@@ -34,7 +34,7 @@ lint-rust: check-rust-toolchain
 	cd rust-service && cargo fmt --check
 
 build-swift: check-swift-toolchain
-	swift build --package-path swift-client
+	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' build
 
 test-swift: check-swift-toolchain
 	swift test --package-path swift-client

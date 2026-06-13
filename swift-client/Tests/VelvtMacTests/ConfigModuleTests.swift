@@ -1,5 +1,5 @@
 import XCTest
-@testable import FocusAgent
+@testable import VelvtMac
 
 final class ConfigModuleTests: XCTestCase {
     func testScaffoldTargetIsWired() {

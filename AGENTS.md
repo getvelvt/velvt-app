@@ -62,7 +62,7 @@ NSWorkspace / AXObserver events  →   Raw event ingestion
 **IPC rules:**
 - The socket path is defined in `proto/ipc_socket_path` — never hardcode it in either workspace.
 - Message schema is defined in `proto/` as JSON Schema. Both workspaces must conform to the version declared in `proto/version`.
-- The Swift client declares its supported protocol version on every connection open: `{"protocol_version": N}`.
+- The Rust service sends `server_hello`, then the Swift client declares its supported protocol version in `client_hello` on every connection.
 - The Rust service must negotiate gracefully — reject unsupported versions with a clear error code, never silently drop messages.
 - The Swift client sends raw events and reads confirmations/payloads. It never reads abstraction maps, analytics state, or intermediate processing results — those are internal to the Rust service.
 - Do not add new message types to the IPC protocol without updating `proto/` and confirming the change spans both workspaces.

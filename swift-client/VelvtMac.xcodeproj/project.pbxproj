@@ -1,0 +1,362 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 46;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		06C9D8301CC9C73FD56ECEB7 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 08FF548B5CFC292896112B45 /* Cocoa.framework */; };
+		07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */; };
+		45E74D92600605D1450A1281 /* IPCClientProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */; };
+		55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31C752D40A995E1401F41A8E /* AppModule.swift */; };
+		59171A93B002F17C0349992E /* DeviceModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */; };
+		5C4179B95803E953316EC37F /* UIModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9F1ADB76DD4328B7586E87C /* UIModule.swift */; };
+		88D5FC587687DD9AB0300E53 /* ConfigModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 928E12E20A85E864E9B7E683 /* ConfigModule.swift */; };
+		89AC090DEEE9F19A1A61543B /* UnixSocketIPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */; };
+		9A6928BC73B9B53A90E1B4E3 /* FakeIPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */; };
+		A03B3DF738D28A838B7E16A5 /* ReconnectBackoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */; };
+		AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */; };
+		FEF395332D1059B366BF6D9A /* IPCTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39C7506861C548B6BD42DE38 /* IPCTypes.swift */; };
+		FF20FC65F747233FBF419F69 /* DeliveryModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ReconnectBackoff.swift; path = IPC/ReconnectBackoff.swift; sourceTree = "<group>"; };
+		08FF548B5CFC292896112B45 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
+		22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UnixSocketIPCClient.swift; path = IPC/UnixSocketIPCClient.swift; sourceTree = "<group>"; };
+		31C752D40A995E1401F41A8E /* AppModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppModule.swift; path = App/AppModule.swift; sourceTree = "<group>"; };
+		3342626EEF1A344019727851 /* velvt-mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "velvt-mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		39C7506861C548B6BD42DE38 /* IPCTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCTypes.swift; path = IPC/IPCTypes.swift; sourceTree = "<group>"; };
+		89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCClientProtocol.swift; path = IPC/IPCClientProtocol.swift; sourceTree = "<group>"; };
+		8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CollectionModule.swift; path = Collection/CollectionModule.swift; sourceTree = "<group>"; };
+		928E12E20A85E864E9B7E683 /* ConfigModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfigModule.swift; path = Config/ConfigModule.swift; sourceTree = "<group>"; };
+		9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceModule.swift; path = Device/DeviceModule.swift; sourceTree = "<group>"; };
+		BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthModule.swift; path = Auth/AuthModule.swift; sourceTree = "<group>"; };
+		C9F1ADB76DD4328B7586E87C /* UIModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UIModule.swift; path = UI/UIModule.swift; sourceTree = "<group>"; };
+		D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeliveryModule.swift; path = Delivery/DeliveryModule.swift; sourceTree = "<group>"; };
+		EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FakeIPCClient.swift; path = IPC/FakeIPCClient.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		7294A54385813BCC9BAC078F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				06C9D8301CC9C73FD56ECEB7 /* Cocoa.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		470112A6B92F8CD311E162EE = {
+			isa = PBXGroup;
+			children = (
+				EBE03290841BF7E9688A9514 /* Products */,
+				CF4946C49B4BE1474322DE94 /* Frameworks */,
+				F43051B39D83B4CA7E178F6C /* VelvtMac */,
+			);
+			sourceTree = "<group>";
+		};
+		CF4946C49B4BE1474322DE94 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				F862D27C059C981EEE0670BF /* OS X */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		EBE03290841BF7E9688A9514 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				3342626EEF1A344019727851 /* velvt-mac.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		F43051B39D83B4CA7E178F6C /* VelvtMac */ = {
+			isa = PBXGroup;
+			children = (
+				31C752D40A995E1401F41A8E /* AppModule.swift */,
+				BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */,
+				8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */,
+				928E12E20A85E864E9B7E683 /* ConfigModule.swift */,
+				D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */,
+				9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */,
+				EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */,
+				89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */,
+				39C7506861C548B6BD42DE38 /* IPCTypes.swift */,
+				010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */,
+				22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */,
+				C9F1ADB76DD4328B7586E87C /* UIModule.swift */,
+			);
+			name = VelvtMac;
+			path = Sources/VelvtMac;
+			sourceTree = "<group>";
+		};
+		F862D27C059C981EEE0670BF /* OS X */ = {
+			isa = PBXGroup;
+			children = (
+				08FF548B5CFC292896112B45 /* Cocoa.framework */,
+			);
+			name = "OS X";
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		30B8CF68810D18DF9F11DB7B /* velvt-mac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8A7F96CAB8DEDE2A664DFD54 /* Build configuration list for PBXNativeTarget "velvt-mac" */;
+			buildPhases = (
+				5ED7FFF41BDCDD531CCEBA0A /* Sources */,
+				7294A54385813BCC9BAC078F /* Frameworks */,
+				41C9B34E074030B53412BB04 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "velvt-mac";
+			productName = "velvt-mac";
+			productReference = 3342626EEF1A344019727851 /* velvt-mac.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A59EA64B0E9A4F30889453D9 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+			};
+			buildConfigurationList = B46D952FB1A35A92FD7C21E6 /* Build configuration list for PBXProject "VelvtMac" */;
+			compatibilityVersion = "Xcode 3.2";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 470112A6B92F8CD311E162EE;
+			productRefGroup = EBE03290841BF7E9688A9514 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				30B8CF68810D18DF9F11DB7B /* velvt-mac */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		41C9B34E074030B53412BB04 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5ED7FFF41BDCDD531CCEBA0A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */,
+				AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */,
+				07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */,
+				88D5FC587687DD9AB0300E53 /* ConfigModule.swift in Sources */,
+				FF20FC65F747233FBF419F69 /* DeliveryModule.swift in Sources */,
+				59171A93B002F17C0349992E /* DeviceModule.swift in Sources */,
+				9A6928BC73B9B53A90E1B4E3 /* FakeIPCClient.swift in Sources */,
+				45E74D92600605D1450A1281 /* IPCClientProtocol.swift in Sources */,
+				FEF395332D1059B366BF6D9A /* IPCTypes.swift in Sources */,
+				A03B3DF738D28A838B7E16A5 /* ReconnectBackoff.swift in Sources */,
+				89AC090DEEE9F19A1A61543B /* UnixSocketIPCClient.swift in Sources */,
+				5C4179B95803E953316EC37F /* UIModule.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		33D3D6C8E2021DADDE2DE54F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		79848A31ABC0FFCF22D2B51F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGNING_ALLOWED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.velvt.mac;
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		86A7CC56EEF9A19A13A9B2CE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGNING_ALLOWED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.velvt.mac;
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		C421438A05045FC2A8BAC83F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		8A7F96CAB8DEDE2A664DFD54 /* Build configuration list for PBXNativeTarget "velvt-mac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				79848A31ABC0FFCF22D2B51F /* Release */,
+				86A7CC56EEF9A19A13A9B2CE /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B46D952FB1A35A92FD7C21E6 /* Build configuration list for PBXProject "VelvtMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C421438A05045FC2A8BAC83F /* Debug */,
+				33D3D6C8E2021DADDE2DE54F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A59EA64B0E9A4F30889453D9 /* Project object */;
+}

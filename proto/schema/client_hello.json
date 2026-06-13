@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "PRIVACY: This message type must never contain raw identifying user data.",
+  "title": "Client Hello",
+  "description": "Swift response declaring its protocol and application versions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "protocol_version", "client_version"],
+  "properties": {
+    "type": { "type": "string", "enum": ["client_hello"] },
+    "protocol_version": { "type": "integer", "minimum": 1 },
+    "client_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    }
+  }
+}

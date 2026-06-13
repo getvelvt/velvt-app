@@ -1,9 +1,8 @@
 import XCTest
-@testable import FocusAgent
+@testable import VelvtMac
 
-final class CollectionModuleTests: XCTestCase {
+final class AuthModuleTests: XCTestCase {
     func testScaffoldTargetIsWired() {
         XCTAssertTrue(true)
     }
 }
-

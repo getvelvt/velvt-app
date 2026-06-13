@@ -3,23 +3,22 @@
 import PackageDescription
 
 let package = Package(
-    name: "FocusAgent",
+    name: "VelvtMac",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "FocusAgent", targets: ["FocusAgent"])
+        .executable(name: "velvt-mac", targets: ["VelvtMac"])
     ],
     targets: [
         .executableTarget(
-            name: "FocusAgent",
-            path: "Sources/FocusAgent"
+            name: "VelvtMac",
+            path: "Sources/VelvtMac"
         ),
         .testTarget(
-            name: "FocusAgentTests",
-            dependencies: ["FocusAgent"],
-            path: "Tests/FocusAgentTests"
+            name: "VelvtMacTests",
+            dependencies: ["VelvtMac"],
+            path: "Tests/VelvtMacTests"
         )
     ]
 )
-

@@ -40,20 +40,20 @@ pub trait IpcMessageCodec {
 
 /// Negotiates the protocol before any other inbound message is dispatched.
 pub trait HandshakeNegotiator {
-    /// Accepts an exact version match or returns a rejected response.
+    /// Accepts an exact version match or returns version-mismatch metadata.
     fn negotiate(
         &self,
-        request: &HandshakeRequest,
+        request: &ClientHello,
         server_protocol_version: u32,
-    ) -> HandshakeResponse;
+    ) -> Result<Acknowledged, VersionMismatch>;
 }
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InboundMessage {
-    /// Client protocol negotiation request.
-    HandshakeRequest(HandshakeRequest),
+    /// Client protocol negotiation response.
+    ClientHello(ClientHello),
     /// Raw local activity event.
     RawEvent(RawEvent),
     /// Typed error envelope.
@@ -64,8 +64,12 @@ pub enum InboundMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutboundMessage {
-    /// Server protocol negotiation response.
-    HandshakeResponse(HandshakeResponse),
+    /// Server protocol negotiation announcement.
+    ServerHello(ServerHello),
+    /// Successful protocol negotiation response.
+    Acknowledged(Acknowledged),
+    /// Incompatible protocol negotiation response.
+    VersionMismatch(VersionMismatch),
     /// Raw event receipt acknowledgement.
     RawEventAck(RawEventAck),
     /// Ready-to-display insight.
@@ -78,25 +82,33 @@ pub enum OutboundMessage {
     ErrorResponse(ErrorResponse),
 }
 
-/// Swift client's first message on a connection.
+/// Swift client's protocol-version response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HandshakeRequest {
+pub struct ClientHello {
     /// Protocol version supported by the client.
     pub protocol_version: u32,
     /// Semantic version of the client.
     pub client_version: String,
 }
 
-/// Server response to protocol negotiation.
+/// Rust server's first message on a connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HandshakeResponse {
-    /// Whether the requested protocol version is accepted.
-    pub accepted: bool,
+pub struct ServerHello {
     /// Protocol version supported by the server.
-    pub server_protocol_version: u32,
-    /// Safe reason supplied only when the request is rejected.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rejection_reason: Option<String>,
+    pub protocol_version: u32,
+}
+
+/// Successful protocol negotiation response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Acknowledged {}
+
+/// Incompatible protocol negotiation response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionMismatch {
+    /// Protocol version required by the server.
+    pub expected: u32,
+    /// Protocol version supplied by the client.
+    pub got: u32,
 }
 
 /// Local-only raw activity event accepted from Swift.

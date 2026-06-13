@@ -29,8 +29,9 @@ Embedded unescaped newline bytes are not valid framing.
 Swift Client                                      Rust Service
      |                                                  |
      |--- connect ~/.velvt/velvt-service.sock --------->|
-     |--- handshake_request --------------------------->|
-     |<-- handshake_response accepted/rejected ---------|
+     |<-- server_hello ---------------------------------|
+     |--- client_hello -------------------------------->|
+     |<-- acknowledged / version_mismatch --------------|
      |                                                  |
      |--- raw_event ----------------------------------->|
      |<-- raw_event_ack --------------------------------|
@@ -45,15 +46,16 @@ Swift Client                                      Rust Service
      |--- disconnect ---------------------------------->|
 ```
 
-The first message on every new connection must be `handshake_request`. Rust
-must not process later messages until it has sent an accepted
-`handshake_response`.
+The first message on every new connection must be `server_hello`. Rust must not
+process later messages until it has received `client_hello` and sent either
+`acknowledged` or `version_mismatch`.
 
 Direction is enforced by the workspace message envelopes:
 
-- Rust accepts only `handshake_request`, `raw_event`, and `error_response`.
-- Rust emits only `handshake_response`, `raw_event_ack`, `insight_payload`,
-  `history_payload`, `service_status`, and `error_response`.
+- Rust accepts only `client_hello`, `raw_event`, and `error_response`.
+- Rust emits only `server_hello`, `acknowledged`, `version_mismatch`,
+  `raw_event_ack`, `insight_payload`, `history_payload`, `service_status`, and
+  `error_response`.
 - Swift sends only the Rust inbound set and accepts only the Rust outbound set.
 
 ## 3. Message Catalog
@@ -61,27 +63,38 @@ Direction is enforced by the workspace message envelopes:
 All schemas use JSON Schema draft-07 and reject undeclared fields with
 `additionalProperties: false`.
 
-Optional-field encoding is strict. Omit absent `rejection_reason`,
-`drop_reason`, `reason`, and `related_event_id` properties entirely. Only
-`raw_event.bundle_id` is nullable and may be encoded as JSON `null`.
+Optional-field encoding is strict. Omit absent `drop_reason`, `reason`, and
+`related_event_id` properties entirely. Only `raw_event.bundle_id` is nullable
+and may be encoded as JSON `null`.
 
-### `handshake_request`
+### `server_hello`
 
-Direction: Swift to Rust. Purpose: declare the client and protocol versions on
-every new connection.
+Direction: Rust to Swift. Purpose: announce the server protocol version.
 
-- `type`: literal `handshake_request`
+- `type`: literal `server_hello`
+- `protocol_version`: positive integer matching Rust's supported version
+
+### `client_hello`
+
+Direction: Swift to Rust. Purpose: declare the client and protocol versions.
+
+- `type`: literal `client_hello`
 - `protocol_version`: positive integer matching `proto/version`
 - `client_version`: semantic-version string
 
-### `handshake_response`
+### `acknowledged`
 
-Direction: Rust to Swift. Purpose: accept or reject protocol negotiation.
+Direction: Rust to Swift. Purpose: accept protocol negotiation.
 
-- `type`: literal `handshake_response`
-- `accepted`: boolean
-- `server_protocol_version`: positive integer matching Rust's supported version
-- `rejection_reason`: required only when `accepted` is false
+- `type`: literal `acknowledged`
+
+### `version_mismatch`
+
+Direction: Rust to Swift. Purpose: reject incompatible protocol negotiation.
+
+- `type`: literal `version_mismatch`
+- `expected`: positive integer required by Rust
+- `got`: incompatible positive integer supplied by Swift
 
 ### `raw_event`
 
@@ -160,15 +173,15 @@ The current version is the integer stored in `proto/version`.
 
 ### Matching Version
 
-1. Swift connects and immediately sends `handshake_request`.
-2. Rust compares `protocol_version` with its supported protocol version.
-3. Rust sends `handshake_response` with `accepted: true`.
-4. Both sides may exchange other messages.
+1. Rust sends `server_hello` immediately after accepting the socket.
+2. Swift sends `client_hello`.
+3. Rust compares the client's version with its supported protocol version.
+4. Rust sends `acknowledged`.
+5. Both sides may exchange other messages.
 
 ### Mismatched Version
 
-1. Rust sends `handshake_response` with `accepted: false`, its
-   `server_protocol_version`, and a safe `rejection_reason`.
+1. Rust sends `version_mismatch` with the expected and received versions.
 2. Rust does not process later messages on that connection.
 3. The connection closes cleanly. Messages must never be silently dropped
    because of a version mismatch.
@@ -230,9 +243,9 @@ messages and compare their JSON keys and discriminator values to the schemas.
    from `proto/ipc_socket_path` and `proto/version`; do not hardcode either.
 2. Bind the Unix domain socket and use newline-delimited JSON framing.
 3. Decode only Rust `InboundMessage` variants.
-4. Require `handshake_request` as the first frame and accept only an exact
-   protocol-version match.
-5. On mismatch, send a rejected `handshake_response`, then close cleanly.
+4. Send `server_hello` first, require `client_hello` next, and accept only an
+   exact protocol-version match.
+5. On mismatch, send `version_mismatch`, then close cleanly.
 6. Do not dispatch `raw_event` until the handshake is accepted.
 7. Send only Rust `OutboundMessage` variants and omit absent optional fields
    according to the message-catalog rule above.
@@ -244,11 +257,11 @@ messages and compare their JSON keys and discriminator values to the schemas.
 1. Read the socket path, protocol version, and client version from typed
    configuration; do not hardcode them.
 2. Connect with a Unix domain socket, not `URLSession`.
-3. Send `handshake_request` as the first newline-delimited JSON frame.
-4. Do not report `connected` or send `raw_event` until Rust accepts the
-   handshake.
-5. Encode only `OutboundIPCMessage` variants and decode only
-   `InboundIPCMessage` variants.
+3. Receive `server_hello`, send `client_hello`, then wait for `acknowledged` or
+   `version_mismatch`.
+4. Do not report `connected` or send `raw_event` until `acknowledged`.
+5. Encode only `ClientMessage` variants and decode only `ServerMessage`
+   variants.
 6. Preserve exact schema field names, discriminator values, timestamp formats,
    and optional-field omission rules.
 7. Reconnect with exponential backoff and keep raw events only in a bounded

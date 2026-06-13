@@ -1,0 +1,47 @@
+.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all
+
+ifeq ($(OS),Windows_NT)
+NULL_DEVICE := NUL
+else
+NULL_DEVICE := /dev/null
+endif
+
+CARGO_VERSION := $(shell cd rust-service && cargo --version 2>$(NULL_DEVICE))
+SWIFT_VERSION := $(shell swift --version 2>$(NULL_DEVICE))
+
+check-rust-toolchain:
+ifeq ($(strip $(CARGO_VERSION)),)
+	$(error ERROR: Rust toolchain not found. Install the pinned toolchain from rust-service/rust-toolchain.toml and ensure cargo is on PATH)
+else
+	@echo "$(CARGO_VERSION)"
+endif
+
+check-swift-toolchain:
+ifeq ($(strip $(SWIFT_VERSION)),)
+	$(error ERROR: Swift toolchain not found. Run Swift targets on macOS with Swift 5.10 or later and ensure swift is on PATH)
+else
+	@echo "$(SWIFT_VERSION)"
+endif
+
+build-rust: check-rust-toolchain
+	cd rust-service && cargo build --release
+
+test-rust: check-rust-toolchain
+	cd rust-service && cargo test
+
+lint-rust: check-rust-toolchain
+	cd rust-service && cargo clippy -- -D warnings
+	cd rust-service && cargo fmt --check
+
+build-swift: check-swift-toolchain
+	swift build --package-path swift-client
+
+test-swift: check-swift-toolchain
+	swift test --package-path swift-client
+
+lint-swift: check-swift-toolchain
+	cd swift-client && swift format lint --recursive Sources Tests
+
+build-all: build-rust build-swift
+
+test-all: test-rust test-swift

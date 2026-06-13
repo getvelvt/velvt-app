@@ -24,14 +24,20 @@ where
     )
     .await?;
 
-    let Some(frame) = read_frame(&mut reader).await? else {
-        return Ok(());
-    };
-    let hello = match decode_client_hello(&frame) {
-        Ok(hello) => hello,
-        Err(error) => {
-            write_malformed(&mut writer).await?;
-            return Err(error);
+    let mut errors = 0_usize;
+    let hello = loop {
+        let Some(frame) = read_frame(&mut reader).await? else {
+            return Ok(());
+        };
+        match decode_client_hello(&frame) {
+            Ok(hello) => break hello,
+            Err(_) => {
+                errors += 1;
+                write_malformed(&mut writer).await?;
+                if errors >= max_errors {
+                    return Ok(());
+                }
+            }
         }
     };
     if hello.expected_protocol_version != PROTOCOL_VERSION {
@@ -47,7 +53,6 @@ where
     }
     write_server_message(&mut writer, &ServerMessage::Acknowledged(Acknowledged)).await?;
 
-    let mut errors = 0_usize;
     while let Some(frame) = read_frame(&mut reader).await? {
         let message = match decode_client_message(&frame) {
             Ok(message) => message,

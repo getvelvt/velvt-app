@@ -110,3 +110,34 @@ async fn malformed_message_is_rejected_without_closing_connection() {
     drop(read);
     assert!(task.await.unwrap().is_ok());
 }
+
+#[tokio::test]
+async fn malformed_pre_handshake_message_can_be_retried() {
+    let (client, server) = duplex(4096);
+    let task = tokio::spawn(serve_connection(server, DefaultRouter, 3));
+    let (read, mut write) = tokio::io::split(client);
+    let mut read = BufReader::new(read);
+    read_message(&mut read).await;
+
+    write.write_all(b"garbage\n").await.unwrap();
+    assert!(matches!(
+        read_message(&mut read).await,
+        Some(ServerMessage::MalformedMessage(_))
+    ));
+    write_message(
+        &mut write,
+        &ClientMessage::ClientHello(ClientHello {
+            expected_protocol_version: PROTOCOL_VERSION,
+            client_version: "0.1.0".into(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        read_message(&mut read).await,
+        Some(ServerMessage::Acknowledged(Acknowledged))
+    );
+
+    drop(write);
+    drop(read);
+    assert!(task.await.unwrap().is_ok());
+}

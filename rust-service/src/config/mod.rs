@@ -32,11 +32,11 @@ pub struct ServiceConfig {
 impl ServiceConfig {
     /// Loads and validates runtime configuration.
     pub fn load() -> Result<Self, ConfigError> {
-        let socket_path = std::env::var("VELVT_IPC_SOCKET_PATH").unwrap_or_else(|_| {
-            include_str!("../../../proto/ipc_socket_path")
-                .trim()
-                .to_owned()
-        });
+        let socket_path = match std::env::var("VELVT_IPC_SOCKET_PATH") {
+            Ok(value) => value,
+            Err(std::env::VarError::NotPresent) => canonical_socket_path()?,
+            Err(std::env::VarError::NotUnicode(_)) => return Err(ConfigError::Invalid),
+        };
         let ipc_max_errors = parse_env("VELVT_IPC_MAX_ERRORS", 3)?;
         if ipc_max_errors == 0 {
             return Err(ConfigError::Invalid);
@@ -56,6 +56,13 @@ impl ServiceConfig {
             log_level: std::env::var("VELVT_LOG_LEVEL").unwrap_or_else(|_| "info".to_owned()),
         })
     }
+}
+
+fn canonical_socket_path() -> Result<String, ConfigError> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../proto/ipc_socket_path");
+    std::fs::read_to_string(path)
+        .map(|value| value.trim().to_owned())
+        .map_err(|_| ConfigError::Invalid)
 }
 
 fn parse_env<T>(name: &str, default: T) -> Result<T, ConfigError>

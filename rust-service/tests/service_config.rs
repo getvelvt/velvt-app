@@ -30,3 +30,15 @@ fn zero_ipc_error_threshold_is_rejected() {
 
     std::env::remove_var("VELVT_IPC_MAX_ERRORS");
 }
+
+#[test]
+fn socket_path_defaults_to_the_canonical_proto_value() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("VELVT_IPC_SOCKET_PATH");
+
+    let config = ServiceConfig::load().unwrap();
+
+    assert!(config
+        .socket_path
+        .ends_with(std::path::Path::new(".velvt/velvt-service.sock")));
+}

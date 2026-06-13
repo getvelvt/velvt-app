@@ -10,6 +10,7 @@ pub const PROTOCOL_VERSION: u32 = 2;
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ClientMessage {
     /// Client response to the server's initial hello.
     ClientHello(ClientHello),
@@ -17,6 +18,18 @@ pub enum ClientMessage {
     RawEvent(RawEvent),
     /// Typed error envelope.
     ErrorResponse(ErrorResponse),
+    /// Test-only proof that adding a client DTO does not change existing handlers.
+    #[cfg(any(test, feature = "extensibility-proof"))]
+    DummyExtension(DummyExtension),
+}
+
+/// Test-only payload used to prove tagged-enum extensibility.
+#[cfg(any(test, feature = "extensibility-proof"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DummyExtension {
+    /// Arbitrary proof sequence.
+    pub sequence: u32,
 }
 
 /// Server-to-client messages emitted by the Rust service.
@@ -235,4 +248,21 @@ pub struct ErrorResponse {
     /// Optional related raw event identifier.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub related_event_id: Option<Uuid>,
+}
+
+#[cfg(test)]
+mod extensibility_proof {
+    use super::{ClientMessage, DummyExtension};
+
+    #[test]
+    fn dummy_variant_serializes_without_service_handler_changes() {
+        // The variant exists directly on the shared DTO enum; the non-exhaustive
+        // service router and transports compile unchanged.
+        let message = ClientMessage::DummyExtension(DummyExtension { sequence: 1 });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"dummy_extension","payload":{"sequence":1}}"#
+        );
+    }
 }

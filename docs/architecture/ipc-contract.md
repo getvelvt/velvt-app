@@ -212,7 +212,8 @@ To add or change an IPC message:
    carrier.
 5. Bump `proto/version` for incompatible changes or new message types.
 6. Update `proto/CHANGELOG.md`.
-7. Update Rust DTOs, dispatch, and tests.
+7. Update Rust DTOs and contract tests; register business handling only when
+   the issue implementing that behavior is in scope.
 8. Update Swift DTOs, dispatch, and tests.
 9. Verify forbidden raw fields cannot appear in privacy-safe messages or
    upload payloads.
@@ -231,15 +232,27 @@ messages and compare their JSON keys and discriminator values to the schemas.
 1. Read the socket path and protocol version from typed configuration sourced
    from `proto/ipc_socket_path` and `proto/version`; do not hardcode either.
 2. Bind the Unix domain socket and use newline-delimited JSON framing.
-3. Decode only Rust `InboundMessage` variants.
+3. Decode only Rust `ClientMessage` variants.
 4. Send `server_hello`, then require `client_hello` with an exact
    protocol-version match.
 5. On mismatch, send `version_mismatch`, then close cleanly.
 6. Do not dispatch `raw_event` until the handshake is accepted.
-7. Send only Rust `OutboundMessage` variants and omit absent optional fields
+7. Send only Rust `ServerMessage` variants and omit absent optional fields
    according to the message-catalog rule above.
 8. Never log decoded message content or echo raw fields in errors.
 9. Add schema-contract tests for every inbound and outbound message.
+
+### R1 Extensibility Proof
+
+`ClientMessage` is non-exhaustive outside `velvt-shared-types`, and the R1
+default router validates post-handshake DTOs without enumerating normal
+variants. A test-only `dummy_extension` variant in the shared-types unit tests
+proves that a tagged DTO variant can be added and serialized without changing
+existing service handler or transport files. The same compile proof is
+available with `cargo check --workspace --features
+velvt-shared-types/extensibility-proof`. Production message additions still
+require the coordinated `proto/`, Rust DTO, Swift DTO, and versioning steps
+above.
 
 ### S1 Swift IPC Client Implementation Checklist
 
@@ -266,6 +279,12 @@ The canonical path is read from `proto/ipc_socket_path`; neither workspace may
 hardcode it. Rust expands `~`, creates the parent directory with user-only
 permissions, and binds the Unix domain socket. Swift opens the connection at
 application launch.
+
+Rust configuration overrides:
+
+- `VELVT_IPC_SOCKET_PATH`: Unix socket path override.
+- `VELVT_IPC_MAX_ERRORS`: positive malformed-frame threshold per connection.
+- `VELVT_LOG_LEVEL`: structured tracing filter, defaulting to `info`.
 
 ### Stale Socket Handling
 

@@ -1,4 +1,4 @@
-use velvt_shared_types::{ClientMessage, RawEventAck, RawEventStatus, ServerMessage};
+use velvt_shared_types::{ClientMessage, ServerMessage};
 
 use super::IpcError;
 
@@ -16,13 +16,8 @@ pub struct DefaultRouter;
 impl MessageRouter for DefaultRouter {
     async fn route(&self, message: ClientMessage) -> Result<Option<ServerMessage>, IpcError> {
         match message {
-            ClientMessage::RawEvent(event) => Ok(Some(ServerMessage::RawEventAck(RawEventAck {
-                event_id: event.event_id,
-                status: RawEventStatus::Accepted,
-                drop_reason: None,
-            }))),
-            ClientMessage::ErrorResponse(_) => Ok(None),
             ClientMessage::ClientHello(_) => Err(IpcError::MalformedMessage),
+            _ => Ok(None),
         }
     }
 }

@@ -81,6 +81,7 @@ where
 }
 
 async fn write_malformed(writer: &mut (impl AsyncWrite + Unpin)) -> Result<(), IpcError> {
+    tracing::warn!(error_code = "malformed_message", "rejected IPC message");
     write_server_message(
         writer,
         &ServerMessage::MalformedMessage(MalformedMessage {

@@ -15,14 +15,6 @@ pub struct ServiceConfig {
     pub socket_path: PathBuf,
     /// IPC protocol version this server speaks.
     pub protocol_version: u32,
-    /// Base URL for the velvt-core cloud API.
-    pub api_base_url: String,
-    /// SQLite database file path.
-    pub db_path: PathBuf,
-    /// Maximum batch size before forcing an upload.
-    pub upload_batch_max_events: usize,
-    /// Maximum seconds between uploads while active.
-    pub upload_interval_secs: u64,
     /// Number of malformed messages allowed before closing a connection.
     pub ipc_max_errors: usize,
     /// Structured tracing filter configured for the service.
@@ -45,13 +37,6 @@ impl ServiceConfig {
         Ok(Self {
             socket_path: expand_home(&socket_path)?,
             protocol_version: PROTOCOL_VERSION,
-            api_base_url: std::env::var("VELVT_API_BASE_URL")
-                .unwrap_or_else(|_| "https://api.velvt.ai".to_owned()),
-            db_path: PathBuf::from(
-                std::env::var("VELVT_DB_PATH").unwrap_or_else(|_| "velvt.sqlite3".to_owned()),
-            ),
-            upload_batch_max_events: parse_env("VELVT_UPLOAD_BATCH_MAX_EVENTS", 50)?,
-            upload_interval_secs: parse_env("VELVT_UPLOAD_INTERVAL_SECS", 60)?,
             ipc_max_errors,
             log_level: std::env::var("VELVT_LOG_LEVEL").unwrap_or_else(|_| "info".to_owned()),
         })

@@ -1,7 +1,7 @@
-//! Velvt local processing service entry point.
+//! Velvt local IPC service entry point.
 //!
-//! The service owns local processing and the final privacy boundary. It does
-//! not render UI or request macOS permissions.
+//! R1 owns transport, framing, version negotiation, and typed message
+//! validation. It does not implement event processing or later service layers.
 
 #[tokio::main]
 async fn main() {

@@ -121,7 +121,8 @@ IPC contract changes are cross-workspace changes:
 
 1. Add or update the closed JSON schema in `proto/schema/` and bump
    `proto/version` when required.
-2. Update the Rust tagged enum and DTO in `rust-service/src/ipc/mod.rs`.
+2. Update the Rust tagged enum and DTO in
+   `rust-service/shared-types/src/lib.rs`.
 3. Add the Swift DTO and its `ClientMessage` or `ServerMessage` tagged-enum
    case in `swift-client/Sources/VelvtMac/IPC/IPCTypes.swift`.
 4. Add encode/decode round-trip tests and register the message handler.
@@ -130,6 +131,14 @@ Unknown future server discriminators decode as `ServerMessage.unknown(type:)`.
 Only the discriminator is retained; unknown payload fields are discarded so
 they cannot leak raw values and existing handler switches do not require
 exhaustive updates.
+
+Rust reads its default socket path from `proto/ipc_socket_path`.
+`VELVT_IPC_SOCKET_PATH` overrides it, `VELVT_IPC_MAX_ERRORS` configures the
+malformed-frame threshold, and `VELVT_LOG_LEVEL` configures structured tracing.
+
+All protocol-v2 messages use a tagged `{"type": "...", "payload": {...}}`
+envelope. Rust DTOs live in `rust-service/shared-types`; Swift DTOs live in
+`swift-client/Sources/VelvtMac/IPC/IPCTypes.swift`.
 
 ## Architecture
 

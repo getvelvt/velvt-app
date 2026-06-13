@@ -36,6 +36,12 @@ or removing message types is breaking and requires a protocol version bump.
 
 Partial protocol updates are prohibited and must not be merged.
 
+## Version 2
+
+- Changed negotiation to `server_hello` followed by `client_hello`.
+- Added typed `acknowledged`, `version_mismatch`, and `malformed_message` responses.
+- Wrapped every message body in a tagged `payload` object.
+
 ## Version 1
 
 - Initial newline-delimited JSON contract.

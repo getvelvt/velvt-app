@@ -141,7 +141,7 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
         try await nextTransport.send(
             frame: encoder.encode(
                 ClientMessage.clientHello(
-                    ClientHello(protocolVersion: protocolVersion, clientVersion: clientVersion)
+                    ClientHello(expectedProtocolVersion: protocolVersion, clientVersion: clientVersion)
                 )
             )
         )
@@ -151,7 +151,10 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
         case .acknowledged:
             publish(.connected)
         case let .versionMismatch(mismatch):
-            throw IPCError.versionMismatch(expected: mismatch.expected, got: mismatch.got)
+            throw IPCError.versionMismatch(
+                expected: mismatch.serverProtocolVersion,
+                got: mismatch.clientProtocolVersion
+            )
         default:
             throw IPCError.handshakeFailed
         }

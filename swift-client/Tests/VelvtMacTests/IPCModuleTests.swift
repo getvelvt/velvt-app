@@ -7,7 +7,7 @@ final class IPCModuleTests: XCTestCase {
 
     func testEveryClientMessageRoundTrips() throws {
         let messages: [ClientMessage] = [
-            .clientHello(ClientHello(protocolVersion: 2, clientVersion: "1.2.3")),
+            .clientHello(ClientHello(expectedProtocolVersion: 2, clientVersion: "1.2.3")),
             .rawEvent(
                 RawEvent(
                     eventID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
@@ -31,7 +31,8 @@ final class IPCModuleTests: XCTestCase {
         let messages: [ServerMessage] = [
             .serverHello(ServerHello(protocolVersion: 2)),
             .acknowledged(Acknowledged()),
-            .versionMismatch(VersionMismatch(expected: 2, got: 1)),
+            .versionMismatch(VersionMismatch(serverProtocolVersion: 2, clientProtocolVersion: 1)),
+            .malformedMessage(MalformedMessage(code: .invalidMessage)),
             .rawEventAck(RawEventAcknowledgement(eventID: eventID, status: .accepted, dropReason: nil)),
             .insightPayload(
                 InsightPayload(
@@ -70,21 +71,24 @@ final class IPCModuleTests: XCTestCase {
     }
 
     func testTaggedEnumUsesTypeDiscriminator() throws {
-        let data = try encoder.encode(ClientMessage.clientHello(ClientHello(protocolVersion: 2, clientVersion: "1.2.3")))
+        let data = try encoder.encode(
+            ClientMessage.clientHello(ClientHello(expectedProtocolVersion: 2, clientVersion: "1.2.3"))
+        )
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
 
         XCTAssertEqual(object["type"] as? String, "client_hello")
-        XCTAssertEqual(object["protocol_version"] as? Int, 2)
+        XCTAssertEqual(payload["expected_protocol_version"] as? Int, 2)
     }
 
-    func testDecoderRejectsUndeclaredFields() {
-        let data = Data(#"{"type":"server_hello","protocol_version":2,"raw_title":"forbidden"}"#.utf8)
+    func testDecoderRejectsMissingPayload() {
+        let data = Data(#"{"type":"server_hello"}"#.utf8)
 
         XCTAssertThrowsError(try decoder.decode(ServerMessage.self, from: data))
     }
 
     func testUnknownServerMessageDecodesWithoutPayloadValues() throws {
-        let data = Data(#"{"type":"future_message","raw_title":"must-not-be-retained"}"#.utf8)
+        let data = Data(#"{"type":"future_message","payload":{"raw_title":"must-not-be-retained"}}"#.utf8)
 
         XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), .unknown(type: "future_message"))
     }

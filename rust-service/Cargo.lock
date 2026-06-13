@@ -2416,6 +2416,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "velvt-shared-types",
+]
+
+[[package]]
+name = "velvt-shared-types"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "uuid",
 ]
 
 [[package]]

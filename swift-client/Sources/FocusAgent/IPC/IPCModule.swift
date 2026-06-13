@@ -17,8 +17,8 @@ public enum IPCConnectionState: Equatable, Sendable {
 /// The IPC client interface. Implementors manage the socket lifecycle.
 ///
 /// Implementors connect only to the configured Unix domain socket, send a
-/// handshake request as the first frame on every connection, and do not report
-/// `connected` until an accepted handshake response is received. Raw events
+/// client hello after receiving the server hello, and do not report
+/// `connected` until an acknowledgement is received. Raw events
 /// may be buffered in memory for at most 30 seconds while reconnecting.
 public protocol IPCClient: AnyObject {
     var connectionState: IPCConnectionState { get }
@@ -55,14 +55,17 @@ public protocol IPCReconnectScheduling {
 
 /// Messages sent by the Swift client.
 public enum OutboundIPCMessage: Equatable, Sendable {
-    case handshakeRequest(HandshakeRequest)
+    case clientHello(ClientHello)
     case rawEvent(RawEventMessage)
     case errorResponse(ErrorResponse)
 }
 
 /// Messages received by the Swift client.
 public enum InboundIPCMessage: Equatable, Sendable {
-    case handshakeResponse(HandshakeResponse)
+    case serverHello(ServerHello)
+    case acknowledged
+    case versionMismatch(VersionMismatch)
+    case malformedMessage(MalformedMessage)
     case rawEventAck(RawEventAcknowledgement)
     case insightPayload(InsightPayload)
     case historyPayload(HistoryPayload)
@@ -70,25 +73,39 @@ public enum InboundIPCMessage: Equatable, Sendable {
     case errorResponse(ErrorResponse)
 }
 
-public struct HandshakeRequest: Equatable, Sendable {
-    public let protocolVersion: Int
+public struct ClientHello: Equatable, Sendable {
+    public let expectedProtocolVersion: Int
     public let clientVersion: String
 
-    public init(protocolVersion: Int, clientVersion: String) {
-        self.protocolVersion = protocolVersion
+    public init(expectedProtocolVersion: Int, clientVersion: String) {
+        self.expectedProtocolVersion = expectedProtocolVersion
         self.clientVersion = clientVersion
     }
 }
 
-public struct HandshakeResponse: Equatable, Sendable {
-    public let accepted: Bool
-    public let serverProtocolVersion: Int
-    public let rejectionReason: String?
+public struct ServerHello: Equatable, Sendable {
+    public let protocolVersion: Int
 
-    public init(accepted: Bool, serverProtocolVersion: Int, rejectionReason: String?) {
-        self.accepted = accepted
+    public init(protocolVersion: Int) {
+        self.protocolVersion = protocolVersion
+    }
+}
+
+public struct VersionMismatch: Equatable, Sendable {
+    public let serverProtocolVersion: Int
+    public let clientProtocolVersion: Int
+
+    public init(serverProtocolVersion: Int, clientProtocolVersion: Int) {
         self.serverProtocolVersion = serverProtocolVersion
-        self.rejectionReason = rejectionReason
+        self.clientProtocolVersion = clientProtocolVersion
+    }
+}
+
+public struct MalformedMessage: Equatable, Sendable {
+    public let code: String
+
+    public init(code: String) {
+        self.code = code
     }
 }
 

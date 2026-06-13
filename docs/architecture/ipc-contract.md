@@ -29,8 +29,9 @@ Embedded unescaped newline bytes are not valid framing.
 Swift Client                                      Rust Service
      |                                                  |
      |--- connect ~/.velvt/velvt-service.sock --------->|
-     |--- handshake_request --------------------------->|
-     |<-- handshake_response accepted/rejected ---------|
+     |<-- server_hello ---------------------------------|
+     |--- client_hello -------------------------------->|
+     |<-- acknowledged / version_mismatch --------------|
      |                                                  |
      |--- raw_event ----------------------------------->|
      |<-- raw_event_ack --------------------------------|
@@ -45,15 +46,16 @@ Swift Client                                      Rust Service
      |--- disconnect ---------------------------------->|
 ```
 
-The first message on every new connection must be `handshake_request`. Rust
-must not process later messages until it has sent an accepted
-`handshake_response`.
+The first message on every new connection must be `server_hello`. Rust must
+not process later messages until it has received a matching `client_hello`
+and sent `acknowledged`.
 
 Direction is enforced by the workspace message envelopes:
 
-- Rust accepts only `handshake_request`, `raw_event`, and `error_response`.
-- Rust emits only `handshake_response`, `raw_event_ack`, `insight_payload`,
-  `history_payload`, `service_status`, and `error_response`.
+- Rust accepts only `client_hello`, `raw_event`, and `error_response`.
+- Rust emits only `server_hello`, `acknowledged`, `version_mismatch`,
+  `malformed_message`, `raw_event_ack`, `insight_payload`, `history_payload`,
+  `service_status`, and `error_response`.
 - Swift sends only the Rust inbound set and accepts only the Rust outbound set.
 
 ## 3. Message Catalog
@@ -65,23 +67,21 @@ Optional-field encoding is strict. Omit absent `rejection_reason`,
 `drop_reason`, `reason`, and `related_event_id` properties entirely. Only
 `raw_event.bundle_id` is nullable and may be encoded as JSON `null`.
 
-### `handshake_request`
+### `client_hello`
 
-Direction: Swift to Rust. Purpose: declare the client and protocol versions on
-every new connection.
+Direction: Swift to Rust. Purpose: respond to the server hello with the
+expected protocol version.
 
-- `type`: literal `handshake_request`
-- `protocol_version`: positive integer matching `proto/version`
+- `type`: literal `client_hello`
+- `expected_protocol_version`: positive integer matching `proto/version`
 - `client_version`: semantic-version string
 
-### `handshake_response`
+### `server_hello`
 
-Direction: Rust to Swift. Purpose: accept or reject protocol negotiation.
+Direction: Rust to Swift. Purpose: declare the server protocol version.
 
-- `type`: literal `handshake_response`
-- `accepted`: boolean
-- `server_protocol_version`: positive integer matching Rust's supported version
-- `rejection_reason`: required only when `accepted` is false
+- `type`: literal `server_hello`
+- `protocol_version`: positive integer matching Rust's supported version
 
 ### `raw_event`
 
@@ -160,15 +160,14 @@ The current version is the integer stored in `proto/version`.
 
 ### Matching Version
 
-1. Swift connects and immediately sends `handshake_request`.
-2. Rust compares `protocol_version` with its supported protocol version.
-3. Rust sends `handshake_response` with `accepted: true`.
+1. Rust sends `server_hello` immediately after Swift connects.
+2. Swift sends `client_hello` with its expected protocol version.
+3. Rust sends `acknowledged`.
 4. Both sides may exchange other messages.
 
 ### Mismatched Version
 
-1. Rust sends `handshake_response` with `accepted: false`, its
-   `server_protocol_version`, and a safe `rejection_reason`.
+1. Rust sends `version_mismatch` with both numeric protocol versions.
 2. Rust does not process later messages on that connection.
 3. The connection closes cleanly. Messages must never be silently dropped
    because of a version mismatch.

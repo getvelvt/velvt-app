@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Client Hello",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "client_hello" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_protocol_version", "client_version"],
+      "properties": {
+        "expected_protocol_version": { "type": "integer", "minimum": 1 },
+        "client_version": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

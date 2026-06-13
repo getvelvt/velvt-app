@@ -12,8 +12,8 @@ pub use velvt_shared_types::*;
 /// Starts and stops the local IPC server.
 ///
 /// Implementors bind the configured Unix domain socket, require a successful
-/// handshake before accepting raw events, dispatch only [`InboundMessage`]
-/// variants, and emit only [`OutboundMessage`] variants. They must remove only
+/// handshake before accepting raw events, dispatch only [`ClientMessage`]
+/// variants, and emit only [`ServerMessage`] variants. They must remove only
 /// a confirmed stale socket file and must never log decoded message content.
 pub trait IpcServer {
     /// Runs the server at `socket_path` until shutdown is requested.
@@ -30,20 +30,10 @@ pub trait IpcServer {
 /// fields, and reject frames that are not valid UTF-8 JSON objects.
 pub trait IpcMessageCodec {
     /// Decodes one complete client-to-server JSON line without the delimiter.
-    fn decode_inbound(&self, frame: &[u8]) -> Result<InboundMessage, IpcError>;
+    fn decode_inbound(&self, frame: &[u8]) -> Result<ClientMessage, IpcError>;
 
     /// Encodes one server-to-client message and appends one newline delimiter.
-    fn encode_outbound(&self, message: &OutboundMessage) -> Result<Vec<u8>, IpcError>;
-}
-
-/// Negotiates the protocol before any other inbound message is dispatched.
-pub trait HandshakeNegotiator {
-    /// Accepts an exact version match or returns a rejected response.
-    fn negotiate(
-        &self,
-        request: &HandshakeRequest,
-        server_protocol_version: u32,
-    ) -> HandshakeResponse;
+    fn encode_outbound(&self, message: &ServerMessage) -> Result<Vec<u8>, IpcError>;
 }
 
 /// Errors produced by IPC transport or protocol handling.

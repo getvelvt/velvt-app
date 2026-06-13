@@ -4,12 +4,15 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Current breaking-change version of the local IPC contract.
+pub const PROTOCOL_VERSION: u32 = 2;
+
 /// Client-to-server messages accepted by the Rust service.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum InboundMessage {
-    /// Client protocol negotiation request.
-    HandshakeRequest(HandshakeRequest),
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum ClientMessage {
+    /// Client response to the server's initial hello.
+    ClientHello(ClientHello),
     /// Raw local activity event.
     RawEvent(RawEvent),
     /// Typed error envelope.
@@ -17,11 +20,17 @@ pub enum InboundMessage {
 }
 
 /// Server-to-client messages emitted by the Rust service.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum OutboundMessage {
-    /// Server protocol negotiation response.
-    HandshakeResponse(HandshakeResponse),
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum ServerMessage {
+    /// Server's initial protocol declaration.
+    ServerHello(ServerHello),
+    /// Successful handshake acknowledgement.
+    Acknowledged(Acknowledged),
+    /// Protocol versions are incompatible.
+    VersionMismatch(VersionMismatch),
+    /// A client frame could not be decoded as a valid typed message.
+    MalformedMessage(MalformedMessage),
     /// Raw event receipt acknowledgement.
     RawEventAck(RawEventAck),
     /// Ready-to-display insight.
@@ -34,29 +43,58 @@ pub enum OutboundMessage {
     ErrorResponse(ErrorResponse),
 }
 
-/// Swift client's first message on a connection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HandshakeRequest {
-    /// Protocol version supported by the client.
+/// Server's first message on every connection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerHello {
+    /// Protocol version supported by the server.
     pub protocol_version: u32,
+}
+
+/// Swift client's response to a server hello.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientHello {
+    /// Protocol version expected by the client.
+    pub expected_protocol_version: u32,
     /// Semantic version of the client.
     pub client_version: String,
 }
 
-/// Server response to protocol negotiation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HandshakeResponse {
-    /// Whether the requested protocol version is accepted.
-    pub accepted: bool,
+/// Confirms that protocol negotiation succeeded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Acknowledged;
+
+/// Reports incompatible client and server protocol versions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VersionMismatch {
     /// Protocol version supported by the server.
     pub server_protocol_version: u32,
-    /// Safe reason supplied only when the request is rejected.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rejection_reason: Option<String>,
+    /// Protocol version declared by the client.
+    pub client_protocol_version: u32,
+}
+
+/// Reports a rejected frame without echoing client-supplied content.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MalformedMessage {
+    /// Stable, privacy-safe malformed-message classification.
+    pub code: MalformedMessageCode,
+}
+
+/// Privacy-safe malformed-message classifications.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MalformedMessageCode {
+    /// The frame was not a valid declared client message.
+    InvalidMessage,
 }
 
 /// Local-only raw activity event accepted from Swift.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawEvent {
     /// Stable event identifier.
     pub event_id: Uuid,
@@ -71,7 +109,8 @@ pub struct RawEvent {
 }
 
 /// Acknowledgement for one raw event.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawEventAck {
     /// Event identifier being acknowledged.
     pub event_id: Uuid,
@@ -83,7 +122,7 @@ pub struct RawEventAck {
 }
 
 /// Raw event receipt outcome.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RawEventStatus {
     /// The event was accepted.
@@ -93,7 +132,8 @@ pub enum RawEventStatus {
 }
 
 /// Ready-to-display daily insight.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InsightPayload {
     /// Calendar date covered by the insight.
     pub date: NaiveDate,
@@ -108,7 +148,8 @@ pub struct InsightPayload {
 }
 
 /// Ready-to-display history summary.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HistoryPayload {
     /// Number of days requested.
     pub days: u32,
@@ -117,7 +158,8 @@ pub struct HistoryPayload {
 }
 
 /// One privacy-safe daily summary.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DailySummary {
     /// Calendar date covered by the summary.
     pub date: NaiveDate,
@@ -136,7 +178,7 @@ pub struct DailySummary {
 }
 
 /// Insight confidence classification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfidenceLevel {
     /// Low confidence.
@@ -148,7 +190,7 @@ pub enum ConfidenceLevel {
 }
 
 /// History availability status.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HistoryStatus {
     /// Summary is available.
@@ -158,7 +200,8 @@ pub enum HistoryStatus {
 }
 
 /// Service health notification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceStatus {
     /// Current service state.
     pub state: ServiceState,
@@ -168,7 +211,7 @@ pub struct ServiceStatus {
 }
 
 /// Service health state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceState {
     /// Service is operating normally.
@@ -182,7 +225,8 @@ pub enum ServiceState {
 }
 
 /// Typed IPC error envelope.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ErrorResponse {
     /// Machine-readable snake_case error code.
     pub code: String,

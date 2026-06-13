@@ -63,6 +63,9 @@ Direction is enforced by the workspace message envelopes:
 All schemas use JSON Schema draft-07 and reject undeclared fields with
 `additionalProperties: false`.
 
+Every message uses a `type` discriminant and a `payload` object. Catalog fields
+listed below live inside `payload`.
+
 Optional-field encoding is strict. Omit absent `rejection_reason`,
 `drop_reason`, `reason`, and `related_event_id` properties entirely. Only
 `raw_event.bundle_id` is nullable and may be encoded as JSON `null`.
@@ -229,9 +232,9 @@ messages and compare their JSON keys and discriminator values to the schemas.
    from `proto/ipc_socket_path` and `proto/version`; do not hardcode either.
 2. Bind the Unix domain socket and use newline-delimited JSON framing.
 3. Decode only Rust `InboundMessage` variants.
-4. Require `handshake_request` as the first frame and accept only an exact
+4. Send `server_hello`, then require `client_hello` with an exact
    protocol-version match.
-5. On mismatch, send a rejected `handshake_response`, then close cleanly.
+5. On mismatch, send `version_mismatch`, then close cleanly.
 6. Do not dispatch `raw_event` until the handshake is accepted.
 7. Send only Rust `OutboundMessage` variants and omit absent optional fields
    according to the message-catalog rule above.
@@ -243,7 +246,7 @@ messages and compare their JSON keys and discriminator values to the schemas.
 1. Read the socket path, protocol version, and client version from typed
    configuration; do not hardcode them.
 2. Connect with a Unix domain socket, not `URLSession`.
-3. Send `handshake_request` as the first newline-delimited JSON frame.
+3. Send `client_hello` after receiving `server_hello`.
 4. Do not report `connected` or send `raw_event` until Rust accepts the
    handshake.
 5. Encode only `OutboundIPCMessage` variants and decode only

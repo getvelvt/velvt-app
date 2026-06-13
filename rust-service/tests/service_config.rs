@@ -20,3 +20,13 @@ fn socket_path_and_log_level_are_configurable() {
     std::env::remove_var("VELVT_IPC_MAX_ERRORS");
     std::env::remove_var("VELVT_LOG_LEVEL");
 }
+
+#[test]
+fn zero_ipc_error_threshold_is_rejected() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("VELVT_IPC_MAX_ERRORS", "0");
+
+    assert!(ServiceConfig::load().is_err());
+
+    std::env::remove_var("VELVT_IPC_MAX_ERRORS");
+}

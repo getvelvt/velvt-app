@@ -38,6 +38,9 @@ impl ServiceConfig {
                 .to_owned()
         });
         let ipc_max_errors = parse_env("VELVT_IPC_MAX_ERRORS", 3)?;
+        if ipc_max_errors == 0 {
+            return Err(ConfigError::Invalid);
+        }
 
         Ok(Self {
             socket_path: expand_home(&socket_path)?,

@@ -262,8 +262,8 @@ above.
 3. Send `client_hello` after receiving `server_hello`.
 4. Do not report `connected` or send `raw_event` until Rust accepts the
    handshake.
-5. Encode only `OutboundIPCMessage` variants and decode only
-   `InboundIPCMessage` variants.
+5. Encode only `ClientMessage` variants and decode only `ServerMessage`
+   variants.
 6. Preserve exact schema field names, discriminator values, timestamp formats,
    and optional-field omission rules.
 7. Reconnect with exponential backoff and keep raw events only in a bounded

@@ -1,5 +1,10 @@
 # IPC Protocol Changelog
 
+## Version 2 - 2026-06-13
+
+- Changed version negotiation to server-first `server_hello`, `client_hello`,
+  and `acknowledged` or `version_mismatch` messages.
+
 The integer in `version` identifies the IPC protocol version implemented by
 both local workspaces. Every connection begins with a version handshake.
 

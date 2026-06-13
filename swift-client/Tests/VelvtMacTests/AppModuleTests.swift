@@ -1,9 +1,8 @@
 import XCTest
-@testable import FocusAgent
+@testable import VelvtMac
 
-final class IPCModuleTests: XCTestCase {
+final class AppModuleTests: XCTestCase {
     func testScaffoldTargetIsWired() {
         XCTAssertTrue(true)
     }
 }
-

@@ -12,6 +12,7 @@ pub use velvt_shared_types::*;
 mod codec;
 mod connection;
 mod router;
+pub mod transport;
 
 pub use connection::serve_connection;
 pub use router::{DefaultRouter, MessageRouter};

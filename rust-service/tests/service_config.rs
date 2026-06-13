@@ -1,0 +1,22 @@
+use std::sync::Mutex;
+use velvt_service::config::ServiceConfig;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn socket_path_and_log_level_are_configurable() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("VELVT_IPC_SOCKET_PATH", "/tmp/velvt-test.sock");
+    std::env::set_var("VELVT_IPC_MAX_ERRORS", "7");
+    std::env::set_var("VELVT_LOG_LEVEL", "debug");
+
+    let config = ServiceConfig::load().unwrap();
+
+    assert_eq!(config.socket_path.to_string_lossy(), "/tmp/velvt-test.sock");
+    assert_eq!(config.ipc_max_errors, 7);
+    assert_eq!(config.log_level, "debug");
+
+    std::env::remove_var("VELVT_IPC_SOCKET_PATH");
+    std::env::remove_var("VELVT_IPC_MAX_ERRORS");
+    std::env::remove_var("VELVT_LOG_LEVEL");
+}

@@ -9,6 +9,13 @@
 use std::path::Path;
 pub use velvt_shared_types::*;
 
+mod codec;
+mod connection;
+mod router;
+
+pub use connection::serve_connection;
+pub use router::{DefaultRouter, MessageRouter};
+
 /// Starts and stops the local IPC server.
 ///
 /// Implementors bind the configured Unix domain socket, require a successful
@@ -48,4 +55,7 @@ pub enum IpcError {
     /// Client and server protocol versions do not match.
     #[error("unsupported IPC protocol version")]
     UnsupportedProtocolVersion,
+    /// A client frame exceeded the configured transport limit.
+    #[error("IPC message exceeded the frame limit")]
+    FrameTooLarge,
 }

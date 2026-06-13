@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Raw Event Acknowledgement",
+  "description": "Acknowledges that the Rust service accepted or dropped a raw event.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "event_id", "status"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["raw_event_ack"]
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["accepted", "dropped"]
+    },
+    "drop_reason": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": ["dropped"]
+          }
+        }
+      },
+      "then": {
+        "required": ["drop_reason"]
+      },
+      "else": {
+        "not": {
+          "required": ["drop_reason"]
+        }
+      }
+    }
+  ]
+}

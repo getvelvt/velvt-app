@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "PRIVACY: This message type must never contain raw app names, window titles, bundle IDs, URLs, file paths, filenames, contact names, email addresses, or any other raw identifying user data.",
+  "title": "Handshake Request",
+  "description": "First message sent by the Swift client on every new IPC connection.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "protocol_version", "client_version"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["handshake_request"]
+    },
+    "protocol_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "client_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    }
+  }
+}

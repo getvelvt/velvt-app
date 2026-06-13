@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "PRIVACY: This message type must never contain raw app names, window titles, bundle IDs, URLs, file paths, filenames, contact names, email addresses, or any other raw identifying user data.",
+  "title": "History Payload",
+  "description": "Ready-to-display multi-day history summary delivered from Rust to Swift.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "days", "summaries"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["history_payload"]
+    },
+    "days": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "summaries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["date", "status", "event_count", "focus_score", "fragmentation_score", "confidence_level", "active_seconds"],
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["ready", "no_data"]
+          },
+          "event_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "focus_score": {
+            "type": ["number", "null"]
+          },
+          "fragmentation_score": {
+            "type": ["number", "null"]
+          },
+          "confidence_level": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          },
+          "active_seconds": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

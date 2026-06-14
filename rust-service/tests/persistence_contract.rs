@@ -95,6 +95,7 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
         occurred_at: timestamp(10),
+        duration_seconds: 0,
     };
 
     repository.insert(&event).unwrap();
@@ -124,6 +125,7 @@ fn upload_batch_repo_contract() {
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
         occurred_at: timestamp(10),
+        duration_seconds: 0,
     };
 
     repository.insert_batch(&batch).unwrap();
@@ -183,6 +185,7 @@ fn multi_table_batch_write_rolls_back_on_failure() {
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
         occurred_at: timestamp(10),
+        duration_seconds: 0,
     };
 
     assert!(repository
@@ -307,4 +310,53 @@ fn missing_row_query_returns_typed_not_found_error() {
             entity: "abstraction_map"
         }
     ));
+}
+
+#[test]
+fn failed_batches_are_resumed_and_rejected_batches_are_terminal() {
+    let database = database();
+    let repository = database.upload_batch_repo();
+    repository
+        .insert_batch(&NewUploadBatch {
+            batch_id: "batch-recovery".into(),
+        })
+        .unwrap();
+
+    repository
+        .mark_failed("batch-recovery", timestamp(50), "transport")
+        .unwrap();
+    let resumable = repository.resumable_batches(timestamp(50)).unwrap();
+    assert_eq!(resumable.len(), 1);
+    assert_eq!(resumable[0].status, UploadBatchStatus::Failed);
+    assert_eq!(resumable[0].attempt_count, 1);
+
+    repository
+        .mark_rejected("batch-recovery", "raw_field_rejected")
+        .unwrap();
+    assert!(repository
+        .resumable_batches(timestamp(2_000_000_000))
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn host_backoff_attempt_survives_repository_recreation() {
+    let database = database();
+    let repository = database.upload_batch_repo();
+    repository
+        .set_host_backoff("api.velvt.test", 3, timestamp(120))
+        .unwrap();
+
+    assert_eq!(
+        database
+            .upload_batch_repo()
+            .host_backoff_attempt("api.velvt.test")
+            .unwrap(),
+        3
+    );
+    repository.clear_host_backoff("api.velvt.test").unwrap();
+    assert_eq!(
+        repository.host_backoff_attempt("api.velvt.test").unwrap(),
+        0
+    );
 }

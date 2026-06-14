@@ -61,17 +61,56 @@ async fn main() {
 
     #[cfg(unix)]
     {
+        use chrono::Duration;
         use std::sync::Arc;
-        use velvt_service::auth::{AuthState, AuthStateMachine};
+        use velvt_service::auth::{
+            AuthManager, AuthState, AuthStateMachine, KeychainTokenStore, ReqwestHttpClient,
+        };
         use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
+        use velvt_service::upload::{HttpBatchUploader, IpcPrivacyAlertSink, UploadCoordinator};
 
+        let upload_batch_repo = persistence.upload_batch_repo();
         let auth_state = Arc::new(AuthStateMachine::new(AuthState::Unauthenticated));
+        let (privacy_alerts, _) = tokio::sync::broadcast::channel(16);
+        let upload_host = reqwest::Url::parse(&config.upload_api_base_url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .unwrap_or_else(|| "invalid_upload_host".into());
+        let authenticated_http = Arc::new(AuthManager::new(
+            Arc::new(KeychainTokenStore::default()),
+            Arc::new(ReqwestHttpClient::new(config.upload_api_base_url)),
+            Arc::clone(&auth_state),
+            Duration::minutes(5),
+        ));
+        let uploader = HttpBatchUploader::new(authenticated_http);
+        let upload_coordinator = UploadCoordinator::new(
+            upload_batch_repo,
+            uploader,
+            IpcPrivacyAlertSink::new(privacy_alerts.clone()),
+        )
+        .with_host(upload_host);
+        let (upload_shutdown, upload_shutdown_receiver) = tokio::sync::watch::channel(false);
+        let retry_scan_interval = config.upload_retry_scan_interval;
+        let recovery_task = tokio::spawn(async move {
+            upload_coordinator
+                .run_retry_loop(
+                    retry_scan_interval,
+                    upload_shutdown_receiver,
+                    "1",
+                    env!("CARGO_PKG_VERSION"),
+                    &["document:edit".into()],
+                )
+                .await;
+        });
         let transport = TokioUnixTransport::new(config.socket_path, config.ipc_max_errors)
-            .with_auth_state(auth_state.subscribe());
+            .with_auth_state(auth_state.subscribe())
+            .with_privacy_alerts(privacy_alerts);
         let server_task = tokio::spawn(async move { transport.run().await });
         if tokio::signal::ctrl_c().await.is_err() {
             tracing::error!("failed to install shutdown signal");
         }
+        upload_shutdown.send_replace(true);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recovery_task).await;
         server_task.abort();
     }
 

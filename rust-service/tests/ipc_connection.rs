@@ -7,11 +7,12 @@ use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use velvt_service::ipc::{serve_connection, DefaultRouter};
 use velvt_service::{
     auth::{AuthState, AuthStateMachine},
-    ipc::serve_connection_with_auth_state,
+    ipc::{serve_connection_with_auth_state, serve_connection_with_notifications},
 };
 use velvt_shared_types::{
-    Acknowledged, ClientHello, ClientMessage, MalformedMessage, MalformedMessageCode, ServerHello,
-    ServerMessage, ServiceState, VersionMismatch, PROTOCOL_VERSION,
+    Acknowledged, ClientHello, ClientMessage, MalformedMessage, MalformedMessageCode,
+    PrivacyViolationAlert, ServerHello, ServerMessage, ServiceState, VersionMismatch,
+    PROTOCOL_VERSION,
 };
 
 async fn write_message(writer: &mut (impl AsyncWriteExt + Unpin), message: &ClientMessage) {
@@ -398,6 +399,42 @@ async fn newly_connected_swift_client_receives_current_device_revoked_state() {
                 reason: Some(reason),
             }
         )) if reason == "device_revoked"
+    ));
+    drop(write);
+    drop(read);
+    assert!(task.await.unwrap().is_ok());
+}
+
+#[tokio::test]
+async fn privacy_violation_alert_is_pushed_to_swift() {
+    let (client, server) = duplex(4096);
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let (alerts, receiver) = tokio::sync::broadcast::channel(4);
+    let task = tokio::spawn(serve_connection_with_notifications(
+        server,
+        DefaultRouter,
+        3,
+        state.subscribe(),
+        receiver,
+    ));
+    let (read, mut write) = tokio::io::split(client);
+    let mut read = BufReader::new(read);
+    complete_handshake(&mut read, &mut write).await;
+    read_message(&mut read).await;
+
+    alerts
+        .send(PrivacyViolationAlert {
+            code: "raw_field_rejected".into(),
+            message: "safe rejection".into(),
+        })
+        .unwrap();
+
+    assert!(matches!(
+        read_message(&mut read).await,
+        Some(ServerMessage::PrivacyViolationAlert(PrivacyViolationAlert { code, .. }))
+            if code == "raw_field_rejected"
     ));
     drop(write);
     drop(read);

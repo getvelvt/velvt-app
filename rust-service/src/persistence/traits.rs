@@ -19,6 +19,31 @@ pub trait UploadBatchRepo: Send + Sync {
     ) -> Result<(), PersistenceError>;
     fn mark_sent(&self, batch_id: &str) -> Result<(), PersistenceError>;
     fn pending_batches(&self) -> Result<Vec<UploadBatch>, PersistenceError>;
+    fn resumable_batches(&self, now: DateTime<Utc>) -> Result<Vec<UploadBatch>, PersistenceError>;
+    fn mark_failed(
+        &self,
+        batch_id: &str,
+        next_attempt_at: DateTime<Utc>,
+        error_code: &str,
+    ) -> Result<(), PersistenceError>;
+    fn mark_pending_retry(
+        &self,
+        batch_id: &str,
+        next_attempt_at: DateTime<Utc>,
+        error_code: &str,
+    ) -> Result<(), PersistenceError>;
+    fn mark_rejected(&self, batch_id: &str, error_code: &str) -> Result<(), PersistenceError>;
+    fn discard_batch(&self, batch_id: &str) -> Result<(), PersistenceError>;
+    fn batch_status(&self, batch_id: &str) -> Result<super::UploadBatchStatus, PersistenceError>;
+    fn host_backoff_attempt(&self, host: &str) -> Result<u32, PersistenceError>;
+    fn host_backoff_until(&self, host: &str) -> Result<Option<DateTime<Utc>>, PersistenceError>;
+    fn set_host_backoff(
+        &self,
+        host: &str,
+        attempt_count: u32,
+        next_attempt_at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError>;
+    fn clear_host_backoff(&self, host: &str) -> Result<(), PersistenceError>;
     fn add_event_to_batch(
         &self,
         batch_id: &str,

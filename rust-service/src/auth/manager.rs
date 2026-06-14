@@ -205,6 +205,21 @@ where
     }
 }
 
+impl<S, H> HttpClient for AuthManager<S, H>
+where
+    S: TokenStore,
+    H: HttpClient,
+{
+    fn send<'a>(
+        &'a self,
+        request: HttpRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<HttpResponse, AuthError>> + Send + 'a>,
+    > {
+        Box::pin(self.send_authenticated(request))
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
     #[error("authentication required")]

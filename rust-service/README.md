@@ -17,6 +17,33 @@ preventing unrelated code from serializing tokens.
 
 Tests use `FakeTokenStore`; they never access the real Keychain.
 
+## Upload Batching
+
+`upload::BatchAssembler` creates deterministic batches from privacy-safe
+`BatchEventPayload` values. Count and age thresholds come from
+`VELVT_UPLOAD_BATCH_EVENT_LIMIT` and `VELVT_UPLOAD_FLUSH_SECONDS`.
+`VELVT_UPLOAD_RETRY_SCAN_SECONDS` controls how often persisted due batches are
+checked, and `VELVT_API_BASE_URL` selects the cloud API host.
+
+Batch IDs are SHA-256 digests over the domain separator
+`velvt:upload-batch:v1`, the device ID, and the ordered local event IDs.
+Recreating the same logical batch after a crash therefore produces the same
+ID. The assembler flushes once when either the configured count or age
+threshold is reached, and exposes immediate sleep/shutdown flushes.
+
+`UploadCoordinator` persists a batch before sending it, resumes pending or
+failed batches after restart, and treats duplicate responses as success.
+Rate-limit retry state is host-scoped and respects server-provided
+`Retry-After` delays. Without that header it uses exponential backoff starting
+at 30 seconds, capped at 15 minutes, with production jitter clamped to +/-10%.
+A `raw_field_rejected` response
+permanently rejects the batch, emits a structured error, and broadcasts
+`privacy_violation_alert` to Swift.
+
+`BatchRetentionPolicy` is the R8 integration seam. R5 defaults to
+`KeepAllBatches`; a future retention policy can discard expired batches before
+the uploader is invoked without changing transport or retry logic.
+
 ## Auth State Machine
 
 Auth state changes only through `AuthStateMachine::transition`.

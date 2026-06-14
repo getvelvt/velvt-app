@@ -17,6 +17,7 @@ pub struct RawEventEntry {
     pub category: String,
     pub taxonomy_version: String,
     pub occurred_at: DateTime<Utc>,
+    pub duration_seconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,12 +33,15 @@ pub struct BatchEvent {
     pub category: String,
     pub taxonomy_version: String,
     pub occurred_at: DateTime<Utc>,
+    pub duration_seconds: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UploadBatchStatus {
     Pending,
     Sent,
+    Failed,
+    Rejected,
 }
 
 impl UploadBatchStatus {
@@ -45,6 +49,8 @@ impl UploadBatchStatus {
         match self {
             Self::Pending => "pending",
             Self::Sent => "sent",
+            Self::Failed => "failed",
+            Self::Rejected => "rejected",
         }
     }
 }
@@ -53,6 +59,8 @@ impl UploadBatchStatus {
 pub struct UploadBatch {
     pub batch_id: String,
     pub status: UploadBatchStatus,
+    pub attempt_count: u32,
+    pub next_attempt_at: DateTime<Utc>,
     pub events: Vec<BatchEvent>,
 }
 

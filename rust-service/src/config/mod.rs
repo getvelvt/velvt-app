@@ -32,6 +32,10 @@ pub struct ServiceConfig {
     pub abstraction_inference_timeout: Duration,
     /// Minimum cosine similarity accepted by Tier 2.
     pub abstraction_similarity_threshold: f32,
+    pub upload_batch_event_limit: usize,
+    pub upload_flush_interval: Duration,
+    pub upload_api_base_url: String,
+    pub upload_retry_scan_interval: Duration,
 }
 
 impl ServiceConfig {
@@ -47,6 +51,15 @@ impl ServiceConfig {
             return Err(ConfigError::Invalid);
         }
 
+        let upload_batch_event_limit = parse_env("VELVT_UPLOAD_BATCH_EVENT_LIMIT", 50_usize)?;
+        let upload_flush_seconds = parse_env("VELVT_UPLOAD_FLUSH_SECONDS", 60_u64)?;
+        let upload_retry_scan_seconds = parse_env("VELVT_UPLOAD_RETRY_SCAN_SECONDS", 5_u64)?;
+        if !(25..=100).contains(&upload_batch_event_limit)
+            || !(16..=180).contains(&upload_flush_seconds)
+            || upload_retry_scan_seconds == 0
+        {
+            return Err(ConfigError::Invalid);
+        }
         Ok(Self {
             socket_path: expand_home(&socket_path)?,
             database_path: database_path()?,
@@ -61,6 +74,11 @@ impl ServiceConfig {
                 20_u64,
             )?),
             abstraction_similarity_threshold: parse_threshold()?,
+            upload_batch_event_limit,
+            upload_flush_interval: Duration::from_secs(upload_flush_seconds),
+            upload_api_base_url: std::env::var("VELVT_API_BASE_URL")
+                .unwrap_or_else(|_| "https://api.velvt.test".into()),
+            upload_retry_scan_interval: Duration::from_secs(upload_retry_scan_seconds),
         })
     }
 }

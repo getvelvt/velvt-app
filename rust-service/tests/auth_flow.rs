@@ -79,6 +79,8 @@ fn response(status: u16, code: Option<&str>, body: Option<TokenPair>) -> HttpRes
         status,
         error_code: code.map(str::to_owned),
         tokens: body,
+        retry_after: None,
+        message: None,
     }
 }
 

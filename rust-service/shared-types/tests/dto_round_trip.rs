@@ -81,6 +81,10 @@ fn server_message_variants_round_trip() {
             state: ServiceState::Ready,
             reason: None,
         }),
+        ServerMessage::PrivacyViolationAlert(PrivacyViolationAlert {
+            code: "raw_field_rejected".into(),
+            message: "safe rejection".into(),
+        }),
         ServerMessage::ErrorResponse(ErrorResponse {
             code: "server_error".into(),
             message: "safe".into(),
@@ -102,7 +106,7 @@ fn messages_use_tagged_payload_envelope() {
 
     assert_eq!(
         value,
-        json!({"type": "server_hello", "payload": {"protocol_version": 2}})
+        json!({"type": "server_hello", "payload": {"protocol_version": 3}})
     );
 }
 

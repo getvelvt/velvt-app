@@ -7,7 +7,7 @@ final class IPCModuleTests: XCTestCase {
 
     func testEveryClientMessageRoundTrips() throws {
         let messages: [ClientMessage] = [
-            .clientHello(ClientHello(expectedProtocolVersion: 2, clientVersion: "1.2.3")),
+            .clientHello(ClientHello(expectedProtocolVersion: 3, clientVersion: "1.2.3")),
             .rawEvent(
                 RawEvent(
                     eventID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
@@ -29,7 +29,7 @@ final class IPCModuleTests: XCTestCase {
     func testEveryServerMessageRoundTrips() throws {
         let eventID = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
         let messages: [ServerMessage] = [
-            .serverHello(ServerHello(protocolVersion: 2)),
+            .serverHello(ServerHello(protocolVersion: 3)),
             .acknowledged(Acknowledged()),
             .versionMismatch(VersionMismatch(serverProtocolVersion: 2, clientProtocolVersion: 1)),
             .malformedMessage(MalformedMessage(code: .invalidMessage)),
@@ -60,6 +60,7 @@ final class IPCModuleTests: XCTestCase {
                 )
             ),
             .serviceStatus(ServiceStatus(state: .ready, reason: nil)),
+            .privacyViolationAlert(PrivacyViolationAlert(code: "raw_field_rejected", message: "safe rejection")),
             .errorResponse(ErrorResponse(code: "safe_error", message: "safe", relatedEventID: nil)),
             .unknown(type: "future_message")
         ]
@@ -72,13 +73,13 @@ final class IPCModuleTests: XCTestCase {
 
     func testTaggedEnumUsesTypeDiscriminator() throws {
         let data = try encoder.encode(
-            ClientMessage.clientHello(ClientHello(expectedProtocolVersion: 2, clientVersion: "1.2.3"))
+            ClientMessage.clientHello(ClientHello(expectedProtocolVersion: 3, clientVersion: "1.2.3"))
         )
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let payload = try XCTUnwrap(object["payload"] as? [String: Any])
 
         XCTAssertEqual(object["type"] as? String, "client_hello")
-        XCTAssertEqual(payload["expected_protocol_version"] as? Int, 2)
+        XCTAssertEqual(payload["expected_protocol_version"] as? Int, 3)
     }
 
     func testDecoderRejectsMissingPayload() {

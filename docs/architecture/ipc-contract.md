@@ -37,6 +37,7 @@ Swift Client                                      Rust Service
      |<-- raw_event_ack --------------------------------|
      |                                                  |
      |<-- service_status -------------------------------|
+     |<-- privacy_violation_alert ----------------------|
      |<-- insight_payload ------------------------------|
      |<-- history_payload ------------------------------|
      |                                                  |
@@ -55,7 +56,7 @@ Direction is enforced by the workspace message envelopes:
 - Rust accepts only `client_hello`, `raw_event`, and `error_response`.
 - Rust emits only `server_hello`, `acknowledged`, `version_mismatch`,
   `malformed_message`, `raw_event_ack`, `insight_payload`, `history_payload`,
-  `service_status`, and `error_response`.
+  `service_status`, `privacy_violation_alert`, and `error_response`.
 - Swift sends only the Rust inbound set and accepts only the Rust outbound set.
 
 ## 3. Message Catalog
@@ -156,6 +157,15 @@ Direction: either direction. Purpose: provide a typed, safe error envelope.
 
 Error messages and reasons must never contain raw event content, tokens, or
 insight text.
+
+### `privacy_violation_alert`
+
+Direction: Rust to Swift. Purpose: report that the cloud rejected an upload
+batch for a terminal privacy violation.
+
+- `type`: literal `privacy_violation_alert`
+- `code`: literal `raw_field_rejected`
+- `message`: safe server-supplied rejection diagnostic; never the batch payload
 
 ## 4. Version Negotiation
 

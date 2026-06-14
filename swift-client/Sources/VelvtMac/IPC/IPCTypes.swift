@@ -48,6 +48,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case insightPayload(InsightPayload)
     case historyPayload(HistoryPayload)
     case serviceStatus(ServiceStatus)
+    case privacyViolationAlert(PrivacyViolationAlert)
     case errorResponse(ErrorResponse)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
@@ -74,6 +75,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .historyPayload(try HistoryPayload(from: payload))
         case "service_status":
             self = .serviceStatus(try ServiceStatus(from: payload))
+        case "privacy_violation_alert":
+            self = .privacyViolationAlert(try PrivacyViolationAlert(from: payload))
         case "error_response":
             self = .errorResponse(try ErrorResponse(from: payload))
         default:
@@ -107,6 +110,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .serviceStatus(value):
             try envelope.encode("service_status", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .privacyViolationAlert(value):
+            try envelope.encode("privacy_violation_alert", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .errorResponse(value):
             try envelope.encode("error_response", forKey: .type)
@@ -449,6 +455,17 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(state, forKey: .state)
         try container.encodeIfPresent(reason, forKey: .reason)
+    }
+}
+
+/// A terminal privacy rejection alert containing safe diagnostics only.
+public struct PrivacyViolationAlert: Codable, Equatable, Sendable {
+    public let code: String
+    public let message: String
+
+    public init(code: String, message: String) {
+        self.code = code
+        self.message = message
     }
 }
 

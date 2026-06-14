@@ -79,6 +79,59 @@ transitioning to `DeviceRevoked`. `device_revoked`, `device_not_found`, failed
 reissue, or repeated revocation transitions to `DeviceRevoked`; subsequent
 authenticated upload attempts are rejected before reaching HTTP.
 
+## History & Insight Delivery (R6)
+
+`delivery::FetchService` is the concrete implementation of `CacheManager` — the
+only interface R7 depends on.  R7 must not import anything from
+`delivery::fetch`, `delivery::parser`, or `delivery::scheduler`; use
+`Arc<dyn CacheManager>` everywhere.
+
+### TTL configuration
+
+| Env var | Default | Description |
+|---|---|---|
+| `VELVT_HISTORY_TTL_SECONDS` | `600` | How long a history summary is considered fresh |
+| `VELVT_INSIGHT_TTL_SECONDS` | `1800` | How long a fetched insight is considered fresh |
+| `VELVT_INSIGHT_NEGATIVE_TTL_SECONDS` | `300` | How long a 404 (no insight) is cached before retrying |
+| `VELVT_CACHE_READ_TIMEOUT_MS` | `200` | Maximum time a blocking SQLite read may hold the IPC path; returns a cache miss if exceeded |
+| `VELVT_FETCH_INTERVAL_SECONDS` | `600` | Minimum wall-clock time between proactive background fetches |
+
+### Negative cache behaviour
+
+When `GET /v1/insights/daily?date=YYYY-MM-DD` returns 404, `FetchService`
+writes a *negative cache entry* (`not_found = 1`) instead of re-querying the
+API on every scheduler tick.  `daily_insight` returns `Ok(None)` for both a
+live 404 and a cached negative entry — callers cannot distinguish the two.
+The negative entry expires after `insight_negative_ttl` (default 5 minutes),
+after which the API is contacted again.
+
+### Fetch scheduler pause conditions
+
+`FetchScheduler` runs a background loop that calls `FetchService::refresh_all`
+whenever the minimum fetch interval has elapsed AND the device is in the
+`Authenticated` state.  The scheduler pauses (silently skips the tick) on:
+
+- `AuthState::DeviceRevoked` — device has been revoked; no outbound calls.
+- `AuthState::Unauthenticated` — no token available.
+- `AuthState::NeedsReauth` — credentials expired; waits for re-auth.
+- `AuthState::RefreshInFlight` — refresh in progress; wait for its outcome.
+
+On shutdown, send `true` on the `watch::Sender<bool>` passed to
+`FetchScheduler::new`.
+
+### Concurrent-fetch deduplication
+
+`daily_history` and `daily_insight` use a per-key `tokio::sync::Mutex` to
+deduplicate in-flight requests.  If two callers request the same date
+simultaneously, only one HTTP call is made; the second caller blocks on the
+mutex, re-checks the cache after the first finishes, and returns the cached
+result.
+
+### Privacy invariant
+
+Insight `text` is never written to any log or tracing field.  Only `date` and
+`confidence_level` are recorded at `DEBUG` level when an insight is stored.
+
 ## Device Registration Seam
 
 Device registration depends only on `DeviceRegistrar::register()`.

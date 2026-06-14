@@ -76,4 +76,6 @@ pub struct InsightCacheEntry {
     pub date: String,
     pub payload: String,
     pub expires_at: DateTime<Utc>,
+    /// True when this entry records a 404 (no approved insight for the date).
+    pub is_negative: bool,
 }

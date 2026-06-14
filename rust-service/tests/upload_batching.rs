@@ -243,6 +243,7 @@ async fn http_uploader_posts_exact_payload_and_maps_duplicate() {
                     tokens: None,
                     retry_after: None,
                     message: None,
+                    raw_body: None,
                 },
                 HttpResponse {
                     status: 409,
@@ -250,6 +251,7 @@ async fn http_uploader_posts_exact_payload_and_maps_duplicate() {
                     tokens: None,
                     retry_after: None,
                     message: None,
+                    raw_body: None,
                 },
             ]
             .into(),
@@ -345,6 +347,7 @@ async fn raw_field_rejected_is_terminal_and_alerted() {
                 tokens: None,
                 retry_after: None,
                 message: Some("forbidden field".into()),
+                raw_body: None,
             }]
             .into(),
         )),
@@ -628,6 +631,7 @@ async fn raw_field_rejected_broadcasts_ipc_alert_and_rejects_batch() {
                 tokens: None,
                 retry_after: None,
                 message: Some("safe rejection".into()),
+                raw_body: None,
             }]
             .into(),
         )),

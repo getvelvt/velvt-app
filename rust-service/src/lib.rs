@@ -3,6 +3,7 @@
 pub mod abstraction;
 pub mod auth;
 pub mod config;
+pub mod delivery;
 pub mod ipc;
 pub mod persistence;
 pub mod upload;

@@ -55,12 +55,21 @@ pub trait HistoryCacheRepo: Send + Sync {
     fn upsert(&self, entry: &HistoryCacheEntry) -> Result<(), PersistenceError>;
     fn get(&self, date: &str) -> Result<Option<HistoryCacheEntry>, PersistenceError>;
     fn invalidate(&self, date: &str) -> Result<u64, PersistenceError>;
+    fn invalidate_all(&self) -> Result<u64, PersistenceError>;
 }
 
 pub trait InsightCacheRepo: Send + Sync {
     fn upsert(&self, entry: &InsightCacheEntry) -> Result<(), PersistenceError>;
+    /// Stores a negative cache entry (404) so the API is not re-queried until
+    /// the short TTL expires.
+    fn upsert_negative(
+        &self,
+        date: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError>;
     fn get(&self, date: &str) -> Result<Option<InsightCacheEntry>, PersistenceError>;
     fn invalidate(&self, date: &str) -> Result<u64, PersistenceError>;
+    fn invalidate_all(&self) -> Result<u64, PersistenceError>;
 }
 
 pub trait RawEventRepo: Send + Sync {

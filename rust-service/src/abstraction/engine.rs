@@ -96,7 +96,13 @@ impl AbstractionEngine {
         }
         let stable_key = raw_key.stable_key();
         let fresh_id = format!("abs_{}", Uuid::new_v4().simple());
-        let stable_id = self.store.resolve_id(&stable_key, &fresh_id)?;
+        let stable_id = self.store.resolve_id(
+            &stable_key,
+            &fresh_id,
+            classification.label(),
+            classification.category(),
+            classification.taxonomy_version(),
+        )?;
         Ok(AbstractedEvent {
             stable_id,
             label: classification.label().to_owned(),

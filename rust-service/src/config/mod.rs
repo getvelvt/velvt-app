@@ -14,6 +14,8 @@ use velvt_shared_types::PROTOCOL_VERSION;
 pub struct ServiceConfig {
     /// Absolute path to the Unix domain socket file.
     pub socket_path: PathBuf,
+    /// SQLite database path. `:memory:` selects the test-only in-memory mode.
+    pub database_path: PathBuf,
     /// IPC protocol version this server speaks.
     pub protocol_version: u32,
     /// Number of malformed messages allowed before closing a connection.
@@ -47,6 +49,7 @@ impl ServiceConfig {
 
         Ok(Self {
             socket_path: expand_home(&socket_path)?,
+            database_path: database_path()?,
             protocol_version: PROTOCOL_VERSION,
             ipc_max_errors,
             log_level: std::env::var("VELVT_LOG_LEVEL").unwrap_or_else(|_| "info".to_owned()),
@@ -59,6 +62,14 @@ impl ServiceConfig {
             )?),
             abstraction_similarity_threshold: parse_threshold()?,
         })
+    }
+}
+
+fn database_path() -> Result<PathBuf, ConfigError> {
+    match std::env::var("VELVT_DATABASE_PATH") {
+        Ok(value) => expand_home(&value),
+        Err(std::env::VarError::NotPresent) => expand_home("~/.velvt/velvt-service.sqlite3"),
+        Err(std::env::VarError::NotUnicode(_)) => Err(ConfigError::Invalid),
     }
 }
 

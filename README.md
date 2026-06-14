@@ -228,3 +228,55 @@ without transmitting raw titles.
 
 Performance gates are Tier 1 mean and p95 below 1 ms and Tier 2 p95 below
 25 ms. The integration tests report p50, p95, and p99.
+
+## Rust SQLite Persistence
+
+The Rust service owns SQLite persistence. `VELVT_DATABASE_PATH` selects the
+database file; `:memory:` uses the same DAL and migration paths for tests. The
+production default is `~/.velvt/velvt-service.sqlite3`, and startup creates
+missing parent directories and applies every pending embedded migration before
+constructing the abstraction engine.
+
+The six feature tables are:
+
+| Table | Purpose |
+|---|---|
+| `abstraction_map` | Stable-key hash to stable ID, abstract label, category, and taxonomy version |
+| `raw_event_buffer` | Short-lived privacy-safe abstracted event metadata |
+| `upload_batch` | Idempotent upload batch state |
+| `batch_event` | Privacy-safe events assigned to a batch |
+| `history_cache` | Date-keyed ready-to-display summary payloads with TTL |
+| `insight_cache` | Date-keyed ready-to-display insight payloads with TTL |
+
+Every feature table has an auto-increment primary key and database-defaulted
+`created_at`. Time/date lookup columns are indexed. The migration-owned
+`schema_migration` table records each applied version, so startup never applies
+the same migration twice.
+
+Raw app names, window titles, URLs, bundle IDs, paths, filenames, contacts, and
+other raw user content are forbidden in every schema column. Migration SQL
+documents this invariant, and integration tests inspect the resulting schema.
+
+### Adding A Migration
+
+1. Add one sequentially numbered SQL file to `rust-service/migrations/`, such
+   as `0003_add_feature_table.sql`.
+2. Make the migration additive and include required constraints and indexes.
+3. Do not edit the migration runner. `rust-service/build.rs` embeds all sorted
+   migration files automatically.
+4. Run `cargo test`, `cargo clippy --all-targets -- -D warnings`, and
+   `cargo fmt --check` from `rust-service/`.
+
+`0002_harden_indexes_and_probe.sql` is the proof migration: it was added without
+runner changes and tests verify it applies to a database containing only
+version 1.
+
+### Extending The DAL
+
+Consumers depend on the narrow traits exported by `persistence`, never on
+`rusqlite` or concrete SQLite internals. Add a new consumer by defining its
+models and trait in `src/persistence/models.rs` and
+`src/persistence/traits.rs`, implementing a SQLite repository in
+`src/persistence/sqlite.rs`, and injecting only that trait into the consumer.
+Multi-table writes belong on the trait and must use an explicit transaction.
+No module outside `src/persistence/` may import or reference `rusqlite`.

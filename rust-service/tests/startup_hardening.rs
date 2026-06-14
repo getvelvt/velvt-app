@@ -9,6 +9,7 @@ use velvt_service::abstraction::Taxonomy;
 fn service_output(env: &[(&str, &Path)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_velvt-service"));
     command.env("VELVT_LOG_LEVEL", "info");
+    command.env("VELVT_DATABASE_PATH", temp_path("startup.sqlite3"));
     for (key, value) in env {
         command.env(key, value);
     }
@@ -84,4 +85,23 @@ fn taxonomy_version_mismatch_warns_and_uses_configured_version() {
     assert!(logs.contains("taxonomy_version_mismatch"), "{logs}");
     assert!(logs.contains("custom-v2"), "{logs}");
     assert!(!logs.contains("service startup halted"), "{logs}");
+}
+
+#[test]
+fn missing_database_file_is_created_and_migrated_at_startup() {
+    let taxonomy = write_taxonomy("mvp-1");
+    let database = temp_path("missing-startup.sqlite3");
+    assert!(!database.exists());
+
+    let output = service_output(&[
+        ("VELVT_ABSTRACTION_TAXONOMY_PATH", &taxonomy),
+        ("VELVT_DATABASE_PATH", &database),
+    ]);
+    let logs = logs(&output);
+
+    assert!(database.exists(), "{logs}");
+    assert!(
+        !logs.contains("persistence_initialization_failed"),
+        "{logs}"
+    );
 }

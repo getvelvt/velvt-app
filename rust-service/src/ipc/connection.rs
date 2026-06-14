@@ -17,7 +17,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     R: MessageRouter,
 {
-    serve_connection_inner(stream, router, max_errors, None).await
+    serve_connection_inner(stream, router, max_errors, None, None).await
 }
 
 /// Serves one connection and pushes privacy-safe authentication state changes.
@@ -31,7 +31,28 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     R: MessageRouter,
 {
-    serve_connection_inner(stream, router, max_errors, Some(auth_states)).await
+    serve_connection_inner(stream, router, max_errors, Some(auth_states), None).await
+}
+
+pub async fn serve_connection_with_notifications<S, R>(
+    stream: S,
+    router: R,
+    max_errors: usize,
+    auth_states: tokio::sync::watch::Receiver<AuthState>,
+    privacy_alerts: tokio::sync::broadcast::Receiver<velvt_shared_types::PrivacyViolationAlert>,
+) -> Result<(), IpcError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    R: MessageRouter,
+{
+    serve_connection_inner(
+        stream,
+        router,
+        max_errors,
+        Some(auth_states),
+        Some(privacy_alerts),
+    )
+    .await
 }
 
 async fn serve_connection_inner<S, R>(
@@ -39,6 +60,9 @@ async fn serve_connection_inner<S, R>(
     router: R,
     max_errors: usize,
     mut auth_states: Option<tokio::sync::watch::Receiver<AuthState>>,
+    mut privacy_alerts: Option<
+        tokio::sync::broadcast::Receiver<velvt_shared_types::PrivacyViolationAlert>,
+    >,
 ) -> Result<(), IpcError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -97,6 +121,14 @@ where
                 write_server_message(&mut writer, &auth_status_message(state)).await?;
                 continue;
             }
+            alert = next_privacy_alert(&mut privacy_alerts) => {
+                let Some(alert) = alert else {
+                    privacy_alerts = None;
+                    continue;
+                };
+                write_server_message(&mut writer, &ServerMessage::PrivacyViolationAlert(alert)).await?;
+                continue;
+            }
         };
         let Some(frame) = frame else {
             return Ok(());
@@ -124,6 +156,17 @@ where
             }
         }
     }
+}
+
+async fn next_privacy_alert(
+    receiver: &mut Option<
+        tokio::sync::broadcast::Receiver<velvt_shared_types::PrivacyViolationAlert>,
+    >,
+) -> Option<velvt_shared_types::PrivacyViolationAlert> {
+    let Some(receiver) = receiver else {
+        return std::future::pending().await;
+    };
+    receiver.recv().await.ok()
 }
 
 async fn next_auth_state(

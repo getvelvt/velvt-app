@@ -263,15 +263,16 @@ impl RawEventRepo for SqliteRawEventRepo {
         let connection = self.0.connection()?;
         connection.execute(
             "INSERT INTO raw_event_buffer(
-                event_id, stable_id, label, category, taxonomy_version, occurred_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                event_id, stable_id, label, category, taxonomy_version, occurred_at, duration_seconds
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 event.event_id,
                 event.stable_id,
                 event.label,
                 event.category,
                 event.taxonomy_version,
-                event.occurred_at.timestamp()
+                event.occurred_at.timestamp(),
+                event.duration_seconds
             ],
         )?;
         Ok(())
@@ -280,7 +281,7 @@ impl RawEventRepo for SqliteRawEventRepo {
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError> {
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
-            "SELECT event_id, stable_id, label, category, taxonomy_version, occurred_at
+            "SELECT event_id, stable_id, label, category, taxonomy_version, occurred_at, duration_seconds
              FROM raw_event_buffer WHERE occurred_at < ?1 ORDER BY occurred_at",
         )?;
         let rows = statement.query_map([cutoff.timestamp()], raw_event_from_row)?;
@@ -331,17 +332,31 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
     }
 
     fn pending_batches(&self) -> Result<Vec<UploadBatch>, PersistenceError> {
+        self.resumable_batches(DateTime::<Utc>::MAX_UTC)
+    }
+
+    fn resumable_batches(&self, now: DateTime<Utc>) -> Result<Vec<UploadBatch>, PersistenceError> {
         let connection = self.0.connection()?;
         let mut batch_statement = connection.prepare(
-            "SELECT batch_id FROM upload_batch WHERE status = 'pending' ORDER BY created_at, id",
+            "SELECT batch_id, status, attempt_count, next_attempt_at
+             FROM upload_batch
+             WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?1
+             ORDER BY created_at, id",
         )?;
         let batch_ids = batch_statement
-            .query_map([], |row| row.get::<_, String>(0))?
+            .query_map([now.timestamp()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    upload_status_from_str(&row.get::<_, String>(1)?)?,
+                    row.get::<_, u32>(2)?,
+                    timestamp_from_row(row, 3)?,
+                ))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         let mut batches = Vec::with_capacity(batch_ids.len());
-        for batch_id in batch_ids {
+        for (batch_id, status, attempt_count, next_attempt_at) in batch_ids {
             let mut event_statement = connection.prepare(
-                "SELECT event_id, stable_id, label, category, taxonomy_version, occurred_at
+                "SELECT event_id, stable_id, label, category, taxonomy_version, occurred_at, duration_seconds
                  FROM batch_event WHERE batch_id = ?1 ORDER BY id",
             )?;
             let events = event_statement
@@ -349,11 +364,132 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
                 .collect::<Result<Vec<_>, _>>()?;
             batches.push(UploadBatch {
                 batch_id,
-                status: UploadBatchStatus::Pending,
+                status,
+                attempt_count,
+                next_attempt_at,
                 events,
             });
         }
         Ok(batches)
+    }
+
+    fn mark_failed(
+        &self,
+        batch_id: &str,
+        next_attempt_at: DateTime<Utc>,
+        error_code: &str,
+    ) -> Result<(), PersistenceError> {
+        update_batch_state(
+            &self.0,
+            "UPDATE upload_batch SET status = 'failed', attempt_count = attempt_count + 1,
+             next_attempt_at = ?2, last_error_code = ?3 WHERE batch_id = ?1",
+            batch_id,
+            next_attempt_at.timestamp(),
+            error_code,
+        )
+    }
+
+    fn mark_pending_retry(
+        &self,
+        batch_id: &str,
+        next_attempt_at: DateTime<Utc>,
+        error_code: &str,
+    ) -> Result<(), PersistenceError> {
+        update_batch_state(
+            &self.0,
+            "UPDATE upload_batch SET status = 'pending', attempt_count = attempt_count + 1,
+             next_attempt_at = ?2, last_error_code = ?3 WHERE batch_id = ?1",
+            batch_id,
+            next_attempt_at.timestamp(),
+            error_code,
+        )
+    }
+
+    fn mark_rejected(&self, batch_id: &str, error_code: &str) -> Result<(), PersistenceError> {
+        update_batch_state(
+            &self.0,
+            "UPDATE upload_batch SET status = 'rejected', last_error_code = ?3 WHERE batch_id = ?1",
+            batch_id,
+            0,
+            error_code,
+        )
+    }
+
+    fn discard_batch(&self, batch_id: &str) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        let deleted =
+            connection.execute("DELETE FROM upload_batch WHERE batch_id = ?1", [batch_id])?;
+        if deleted == 0 {
+            Err(PersistenceError::NotFound {
+                entity: "upload_batch",
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn batch_status(&self, batch_id: &str) -> Result<UploadBatchStatus, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT status FROM upload_batch WHERE batch_id = ?1",
+                [batch_id],
+                |row| upload_status_from_str(&row.get::<_, String>(0)?),
+            )
+            .optional()?
+            .ok_or(PersistenceError::NotFound {
+                entity: "upload_batch",
+            })
+    }
+
+    fn host_backoff_attempt(&self, host: &str) -> Result<u32, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT attempt_count FROM upload_host_backoff WHERE host = ?1",
+                [host],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|attempt| attempt.unwrap_or(0))
+            .map_err(Into::into)
+    }
+
+    fn host_backoff_until(&self, host: &str) -> Result<Option<DateTime<Utc>>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT next_attempt_at FROM upload_host_backoff WHERE host = ?1",
+                [host],
+                |row| timestamp_from_row(row, 0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn set_host_backoff(
+        &self,
+        host: &str,
+        attempt_count: u32,
+        next_attempt_at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO upload_host_backoff(host, attempt_count, next_attempt_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(host) DO UPDATE SET
+                attempt_count = excluded.attempt_count,
+                next_attempt_at = excluded.next_attempt_at,
+                updated_at = unixepoch()",
+            params![host, attempt_count, next_attempt_at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn clear_host_backoff(&self, host: &str) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute("DELETE FROM upload_host_backoff WHERE host = ?1", [host])?;
+        Ok(())
     }
 
     fn add_event_to_batch(
@@ -429,8 +565,8 @@ fn add_event_to_batch(
 ) -> Result<(), PersistenceError> {
     connection.execute(
         "INSERT INTO batch_event(
-            batch_id, event_id, stable_id, label, category, taxonomy_version, occurred_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            batch_id, event_id, stable_id, label, category, taxonomy_version, occurred_at, duration_seconds
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             batch_id,
             event.event_id,
@@ -438,7 +574,8 @@ fn add_event_to_batch(
             event.label,
             event.category,
             event.taxonomy_version,
-            event.occurred_at.timestamp()
+            event.occurred_at.timestamp(),
+            event.duration_seconds
         ],
     )?;
     Ok(())
@@ -452,6 +589,7 @@ fn raw_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEventEntry
         category: row.get(3)?,
         taxonomy_version: row.get(4)?,
         occurred_at: timestamp_from_row(row, 5)?,
+        duration_seconds: row.get(6)?,
     })
 }
 
@@ -463,6 +601,7 @@ fn batch_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BatchEvent>
         category: row.get(3)?,
         taxonomy_version: row.get(4)?,
         occurred_at: timestamp_from_row(row, 5)?,
+        duration_seconds: row.get(6)?,
     })
 }
 
@@ -475,6 +614,34 @@ fn timestamp_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result
             Box::new(PersistenceError::InvalidTimestamp),
         )
     })
+}
+
+fn upload_status_from_str(status: &str) -> rusqlite::Result<UploadBatchStatus> {
+    match status {
+        "pending" => Ok(UploadBatchStatus::Pending),
+        "sent" => Ok(UploadBatchStatus::Sent),
+        "failed" => Ok(UploadBatchStatus::Failed),
+        "rejected" => Ok(UploadBatchStatus::Rejected),
+        _ => Err(rusqlite::Error::InvalidQuery),
+    }
+}
+
+fn update_batch_state(
+    persistence: &SqlitePersistence,
+    query: &str,
+    batch_id: &str,
+    next_attempt_at: i64,
+    error_code: &str,
+) -> Result<(), PersistenceError> {
+    let connection = persistence.connection()?;
+    let updated = connection.execute(query, params![batch_id, next_attempt_at, error_code])?;
+    if updated == 0 {
+        Err(PersistenceError::NotFound {
+            entity: "upload_batch",
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn upsert_cache(

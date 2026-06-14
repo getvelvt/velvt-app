@@ -136,7 +136,7 @@ Rust reads its default socket path from `proto/ipc_socket_path`.
 `VELVT_IPC_SOCKET_PATH` overrides it, `VELVT_IPC_MAX_ERRORS` configures the
 malformed-frame threshold, and `VELVT_LOG_LEVEL` configures structured tracing.
 
-All protocol-v2 messages use a tagged `{"type": "...", "payload": {...}}`
+All protocol-v3 messages use a tagged `{"type": "...", "payload": {...}}`
 envelope. Rust DTOs live in `rust-service/shared-types`; Swift DTOs live in
 `swift-client/Sources/VelvtMac/IPC/IPCTypes.swift`.
 

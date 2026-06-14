@@ -1,5 +1,10 @@
 # IPC Protocol Changelog
 
+## Version 3 - 2026-06-14
+
+- Added `privacy_violation_alert` from Rust to Swift for terminal cloud privacy
+  rejection notifications.
+
 ## Version 2 - 2026-06-13
 
 - Changed version negotiation to server-first `server_hello`, `client_hello`,

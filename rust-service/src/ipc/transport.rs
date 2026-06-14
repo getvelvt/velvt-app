@@ -16,6 +16,8 @@ pub struct TokioUnixTransport {
     socket_path: std::path::PathBuf,
     max_errors: usize,
     auth_states: Option<tokio::sync::watch::Receiver<crate::auth::AuthState>>,
+    privacy_alerts:
+        Option<tokio::sync::broadcast::Sender<velvt_shared_types::PrivacyViolationAlert>>,
 }
 
 #[cfg(unix)]
@@ -26,7 +28,16 @@ impl TokioUnixTransport {
             socket_path,
             max_errors,
             auth_states: None,
+            privacy_alerts: None,
         }
+    }
+
+    pub fn with_privacy_alerts(
+        mut self,
+        alerts: tokio::sync::broadcast::Sender<velvt_shared_types::PrivacyViolationAlert>,
+    ) -> Self {
+        self.privacy_alerts = Some(alerts);
+        self
     }
 
     /// Pushes authentication state changes to every connected Swift client.
@@ -72,9 +83,23 @@ impl IpcTransport for TokioUnixTransport {
             let (stream, _) = listener.accept().await.map_err(|_| IpcError::Transport)?;
             let max_errors = self.max_errors;
             let auth_states = self.auth_states.clone();
+            let privacy_alerts = self
+                .privacy_alerts
+                .as_ref()
+                .map(|alerts| alerts.subscribe());
             tokio::spawn(async move {
-                let result = match auth_states {
-                    Some(states) => {
+                let result = match (auth_states, privacy_alerts) {
+                    (Some(states), Some(alerts)) => {
+                        super::serve_connection_with_notifications(
+                            stream,
+                            super::DefaultRouter,
+                            max_errors,
+                            states,
+                            alerts,
+                        )
+                        .await
+                    }
+                    (Some(states), None) => {
                         super::serve_connection_with_auth_state(
                             stream,
                             super::DefaultRouter,
@@ -83,7 +108,7 @@ impl IpcTransport for TokioUnixTransport {
                         )
                         .await
                     }
-                    None => super::serve_connection(stream, super::DefaultRouter, max_errors).await,
+                    _ => super::serve_connection(stream, super::DefaultRouter, max_errors).await,
                 };
                 if let Err(error) = result {
                     tracing::warn!(error = %error, "IPC client connection ended with an error");

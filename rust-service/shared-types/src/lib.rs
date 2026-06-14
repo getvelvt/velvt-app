@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +52,8 @@ pub enum ServerMessage {
     HistoryPayload(HistoryPayload),
     /// Service health update.
     ServiceStatus(ServiceStatus),
+    /// Terminal cloud privacy rejection alert.
+    PrivacyViolationAlert(PrivacyViolationAlert),
     /// Typed error envelope.
     ErrorResponse(ErrorResponse),
 }
@@ -221,6 +223,14 @@ pub struct ServiceStatus {
     /// Optional safe diagnostic reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Terminal privacy rejection notification containing safe diagnostics only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivacyViolationAlert {
+    pub code: String,
+    pub message: String,
 }
 
 /// Service health state.

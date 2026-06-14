@@ -15,6 +15,7 @@ pub trait IpcTransport {
 pub struct TokioUnixTransport {
     socket_path: std::path::PathBuf,
     max_errors: usize,
+    auth_states: Option<tokio::sync::watch::Receiver<crate::auth::AuthState>>,
 }
 
 #[cfg(unix)]
@@ -24,7 +25,17 @@ impl TokioUnixTransport {
         Self {
             socket_path,
             max_errors,
+            auth_states: None,
         }
+    }
+
+    /// Pushes authentication state changes to every connected Swift client.
+    pub fn with_auth_state(
+        mut self,
+        auth_states: tokio::sync::watch::Receiver<crate::auth::AuthState>,
+    ) -> Self {
+        self.auth_states = Some(auth_states);
+        self
     }
 
     async fn bind(&self) -> Result<tokio::net::UnixListener, IpcError> {
@@ -60,10 +71,21 @@ impl IpcTransport for TokioUnixTransport {
         loop {
             let (stream, _) = listener.accept().await.map_err(|_| IpcError::Transport)?;
             let max_errors = self.max_errors;
+            let auth_states = self.auth_states.clone();
             tokio::spawn(async move {
-                if let Err(error) =
-                    super::serve_connection(stream, super::DefaultRouter, max_errors).await
-                {
+                let result = match auth_states {
+                    Some(states) => {
+                        super::serve_connection_with_auth_state(
+                            stream,
+                            super::DefaultRouter,
+                            max_errors,
+                            states,
+                        )
+                        .await
+                    }
+                    None => super::serve_connection(stream, super::DefaultRouter, max_errors).await,
+                };
+                if let Err(error) = result {
                     tracing::warn!(error = %error, "IPC client connection ended with an error");
                 }
             });

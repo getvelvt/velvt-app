@@ -1,8 +1,10 @@
 use tokio::io::{AsyncRead, AsyncWrite};
 use velvt_shared_types::{
-    Acknowledged, MalformedMessage, MalformedMessageCode, ServerHello, ServerMessage,
-    VersionMismatch, PROTOCOL_VERSION,
+    Acknowledged, MalformedMessage, MalformedMessageCode, ServerHello, ServerMessage, ServiceState,
+    ServiceStatus, VersionMismatch, PROTOCOL_VERSION,
 };
+
+use crate::auth::AuthState;
 
 use super::{
     codec::{decode_client_hello, decode_client_message, read_frame, write_server_message},
@@ -11,6 +13,33 @@ use super::{
 
 /// Serves one transport-independent bidirectional client connection.
 pub async fn serve_connection<S, R>(stream: S, router: R, max_errors: usize) -> Result<(), IpcError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    R: MessageRouter,
+{
+    serve_connection_inner(stream, router, max_errors, None).await
+}
+
+/// Serves one connection and pushes privacy-safe authentication state changes.
+pub async fn serve_connection_with_auth_state<S, R>(
+    stream: S,
+    router: R,
+    max_errors: usize,
+    auth_states: tokio::sync::watch::Receiver<AuthState>,
+) -> Result<(), IpcError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    R: MessageRouter,
+{
+    serve_connection_inner(stream, router, max_errors, Some(auth_states)).await
+}
+
+async fn serve_connection_inner<S, R>(
+    stream: S,
+    router: R,
+    max_errors: usize,
+    mut auth_states: Option<tokio::sync::watch::Receiver<AuthState>>,
+) -> Result<(), IpcError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     R: MessageRouter,
@@ -52,8 +81,26 @@ where
         return Ok(());
     }
     write_server_message(&mut writer, &ServerMessage::Acknowledged(Acknowledged)).await?;
+    if let Some(states) = &auth_states {
+        let initial_state = states.borrow().clone();
+        write_server_message(&mut writer, &auth_status_message(initial_state)).await?;
+    }
 
-    while let Some(frame) = read_frame(&mut reader).await? {
+    loop {
+        let frame = tokio::select! {
+            frame = read_frame(&mut reader) => frame?,
+            state = next_auth_state(&mut auth_states) => {
+                let Some(state) = state else {
+                    auth_states = None;
+                    continue;
+                };
+                write_server_message(&mut writer, &auth_status_message(state)).await?;
+                continue;
+            }
+        };
+        let Some(frame) = frame else {
+            return Ok(());
+        };
         let message = match decode_client_message(&frame) {
             Ok(message) => message,
             Err(_) => {
@@ -77,7 +124,31 @@ where
             }
         }
     }
-    Ok(())
+}
+
+async fn next_auth_state(
+    receiver: &mut Option<tokio::sync::watch::Receiver<AuthState>>,
+) -> Option<AuthState> {
+    let Some(receiver) = receiver else {
+        return std::future::pending().await;
+    };
+    receiver.changed().await.ok()?;
+    Some(receiver.borrow().clone())
+}
+
+fn auth_status_message(state: AuthState) -> ServerMessage {
+    let (state, reason) = match state {
+        AuthState::Authenticated { .. } => (ServiceState::Ready, None),
+        AuthState::RefreshInFlight => (ServiceState::Degraded, Some("auth_refresh_in_flight")),
+        AuthState::Unauthenticated | AuthState::NeedsReauth => {
+            (ServiceState::AuthRequired, Some("needs_reauth"))
+        }
+        AuthState::DeviceRevoked => (ServiceState::UploadPaused, Some("device_revoked")),
+    };
+    ServerMessage::ServiceStatus(ServiceStatus {
+        state,
+        reason: reason.map(str::to_owned),
+    })
 }
 
 async fn write_malformed(writer: &mut (impl AsyncWrite + Unpin)) -> Result<(), IpcError> {

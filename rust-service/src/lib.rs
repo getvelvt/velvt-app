@@ -3,3 +3,4 @@
 pub mod abstraction;
 pub mod config;
 pub mod ipc;
+pub mod persistence;

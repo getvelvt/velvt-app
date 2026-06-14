@@ -5,12 +5,10 @@
 
 #[tokio::main]
 async fn main() {
-    use std::sync::Arc;
     use tracing_subscriber::EnvFilter;
-    use velvt_service::abstraction::{
-        AbstractionEngine, InMemoryMappingStore, Taxonomy, API_EXPECTED_TAXONOMY_VERSION,
-    };
+    use velvt_service::abstraction::{AbstractionEngine, Taxonomy, API_EXPECTED_TAXONOMY_VERSION};
     use velvt_service::config::ServiceConfig;
+    use velvt_service::persistence::SqlitePersistence;
 
     let Ok(config) = ServiceConfig::load() else {
         return;
@@ -26,6 +24,13 @@ async fn main() {
         return;
     }
 
+    let Ok(persistence) = SqlitePersistence::open(&config.database_path) else {
+        tracing::error!(
+            error_code = "persistence_initialization_failed",
+            "service startup halted"
+        );
+        return;
+    };
     let Ok(taxonomy) = Taxonomy::from_path(&config.abstraction_taxonomy_path) else {
         tracing::error!(
             error_code = "abstraction_taxonomy_load_failed",
@@ -43,7 +48,7 @@ async fn main() {
     }
     let embedding_plugin = load_embedding_plugin(&config, &taxonomy);
     let Ok(_abstraction_engine) =
-        AbstractionEngine::builder(Arc::new(InMemoryMappingStore::default()), taxonomy)
+        AbstractionEngine::builder(persistence.abstraction_mapping_store(), taxonomy)
             .register_builtin_plugins_with_embedding(embedding_plugin)
             .build()
     else {

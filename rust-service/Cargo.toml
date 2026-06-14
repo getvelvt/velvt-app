@@ -9,11 +9,14 @@ members = [".", "shared-types"]
 resolver = "2"
 
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["serde", "v4"] }
 velvt-shared-types = { path = "shared-types" }
 

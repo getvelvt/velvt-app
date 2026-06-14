@@ -5,7 +5,9 @@
 
 #[tokio::main]
 async fn main() {
+    use std::sync::Arc;
     use tracing_subscriber::EnvFilter;
+    use velvt_service::abstraction::{AbstractionEngine, InMemoryMappingStore, Taxonomy};
     use velvt_service::config::ServiceConfig;
 
     let Ok(config) = ServiceConfig::load() else {
@@ -21,6 +23,25 @@ async fn main() {
     {
         return;
     }
+
+    let Ok(taxonomy) = Taxonomy::from_path(&config.abstraction_taxonomy_path) else {
+        tracing::error!(
+            error_code = "abstraction_taxonomy_load_failed",
+            "service startup halted"
+        );
+        return;
+    };
+    let Ok(_abstraction_engine) =
+        AbstractionEngine::builder(Arc::new(InMemoryMappingStore::default()), taxonomy)
+            .register_builtin_plugins()
+            .build()
+    else {
+        tracing::error!(
+            error_code = "abstraction_engine_initialization_failed",
+            "service startup halted"
+        );
+        return;
+    };
 
     #[cfg(unix)]
     {

@@ -19,6 +19,8 @@ pub struct ServiceConfig {
     pub ipc_max_errors: usize,
     /// Structured tracing filter configured for the service.
     pub log_level: String,
+    /// Versioned abstraction taxonomy loaded before the service starts.
+    pub abstraction_taxonomy_path: PathBuf,
 }
 
 impl ServiceConfig {
@@ -39,7 +41,17 @@ impl ServiceConfig {
             protocol_version: PROTOCOL_VERSION,
             ipc_max_errors,
             log_level: std::env::var("VELVT_LOG_LEVEL").unwrap_or_else(|_| "info".to_owned()),
+            abstraction_taxonomy_path: taxonomy_path()?,
         })
+    }
+}
+
+fn taxonomy_path() -> Result<PathBuf, ConfigError> {
+    match std::env::var("VELVT_ABSTRACTION_TAXONOMY_PATH") {
+        Ok(value) => expand_home(&value),
+        Err(std::env::VarError::NotPresent) => Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/abstraction-taxonomy-mvp-1.json")),
+        Err(std::env::VarError::NotUnicode(_)) => Err(ConfigError::Invalid),
     }
 }
 

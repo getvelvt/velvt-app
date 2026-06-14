@@ -9,16 +9,25 @@ fn socket_path_and_log_level_are_configurable() {
     std::env::set_var("VELVT_IPC_SOCKET_PATH", "/tmp/velvt-test.sock");
     std::env::set_var("VELVT_IPC_MAX_ERRORS", "7");
     std::env::set_var("VELVT_LOG_LEVEL", "debug");
+    std::env::set_var(
+        "VELVT_ABSTRACTION_TAXONOMY_PATH",
+        "/tmp/custom-taxonomy.json",
+    );
 
     let config = ServiceConfig::load().unwrap();
 
     assert_eq!(config.socket_path.to_string_lossy(), "/tmp/velvt-test.sock");
     assert_eq!(config.ipc_max_errors, 7);
     assert_eq!(config.log_level, "debug");
+    assert_eq!(
+        config.abstraction_taxonomy_path.to_string_lossy(),
+        "/tmp/custom-taxonomy.json"
+    );
 
     std::env::remove_var("VELVT_IPC_SOCKET_PATH");
     std::env::remove_var("VELVT_IPC_MAX_ERRORS");
     std::env::remove_var("VELVT_LOG_LEVEL");
+    std::env::remove_var("VELVT_ABSTRACTION_TAXONOMY_PATH");
 }
 
 #[test]

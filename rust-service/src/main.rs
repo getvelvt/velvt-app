@@ -7,7 +7,9 @@
 async fn main() {
     use std::sync::Arc;
     use tracing_subscriber::EnvFilter;
-    use velvt_service::abstraction::{AbstractionEngine, InMemoryMappingStore, Taxonomy};
+    use velvt_service::abstraction::{
+        AbstractionEngine, InMemoryMappingStore, Taxonomy, API_EXPECTED_TAXONOMY_VERSION,
+    };
     use velvt_service::config::ServiceConfig;
 
     let Ok(config) = ServiceConfig::load() else {
@@ -31,9 +33,18 @@ async fn main() {
         );
         return;
     };
+    if taxonomy.version() != API_EXPECTED_TAXONOMY_VERSION {
+        tracing::warn!(
+            error_code = "taxonomy_version_mismatch",
+            expected_version = API_EXPECTED_TAXONOMY_VERSION,
+            configured_version = taxonomy.version(),
+            "configured taxonomy version differs from API expected value"
+        );
+    }
+    let embedding_plugin = load_embedding_plugin(&config, &taxonomy);
     let Ok(_abstraction_engine) =
         AbstractionEngine::builder(Arc::new(InMemoryMappingStore::default()), taxonomy)
-            .register_builtin_plugins()
+            .register_builtin_plugins_with_embedding(embedding_plugin)
             .build()
     else {
         tracing::error!(
@@ -57,4 +68,80 @@ async fn main() {
 
     #[cfg(not(unix))]
     tracing::error!("Unix domain socket transport is unavailable on this platform");
+}
+
+#[cfg(feature = "onnx")]
+fn load_embedding_plugin(
+    config: &velvt_service::config::ServiceConfig,
+    taxonomy: &velvt_service::abstraction::Taxonomy,
+) -> Option<velvt_service::abstraction::EmbeddingSimilarityPlugin> {
+    use std::sync::Arc;
+    use velvt_service::abstraction::{
+        CategoryCentroids, EmbeddingMetrics, EmbeddingSimilarityPlugin, OrtEmbeddingModel,
+    };
+
+    let model_path = config.abstraction_model_path.as_deref()?;
+    let Some(centroid_path) = config.abstraction_centroids_path.as_deref() else {
+        tracing::warn!(
+            error_code = "tier2_centroids_unavailable",
+            "Tier 2 classification disabled"
+        );
+        return None;
+    };
+    let Ok(centroids) = CategoryCentroids::from_path(centroid_path) else {
+        tracing::warn!(
+            error_code = "tier2_centroids_unavailable",
+            "Tier 2 classification disabled"
+        );
+        return None;
+    };
+    let Ok(model) = OrtEmbeddingModel::load(model_path) else {
+        tracing::warn!(
+            error_code = "tier2_model_unavailable",
+            "Tier 2 classification disabled"
+        );
+        return None;
+    };
+    if centroids.taxonomy_version() != taxonomy.version()
+        || centroids
+            .categories()
+            .any(|category| !taxonomy.contains_category(category))
+    {
+        tracing::warn!(
+            error_code = "tier2_centroids_invalid",
+            "Tier 2 classification disabled"
+        );
+        return None;
+    }
+    EmbeddingSimilarityPlugin::new(
+        Arc::new(model),
+        centroids.into_vectors(),
+        taxonomy.version(),
+        config.abstraction_similarity_threshold,
+        config.abstraction_inference_timeout,
+        Arc::new(EmbeddingMetrics::default()),
+    )
+    .map_err(|_| {
+        tracing::warn!(
+            error_code = "tier2_initialization_failed",
+            "Tier 2 classification disabled"
+        );
+    })
+    .ok()
+}
+
+#[cfg(not(feature = "onnx"))]
+fn load_embedding_plugin(
+    config: &velvt_service::config::ServiceConfig,
+    _taxonomy: &velvt_service::abstraction::Taxonomy,
+) -> Option<velvt_service::abstraction::EmbeddingSimilarityPlugin> {
+    if config.abstraction_model_path.is_some() {
+        let error_code = if config.abstraction_centroids_path.is_none() {
+            "tier2_centroids_unavailable"
+        } else {
+            "tier2_model_unavailable"
+        };
+        tracing::warn!(error_code, "Tier 2 classification disabled");
+    }
+    None
 }

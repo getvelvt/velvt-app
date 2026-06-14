@@ -4,6 +4,7 @@
 //! storage, service lifecycle, or business logic.
 
 use std::path::PathBuf;
+use std::time::Duration;
 use velvt_shared_types::PROTOCOL_VERSION;
 
 /// Typed runtime configuration for the Velvt local service.
@@ -21,6 +22,14 @@ pub struct ServiceConfig {
     pub log_level: String,
     /// Versioned abstraction taxonomy loaded before the service starts.
     pub abstraction_taxonomy_path: PathBuf,
+    /// Optional local ONNX model path. Absence disables Tier 2.
+    pub abstraction_model_path: Option<PathBuf>,
+    /// Companion centroid file required when the ONNX model is configured.
+    pub abstraction_centroids_path: Option<PathBuf>,
+    /// Maximum Tier 2 inference time.
+    pub abstraction_inference_timeout: Duration,
+    /// Minimum cosine similarity accepted by Tier 2.
+    pub abstraction_similarity_threshold: f32,
 }
 
 impl ServiceConfig {
@@ -42,7 +51,31 @@ impl ServiceConfig {
             ipc_max_errors,
             log_level: std::env::var("VELVT_LOG_LEVEL").unwrap_or_else(|_| "info".to_owned()),
             abstraction_taxonomy_path: taxonomy_path()?,
+            abstraction_model_path: optional_path("VELVT_ABSTRACTION_MODEL_PATH")?,
+            abstraction_centroids_path: optional_path("VELVT_ABSTRACTION_CENTROIDS_PATH")?,
+            abstraction_inference_timeout: Duration::from_millis(parse_env(
+                "VELVT_ABSTRACTION_INFERENCE_TIMEOUT_MS",
+                20_u64,
+            )?),
+            abstraction_similarity_threshold: parse_threshold()?,
         })
+    }
+}
+
+fn optional_path(name: &str) -> Result<Option<PathBuf>, ConfigError> {
+    match std::env::var(name) {
+        Ok(value) => expand_home(&value).map(Some),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(ConfigError::Invalid),
+    }
+}
+
+fn parse_threshold() -> Result<f32, ConfigError> {
+    let threshold = parse_env("VELVT_ABSTRACTION_SIMILARITY_THRESHOLD", 0.72_f32)?;
+    if (0.0..=1.0).contains(&threshold) {
+        Ok(threshold)
+    } else {
+        Err(ConfigError::Invalid)
     }
 }
 

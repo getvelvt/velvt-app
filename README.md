@@ -145,3 +145,86 @@ envelope. Rust DTOs live in `rust-service/shared-types`; Swift DTOs live in
 Start with [`docs/architecture/`](docs/architecture/) for architecture and IPC
 contract documentation. Contributors must also read [`AGENTS.md`](AGENTS.md)
 and [`CONTRIBUTING.md`](CONTRIBUTING.md) before making changes.
+
+## On-Device Classification
+
+The Rust abstraction engine applies a privacy-preserving three-tier pipeline:
+
+1. **Exact match:** the versioned taxonomy seed dictionary matches exact or
+   glob application-name patterns.
+2. **Embedding similarity:** an optional local ONNX sentence-embedding model
+   compares an app-name/window-title embedding with static category centroids.
+3. **Fallback:** unmatched or unavailable Tier 2 requests become
+   `unlogged` / `UNLOGGED`.
+
+Plugins run in registry order and the first match wins. The built-in registry
+is in `AbstractionEngineBuilder::register_builtin_plugins_with_embedding`:
+
+```rust
+// This is the only line to change when registering a new classification plugin.
+let builder = builder.register_plugin(NewClassificationPlugin::new(...));
+```
+
+`AbstractedEvent` contains only a stable local ID, label, category, taxonomy
+version, timestamp, and internal-only classification tier. Raw app names and
+window titles never enter this type or its serialized output.
+
+### Model Artifacts
+
+Tier 2 targets an Apache-2.0 licensed, INT8-quantized ONNX export of
+`sentence-transformers/all-MiniLM-L6-v2`. The model must be at most 50 MB and
+must be accompanied by its `tokenizer.json` and a version-matched centroid
+file. Model training, fine-tuning, and artifact generation happen offline and
+are intentionally not part of the service.
+
+Install an approved model artifact bundle by placing its files together and
+configuring:
+
+```sh
+export VELVT_ABSTRACTION_MODEL_PATH=/path/to/model.onnx
+export VELVT_ABSTRACTION_CENTROIDS_PATH=/path/to/centroids.bin
+export VELVT_ABSTRACTION_INFERENCE_TIMEOUT_MS=20
+export VELVT_ABSTRACTION_SIMILARITY_THRESHOLD=0.72
+```
+
+Do not configure arbitrary downloaded models. The tokenizer, model output
+shape, centroid dimension, taxonomy version, and model license must be reviewed
+together. If the model or centroids are unavailable or invalid, Tier 2 is
+disabled with a structured warning and Tier 1/Tier 3 continue.
+
+### Centroid File
+
+Centroids are static companion data and are never recomputed at runtime. The
+binary format is:
+
+```text
+"VELVTC01"
+taxonomy_version_length: u32 little-endian
+taxonomy_version: UTF-8 bytes
+embedding_dimensions: u32 little-endian
+centroid_count: u32 little-endian
+repeated centroid_count times:
+  category_length: u32 little-endian
+  category: UTF-8 bytes
+  embedding_dimensions float32 little-endian values
+```
+
+The file taxonomy version must match the configured taxonomy. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md#adding-a-classification-category) for the
+offline update process.
+
+### Taxonomy And Roadmap
+
+The taxonomy is data loaded from
+`rust-service/resources/abstraction-taxonomy-mvp-1.json`, or from
+`VELVT_ABSTRACTION_TAXONOMY_PATH`. The API-expected version is currently
+`mvp-1`; a configured mismatch emits a structured warning while the configured
+version remains attached to results.
+
+`TitleAbstractor` is wired into `AbstractionEngine::process`, with
+`DefaultTitleAbstractor` passing titles through locally. V1 will replace
+semantically sensitive title tokens with category-scoped abstract labels
+without transmitting raw titles.
+
+Performance gates are Tier 1 mean and p95 below 1 ms and Tier 2 p95 below
+25 ms. The integration tests report p50, p95, and p99.

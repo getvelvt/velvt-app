@@ -27,9 +27,9 @@ impl RawKey {
     }
 
     pub(crate) fn stable_key(&self) -> String {
-        // SHA-256 hashes a domain-separated, length-prefixed UTF-8 encoding.
-        // Length prefixes avoid delimiter ambiguity, and preserving exact bytes
-        // keeps the key deterministic across binary and service restarts.
+        // SHA-256 hashes a versioned domain plus length-prefixed raw UTF-8 fields.
+        // Length prefixes prevent delimiter collisions; exact bytes and the fixed
+        // domain keep keys deterministic across service and binary restarts.
         let mut hasher = Sha256::new();
         hasher.update(KEY_DOMAIN);
         update_length_prefixed(&mut hasher, self.app_name.as_bytes());

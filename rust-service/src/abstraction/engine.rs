@@ -5,29 +5,53 @@ use uuid::Uuid;
 use velvt_shared_types::RawEvent;
 
 use super::{
-    plugin::{AppTitlePlugin, UnloggedPlugin},
-    AbstractionMappingStore, AbstractionPlugin, RawKey, StoreError, Taxonomy, TaxonomyError,
+    plugin::{SeedDictionaryPlugin, UnloggedFallbackPlugin},
+    taxonomy::is_valid_label,
+    AbstractionMappingStore, ClassificationPlugin, ClassificationTier, RawKey, StoreError,
+    Taxonomy, TaxonomyError, TitleAbstractor,
 };
 
-/// Privacy-safe abstraction result consumable by IPC handlers and upload code.
+/// Privacy-safe result. Raw fields cannot be constructed into or read from this type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AbstractedEvent {
-    pub stable_id: String,
-    pub label: String,
-    pub category: String,
-    pub taxonomy_version: String,
-    pub occurred_at: DateTime<Utc>,
+    stable_id: String,
+    label: String,
+    category: String,
+    taxonomy_version: String,
+    occurred_at: DateTime<Utc>,
+    #[serde(skip)]
+    classification_tier: ClassificationTier,
 }
 
-/// On-device abstraction engine.
+impl AbstractedEvent {
+    pub fn stable_id(&self) -> &str {
+        &self.stable_id
+    }
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+    pub fn category(&self) -> &str {
+        &self.category
+    }
+    pub fn taxonomy_version(&self) -> &str {
+        &self.taxonomy_version
+    }
+    pub fn occurred_at(&self) -> DateTime<Utc> {
+        self.occurred_at
+    }
+    pub fn classification_tier(&self) -> ClassificationTier {
+        self.classification_tier
+    }
+}
+
 pub struct AbstractionEngine {
     store: Arc<dyn AbstractionMappingStore>,
     taxonomy: Taxonomy,
-    plugins: Vec<Box<dyn AbstractionPlugin>>,
+    title_abstractor: Arc<dyn TitleAbstractor>,
+    plugins: Vec<Box<dyn ClassificationPlugin>>,
 }
 
 impl AbstractionEngine {
-    /// Creates an engine using the built-in taxonomy and plugins.
     pub fn from_builtin_taxonomy(
         store: Arc<dyn AbstractionMappingStore>,
     ) -> Result<Self, AbstractionError> {
@@ -37,7 +61,6 @@ impl AbstractionEngine {
             .build()
     }
 
-    /// Starts constructing an engine with an explicitly loaded taxonomy.
     pub fn builder(
         store: Arc<dyn AbstractionMappingStore>,
         taxonomy: Taxonomy,
@@ -45,11 +68,11 @@ impl AbstractionEngine {
         AbstractionEngineBuilder {
             store,
             taxonomy,
+            title_abstractor: Arc::new(super::DefaultTitleAbstractor),
             plugins: Vec::new(),
         }
     }
 
-    /// Converts one local-only raw event into a privacy-safe abstracted event.
     pub fn process(&self, raw_event: RawEvent) -> Result<AbstractedEvent, AbstractionError> {
         let RawEvent {
             occurred_at,
@@ -58,92 +81,97 @@ impl AbstractionEngine {
             ..
         } = raw_event;
         let raw_key = RawKey::new(app_name, window_title);
-        let (label, _) = self
+        let abstracted_title = self.title_abstractor.abstract_title(raw_key.window_title());
+        let classification = self
             .plugins
             .iter()
-            .find_map(|plugin| plugin.classify(&raw_key))
+            .find_map(|plugin| plugin.classify(raw_key.app_name(), abstracted_title.as_ref()))
             .ok_or(AbstractionError::NoPluginMatch)?;
-        if !is_valid_label(&label) {
-            return Err(AbstractionError::InvalidPluginLabel);
+        if !is_valid_label(classification.label())
+            || !self.taxonomy.contains_category(classification.category())
+            || classification.taxonomy_version() != self.taxonomy.version()
+            || matches_raw_input(classification.label(), &raw_key)
+        {
+            return Err(AbstractionError::InvalidPluginResult);
         }
         let stable_key = raw_key.stable_key();
         let fresh_id = format!("abs_{}", Uuid::new_v4().simple());
         let stable_id = self.store.resolve_id(&stable_key, &fresh_id)?;
-        let category = self.taxonomy.category_for_label(&label).to_owned();
-
         Ok(AbstractedEvent {
             stable_id,
-            label,
-            category,
-            taxonomy_version: self.taxonomy.version().to_owned(),
+            label: classification.label().to_owned(),
+            category: classification.category().to_owned(),
+            taxonomy_version: classification.taxonomy_version().to_owned(),
             occurred_at,
+            classification_tier: classification.tier(),
         })
     }
 }
 
-fn is_valid_label(label: &str) -> bool {
-    if label.len() > 64 {
-        return false;
-    }
-    let mut parts = label.split(':');
-    let valid_part = |part: &str| {
-        !part.is_empty()
-            && part
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-    };
-    matches!(
-        (parts.next(), parts.next(), parts.next()),
-        (Some(prefix), Some(action), None) if valid_part(prefix) && valid_part(action)
-    )
+fn matches_raw_input(label: &str, raw_key: &RawKey) -> bool {
+    label.eq_ignore_ascii_case(raw_key.app_name())
+        || label.eq_ignore_ascii_case(raw_key.window_title())
 }
 
-/// Builder supporting plugin extension without changes to engine core.
 pub struct AbstractionEngineBuilder {
     store: Arc<dyn AbstractionMappingStore>,
     taxonomy: Taxonomy,
-    plugins: Vec<Box<dyn AbstractionPlugin>>,
+    title_abstractor: Arc<dyn TitleAbstractor>,
+    plugins: Vec<Box<dyn ClassificationPlugin>>,
 }
 
 impl AbstractionEngineBuilder {
-    /// Registers one plugin. Plugins are executed by ascending priority.
-    pub fn register_plugin(mut self, plugin: impl AbstractionPlugin + 'static) -> Self {
+    pub fn register_plugin(mut self, plugin: impl ClassificationPlugin + 'static) -> Self {
         self.plugins.push(Box::new(plugin));
         self
     }
 
-    /// Registers the built-in seed dictionary and fallback plugins.
-    pub fn register_builtin_plugins(self) -> Self {
-        let entries = self.taxonomy.seed_applications();
-        self.register_plugin(AppTitlePlugin::new(entries))
-            .register_plugin(UnloggedPlugin)
+    pub fn title_abstractor(mut self, abstractor: impl TitleAbstractor + 'static) -> Self {
+        self.title_abstractor = Arc::new(abstractor);
+        self
     }
 
-    /// Validates and constructs the engine.
-    pub fn build(mut self) -> Result<AbstractionEngine, AbstractionError> {
+    pub fn register_builtin_plugins(self) -> Self {
+        self.register_builtin_plugins_with_embedding(None)
+    }
+
+    pub fn register_builtin_plugins_with_embedding(
+        self,
+        embedding: Option<super::EmbeddingSimilarityPlugin>,
+    ) -> Self {
+        let version = self.taxonomy.version().to_owned();
+        let entries = self.taxonomy.seed_applications();
+        let builder = self.register_plugin(SeedDictionaryPlugin::new(entries, version.clone()));
+        let builder = match embedding {
+            Some(plugin) => builder.register_plugin(plugin),
+            None => builder,
+        };
+        builder.register_plugin(UnloggedFallbackPlugin::new(version))
+    }
+
+    pub fn build(self) -> Result<AbstractionEngine, AbstractionError> {
         if self.plugins.is_empty() {
             return Err(AbstractionError::NoPlugins);
         }
-        self.plugins.sort_by_key(|plugin| plugin.priority());
         Ok(AbstractionEngine {
             store: self.store,
             taxonomy: self.taxonomy,
+            title_abstractor: self.title_abstractor,
             plugins: self.plugins,
         })
     }
 }
 
-/// Privacy-safe abstraction failures.
 #[derive(Debug, thiserror::Error)]
 pub enum AbstractionError {
     #[error(transparent)]
     Taxonomy(#[from] TaxonomyError),
     #[error(transparent)]
     Store(#[from] StoreError),
-    #[error("no abstraction plugins are registered")]
+    #[error("no classification plugins are registered")]
     NoPlugins,
-    #[error("no abstraction plugin matched the event")]
+    #[error("no classification plugin matched the event")]
     NoPluginMatch,
-    #[error("abstraction plugin returned an invalid label")]
-    InvalidPluginLabel,
+    #[error("classification plugin returned an invalid privacy-safe result")]
+    InvalidPluginResult,
 }

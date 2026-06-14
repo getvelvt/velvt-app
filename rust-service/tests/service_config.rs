@@ -13,6 +13,10 @@ fn socket_path_and_log_level_are_configurable() {
         "VELVT_ABSTRACTION_TAXONOMY_PATH",
         "/tmp/custom-taxonomy.json",
     );
+    std::env::set_var("VELVT_ABSTRACTION_MODEL_PATH", "/tmp/model.onnx");
+    std::env::set_var("VELVT_ABSTRACTION_CENTROIDS_PATH", "/tmp/centroids.bin");
+    std::env::set_var("VELVT_ABSTRACTION_INFERENCE_TIMEOUT_MS", "19");
+    std::env::set_var("VELVT_ABSTRACTION_SIMILARITY_THRESHOLD", "0.81");
 
     let config = ServiceConfig::load().unwrap();
 
@@ -23,11 +27,25 @@ fn socket_path_and_log_level_are_configurable() {
         config.abstraction_taxonomy_path.to_string_lossy(),
         "/tmp/custom-taxonomy.json"
     );
+    assert_eq!(
+        config
+            .abstraction_model_path
+            .as_ref()
+            .unwrap()
+            .to_string_lossy(),
+        "/tmp/model.onnx"
+    );
+    assert_eq!(config.abstraction_inference_timeout.as_millis(), 19);
+    assert_eq!(config.abstraction_similarity_threshold, 0.81);
 
     std::env::remove_var("VELVT_IPC_SOCKET_PATH");
     std::env::remove_var("VELVT_IPC_MAX_ERRORS");
     std::env::remove_var("VELVT_LOG_LEVEL");
     std::env::remove_var("VELVT_ABSTRACTION_TAXONOMY_PATH");
+    std::env::remove_var("VELVT_ABSTRACTION_MODEL_PATH");
+    std::env::remove_var("VELVT_ABSTRACTION_CENTROIDS_PATH");
+    std::env::remove_var("VELVT_ABSTRACTION_INFERENCE_TIMEOUT_MS");
+    std::env::remove_var("VELVT_ABSTRACTION_SIMILARITY_THRESHOLD");
 }
 
 #[test]

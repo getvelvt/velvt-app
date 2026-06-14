@@ -1,97 +1,122 @@
 use serde::Deserialize;
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashSet, path::Path};
 
 const BUILTIN_TAXONOMY: &[u8] = include_bytes!("../../resources/abstraction-taxonomy-mvp-1.json");
+pub const API_EXPECTED_TAXONOMY_VERSION: &str = "mvp-1";
 
-/// One built-in application-to-label seed.
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct SeedApplication {
-    pub(crate) app_name: String,
-    pub(crate) label: String,
+#[serde(deny_unknown_fields)]
+pub struct SeedApplication {
+    app_name_pattern: String,
+    label: String,
+    category: String,
+}
+
+impl SeedApplication {
+    pub fn app_name_pattern(&self) -> &str {
+        &self.app_name_pattern
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn category(&self) -> &str {
+        &self.category
+    }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TaxonomyFile {
-    version: String,
+    category_taxonomy_version: String,
     default_category: String,
-    label_categories: HashMap<String, String>,
+    categories: Vec<String>,
     seed_applications: Vec<SeedApplication>,
 }
 
-/// Versioned, data-driven category taxonomy and seed dictionary.
 #[derive(Debug, Clone)]
 pub struct Taxonomy {
-    version: String,
+    category_taxonomy_version: String,
     default_category: String,
-    label_categories: HashMap<String, String>,
+    categories: HashSet<String>,
     seed_applications: Vec<SeedApplication>,
 }
 
 impl Taxonomy {
-    /// Loads the built-in MVP taxonomy.
     pub fn from_builtin() -> Result<Self, TaxonomyError> {
         Self::from_json(BUILTIN_TAXONOMY)
     }
 
-    /// Loads a taxonomy from a configurable JSON path.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, TaxonomyError> {
         let bytes = std::fs::read(path).map_err(|_| TaxonomyError::Read)?;
         Self::from_json(&bytes)
     }
 
-    /// Parses and validates taxonomy JSON.
     pub fn from_json(bytes: &[u8]) -> Result<Self, TaxonomyError> {
         let file: TaxonomyFile =
             serde_json::from_slice(bytes).map_err(|_| TaxonomyError::InvalidJson)?;
-        if file.version.trim().is_empty() {
+        if file.category_taxonomy_version.trim().is_empty() {
             return Err(TaxonomyError::MissingVersion);
         }
         if file.seed_applications.is_empty() {
             return Err(TaxonomyError::NoSeedApplications);
         }
-        if file.label_categories.is_empty() {
+        let categories: HashSet<_> = file.categories.into_iter().collect();
+        if categories.is_empty() || !categories.contains(&file.default_category) {
             return Err(TaxonomyError::NoCategories);
         }
-        if file.default_category.trim().is_empty() {
-            return Err(TaxonomyError::MissingDefaultCategory);
-        }
+        let mut patterns = HashSet::new();
         if file.seed_applications.iter().any(|entry| {
-            entry.app_name.trim().is_empty()
-                || entry.label.trim().is_empty()
-                || !file
-                    .label_categories
-                    .keys()
-                    .any(|prefix| entry.label.starts_with(prefix))
+            entry.app_name_pattern.trim().is_empty()
+                || !is_valid_label(&entry.label)
+                || !categories.contains(&entry.category)
+                || !patterns.insert(entry.app_name_pattern.to_ascii_lowercase())
         }) {
             return Err(TaxonomyError::InvalidSeedApplication);
         }
         Ok(Self {
-            version: file.version,
+            category_taxonomy_version: file.category_taxonomy_version,
             default_category: file.default_category,
-            label_categories: file.label_categories,
+            categories,
             seed_applications: file.seed_applications,
         })
     }
 
-    pub(crate) fn version(&self) -> &str {
-        &self.version
+    pub fn version(&self) -> &str {
+        &self.category_taxonomy_version
     }
 
-    pub(crate) fn category_for_label(&self, label: &str) -> &str {
-        self.label_categories
-            .iter()
-            .filter(|(prefix, _)| label.starts_with(prefix.as_str()))
-            .max_by_key(|(prefix, _)| prefix.len())
-            .map_or(self.default_category.as_str(), |(_, category)| category)
+    pub fn default_category(&self) -> &str {
+        &self.default_category
     }
 
-    pub(crate) fn seed_applications(&self) -> Vec<SeedApplication> {
+    pub fn contains_category(&self, category: &str) -> bool {
+        self.categories.contains(category)
+    }
+
+    pub fn seed_applications(&self) -> Vec<SeedApplication> {
         self.seed_applications.clone()
     }
 }
 
-/// Clear startup errors for invalid or unavailable taxonomy configuration.
+pub(crate) fn is_valid_label(label: &str) -> bool {
+    if label == "unlogged" {
+        return true;
+    }
+    let mut parts = label.split(':');
+    let valid_part = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    };
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(prefix), Some(action), None) if valid_part(prefix) && valid_part(action)
+    )
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TaxonomyError {
     #[error("failed to read abstraction taxonomy")]
@@ -104,8 +129,6 @@ pub enum TaxonomyError {
     NoCategories,
     #[error("taxonomy has no seed application entries")]
     NoSeedApplications,
-    #[error("taxonomy default category is missing")]
-    MissingDefaultCategory,
     #[error("taxonomy contains an invalid seed application")]
     InvalidSeedApplication,
 }

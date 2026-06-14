@@ -4,16 +4,25 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+default = []
+onnx = ["dep:ort", "dep:tokenizers"]
+
 [workspace]
 members = [".", "shared-types"]
 resolver = "2"
 
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["serde", "v4"] }
 velvt-shared-types = { path = "shared-types" }
+ort = { version = "=2.0.0-rc.12", optional = true, default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-native", "api-24"] }
+tokenizers = { version = "0.21", optional = true, default-features = false, features = ["onig"] }
 

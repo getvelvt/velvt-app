@@ -5,9 +5,13 @@ use std::{
 };
 use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use velvt_service::ipc::{serve_connection, DefaultRouter};
+use velvt_service::{
+    auth::{AuthState, AuthStateMachine},
+    ipc::serve_connection_with_auth_state,
+};
 use velvt_shared_types::{
     Acknowledged, ClientHello, ClientMessage, MalformedMessage, MalformedMessageCode, ServerHello,
-    ServerMessage, VersionMismatch, PROTOCOL_VERSION,
+    ServerMessage, ServiceState, VersionMismatch, PROTOCOL_VERSION,
 };
 
 async fn write_message(writer: &mut (impl AsyncWriteExt + Unpin), message: &ClientMessage) {
@@ -330,4 +334,72 @@ async fn malformed_rejection_logs_never_contain_raw_user_content() {
     assert!(!logs.contains("PRIVATE_APP"));
     assert!(!logs.contains("PRIVATE_TITLE"));
     assert!(!logs.contains("https://private.example"));
+}
+
+#[tokio::test]
+async fn device_revoked_auth_state_is_pushed_to_swift_as_upload_paused() {
+    let (client, server) = duplex(4096);
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let task = tokio::spawn(serve_connection_with_auth_state(
+        server,
+        DefaultRouter,
+        3,
+        state.subscribe(),
+    ));
+    let (read, mut write) = tokio::io::split(client);
+    let mut read = BufReader::new(read);
+    complete_handshake(&mut read, &mut write).await;
+    assert!(matches!(
+        read_message(&mut read).await,
+        Some(ServerMessage::ServiceStatus(
+            velvt_shared_types::ServiceStatus {
+                state: ServiceState::Ready,
+                reason: None,
+            }
+        ))
+    ));
+
+    state.transition(AuthState::DeviceRevoked).unwrap();
+
+    let status = read_message(&mut read).await.unwrap();
+    assert!(matches!(
+        status,
+        ServerMessage::ServiceStatus(velvt_shared_types::ServiceStatus {
+            state: ServiceState::UploadPaused,
+            reason: Some(reason),
+        }) if reason == "device_revoked"
+    ));
+    drop(write);
+    drop(read);
+    assert!(task.await.unwrap().is_ok());
+}
+
+#[tokio::test]
+async fn newly_connected_swift_client_receives_current_device_revoked_state() {
+    let (client, server) = duplex(4096);
+    let state = Arc::new(AuthStateMachine::new(AuthState::DeviceRevoked));
+    let task = tokio::spawn(serve_connection_with_auth_state(
+        server,
+        DefaultRouter,
+        3,
+        state.subscribe(),
+    ));
+    let (read, mut write) = tokio::io::split(client);
+    let mut read = BufReader::new(read);
+    complete_handshake(&mut read, &mut write).await;
+
+    assert!(matches!(
+        read_message(&mut read).await,
+        Some(ServerMessage::ServiceStatus(
+            velvt_shared_types::ServiceStatus {
+                state: ServiceState::UploadPaused,
+                reason: Some(reason),
+            }
+        )) if reason == "device_revoked"
+    ));
+    drop(write);
+    drop(read);
+    assert!(task.await.unwrap().is_ok());
 }

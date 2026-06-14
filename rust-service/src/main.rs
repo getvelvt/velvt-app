@@ -61,9 +61,13 @@ async fn main() {
 
     #[cfg(unix)]
     {
+        use std::sync::Arc;
+        use velvt_service::auth::{AuthState, AuthStateMachine};
         use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
 
-        let transport = TokioUnixTransport::new(config.socket_path, config.ipc_max_errors);
+        let auth_state = Arc::new(AuthStateMachine::new(AuthState::Unauthenticated));
+        let transport = TokioUnixTransport::new(config.socket_path, config.ipc_max_errors)
+            .with_auth_state(auth_state.subscribe());
         let server_task = tokio::spawn(async move { transport.run().await });
         if tokio::signal::ctrl_c().await.is_err() {
             tracing::error!("failed to install shutdown signal");

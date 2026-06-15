@@ -1,7 +1,9 @@
 //! Integration tests for the R7 IPC push delivery layer.
 //!
 //! Covers: proactive push, queue drain on connect, drop policy, validation
-//! gating, and slow-client write timeout.
+//! gating, slow-client write timeout, reconnect after abrupt disconnect,
+//! two independent concurrent clients, privacy alert queued while disconnected,
+//! and validation failure isolation between DTO types.
 
 use std::{sync::Arc, time::Duration};
 
@@ -11,7 +13,8 @@ use velvt_service::{
     ipc::{serve_connection_with_push_queue, DefaultRouter},
 };
 use velvt_shared_types::{
-    Acknowledged, ClientHello, ClientMessage, HistoryPayload, ServerMessage, PROTOCOL_VERSION,
+    Acknowledged, ClientHello, ClientMessage, ConfidenceLevel, HistoryPayload, InsightPayload,
+    PrivacyViolationAlert, ServerMessage, PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -313,4 +316,306 @@ async fn slow_client_write_timeout_closes_connection_and_queue_is_preserved() {
     );
 
     // read and write are dropped here; server stream is already closed.
+}
+
+// ---------------------------------------------------------------------------
+// Test 6 — Reconnect after abrupt disconnect: no panic, queue coherent
+// ---------------------------------------------------------------------------
+
+/// Client A disconnects without reading any push messages.  The server task
+/// must not panic.  A second client connecting to the same queue receives any
+/// messages that were enqueued after client A disconnected.
+#[tokio::test]
+async fn reconnect_after_abrupt_disconnect_no_panic_and_queue_coherent() {
+    let queue = PushQueue::new(10);
+    let adapter = PushAdapter::new(Arc::clone(&queue));
+
+    // Pre-load the queue before the first connection.
+    for i in 1u8..=3 {
+        adapter.push_cache_empty(&format!("pre_{i}")).await;
+    }
+
+    // Connection A — client drops its write half after the handshake so the
+    // server gets EOF and exits cleanly (no slow-client timeout needed).
+    let (client_a, server_a) = duplex(4096);
+    let task_a = tokio::spawn(serve_connection_with_push_queue(
+        server_a,
+        DefaultRouter,
+        3,
+        None,
+        Arc::clone(&queue),
+        Duration::from_millis(500),
+    ));
+
+    let (read_a, mut write_a) = tokio::io::split(client_a);
+    let mut read_a = BufReader::new(read_a);
+    assert!(matches!(
+        read_message(&mut read_a).await,
+        Some(ServerMessage::ServerHello(_))
+    ));
+    write_message(
+        &mut write_a,
+        &ClientMessage::ClientHello(ClientHello {
+            expected_protocol_version: PROTOCOL_VERSION,
+            client_version: "0.1.0".into(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        read_message(&mut read_a).await,
+        Some(ServerMessage::Acknowledged(Acknowledged))
+    );
+    // Drop the write half — server receives EOF on the next read_frame and
+    // exits its message loop without panicking.
+    drop(write_a);
+    drop(read_a);
+
+    let result_a = tokio::time::timeout(Duration::from_secs(1), task_a)
+        .await
+        .expect("server A must terminate within 1 s")
+        .expect("task must not panic");
+    let _ = result_a; // Ok or Err is fine; panic is the only failure.
+
+    // Enqueue a sentinel message after the disconnect.
+    adapter.push_cache_empty("post_reconnect").await;
+    let remaining = queue.len().await;
+    assert!(remaining >= 1, "sentinel message must be in queue");
+
+    // Connection B — must drain remaining messages from the same queue.
+    let (client_b, server_b) = duplex(4096);
+    let task_b = tokio::spawn(serve_connection_with_push_queue(
+        server_b,
+        DefaultRouter,
+        3,
+        None,
+        Arc::clone(&queue),
+        Duration::from_millis(500),
+    ));
+
+    let (read_b, mut write_b) = tokio::io::split(client_b);
+    let mut read_b = BufReader::new(read_b);
+    complete_handshake(&mut read_b, &mut write_b).await;
+
+    for _ in 0..remaining {
+        assert!(
+            read_message(&mut read_b).await.is_some(),
+            "client B must receive all remaining queued messages"
+        );
+    }
+    assert!(
+        queue.is_empty().await,
+        "queue must be empty after client B drains it"
+    );
+
+    drop(write_b);
+    drop(read_b);
+    task_b.await.unwrap().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Test 7 — Two simultaneous clients with independent queues do not interfere
+// ---------------------------------------------------------------------------
+
+/// Two concurrent connections backed by separate queues must each receive
+/// exactly their own messages, with no cross-contamination and no panic.
+#[tokio::test]
+async fn two_concurrent_clients_with_independent_queues_do_not_interfere() {
+    let queue_a = PushQueue::new(10);
+    let queue_b = PushQueue::new(10);
+    let adapter_a = PushAdapter::new(Arc::clone(&queue_a));
+    let adapter_b = PushAdapter::new(Arc::clone(&queue_b));
+
+    adapter_a.push_cache_empty("only_for_a").await;
+    adapter_a.push_cache_empty("also_for_a").await;
+    adapter_b.push_cache_empty("only_for_b").await;
+
+    let (client_a, server_a) = duplex(4096);
+    let (client_b, server_b) = duplex(4096);
+
+    let task_a = tokio::spawn(serve_connection_with_push_queue(
+        server_a,
+        DefaultRouter,
+        3,
+        None,
+        queue_a,
+        Duration::from_millis(500),
+    ));
+    let task_b = tokio::spawn(serve_connection_with_push_queue(
+        server_b,
+        DefaultRouter,
+        3,
+        None,
+        queue_b,
+        Duration::from_millis(500),
+    ));
+
+    // Drive both client handshakes and reads concurrently.
+    let (msgs_a, msg_b) = tokio::join!(
+        async {
+            let (read, mut write) = tokio::io::split(client_a);
+            let mut read = BufReader::new(read);
+            complete_handshake(&mut read, &mut write).await;
+            let m1 = read_message(&mut read).await;
+            let m2 = read_message(&mut read).await;
+            drop(write);
+            (m1, m2)
+        },
+        async {
+            let (read, mut write) = tokio::io::split(client_b);
+            let mut read = BufReader::new(read);
+            complete_handshake(&mut read, &mut write).await;
+            let m = read_message(&mut read).await;
+            drop(write);
+            m
+        },
+    );
+
+    assert!(
+        matches!(&msgs_a.0, Some(ServerMessage::CacheEmpty(ce)) if ce.payload_type == "only_for_a"),
+        "client A first message wrong: {:?}",
+        msgs_a.0
+    );
+    assert!(
+        matches!(&msgs_a.1, Some(ServerMessage::CacheEmpty(ce)) if ce.payload_type == "also_for_a"),
+        "client A second message wrong: {:?}",
+        msgs_a.1
+    );
+    assert!(
+        matches!(&msg_b, Some(ServerMessage::CacheEmpty(ce)) if ce.payload_type == "only_for_b"),
+        "client B message wrong: {:?}",
+        msg_b
+    );
+
+    task_a.await.unwrap().unwrap();
+    task_b.await.unwrap().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Test 8 — PrivacyViolationAlert queued while disconnected, delivered on reconnect
+// ---------------------------------------------------------------------------
+
+/// A `PrivacyViolationAlert` that arrives when no client is connected must
+/// enter the queue (urgent, at the front) and be delivered as the first message
+/// when a client eventually reconnects.
+#[tokio::test]
+async fn privacy_alert_queued_while_disconnected_is_delivered_on_reconnect() {
+    let queue = PushQueue::new(10);
+    let adapter = PushAdapter::new(Arc::clone(&queue));
+
+    // Enqueue a history payload first so the alert's priority ordering is visible.
+    adapter
+        .push_history(HistoryPayload {
+            days: 7,
+            summaries: vec![],
+        })
+        .await;
+
+    // Alert arrives while no client is connected.
+    adapter
+        .push_privacy_alert(PrivacyViolationAlert {
+            code: "raw_field_rejected".into(),
+            message: "safe diagnostic for test".into(),
+        })
+        .await;
+
+    // Alert is urgent — it should be at the front of the queue.
+    assert_eq!(queue.len().await, 2);
+
+    let (client, server) = duplex(4096);
+    let task = tokio::spawn(serve_connection_with_push_queue(
+        server,
+        DefaultRouter,
+        3,
+        None,
+        queue,
+        Duration::from_millis(500),
+    ));
+
+    let (read, mut write) = tokio::io::split(client);
+    let mut read = BufReader::new(read);
+    complete_handshake(&mut read, &mut write).await;
+
+    // First message must be the privacy alert (urgent, prepended to front).
+    let first = read_message(&mut read).await;
+    assert!(
+        matches!(&first, Some(ServerMessage::PrivacyViolationAlert(a)) if a.code == "raw_field_rejected"),
+        "privacy alert must be delivered first on reconnect, got {first:?}"
+    );
+
+    // Second message is the history payload enqueued before the alert.
+    let second = read_message(&mut read).await;
+    assert!(
+        matches!(&second, Some(ServerMessage::HistoryPayload(h)) if h.days == 7),
+        "history payload must follow the alert, got {second:?}"
+    );
+
+    drop(write);
+    drop(read);
+    task.await.unwrap().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Test 9 — Validation failure for one DTO type does not affect other types
+// ---------------------------------------------------------------------------
+
+/// When a payload fails validation, the push adapter silently drops it.
+/// A subsequent valid payload of a *different* type must still be enqueued
+/// and delivered, proving the validation failure does not corrupt queue state.
+#[tokio::test]
+async fn validation_failure_for_one_type_does_not_block_another_type() {
+    let queue = PushQueue::new(10);
+    let adapter = PushAdapter::new(Arc::clone(&queue));
+
+    // InsightPayload with empty text — validate_fields rejects it.
+    adapter
+        .push_insight(InsightPayload {
+            date: chrono::Utc::now().date_naive(),
+            text: String::new(),
+            confidence_level: ConfidenceLevel::High,
+            low_confidence: false,
+            generated_at: chrono::Utc::now(),
+        })
+        .await;
+    assert_eq!(
+        queue.len().await,
+        0,
+        "invalid insight must not enter the queue"
+    );
+
+    // A valid HistoryPayload must still be enqueued and delivered.
+    adapter
+        .push_history(HistoryPayload {
+            days: 7,
+            summaries: vec![],
+        })
+        .await;
+    assert_eq!(
+        queue.len().await,
+        1,
+        "valid history must be enqueued despite prior failure"
+    );
+
+    let (client, server) = duplex(4096);
+    let task = tokio::spawn(serve_connection_with_push_queue(
+        server,
+        DefaultRouter,
+        3,
+        None,
+        queue,
+        Duration::from_millis(500),
+    ));
+
+    let (read, mut write) = tokio::io::split(client);
+    let mut read = BufReader::new(read);
+    complete_handshake(&mut read, &mut write).await;
+
+    let msg = read_message(&mut read).await;
+    assert!(
+        matches!(&msg, Some(ServerMessage::HistoryPayload(h)) if h.days == 7),
+        "history must be delivered after insight validation failure, got {msg:?}"
+    );
+
+    drop(write);
+    drop(read);
+    task.await.unwrap().unwrap();
 }

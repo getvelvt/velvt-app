@@ -46,8 +46,33 @@ pub trait ValidatePayload: Serialize + Sized {
 ///
 /// Only constructible via `ValidatedPayload::new`, which calls
 /// `ValidatePayload::validate_fields` and a serialisation round-trip check.
-/// This makes it a compile-time contract: the transport layer can only accept
-/// a `ValidatedPayload<T>`, never a raw DTO.
+///
+/// # Compile-time enforcement
+///
+/// The IPC transport only ever sends messages that arrived through this
+/// wrapper.  Two mechanisms make it impossible to bypass:
+///
+/// 1. **`PushQueue::enqueue` is `pub(super)`** — only `PushAdapter` (same
+///    module) can write to the queue.  Integration test code and the IPC
+///    connection layer receive only read access (`try_pop`, `notify`).
+///
+/// 2. **`ValidatedPayload::new` is the only constructor** — there is no
+///    `impl From<T> for ValidatedPayload<T>` and the inner field is private,
+///    so a caller cannot construct one without calling `validate_fields`.
+///
+/// The following would fail to compile because `enqueue` is not visible
+/// outside the `delivery` module:
+///
+/// ```compile_fail
+/// use velvt_service::delivery::PushQueue;
+/// use velvt_shared_types::{CacheEmpty, ServerMessage};
+/// async fn bypass(queue: &PushQueue) {
+///     // error[E0624]: method `enqueue` is private
+///     queue.enqueue(ServerMessage::CacheEmpty(CacheEmpty {
+///         payload_type: "history_payload".into(),
+///     })).await;
+/// }
+/// ```
 #[derive(Debug)]
 pub struct ValidatedPayload<T>(T);
 

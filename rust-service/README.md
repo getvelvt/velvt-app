@@ -132,6 +132,64 @@ result.
 Insight `text` is never written to any log or tracing field.  Only `date` and
 `confidence_level` are recorded at `DEBUG` level when an insight is stored.
 
+## Push Delivery to Swift (R7)
+
+R7 closes the last mile: after R6 fetches or caches history and insight data,
+R7 shapes it and delivers it proactively to the connected Swift client over the
+IPC socket.  Push failures are fire-and-forget — they never propagate back to
+the cache or fetch layers.
+
+### Push trigger events
+
+| Trigger | Payload type | Adapter method |
+|---|---|---|
+| Positive insight cache write (R6 slow path) | `InsightPayload` | `PushAdapter::push_insight` |
+| History fetch completes (R6 slow path) | `HistoryPayload` | `PushAdapter::push_history` |
+| `RequestLatestInsight` from Swift (on-demand) | `InsightPayload` or `CacheEmpty` | `R7Router` → direct response |
+| `RequestLatestHistory` from Swift (on-demand) | `HistoryPayload` or `CacheEmpty` | `R7Router` → direct response |
+| Privacy violation detected (R5 upload boundary) | `PrivacyViolationAlert` | `PushAdapterAlertSink::alert` |
+
+On-demand requests receive a synchronous pull response; the push queue is only
+used for proactive (unsolicited) delivery and privacy alerts.
+
+### Queue configuration
+
+| Env var | Default | Description |
+|---|---|---|
+| `VELVT_PUSH_QUEUE_CAPACITY` | `50` | Maximum messages buffered while Swift is disconnected; oldest dropped when full |
+| `VELVT_PUSH_WRITE_TIMEOUT_MS` | `500` | Per-message write timeout; slow clients are disconnected when exceeded |
+
+The queue survives client disconnects.  Messages not yet sent when a client
+disconnects remain in the queue and are delivered when the client reconnects.
+
+### ValidatedPayload<T> pattern
+
+Every message that enters the push queue must pass through
+`delivery::shaper::ValidatedPayload<T>`.  The type-system contract has two
+layers:
+
+1. **`ValidatedPayload::new` is the only constructor** — it calls
+   `ValidatePayload::validate_fields` plus a JSON serialisation round-trip.
+   A payload with an empty `text`, `code`, or `payload_type` field is
+   rejected at this point, logged (type name only, no content), and silently
+   dropped.
+
+2. **`PushQueue::enqueue` is `pub(super)`** — only `PushAdapter`, which lives
+   in the same module, can write to the queue.  The IPC connection layer
+   (`ipc/connection.rs`) receives only `Arc<PushQueue>` for draining (`try_pop`,
+   `notify`); it has no write access.
+
+To add a new push type: implement `ValidatePayload` for the DTO in
+`delivery/shaper.rs`, add a shaper function, and add a `push_*` method to
+`PushAdapter`.  No changes to the transport or cache layers are required.
+
+### Privacy invariant
+
+Insight `text`, history `summaries`, and privacy alert `message` fields must
+never appear in any log or tracing output — not even truncated.  Only the
+following are safe to log: `date`, `days`, message type names (as
+`message_type`), and error codes (as `error_code`).
+
 ## Device Registration Seam
 
 Device registration depends only on `DeviceRegistrar::register()`.

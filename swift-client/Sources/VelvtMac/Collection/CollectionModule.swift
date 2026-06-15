@@ -309,14 +309,6 @@ public final class FakeCollectionAgent: CollectionAgentProtocol {
     }
 }
 
-public final class SystemAccessibilityPermissionChecker: AccessibilityPermissionChecking {
-    public init() {}
-
-    public func hasPermission() -> Bool {
-        AXIsProcessTrusted()
-    }
-}
-
 public final class NSWorkspaceActivationObserver: WorkspaceActivationObserving {
     private var subscription: NSObjectProtocol?
 

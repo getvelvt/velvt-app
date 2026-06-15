@@ -1,0 +1,378 @@
+import Combine
+import XCTest
+@testable import VelvtMac
+
+final class PermissionModuleTests: XCTestCase {
+    private var cancellables: Set<AnyCancellable> = []
+
+    func testPermissionTypeContainsExactlyTheApprovedPermissions() {
+        XCTAssertEqual(Set(PermissionType.allCases), [.accessibility, .notifications])
+    }
+
+    func testPermissionTypeExtensionCannotExpandTheApprovedPermissionSet() {
+        XCTAssertEqual(
+            Set(PermissionType.testOnlyAuditedCases),
+            Set(PermissionType.allCases)
+        )
+    }
+
+    func testFakePermissionManagerPublishesInjectedStatusesAndRecordsRequests() async {
+        let manager = FakePermissionManager()
+        var snapshots: [[PermissionType: PermissionStatus]] = []
+        manager.statusPublisher.sink { snapshots.append($0) }.store(in: &cancellables)
+
+        manager.setStatus(.denied, for: .accessibility)
+        let requested = await manager.requestPermission(for: .notifications)
+
+        XCTAssertEqual(snapshots.last?[.accessibility], .denied)
+        XCTAssertEqual(manager.requestedPermissions, [.notifications])
+        XCTAssertEqual(requested, .unknown)
+    }
+
+    func testPermissionManagerMapsAllNotificationStatuses() async {
+        let notifications = FakeNotificationPermissionClient()
+        let manager = PermissionManager(
+            accessibilityClient: FakeAccessibilityPermissionClient(isTrusted: false),
+            notificationClient: notifications
+        )
+
+        for (authorizationStatus, expected) in [
+            (NotificationAuthorizationStatus.notDetermined, PermissionStatus.unknown),
+            (.authorized, .granted),
+            (.provisional, .granted),
+            (.ephemeral, .granted),
+            (.denied, .denied),
+            (.restricted, .restricted)
+        ] {
+            notifications.status = authorizationStatus
+            let actual = await manager.checkStatus(for: .notifications)
+            XCTAssertEqual(actual, expected)
+        }
+    }
+
+    func testPermissionManagerChecksAccessibilityWithoutPrompting() async {
+        let accessibility = FakeAccessibilityPermissionClient(isTrusted: true)
+        let manager = PermissionManager(
+            accessibilityClient: accessibility,
+            notificationClient: FakeNotificationPermissionClient()
+        )
+
+        let status = await manager.checkStatus(for: .accessibility)
+
+        XCTAssertEqual(status, .granted)
+        XCTAssertEqual(accessibility.promptValues, [false])
+    }
+
+    func testNotificationDenialPreventsSubsequentAuthorizationRequests() async {
+        let notifications = FakeNotificationPermissionClient()
+        notifications.requestResult = false
+        let manager = PermissionManager(
+            accessibilityClient: FakeAccessibilityPermissionClient(isTrusted: false),
+            notificationClient: notifications
+        )
+
+        let first = await manager.requestPermission(for: .notifications)
+        let second = await manager.requestPermission(for: .notifications)
+
+        XCTAssertEqual(first, .denied)
+        XCTAssertEqual(second, .denied)
+        XCTAssertEqual(notifications.requestCallCount, 1)
+    }
+
+    func testAccessibilityRequestFromBackgroundThreadRunsSystemClientOnMainThread() async {
+        let accessibility = FakeAccessibilityPermissionClient(isTrusted: true)
+        let manager = PermissionManager(
+            accessibilityClient: accessibility,
+            notificationClient: FakeNotificationPermissionClient()
+        )
+
+        let status = await Task.detached {
+            await manager.requestPermission(for: .accessibility)
+        }.value
+
+        XCTAssertEqual(status, .granted)
+        XCTAssertEqual(accessibility.mainThreadValues, [true])
+    }
+
+    func testBackgroundedAppSkipsAccessibilityMonitorCycle() {
+        let accessibility = FakeAccessibilityPermissionClient(isTrusted: true)
+        let scheduler = FakePermissionMonitorScheduler()
+        let activityNotifications = NotificationCenter()
+        let manager = PermissionManager(
+            accessibilityClient: accessibility,
+            notificationClient: FakeNotificationPermissionClient(),
+            applicationIsActive: { false },
+            monitorScheduler: scheduler,
+            activityNotifications: activityNotifications
+        )
+
+        manager.startMonitoring()
+        scheduler.fire()
+
+        XCTAssertEqual(scheduler.startCallCount, 0)
+        XCTAssertTrue(accessibility.promptValues.isEmpty)
+    }
+
+    func testAccessibilityMonitorPausesWhenAppMovesToBackground() {
+        var isActive = true
+        let scheduler = FakePermissionMonitorScheduler()
+        let activityNotifications = NotificationCenter()
+        let manager = PermissionManager(
+            accessibilityClient: FakeAccessibilityPermissionClient(isTrusted: true),
+            notificationClient: FakeNotificationPermissionClient(),
+            applicationIsActive: { isActive },
+            monitorScheduler: scheduler,
+            activityNotifications: activityNotifications
+        )
+
+        manager.startMonitoring()
+        isActive = false
+        activityNotifications.post(name: NSApplication.willResignActiveNotification, object: nil)
+
+        XCTAssertEqual(scheduler.startCallCount, 1)
+        XCTAssertEqual(scheduler.stopCallCount, 1)
+    }
+
+    func testAccessibilityRevocationDuringMonitorCycleStopsCollectionAndShowsRecovery() async {
+        let accessibility = FakeAccessibilityPermissionClient(isTrusted: true)
+        let scheduler = FakePermissionMonitorScheduler()
+        let permissions = PermissionManager(
+            accessibilityClient: accessibility,
+            notificationClient: FakeNotificationPermissionClient(),
+            applicationIsActive: { true },
+            monitorScheduler: scheduler
+        )
+        let collection = RecordingCollectionAgent()
+        let coordinator = PermissionCollectionCoordinator(
+            permissionManager: permissions,
+            collectionAgent: collection
+        )
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore(hasCompletedOnboarding: true)
+        )
+        let recoveryShown = expectation(description: "Recovery appears after monitor cycle")
+        presentation.$statuses
+            .dropFirst()
+            .sink { statuses in
+                if statuses[.accessibility] == .denied {
+                    recoveryShown.fulfill()
+                }
+            }
+            .store(in: &cancellables)
+
+        coordinator.start()
+        permissions.startMonitoring()
+        _ = await permissions.checkStatus(for: .accessibility)
+        accessibility.isTrusted = false
+        scheduler.fire()
+        await fulfillment(of: [recoveryShown], timeout: 1)
+
+        XCTAssertEqual(collection.startCallCount, 1)
+        XCTAssertEqual(collection.stopCallCount, 1)
+        XCTAssertTrue(presentation.showsAccessibilityRecovery)
+    }
+
+    func testCollectionCoordinatorStopsOnAccessibilityDenialAndStartsOnRegrant() {
+        let permissions = FakePermissionManager()
+        let collection = RecordingCollectionAgent()
+        let coordinator = PermissionCollectionCoordinator(
+            permissionManager: permissions,
+            collectionAgent: collection
+        )
+        var statuses: [PermissionCollectionStatus] = []
+        coordinator.statusPublisher.sink { statuses.append($0) }.store(in: &cancellables)
+
+        coordinator.start()
+        permissions.setStatus(.denied, for: .accessibility)
+        permissions.setStatus(.granted, for: .accessibility)
+
+        XCTAssertEqual(collection.stopCallCount, 1)
+        XCTAssertEqual(collection.startCallCount, 1)
+        XCTAssertEqual(statuses.last, .collecting)
+    }
+
+    func testCollectionCoordinatorStopsOnRestrictedAccessibility() {
+        let permissions = FakePermissionManager()
+        let collection = RecordingCollectionAgent()
+        let coordinator = PermissionCollectionCoordinator(
+            permissionManager: permissions,
+            collectionAgent: collection
+        )
+        var statuses: [PermissionCollectionStatus] = []
+        coordinator.statusPublisher.sink { statuses.append($0) }.store(in: &cancellables)
+
+        coordinator.start()
+        permissions.setStatus(.restricted, for: .accessibility)
+
+        XCTAssertEqual(collection.stopCallCount, 1)
+        XCTAssertEqual(statuses.last, .permissionRequired)
+    }
+
+    func testFakePermissionManagerCanPublishEveryPermissionStatus() {
+        let manager = FakePermissionManager()
+        var observed: [PermissionStatus] = []
+        manager.statusPublisher
+            .sink { observed.append($0[.accessibility] ?? .unknown) }
+            .store(in: &cancellables)
+
+        manager.setStatus(.granted, for: .accessibility)
+        manager.setStatus(.denied, for: .accessibility)
+        manager.setStatus(.restricted, for: .accessibility)
+
+        XCTAssertEqual(observed, [.unknown, .granted, .denied, .restricted])
+    }
+
+    func testPresentationShowsOnboardingOnlyOnFirstLaunch() {
+        let store = InMemoryOnboardingStateStore()
+        let firstLaunch = PermissionPresentationModel(
+            permissionManager: FakePermissionManager(),
+            onboardingStateStore: store
+        )
+
+        XCTAssertTrue(firstLaunch.showsOnboarding)
+
+        firstLaunch.completeOnboarding()
+        let secondLaunch = PermissionPresentationModel(
+            permissionManager: FakePermissionManager(),
+            onboardingStateStore: store
+        )
+
+        XCTAssertFalse(secondLaunch.showsOnboarding)
+    }
+
+    func testPresentationShowsAccessibilityRecoveryAfterDenial() {
+        let permissions = FakePermissionManager()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore(hasCompletedOnboarding: true)
+        )
+
+        permissions.setStatus(.denied, for: .accessibility)
+
+        XCTAssertTrue(presentation.showsAccessibilityRecovery)
+    }
+
+    @MainActor
+    func testOnboardingRequestsAccessibilityThenNotificationsBeforeCompleting() async {
+        let permissions = FakePermissionManager()
+        permissions.setStatus(.denied, for: .accessibility)
+        permissions.setStatus(.denied, for: .notifications)
+        var completionCount = 0
+        let model = PermissionOnboardingModel(permissionManager: permissions) {
+            completionCount += 1
+        }
+
+        await model.requestCurrentPermission()
+        XCTAssertEqual(model.step, .notifications)
+        XCTAssertEqual(completionCount, 0)
+
+        await model.requestCurrentPermission()
+        XCTAssertEqual(permissions.requestedPermissions, [.accessibility, .notifications])
+        XCTAssertEqual(completionCount, 1)
+    }
+
+    @MainActor
+    func testBothPermissionsDeniedOnFirstLaunchStillShowsMenuBarRecoveryState() async {
+        let permissions = FakePermissionManager()
+        permissions.setStatus(.denied, for: .accessibility)
+        permissions.setStatus(.denied, for: .notifications)
+        let store = InMemoryOnboardingStateStore()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: store
+        )
+        let model = PermissionOnboardingModel(permissionManager: permissions) {
+            presentation.completeOnboarding()
+        }
+
+        await model.requestCurrentPermission()
+        await model.requestCurrentPermission()
+
+        XCTAssertFalse(presentation.showsOnboarding)
+        XCTAssertTrue(presentation.isMenuBarIconVisible)
+        XCTAssertEqual(presentation.menuBarIconName, "exclamationmark.triangle")
+        XCTAssertTrue(presentation.showsAccessibilityRecovery)
+        XCTAssertEqual(presentation.statuses[.notifications], .denied)
+    }
+}
+
+private extension PermissionType {
+    // Swift extensions cannot add enum cases; this verifies extension helpers
+    // cannot expand the compile-time permission allowlist.
+    static var testOnlyAuditedCases: [PermissionType] {
+        [.accessibility, .notifications]
+    }
+}
+
+private final class FakeAccessibilityPermissionClient: AccessibilityPermissionClient {
+    var isTrusted: Bool
+    private(set) var promptValues: [Bool] = []
+    private(set) var mainThreadValues: [Bool] = []
+
+    init(isTrusted: Bool) {
+        self.isTrusted = isTrusted
+    }
+
+    func isProcessTrusted(prompt: Bool) -> Bool {
+        promptValues.append(prompt)
+        mainThreadValues.append(Thread.isMainThread)
+        return isTrusted
+    }
+}
+
+private final class FakeNotificationPermissionClient: NotificationPermissionClient {
+    var status = NotificationAuthorizationStatus.notDetermined
+    var requestResult = true
+    private(set) var requestCallCount = 0
+
+    func authorizationStatus() async -> NotificationAuthorizationStatus {
+        status
+    }
+
+    func requestAuthorization() async throws -> Bool {
+        requestCallCount += 1
+        status = requestResult ? .authorized : .denied
+        return requestResult
+    }
+}
+
+private final class RecordingCollectionAgent: CollectionAgentProtocol {
+    var status: AnyPublisher<CollectionStatus, Never> {
+        statusSubject.eraseToAnyPublisher()
+    }
+
+    private let statusSubject = CurrentValueSubject<CollectionStatus, Never>(.idle)
+    private(set) var startCallCount = 0
+    private(set) var stopCallCount = 0
+
+    func start() throws {
+        startCallCount += 1
+        statusSubject.send(.running)
+    }
+
+    func stop() {
+        stopCallCount += 1
+        statusSubject.send(.idle)
+    }
+}
+
+private final class FakePermissionMonitorScheduler: PermissionMonitorScheduling {
+    private var handler: (() -> Void)?
+    private(set) var startCallCount = 0
+    private(set) var stopCallCount = 0
+
+    func start(interval: TimeInterval, handler: @escaping () -> Void) {
+        startCallCount += 1
+        self.handler = handler
+    }
+
+    func stop() {
+        stopCallCount += 1
+        handler = nil
+    }
+
+    func fire() {
+        handler?()
+    }
+}

@@ -25,9 +25,31 @@ public protocol StatusItemManaging: AnyObject {
 
 /// AppKit delegate used by the SwiftUI application entry point.
 public final class AppDelegate: NSObject, NSApplicationDelegate {
+    public let permissionManager: PermissionManager
+    public let permissionPresentation: PermissionPresentationModel
+
     private var ipcClient: (any IPCClientProtocol)?
+    private var eventRelay: IPCEventRelay?
+    private var collectionAgent: (any CollectionAgentProtocol)?
+    private var permissionCoordinator: PermissionCollectionCoordinator?
+
+    public override init() {
+        let permissionManager = PermissionManager()
+        self.permissionManager = permissionManager
+        permissionPresentation = PermissionPresentationModel(
+            permissionManager: permissionManager,
+            onboardingStateStore: UserDefaultsOnboardingStateStore()
+        )
+        super.init()
+    }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        permissionManager.startMonitoring()
+        Task {
+            _ = await permissionManager.checkStatus(for: .accessibility)
+            _ = await permissionManager.checkStatus(for: .notifications)
+        }
+
         do {
             let config = try EnvironmentConfigLoader().load()
             let client: any IPCClientProtocol = UnixSocketIPCClient(
@@ -36,6 +58,17 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 clientVersion: config.clientVersion
             )
             ipcClient = client
+            let eventRelay = IPCEventRelay(client: client)
+            let collectionAgent = AXCollectionAgent(eventSink: eventRelay)
+            let coordinator = PermissionCollectionCoordinator(
+                permissionManager: permissionManager,
+                collectionAgent: collectionAgent
+            )
+            self.eventRelay = eventRelay
+            self.collectionAgent = collectionAgent
+            permissionCoordinator = coordinator
+            coordinator.start()
+
             Task.detached {
                 do {
                     try await client.connect()
@@ -57,7 +90,30 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
+        permissionManager.stopMonitoring()
+        permissionCoordinator?.stop()
         ipcClient?.disconnect()
+    }
+}
+
+public final class IPCEventRelay: EventSink {
+    private let client: any IPCClientProtocol
+
+    public init(client: any IPCClientProtocol) {
+        self.client = client
+    }
+
+    public func receive(_ event: RawEvent) {
+        let message = RawEventMessage(
+            eventID: UUID(),
+            occurredAt: event.occurredAt,
+            appName: event.appName,
+            windowTitle: event.windowTitle,
+            bundleID: nil
+        )
+        Task {
+            try? await client.send(.rawEvent(message))
+        }
     }
 }
 
@@ -83,8 +139,16 @@ public struct VelvtMacApp: App {
 
     public var body: some Scene {
         WindowGroup {
-            Text("Velvt")
-                .frame(minWidth: 320, minHeight: 180)
+            PermissionRootView(
+                presentation: appDelegate.permissionPresentation,
+                permissionManager: appDelegate.permissionManager
+            )
         }
+        MenuBarExtra {
+            MenuBarView(presentation: appDelegate.permissionPresentation)
+        } label: {
+            PermissionMenuBarLabel(presentation: appDelegate.permissionPresentation)
+        }
+        .menuBarExtraStyle(.window)
     }
 }

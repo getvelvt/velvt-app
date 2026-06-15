@@ -149,6 +149,9 @@ and [`CONTRIBUTING.md`](CONTRIBUTING.md) before making changes.
 The macOS collection-agent lifecycle, private AX run-loop threading model, and
 no-polling rules are documented in
 [`docs/architecture/collection-agent.md`](docs/architecture/collection-agent.md).
+The two-permission allowlist, onboarding rationale, monitoring behavior, and
+recovery steps are documented in
+[`docs/architecture/permissions.md`](docs/architecture/permissions.md).
 
 ## On-Device Classification
 

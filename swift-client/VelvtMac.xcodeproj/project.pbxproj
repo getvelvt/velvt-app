@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		06C9D8301CC9C73FD56ECEB7 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 08FF548B5CFC292896112B45 /* Cocoa.framework */; };
 		07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */; };
+		143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */; };
+		38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93C055AD72C0443A8CD98C13 /* PermissionManager.swift */; };
 		45E74D92600605D1450A1281 /* IPCClientProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */; };
 		55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31C752D40A995E1401F41A8E /* AppModule.swift */; };
 		59171A93B002F17C0349992E /* DeviceModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */; };
@@ -20,17 +22,21 @@
 		AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */; };
 		FEF395332D1059B366BF6D9A /* IPCTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39C7506861C548B6BD42DE38 /* IPCTypes.swift */; };
 		FF20FC65F747233FBF419F69 /* DeliveryModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */; };
+		FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ReconnectBackoff.swift; path = IPC/ReconnectBackoff.swift; sourceTree = "<group>"; };
 		08FF548B5CFC292896112B45 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UnixSocketIPCClient.swift; path = IPC/UnixSocketIPCClient.swift; sourceTree = "<group>"; };
+		28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionCollectionCoordinator.swift; path = App/PermissionCollectionCoordinator.swift; sourceTree = "<group>"; };
 		31C752D40A995E1401F41A8E /* AppModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppModule.swift; path = App/AppModule.swift; sourceTree = "<group>"; };
 		3342626EEF1A344019727851 /* velvt-mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "velvt-mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		39C7506861C548B6BD42DE38 /* IPCTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCTypes.swift; path = IPC/IPCTypes.swift; sourceTree = "<group>"; };
+		46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionViews.swift; path = UI/PermissionViews.swift; sourceTree = "<group>"; };
 		89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCClientProtocol.swift; path = IPC/IPCClientProtocol.swift; sourceTree = "<group>"; };
 		8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CollectionModule.swift; path = Collection/CollectionModule.swift; sourceTree = "<group>"; };
+		93C055AD72C0443A8CD98C13 /* PermissionManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionManager.swift; path = Permissions/PermissionManager.swift; sourceTree = "<group>"; };
 		928E12E20A85E864E9B7E683 /* ConfigModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfigModule.swift; path = Config/ConfigModule.swift; sourceTree = "<group>"; };
 		9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceModule.swift; path = Device/DeviceModule.swift; sourceTree = "<group>"; };
 		BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthModule.swift; path = Auth/AuthModule.swift; sourceTree = "<group>"; };
@@ -80,6 +86,7 @@
 			isa = PBXGroup;
 			children = (
 				31C752D40A995E1401F41A8E /* AppModule.swift */,
+				28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */,
 				BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */,
 				8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */,
 				928E12E20A85E864E9B7E683 /* ConfigModule.swift */,
@@ -91,6 +98,8 @@
 				010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */,
 				22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */,
 				C9F1ADB76DD4328B7586E87C /* UIModule.swift */,
+				46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */,
+				93C055AD72C0443A8CD98C13 /* PermissionManager.swift */,
 			);
 			name = VelvtMac;
 			path = Sources/VelvtMac;
@@ -167,6 +176,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */,
+				143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */,
 				AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */,
 				07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */,
 				88D5FC587687DD9AB0300E53 /* ConfigModule.swift in Sources */,
@@ -178,6 +188,8 @@
 				A03B3DF738D28A838B7E16A5 /* ReconnectBackoff.swift in Sources */,
 				89AC090DEEE9F19A1A61543B /* UnixSocketIPCClient.swift in Sources */,
 				5C4179B95803E953316EC37F /* UIModule.swift in Sources */,
+				FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */,
+				38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

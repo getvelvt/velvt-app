@@ -9,7 +9,7 @@ final class IPCModuleTests: XCTestCase {
         let messages: [ClientMessage] = [
             .clientHello(ClientHello(expectedProtocolVersion: 3, clientVersion: "1.2.3")),
             .rawEvent(
-                RawEvent(
+                RawEventMessage(
                     eventID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
                     occurredAt: Date(timeIntervalSince1970: 1_700_000_000),
                     appName: "local-only",

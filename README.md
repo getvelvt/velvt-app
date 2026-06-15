@@ -146,6 +146,10 @@ Start with [`docs/architecture/`](docs/architecture/) for architecture and IPC
 contract documentation. Contributors must also read [`AGENTS.md`](AGENTS.md)
 and [`CONTRIBUTING.md`](CONTRIBUTING.md) before making changes.
 
+The macOS collection-agent lifecycle, private AX run-loop threading model, and
+no-polling rules are documented in
+[`docs/architecture/collection-agent.md`](docs/architecture/collection-agent.md).
+
 ## On-Device Classification
 
 The Rust abstraction engine applies a privacy-preserving three-tier pipeline:

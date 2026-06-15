@@ -3,7 +3,7 @@ import Foundation
 /// Messages sent from the macOS client to the Rust service.
 public enum ClientMessage: Codable, Equatable, Sendable {
     case clientHello(ClientHello)
-    case rawEvent(RawEvent)
+    case rawEvent(RawEventMessage)
     case errorResponse(ErrorResponse)
 
     public init(from decoder: Decoder) throws {
@@ -14,7 +14,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case "client_hello":
             self = .clientHello(try ClientHello(from: payload))
         case "raw_event":
-            self = .rawEvent(try RawEvent(from: payload))
+            self = .rawEvent(try RawEventMessage(from: payload))
         case "error_response":
             self = .errorResponse(try ErrorResponse(from: payload))
         default:
@@ -231,7 +231,7 @@ public struct MalformedMessage: Codable, Equatable, Sendable {
 }
 
 /// A local-only raw activity event sent to the Rust privacy boundary.
-public struct RawEvent: Codable, Equatable, Sendable {
+public struct RawEventMessage: Codable, Equatable, Sendable {
     public let eventID: UUID
     public let occurredAt: Date
     public let appName: String

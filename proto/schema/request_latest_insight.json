@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "PRIVACY: This message carries only a calendar date; no raw user data.",
+  "title": "Request Latest Insight",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "request_latest_insight" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date"],
+      "properties": {
+        "date": { "type": "string", "format": "date" }
+      }
+    }
+  }
+}

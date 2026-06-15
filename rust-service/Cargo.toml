@@ -8,6 +8,7 @@ build = "build.rs"
 [features]
 default = []
 onnx = ["dep:ort", "dep:tokenizers"]
+test-helpers = []
 
 [workspace]
 members = [".", "shared-types"]

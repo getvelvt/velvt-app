@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -18,6 +18,10 @@ pub enum ClientMessage {
     RawEvent(RawEvent),
     /// Typed error envelope.
     ErrorResponse(ErrorResponse),
+    /// Swift requests the cached insight for a specific date.
+    RequestLatestInsight(RequestLatestInsight),
+    /// Swift requests the cached history summary for the last N days.
+    RequestLatestHistory(RequestLatestHistory),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -56,6 +60,8 @@ pub enum ServerMessage {
     PrivacyViolationAlert(PrivacyViolationAlert),
     /// Typed error envelope.
     ErrorResponse(ErrorResponse),
+    /// The requested payload has no cached entry; `payload_type` names what was requested.
+    CacheEmpty(CacheEmpty),
 }
 
 /// Server's first message on every connection.
@@ -245,6 +251,30 @@ pub enum ServiceState {
     UploadPaused,
     /// User authentication is required.
     AuthRequired,
+}
+
+/// Swift client request for the cached insight for a specific date.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestLatestInsight {
+    /// Calendar date whose insight is being requested.
+    pub date: NaiveDate,
+}
+
+/// Swift client request for the cached history summary for the last N days.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestLatestHistory {
+    /// Number of days of history to return (1–30).
+    pub days: u8,
+}
+
+/// Sent when Swift requested a payload that is not yet in the cache.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CacheEmpty {
+    /// Which payload type was requested (`"insight_payload"` or `"history_payload"`).
+    pub payload_type: String,
 }
 
 /// Typed IPC error envelope.

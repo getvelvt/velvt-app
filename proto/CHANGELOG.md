@@ -1,5 +1,17 @@
 # IPC Protocol Changelog
 
+## Version 4 - 2026-06-14
+
+- Added `request_latest_insight` client message: Swift requests the insight for a
+  specific date; Rust responds with `insight_payload` or `cache_empty`.
+- Added `request_latest_history` client message: Swift requests history for the
+  last N days; Rust responds with `history_payload`.
+- Added `cache_empty` server message: returned when the requested payload has no
+  cached entry yet. `payload_type` identifies which payload was requested.
+- `insight_payload` and `history_payload` are now also pushed proactively after a
+  successful cloud fetch and after `privacy_violation_alert` events, without a
+  corresponding client request.
+
 ## Version 3 - 2026-06-14
 
 - Added `privacy_violation_alert` from Rust to Swift for terminal cloud privacy

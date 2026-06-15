@@ -5,6 +5,11 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case clientHello(ClientHello)
     case rawEvent(RawEventMessage)
     case errorResponse(ErrorResponse)
+    // Auth messages (proto v6)
+    case signUp(SignUpRequest)
+    case logIn(LogInRequest)
+    case logOut
+    case deleteAccount
 
     public init(from decoder: Decoder) throws {
         let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
@@ -17,6 +22,14 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .rawEvent(try RawEventMessage(from: payload))
         case "error_response":
             self = .errorResponse(try ErrorResponse(from: payload))
+        case "sign_up":
+            self = .signUp(try SignUpRequest(from: payload))
+        case "log_in":
+            self = .logIn(try LogInRequest(from: payload))
+        case "log_out":
+            self = .logOut
+        case "delete_account":
+            self = .deleteAccount
         default:
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
         }
@@ -34,6 +47,18 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case let .errorResponse(value):
             try envelope.encode("error_response", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .signUp(value):
+            try envelope.encode("sign_up", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .logIn(value):
+            try envelope.encode("log_in", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .logOut:
+            try envelope.encode("log_out", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case .deleteAccount:
+            try envelope.encode("delete_account", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
 }
@@ -52,6 +77,12 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case errorResponse(ErrorResponse)
     /// Sent by the Rust service before a graceful shutdown.
     case shuttingDown(ShuttingDown)
+    // Auth messages (proto v6)
+    case authSuccess(AuthSuccess)
+    case authFailure(AuthFailure)
+    case accountDeletionAccepted
+    case needsReauth(NeedsReauth)
+    case deviceRevoked(DeviceRevoked)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
@@ -83,6 +114,16 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .errorResponse(try ErrorResponse(from: payload))
         case "shutting_down":
             self = .shuttingDown(try ShuttingDown(from: payload))
+        case "auth_success":
+            self = .authSuccess(try AuthSuccess(from: payload))
+        case "auth_failure":
+            self = .authFailure(try AuthFailure(from: payload))
+        case "account_deletion_accepted":
+            self = .accountDeletionAccepted
+        case "needs_reauth":
+            self = .needsReauth(try NeedsReauth(from: payload))
+        case "device_revoked":
+            self = .deviceRevoked(try DeviceRevoked(from: payload))
         default:
             self = .unknown(type: type)
         }
@@ -123,6 +164,21 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .shuttingDown(value):
             try envelope.encode("shutting_down", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .authSuccess(value):
+            try envelope.encode("auth_success", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .authFailure(value):
+            try envelope.encode("auth_failure", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .accountDeletionAccepted:
+            try envelope.encode("account_deletion_accepted", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case let .needsReauth(value):
+            try envelope.encode("needs_reauth", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .deviceRevoked(value):
+            try envelope.encode("device_revoked", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .unknown(type):
             try envelope.encode(type, forKey: .type)
@@ -518,6 +574,108 @@ public struct ShuttingDown: Codable, Equatable, Sendable {
 
     public init(reason: String) {
         self.reason = reason
+    }
+}
+
+// MARK: - Auth DTOs (proto v6)
+
+/// Credentials for account creation. Never log, persist outside Keychain, or
+/// include in upload payloads.
+public struct SignUpRequest: Codable, Equatable, Sendable {
+    public let email: String
+    public let password: String
+
+    public init(email: String, password: String) {
+        self.email = email
+        self.password = password
+    }
+}
+
+/// Credentials for account login. Never log, persist outside Keychain, or
+/// include in upload payloads.
+public struct LogInRequest: Codable, Equatable, Sendable {
+    public let email: String
+    public let password: String
+
+    public init(email: String, password: String) {
+        self.email = email
+        self.password = password
+    }
+}
+
+/// Tokens returned on successful authentication. Swift stores these in Keychain
+/// only — never in SQLite, logs, or string interpolation.
+public struct AuthSuccess: Codable, Equatable, Sendable {
+    public let userId: String
+    public let accessToken: String
+    public let refreshToken: String
+    public let expiresAt: Date
+
+    public init(userId: String, accessToken: String, refreshToken: String, expiresAt: Date) {
+        self.userId = userId
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.expiresAt = expiresAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case userId = "user_id"
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresAt = "expires_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        userId = try c.decode(String.self, forKey: .userId)
+        accessToken = try c.decode(String.self, forKey: .accessToken)
+        refreshToken = try c.decode(String.self, forKey: .refreshToken)
+        expiresAt = try c.decode(Date.self, forKey: .expiresAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(userId, forKey: .userId)
+        try c.encode(accessToken, forKey: .accessToken)
+        try c.encode(refreshToken, forKey: .refreshToken)
+        try c.encode(expiresAt, forKey: .expiresAt)
+    }
+}
+
+/// Machine-readable auth failure reason.
+public enum AuthFailureCode: String, Codable, Equatable, Sendable {
+    case invalidCredentials = "invalid_credentials"
+    case networkError = "network_error"
+    case serverError = "server_error"
+}
+
+/// Reports a failed authentication attempt. The message field is safe for
+/// display and must never echo credentials or tokens.
+public struct AuthFailure: Codable, Equatable, Sendable {
+    public let code: AuthFailureCode
+    public let message: String
+
+    public init(code: AuthFailureCode, message: String) {
+        self.code = code
+        self.message = message
+    }
+}
+
+/// Signals that the current session is no longer valid and login is required.
+public struct NeedsReauth: Codable, Equatable, Sendable {
+    public let reason: String
+
+    public init(reason: String) {
+        self.reason = reason
+    }
+}
+
+/// Signals that this device registration has been permanently revoked.
+public struct DeviceRevoked: Codable, Equatable, Sendable {
+    public let message: String
+
+    public init(message: String) {
+        self.message = message
     }
 }
 

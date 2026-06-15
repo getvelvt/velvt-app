@@ -1,5 +1,26 @@
 # IPC Protocol Changelog
 
+## Version 6 - 2026-06-15
+
+- Added `sign_up` client message: Swift sends email/password credentials; Rust
+  performs the HTTP signup and responds with `auth_success` or `auth_failure`.
+- Added `log_in` client message: Swift sends email/password credentials; Rust
+  performs the HTTP login and responds with `auth_success` or `auth_failure`.
+- Added `log_out` client message: fire-and-forget notification to Rust that the
+  client has cleared its local session. Rust revokes the server session.
+- Added `delete_account` client message: Swift requests permanent account
+  deletion. Rust responds with `account_deletion_accepted`.
+- Added `auth_success` server message: carries `user_id`, `access_token`,
+  `refresh_token`, and `expires_at`. Swift stores tokens in Keychain.
+- Added `auth_failure` server message: carries `code` and `message`. Codes:
+  `invalid_credentials`, `network_error`, `server_error`.
+- Added `account_deletion_accepted` server message: confirms that the Rust
+  service accepted and processed the account deletion request.
+- Added `needs_reauth` server message: pushed when the session expires or the
+  access token cannot be refreshed. Swift must clear Keychain and show login.
+- Added `device_revoked` server message: pushed when the device registration is
+  permanently revoked. Swift clears Keychain and shows the Device Revoked screen.
+
 ## Version 5 - 2026-06-15
 
 - Added `shutting_down` server message: sent to all connected clients immediately

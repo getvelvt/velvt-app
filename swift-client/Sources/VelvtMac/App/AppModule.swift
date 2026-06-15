@@ -27,8 +27,9 @@ public protocol StatusItemManaging: AnyObject {
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     public let permissionManager: PermissionManager
     public let permissionPresentation: PermissionPresentationModel
+    public let accountStateManager: AccountStateManager
 
-    private var ipcClient: (any IPCClientProtocol)?
+    var ipcClient: (any IPCClientProtocol)?
     private var eventRelay: (any EventRelayProtocol)?
     private var collectionAgent: (any CollectionAgentProtocol)?
     private var permissionCoordinator: PermissionCollectionCoordinator?
@@ -40,6 +41,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             permissionManager: permissionManager,
             onboardingStateStore: UserDefaultsOnboardingStateStore()
         )
+        accountStateManager = AccountStateManager(keychain: KeychainService())
         super.init()
     }
 
@@ -59,7 +61,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             ipcClient = client
 
-            // Relay is the EventSink; collection agent receives it at init.
+            // AccountStateManager is the sole consumer of incomingMessages.
+            // It re-publishes to serverMessages for downstream consumers.
+            accountStateManager.startListening(to: client)
+
             let relay = EventRelay(ipcClient: client)
             let collectionAgent = AXCollectionAgent(eventSink: relay)
             let coordinator = PermissionCollectionCoordinator(
@@ -71,9 +76,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             permissionCoordinator = coordinator
             coordinator.start()
 
-            Task {
-                await relay.start()
-            }
+            Task { await relay.start() }
 
             Task.detached {
                 do {
@@ -98,6 +101,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationWillTerminate(_ notification: Notification) {
         permissionManager.stopMonitoring()
         permissionCoordinator?.stop()
+        accountStateManager.stopListening()
         let relay = eventRelay
         Task { await relay?.stop() }
         ipcClient?.disconnect()
@@ -108,13 +112,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 public final class StatusItemController: StatusItemManaging {
     public init() {}
 
-    public func install() {
-        // Status-item behavior is outside the S1 IPC scaffold scope.
-    }
-
-    public func remove() {
-        // Status-item behavior is outside the S1 IPC scaffold scope.
-    }
+    public func install() {}
+    public func remove() {}
 }
 
 /// FocusAgent executable entry point.
@@ -128,7 +127,9 @@ public struct VelvtMacApp: App {
         WindowGroup {
             PermissionRootView(
                 presentation: appDelegate.permissionPresentation,
-                permissionManager: appDelegate.permissionManager
+                permissionManager: appDelegate.permissionManager,
+                accountStateManager: appDelegate.accountStateManager,
+                ipcClient: appDelegate.ipcClient ?? FakeIPCClient()
             )
         }
         MenuBarExtra {

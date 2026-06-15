@@ -73,6 +73,13 @@ final class EventRelayTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(100))
     }
 
+    private func sentRawEvents(_ client: FakeIPCClient) -> [RawEventMessage] {
+        client.sentMessages.compactMap { msg -> RawEventMessage? in
+            if case .rawEvent(let m) = msg { return m }
+            return nil
+        }
+    }
+
     // MARK: Buffer fill and drop-oldest policy
 
     func testBufferFillDropsOldestEventsAndCountsDrops() async throws {
@@ -111,14 +118,40 @@ final class EventRelayTests: XCTestCase {
         await relay.connectionDidChange(to: .connected)
         await drain()
 
-        let sent = client.sentMessages.compactMap { msg -> RawEventMessage? in
-            if case .rawEvent(let m) = msg { return m }
-            return nil
-        }
+        let sent = sentRawEvents(client)
         XCTAssertEqual(sent.count, 3)
         XCTAssertEqual(sent[0].appName, "App3")
         XCTAssertEqual(sent[1].appName, "App4")
         XCTAssertEqual(sent[2].appName, "App5")
+    }
+
+    func testBufferCapacityOfOne() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 1)
+        await relay.start()
+
+        // First event fills the single-event buffer.
+        relay.receive(makeEvent(index: 1))
+        await drain()
+        let buffered1 = await relay.bufferedEventCount
+        let dropped1 = await relay.droppedEventCount
+        XCTAssertEqual(buffered1, 1)
+        XCTAssertEqual(dropped1, 0)
+
+        // Second event drops the first (oldest) and takes its place.
+        relay.receive(makeEvent(index: 2))
+        await drain()
+        let buffered2 = await relay.bufferedEventCount
+        let dropped2 = await relay.droppedEventCount
+        XCTAssertEqual(buffered2, 1)
+        XCTAssertEqual(dropped2, 1)
+
+        // On reconnect the relay must send only event 2 (event 1 was dropped).
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+        let sent = sentRawEvents(client)
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(sent.first?.appName, "App2")
     }
 
     // MARK: Reconnect flush ordering
@@ -144,10 +177,7 @@ final class EventRelayTests: XCTestCase {
         }
         await drain()
 
-        let sent = client.sentMessages.compactMap { msg -> RawEventMessage? in
-            if case .rawEvent(let m) = msg { return m }
-            return nil
-        }
+        let sent = sentRawEvents(client)
 
         XCTAssertGreaterThanOrEqual(sent.count, 10)
 
@@ -194,6 +224,44 @@ final class EventRelayTests: XCTestCase {
         XCTAssertEqual(buffered, 2)
     }
 
+    // MARK: Mid-flush disconnect
+
+    func testMidFlushDisconnectRetainsRemainingBufferedEvents() async throws {
+        // Client that auto-disconnects after exactly 2 sends (one-shot).
+        let client = DisconnectingFakeIPCClient(disconnectAfterSends: 2)
+        let relay = EventRelay(ipcClient: client, capacity: 500)
+        await relay.start()
+        await drain() // settle status observer initial .disconnected
+
+        // Buffer 5 events while disconnected.
+        for i in 1...5 { relay.receive(makeEvent(index: i)) }
+        await drain()
+        let initialBuffered = await relay.bufferedEventCount
+        XCTAssertEqual(initialBuffered, 5)
+
+        // Trigger first connection: flush starts, but client disconnects after
+        // 2 sends so the relay must stop mid-flush and retain remaining events.
+        client.simulateConnect()
+        // Allow time for flush to start, 2 sends + 20 ms pause inside each
+        // disconnecting send, and for the relay to stop.
+        try? await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertEqual(client.sentCount, 2, "exactly 2 events sent before mid-flush disconnect")
+        let bufferedAfterPartialFlush = await relay.bufferedEventCount
+        XCTAssertEqual(
+            bufferedAfterPartialFlush, 3,
+            "remaining 3 events must stay in buffer after mid-flush disconnect"
+        )
+
+        // Second connect: no more auto-disconnects; all remaining events flush.
+        client.simulateConnect()
+        try? await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertEqual(client.sentCount, 5, "all 5 events eventually sent across two connections")
+        let finalBuffered = await relay.bufferedEventCount
+        XCTAssertEqual(finalBuffered, 0)
+    }
+
     // MARK: Back-pressure
 
     func testReceiveReturnsImmediatelyWhenClientIsSlow() async throws {
@@ -212,6 +280,29 @@ final class EventRelayTests: XCTestCase {
         // All 20 receive() calls must complete in well under 1 second,
         // regardless of the 0.5-second per-send delay.
         XCTAssertLessThan(elapsed, .milliseconds(200))
+    }
+
+    func testReceivePerCallLatencyUnderOneMillisecond() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 2_000)
+        await relay.start()
+
+        // Warm up the lock + continuation path before measuring.
+        relay.receive(makeEvent(index: 0))
+
+        var maxLatency = Duration.zero
+        for i in 1...500 {
+            let t = ContinuousClock.now
+            relay.receive(makeEvent(index: i))
+            let elapsed = ContinuousClock.now - t
+            if elapsed > maxLatency { maxLatency = elapsed }
+        }
+
+        XCTAssertLessThan(
+            maxLatency,
+            .milliseconds(1),
+            "receive() must be O(1) — worst-case call took \(maxLatency)"
+        )
     }
 
     // MARK: Dropped-counter log content
@@ -280,10 +371,7 @@ final class EventRelayTests: XCTestCase {
         relay.receive(makeEvent(index: 1))
         await drain()
 
-        let sent = client.sentMessages.compactMap { msg -> RawEventMessage? in
-            if case .rawEvent(let m) = msg { return m }
-            return nil
-        }
+        let sent = sentRawEvents(client)
         XCTAssertEqual(sent.count, 1)
     }
 
@@ -294,16 +382,77 @@ final class EventRelayTests: XCTestCase {
         await relay.start()
         await relay.start() // must not create duplicate tasks / crash
 
+        // Settle: the status observer emits .disconnected on subscription;
+        // drain it before manually advancing the connection state.
+        await drain()
         await relay.connectionDidChange(to: .connected)
         relay.receive(makeEvent(index: 1))
         await drain()
 
-        let sent = client.sentMessages.compactMap { msg -> RawEventMessage? in
-            if case .rawEvent(let m) = msg { return m }
-            return nil
-        }
+        let sent = sentRawEvents(client)
         // Exactly one send, not two (no duplicate send loops).
         XCTAssertEqual(sent.count, 1)
+    }
+
+    // MARK: Event arrives after stop
+
+    func testEventArrivingAfterStopIsDroppedCleanly() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        await relay.stop()
+
+        // receive() after stop must not crash or corrupt relay state.
+        relay.receive(makeEvent(index: 1))
+
+        // Restart and verify the relay works correctly with fresh state.
+        await relay.start()
+        await drain() // settle status observer
+        await relay.connectionDidChange(to: .connected)
+        relay.receive(makeEvent(index: 2))
+        await drain()
+
+        let sent = sentRawEvents(client)
+        XCTAssertEqual(sent.count, 1, "only event 2 is sent; event 1 (pre-restart receive) was dropped")
+        XCTAssertEqual(sent.first?.appName, "App2")
+    }
+
+    // MARK: Rapid reconnect / disconnect cycles
+
+    func testRapidReconnectDisconnectCyclesNoCrash() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        await drain() // settle status observer
+
+        // Buffer a few events to make cycles more interesting.
+        for i in 1...3 { relay.receive(makeEvent(index: i)) }
+        await drain()
+
+        // 5 rapid connect/disconnect cycles, all within 1 second.
+        let cycleStart = ContinuousClock.now
+        for _ in 1...5 {
+            client.setConnectionStatus(.connected)
+            client.setConnectionStatus(.disconnected)
+        }
+        XCTAssertLessThan(ContinuousClock.now - cycleStart, .seconds(1))
+
+        // Allow all queued status deliveries to settle.
+        await drain()
+
+        // Relay must still be functional after the rapid churn.
+        relay.receive(makeEvent(index: 4))
+        await drain()
+        client.setConnectionStatus(.connected)
+        await drain()
+
+        let sent = sentRawEvents(client)
+        XCTAssertTrue(
+            sent.contains { $0.appName == "App4" },
+            "relay must remain functional after rapid connect/disconnect cycles"
+        )
+        let dropped = await relay.droppedEventCount
+        XCTAssertEqual(dropped, 0, "no events dropped due to buffer overflow")
     }
 
     // MARK: FakeEventRelay protocol conformance
@@ -329,7 +478,7 @@ final class EventRelayTests: XCTestCase {
     }
 }
 
-// MARK: - SlowFakeIPCClient
+// MARK: - Test doubles
 
 /// IPCClientProtocol test double that introduces a configurable delay on each send.
 /// Used to verify that `EventSink.receive` is non-blocking even when the IPC
@@ -362,4 +511,59 @@ private final class SlowFakeIPCClient: IPCClientProtocol, @unchecked Sendable {
     func send(_ message: ClientMessage) async throws {
         try await Task.sleep(for: .seconds(sendDelay))
     }
+}
+
+/// IPCClientProtocol test double that auto-disconnects after a fixed number of
+/// `send()` calls (one-shot). Used to test mid-flush disconnect recovery.
+///
+/// After the auto-disconnect, subsequent connections stay up indefinitely so the
+/// relay can complete a second flush without interference.
+private final class DisconnectingFakeIPCClient: IPCClientProtocol, @unchecked Sendable {
+    let incomingMessages: AsyncStream<ServerMessage>
+    var connectionStatus: AnyPublisher<ConnectionStatus, Never> {
+        statusSubject.eraseToAnyPublisher()
+    }
+
+    private let statusSubject = CurrentValueSubject<ConnectionStatus, Never>(.disconnected)
+    private let streamContinuation: AsyncStream<ServerMessage>.Continuation
+    private let lock = NSLock()
+    private var _sentCount = 0
+    private var hasAutoDisconnected = false
+    private let autoDisconnectAfter: Int
+
+    var sentCount: Int { lock.withLock { _sentCount } }
+
+    init(disconnectAfterSends: Int) {
+        precondition(disconnectAfterSends > 0)
+        autoDisconnectAfter = disconnectAfterSends
+        var cont: AsyncStream<ServerMessage>.Continuation!
+        incomingMessages = AsyncStream { cont = $0 }
+        streamContinuation = cont
+    }
+
+    func connect() async throws {}
+    func disconnect() { statusSubject.send(.disconnected) }
+
+    func send(_ message: ClientMessage) async throws {
+        let shouldDisconnect = lock.withLock { () -> Bool in
+            _sentCount += 1
+            if !hasAutoDisconnected && _sentCount >= autoDisconnectAfter {
+                hasAutoDisconnected = true
+                return true
+            }
+            return false
+        }
+        if shouldDisconnect {
+            statusSubject.send(.disconnected)
+            // Brief pause so the relay's status observer can update isConnected
+            // on the actor before flushBuffer()'s next iteration checks it.
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// Simulates an external connect/reconnect by emitting `.connected`.
+    func simulateConnect() { statusSubject.send(.connected) }
+
+    /// Simulates an external disconnect by emitting `.disconnected`.
+    func simulateDisconnect() { statusSubject.send(.disconnected) }
 }

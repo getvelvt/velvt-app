@@ -140,6 +140,40 @@ All protocol-v3 messages use a tagged `{"type": "...", "payload": {...}}`
 envelope. Rust DTOs live in `rust-service/shared-types`; Swift DTOs live in
 `swift-client/Sources/VelvtMac/IPC/IPCTypes.swift`.
 
+## Event Relay
+
+The `EventRelay` actor sits between the collection agent and the IPC layer. It
+implements `EventSink` and is the sole downstream of `AXCollectionAgent`.
+
+### Ring buffer and drop policy
+
+While the IPC socket is unavailable, events are held in an in-memory
+`CircularBuffer<RawEvent>` (default capacity: 500). When the buffer is full, the
+**oldest** event is dropped and counted. Nothing is ever written to disk,
+SQLite, or `UserDefaults`; events that overflow the buffer are permanently lost.
+
+### Reconnect flush
+
+On reconnect the relay logs a single count-only line (no raw event content):
+
+```
+Relay flushing N buffered events; dropped M events since disconnect.
+```
+
+It then drains the ring buffer in FIFO order before forwarding new events,
+preserving chronological order. If the connection drops again mid-flush, the
+remaining buffered events stay at the head of the ring buffer and resume on the
+next reconnect.
+
+### Back-pressure safety
+
+`EventSink.receive(_:)` is `nonisolated` and returns in O(1) time — it holds
+an `NSLock` only for a single `AsyncStream.Continuation.yield` call. It never
+blocks the AX callback thread regardless of IPC speed or buffer state.
+
+See [`docs/architecture/event-relay.md`](docs/architecture/event-relay.md) for
+the full threading model, stream lifecycle, and privacy invariants.
+
 ## Architecture
 
 Start with [`docs/architecture/`](docs/architecture/) for architecture and IPC
@@ -152,6 +186,9 @@ no-polling rules are documented in
 The two-permission allowlist, onboarding rationale, monitoring behavior, and
 recovery steps are documented in
 [`docs/architecture/permissions.md`](docs/architecture/permissions.md).
+The event relay ring-buffer, drop policy, flush sequence, and privacy invariants
+are documented in
+[`docs/architecture/event-relay.md`](docs/architecture/event-relay.md).
 
 ## On-Device Classification
 

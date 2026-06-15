@@ -184,20 +184,34 @@ public actor EventRelay: EventRelayProtocol {
     }
 
     private func observeConnectionStatus() async {
-        for await status in ipcClient.connectionStatus.values {
-            guard !Task.isCancelled else { break }
-            await connectionDidChange(to: status)
+        // Use a TaskGroup so each status delivery becomes an independent actor
+        // task. This lets `connectionDidChange(.disconnected)` reach the actor
+        // at the next suspension point while a flush is in progress, rather
+        // than being blocked until the flush completes.
+        //
+        // The group's implicit wait-for-all on exit ensures stop() correctly
+        // drains in-flight connectionDidChange calls before returning.
+        await withTaskGroup(of: Void.self) { group in
+            for await status in ipcClient.connectionStatus.values {
+                if Task.isCancelled { break }
+                group.addTask { await self.connectionDidChange(to: status) }
+            }
         }
     }
 
     /// Drains the ring buffer, sending each event to the IPC client.
     ///
-    /// Events added to the buffer by the send loop *during* flush (while this
-    /// method is suspended at an `await`) are appended at the tail and will be
-    /// dequeued on the next iteration — preserving chronological order.
+    /// The `isConnected` guard is checked at the top of every iteration so that
+    /// a mid-flush disconnect (detected when `connectionDidChange(.disconnected)`
+    /// runs on the actor while this method is suspended at `await ipcClient.send`)
+    /// stops the drain immediately. Unprocessed events remain at the head of the
+    /// ring buffer and are flushed on the next reconnect in chronological order.
+    ///
+    /// Events arriving via `receive(_:)` during a flush are sent to `bufferEvent`
+    /// by the send loop (since `isFlushing == true`) and appended to the tail,
+    /// so they are dequeued after the pre-existing backlog — preserving order.
     private func flushBuffer() async {
-        while let event = ringBuffer.dequeue() {
-            guard !Task.isCancelled else { break }
+        while isConnected && !Task.isCancelled, let event = ringBuffer.dequeue() {
             try? await ipcClient.send(.rawEvent(toMessage(event)))
         }
     }

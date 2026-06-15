@@ -276,6 +276,30 @@ final class AuthIPCContractTests: XCTestCase {
         }
     }
 
+    // MARK: DTO extensibility
+
+    func testUnknownServerMessageTypeIsForwardCompatible() throws {
+        // Any future server message type the Swift client doesn't know about must
+        // produce .unknown(type:) and must not crash or corrupt state. This is the
+        // forward-compatibility guarantee for proto extensibility.
+        let raw = #"{"type":"future_server_feature","payload":{"sensitive_field":"must-not-be-retained"}}"#
+        let decoded = try decoder.decode(ServerMessage.self, from: Data(raw.utf8))
+        guard case .unknown(let t) = decoded else {
+            XCTFail("Expected .unknown; got \(decoded)")
+            return
+        }
+        XCTAssertEqual(t, "future_server_feature")
+    }
+
+    func testUnknownClientMessageTypeThrowsOnDecode() {
+        // ClientMessage decode is intentionally strict: the Swift client is the
+        // authoritative source of client messages and should never receive unknown
+        // ones. Decoding an unknown type must throw rather than silently succeed.
+        let raw = #"{"type":"unknown_client_cmd","payload":{}}"#
+        XCTAssertThrowsError(try decoder.decode(ClientMessage.self, from: Data(raw.utf8)),
+                             "Unknown ClientMessage types must throw DecodingError")
+    }
+
     func testAllNewServerMessagesRoundTripTogether() throws {
         let expires = Date(timeIntervalSince1970: 1_750_000_000)
         let messages: [ServerMessage] = [

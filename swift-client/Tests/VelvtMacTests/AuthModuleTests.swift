@@ -218,6 +218,130 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(sut.accountState, .loggedIn(userId: "u99"))
     }
 
+    // MARK: IPC stream-end behaviour
+
+    func testLoggingInRevertsToLoggedOutWhenIPCStreamEnds() async {
+        let client = FakeIPCClient()
+        let sut = makeManager(client: client)
+        sut.transition(to: .loggingIn)
+
+        let reverted = expectation(description: "reverted to loggedOut")
+        var cancellable: AnyCancellable?
+        cancellable = sut.$accountState.dropFirst().sink { state in
+            if case .loggedOut = state { reverted.fulfill(); cancellable?.cancel() }
+        }
+
+        client.closeStream()
+
+        await fulfillment(of: [reverted], timeout: 1)
+        XCTAssertEqual(sut.accountState, .loggedOut)
+    }
+
+    func testLoggingOutRevertsToLoggedOutWhenIPCStreamEnds() async {
+        let client = FakeIPCClient()
+        let sut = makeLoggedInManager(client: client)
+        sut.transition(to: .loggingOut)
+
+        let reverted = expectation(description: "reverted to loggedOut")
+        var cancellable: AnyCancellable?
+        cancellable = sut.$accountState.dropFirst().sink { state in
+            if case .loggedOut = state { reverted.fulfill(); cancellable?.cancel() }
+        }
+
+        client.closeStream()
+
+        await fulfillment(of: [reverted], timeout: 1)
+        XCTAssertEqual(sut.accountState, .loggedOut)
+    }
+
+    func testPendingErasureIsNotRevertedWhenIPCStreamEnds() async throws {
+        // pendingErasure must survive a disconnect: the Rust service may have
+        // received the request and the sentinel must persist until confirmed.
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let sut = makeLoggedInManager(keychain: keychain, client: client)
+        sut.transition(to: .pendingErasure)
+
+        // Give the listener task a chance to detect stream end.
+        client.closeStream()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(sut.accountState, .pendingErasure, "pendingErasure must not be auto-reverted on disconnect")
+    }
+
+    // MARK: pendingErasure persistence across relaunches
+
+    func testInitRestoresPendingErasureWhenFlagAndUserIdBothPresent() throws {
+        let keychain = FakeKeychain()
+        try keychain.store(token: "u5", for: .userId)
+        try keychain.store(token: "1", for: .pendingDeletion)
+
+        let sut = AccountStateManager(keychain: keychain)
+
+        XCTAssertEqual(sut.accountState, .pendingErasure)
+    }
+
+    func testInitIsLoggedInWhenUserIdPresentButNoDeletionFlag() throws {
+        let keychain = FakeKeychain()
+        try keychain.store(token: "u5", for: .userId)
+
+        XCTAssertEqual(AccountStateManager(keychain: keychain).accountState, .loggedIn(userId: "u5"))
+    }
+
+    func testTransitionToPendingErasureWritesDeletionFlag() throws {
+        let keychain = FakeKeychain()
+        try keychain.store(token: "u1", for: .userId)
+        let sut = AccountStateManager(keychain: keychain)
+
+        sut.transition(to: .pendingErasure)
+
+        XCTAssertNotNil(keychain.storedValue(for: .pendingDeletion), "sentinel must be written")
+    }
+
+    func testCancelPendingErasureClearsDeletionFlag() throws {
+        let keychain = FakeKeychain()
+        try keychain.store(token: "u1", for: .userId)
+        try keychain.store(token: "1", for: .pendingDeletion)
+        let sut = AccountStateManager(keychain: keychain)
+
+        XCTAssertEqual(sut.accountState, .pendingErasure)
+        sut.cancelPendingErasure()
+
+        XCTAssertNil(keychain.storedValue(for: .pendingDeletion), "sentinel must be cleared on cancel")
+        XCTAssertEqual(sut.accountState, .loggedIn(userId: "u1"))
+    }
+
+    func testAccountDeletionAcceptedClearsDeletionFlagViaDeleteAll() async throws {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        try keychain.store(token: "u1", for: .userId)
+        let sut = makeLoggedInManager(keychain: keychain, client: client)
+        sut.transition(to: .pendingErasure)
+        XCTAssertNotNil(keychain.storedValue(for: .pendingDeletion))
+
+        let settled = expectation(description: "loggedOut")
+        var cancellable: AnyCancellable?
+        cancellable = sut.$accountState.dropFirst().sink { state in
+            if case .loggedOut = state { settled.fulfill(); cancellable?.cancel() }
+        }
+        client.inject(.accountDeletionAccepted)
+        await fulfillment(of: [settled], timeout: 1)
+
+        XCTAssertTrue(keychain.isEmpty, "deleteAll must clear the deletion sentinel")
+    }
+
+    func testRelaunchInPendingErasureBlocksNormalTransitionsToLoggedIn() throws {
+        let keychain = FakeKeychain()
+        try keychain.store(token: "u1", for: .userId)
+        try keychain.store(token: "1", for: .pendingDeletion)
+        let sut = AccountStateManager(keychain: keychain)
+
+        // A transition to loggedIn is not a valid move from pendingErasure.
+        sut.transition(to: .loggedIn(userId: "u1"))
+
+        XCTAssertEqual(sut.accountState, .pendingErasure, "normal use must be blocked during pending erasure")
+    }
+
     // MARK: Helpers
 
     private func makeManager(
@@ -418,7 +542,113 @@ final class AuthViewModelTests: XCTestCase {
         XCTAssertNil(sut.errorMessage)
     }
 
+    // MARK: Client-side validation (empty fields)
+
+    func testSignUpBlockedWhenEmailEmpty() async {
+        let (sut, manager, client) = makeViewModelWithDependencies()
+        sut.email = ""
+        sut.password = "secret"
+        await sut.signUp()
+        XCTAssertEqual(manager.accountState, .loggedOut, "must not leave loggedOut")
+        XCTAssertFalse(client.sentMessages.contains(where: { if case .signUp = $0 { return true }; return false }))
+        XCTAssertNotNil(sut.errorMessage)
+        XCTAssertFalse(sut.isLoading)
+    }
+
+    func testSignUpBlockedWhenEmailIsWhitespaceOnly() async {
+        let (sut, manager, _) = makeViewModelWithDependencies()
+        sut.email = "   "
+        sut.password = "secret"
+        await sut.signUp()
+        XCTAssertEqual(manager.accountState, .loggedOut)
+        XCTAssertNotNil(sut.errorMessage)
+    }
+
+    func testSignUpBlockedWhenPasswordEmpty() async {
+        let (sut, manager, _) = makeViewModelWithDependencies()
+        sut.email = "user@example.com"
+        sut.password = ""
+        await sut.signUp()
+        XCTAssertEqual(manager.accountState, .loggedOut)
+        XCTAssertNotNil(sut.errorMessage)
+    }
+
+    func testLogInBlockedWhenEmailEmpty() async {
+        let (sut, manager, _) = makeViewModelWithDependencies()
+        sut.email = ""
+        sut.password = "secret"
+        await sut.logIn()
+        XCTAssertEqual(manager.accountState, .loggedOut)
+        XCTAssertNotNil(sut.errorMessage)
+    }
+
+    // MARK: IPC disconnect mid-login
+
+    func testIPCDisconnectMidLoginShowsConnectionLostError() async {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let manager = AccountStateManager(keychain: keychain)
+        manager.startListening(to: client)
+        let sut = AuthViewModel(accountStateManager: manager, ipcClient: client)
+        sut.email = "user@example.com"
+        sut.password = "secret"
+
+        let reverted = expectation(description: "state reverted to loggedOut")
+        var cancellable: AnyCancellable?
+        cancellable = manager.$accountState.dropFirst().sink { state in
+            if case .loggedOut = state { reverted.fulfill(); cancellable?.cancel() }
+        }
+
+        await sut.signUp()           // transitions to .loggingIn, sends IPC
+        client.closeStream()         // simulate hard disconnect — authSuccess never arrives
+
+        await fulfillment(of: [reverted], timeout: 2)
+
+        XCTAssertEqual(manager.accountState, .loggedOut)
+        XCTAssertFalse(sut.isLoading)
+        XCTAssertNotNil(sut.errorMessage, "connection-lost error must be surfaced")
+        XCTAssertEqual(sut.errorMessage, "Connection lost. Please try again.")
+    }
+
+    // MARK: deleteAccount IPC send failure
+
+    func testDeleteAccountIPCSendFailureRevertsToLoggedInAndShowsRetryMessage() async throws {
+        let keychain = FakeKeychain()
+        try keychain.store(token: "u1", for: .userId)
+        let client = FakeIPCClient()
+        let manager = AccountStateManager(keychain: keychain)
+        manager.startListening(to: client)
+        let sut = AuthViewModel(accountStateManager: manager, ipcClient: client)
+
+        client.shouldThrowOnSend = IPCError.notConnected
+
+        sut.requestAccountDeletion()
+        XCTAssertTrue(sut.showDeleteConfirmation)
+
+        await sut.confirmAccountDeletion()
+
+        // After a failed send the state must return to loggedIn — not pendingErasure.
+        XCTAssertEqual(manager.accountState, .loggedIn(userId: "u1"),
+                       "state must revert when send fails")
+        XCTAssertNotNil(sut.errorMessage, "retry message must be shown")
+        XCTAssertFalse(sut.showDeleteConfirmation)
+        // Keychain must be intact — no data lost due to a failed request.
+        XCTAssertNotNil(keychain.storedValue(for: .userId))
+        // Deletion sentinel must be cleared since erasure did not proceed.
+        XCTAssertNil(keychain.storedValue(for: .pendingDeletion))
+    }
+
     // MARK: Helpers
+
+    private func makeViewModelWithDependencies(
+        keychain: FakeKeychain = FakeKeychain(),
+        client: FakeIPCClient = FakeIPCClient()
+    ) -> (AuthViewModel, AccountStateManager, FakeIPCClient) {
+        let manager = AccountStateManager(keychain: keychain)
+        manager.startListening(to: client)
+        let vm = AuthViewModel(accountStateManager: manager, ipcClient: client)
+        return (vm, manager, client)
+    }
 
     private func makeViewModel(
         keychain: FakeKeychain = FakeKeychain(),

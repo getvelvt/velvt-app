@@ -29,7 +29,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public let permissionPresentation: PermissionPresentationModel
 
     private var ipcClient: (any IPCClientProtocol)?
-    private var eventRelay: IPCEventRelay?
+    private var eventRelay: (any EventRelayProtocol)?
     private var collectionAgent: (any CollectionAgentProtocol)?
     private var permissionCoordinator: PermissionCollectionCoordinator?
 
@@ -58,16 +58,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 clientVersion: config.clientVersion
             )
             ipcClient = client
-            let eventRelay = IPCEventRelay(client: client)
-            let collectionAgent = AXCollectionAgent(eventSink: eventRelay)
+
+            // Relay is the EventSink; collection agent receives it at init.
+            let relay = EventRelay(ipcClient: client)
+            let collectionAgent = AXCollectionAgent(eventSink: relay)
             let coordinator = PermissionCollectionCoordinator(
                 permissionManager: permissionManager,
                 collectionAgent: collectionAgent
             )
-            self.eventRelay = eventRelay
+            self.eventRelay = relay
             self.collectionAgent = collectionAgent
             permissionCoordinator = coordinator
             coordinator.start()
+
+            Task {
+                await relay.start()
+            }
 
             Task.detached {
                 do {
@@ -92,28 +98,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public func applicationWillTerminate(_ notification: Notification) {
         permissionManager.stopMonitoring()
         permissionCoordinator?.stop()
+        let relay = eventRelay
+        Task { await relay?.stop() }
         ipcClient?.disconnect()
-    }
-}
-
-public final class IPCEventRelay: EventSink {
-    private let client: any IPCClientProtocol
-
-    public init(client: any IPCClientProtocol) {
-        self.client = client
-    }
-
-    public func receive(_ event: RawEvent) {
-        let message = RawEventMessage(
-            eventID: UUID(),
-            occurredAt: event.occurredAt,
-            appName: event.appName,
-            windowTitle: event.windowTitle,
-            bundleID: nil
-        )
-        Task {
-            try? await client.send(.rawEvent(message))
-        }
     }
 }
 

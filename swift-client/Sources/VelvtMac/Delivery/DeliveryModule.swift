@@ -19,7 +19,6 @@ public protocol InsightCaching: AnyObject {
 
 /// Schedules notifications using text already supplied by Rust.
 public protocol NotificationScheduling: AnyObject {
-    func requestAuthorization() async throws -> Bool
     func schedule(insight: InsightPayload) async throws
 }
 
@@ -29,4 +28,3 @@ public enum DeliveryError: Error, Equatable {
     case notificationAuthorizationDenied
     case notificationSchedulingFailed(code: Int)
 }
-

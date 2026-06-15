@@ -46,6 +46,10 @@ pub struct ServiceConfig {
     pub cache_read_timeout: Duration,
     /// Minimum interval between proactive fetch scheduler runs.
     pub fetch_interval: Duration,
+    /// Maximum messages buffered in the IPC push queue while Swift is disconnected.
+    pub push_queue_capacity: usize,
+    /// Per-message write timeout before a connected Swift client is declared slow.
+    pub push_write_timeout: Duration,
 }
 
 impl ServiceConfig {
@@ -77,12 +81,16 @@ impl ServiceConfig {
             parse_env("VELVT_INSIGHT_NEGATIVE_TTL_SECONDS", 300_u64)?;
         let cache_read_timeout_ms = parse_env("VELVT_CACHE_READ_TIMEOUT_MS", 200_u64)?;
         let fetch_interval_seconds = parse_env("VELVT_FETCH_INTERVAL_SECONDS", 600_u64)?;
+        let push_queue_capacity = parse_env("VELVT_PUSH_QUEUE_CAPACITY", 50_usize)?;
+        let push_write_timeout_ms = parse_env("VELVT_PUSH_WRITE_TIMEOUT_MS", 500_u64)?;
 
         if history_ttl_seconds == 0
             || insight_ttl_seconds == 0
             || insight_negative_ttl_seconds == 0
             || cache_read_timeout_ms == 0
             || fetch_interval_seconds == 0
+            || push_queue_capacity == 0
+            || push_write_timeout_ms == 0
         {
             return Err(ConfigError::Invalid);
         }
@@ -111,6 +119,8 @@ impl ServiceConfig {
             insight_negative_ttl: Duration::from_secs(insight_negative_ttl_seconds),
             cache_read_timeout: Duration::from_millis(cache_read_timeout_ms),
             fetch_interval: Duration::from_secs(fetch_interval_seconds),
+            push_queue_capacity,
+            push_write_timeout: Duration::from_millis(push_write_timeout_ms),
         })
     }
 }

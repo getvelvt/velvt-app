@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "PRIVACY: This message carries only a payload-type discriminant; no raw user data.",
+  "title": "Cache Empty",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "cache_empty" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["payload_type"],
+      "properties": {
+        "payload_type": { "type": "string", "enum": ["insight_payload", "history_payload"] }
+      }
+    }
+  }
+}

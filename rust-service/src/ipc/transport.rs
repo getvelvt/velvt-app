@@ -11,24 +11,50 @@ pub trait IpcTransport {
 }
 
 /// Tokio Unix-domain-socket transport for the macOS service.
+///
+/// Generic over the message router `R` so business handlers can be swapped
+/// without touching transport or framing code.  The default is `DefaultRouter`
+/// for backward compatibility.
 #[cfg(unix)]
-pub struct TokioUnixTransport {
+pub struct TokioUnixTransport<R = super::DefaultRouter> {
     socket_path: std::path::PathBuf,
     max_errors: usize,
+    router: R,
     auth_states: Option<tokio::sync::watch::Receiver<crate::auth::AuthState>>,
     privacy_alerts:
         Option<tokio::sync::broadcast::Sender<velvt_shared_types::PrivacyViolationAlert>>,
+    push_queue: Option<std::sync::Arc<crate::delivery::PushQueue>>,
+    write_timeout: std::time::Duration,
 }
 
 #[cfg(unix)]
-impl TokioUnixTransport {
-    /// Creates a Unix transport for the configured socket path.
+impl TokioUnixTransport<super::DefaultRouter> {
+    /// Creates a Unix transport with the default router.
     pub fn new(socket_path: std::path::PathBuf, max_errors: usize) -> Self {
         Self {
             socket_path,
             max_errors,
+            router: super::DefaultRouter,
             auth_states: None,
             privacy_alerts: None,
+            push_queue: None,
+            write_timeout: std::time::Duration::from_millis(500),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl<R: super::MessageRouter + Clone + Send + 'static> TokioUnixTransport<R> {
+    /// Creates a Unix transport with a custom router.
+    pub fn new_with_router(socket_path: std::path::PathBuf, max_errors: usize, router: R) -> Self {
+        Self {
+            socket_path,
+            max_errors,
+            router,
+            auth_states: None,
+            privacy_alerts: None,
+            push_queue: None,
+            write_timeout: std::time::Duration::from_millis(500),
         }
     }
 
@@ -46,6 +72,17 @@ impl TokioUnixTransport {
         auth_states: tokio::sync::watch::Receiver<crate::auth::AuthState>,
     ) -> Self {
         self.auth_states = Some(auth_states);
+        self
+    }
+
+    /// Attaches a push queue; enables proactive delivery to connected clients.
+    pub fn with_push_queue(
+        mut self,
+        queue: std::sync::Arc<crate::delivery::PushQueue>,
+        write_timeout: std::time::Duration,
+    ) -> Self {
+        self.push_queue = Some(queue);
+        self.write_timeout = write_timeout;
         self
     }
 
@@ -76,7 +113,7 @@ impl TokioUnixTransport {
 }
 
 #[cfg(unix)]
-impl IpcTransport for TokioUnixTransport {
+impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUnixTransport<R> {
     async fn run(&self) -> Result<(), IpcError> {
         let listener = self.bind().await?;
         loop {
@@ -87,28 +124,36 @@ impl IpcTransport for TokioUnixTransport {
                 .privacy_alerts
                 .as_ref()
                 .map(|alerts| alerts.subscribe());
+            let push_queue = self.push_queue.clone();
+            let write_timeout = self.write_timeout;
+            let router = self.router.clone();
             tokio::spawn(async move {
-                let result = match (auth_states, privacy_alerts) {
-                    (Some(states), Some(alerts)) => {
-                        super::serve_connection_with_notifications(
-                            stream,
-                            super::DefaultRouter,
-                            max_errors,
-                            states,
-                            alerts,
-                        )
-                        .await
+                let result = if let Some(pq) = push_queue {
+                    super::serve_connection_with_push_queue(
+                        stream,
+                        router,
+                        max_errors,
+                        auth_states,
+                        pq,
+                        write_timeout,
+                    )
+                    .await
+                } else {
+                    match (auth_states, privacy_alerts) {
+                        (Some(states), Some(alerts)) => {
+                            super::serve_connection_with_notifications(
+                                stream, router, max_errors, states, alerts,
+                            )
+                            .await
+                        }
+                        (Some(states), None) => {
+                            super::serve_connection_with_auth_state(
+                                stream, router, max_errors, states,
+                            )
+                            .await
+                        }
+                        _ => super::serve_connection(stream, router, max_errors).await,
                     }
-                    (Some(states), None) => {
-                        super::serve_connection_with_auth_state(
-                            stream,
-                            super::DefaultRouter,
-                            max_errors,
-                            states,
-                        )
-                        .await
-                    }
-                    _ => super::serve_connection(stream, super::DefaultRouter, max_errors).await,
                 };
                 if let Err(error) = result {
                     tracing::warn!(error = %error, "IPC client connection ended with an error");

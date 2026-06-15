@@ -26,6 +26,7 @@ use crate::{
 use velvt_shared_types::{DailySummary, HistoryPayload, InsightPayload};
 
 use super::parser::{self, ParseError};
+use super::push::PushAdapter;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -77,6 +78,7 @@ pub struct FetchService<H> {
     inflight_history: std::sync::Mutex<HashMap<u8, Weak<AsyncMutex<()>>>>,
     /// Per-date lock: deduplicates concurrent insight fetches for the same date.
     inflight_insight: std::sync::Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
+    push_adapter: Option<Arc<PushAdapter>>,
 }
 
 impl<H: HttpClient> FetchService<H> {
@@ -93,7 +95,15 @@ impl<H: HttpClient> FetchService<H> {
             config,
             inflight_history: std::sync::Mutex::new(HashMap::new()),
             inflight_insight: std::sync::Mutex::new(HashMap::new()),
+            push_adapter: None,
         }
+    }
+
+    /// Attaches a push adapter; called after construction so existing tests
+    /// using `FetchService::new()` need no changes.
+    pub fn with_push_adapter(mut self, adapter: Arc<PushAdapter>) -> Self {
+        self.push_adapter = Some(adapter);
+        self
     }
 
     // -----------------------------------------------------------------------
@@ -180,10 +190,14 @@ impl<H: HttpClient> FetchService<H> {
         }
         let mut sorted = summaries;
         sorted.sort_by_key(|s| s.date);
-        Ok(HistoryPayload {
+        let result = HistoryPayload {
             days: days as u32,
             summaries: sorted,
-        })
+        };
+        if let Some(adapter) = &self.push_adapter {
+            adapter.push_history(result.clone()).await;
+        }
+        Ok(result)
     }
 
     pub async fn daily_insight(
@@ -233,6 +247,9 @@ impl<H: HttpClient> FetchService<H> {
                     confidence_level = ?insight.confidence_level,
                     "cached daily insight"
                 );
+                if let Some(adapter) = &self.push_adapter {
+                    adapter.push_insight(insight.clone()).await;
+                }
                 Ok(Some(insight))
             }
             None => {

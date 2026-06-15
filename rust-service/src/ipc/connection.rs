@@ -1,10 +1,12 @@
+use std::{sync::Arc, time::Duration};
+
 use tokio::io::{AsyncRead, AsyncWrite};
 use velvt_shared_types::{
     Acknowledged, MalformedMessage, MalformedMessageCode, ServerHello, ServerMessage, ServiceState,
     ServiceStatus, VersionMismatch, PROTOCOL_VERSION,
 };
 
-use crate::auth::AuthState;
+use crate::{auth::AuthState, delivery::PushQueue};
 
 use super::{
     codec::{decode_client_hello, decode_client_message, read_frame, write_server_message},
@@ -17,7 +19,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     R: MessageRouter,
 {
-    serve_connection_inner(stream, router, max_errors, None, None).await
+    serve_connection_inner(stream, router, max_errors, None, None, None, Duration::ZERO).await
 }
 
 /// Serves one connection and pushes privacy-safe authentication state changes.
@@ -31,7 +33,16 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     R: MessageRouter,
 {
-    serve_connection_inner(stream, router, max_errors, Some(auth_states), None).await
+    serve_connection_inner(
+        stream,
+        router,
+        max_errors,
+        Some(auth_states),
+        None,
+        None,
+        Duration::ZERO,
+    )
+    .await
 }
 
 pub async fn serve_connection_with_notifications<S, R>(
@@ -51,6 +62,37 @@ where
         max_errors,
         Some(auth_states),
         Some(privacy_alerts),
+        None,
+        Duration::ZERO,
+    )
+    .await
+}
+
+/// Serves one connection with a bounded push queue for proactive delivery.
+///
+/// The queue is drained in FIFO order on every loop tick.  Each write is
+/// wrapped in `write_timeout`; if the client is too slow the connection is
+/// closed but the queue is preserved for reconnect.
+pub async fn serve_connection_with_push_queue<S, R>(
+    stream: S,
+    router: R,
+    max_errors: usize,
+    auth_states: Option<tokio::sync::watch::Receiver<AuthState>>,
+    push_queue: Arc<PushQueue>,
+    write_timeout: Duration,
+) -> Result<(), IpcError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    R: MessageRouter,
+{
+    serve_connection_inner(
+        stream,
+        router,
+        max_errors,
+        auth_states,
+        None,
+        Some(push_queue),
+        write_timeout,
     )
     .await
 }
@@ -63,6 +105,8 @@ async fn serve_connection_inner<S, R>(
     mut privacy_alerts: Option<
         tokio::sync::broadcast::Receiver<velvt_shared_types::PrivacyViolationAlert>,
     >,
+    push_queue: Option<Arc<PushQueue>>,
+    write_timeout: Duration,
 ) -> Result<(), IpcError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -111,6 +155,13 @@ where
     }
 
     loop {
+        // Drain all pending push messages before blocking on the next event.
+        if let Some(queue) = &push_queue {
+            while let Some(msg) = queue.try_pop().await {
+                write_with_timeout(&mut writer, &msg, write_timeout).await?;
+            }
+        }
+
         let frame = tokio::select! {
             frame = read_frame(&mut reader) => frame?,
             state = next_auth_state(&mut auth_states) => {
@@ -127,6 +178,10 @@ where
                     continue;
                 };
                 write_server_message(&mut writer, &ServerMessage::PrivacyViolationAlert(alert)).await?;
+                continue;
+            }
+            _ = next_push_notify(&push_queue) => {
+                // A message was enqueued; loop back to drain it.
                 continue;
             }
         };
@@ -156,6 +211,50 @@ where
             }
         }
     }
+}
+
+/// Writes `msg` with a per-message timeout; returns `Err` if the client is slow.
+///
+/// Only the message type is logged — never any payload content.
+async fn write_with_timeout(
+    writer: &mut (impl AsyncWrite + Unpin),
+    msg: &ServerMessage,
+    timeout: Duration,
+) -> Result<(), IpcError> {
+    match tokio::time::timeout(timeout, write_server_message(writer, msg)).await {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            tracing::warn!(
+                message_type = server_message_type_name(msg),
+                error_code = "slow_client_write_timeout",
+                "disconnecting slow client"
+            );
+            Err(IpcError::Transport)
+        }
+    }
+}
+
+fn server_message_type_name(msg: &ServerMessage) -> &'static str {
+    match msg {
+        ServerMessage::ServerHello(_) => "server_hello",
+        ServerMessage::Acknowledged(_) => "acknowledged",
+        ServerMessage::VersionMismatch(_) => "version_mismatch",
+        ServerMessage::MalformedMessage(_) => "malformed_message",
+        ServerMessage::RawEventAck(_) => "raw_event_ack",
+        ServerMessage::InsightPayload(_) => "insight_payload",
+        ServerMessage::HistoryPayload(_) => "history_payload",
+        ServerMessage::ServiceStatus(_) => "service_status",
+        ServerMessage::PrivacyViolationAlert(_) => "privacy_violation_alert",
+        ServerMessage::ErrorResponse(_) => "error_response",
+        ServerMessage::CacheEmpty(_) => "cache_empty",
+    }
+}
+
+async fn next_push_notify(queue: &Option<Arc<PushQueue>>) {
+    let Some(queue) = queue else {
+        return std::future::pending().await;
+    };
+    queue.notify().notified().await
 }
 
 async fn next_privacy_alert(

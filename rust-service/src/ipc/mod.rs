@@ -15,8 +15,9 @@ pub mod transport;
 
 pub use connection::{
     serve_connection, serve_connection_with_auth_state, serve_connection_with_notifications,
+    serve_connection_with_push_queue,
 };
-pub use router::{DefaultRouter, MessageRouter};
+pub use router::{DefaultRouter, MessageRouter, R7Router};
 
 /// Errors produced by IPC transport or protocol handling.
 #[derive(Debug, thiserror::Error)]

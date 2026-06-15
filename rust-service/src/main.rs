@@ -67,17 +67,18 @@ async fn main() {
             AuthManager, AuthState, AuthStateMachine, KeychainTokenStore, ReqwestHttpClient,
         };
         use velvt_service::delivery::{
-            CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable,
+            CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable, PushAdapter,
+            PushAdapterAlertSink, PushQueue,
         };
         use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
-        use velvt_service::upload::{HttpBatchUploader, IpcPrivacyAlertSink, UploadCoordinator};
+        use velvt_service::ipc::R7Router;
+        use velvt_service::upload::{HttpBatchUploader, UploadCoordinator};
 
         let upload_batch_repo = persistence.upload_batch_repo();
         let history_cache_repo = persistence.history_cache_repo();
         let insight_cache_repo = persistence.insight_cache_repo();
 
         let auth_state = Arc::new(AuthStateMachine::new(AuthState::Unauthenticated));
-        let (privacy_alerts, _) = tokio::sync::broadcast::channel(16);
         let upload_host = reqwest::Url::parse(&config.upload_api_base_url)
             .ok()
             .and_then(|url| url.host_str().map(str::to_owned))
@@ -89,22 +90,28 @@ async fn main() {
             Duration::minutes(5),
         ));
 
-        // R6 — fetch service and scheduler.
+        // R7 — push queue and adapter.
+        let push_queue = PushQueue::new(config.push_queue_capacity);
+        let push_adapter = PushAdapter::new(Arc::clone(&push_queue));
+
+        // R6 — fetch service and scheduler (push adapter injected for proactive delivery).
         let fetch_config = FetchConfig {
             history_ttl: config.history_ttl,
             insight_ttl: config.insight_ttl,
             insight_negative_ttl: config.insight_negative_ttl,
             read_timeout: config.cache_read_timeout,
         };
-        let fetch_service = Arc::new(FetchService::new(
-            Arc::clone(&authenticated_http),
-            history_cache_repo,
-            insight_cache_repo,
-            fetch_config,
-        ));
-        // `_cache_manager` will be consumed by R7; retained here to keep the
-        // Arc alive and document the intended handoff point.
-        let _cache_manager: Arc<dyn CacheManager> = Arc::clone(&fetch_service);
+        let fetch_service = Arc::new(
+            FetchService::new(
+                Arc::clone(&authenticated_http),
+                history_cache_repo,
+                insight_cache_repo,
+                fetch_config,
+            )
+            .with_push_adapter(Arc::clone(&push_adapter)),
+        );
+        let cache_manager: Arc<dyn CacheManager> =
+            Arc::clone(&fetch_service) as Arc<dyn CacheManager>;
         let (fetch_shutdown_tx, fetch_shutdown_rx) = tokio::sync::watch::channel(false);
         let fetch_scheduler = FetchScheduler::new(
             Arc::clone(&fetch_service) as Arc<dyn Fetchable>,
@@ -119,7 +126,7 @@ async fn main() {
         let upload_coordinator = UploadCoordinator::new(
             upload_batch_repo,
             uploader,
-            IpcPrivacyAlertSink::new(privacy_alerts.clone()),
+            PushAdapterAlertSink::new(push_adapter),
         )
         .with_host(upload_host);
         let (upload_shutdown, upload_shutdown_receiver) = tokio::sync::watch::channel(false);
@@ -135,9 +142,13 @@ async fn main() {
                 )
                 .await;
         });
-        let transport = TokioUnixTransport::new(config.socket_path, config.ipc_max_errors)
-            .with_auth_state(auth_state.subscribe())
-            .with_privacy_alerts(privacy_alerts);
+        let transport = TokioUnixTransport::new_with_router(
+            config.socket_path,
+            config.ipc_max_errors,
+            R7Router::new(cache_manager),
+        )
+        .with_auth_state(auth_state.subscribe())
+        .with_push_queue(push_queue, config.push_write_timeout);
         let server_task = tokio::spawn(async move { transport.run().await });
         if tokio::signal::ctrl_c().await.is_err() {
             tracing::error!("failed to install shutdown signal");

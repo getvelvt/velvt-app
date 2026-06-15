@@ -27,7 +27,7 @@ final class UnixSocketIPCClientTests: XCTestCase {
         XCTAssertEqual(sent.count, 1)
         XCTAssertEqual(
             try IPCMessageCodec.makeDecoder().decode(ClientMessage.self, from: sent[0]),
-            .clientHello(ClientHello(protocolVersion: 1, clientVersion: "1.0.0"))
+            .clientHello(ClientHello(expectedProtocolVersion: 1, clientVersion: "1.0.0"))
         )
         XCTAssertEqual(statuses.suffix(3), [.connecting, .handshaking, .connected])
         client.disconnect()
@@ -37,7 +37,9 @@ final class UnixSocketIPCClientTests: XCTestCase {
         let transport = ScriptedIPCTransport(
             receives: [
                 .success(try frame(.serverHello(ServerHello(protocolVersion: 2)))),
-                .success(try frame(.versionMismatch(VersionMismatch(expected: 2, got: 1))))
+                .success(
+                    try frame(.versionMismatch(VersionMismatch(serverProtocolVersion: 2, clientProtocolVersion: 1)))
+                )
             ]
         )
         let client = UnixSocketIPCClient(
@@ -134,7 +136,7 @@ final class UnixSocketIPCClientTests: XCTestCase {
             receives: [
                 .success(try frame(.serverHello(ServerHello(protocolVersion: 1)))),
                 .success(try frame(.acknowledged(Acknowledged()))),
-                .success(Data(#"{"type":"future_message","raw_title":"not-retained"}"#.utf8)),
+                .success(Data(#"{"type":"future_message","payload":{"raw_title":"not-retained"}}"#.utf8)),
                 .success(try frame(.serviceStatus(ServiceStatus(state: .ready, reason: nil))))
             ]
         )

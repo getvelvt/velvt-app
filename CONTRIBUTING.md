@@ -148,6 +148,31 @@ Debug builds may enable verbose safe diagnostics. Release builds must not be noi
 - **Pass lint before opening PR.** `cargo clippy -- -D warnings` for Rust; Swift lint config in CI.
 - PR titles follow: `[swift-client]`, `[rust-service]`, `[proto]`, or `[cloud]` prefix.
 
+## Adding A Classification Category
+
+Category changes remain data-only in the runtime classification pipeline:
+
+1. Add the category identifier to `categories` in the versioned taxonomy JSON.
+2. Add or update exact/glob seed entries with privacy-safe `<type>:<behavior>`
+   labels where deterministic Tier 1 mappings are appropriate.
+3. In the offline model-artifact pipeline, run the approved centroid
+   computation script against reviewed representative names. The script must
+   mean-pool and normalize embeddings using the exact shipped model/tokenizer.
+4. Package the resulting vector into `centroids.bin` using the `VELVTC01`
+   format documented in `README.md`.
+5. Keep the centroid category key, dimensions, and taxonomy version aligned
+   with the taxonomy file. Increment the taxonomy version for category-set
+   changes.
+6. Add exhaustive seed, centroid-loader, below-threshold, and extension tests.
+7. Run `cargo test --all-features`, `cargo clippy --all-targets --all-features
+   -- -D warnings`, and `cargo fmt --check`.
+
+Centroid computation is offline artifact production, not service behavior.
+Never add runtime centroid recomputation, training, fine-tuning, or online
+learning. New classification strategies implement `ClassificationPlugin` and
+are added only at the registry call site documented in `README.md`; the engine
+core and existing plugins must remain unchanged.
+
 ***
 
 ## MVP Scope

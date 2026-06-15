@@ -1,34 +1,23 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "PRIVACY: This is the ONLY IPC schema permitted to carry raw identifying user data. It is local-only and must never be used as an upload payload.",
+  "$comment": "PRIVACY: This is the ONLY IPC schema permitted to carry raw identifying user data.",
   "title": "Raw Event",
-  "description": "One raw macOS activity event sent locally from Swift to Rust for abstraction.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["type", "event_id", "occurred_at", "app_name", "window_title"],
+  "required": ["type", "payload"],
   "properties": {
-    "type": {
-      "type": "string",
-      "enum": ["raw_event"]
-    },
-    "event_id": {
-      "type": "string",
-      "format": "uuid",
-      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
-    },
-    "occurred_at": {
-      "type": "string",
-      "format": "date-time",
-      "pattern": "Z$"
-    },
-    "app_name": {
-      "type": "string"
-    },
-    "window_title": {
-      "type": "string"
-    },
-    "bundle_id": {
-      "type": ["string", "null"]
+    "type": { "const": "raw_event" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "occurred_at", "app_name", "window_title", "bundle_id"],
+      "properties": {
+        "event_id": { "type": "string", "format": "uuid" },
+        "occurred_at": { "type": "string", "format": "date-time" },
+        "app_name": { "type": "string" },
+        "window_title": { "type": "string" },
+        "bundle_id": { "type": ["string", "null"] }
+      }
     }
   }
 }

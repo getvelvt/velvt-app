@@ -1,0 +1,73 @@
+{
+  "category_taxonomy_version": "mvp-1",
+  "default_category": "UNLOGGED",
+  "categories": [
+    "FOCUS_WORK",
+    "PASSIVE_CONSUMPTION",
+    "SOCIAL_FEED",
+    "COMMUNICATION",
+    "TASK_MANAGEMENT",
+    "REFERENCE",
+    "SYSTEM",
+    "UNLOGGED"
+  ],
+  "seed_applications": [
+    { "app_name_pattern": "VS Code", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Xcode", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Zed", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Cursor", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Notion", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Obsidian", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Overleaf", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Google Docs", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Microsoft Word", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Linear", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Jira", "label": "document:edit", "category": "FOCUS_WORK" },
+
+    { "app_name_pattern": "YouTube", "label": "video:passive", "category": "PASSIVE_CONSUMPTION" },
+    { "app_name_pattern": "Netflix", "label": "video:passive", "category": "PASSIVE_CONSUMPTION" },
+    { "app_name_pattern": "TikTok", "label": "video:passive", "category": "PASSIVE_CONSUMPTION" },
+    { "app_name_pattern": "Twitch", "label": "video:passive", "category": "PASSIVE_CONSUMPTION" },
+    { "app_name_pattern": "Hulu", "label": "video:passive", "category": "PASSIVE_CONSUMPTION" },
+    { "app_name_pattern": "Disney+", "label": "video:passive", "category": "PASSIVE_CONSUMPTION" },
+
+    { "app_name_pattern": "Reddit", "label": "social:feed", "category": "SOCIAL_FEED" },
+    { "app_name_pattern": "Twitter*", "label": "social:feed", "category": "SOCIAL_FEED" },
+    { "app_name_pattern": "X", "label": "social:feed", "category": "SOCIAL_FEED" },
+    { "app_name_pattern": "Instagram", "label": "social:feed", "category": "SOCIAL_FEED" },
+    { "app_name_pattern": "Facebook", "label": "social:feed", "category": "SOCIAL_FEED" },
+    { "app_name_pattern": "Threads", "label": "social:feed", "category": "SOCIAL_FEED" },
+    { "app_name_pattern": "LinkedIn", "label": "social:feed", "category": "SOCIAL_FEED" },
+
+    { "app_name_pattern": "Slack", "label": "communication:active", "category": "COMMUNICATION" },
+    { "app_name_pattern": "Discord", "label": "communication:active", "category": "COMMUNICATION" },
+    { "app_name_pattern": "iMessage", "label": "communication:active", "category": "COMMUNICATION" },
+    { "app_name_pattern": "Gmail", "label": "communication:active", "category": "COMMUNICATION" },
+    { "app_name_pattern": "Outlook", "label": "communication:active", "category": "COMMUNICATION" },
+    { "app_name_pattern": "Zoom", "label": "meeting:active", "category": "COMMUNICATION" },
+    { "app_name_pattern": "Microsoft Teams", "label": "meeting:active", "category": "COMMUNICATION" },
+    { "app_name_pattern": "Telegram", "label": "communication:active", "category": "COMMUNICATION" },
+
+    { "app_name_pattern": "Linear (task view)", "label": "task:manage", "category": "TASK_MANAGEMENT" },
+    { "app_name_pattern": "Jira (task view)", "label": "task:manage", "category": "TASK_MANAGEMENT" },
+    { "app_name_pattern": "Todoist", "label": "task:manage", "category": "TASK_MANAGEMENT" },
+    { "app_name_pattern": "Asana", "label": "task:manage", "category": "TASK_MANAGEMENT" },
+    { "app_name_pattern": "Notion (task view)", "label": "task:manage", "category": "TASK_MANAGEMENT" },
+    { "app_name_pattern": "Things 3", "label": "task:manage", "category": "TASK_MANAGEMENT" },
+    { "app_name_pattern": "OmniFocus", "label": "task:manage", "category": "TASK_MANAGEMENT" },
+
+    { "app_name_pattern": "Wikipedia", "label": "reference:read", "category": "REFERENCE" },
+    { "app_name_pattern": "MDN", "label": "reference:read", "category": "REFERENCE" },
+    { "app_name_pattern": "Stack Overflow", "label": "reference:read", "category": "REFERENCE" },
+    { "app_name_pattern": "GitHub", "label": "reference:read", "category": "REFERENCE" },
+    { "app_name_pattern": "GitLab", "label": "reference:read", "category": "REFERENCE" },
+    { "app_name_pattern": "Hacker News", "label": "reference:read", "category": "REFERENCE" },
+
+    { "app_name_pattern": "Finder", "label": "system:manage", "category": "SYSTEM" },
+    { "app_name_pattern": "System Settings", "label": "system:manage", "category": "SYSTEM" },
+    { "app_name_pattern": "Terminal", "label": "system:manage", "category": "SYSTEM" },
+    { "app_name_pattern": "iTerm2", "label": "system:manage", "category": "SYSTEM" },
+    { "app_name_pattern": "Activity Monitor", "label": "system:manage", "category": "SYSTEM" },
+    { "app_name_pattern": "unclassifiable", "label": "system:unknown", "category": "SYSTEM" }
+  ]
+}

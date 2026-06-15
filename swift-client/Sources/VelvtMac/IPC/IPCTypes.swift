@@ -7,36 +7,35 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case errorResponse(ErrorResponse)
 
     public init(from decoder: Decoder) throws {
-        let type = try MessageTypeProbe(from: decoder).type
-        try validateMessageKeys(type: type, decoder: decoder, allowedKeysByType: Self.allowedKeysByType)
+        let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
+        let type = try envelope.decode(String.self, forKey: .type)
+        let payload = try envelope.superDecoder(forKey: .payload)
         switch type {
         case "client_hello":
-            self = .clientHello(try ClientHello(from: decoder))
+            self = .clientHello(try ClientHello(from: payload))
         case "raw_event":
-            self = .rawEvent(try RawEventMessage(from: decoder))
+            self = .rawEvent(try RawEventMessage(from: payload))
         case "error_response":
-            self = .errorResponse(try ErrorResponse(from: decoder))
+            self = .errorResponse(try ErrorResponse(from: payload))
         default:
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
         }
     }
 
     public func encode(to encoder: Encoder) throws {
+        var envelope = encoder.container(keyedBy: EnvelopeCodingKeys.self)
         switch self {
         case let .clientHello(value):
-            try value.encode(to: encoder)
+            try envelope.encode("client_hello", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .rawEvent(value):
-            try value.encode(to: encoder)
+            try envelope.encode("raw_event", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .errorResponse(value):
-            try value.encode(to: encoder)
+            try envelope.encode("error_response", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
-
-    private static let allowedKeysByType: [String: Set<String>] = [
-        "client_hello": ["type", "protocol_version", "client_version"],
-        "raw_event": ["type", "event_id", "occurred_at", "app_name", "window_title", "bundle_id"],
-        "error_response": ["type", "code", "message", "related_event_id"]
-    ]
 }
 
 /// Messages sent from the Rust service to the macOS client.
@@ -44,134 +43,106 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case serverHello(ServerHello)
     case acknowledged(Acknowledged)
     case versionMismatch(VersionMismatch)
+    case malformedMessage(MalformedMessage)
     case rawEventAck(RawEventAcknowledgement)
     case insightPayload(InsightPayload)
     case historyPayload(HistoryPayload)
     case serviceStatus(ServiceStatus)
+    case privacyViolationAlert(PrivacyViolationAlert)
     case errorResponse(ErrorResponse)
+    /// Sent by the Rust service before a graceful shutdown.
+    case shuttingDown(ShuttingDown)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
 
     public init(from decoder: Decoder) throws {
-        let type = try MessageTypeProbe(from: decoder).type
-        try validateMessageKeys(type: type, decoder: decoder, allowedKeysByType: Self.allowedKeysByType)
+        let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
+        let type = try envelope.decode(String.self, forKey: .type)
+        let payload = try envelope.superDecoder(forKey: .payload)
         switch type {
         case "server_hello":
-            self = .serverHello(try ServerHello(from: decoder))
+            self = .serverHello(try ServerHello(from: payload))
         case "acknowledged":
-            self = .acknowledged(try Acknowledged(from: decoder))
+            self = .acknowledged(try Acknowledged(from: payload))
         case "version_mismatch":
-            self = .versionMismatch(try VersionMismatch(from: decoder))
+            self = .versionMismatch(try VersionMismatch(from: payload))
+        case "malformed_message":
+            self = .malformedMessage(try MalformedMessage(from: payload))
         case "raw_event_ack":
-            self = .rawEventAck(try RawEventAcknowledgement(from: decoder))
+            self = .rawEventAck(try RawEventAcknowledgement(from: payload))
         case "insight_payload":
-            self = .insightPayload(try InsightPayload(from: decoder))
+            self = .insightPayload(try InsightPayload(from: payload))
         case "history_payload":
-            self = .historyPayload(try HistoryPayload(from: decoder))
+            self = .historyPayload(try HistoryPayload(from: payload))
         case "service_status":
-            self = .serviceStatus(try ServiceStatus(from: decoder))
+            self = .serviceStatus(try ServiceStatus(from: payload))
+        case "privacy_violation_alert":
+            self = .privacyViolationAlert(try PrivacyViolationAlert(from: payload))
         case "error_response":
-            self = .errorResponse(try ErrorResponse(from: decoder))
+            self = .errorResponse(try ErrorResponse(from: payload))
+        case "shutting_down":
+            self = .shuttingDown(try ShuttingDown(from: payload))
         default:
             self = .unknown(type: type)
         }
     }
 
     public func encode(to encoder: Encoder) throws {
+        var envelope = encoder.container(keyedBy: EnvelopeCodingKeys.self)
         switch self {
         case let .serverHello(value):
-            try value.encode(to: encoder)
+            try envelope.encode("server_hello", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .acknowledged(value):
-            try value.encode(to: encoder)
+            try envelope.encode("acknowledged", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .versionMismatch(value):
-            try value.encode(to: encoder)
+            try envelope.encode("version_mismatch", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .malformedMessage(value):
+            try envelope.encode("malformed_message", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .rawEventAck(value):
-            try value.encode(to: encoder)
+            try envelope.encode("raw_event_ack", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .insightPayload(value):
-            try value.encode(to: encoder)
+            try envelope.encode("insight_payload", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .historyPayload(value):
-            try value.encode(to: encoder)
+            try envelope.encode("history_payload", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .serviceStatus(value):
-            try value.encode(to: encoder)
+            try envelope.encode("service_status", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .privacyViolationAlert(value):
+            try envelope.encode("privacy_violation_alert", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .errorResponse(value):
-            try value.encode(to: encoder)
+            try envelope.encode("error_response", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .shuttingDown(value):
+            try envelope.encode("shutting_down", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .unknown(type):
-            var container = encoder.container(keyedBy: CommonCodingKeys.self)
-            try container.encode(type, forKey: .type)
+            try envelope.encode(type, forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
-
-    private static let allowedKeysByType: [String: Set<String>] = [
-        "server_hello": ["type", "protocol_version"],
-        "acknowledged": ["type"],
-        "version_mismatch": ["type", "expected", "got"],
-        "raw_event_ack": ["type", "event_id", "status", "drop_reason"],
-        "insight_payload": ["type", "date", "text", "confidence_level", "low_confidence", "generated_at"],
-        "history_payload": ["type", "days", "summaries"],
-        "service_status": ["type", "state", "reason"],
-        "error_response": ["type", "code", "message", "related_event_id"]
-    ]
 }
 
-private struct MessageTypeProbe: Decodable {
-    let type: String
-}
-
-private struct DynamicCodingKey: CodingKey {
-    let stringValue: String
-    let intValue: Int? = nil
-
-    init?(stringValue: String) {
-        self.stringValue = stringValue
-    }
-
-    init?(intValue: Int) {
-        return nil
-    }
-}
-
-private func validateMessageKeys(
-    type: String,
-    decoder: Decoder,
-    allowedKeysByType: [String: Set<String>]
-) throws {
-    guard let allowedKeys = allowedKeysByType[type] else {
-        return
-    }
-    let container = try decoder.container(keyedBy: DynamicCodingKey.self)
-    let actualKeys = Set(container.allKeys.map(\.stringValue))
-    guard actualKeys.isSubset(of: allowedKeys) else {
-        throw DecodingError.dataCorrupted(
-            .init(codingPath: decoder.codingPath, debugDescription: "Message contains undeclared fields")
-        )
-    }
-}
-
-private protocol TaggedMessage {
-    static var messageType: String { get }
-}
-
-private extension TaggedMessage {
-    func encodeType(to container: inout KeyedEncodingContainer<CommonCodingKeys>) throws {
-        try container.encode(Self.messageType, forKey: .type)
-    }
-}
-
-private enum CommonCodingKeys: String, CodingKey {
-    case type
-}
+private enum EnvelopeCodingKeys: String, CodingKey { case type, payload }
+private struct EmptyPayload: Codable {}
 
 /// Announces the server protocol version after a socket connection opens.
-public struct ServerHello: Codable, Equatable, Sendable, TaggedMessage {
-    static let messageType = "server_hello"
+public struct ServerHello: Codable, Equatable, Sendable {
     public let protocolVersion: Int
 
     public init(protocolVersion: Int) {
         self.protocolVersion = protocolVersion
     }
 
-    private enum CodingKeys: String, CodingKey { case type; case protocolVersion = "protocol_version" }
+    private enum CodingKeys: String, CodingKey { case protocolVersion = "protocol_version" }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -180,88 +151,87 @@ public struct ServerHello: Codable, Equatable, Sendable, TaggedMessage {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.messageType, forKey: .type)
         try container.encode(protocolVersion, forKey: .protocolVersion)
     }
 }
 
 /// Declares the client protocol and application versions.
-public struct ClientHello: Codable, Equatable, Sendable, TaggedMessage {
-    static let messageType = "client_hello"
-    public let protocolVersion: Int
+public struct ClientHello: Codable, Equatable, Sendable {
+    public let expectedProtocolVersion: Int
     public let clientVersion: String
 
-    public init(protocolVersion: Int, clientVersion: String) {
-        self.protocolVersion = protocolVersion
+    public init(expectedProtocolVersion: Int, clientVersion: String) {
+        self.expectedProtocolVersion = expectedProtocolVersion
         self.clientVersion = clientVersion
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type
-        case protocolVersion = "protocol_version"
+        case expectedProtocolVersion = "expected_protocol_version"
         case clientVersion = "client_version"
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
+        expectedProtocolVersion = try container.decode(Int.self, forKey: .expectedProtocolVersion)
         clientVersion = try container.decode(String.self, forKey: .clientVersion)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.messageType, forKey: .type)
-        try container.encode(protocolVersion, forKey: .protocolVersion)
+        try container.encode(expectedProtocolVersion, forKey: .expectedProtocolVersion)
         try container.encode(clientVersion, forKey: .clientVersion)
     }
 }
 
 /// Confirms that the client and server protocol versions match.
-public struct Acknowledged: Codable, Equatable, Sendable, TaggedMessage {
-    static let messageType = "acknowledged"
-
+public struct Acknowledged: Codable, Equatable, Sendable {
     public init() {}
-
-    public init(from decoder: Decoder) throws {
-        _ = try decoder.container(keyedBy: CommonCodingKeys.self)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CommonCodingKeys.self)
-        try encodeType(to: &container)
-    }
 }
 
 /// Reports incompatible client and server protocol versions.
-public struct VersionMismatch: Codable, Equatable, Sendable, TaggedMessage {
-    static let messageType = "version_mismatch"
-    public let expected: Int
-    public let got: Int
+public struct VersionMismatch: Codable, Equatable, Sendable {
+    public let serverProtocolVersion: Int
+    public let clientProtocolVersion: Int
 
-    public init(expected: Int, got: Int) {
-        self.expected = expected
-        self.got = got
+    public init(serverProtocolVersion: Int, clientProtocolVersion: Int) {
+        self.serverProtocolVersion = serverProtocolVersion
+        self.clientProtocolVersion = clientProtocolVersion
     }
 
-    private enum CodingKeys: String, CodingKey { case type, expected, got }
+    private enum CodingKeys: String, CodingKey {
+        case serverProtocolVersion = "server_protocol_version"
+        case clientProtocolVersion = "client_protocol_version"
+    }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        expected = try container.decode(Int.self, forKey: .expected)
-        got = try container.decode(Int.self, forKey: .got)
+        serverProtocolVersion = try container.decode(Int.self, forKey: .serverProtocolVersion)
+        clientProtocolVersion = try container.decode(Int.self, forKey: .clientProtocolVersion)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.messageType, forKey: .type)
-        try container.encode(expected, forKey: .expected)
-        try container.encode(got, forKey: .got)
+        try container.encode(serverProtocolVersion, forKey: .serverProtocolVersion)
+        try container.encode(clientProtocolVersion, forKey: .clientProtocolVersion)
+    }
+}
+
+/// A privacy-safe reason code for rejecting an invalid IPC frame.
+public enum MalformedMessageCode: String, Codable, Equatable, Sendable {
+    case invalidMessage = "invalid_message"
+}
+
+/// Reports an invalid IPC frame without retaining or echoing its contents.
+public struct MalformedMessage: Codable, Equatable, Sendable {
+    public let code: MalformedMessageCode
+
+    public init(code: MalformedMessageCode) {
+        self.code = code
     }
 }
 
 /// A local-only raw activity event sent to the Rust privacy boundary.
-public struct RawEventMessage: Codable, Equatable, Sendable, TaggedMessage {
-    static let messageType = "raw_event"
+public struct RawEventMessage: Codable, Equatable, Sendable {
     public let eventID: UUID
     public let occurredAt: Date
     public let appName: String
@@ -277,7 +247,6 @@ public struct RawEventMessage: Codable, Equatable, Sendable, TaggedMessage {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type
         case eventID = "event_id"
         case occurredAt = "occurred_at"
         case appName = "app_name"
@@ -296,7 +265,6 @@ public struct RawEventMessage: Codable, Equatable, Sendable, TaggedMessage {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.messageType, forKey: .type)
         try container.encode(eventID, forKey: .eventID)
         try container.encode(occurredAt, forKey: .occurredAt)
         try container.encode(appName, forKey: .appName)
@@ -312,8 +280,7 @@ public enum RawEventAcknowledgementStatus: String, Codable, Equatable, Sendable 
 }
 
 /// Acknowledges receipt of a raw event without echoing raw fields.
-public struct RawEventAcknowledgement: Codable, Equatable, Sendable, TaggedMessage {
-    static let messageType = "raw_event_ack"
+public struct RawEventAcknowledgement: Codable, Equatable, Sendable {
     public let eventID: UUID
     public let status: RawEventAcknowledgementStatus
     public let dropReason: String?
@@ -325,7 +292,6 @@ public struct RawEventAcknowledgement: Codable, Equatable, Sendable, TaggedMessa
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type
         case eventID = "event_id"
         case status
         case dropReason = "drop_reason"
@@ -340,7 +306,6 @@ public struct RawEventAcknowledgement: Codable, Equatable, Sendable, TaggedMessa
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.messageType, forKey: .type)
         try container.encode(eventID, forKey: .eventID)
         try container.encode(status, forKey: .status)
         try container.encodeIfPresent(dropReason, forKey: .dropReason)
@@ -355,8 +320,7 @@ public enum ConfidenceLevel: String, Codable, Equatable, Sendable {
 }
 
 /// A ready-to-display daily insight.
-public struct InsightPayload: Codable, Equatable, Sendable, TaggedMessage {
-    static let messageType = "insight_payload"
+public struct InsightPayload: Codable, Equatable, Sendable {
     public let date: String
     public let text: String
     public let confidenceLevel: ConfidenceLevel
@@ -372,7 +336,6 @@ public struct InsightPayload: Codable, Equatable, Sendable, TaggedMessage {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type
         case date
         case text
         case confidenceLevel = "confidence_level"
@@ -391,7 +354,6 @@ public struct InsightPayload: Codable, Equatable, Sendable, TaggedMessage {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.messageType, forKey: .type)
         try container.encode(date, forKey: .date)
         try container.encode(text, forKey: .text)
         try container.encode(confidenceLevel, forKey: .confidenceLevel)
@@ -446,8 +408,7 @@ public struct DailySummary: Codable, Equatable, Sendable {
 }
 
 /// A ready-to-display multi-day history payload.
-public struct HistoryPayload: Codable, Equatable, Sendable, TaggedMessage {
-    static let messageType = "history_payload"
+public struct HistoryPayload: Codable, Equatable, Sendable {
     public let days: Int
     public let summaries: [DailySummary]
 
@@ -456,7 +417,7 @@ public struct HistoryPayload: Codable, Equatable, Sendable, TaggedMessage {
         self.summaries = summaries
     }
 
-    private enum CodingKeys: String, CodingKey { case type, days, summaries }
+    private enum CodingKeys: String, CodingKey { case days, summaries }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -466,7 +427,6 @@ public struct HistoryPayload: Codable, Equatable, Sendable, TaggedMessage {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.messageType, forKey: .type)
         try container.encode(days, forKey: .days)
         try container.encode(summaries, forKey: .summaries)
     }
@@ -481,8 +441,7 @@ public enum ServiceState: String, Codable, Equatable, Sendable {
 }
 
 /// A privacy-safe Rust service health update.
-public struct ServiceStatus: Codable, Equatable, Sendable, TaggedMessage {
-    static let messageType = "service_status"
+public struct ServiceStatus: Codable, Equatable, Sendable {
     public let state: ServiceState
     public let reason: String?
 
@@ -491,7 +450,7 @@ public struct ServiceStatus: Codable, Equatable, Sendable, TaggedMessage {
         self.reason = reason
     }
 
-    private enum CodingKeys: String, CodingKey { case type, state, reason }
+    private enum CodingKeys: String, CodingKey { case state, reason }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -501,15 +460,24 @@ public struct ServiceStatus: Codable, Equatable, Sendable, TaggedMessage {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.messageType, forKey: .type)
         try container.encode(state, forKey: .state)
         try container.encodeIfPresent(reason, forKey: .reason)
     }
 }
 
+/// A terminal privacy rejection alert containing safe diagnostics only.
+public struct PrivacyViolationAlert: Codable, Equatable, Sendable {
+    public let code: String
+    public let message: String
+
+    public init(code: String, message: String) {
+        self.code = code
+        self.message = message
+    }
+}
+
 /// A typed error envelope that must contain only privacy-safe text.
-public struct ErrorResponse: Codable, Equatable, Sendable, TaggedMessage {
-    static let messageType = "error_response"
+public struct ErrorResponse: Codable, Equatable, Sendable {
     public let code: String
     public let message: String
     public let relatedEventID: UUID?
@@ -521,7 +489,6 @@ public struct ErrorResponse: Codable, Equatable, Sendable, TaggedMessage {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type
         case code
         case message
         case relatedEventID = "related_event_id"
@@ -536,10 +503,21 @@ public struct ErrorResponse: Codable, Equatable, Sendable, TaggedMessage {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(Self.messageType, forKey: .type)
         try container.encode(code, forKey: .code)
         try container.encode(message, forKey: .message)
         try container.encodeIfPresent(relatedEventID, forKey: .relatedEventID)
+    }
+}
+
+/// Signals that the Rust service is about to shut down.
+///
+/// Clients should disconnect and reconnect after the service restarts.
+/// The `reason` field is `"sigterm"` or `"sigint"`.
+public struct ShuttingDown: Codable, Equatable, Sendable {
+    public let reason: String
+
+    public init(reason: String) {
+        self.reason = reason
     }
 }
 

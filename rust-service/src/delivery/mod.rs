@@ -1,43 +1,20 @@
-//! Ready-to-display insight delivery interfaces.
+//! History and insight fetch, cache, and delivery pipeline (R6 + R7).
 //!
-//! This module owns fetching and sending fully formed insight and history
-//! payloads. It does not generate insight text, schedule notifications, or
-//! render UI.
+//! R6 public surface: `CacheManager`, `FetchService`, `FetchScheduler`.
+//! R7 public surface: `PushAdapter`, `PushQueue`, `PushConfig`,
+//! `PushAdapterAlertSink`, and the shaper types.
 
-#![allow(async_fn_in_trait)]
+mod cache;
+mod fetch;
+mod parser;
+pub mod push;
+mod scheduler;
+pub mod shaper;
 
-use chrono::NaiveDate;
-
-use crate::ipc::{HistoryPayload, InsightPayload};
-
-/// Fetches ready-to-display daily insights.
-pub trait InsightFetcher {
-    /// Fetches an insight for one date.
-    async fn fetch_insight(&self, date: NaiveDate) -> Result<InsightPayload, DeliveryError>;
-}
-
-/// Fetches ready-to-display history payloads.
-pub trait HistoryFetcher {
-    /// Fetches the requested number of history days.
-    async fn fetch_history(&self, days: u32) -> Result<HistoryPayload, DeliveryError>;
-}
-
-/// Delivers ready-to-display payloads to the Swift client.
-pub trait DeliveryService {
-    /// Sends a daily insight over IPC.
-    async fn deliver_insight(&self, insight: &InsightPayload) -> Result<(), DeliveryError>;
-
-    /// Sends a history payload over IPC.
-    async fn deliver_history(&self, history: &HistoryPayload) -> Result<(), DeliveryError>;
-}
-
-/// Errors produced while fetching or delivering payloads.
-#[derive(Debug, thiserror::Error)]
-pub enum DeliveryError {
-    /// Fetching a ready-to-display payload failed.
-    #[error("delivery payload fetch failed")]
-    Fetch,
-    /// Sending a ready-to-display payload failed.
-    #[error("delivery payload send failed")]
-    Send,
-}
+pub use cache::{CacheError, CacheManager, FakeCacheManager};
+pub use fetch::{FetchConfig, FetchError, FetchService, Fetchable};
+#[cfg(any(test, feature = "test-helpers"))]
+pub use push::FakePushAdapter;
+pub use push::{PushAdapter, PushAdapterAlertSink, PushConfig, PushQueue};
+pub use scheduler::FetchScheduler;
+pub use shaper::{ValidatePayload, ValidatedPayload, ValidationError};

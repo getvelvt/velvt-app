@@ -37,6 +37,7 @@ Swift Client                                      Rust Service
      |<-- raw_event_ack --------------------------------|
      |                                                  |
      |<-- service_status -------------------------------|
+     |<-- privacy_violation_alert ----------------------|
      |<-- insight_payload ------------------------------|
      |<-- history_payload ------------------------------|
      |                                                  |
@@ -46,16 +47,16 @@ Swift Client                                      Rust Service
      |--- disconnect ---------------------------------->|
 ```
 
-The first message on every new connection must be `server_hello`. Rust must not
-process later messages until it has received `client_hello` and sent either
-`acknowledged` or `version_mismatch`.
+The first message on every new connection must be `server_hello`. Rust must
+not process later messages until it has received a matching `client_hello`
+and sent `acknowledged`.
 
 Direction is enforced by the workspace message envelopes:
 
 - Rust accepts only `client_hello`, `raw_event`, and `error_response`.
 - Rust emits only `server_hello`, `acknowledged`, `version_mismatch`,
-  `raw_event_ack`, `insight_payload`, `history_payload`, `service_status`, and
-  `error_response`.
+  `malformed_message`, `raw_event_ack`, `insight_payload`, `history_payload`,
+  `service_status`, `privacy_violation_alert`, and `error_response`.
 - Swift sends only the Rust inbound set and accepts only the Rust outbound set.
 
 ## 3. Message Catalog
@@ -63,38 +64,28 @@ Direction is enforced by the workspace message envelopes:
 All schemas use JSON Schema draft-07 and reject undeclared fields with
 `additionalProperties: false`.
 
-Optional-field encoding is strict. Omit absent `drop_reason`, `reason`, and
-`related_event_id` properties entirely. Only `raw_event.bundle_id` is nullable
-and may be encoded as JSON `null`.
+Every message uses a `type` discriminant and a `payload` object. Catalog fields
+listed below live inside `payload`.
 
-### `server_hello`
-
-Direction: Rust to Swift. Purpose: announce the server protocol version.
-
-- `type`: literal `server_hello`
-- `protocol_version`: positive integer matching Rust's supported version
+Optional-field encoding is strict. Omit absent `rejection_reason`,
+`drop_reason`, `reason`, and `related_event_id` properties entirely. Only
+`raw_event.bundle_id` is nullable and may be encoded as JSON `null`.
 
 ### `client_hello`
 
-Direction: Swift to Rust. Purpose: declare the client and protocol versions.
+Direction: Swift to Rust. Purpose: respond to the server hello with the
+expected protocol version.
 
 - `type`: literal `client_hello`
-- `protocol_version`: positive integer matching `proto/version`
+- `expected_protocol_version`: positive integer matching `proto/version`
 - `client_version`: semantic-version string
 
-### `acknowledged`
+### `server_hello`
 
-Direction: Rust to Swift. Purpose: accept protocol negotiation.
+Direction: Rust to Swift. Purpose: declare the server protocol version.
 
-- `type`: literal `acknowledged`
-
-### `version_mismatch`
-
-Direction: Rust to Swift. Purpose: reject incompatible protocol negotiation.
-
-- `type`: literal `version_mismatch`
-- `expected`: positive integer required by Rust
-- `got`: incompatible positive integer supplied by Swift
+- `type`: literal `server_hello`
+- `protocol_version`: positive integer matching Rust's supported version
 
 ### `raw_event`
 
@@ -167,21 +158,29 @@ Direction: either direction. Purpose: provide a typed, safe error envelope.
 Error messages and reasons must never contain raw event content, tokens, or
 insight text.
 
+### `privacy_violation_alert`
+
+Direction: Rust to Swift. Purpose: report that the cloud rejected an upload
+batch for a terminal privacy violation.
+
+- `type`: literal `privacy_violation_alert`
+- `code`: literal `raw_field_rejected`
+- `message`: safe server-supplied rejection diagnostic; never the batch payload
+
 ## 4. Version Negotiation
 
 The current version is the integer stored in `proto/version`.
 
 ### Matching Version
 
-1. Rust sends `server_hello` immediately after accepting the socket.
-2. Swift sends `client_hello`.
-3. Rust compares the client's version with its supported protocol version.
-4. Rust sends `acknowledged`.
-5. Both sides may exchange other messages.
+1. Rust sends `server_hello` immediately after Swift connects.
+2. Swift sends `client_hello` with its expected protocol version.
+3. Rust sends `acknowledged`.
+4. Both sides may exchange other messages.
 
 ### Mismatched Version
 
-1. Rust sends `version_mismatch` with the expected and received versions.
+1. Rust sends `version_mismatch` with both numeric protocol versions.
 2. Rust does not process later messages on that connection.
 3. The connection closes cleanly. Messages must never be silently dropped
    because of a version mismatch.
@@ -223,7 +222,8 @@ To add or change an IPC message:
    carrier.
 5. Bump `proto/version` for incompatible changes or new message types.
 6. Update `proto/CHANGELOG.md`.
-7. Update Rust DTOs, dispatch, and tests.
+7. Update Rust DTOs and contract tests; register business handling only when
+   the issue implementing that behavior is in scope.
 8. Update Swift DTOs, dispatch, and tests.
 9. Verify forbidden raw fields cannot appear in privacy-safe messages or
    upload payloads.
@@ -242,24 +242,36 @@ messages and compare their JSON keys and discriminator values to the schemas.
 1. Read the socket path and protocol version from typed configuration sourced
    from `proto/ipc_socket_path` and `proto/version`; do not hardcode either.
 2. Bind the Unix domain socket and use newline-delimited JSON framing.
-3. Decode only Rust `InboundMessage` variants.
-4. Send `server_hello` first, require `client_hello` next, and accept only an
-   exact protocol-version match.
+3. Decode only Rust `ClientMessage` variants.
+4. Send `server_hello`, then require `client_hello` with an exact
+   protocol-version match.
 5. On mismatch, send `version_mismatch`, then close cleanly.
 6. Do not dispatch `raw_event` until the handshake is accepted.
-7. Send only Rust `OutboundMessage` variants and omit absent optional fields
+7. Send only Rust `ServerMessage` variants and omit absent optional fields
    according to the message-catalog rule above.
 8. Never log decoded message content or echo raw fields in errors.
 9. Add schema-contract tests for every inbound and outbound message.
+
+### R1 Extensibility Proof
+
+`ClientMessage` is non-exhaustive outside `velvt-shared-types`, and the R1
+default router validates post-handshake DTOs without enumerating normal
+variants. A test-only `dummy_extension` variant in the shared-types unit tests
+proves that a tagged DTO variant can be added and serialized without changing
+existing service handler or transport files. The same compile proof is
+available with `cargo check --workspace --features
+velvt-shared-types/extensibility-proof`. Production message additions still
+require the coordinated `proto/`, Rust DTO, Swift DTO, and versioning steps
+above.
 
 ### S1 Swift IPC Client Implementation Checklist
 
 1. Read the socket path, protocol version, and client version from typed
    configuration; do not hardcode them.
 2. Connect with a Unix domain socket, not `URLSession`.
-3. Receive `server_hello`, send `client_hello`, then wait for `acknowledged` or
-   `version_mismatch`.
-4. Do not report `connected` or send `raw_event` until `acknowledged`.
+3. Send `client_hello` after receiving `server_hello`.
+4. Do not report `connected` or send `raw_event` until Rust accepts the
+   handshake.
 5. Encode only `ClientMessage` variants and decode only `ServerMessage`
    variants.
 6. Preserve exact schema field names, discriminator values, timestamp formats,
@@ -277,6 +289,12 @@ The canonical path is read from `proto/ipc_socket_path`; neither workspace may
 hardcode it. Rust expands `~`, creates the parent directory with user-only
 permissions, and binds the Unix domain socket. Swift opens the connection at
 application launch.
+
+Rust configuration overrides:
+
+- `VELVT_IPC_SOCKET_PATH`: Unix socket path override.
+- `VELVT_IPC_MAX_ERRORS`: positive malformed-frame threshold per connection.
+- `VELVT_LOG_LEVEL`: structured tracing filter, defaulting to `info`.
 
 ### Stale Socket Handling
 

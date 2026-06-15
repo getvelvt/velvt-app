@@ -1,23 +1,20 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "PRIVACY: This message type must never contain raw app names, window titles, bundle IDs, URLs, file paths, filenames, contact names, email addresses, or any other raw identifying user data.",
+  "$comment": "PRIVACY: This message must never contain raw identifying user data.",
   "title": "Service Status",
-  "description": "Rust service health state notification delivered to Swift.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["type", "state"],
+  "required": ["type", "payload"],
   "properties": {
-    "type": {
-      "type": "string",
-      "enum": ["service_status"]
-    },
-    "state": {
-      "type": "string",
-      "enum": ["ready", "degraded", "upload_paused", "auth_required"]
-    },
-    "reason": {
-      "type": "string",
-      "minLength": 1
+    "type": { "const": "service_status" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": { "enum": ["ready", "degraded", "upload_paused", "auth_required"] },
+        "reason": { "type": "string", "minLength": 1 }
+      }
     }
   }
 }

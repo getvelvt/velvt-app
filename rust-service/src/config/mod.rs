@@ -36,6 +36,16 @@ pub struct ServiceConfig {
     pub upload_flush_interval: Duration,
     pub upload_api_base_url: String,
     pub upload_retry_scan_interval: Duration,
+    /// TTL for daily history cache entries.
+    pub history_ttl: Duration,
+    /// TTL for daily insight cache entries (positive responses).
+    pub insight_ttl: Duration,
+    /// TTL for negative insight cache entries (404 responses).
+    pub insight_negative_ttl: Duration,
+    /// Maximum time a cache read may block before being treated as a miss.
+    pub cache_read_timeout: Duration,
+    /// Minimum interval between proactive fetch scheduler runs.
+    pub fetch_interval: Duration,
 }
 
 impl ServiceConfig {
@@ -60,6 +70,23 @@ impl ServiceConfig {
         {
             return Err(ConfigError::Invalid);
         }
+
+        let history_ttl_seconds = parse_env("VELVT_HISTORY_TTL_SECONDS", 600_u64)?;
+        let insight_ttl_seconds = parse_env("VELVT_INSIGHT_TTL_SECONDS", 1800_u64)?;
+        let insight_negative_ttl_seconds =
+            parse_env("VELVT_INSIGHT_NEGATIVE_TTL_SECONDS", 300_u64)?;
+        let cache_read_timeout_ms = parse_env("VELVT_CACHE_READ_TIMEOUT_MS", 200_u64)?;
+        let fetch_interval_seconds = parse_env("VELVT_FETCH_INTERVAL_SECONDS", 600_u64)?;
+
+        if history_ttl_seconds == 0
+            || insight_ttl_seconds == 0
+            || insight_negative_ttl_seconds == 0
+            || cache_read_timeout_ms == 0
+            || fetch_interval_seconds == 0
+        {
+            return Err(ConfigError::Invalid);
+        }
+
         Ok(Self {
             socket_path: expand_home(&socket_path)?,
             database_path: database_path()?,
@@ -79,6 +106,11 @@ impl ServiceConfig {
             upload_api_base_url: std::env::var("VELVT_API_BASE_URL")
                 .unwrap_or_else(|_| "https://api.velvt.test".into()),
             upload_retry_scan_interval: Duration::from_secs(upload_retry_scan_seconds),
+            history_ttl: Duration::from_secs(history_ttl_seconds),
+            insight_ttl: Duration::from_secs(insight_ttl_seconds),
+            insight_negative_ttl: Duration::from_secs(insight_negative_ttl_seconds),
+            cache_read_timeout: Duration::from_millis(cache_read_timeout_ms),
+            fetch_interval: Duration::from_secs(fetch_interval_seconds),
         })
     }
 }

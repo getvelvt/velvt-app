@@ -81,6 +81,7 @@ fn response(status: u16, code: Option<&str>, body: Option<TokenPair>) -> HttpRes
         tokens: body,
         retry_after: None,
         message: None,
+        raw_body: None,
     }
 }
 

@@ -524,6 +524,11 @@ impl HistoryCacheRepo for SqliteHistoryCacheRepo {
     fn invalidate(&self, date: &str) -> Result<u64, PersistenceError> {
         invalidate_cache(&self.0, "DELETE FROM history_cache WHERE date = ?1", date)
     }
+
+    fn invalidate_all(&self) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        Ok(connection.execute("DELETE FROM history_cache", [])? as u64)
+    }
 }
 
 #[derive(Clone)]
@@ -531,14 +536,33 @@ struct SqliteInsightCacheRepo(SqlitePersistence);
 
 impl InsightCacheRepo for SqliteInsightCacheRepo {
     fn upsert(&self, entry: &InsightCacheEntry) -> Result<(), PersistenceError> {
-        upsert_cache(
-            &self.0,
-            "INSERT INTO insight_cache(date, payload, ttl) VALUES (?1, ?2, ?3)
-             ON CONFLICT(date) DO UPDATE SET payload = excluded.payload, ttl = excluded.ttl",
-            &entry.date,
-            &entry.payload,
-            entry.expires_at,
-        )
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO insight_cache(date, payload, ttl, not_found) VALUES (?1, ?2, ?3, 0)
+             ON CONFLICT(date) DO UPDATE SET
+                payload = excluded.payload,
+                ttl = excluded.ttl,
+                not_found = 0",
+            params![entry.date, entry.payload, entry.expires_at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn upsert_negative(
+        &self,
+        date: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO insight_cache(date, payload, ttl, not_found) VALUES (?1, 'null', ?2, 1)
+             ON CONFLICT(date) DO UPDATE SET
+                payload = 'null',
+                ttl = excluded.ttl,
+                not_found = 1",
+            params![date, expires_at.timestamp()],
+        )?;
+        Ok(())
     }
 
     fn get(&self, date: &str) -> Result<Option<InsightCacheEntry>, PersistenceError> {
@@ -547,6 +571,11 @@ impl InsightCacheRepo for SqliteInsightCacheRepo {
 
     fn invalidate(&self, date: &str) -> Result<u64, PersistenceError> {
         invalidate_cache(&self.0, "DELETE FROM insight_cache WHERE date = ?1", date)
+    }
+
+    fn invalidate_all(&self) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        Ok(connection.execute("DELETE FROM insight_cache", [])? as u64)
     }
 }
 
@@ -684,13 +713,15 @@ fn get_insight_cache(
     let connection = persistence.connection()?;
     connection
         .query_row(
-            "SELECT date, payload, ttl FROM insight_cache WHERE date = ?1 AND ttl > unixepoch()",
+            "SELECT date, payload, ttl, not_found
+             FROM insight_cache WHERE date = ?1 AND ttl > unixepoch()",
             [date],
             |row| {
                 Ok(InsightCacheEntry {
                     date: row.get(0)?,
                     payload: row.get(1)?,
                     expires_at: timestamp_from_row(row, 2)?,
+                    is_negative: row.get::<_, i32>(3)? != 0,
                 })
             },
         )
@@ -748,5 +779,48 @@ mod tests {
             .unwrap()
             .iter()
             .any(|name| name == "persistence_migration_probe"));
+    }
+
+    #[test]
+    fn migration_0004_not_found_column_is_functional() {
+        use chrono::Utc;
+
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        connection
+            .execute_batch(include_str!(
+                "../../migrations/0001_initial_persistence.sql"
+            ))
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migration(version, name) VALUES (1, '0001_initial_persistence.sql')",
+                [],
+            )
+            .unwrap();
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+        database.run_migrations().unwrap();
+
+        // After migration 0004, upsert_negative must succeed and round-trip.
+        let repo = database.insight_cache_repo();
+        let expires_at = Utc::now() + chrono::Duration::hours(1);
+        repo.upsert_negative("2026-01-01", expires_at).unwrap();
+        let entry = repo
+            .get("2026-01-01")
+            .unwrap()
+            .expect("negative entry not found");
+        assert!(entry.is_negative, "is_negative flag not set");
+        assert_eq!(entry.date, "2026-01-01");
     }
 }

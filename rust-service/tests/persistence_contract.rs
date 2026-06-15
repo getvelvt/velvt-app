@@ -163,6 +163,7 @@ fn insight_cache_repo_contract() {
         date: "2026-06-14".into(),
         payload: "Ready-to-display local insight".into(),
         expires_at: timestamp(2_000_000_000) + Duration::days(1),
+        is_negative: false,
     };
 
     repository.upsert(&entry).unwrap();

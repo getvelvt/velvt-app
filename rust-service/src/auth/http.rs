@@ -49,6 +49,8 @@ pub struct HttpResponse {
     pub tokens: Option<TokenPair>,
     pub retry_after: Option<String>,
     pub message: Option<String>,
+    /// Raw response body as a parsed JSON value, available for non-auth endpoints.
+    pub raw_body: Option<serde_json::Value>,
 }
 
 pub trait HttpClient: Send + Sync {
@@ -98,7 +100,9 @@ impl HttpClient for ReqwestHttpClient {
                 .get(reqwest::header::RETRY_AFTER)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
-            let body = response.json::<ApiResponse>().await.unwrap_or_default();
+            let bytes = response.bytes().await.unwrap_or_default();
+            let raw_body: Option<serde_json::Value> = serde_json::from_slice(&bytes).ok();
+            let body: ApiResponse = serde_json::from_slice(&bytes).unwrap_or_default();
             let error_code = body.code.clone();
             let message = body.message.clone();
             Ok(HttpResponse {
@@ -107,6 +111,7 @@ impl HttpClient for ReqwestHttpClient {
                 tokens: body.into_tokens(),
                 retry_after,
                 message,
+                raw_body,
             })
         })
     }

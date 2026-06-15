@@ -350,6 +350,46 @@ public struct DeviceRevokedView: View {
     }
 }
 
+// MARK: - PendingDeletionView
+
+/// Shown when the app relaunches while an account-deletion request is still
+/// in flight. Blocks all normal use until the Rust service acknowledges the
+/// erasure or the request is explicitly cancelled.
+public struct PendingDeletionView: View {
+    private let onCancel: () -> Void
+
+    public init(onCancel: @escaping () -> Void) {
+        self.onCancel = onCancel
+    }
+
+    public var body: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            ProgressView()
+                .scaleEffect(1.5)
+
+            VStack(spacing: 8) {
+                Text("Account deletion in progress")
+                    .font(.title2)
+                    .bold()
+                Text("Your account data is being erased.\nThis may take a moment.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("Cancel Deletion") {
+                onCancel()
+            }
+            .buttonStyle(.bordered)
+            .foregroundStyle(.red)
+
+            Spacer()
+        }
+        .padding(40)
+        .frame(minWidth: 360, minHeight: 260)
+    }
+}
+
 // MARK: - NeedsReauthView
 
 /// Shown when the account is in `.loggedOut` after a session expired.

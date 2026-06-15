@@ -15,6 +15,9 @@ public enum KeychainKey: String, CaseIterable, Sendable {
     case accessToken = "velvt.access_token"
     case refreshToken = "velvt.refresh_token"
     case userId = "velvt.user_id"
+    /// Sentinel written when the state machine enters `.pendingErasure` so that
+    /// a relaunch mid-deletion can restore the correct state and block normal use.
+    case pendingDeletion = "velvt.pending_deletion"
 }
 
 // MARK: - KeychainProtocol
@@ -180,8 +183,14 @@ public final class AccountStateManager: ObservableObject {
     /// their `_`-prefixed wrappers during the init phase is safe per SE-0327.
     nonisolated public init(keychain: any KeychainProtocol) {
         self.keychain = keychain
-        let initialState: AccountState = (try? keychain.load(for: .userId))
-            .map { .loggedIn(userId: $0) } ?? .loggedOut
+        let storedUserId = try? keychain.load(for: .userId)
+        let isPendingDeletion = (try? keychain.load(for: .pendingDeletion)) != nil
+        let initialState: AccountState
+        if let uid = storedUserId {
+            initialState = isPendingDeletion ? .pendingErasure : .loggedIn(userId: uid)
+        } else {
+            initialState = .loggedOut
+        }
         _accountState = Published(wrappedValue: initialState)
         _isDeviceRevoked = Published(wrappedValue: false)
         serverMessages = PassthroughSubject()
@@ -197,6 +206,11 @@ public final class AccountStateManager: ObservableObject {
                 "Rejected invalid AccountState transition: \(String(describing: self.accountState)) → \(String(describing: newState))"
             )
             return
+        }
+        // Persist the pendingDeletion sentinel so a relaunch mid-erasure can
+        // restore the correct blocking state.
+        if case .pendingErasure = newState {
+            try? keychain.store(token: "1", for: .pendingDeletion)
         }
         accountState = newState
     }
@@ -216,6 +230,7 @@ public final class AccountStateManager: ObservableObject {
     public func cancelPendingErasure() {
         guard case .pendingErasure = accountState,
               let userId = try? keychain.load(for: .userId) else { return }
+        try? keychain.delete(for: .pendingDeletion)
         accountState = .loggedIn(userId: userId)
     }
 
@@ -234,6 +249,19 @@ public final class AccountStateManager: ObservableObject {
             for await message in client.incomingMessages {
                 guard let self, !Task.isCancelled else { break }
                 self.handle(message)
+            }
+            // Stream ended while the task was not cancelled — the IPC connection
+            // dropped unexpectedly. Revert transient states so the UI does not
+            // become stuck in a loading/loggingIn/loggingOut limbo.
+            // pendingErasure is intentionally NOT reverted: the Rust service may
+            // have already received the delete request and the sentinel must
+            // survive until the next connection confirms or cancels the erasure.
+            guard let self, !Task.isCancelled else { return }
+            switch self.accountState {
+            case .loggingIn, .loggingOut:
+                self.accountState = .loggedOut
+            default:
+                break
             }
         }
     }

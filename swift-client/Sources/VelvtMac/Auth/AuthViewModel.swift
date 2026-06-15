@@ -37,6 +37,10 @@ public final class AuthViewModel: ObservableObject {
 
     public func signUp() async {
         guard !isLoading else { return }
+        guard !email.trimmingCharacters(in: .whitespaces).isEmpty, !password.isEmpty else {
+            errorMessage = "Email and password are required."
+            return
+        }
         startLoading()
         accountStateManager.transition(to: .loggingIn)
         do {
@@ -49,6 +53,10 @@ public final class AuthViewModel: ObservableObject {
 
     public func logIn() async {
         guard !isLoading else { return }
+        guard !email.trimmingCharacters(in: .whitespaces).isEmpty, !password.isEmpty else {
+            errorMessage = "Email and password are required."
+            return
+        }
         startLoading()
         accountStateManager.transition(to: .loggingIn)
         do {
@@ -96,14 +104,21 @@ public final class AuthViewModel: ObservableObject {
 
     private func bindStateObservation() {
         // Stop loading when state resolves from loggingIn to loggedIn or loggedOut.
+        // If state reverts to loggedOut while we were loading and no server error
+        // has already been set, the IPC connection dropped — show a generic error.
         accountStateManager.$accountState
             .dropFirst()
             .receive(on: RunLoop.main)
             .sink { [weak self] state in
                 guard let self, self.isLoading else { return }
                 switch state {
-                case .loggedIn, .loggedOut:
+                case .loggedIn:
                     self.isLoading = false
+                case .loggedOut:
+                    self.isLoading = false
+                    if self.errorMessage == nil {
+                        self.errorMessage = "Connection lost. Please try again."
+                    }
                 default:
                     break
                 }

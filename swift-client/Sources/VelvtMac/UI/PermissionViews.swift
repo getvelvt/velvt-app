@@ -143,6 +143,10 @@ public struct PermissionRootView: View {
             DeviceRevokedView {
                 accountStateManager.clearDeviceRevokedFlag()
             }
+        } else if case .pendingErasure = accountStateManager.accountState {
+            PendingDeletionView {
+                accountStateManager.cancelPendingErasure()
+            }
         } else if presentation.showsOnboarding || !isLoggedIn {
             // skipToAuth is true when permissions are done but the user is
             // logged out (re-auth after session expiry).

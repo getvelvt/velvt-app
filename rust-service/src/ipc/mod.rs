@@ -10,13 +10,15 @@ pub use velvt_shared_types::*;
 
 mod codec;
 mod connection;
+mod reconnect;
 mod router;
 pub mod transport;
 
 pub use connection::{
     serve_connection, serve_connection_with_auth_state, serve_connection_with_notifications,
-    serve_connection_with_push_queue,
+    serve_connection_with_push_queue, serve_connection_with_push_queue_and_shutdown,
 };
+pub use reconnect::ReconnectTracker;
 pub use router::{DefaultRouter, MessageRouter, R7Router};
 
 /// Errors produced by IPC transport or protocol handling.

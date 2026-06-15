@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::watch;
 use velvt_shared_types::{
     Acknowledged, MalformedMessage, MalformedMessageCode, ServerHello, ServerMessage, ServiceState,
     ServiceStatus, VersionMismatch, PROTOCOL_VERSION,
@@ -19,7 +20,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     R: MessageRouter,
 {
-    serve_connection_inner(stream, router, max_errors, None, None, None, Duration::ZERO).await
+    serve_connection_inner(stream, router, max_errors, None, None, None, Duration::ZERO, None).await
 }
 
 /// Serves one connection and pushes privacy-safe authentication state changes.
@@ -41,6 +42,7 @@ where
         None,
         None,
         Duration::ZERO,
+        None,
     )
     .await
 }
@@ -64,6 +66,7 @@ where
         Some(privacy_alerts),
         None,
         Duration::ZERO,
+        None,
     )
     .await
 }
@@ -93,10 +96,43 @@ where
         None,
         Some(push_queue),
         write_timeout,
+        None,
     )
     .await
 }
 
+/// Serves one connection with a bounded push queue and graceful shutdown support.
+///
+/// When `shutdown_rx` fires `true`, any remaining items in the push queue
+/// (including a pre-enqueued `ShuttingDown` message placed at the front by the
+/// caller) are flushed to the client before the connection is closed.
+pub async fn serve_connection_with_push_queue_and_shutdown<S, R>(
+    stream: S,
+    router: R,
+    max_errors: usize,
+    auth_states: Option<tokio::sync::watch::Receiver<AuthState>>,
+    push_queue: Arc<PushQueue>,
+    write_timeout: Duration,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), IpcError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    R: MessageRouter,
+{
+    serve_connection_inner(
+        stream,
+        router,
+        max_errors,
+        auth_states,
+        None,
+        Some(push_queue),
+        write_timeout,
+        Some(shutdown_rx),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn serve_connection_inner<S, R>(
     stream: S,
     router: R,
@@ -107,6 +143,7 @@ async fn serve_connection_inner<S, R>(
     >,
     push_queue: Option<Arc<PushQueue>>,
     write_timeout: Duration,
+    mut shutdown_rx: Option<watch::Receiver<bool>>,
 ) -> Result<(), IpcError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -184,6 +221,16 @@ where
                 // A message was enqueued; loop back to drain it.
                 continue;
             }
+            _ = next_shutdown(&mut shutdown_rx) => {
+                // Shutdown fired: drain remaining push messages (ShuttingDown is at front)
+                // then close the connection gracefully.
+                if let Some(queue) = &push_queue {
+                    while let Some(msg) = queue.try_pop().await {
+                        let _ = write_server_message(&mut writer, &msg).await;
+                    }
+                }
+                return Ok(());
+            }
         };
         let Some(frame) = frame else {
             return Ok(());
@@ -247,6 +294,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::PrivacyViolationAlert(_) => "privacy_violation_alert",
         ServerMessage::ErrorResponse(_) => "error_response",
         ServerMessage::CacheEmpty(_) => "cache_empty",
+        ServerMessage::ShuttingDown(_) => "shutting_down",
     }
 }
 
@@ -276,6 +324,22 @@ async fn next_auth_state(
     };
     receiver.changed().await.ok()?;
     Some(receiver.borrow().clone())
+}
+
+/// Resolves when `rx` fires `true` or the sender is dropped.  Never resolves
+/// when `rx` is `None` (allows this arm to be permanently disabled).
+async fn next_shutdown(rx: &mut Option<watch::Receiver<bool>>) {
+    let Some(rx) = rx else {
+        return std::future::pending().await;
+    };
+    loop {
+        if rx.changed().await.is_err() {
+            return;
+        }
+        if *rx.borrow() {
+            return;
+        }
+    }
 }
 
 fn auth_status_message(state: AuthState) -> ServerMessage {

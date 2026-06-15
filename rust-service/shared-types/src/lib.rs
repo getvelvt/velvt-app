@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +62,8 @@ pub enum ServerMessage {
     ErrorResponse(ErrorResponse),
     /// The requested payload has no cached entry; `payload_type` names what was requested.
     CacheEmpty(CacheEmpty),
+    /// Sent to all connected clients during graceful service shutdown.
+    ShuttingDown(ShuttingDown),
 }
 
 /// Server's first message on every connection.
@@ -275,6 +277,14 @@ pub struct RequestLatestHistory {
 pub struct CacheEmpty {
     /// Which payload type was requested (`"insight_payload"` or `"history_payload"`).
     pub payload_type: String,
+}
+
+/// Sent to all connected clients during a graceful service shutdown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShuttingDown {
+    /// Machine-readable shutdown reason (`"sigterm"` or `"sigint"`).
+    pub reason: String,
 }
 
 /// Typed IPC error envelope.

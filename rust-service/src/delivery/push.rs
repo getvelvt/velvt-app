@@ -54,6 +54,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::MalformedMessage(_) => "malformed_message",
         ServerMessage::RawEventAck(_) => "raw_event_ack",
         ServerMessage::ErrorResponse(_) => "error_response",
+        ServerMessage::ShuttingDown(_) => "shutting_down",
     }
 }
 
@@ -220,6 +221,17 @@ impl PushAdapter {
                 );
             }
         }
+    }
+
+    /// Enqueues a `ShuttingDown` message at the front of the queue so it is
+    /// delivered before any pending payloads.  Called during graceful shutdown
+    /// before the cancellation token is set.
+    pub async fn push_shutting_down(&self, reason: &str) {
+        self.queue
+            .enqueue_urgent(ServerMessage::ShuttingDown(velvt_shared_types::ShuttingDown {
+                reason: reason.to_owned(),
+            }))
+            .await;
     }
 }
 

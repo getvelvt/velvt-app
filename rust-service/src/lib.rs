@@ -5,5 +5,7 @@ pub mod auth;
 pub mod config;
 pub mod delivery;
 pub mod ipc;
+pub mod lifecycle;
 pub mod persistence;
+pub mod retention;
 pub mod upload;

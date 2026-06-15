@@ -50,6 +50,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case serviceStatus(ServiceStatus)
     case privacyViolationAlert(PrivacyViolationAlert)
     case errorResponse(ErrorResponse)
+    /// Sent by the Rust service before a graceful shutdown.
+    case shuttingDown(ShuttingDown)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
@@ -79,6 +81,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .privacyViolationAlert(try PrivacyViolationAlert(from: payload))
         case "error_response":
             self = .errorResponse(try ErrorResponse(from: payload))
+        case "shutting_down":
+            self = .shuttingDown(try ShuttingDown(from: payload))
         default:
             self = .unknown(type: type)
         }
@@ -116,6 +120,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .errorResponse(value):
             try envelope.encode("error_response", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .shuttingDown(value):
+            try envelope.encode("shutting_down", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .unknown(type):
             try envelope.encode(type, forKey: .type)
@@ -499,6 +506,18 @@ public struct ErrorResponse: Codable, Equatable, Sendable {
         try container.encode(code, forKey: .code)
         try container.encode(message, forKey: .message)
         try container.encodeIfPresent(relatedEventID, forKey: .relatedEventID)
+    }
+}
+
+/// Signals that the Rust service is about to shut down.
+///
+/// Clients should disconnect and reconnect after the service restarts.
+/// The `reason` field is `"sigterm"` or `"sigint"`.
+public struct ShuttingDown: Codable, Equatable, Sendable {
+    public let reason: String
+
+    public init(reason: String) {
+        self.reason = reason
     }
 }
 

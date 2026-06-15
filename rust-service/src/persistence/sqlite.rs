@@ -163,6 +163,35 @@ impl SqlitePersistence {
             .lock()
             .map_err(|_| PersistenceError::LockUnavailable)
     }
+
+    // ------------------------------------------------------------------
+    // Test-setup helpers — public for integration tests, never call in
+    // production code; name suffix "_for_test" documents intent.
+    // ------------------------------------------------------------------
+
+    /// Sets `created_at` for ALL current rows in `raw_event_buffer`.
+    /// Used in retention integration tests to simulate aged rows.
+    pub fn set_all_raw_event_created_at_for_test(
+        &self,
+        unix_ts: i64,
+    ) -> Result<usize, PersistenceError> {
+        let conn = self.connection()?;
+        conn.execute(
+            "UPDATE raw_event_buffer SET created_at = ?1",
+            params![unix_ts],
+        )
+        .map_err(Into::into)
+    }
+
+    /// Returns the number of rows in `raw_event_buffer`.
+    pub fn count_raw_events_for_test(&self) -> Result<usize, PersistenceError> {
+        let conn = self.connection()?;
+        conn.query_row("SELECT COUNT(*) FROM raw_event_buffer", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|n| n as usize)
+        .map_err(Into::into)
+    }
 }
 
 #[derive(Clone)]
@@ -294,6 +323,21 @@ impl RawEventRepo for SqliteRawEventRepo {
         let deleted = connection.execute(
             "DELETE FROM raw_event_buffer WHERE occurred_at < ?1",
             [cutoff.timestamp()],
+        )?;
+        Ok(deleted as u64)
+    }
+
+    fn delete_expired_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let deleted = connection.execute(
+            "DELETE FROM raw_event_buffer WHERE id IN (
+                 SELECT id FROM raw_event_buffer WHERE created_at < ?1 LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
         )?;
         Ok(deleted as u64)
     }
@@ -500,6 +544,36 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
         let connection = self.0.connection()?;
         add_event_to_batch(&connection, batch_id, event)
     }
+
+    fn delete_sent_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let deleted = connection.execute(
+            "DELETE FROM upload_batch WHERE id IN (
+                 SELECT id FROM upload_batch WHERE status = 'sent' AND sent_at < ?1 LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+
+    fn delete_rejected_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let deleted = connection.execute(
+            "DELETE FROM upload_batch WHERE id IN (
+                 SELECT id FROM upload_batch WHERE status = 'rejected' AND created_at < ?1 LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
 }
 
 #[derive(Clone)]
@@ -528,6 +602,21 @@ impl HistoryCacheRepo for SqliteHistoryCacheRepo {
     fn invalidate_all(&self) -> Result<u64, PersistenceError> {
         let connection = self.0.connection()?;
         Ok(connection.execute("DELETE FROM history_cache", [])? as u64)
+    }
+
+    fn delete_expired_batch(
+        &self,
+        grace_cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let deleted = connection.execute(
+            "DELETE FROM history_cache WHERE id IN (
+                 SELECT id FROM history_cache WHERE ttl < ?1 LIMIT ?2
+             )",
+            params![grace_cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
     }
 }
 
@@ -576,6 +665,21 @@ impl InsightCacheRepo for SqliteInsightCacheRepo {
     fn invalidate_all(&self) -> Result<u64, PersistenceError> {
         let connection = self.0.connection()?;
         Ok(connection.execute("DELETE FROM insight_cache", [])? as u64)
+    }
+
+    fn delete_expired_batch(
+        &self,
+        grace_cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let deleted = connection.execute(
+            "DELETE FROM insight_cache WHERE id IN (
+                 SELECT id FROM insight_cache WHERE ttl < ?1 LIMIT ?2
+             )",
+            params![grace_cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
     }
 }
 

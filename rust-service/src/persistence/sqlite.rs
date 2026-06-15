@@ -192,6 +192,38 @@ impl SqlitePersistence {
         .map(|n| n as usize)
         .map_err(Into::into)
     }
+
+    /// Sets `sent_at` for ALL current rows in `upload_batch`.
+    /// Used in retention integration tests to simulate aged sent batches.
+    pub fn set_all_upload_batch_sent_at_for_test(
+        &self,
+        unix_ts: i64,
+    ) -> Result<usize, PersistenceError> {
+        let conn = self.connection()?;
+        conn.execute("UPDATE upload_batch SET sent_at = ?1", params![unix_ts])
+            .map_err(Into::into)
+    }
+
+    /// Sets `created_at` for ALL current rows in `upload_batch`.
+    /// Used in retention integration tests to simulate aged rejected batches.
+    pub fn set_all_upload_batch_created_at_for_test(
+        &self,
+        unix_ts: i64,
+    ) -> Result<usize, PersistenceError> {
+        let conn = self.connection()?;
+        conn.execute("UPDATE upload_batch SET created_at = ?1", params![unix_ts])
+            .map_err(Into::into)
+    }
+
+    /// Returns the number of rows in `upload_batch`.
+    pub fn count_upload_batches_for_test(&self) -> Result<usize, PersistenceError> {
+        let conn = self.connection()?;
+        conn.query_row("SELECT COUNT(*) FROM upload_batch", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|n| n as usize)
+        .map_err(Into::into)
+    }
 }
 
 #[derive(Clone)]

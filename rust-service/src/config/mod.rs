@@ -52,7 +52,6 @@ pub struct ServiceConfig {
     pub push_write_timeout: Duration,
 
     // --- R8 lifecycle ---
-
     /// How long raw events are kept in `raw_event_buffer` before expiry.
     pub raw_event_ttl: Duration,
     /// How often the retention scheduler runs.
@@ -120,8 +119,7 @@ impl ServiceConfig {
         let retention_batch_size = parse_env("VELVT_RETENTION_BATCH_SIZE", 500_usize)?;
         let sent_batch_retention_days = parse_env("VELVT_SENT_BATCH_RETENTION_DAYS", 30_u64)?;
         let rejected_batch_audit_days = parse_env("VELVT_REJECTED_BATCH_AUDIT_DAYS", 7_u64)?;
-        let cache_expiry_grace_seconds =
-            parse_env("VELVT_CACHE_EXPIRY_GRACE_SECONDS", 3600_u64)?;
+        let cache_expiry_grace_seconds = parse_env("VELVT_CACHE_EXPIRY_GRACE_SECONDS", 3600_u64)?;
         let shutdown_deadline_seconds = parse_env("VELVT_SHUTDOWN_DEADLINE_SECONDS", 10_u64)?;
         let reconnect_window_seconds = parse_env("VELVT_RECONNECT_WINDOW_SECONDS", 30_u64)?;
 
@@ -163,14 +161,10 @@ impl ServiceConfig {
             push_queue_capacity,
             push_write_timeout: Duration::from_millis(push_write_timeout_ms),
             raw_event_ttl: Duration::from_secs(raw_event_ttl_hours * 3600),
-            raw_event_expiry_interval: Duration::from_secs(
-                raw_event_expiry_interval_minutes * 60,
-            ),
+            raw_event_expiry_interval: Duration::from_secs(raw_event_expiry_interval_minutes * 60),
             retention_batch_size,
             sent_batch_retention: Duration::from_secs(sent_batch_retention_days * 86400),
-            rejected_batch_audit_period: Duration::from_secs(
-                rejected_batch_audit_days * 86400,
-            ),
+            rejected_batch_audit_period: Duration::from_secs(rejected_batch_audit_days * 86400),
             cache_expiry_grace: Duration::from_secs(cache_expiry_grace_seconds),
             shutdown_deadline: Duration::from_secs(shutdown_deadline_seconds),
             reconnect_window: Duration::from_secs(reconnect_window_seconds),

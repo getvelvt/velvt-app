@@ -101,10 +101,11 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-        let scheduler = RetentionScheduler::new(Duration::from_millis(10), shutdown_rx)
-            .add_target(CountingTarget {
+        let scheduler = RetentionScheduler::new(Duration::from_millis(10), shutdown_rx).add_target(
+            CountingTarget {
                 count: Arc::clone(&count),
-            });
+            },
+        );
 
         tokio::spawn(async move { scheduler.run().await });
         tokio::time::sleep(Duration::from_millis(120)).await;
@@ -123,10 +124,11 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let _ = shutdown_tx.send(true);
 
-        let scheduler = RetentionScheduler::new(Duration::from_millis(10), shutdown_rx)
-            .add_target(CountingTarget {
+        let scheduler = RetentionScheduler::new(Duration::from_millis(10), shutdown_rx).add_target(
+            CountingTarget {
                 count: Arc::clone(&count),
-            });
+            },
+        );
 
         tokio::time::timeout(Duration::from_millis(200), scheduler.run())
             .await
@@ -152,10 +154,11 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         // Register a brand-new target type — scheduler core is unchanged.
-        let scheduler = RetentionScheduler::new(Duration::from_millis(10), shutdown_rx)
-            .add_target(FakeTarget {
+        let scheduler = RetentionScheduler::new(Duration::from_millis(10), shutdown_rx).add_target(
+            FakeTarget {
                 calls: Arc::clone(&calls),
-            });
+            },
+        );
 
         tokio::spawn(async move { scheduler.run().await });
         tokio::time::sleep(Duration::from_millis(80)).await;

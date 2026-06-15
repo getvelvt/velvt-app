@@ -20,7 +20,17 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
     R: MessageRouter,
 {
-    serve_connection_inner(stream, router, max_errors, None, None, None, Duration::ZERO, None).await
+    serve_connection_inner(
+        stream,
+        router,
+        max_errors,
+        None,
+        None,
+        None,
+        Duration::ZERO,
+        None,
+    )
+    .await
 }
 
 /// Serves one connection and pushes privacy-safe authentication state changes.

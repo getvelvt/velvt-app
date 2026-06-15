@@ -70,7 +70,7 @@ async fn main() {
             PushAdapterAlertSink,
         };
         use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
-        use velvt_service::ipc::{ReconnectTracker, R7Router};
+        use velvt_service::ipc::{R7Router, ReconnectTracker};
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
             CacheRetentionTarget, RawEventRetentionTarget, RetentionScheduler,

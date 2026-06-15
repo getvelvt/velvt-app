@@ -10,6 +10,7 @@ use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use velvt_service::{
     delivery::{PushAdapter, PushQueue},
     ipc::{serve_connection_with_push_queue_and_shutdown, DefaultRouter, ReconnectTracker},
+    lifecycle::CancellationToken,
 };
 use velvt_shared_types::{
     Acknowledged, ClientHello, ClientMessage, ServerMessage, PROTOCOL_VERSION,
@@ -152,4 +153,49 @@ async fn reconnect_after_window_gets_fresh_push_queue() {
         "a fresh Arc<PushQueue> must be returned after the reconnect window expires"
     );
     assert!(q2.is_empty().await, "fresh queue must start empty");
+}
+
+// ---------------------------------------------------------------------------
+// Test 4 — Double cancel (SIGTERM received twice) does not panic
+// ---------------------------------------------------------------------------
+
+/// Simulates SIGTERM received twice: `cancel()` called twice with active
+/// subscribers.  Must be idempotent — no panic, no double-free.
+#[test]
+fn double_cancel_with_active_subscribers_does_not_panic() {
+    let token = CancellationToken::new();
+    let _rx1 = token.subscribe();
+    let _rx2 = token.subscribe();
+
+    token.cancel();
+    token.cancel(); // second SIGTERM — must not panic or double-free
+
+    assert!(token.is_cancelled());
+}
+
+// ---------------------------------------------------------------------------
+// Test 5 — Shutdown deadline fires when tasks do not stop in time
+// ---------------------------------------------------------------------------
+
+/// Verifies the `tokio::time::timeout(deadline, join_all)` pattern used in
+/// main.rs: when a task blocks indefinitely, the timeout must fire within the
+/// deadline and the overall shutdown must still complete cleanly.
+#[tokio::test]
+async fn shutdown_deadline_fires_when_tasks_are_slow() {
+    let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let slow_task = tokio::spawn(async move {
+        let _ = drop_rx.await; // waits until the sender is dropped
+    });
+
+    let deadline = Duration::from_millis(30);
+    let result = tokio::time::timeout(deadline, slow_task).await;
+
+    assert!(
+        result.is_err(),
+        "timeout must fire when the task does not stop within the deadline"
+    );
+
+    // Let the task clean up after the test ends.
+    drop(drop_tx);
 }

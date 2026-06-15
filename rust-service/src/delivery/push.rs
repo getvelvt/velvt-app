@@ -228,9 +228,11 @@ impl PushAdapter {
     /// before the cancellation token is set.
     pub async fn push_shutting_down(&self, reason: &str) {
         self.queue
-            .enqueue_urgent(ServerMessage::ShuttingDown(velvt_shared_types::ShuttingDown {
-                reason: reason.to_owned(),
-            }))
+            .enqueue_urgent(ServerMessage::ShuttingDown(
+                velvt_shared_types::ShuttingDown {
+                    reason: reason.to_owned(),
+                },
+            ))
             .await;
     }
 }

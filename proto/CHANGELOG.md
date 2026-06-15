@@ -1,5 +1,11 @@
 # IPC Protocol Changelog
 
+## Version 5 - 2026-06-15
+
+- Added `shutting_down` server message: sent to all connected clients immediately
+  before a graceful service shutdown. The `reason` field is `"sigterm"` or
+  `"sigint"`. Clients should disconnect and reconnect after the service restarts.
+
 ## Version 4 - 2026-06-14
 
 - Added `request_latest_insight` client message: Swift requests the insight for a

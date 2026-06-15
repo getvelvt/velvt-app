@@ -49,6 +49,20 @@ pub trait UploadBatchRepo: Send + Sync {
         batch_id: &str,
         event: &BatchEvent,
     ) -> Result<(), PersistenceError>;
+    /// Deletes at most `limit` sent batches whose `sent_at` is before `cutoff`.
+    /// Cascade deletes the associated `batch_event` rows.
+    fn delete_sent_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
+    /// Deletes at most `limit` rejected batches whose `created_at` is before `cutoff`.
+    /// Cascade deletes the associated `batch_event` rows.
+    fn delete_rejected_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
 }
 
 pub trait HistoryCacheRepo: Send + Sync {
@@ -56,6 +70,14 @@ pub trait HistoryCacheRepo: Send + Sync {
     fn get(&self, date: &str) -> Result<Option<HistoryCacheEntry>, PersistenceError>;
     fn invalidate(&self, date: &str) -> Result<u64, PersistenceError>;
     fn invalidate_all(&self) -> Result<u64, PersistenceError>;
+    /// Deletes at most `limit` entries whose TTL (`expires_at`) is before
+    /// `grace_cutoff`, meaning they have been expired for at least the
+    /// configured grace period.
+    fn delete_expired_batch(
+        &self,
+        grace_cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
 }
 
 pub trait InsightCacheRepo: Send + Sync {
@@ -70,10 +92,25 @@ pub trait InsightCacheRepo: Send + Sync {
     fn get(&self, date: &str) -> Result<Option<InsightCacheEntry>, PersistenceError>;
     fn invalidate(&self, date: &str) -> Result<u64, PersistenceError>;
     fn invalidate_all(&self) -> Result<u64, PersistenceError>;
+    /// Deletes at most `limit` entries whose TTL (`expires_at`) is before
+    /// `grace_cutoff`, meaning they have been expired for at least the
+    /// configured grace period.
+    fn delete_expired_batch(
+        &self,
+        grace_cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
 }
 
 pub trait RawEventRepo: Send + Sync {
     fn insert(&self, event: &RawEventEntry) -> Result<(), PersistenceError>;
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError>;
     fn delete_before(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError>;
+    /// Deletes at most `limit` rows whose `created_at` is before `cutoff`.
+    /// Returns the number of rows actually deleted.
+    fn delete_expired_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
 }

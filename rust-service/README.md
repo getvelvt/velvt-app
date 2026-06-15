@@ -190,6 +190,84 @@ never appear in any log or tracing output — not even truncated.  Only the
 following are safe to log: `date`, `days`, message type names (as
 `message_type`), and error codes (as `error_code`).
 
+## Retention & Lifecycle (R8)
+
+### Retention scheduler
+
+`RetentionScheduler` drives a list of `RetentionTarget` objects on a
+configurable interval.  Each target performs exactly **one batched DELETE per
+scheduler cycle** — no looping within a single call.  If a table still has rows
+to clean up, the scheduler calls the same target again on the next tick.
+
+Pending and in-flight upload batches (`status = 'pending'` or `'failed'`) are
+**never** touched by any retention target.  Only `sent` and `rejected` batches
+are eligible.
+
+#### Retention configuration
+
+| Env var | Default | Description |
+|---|---|---|
+| `VELVT_RAW_EVENT_TTL_HOURS` | `72` | Raw events older than this are eligible for expiry |
+| `VELVT_RAW_EVENT_EXPIRY_INTERVAL_MINUTES` | `30` | How often the expiry scheduler runs |
+| `VELVT_RETENTION_BATCH_SIZE` | `500` | Max rows deleted per target per cycle |
+| `VELVT_SENT_BATCH_RETENTION_DAYS` | `30` | How long sent upload batches are kept |
+| `VELVT_REJECTED_BATCH_AUDIT_DAYS` | `7` | How long rejected batches are kept for audit |
+| `VELVT_CACHE_EXPIRY_GRACE_SECONDS` | `3600` | Extra window after TTL before cache rows are deleted |
+
+#### Extending retention
+
+To add a new retention target without modifying the scheduler:
+1. Add a DAL method on the relevant trait in `persistence/traits.rs`.
+2. Implement it in `persistence/sqlite.rs`.
+3. Create a struct implementing `RetentionTarget` in `retention/targets.rs`.
+4. Register it in `main.rs` with `scheduler.add_target(...)`.
+
+The scheduler core (`RetentionScheduler`) is never modified.
+
+### Graceful shutdown sequence
+
+When `SIGTERM` or `SIGINT` is received:
+
+```
+1. push_adapter.push_shutting_down(reason)   ← ShuttingDown enqueued at queue front
+2. token.cancel()                             ← all subscribers see shutdown = true
+3. tokio::time::timeout(deadline, async {     ← race: tasks stop OR deadline fires
+       fetch_task.await
+       recovery_task.await
+       server_task.await    ← drains queue (delivers ShuttingDown) then returns
+       retention_task.await
+   }).await
+4. drop(persistence)                          ← closes SQLite connection
+```
+
+`push_shutting_down()` **must** be called before `token.cancel()`.  The
+connection task's shutdown select arm drains the push queue — including
+the pre-queued `ShuttingDown` message — before it returns.
+
+`SIGTERM` received twice is safe: `CancellationToken::cancel()` is idempotent.
+
+| Env var | Default | Description |
+|---|---|---|
+| `VELVT_SHUTDOWN_DEADLINE_SECONDS` | `10` | Maximum time to wait for tasks to stop cleanly |
+
+### Reconnect window
+
+When a Swift client disconnects unexpectedly, the push queue is **preserved** for
+a configurable window.  If the client reconnects within that window,
+`ReconnectTracker::acquire()` returns the same `Arc<PushQueue>` so any
+messages buffered during the disconnect are delivered.
+
+If the window elapses without a reconnect, the queue is dropped and
+`acquire()` returns a fresh empty queue on the next connection.
+
+The version counter inside `ReconnectTracker` prevents a race where a slow
+cleanup task clears the queue for a connection that already reconnected.
+
+| Env var | Default | Description |
+|---|---|---|
+| `VELVT_RECONNECT_WINDOW_SECONDS` | `30` | How long a push queue survives after a client disconnect |
+| `VELVT_PUSH_QUEUE_CAPACITY` | `50` | Maximum messages buffered in the queue |
+
 ## Device Registration Seam
 
 Device registration depends only on `DeviceRegistrar::register()`.

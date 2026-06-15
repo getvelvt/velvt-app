@@ -61,22 +61,29 @@ async fn main() {
 
     #[cfg(unix)]
     {
-        use chrono::Duration;
         use std::sync::Arc;
         use velvt_service::auth::{
             AuthManager, AuthState, AuthStateMachine, KeychainTokenStore, ReqwestHttpClient,
         };
         use velvt_service::delivery::{
             CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable, PushAdapter,
-            PushAdapterAlertSink, PushQueue,
+            PushAdapterAlertSink,
         };
         use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
-        use velvt_service::ipc::R7Router;
+        use velvt_service::ipc::{R7Router, ReconnectTracker};
+        use velvt_service::lifecycle::CancellationToken;
+        use velvt_service::retention::{
+            CacheRetentionTarget, RawEventRetentionTarget, RetentionScheduler,
+            UploadBatchRetentionTarget,
+        };
         use velvt_service::upload::{HttpBatchUploader, UploadCoordinator};
+
+        let token = CancellationToken::new();
 
         let upload_batch_repo = persistence.upload_batch_repo();
         let history_cache_repo = persistence.history_cache_repo();
         let insight_cache_repo = persistence.insight_cache_repo();
+        let raw_event_repo = persistence.raw_event_repo();
 
         let auth_state = Arc::new(AuthStateMachine::new(AuthState::Unauthenticated));
         let upload_host = reqwest::Url::parse(&config.upload_api_base_url)
@@ -87,14 +94,17 @@ async fn main() {
             Arc::new(KeychainTokenStore::default()),
             Arc::new(ReqwestHttpClient::new(config.upload_api_base_url.clone())),
             Arc::clone(&auth_state),
-            Duration::minutes(5),
+            chrono::Duration::minutes(5),
         ));
 
-        // R7 — push queue and adapter.
-        let push_queue = PushQueue::new(config.push_queue_capacity);
-        let push_adapter = PushAdapter::new(Arc::clone(&push_queue));
+        // Reconnect tracker — creates and manages the push queue per connection.
+        let reconnect_tracker =
+            ReconnectTracker::new(config.reconnect_window, config.push_queue_capacity);
+        // Acquire the initial queue so PushAdapter can enqueue proactively.
+        let initial_queue = reconnect_tracker.acquire();
+        let push_adapter = PushAdapter::new(Arc::clone(&initial_queue));
 
-        // R6 — fetch service and scheduler (push adapter injected for proactive delivery).
+        // R6 — fetch service and scheduler.
         let fetch_config = FetchConfig {
             history_ttl: config.history_ttl,
             insight_ttl: config.insight_ttl,
@@ -104,60 +114,116 @@ async fn main() {
         let fetch_service = Arc::new(
             FetchService::new(
                 Arc::clone(&authenticated_http),
-                history_cache_repo,
-                insight_cache_repo,
+                Arc::clone(&history_cache_repo),
+                Arc::clone(&insight_cache_repo),
                 fetch_config,
             )
             .with_push_adapter(Arc::clone(&push_adapter)),
         );
         let cache_manager: Arc<dyn CacheManager> =
             Arc::clone(&fetch_service) as Arc<dyn CacheManager>;
-        let (fetch_shutdown_tx, fetch_shutdown_rx) = tokio::sync::watch::channel(false);
         let fetch_scheduler = FetchScheduler::new(
             Arc::clone(&fetch_service) as Arc<dyn Fetchable>,
             7,
             config.fetch_interval,
             auth_state.subscribe(),
-            fetch_shutdown_rx,
+            token.subscribe(),
         );
         let fetch_task = tokio::spawn(async move { fetch_scheduler.run().await });
 
         let uploader = HttpBatchUploader::new(authenticated_http);
         let upload_coordinator = UploadCoordinator::new(
-            upload_batch_repo,
+            Arc::clone(&upload_batch_repo),
             uploader,
-            PushAdapterAlertSink::new(push_adapter),
+            PushAdapterAlertSink::new(Arc::clone(&push_adapter)),
         )
         .with_host(upload_host);
-        let (upload_shutdown, upload_shutdown_receiver) = tokio::sync::watch::channel(false);
         let retry_scan_interval = config.upload_retry_scan_interval;
+        let upload_shutdown = token.subscribe();
         let recovery_task = tokio::spawn(async move {
             upload_coordinator
                 .run_retry_loop(
                     retry_scan_interval,
-                    upload_shutdown_receiver,
+                    upload_shutdown,
                     "1",
                     env!("CARGO_PKG_VERSION"),
                     &["document:edit".into()],
                 )
                 .await;
         });
+
+        // R8 — retention scheduler.
+        let raw_event_target = RawEventRetentionTarget::new(
+            raw_event_repo,
+            config.raw_event_ttl,
+            config.retention_batch_size,
+        );
+        let upload_batch_target = UploadBatchRetentionTarget::new(
+            upload_batch_repo,
+            config.sent_batch_retention,
+            config.rejected_batch_audit_period,
+            config.retention_batch_size,
+        );
+        let cache_target = CacheRetentionTarget::new(
+            history_cache_repo,
+            insight_cache_repo,
+            config.cache_expiry_grace,
+            config.retention_batch_size,
+        );
+        let retention_scheduler =
+            RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
+                .add_target(raw_event_target)
+                .add_target(upload_batch_target)
+                .add_target(cache_target);
+        let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
+
+        // R7 + R8 transport — shutdown-aware, reconnect-tracking.
         let transport = TokioUnixTransport::new_with_router(
             config.socket_path,
             config.ipc_max_errors,
             R7Router::new(cache_manager),
         )
         .with_auth_state(auth_state.subscribe())
-        .with_push_queue(push_queue, config.push_write_timeout);
+        .with_reconnect_tracker(reconnect_tracker, config.push_write_timeout)
+        .with_shutdown(token.subscribe());
         let server_task = tokio::spawn(async move { transport.run().await });
-        if tokio::signal::ctrl_c().await.is_err() {
-            tracing::error!("failed to install shutdown signal");
-        }
-        fetch_shutdown_tx.send_replace(true);
-        upload_shutdown.send_replace(true);
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), fetch_task).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recovery_task).await;
-        server_task.abort();
+
+        // Wait for SIGTERM or SIGINT.
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => {
+                tracing::error!("failed to install SIGTERM handler");
+                return;
+            }
+        };
+        let reason = tokio::select! {
+            _ = sigterm.recv() => "sigterm",
+            result = tokio::signal::ctrl_c() => {
+                if result.is_err() {
+                    tracing::error!("failed to install SIGINT handler");
+                    return;
+                }
+                "sigint"
+            }
+        };
+        tracing::info!(reason, "shutdown signal received");
+
+        // Shutdown sequence: notify clients → cancel tasks → wait → drop persistence.
+        push_adapter.push_shutting_down(reason).await;
+        token.cancel();
+
+        let shutdown_deadline = config.shutdown_deadline;
+        let _ = tokio::time::timeout(shutdown_deadline, async {
+            let _ = fetch_task.await;
+            let _ = recovery_task.await;
+            let _ = server_task.await;
+            let _ = retention_task.await;
+        })
+        .await;
+
+        // `persistence` is dropped here, which closes the SQLite connection.
+        drop(persistence);
     }
 
     #[cfg(not(unix))]

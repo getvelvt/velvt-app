@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ShuttingDown",
+  "description": "Sent by the Rust service to every connected client immediately before a graceful shutdown. The client should treat this as a signal to disconnect and retry when the service restarts.",
+  "type": "object",
+  "required": ["reason"],
+  "properties": {
+    "reason": {
+      "type": "string",
+      "description": "Machine-readable shutdown trigger: 'sigterm' or 'sigint'.",
+      "enum": ["sigterm", "sigint"]
+    }
+  },
+  "additionalProperties": false
+}

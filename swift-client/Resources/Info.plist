@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Velvt</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<!--
+	Velvt is a menu-bar-only app: no Dock icon, no main window chrome.
+	See README.md "Velvt is available from the menu bar."
+	-->
+	<key>LSUIElement</key>
+	<true/>
+	<!--
+	Defaults so a double-clicked, no-environment install still works.
+	These three values must stay in sync with proto/ipc_socket_path,
+	proto/version, and the Rust service's Cargo.toml version respectively
+	-- see CONTRIBUTING.md "IPC Contract Changes" for the version-bump
+	checklist these are now part of. A developer running via
+	`swift run --package-path swift-client velvt-mac` with explicit
+	VELVT_* environment variables overrides these.
+	-->
+	<key>LSEnvironment</key>
+	<dict>
+		<key>VELVT_SOCKET_PATH</key>
+		<string>~/.velvt/velvt-service.sock</string>
+		<key>VELVT_PROTOCOL_VERSION</key>
+		<string>7</string>
+		<key>VELVT_CLIENT_VERSION</key>
+		<string>0.1.0</string>
+	</dict>
+</dict>
+</plist>

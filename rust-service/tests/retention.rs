@@ -7,9 +7,7 @@
 use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
-use velvt_service::persistence::{
-    NewUploadBatch, RawEventEntry, SqlitePersistence, UploadBatchRepo,
-};
+use velvt_service::persistence::{NewUploadBatch, RawEventEntry, SqlitePersistence};
 use velvt_service::retention::{
     CleanupReport, RawEventRetentionTarget, RetentionError, RetentionScheduler, RetentionTarget,
     UploadBatchRetentionTarget,

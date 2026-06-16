@@ -305,6 +305,12 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::ErrorResponse(_) => "error_response",
         ServerMessage::CacheEmpty(_) => "cache_empty",
         ServerMessage::ShuttingDown(_) => "shutting_down",
+        ServerMessage::AuthSuccess(_) => "auth_success",
+        ServerMessage::AuthFailure(_) => "auth_failure",
+        ServerMessage::AccountDeletionAccepted(_) => "account_deletion_accepted",
+        ServerMessage::NeedsReauth(_) => "needs_reauth",
+        ServerMessage::DeviceRevoked(_) => "device_revoked",
+        ServerMessage::NotificationPayload(_) => "notification_payload",
     }
 }
 

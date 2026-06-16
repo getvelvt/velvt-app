@@ -249,6 +249,14 @@ impl<H: HttpClient> FetchService<H> {
                 );
                 if let Some(adapter) = &self.push_adapter {
                     adapter.push_insight(insight.clone()).await;
+                    adapter
+                        .push_notification(
+                            uuid::Uuid::new_v4(),
+                            "Your Velvt insight is ready",
+                            &insight.text,
+                            insight.date,
+                        )
+                        .await;
                 }
                 Ok(Some(insight))
             }
@@ -467,6 +475,8 @@ mod tests {
                     retry_after: None,
                     message: None,
                     raw_body: Some(raw_body),
+                    user_id: None,
+                    device_id: None,
                 })
             })
         }
@@ -946,6 +956,8 @@ mod tests {
                     retry_after: None,
                     message: None,
                     raw_body: Some(body),
+                    user_id: None,
+                    device_id: None,
                 })
             })
         }

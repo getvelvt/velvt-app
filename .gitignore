@@ -9,6 +9,9 @@ DerivedData/
 swift-client/VelvtMac.xcodeproj/project.xcworkspace
 swift-client/VelvtMac.xcodeproj/xcuserdata
 swift-client/VelvtMac.xcodeproj/project.pbxproj
+
+# Packaged app artifact (make build-app)
+/dist/
 *.xcuserstate
 
 # macOS

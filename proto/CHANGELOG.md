@@ -1,5 +1,20 @@
 # IPC Protocol Changelog
 
+## Version 7 - 2026-06-16
+
+- Added `notification_payload` server message: a ready-to-schedule
+  notification pushed after a fresh (non-cached) daily insight fetch.
+  `notification_id`, `title`, and `body` are Rust-authored display copy —
+  Swift schedules exactly this content and never generates notification text
+  itself. `insight_date` is the calendar date the insight covers.
+  `do_not_disturb_until`, when present, is a future timestamp before which
+  Swift must not deliver the notification.
+- This message type and its Swift DTO (`NotificationPayload`,
+  `ServerMessage.notificationPayload`) existed in `swift-client/` prior to
+  this version but had no `proto/schema/` entry, no Rust counterpart, and no
+  version bump — a partial protocol update that the version-bump process
+  below exists to prevent. This entry retroactively closes that gap.
+
 ## Version 6 - 2026-06-15
 
 - Added `sign_up` client message: Swift sends email/password credentials; Rust

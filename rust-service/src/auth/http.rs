@@ -51,6 +51,10 @@ pub struct HttpResponse {
     pub message: Option<String>,
     /// Raw response body as a parsed JSON value, available for non-auth endpoints.
     pub raw_body: Option<serde_json::Value>,
+    /// Present on `/v1/devices` and account responses that identify a user or device.
+    pub user_id: Option<String>,
+    /// Present on `/v1/devices` responses.
+    pub device_id: Option<String>,
 }
 
 pub trait HttpClient: Send + Sync {
@@ -69,7 +73,13 @@ impl ReqwestHttpClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
-            client: reqwest::Client::new(),
+            // An unreachable or slow cloud host (e.g. during startup device
+            // registration) must fail fast, not hang the service or any
+            // test that exercises real startup.
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
         }
     }
 }
@@ -105,6 +115,8 @@ impl HttpClient for ReqwestHttpClient {
             let body: ApiResponse = serde_json::from_slice(&bytes).unwrap_or_default();
             let error_code = body.code.clone();
             let message = body.message.clone();
+            let user_id = body.user_id.clone();
+            let device_id = body.device_id.clone();
             Ok(HttpResponse {
                 status,
                 error_code,
@@ -112,6 +124,8 @@ impl HttpClient for ReqwestHttpClient {
                 retry_after,
                 message,
                 raw_body,
+                user_id,
+                device_id,
             })
         })
     }
@@ -124,6 +138,8 @@ struct ApiResponse {
     refresh_token: Option<RedactedString>,
     expires_at: Option<DateTime<Utc>>,
     message: Option<String>,
+    user_id: Option<String>,
+    device_id: Option<String>,
 }
 
 impl ApiResponse {

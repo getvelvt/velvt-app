@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,6 +22,14 @@ pub enum ClientMessage {
     RequestLatestInsight(RequestLatestInsight),
     /// Swift requests the cached history summary for the last N days.
     RequestLatestHistory(RequestLatestHistory),
+    /// Swift requests account creation with email/password credentials.
+    SignUp(SignUp),
+    /// Swift requests login with email/password credentials.
+    LogIn(LogIn),
+    /// Fire-and-forget notification that the client cleared its local session.
+    LogOut(LogOut),
+    /// Swift requests permanent account deletion.
+    DeleteAccount(DeleteAccount),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -64,6 +72,18 @@ pub enum ServerMessage {
     CacheEmpty(CacheEmpty),
     /// Sent to all connected clients during graceful service shutdown.
     ShuttingDown(ShuttingDown),
+    /// Account creation or login succeeded.
+    AuthSuccess(AuthSuccess),
+    /// Account creation or login failed.
+    AuthFailure(AuthFailure),
+    /// Confirms permanent account deletion was accepted and processed.
+    AccountDeletionAccepted(AccountDeletionAccepted),
+    /// Pushed when the session expires and cannot be refreshed.
+    NeedsReauth(NeedsReauth),
+    /// Pushed when the device registration is permanently revoked.
+    DeviceRevoked(DeviceRevoked),
+    /// A ready-to-schedule notification pushed after a fresh daily insight fetch.
+    NotificationPayload(NotificationPayload),
 }
 
 /// Server's first message on every connection.
@@ -287,6 +307,145 @@ pub struct ShuttingDown {
     pub reason: String,
 }
 
+/// Swift's request to create a new account. Direction: Swift to Rust.
+///
+/// PRIVACY: `password` is an opaque auth-protocol value. It must never be
+/// logged, stored in SQLite, or included in any upload payload. `Debug` is
+/// implemented manually below to redact it from any incidental log output.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignUp {
+    pub email: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for SignUp {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SignUp")
+            .field("email", &"[redacted]")
+            .field("password", &"[redacted]")
+            .finish()
+    }
+}
+
+/// Swift's request to authenticate an existing account. Direction: Swift to Rust.
+///
+/// PRIVACY: see [`SignUp`]; the same redaction rules apply.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogIn {
+    pub email: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for LogIn {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LogIn")
+            .field("email", &"[redacted]")
+            .field("password", &"[redacted]")
+            .finish()
+    }
+}
+
+/// Fire-and-forget notification that the client cleared its local session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogOut {}
+
+/// Swift's request for permanent account deletion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteAccount {}
+
+/// Successful signup/login. Direction: Rust to Swift.
+///
+/// PRIVACY: `access_token` and `refresh_token` are opaque auth-protocol
+/// values. They must never be logged, stored in SQLite, or included in any
+/// upload payload; Swift stores them in Keychain only. `Debug` is
+/// implemented manually below to redact them from any incidental log output.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthSuccess {
+    pub user_id: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for AuthSuccess {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthSuccess")
+            .field("user_id", &self.user_id)
+            .field("access_token", &"[redacted]")
+            .field("refresh_token", &"[redacted]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+/// Privacy-safe signup/login failure classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthFailureCode {
+    InvalidCredentials,
+    NetworkError,
+    ServerError,
+}
+
+/// Signup or login failed. Direction: Rust to Swift.
+///
+/// PRIVACY: `message` must never contain raw identifying user data, echoed
+/// credentials, or tokens — it is a safe display string only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthFailure {
+    pub code: AuthFailureCode,
+    pub message: String,
+}
+
+/// Confirms the Rust service accepted and processed account deletion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountDeletionAccepted {}
+
+/// Pushed when the session expires or the access token cannot be refreshed.
+///
+/// PRIVACY: `reason` is a safe diagnostic code, not user content.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NeedsReauth {
+    pub reason: String,
+}
+
+/// Pushed when the device registration is permanently revoked.
+///
+/// PRIVACY: `message` is a safe display string supplied by Rust, never raw
+/// identifying user data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceRevoked {
+    pub message: String,
+}
+
+/// A ready-to-schedule notification. Direction: Rust to Swift.
+///
+/// `title` and `body` are Rust-authored display copy; Swift schedules
+/// exactly this content and never generates notification text itself (see
+/// CONTRIBUTING.md "Notification text comes from the Rust service payload").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationPayload {
+    pub notification_id: Uuid,
+    pub title: String,
+    pub body: String,
+    pub insight_date: NaiveDate,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub do_not_disturb_until: Option<DateTime<Utc>>,
+}
+
 /// Typed IPC error envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -314,5 +473,133 @@ mod extensibility_proof {
             encoded,
             r#"{"type":"dummy_extension","payload":{"sequence":1}}"#
         );
+    }
+}
+
+#[cfg(test)]
+mod v6_auth_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_at_least_six() {
+        let version = PROTOCOL_VERSION;
+        assert!(version >= 6);
+    }
+
+    #[test]
+    fn sign_up_round_trips_and_matches_schema_shape() {
+        let message = ClientMessage::SignUp(SignUp {
+            email: "user@example.com".into(),
+            password: "hunter2".into(),
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"sign_up","payload":{"email":"user@example.com","password":"hunter2"}}"#
+        );
+        let decoded: ClientMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn log_in_round_trips_and_matches_schema_shape() {
+        let message = ClientMessage::LogIn(LogIn {
+            email: "user@example.com".into(),
+            password: "hunter2".into(),
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"log_in","payload":{"email":"user@example.com","password":"hunter2"}}"#
+        );
+        let decoded: ClientMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn log_out_and_delete_account_have_empty_payloads() {
+        let log_out = serde_json::to_string(&ClientMessage::LogOut(LogOut {})).unwrap();
+        assert_eq!(log_out, r#"{"type":"log_out","payload":{}}"#);
+        let delete_account =
+            serde_json::to_string(&ClientMessage::DeleteAccount(DeleteAccount {})).unwrap();
+        assert_eq!(delete_account, r#"{"type":"delete_account","payload":{}}"#);
+    }
+
+    #[test]
+    fn auth_success_debug_redacts_tokens_but_keeps_user_id() {
+        let success = AuthSuccess {
+            user_id: "user-123".into(),
+            access_token: "secret-access".into(),
+            refresh_token: "secret-refresh".into(),
+            expires_at: Utc::now(),
+        };
+        let output = format!("{success:?}");
+        assert!(output.contains("user-123"));
+        assert!(!output.contains("secret-access"));
+        assert!(!output.contains("secret-refresh"));
+    }
+
+    #[test]
+    fn sign_up_and_log_in_debug_redact_credentials() {
+        let sign_up = SignUp {
+            email: "user@example.com".into(),
+            password: "hunter2".into(),
+        };
+        let log_in = LogIn {
+            email: "user@example.com".into(),
+            password: "hunter2".into(),
+        };
+        assert!(!format!("{sign_up:?}").contains("hunter2"));
+        assert!(!format!("{log_in:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn auth_failure_round_trips() {
+        let message = ServerMessage::AuthFailure(AuthFailure {
+            code: AuthFailureCode::InvalidCredentials,
+            message: "invalid email or password".into(),
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"auth_failure","payload":{"code":"invalid_credentials","message":"invalid email or password"}}"#
+        );
+        let decoded: ServerMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn device_revoked_and_needs_reauth_round_trip() {
+        let revoked = ServerMessage::DeviceRevoked(DeviceRevoked {
+            message: "This device was removed from your account.".into(),
+        });
+        let decoded: ServerMessage =
+            serde_json::from_str(&serde_json::to_string(&revoked).unwrap()).unwrap();
+        assert_eq!(decoded, revoked);
+
+        let needs_reauth = ServerMessage::NeedsReauth(NeedsReauth {
+            reason: "refresh_token_expired".into(),
+        });
+        let decoded: ServerMessage =
+            serde_json::from_str(&serde_json::to_string(&needs_reauth).unwrap()).unwrap();
+        assert_eq!(decoded, needs_reauth);
+    }
+
+    #[test]
+    fn notification_payload_round_trips_and_matches_schema_shape() {
+        let message = ServerMessage::NotificationPayload(NotificationPayload {
+            notification_id: Uuid::nil(),
+            title: "Your Velvt insight is ready".into(),
+            body: "Today was a focused day.".into(),
+            insight_date: NaiveDate::from_ymd_opt(2026, 6, 16).unwrap(),
+            do_not_disturb_until: None,
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"notification_payload","payload":{"notification_id":"00000000-0000-0000-0000-000000000000","title":"Your Velvt insight is ready","body":"Today was a focused day.","insight_date":"2026-06-16"}}"#
+        );
+        let decoded: ServerMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
     }
 }

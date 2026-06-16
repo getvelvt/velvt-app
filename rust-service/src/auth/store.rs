@@ -12,6 +12,14 @@ pub trait TokenStore: Send + Sync {
     fn load_tokens(&self) -> Result<Option<TokenPair>, TokenStoreError>;
     fn clear_tokens(&self) -> Result<(), TokenStoreError>;
 
+    /// Persists the locally-assigned device identifier returned by device
+    /// registration (`POST /v1/devices`). Device-bound, not user-bound:
+    /// stored alongside tokens in the same platform credential store, never
+    /// in SQLite.
+    fn store_device_id(&self, device_id: &str) -> Result<(), TokenStoreError>;
+    fn load_device_id(&self) -> Result<Option<String>, TokenStoreError>;
+    fn clear_device_id(&self) -> Result<(), TokenStoreError>;
+
     fn store_pair(&self, tokens: TokenPair) -> Result<(), TokenStoreError> {
         self.store_tokens(
             tokens.access_token().clone(),
@@ -32,6 +40,7 @@ pub enum TokenStoreError {
 #[derive(Clone, Default)]
 pub struct FakeTokenStore {
     tokens: Arc<Mutex<Option<TokenPair>>>,
+    device_id: Arc<Mutex<Option<String>>>,
 }
 
 impl TokenStore for FakeTokenStore {
@@ -59,6 +68,29 @@ impl TokenStore for FakeTokenStore {
     fn clear_tokens(&self) -> Result<(), TokenStoreError> {
         *self
             .tokens
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)? = None;
+        Ok(())
+    }
+
+    fn store_device_id(&self, device_id: &str) -> Result<(), TokenStoreError> {
+        *self
+            .device_id
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)? = Some(device_id.to_owned());
+        Ok(())
+    }
+
+    fn load_device_id(&self) -> Result<Option<String>, TokenStoreError> {
+        self.device_id
+            .lock()
+            .map(|device_id| device_id.clone())
+            .map_err(|_| TokenStoreError::Unavailable)
+    }
+
+    fn clear_device_id(&self) -> Result<(), TokenStoreError> {
+        *self
+            .device_id
             .lock()
             .map_err(|_| TokenStoreError::Unavailable)? = None;
         Ok(())
@@ -144,6 +176,46 @@ impl TokenStore for KeychainTokenStore {
             Err(_) => Err(TokenStoreError::Unavailable),
         }
     }
+
+    fn store_device_id(&self, device_id: &str) -> Result<(), TokenStoreError> {
+        security_framework::passwords::set_generic_password(
+            &self.service,
+            &self.device_id_account(),
+            device_id.as_bytes(),
+        )
+        .map_err(|_| TokenStoreError::Unavailable)
+    }
+
+    fn load_device_id(&self) -> Result<Option<String>, TokenStoreError> {
+        match security_framework::passwords::get_generic_password(
+            &self.service,
+            &self.device_id_account(),
+        ) {
+            Ok(bytes) => String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|_| TokenStoreError::InvalidData),
+            Err(error) if error.code() == -25300 => Ok(None),
+            Err(_) => Err(TokenStoreError::Unavailable),
+        }
+    }
+
+    fn clear_device_id(&self) -> Result<(), TokenStoreError> {
+        match security_framework::passwords::delete_generic_password(
+            &self.service,
+            &self.device_id_account(),
+        ) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == -25300 => Ok(()),
+            Err(_) => Err(TokenStoreError::Unavailable),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl KeychainTokenStore {
+    fn device_id_account(&self) -> String {
+        format!("{}.device_id", self.account)
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -162,6 +234,18 @@ impl TokenStore for KeychainTokenStore {
     }
 
     fn clear_tokens(&self) -> Result<(), TokenStoreError> {
+        Err(TokenStoreError::Unavailable)
+    }
+
+    fn store_device_id(&self, _device_id: &str) -> Result<(), TokenStoreError> {
+        Err(TokenStoreError::Unavailable)
+    }
+
+    fn load_device_id(&self) -> Result<Option<String>, TokenStoreError> {
+        Err(TokenStoreError::Unavailable)
+    }
+
+    fn clear_device_id(&self) -> Result<(), TokenStoreError> {
         Err(TokenStoreError::Unavailable)
     }
 }

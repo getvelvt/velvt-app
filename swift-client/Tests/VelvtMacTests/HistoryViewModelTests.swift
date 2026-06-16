@@ -12,6 +12,25 @@ final class HistoryViewModelTests: XCTestCase {
         XCTAssertTrue(sut.days.isEmpty)
     }
 
+    // MARK: - Scroll-to-date
+
+    func testScrollTargetStartsNil() {
+        let sut = HistoryViewModel()
+        XCTAssertNil(sut.scrollTarget)
+    }
+
+    func testScrollToDateSetsScrollTarget() {
+        let sut = HistoryViewModel()
+        sut.scrollToDate("2026-06-10")
+        XCTAssertEqual(sut.scrollTarget, "2026-06-10")
+    }
+
+    func testScrollToDateActionDrivesScrollTarget() {
+        let sut = HistoryViewModel()
+        sut.scrollToDateAction("2026-06-11")
+        XCTAssertEqual(sut.scrollTarget, "2026-06-11")
+    }
+
     // MARK: - update(from:) transitions
 
     func testUpdateClearsLoadingFlag() {

@@ -81,6 +81,10 @@ private struct InsightCardContentView: View {
         .padding(14)
         .background(Color.velvtSurface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .focusable()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Insight for \(viewModel.date)")
+        .accessibilityValue("\(viewModel.text). Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
     }
 }
 

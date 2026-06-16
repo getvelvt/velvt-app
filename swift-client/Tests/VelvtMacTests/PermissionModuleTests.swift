@@ -290,8 +290,6 @@ final class PermissionModuleTests: XCTestCase {
         await model.requestCurrentPermission()
 
         XCTAssertFalse(presentation.showsOnboarding)
-        XCTAssertTrue(presentation.isMenuBarIconVisible)
-        XCTAssertEqual(presentation.menuBarIconName, "exclamationmark.triangle")
         XCTAssertTrue(presentation.showsAccessibilityRecovery)
         XCTAssertEqual(presentation.statuses[.notifications], .denied)
     }

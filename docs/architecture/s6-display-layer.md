@@ -51,7 +51,7 @@ disk, and never modifies insight text.
 ## View Hierarchy
 
 ```
-MenuBarView
+MenuBarPopoverView
 └── VelvtPopoverContentView(coordinator: ConcreteDisplayDataCoordinator)
     ├── .loading  →  InsightCardSkeletonView + HistorySkeletonView
     ├── .populated →  InsightCardView(viewModel: InsightViewModel)

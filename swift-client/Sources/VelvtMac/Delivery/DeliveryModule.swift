@@ -17,11 +17,6 @@ public protocol InsightCaching: AnyObject {
     func recentHistory() async throws -> HistoryPayload?
 }
 
-/// Schedules notifications using text already supplied by Rust.
-public protocol NotificationScheduling: AnyObject {
-    func schedule(insight: InsightPayload) async throws
-}
-
 /// Safe delivery errors that never include insight text.
 public enum DeliveryError: Error, Equatable {
     case cacheUnavailable

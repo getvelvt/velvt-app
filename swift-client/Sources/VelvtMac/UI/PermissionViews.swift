@@ -48,14 +48,6 @@ public final class PermissionPresentationModel: ObservableObject {
         }
     }
 
-    public var isMenuBarIconVisible: Bool {
-        true
-    }
-
-    public var menuBarIconName: String {
-        showsAccessibilityRecovery ? "exclamationmark.triangle" : "circle.fill"
-    }
-
     private let onboardingStateStore: any OnboardingStateStoring
     private var cancellable: AnyCancellable?
 
@@ -202,21 +194,6 @@ private struct OnboardingContainer: View {
     }
 }
 
-public struct PermissionMenuBarLabel: View {
-    @ObservedObject private var presentation: PermissionPresentationModel
-
-    public init(presentation: PermissionPresentationModel) {
-        self.presentation = presentation
-    }
-
-    public var body: some View {
-        Label(
-            "Velvt",
-            systemImage: presentation.menuBarIconName
-        )
-    }
-}
-
 public struct OnboardingView: View {
     @StateObject private var model: PermissionOnboardingModel
 
@@ -264,54 +241,6 @@ public struct OnboardingView: View {
             return "Continue to Accessibility"
         case .notifications:
             return "Continue to Notifications"
-        }
-    }
-}
-
-public struct MenuBarView: View {
-    @ObservedObject private var presentation: PermissionPresentationModel
-    private let displayCoordinator: ConcreteDisplayDataCoordinator?
-
-    public init(
-        presentation: PermissionPresentationModel,
-        displayCoordinator: ConcreteDisplayDataCoordinator? = nil
-    ) {
-        self.presentation = presentation
-        self.displayCoordinator = displayCoordinator
-    }
-
-    public var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Velvt")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-
-            Divider().opacity(0.2)
-
-            if presentation.showsAccessibilityRecovery {
-                PermissionRecoveryView()
-                    .padding(16)
-            } else if let coordinator = displayCoordinator {
-                VelvtPopoverContentView(coordinator: coordinator)
-            } else {
-                Text("Insights will appear here.")
-                    .foregroundStyle(.secondary)
-                    .padding(16)
-            }
-
-            if presentation.statuses[.notifications] == .denied {
-                Divider().opacity(0.15)
-                Text("Notifications are off. Daily insights remain available here.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-            }
         }
     }
 }

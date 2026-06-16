@@ -83,6 +83,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case accountDeletionAccepted
     case needsReauth(NeedsReauth)
     case deviceRevoked(DeviceRevoked)
+    // Notification push (S7)
+    case notificationPayload(NotificationPayload)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
@@ -124,6 +126,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .needsReauth(try NeedsReauth(from: payload))
         case "device_revoked":
             self = .deviceRevoked(try DeviceRevoked(from: payload))
+        case "notification_payload":
+            self = .notificationPayload(try NotificationPayload(from: payload))
         default:
             self = .unknown(type: type)
         }
@@ -179,6 +183,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .deviceRevoked(value):
             try envelope.encode("device_revoked", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .notificationPayload(value):
+            try envelope.encode("notification_payload", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .unknown(type):
             try envelope.encode(type, forKey: .type)
@@ -676,6 +683,62 @@ public struct DeviceRevoked: Codable, Equatable, Sendable {
 
     public init(message: String) {
         self.message = message
+    }
+}
+
+// MARK: - Notification DTOs (proto v7, S7)
+
+/// A ready-to-schedule notification pushed by the Rust service. The Swift
+/// layer schedules exactly this content — it never generates notification
+/// copy itself.
+///
+/// `doNotDisturbUntil`, when present, is a future timestamp before which the
+/// notification must not be delivered to the user.
+public struct NotificationPayload: Codable, Equatable, Sendable {
+    public let notificationID: UUID
+    public let title: String
+    public let body: String
+    public let insightDate: String
+    public let doNotDisturbUntil: Date?
+
+    public init(
+        notificationID: UUID,
+        title: String,
+        body: String,
+        insightDate: String,
+        doNotDisturbUntil: Date?
+    ) {
+        self.notificationID = notificationID
+        self.title = title
+        self.body = body
+        self.insightDate = insightDate
+        self.doNotDisturbUntil = doNotDisturbUntil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case notificationID = "notification_id"
+        case title
+        case body
+        case insightDate = "insight_date"
+        case doNotDisturbUntil = "do_not_disturb_until"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        notificationID = try container.decode(UUID.self, forKey: .notificationID)
+        title = try container.decode(String.self, forKey: .title)
+        body = try container.decode(String.self, forKey: .body)
+        insightDate = try container.decode(String.self, forKey: .insightDate)
+        doNotDisturbUntil = try container.decodeIfPresent(Date.self, forKey: .doNotDisturbUntil)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(notificationID, forKey: .notificationID)
+        try container.encode(title, forKey: .title)
+        try container.encode(body, forKey: .body)
+        try container.encode(insightDate, forKey: .insightDate)
+        try container.encodeIfPresent(doNotDisturbUntil, forKey: .doNotDisturbUntil)
     }
 }
 

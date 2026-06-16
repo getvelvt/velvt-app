@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 /// App module - owns application lifecycle and menu bar setup.
 /// Does NOT own event capture, IPC processing, abstraction, cloud calls, or
@@ -14,15 +15,6 @@ public protocol AppLifecycleManaging: AnyObject {
     func stop() async
 }
 
-/// Creates and manages the menu bar status item.
-public protocol StatusItemManaging: AnyObject {
-    /// Installs the status item in the system menu bar.
-    func install()
-
-    /// Removes the status item from the system menu bar.
-    func remove()
-}
-
 /// AppKit delegate used by the SwiftUI application entry point.
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     public let permissionManager: PermissionManager
@@ -34,6 +26,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var eventRelay: (any EventRelayProtocol)?
     private var collectionAgent: (any CollectionAgentProtocol)?
     private var permissionCoordinator: PermissionCollectionCoordinator?
+    private var menuBarController: MenuBarController?
+    private var notificationDeliveryCoordinator: NotificationDeliveryCoordinator?
+    private var notificationResponseRouter: NotificationResponseRouter?
 
     public override init() {
         let permissionManager = PermissionManager()
@@ -84,6 +79,33 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             permissionCoordinator = coordinator
             coordinator.start()
 
+            let menuBar = MenuBarController(
+                presentation: permissionPresentation,
+                displayCoordinator: displayCoord
+            )
+            menuBar.install()
+            menuBar.observe(
+                collectionStatus: collectionAgent.status,
+                connectionStatus: client.connectionStatus,
+                accountStateManager: accountStateManager
+            )
+            menuBarController = menuBar
+
+            let scheduler = UNNotificationScheduler()
+            let notificationCoordinator = NotificationDeliveryCoordinator(
+                scheduler: scheduler,
+                permissionManager: permissionManager
+            )
+            notificationCoordinator.start(serverMessages: accountStateManager.serverMessages)
+            notificationDeliveryCoordinator = notificationCoordinator
+
+            let responseRouter = NotificationResponseRouter(
+                openPopover: { [weak menuBar] in menuBar?.showPopover() },
+                scrollToDate: displayCoord.historyViewModel.scrollToDateAction
+            )
+            UNUserNotificationCenter.current().delegate = responseRouter
+            notificationResponseRouter = responseRouter
+
             Task { await relay.start() }
 
             Task.detached {
@@ -110,18 +132,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         permissionManager.stopMonitoring()
         permissionCoordinator?.stop()
         accountStateManager.stopListening()
+        menuBarController?.remove()
         let relay = eventRelay
         Task { await relay?.stop() }
         ipcClient?.disconnect()
     }
-}
-
-/// Concrete placeholder for menu bar status-item ownership.
-public final class StatusItemController: StatusItemManaging {
-    public init() {}
-
-    public func install() {}
-    public func remove() {}
 }
 
 /// FocusAgent executable entry point.
@@ -140,14 +155,5 @@ public struct VelvtMacApp: App {
                 ipcClient: appDelegate.ipcClient ?? FakeIPCClient()
             )
         }
-        MenuBarExtra {
-            MenuBarView(
-                presentation: appDelegate.permissionPresentation,
-                displayCoordinator: appDelegate.displayCoordinator
-            )
-        } label: {
-            PermissionMenuBarLabel(presentation: appDelegate.permissionPresentation)
-        }
-        .menuBarExtraStyle(.window)
     }
 }

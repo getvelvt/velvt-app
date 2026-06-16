@@ -54,6 +54,17 @@ struct HistoryDayRowView: View {
         .padding(.vertical, 5)
         .padding(.horizontal, 14)
         .focusable()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(day.date), \(day.statusLabel)")
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: String {
+        guard !day.isNoData else { return "No data" }
+        var parts = ["Active \(day.activeTime)"]
+        if let focusScore = day.focusScore { parts.append("Focus \(focusScore)") }
+        if let fragmentationScore = day.fragmentationScore { parts.append("Fragmentation \(fragmentationScore)") }
+        return parts.joined(separator: ", ")
     }
 
     @ViewBuilder

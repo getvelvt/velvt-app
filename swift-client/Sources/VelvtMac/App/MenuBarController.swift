@@ -42,6 +42,52 @@ public struct MenuBarStateResolver {
     }
 }
 
+// MARK: - MenuBarStateStream
+
+/// Derives a stream of resolved `MenuBarState` values from the three
+/// independent status sources.
+///
+/// `CombineLatest4` re-emits on *every* upstream emission, using the latest
+/// cached value from the other three publishers. When two of the four
+/// sources change as part of the same logical event but arrive as separate
+/// synchronous `@Published` writes (or otherwise in quick succession), the
+/// first of those two emissions briefly combines a stale value with a fresh
+/// one — exactly the kind of compound update `AccountStateManager` performs
+/// when handling `device_revoked` (`accountState` and `isDeviceRevoked` are
+/// set in two separate statements). Debouncing the *resolved* state — rather
+/// than any one input — coalesces that burst into a single, correct,
+/// settled emission instead of letting a transient incorrect `MenuBarState`
+/// reach the icon. `debounceInterval` defaults to a value imperceptible for
+/// a status icon but is injectable so tests can use a much shorter window.
+@MainActor
+enum MenuBarStateStream {
+    static func make(
+        resolver: MenuBarStateResolver,
+        collectionStatus: some Publisher<CollectionStatus, Never>,
+        connectionStatus: some Publisher<ConnectionStatus, Never>,
+        accountStateManager: AccountStateManager,
+        debounceInterval: RunLoop.SchedulerTimeType.Stride = .milliseconds(50)
+    ) -> AnyPublisher<MenuBarState, Never> {
+        Publishers.CombineLatest4(
+            collectionStatus,
+            connectionStatus,
+            accountStateManager.$accountState,
+            accountStateManager.$isDeviceRevoked
+        )
+        .map { collection, connection, account, isRevoked in
+            resolver.resolve(
+                collectionStatus: collection,
+                connectionStatus: connection,
+                accountState: account,
+                isDeviceRevoked: isRevoked
+            )
+        }
+        .debounce(for: debounceInterval, scheduler: RunLoop.main)
+        .removeDuplicates()
+        .eraseToAnyPublisher()
+    }
+}
+
 // MARK: - MenuBarIconProvider
 
 /// Maps a `MenuBarState` to an SF Symbol name and accessibility description.
@@ -78,16 +124,30 @@ enum MenuBarIconProvider {
 public final class MenuBarController: NSObject {
     private let resolver = MenuBarStateResolver()
     private let popover: NSPopover
+    private let activateApp: () -> Void
     private var statusItem: NSStatusItem?
     private var cancellables = Set<AnyCancellable>()
 
+    /// Whether the popover is currently shown. Exposed for tests; production
+    /// callers should use `togglePopover()`/`showPopover()`/`closePopover()`.
+    public var isPopoverShown: Bool { popover.isShown }
+
     public init(
         presentation: PermissionPresentationModel,
-        displayCoordinator: ConcreteDisplayDataCoordinator
+        displayCoordinator: ConcreteDisplayDataCoordinator,
+        activateApp: @escaping @MainActor () -> Void = {
+            NSApp.unhide(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
     ) {
         popover = NSPopover()
+        self.activateApp = activateApp
         super.init()
         popover.behavior = .transient
+        // Disabling the fade keeps show/close synchronous (isShown flips
+        // immediately), which both reads more like a snappy status-item
+        // utility and avoids a test-only race on the animation completion.
+        popover.animates = false
         popover.contentViewController = NSHostingController(
             rootView: MenuBarPopoverView(
                 presentation: presentation,
@@ -129,22 +189,12 @@ public final class MenuBarController: NSObject {
         connectionStatus: some Publisher<ConnectionStatus, Never>,
         accountStateManager: AccountStateManager
     ) {
-        Publishers.CombineLatest4(
-            collectionStatus,
-            connectionStatus,
-            accountStateManager.$accountState,
-            accountStateManager.$isDeviceRevoked
+        MenuBarStateStream.make(
+            resolver: resolver,
+            collectionStatus: collectionStatus,
+            connectionStatus: connectionStatus,
+            accountStateManager: accountStateManager
         )
-        .map { [resolver] collection, connection, account, isRevoked in
-            resolver.resolve(
-                collectionStatus: collection,
-                connectionStatus: connection,
-                accountState: account,
-                isDeviceRevoked: isRevoked
-            )
-        }
-        .removeDuplicates()
-        .receive(on: RunLoop.main)
         .sink { [weak self] state in
             self?.applyIcon(for: state)
         }
@@ -161,13 +211,17 @@ public final class MenuBarController: NSObject {
         }
     }
 
+    /// Shows the popover, activating the app first so it opens correctly
+    /// even if the app is currently hidden (e.g. via Cmd+H or a notification
+    /// tap arriving while backgrounded).
     public func showPopover() {
         guard let button = statusItem?.button, !popover.isShown else { return }
+        activateApp()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
     public func closePopover() {
-        popover.performClose(nil)
+        popover.close()
     }
 
     // MARK: Private

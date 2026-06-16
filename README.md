@@ -189,6 +189,10 @@ recovery steps are documented in
 The event relay ring-buffer, drop policy, flush sequence, and privacy invariants
 are documented in
 [`docs/architecture/event-relay.md`](docs/architecture/event-relay.md).
+The menu bar status item, `MenuBarState` derivation, notification scheduling
+flow, `do_not_disturb_until` enforcement, and popover keyboard navigation are
+documented in
+[`docs/architecture/s7-menu-bar-and-notifications.md`](docs/architecture/s7-menu-bar-and-notifications.md).
 
 ## On-Device Classification
 

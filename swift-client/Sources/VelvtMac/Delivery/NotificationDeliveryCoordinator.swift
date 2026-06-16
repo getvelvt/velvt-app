@@ -14,7 +14,16 @@ import UserNotifications
 public final class NotificationDeliveryCoordinator {
     private let scheduler: any NotificationSchedulerProtocol
     private let permissionManager: any PermissionManagerProtocol
+    private let debounceInterval: Duration
     private var cancellables = Set<AnyCancellable>()
+
+    /// The in-flight debounce/schedule task for each insight date. A new
+    /// payload for the same date cancels the previous task before it has a
+    /// chance to schedule anything, so a burst of corrected payloads for one
+    /// date — arriving one at a time through the IPC listener loop, not
+    /// necessarily in the same synchronous tick — still results in at most
+    /// one scheduled notification: the most recently received payload.
+    private var pendingTasksByDate: [String: Task<Void, Never>] = [:]
 
     /// The task spawned by the most recently received payload. Exposed so
     /// tests can `await` the permission-check/schedule work deterministically
@@ -23,10 +32,12 @@ public final class NotificationDeliveryCoordinator {
 
     public init(
         scheduler: any NotificationSchedulerProtocol,
-        permissionManager: any PermissionManagerProtocol
+        permissionManager: any PermissionManagerProtocol,
+        debounceInterval: Duration = .milliseconds(250)
     ) {
         self.scheduler = scheduler
         self.permissionManager = permissionManager
+        self.debounceInterval = debounceInterval
     }
 
     /// Call once after the IPC client and `AccountStateManager` are ready.
@@ -44,13 +55,25 @@ public final class NotificationDeliveryCoordinator {
             .store(in: &cancellables)
     }
 
+    /// Schedules at most one notification per insight date. A new payload for
+    /// a date that already has pending work cancels that work first, so a
+    /// burst of corrected payloads for the same date (e.g. Rust re-sending a
+    /// corrected insight) settles on scheduling only the most recently
+    /// received one, never a flood of one notification per payload.
     @discardableResult
     public func handle(_ payload: NotificationPayload) -> Task<Void, Never> {
-        let task = Task { [scheduler, permissionManager] in
+        pendingTasksByDate[payload.insightDate]?.cancel()
+        let task = Task { @MainActor [weak self, scheduler, permissionManager, debounceInterval] in
+            // Briefly wait so a near-simultaneous newer payload for the same
+            // date can cancel this task before any scheduling work happens.
+            try? await Task.sleep(for: debounceInterval)
+            guard !Task.isCancelled else { return }
             let status = await permissionManager.checkStatus(for: .notifications)
-            guard status == .granted else { return }
+            guard status == .granted, !Task.isCancelled else { return }
             await scheduler.schedule(payload)
+            self?.pendingTasksByDate.removeValue(forKey: payload.insightDate)
         }
+        pendingTasksByDate[payload.insightDate] = task
         inFlightTask = task
         return task
     }

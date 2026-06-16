@@ -346,6 +346,73 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         }
     }
 
+    // MARK: - Rapid successive IPC pushes
+
+    func testTwoRapidInsightPushesViaIPCShowOnlyLatest() async {
+        // manager must stay alive for serverMessages fan-out to work.
+        let (sut, client, manager) = makeWiredCoordinator()
+
+        let expectSecondText = expectation(description: "second insight text reflected")
+        var cancellable: AnyCancellable?
+        cancellable = sut.insightViewModel.$text.dropFirst().sink { text in
+            if text == "Second rapid insight." {
+                expectSecondText.fulfill()
+                cancellable?.cancel()
+            }
+        }
+
+        client.inject(.insightPayload(makeInsightPayload(text: "First rapid insight.")))
+        client.inject(.insightPayload(makeInsightPayload(text: "Second rapid insight.")))
+
+        await fulfillment(of: [expectSecondText], timeout: 1)
+        XCTAssertEqual(sut.insightViewModel.text, "Second rapid insight.",
+                       "Latest push must win; first must not persist")
+        _ = manager
+    }
+
+    // MARK: - Full state-transition cycle: loading → error → loading → populated
+
+    func testFullReconnectCycleEndsInPopulatedState() async {
+        // loading → .connected → .disconnected (error) → .connected (loading) → insight push (populated)
+        let (sut, client, manager) = makeWiredCoordinator()
+
+        // Drive loading → error.
+        client.setConnectionStatus(.connected)
+        let expectError = expectation(description: "error after disconnect")
+        var c1: AnyCancellable?
+        c1 = sut.displayState.dropFirst().sink { state in
+            if case .error = state { expectError.fulfill(); c1?.cancel() }
+        }
+        client.setConnectionStatus(.disconnected)
+        await fulfillment(of: [expectError], timeout: 1)
+
+        // Reconnect → back to loading.
+        let expectLoading = expectation(description: "loading after reconnect")
+        var c2: AnyCancellable?
+        c2 = sut.displayState.dropFirst().sink { state in
+            if case .loading = state { expectLoading.fulfill(); c2?.cancel() }
+        }
+        client.setConnectionStatus(.connected)
+        await fulfillment(of: [expectLoading], timeout: 1)
+
+        // Push insight → populated. Verifies no state inconsistency across full cycle.
+        let expectPopulated = expectation(description: "populated after reconnect push")
+        var c3: AnyCancellable?
+        c3 = sut.displayState.dropFirst().sink { state in
+            if case .populated = state { expectPopulated.fulfill(); c3?.cancel() }
+        }
+        client.inject(.insightPayload(makeInsightPayload(text: "Post-reconnect insight.")))
+        await fulfillment(of: [expectPopulated], timeout: 1)
+
+        if case .populated(let vm, _) = sut.state {
+            XCTAssertEqual(vm.text, "Post-reconnect insight.",
+                           "Insight must reflect data pushed after reconnect cycle")
+        } else {
+            XCTFail("Expected .populated after full reconnect cycle; got \(describeState(sut.state))")
+        }
+        _ = manager
+    }
+
     // MARK: - View model identity stability
 
     func testViewModelInstancesAreStableAcrossUpdates() {

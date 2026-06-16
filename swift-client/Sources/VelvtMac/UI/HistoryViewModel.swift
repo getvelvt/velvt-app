@@ -63,7 +63,37 @@ public final class HistoryViewModel: ObservableObject {
     public init() {}
 
     public func update(from payload: HistoryPayload) {
-        days = payload.summaries.map(DaySummaryViewModel.init)
+        let mapped = payload.summaries.map(DaySummaryViewModel.init)
+        days = HistoryViewModel.padded(mapped, toCount: payload.days)
         isLoading = false
+    }
+
+    /// Prepends synthetic no_data stubs for dates before the earliest known day
+    /// when the server sends fewer summaries than the requested window.
+    ///
+    /// New-user invariant: a user on day 2 with a 7-day window sees 5 no_data
+    /// rows followed by 2 real rows — never a shorter-than-expected list.
+    static func padded(_ existing: [DaySummaryViewModel], toCount target: Int) -> [DaySummaryViewModel] {
+        guard target > existing.count, let earliest = existing.first else {
+            return existing
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        guard let earliestDate = formatter.date(from: earliest.id) else { return existing }
+        let missing = target - existing.count
+        // (1...missing).reversed() → offsets [missing, ..., 1] → chronological ascending order.
+        let stubs: [DaySummaryViewModel] = (1 ... missing).reversed().compactMap { offset in
+            guard let date = Calendar.current.date(byAdding: .day, value: -offset, to: earliestDate)
+            else { return nil }
+            let stub = DailySummary(
+                date: formatter.string(from: date),
+                status: .noData, eventCount: 0,
+                focusScore: nil, fragmentationScore: nil,
+                confidenceLevel: .low, activeSeconds: 0
+            )
+            return DaySummaryViewModel(stub)
+        }
+        return stubs + existing
     }
 }

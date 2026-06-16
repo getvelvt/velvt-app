@@ -175,6 +175,76 @@ final class HistoryViewModelTests: XCTestCase {
         }
     }
 
+    // MARK: - New-user padding (<7 days from Rust)
+
+    func testFewerThanSevenSummariesPaddedToRequestedDayCount() {
+        // Simulates a user on their second day: Rust sends 2 summaries for a 7-day window.
+        let sut = HistoryViewModel()
+        let payload = HistoryPayload(days: 7, summaries: [
+            DailySummary(date: "2026-06-14", status: .ready, eventCount: 20,
+                         focusScore: 70.0, fragmentationScore: 18.0,
+                         confidenceLevel: .medium, activeSeconds: 3600),
+            DailySummary(date: "2026-06-15", status: .ready, eventCount: 25,
+                         focusScore: 72.0, fragmentationScore: 17.0,
+                         confidenceLevel: .medium, activeSeconds: 4200),
+        ])
+        sut.update(from: payload)
+        XCTAssertEqual(sut.days.count, 7,
+                       "Must pad to payload.days even when Rust sends fewer summaries")
+    }
+
+    func testPaddedRowsAreNoData() {
+        let sut = HistoryViewModel()
+        let payload = HistoryPayload(days: 7, summaries: [
+            DailySummary(date: "2026-06-14", status: .ready, eventCount: 20,
+                         focusScore: 70.0, fragmentationScore: 18.0,
+                         confidenceLevel: .medium, activeSeconds: 3600),
+            DailySummary(date: "2026-06-15", status: .ready, eventCount: 25,
+                         focusScore: 72.0, fragmentationScore: 17.0,
+                         confidenceLevel: .medium, activeSeconds: 4200),
+        ])
+        sut.update(from: payload)
+        // First 5 rows are synthetic stubs — all no_data.
+        for row in sut.days.prefix(5) {
+            XCTAssertTrue(row.isNoData,
+                          "Padded row \(row.id) should be no_data")
+            XCTAssertNil(row.focusScore,
+                         "Padded row \(row.id) must have nil focusScore")
+            XCTAssertEqual(row.activeTime, "—",
+                           "Padded row \(row.id) must show — for activeTime")
+        }
+    }
+
+    func testPaddedRowsAreChronologicallyBeforeRealRows() {
+        let sut = HistoryViewModel()
+        let payload = HistoryPayload(days: 7, summaries: [
+            DailySummary(date: "2026-06-14", status: .ready, eventCount: 20,
+                         focusScore: 70.0, fragmentationScore: 18.0,
+                         confidenceLevel: .medium, activeSeconds: 3600),
+            DailySummary(date: "2026-06-15", status: .ready, eventCount: 25,
+                         focusScore: 72.0, fragmentationScore: 17.0,
+                         confidenceLevel: .medium, activeSeconds: 4200),
+        ])
+        sut.update(from: payload)
+        XCTAssertEqual(sut.days[5].id, "2026-06-14")
+        XCTAssertEqual(sut.days[6].id, "2026-06-15")
+    }
+
+    func testPaddingDoesNotOccurWhenSummaryCountMatchesDays() {
+        // Ensure padding is not applied when Rust sends exactly `days` summaries.
+        let sut = HistoryViewModel()
+        sut.update(from: makeHistoryPayload())
+        XCTAssertEqual(sut.days.count, 7)
+    }
+
+    func testPaddingDoesNotOccurForEmptyPayload() {
+        let sut = HistoryViewModel()
+        let payload = HistoryPayload(days: 7, summaries: [])
+        sut.update(from: payload)
+        XCTAssertEqual(sut.days.count, 0,
+                       "Empty payload with no anchor date cannot be padded")
+    }
+
     // MARK: - Identifier stability
 
     func testDayIdMatchesDateString() {

@@ -138,6 +138,38 @@ final class InsightViewModelTests: XCTestCase {
         XCTAssertEqual(sut.text, raw)
     }
 
+    func testLongInsightTextStoredVerbatimWithoutTruncation() {
+        // 500+ characters: view model must not shorten, clip, or append ellipsis.
+        let long = String(repeating: "Focus held steady. ", count: 30) // 570 chars
+        let sut = InsightViewModel()
+        sut.update(from: makeInsight(text: long))
+        XCTAssertEqual(sut.text, long,
+                       "Insight text must pass through verbatim regardless of length")
+        XCTAssertEqual(sut.text.count, long.count,
+                       "Character count must be unchanged after update")
+    }
+
+    // MARK: - Rapid successive pushes
+
+    func testTwoRapidPushesShowOnlyLatest() {
+        // Simulates Rust resending an updated insight without an intermediate render cycle.
+        let sut = InsightViewModel()
+        let first  = makeInsight(text: "Initial baseline insight from earlier processing.")
+        let second = makeInsight(text: "Revised insight reflecting afternoon context shift.")
+        sut.update(from: first)
+        sut.update(from: second)
+        XCTAssertEqual(sut.text, second.text,
+                       "Latest push must win; earlier text must not persist")
+        XCTAssertNotEqual(sut.text, first.text)
+    }
+
+    func testRapidPushDoesNotLeaveStaleIsLoading() {
+        let sut = InsightViewModel()
+        sut.update(from: makeInsight(text: "First."))
+        sut.update(from: makeInsight(text: "Second."))
+        XCTAssertFalse(sut.isLoading)
+    }
+
     // MARK: - Helpers
 
     private func makeInsight(

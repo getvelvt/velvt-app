@@ -17,6 +17,7 @@ public struct HistoryListView: View {
             VStack(spacing: 0) {
                 ForEach(viewModel.days) { day in
                     HistoryDayRowView(day: day)
+                        .id(day.id)
                     if day.id != viewModel.days.last?.id {
                         Divider()
                             .opacity(0.12)
@@ -52,6 +53,7 @@ struct HistoryDayRowView: View {
         }
         .padding(.vertical, 5)
         .padding(.horizontal, 14)
+        .focusable()
     }
 
     @ViewBuilder

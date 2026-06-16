@@ -48,6 +48,24 @@ public struct DaySummaryViewModel: Identifiable, Equatable {
     }
 }
 
+// MARK: - ScrollToDateAction
+
+/// Callable wrapper around a request to scroll the history list to a given
+/// date. `@MainActor`-isolated because its sole concrete use
+/// (`HistoryViewModel.scrollToDate`) mutates main-actor-isolated state.
+@MainActor
+public struct ScrollToDateAction {
+    private let action: (String) -> Void
+
+    public init(_ action: @escaping (String) -> Void) {
+        self.action = action
+    }
+
+    public func callAsFunction(_ date: String) {
+        action(date)
+    }
+}
+
 // MARK: - HistoryViewModel
 
 /// Holds the formatted day rows for the 7-day history list.
@@ -59,6 +77,9 @@ public final class HistoryViewModel: ObservableObject {
 
     @Published public private(set) var days: [DaySummaryViewModel] = []
     @Published public private(set) var isLoading: Bool = true
+    /// The date most recently requested for scroll-into-view, e.g. by a
+    /// tapped notification. Views observe this to drive a `ScrollViewReader`.
+    @Published public private(set) var scrollTarget: String?
 
     public init() {}
 
@@ -66,6 +87,16 @@ public final class HistoryViewModel: ObservableObject {
         let mapped = payload.summaries.map(DaySummaryViewModel.init)
         days = HistoryViewModel.padded(mapped, toCount: payload.days)
         isLoading = false
+    }
+
+    public func scrollToDate(_ date: String) {
+        scrollTarget = date
+    }
+
+    /// Bound action passed to notification-tap routing so it stays decoupled
+    /// from this concrete view model type.
+    public var scrollToDateAction: ScrollToDateAction {
+        ScrollToDateAction { [weak self] date in self?.scrollToDate(date) }
     }
 
     /// Prepends synthetic no_data stubs for dates before the earliest known day

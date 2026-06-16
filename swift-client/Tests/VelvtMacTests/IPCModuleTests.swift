@@ -252,6 +252,44 @@ final class AuthIPCContractTests: XCTestCase {
         XCTAssertEqual(obj["type"] as? String, "device_revoked")
     }
 
+    func testNotificationPayloadRoundTrips() throws {
+        let msg = ServerMessage.notificationPayload(
+            NotificationPayload(
+                notificationID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
+                title: "Daily insight",
+                body: "ready-to-display",
+                insightDate: "2026-06-15",
+                doNotDisturbUntil: Date(timeIntervalSince1970: 1_700_000_000)
+            )
+        )
+        let data = try encoder.encode(msg)
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg)
+    }
+
+    func testNotificationPayloadRoundTripsWithoutDoNotDisturb() throws {
+        let msg = ServerMessage.notificationPayload(
+            NotificationPayload(
+                notificationID: UUID(),
+                title: "Daily insight",
+                body: "ready-to-display",
+                insightDate: "2026-06-15",
+                doNotDisturbUntil: nil
+            )
+        )
+        let data = try encoder.encode(msg)
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg)
+    }
+
+    func testNotificationPayloadDiscriminator() throws {
+        let data = try encoder.encode(
+            ServerMessage.notificationPayload(
+                NotificationPayload(notificationID: UUID(), title: "t", body: "b", insightDate: "2026-06-15", doNotDisturbUntil: nil)
+            )
+        )
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["type"] as? String, "notification_payload")
+    }
+
     func testAuthSuccessDoesNotDecodeAsUnknown() throws {
         let raw = #"{"type":"auth_success","payload":{"user_id":"u","access_token":"a","refresh_token":"r","expires_at":"2026-06-15T00:00:00Z"}}"#
         let decoded = try decoder.decode(ServerMessage.self, from: Data(raw.utf8))
@@ -308,6 +346,9 @@ final class AuthIPCContractTests: XCTestCase {
             .accountDeletionAccepted,
             .needsReauth(NeedsReauth(reason: "expired")),
             .deviceRevoked(DeviceRevoked(message: "revoked")),
+            .notificationPayload(
+                NotificationPayload(notificationID: UUID(), title: "t", body: "b", insightDate: "2026-06-15", doNotDisturbUntil: nil)
+            ),
         ]
         for msg in messages {
             let data = try encoder.encode(msg)

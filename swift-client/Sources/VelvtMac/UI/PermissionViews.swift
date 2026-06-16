@@ -270,28 +270,49 @@ public struct OnboardingView: View {
 
 public struct MenuBarView: View {
     @ObservedObject private var presentation: PermissionPresentationModel
+    private let displayCoordinator: ConcreteDisplayDataCoordinator?
 
-    public init(presentation: PermissionPresentationModel) {
+    public init(
+        presentation: PermissionPresentationModel,
+        displayCoordinator: ConcreteDisplayDataCoordinator? = nil
+    ) {
         self.presentation = presentation
+        self.displayCoordinator = displayCoordinator
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Velvt")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Velvt")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            Divider().opacity(0.2)
+
             if presentation.showsAccessibilityRecovery {
                 PermissionRecoveryView()
+                    .padding(16)
+            } else if let coordinator = displayCoordinator {
+                VelvtPopoverContentView(coordinator: coordinator)
             } else {
                 Text("Insights will appear here.")
                     .foregroundStyle(.secondary)
+                    .padding(16)
             }
+
             if presentation.statuses[.notifications] == .denied {
+                Divider().opacity(0.15)
                 Text("Notifications are off. Daily insights remain available here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
             }
         }
-        .padding(16)
     }
 }
 

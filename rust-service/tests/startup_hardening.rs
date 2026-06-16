@@ -1,19 +1,47 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 use velvt_service::abstraction::Taxonomy;
 
+/// Spawns the real service binary and captures its startup output.
+///
+/// The service is a long-running process: when startup fails (a missing
+/// taxonomy, a bad database path, ...) it exits early on its own and this
+/// returns quickly. When startup succeeds it blocks forever waiting for
+/// SIGTERM/SIGINT by design (see `main.rs`), so these tests only care about
+/// the logged startup output, not a natural exit — poll briefly for a fast
+/// exit, then send SIGTERM and collect whatever was logged before that.
 fn service_output(env: &[(&str, &Path)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_velvt-service"));
     command.env("VELVT_LOG_LEVEL", "info");
     command.env("VELVT_DATABASE_PATH", temp_path("startup.sqlite3"));
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, value) in env {
         command.env(key, value);
     }
-    command.output().unwrap()
+    let mut child = command.spawn().unwrap();
+
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let exited_on_its_own = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    if !exited_on_its_own {
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(child.id().to_string())
+            .status();
+    }
+    child.wait_with_output().unwrap()
 }
 
 fn temp_path(name: &str) -> PathBuf {

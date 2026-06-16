@@ -47,7 +47,12 @@ async fn main() {
         );
     }
     let embedding_plugin = load_embedding_plugin(&config, &taxonomy);
-    let Ok(_abstraction_engine) =
+    // Tracked before the plugin is consumed below: true only when an operator
+    // explicitly configured a Tier 2 model and it failed to load — not when
+    // Tier 2 was never configured at all (that is expected MVP-default Tier
+    // 1/3 behavior, not a degradation worth alerting on).
+    let tier2_unavailable = config.abstraction_model_path.is_some() && embedding_plugin.is_none();
+    let Ok(abstraction_engine) =
         AbstractionEngine::builder(persistence.abstraction_mapping_store(), taxonomy)
             .register_builtin_plugins_with_embedding(embedding_plugin)
             .build()
@@ -63,7 +68,8 @@ async fn main() {
     {
         use std::sync::Arc;
         use velvt_service::auth::{
-            AuthManager, AuthState, AuthStateMachine, KeychainTokenStore, ReqwestHttpClient,
+            AccountAuthService, AuthManager, AuthState, AuthStateMachine, DeviceRegistrar,
+            HttpClient, HttpDeviceRegistrar, KeychainTokenStore, ReqwestHttpClient, TokenStore,
         };
         use velvt_service::delivery::{
             CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable, PushAdapter,
@@ -76,23 +82,66 @@ async fn main() {
             CacheRetentionTarget, RawEventRetentionTarget, RetentionScheduler,
             UploadBatchRetentionTarget,
         };
-        use velvt_service::upload::{HttpBatchUploader, UploadCoordinator};
+        use velvt_service::upload::{
+            BatchAssembler, EventIngestor, HttpBatchUploader, SharedUploadBatcher, UploadBatcher,
+            UploadCoordinator,
+        };
 
         let token = CancellationToken::new();
+        let abstraction_engine = Arc::new(abstraction_engine);
 
         let upload_batch_repo = persistence.upload_batch_repo();
         let history_cache_repo = persistence.history_cache_repo();
         let insight_cache_repo = persistence.insight_cache_repo();
         let raw_event_repo = persistence.raw_event_repo();
 
-        let auth_state = Arc::new(AuthStateMachine::new(AuthState::Unauthenticated));
+        let token_store = Arc::new(KeychainTokenStore::default());
+        let raw_http = Arc::new(ReqwestHttpClient::new(config.upload_api_base_url.clone()));
+
+        // Device registration is the seam connecting Swift onboarding (S5) to
+        // this auth layer (R4): without a registered device, AuthManager
+        // never has tokens to attach to outbound requests, so uploads and
+        // fetches can never authenticate. Register once and persist the
+        // result; subsequent starts reuse the stored device_id and tokens.
+        let device_id = match token_store.load_device_id() {
+            Ok(Some(device_id)) => Some(device_id),
+            Ok(None) => {
+                let registrar =
+                    HttpDeviceRegistrar::new(Arc::clone(&raw_http), Arc::clone(&token_store));
+                match registrar.register().await {
+                    Ok(()) => token_store.load_device_id().unwrap_or(None),
+                    Err(error) => {
+                        tracing::error!(
+                            error_code = "device_registration_failed",
+                            error = %error,
+                            "device registration failed at startup; uploads and fetches will be unavailable until the next successful attempt"
+                        );
+                        None
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::error!(
+                    error_code = "device_id_load_failed",
+                    error = %error,
+                    "failed to read stored device identifier"
+                );
+                None
+            }
+        };
+
+        let auth_state = Arc::new(match &device_id {
+            Some(device_id) => AuthStateMachine::from_token_store(&*token_store, device_id.clone())
+                .unwrap_or_else(|_| AuthStateMachine::new(AuthState::Unauthenticated)),
+            None => AuthStateMachine::new(AuthState::Unauthenticated),
+        });
         let upload_host = reqwest::Url::parse(&config.upload_api_base_url)
             .ok()
             .and_then(|url| url.host_str().map(str::to_owned))
             .unwrap_or_else(|| "invalid_upload_host".into());
         let authenticated_http = Arc::new(AuthManager::new(
-            Arc::new(KeychainTokenStore::default()),
-            Arc::new(ReqwestHttpClient::new(config.upload_api_base_url.clone())),
+            Arc::clone(&token_store),
+            Arc::clone(&raw_http),
             Arc::clone(&auth_state),
             chrono::Duration::minutes(5),
         ));
@@ -103,6 +152,60 @@ async fn main() {
         // Acquire the initial queue so PushAdapter can enqueue proactively.
         let initial_queue = reconnect_tracker.acquire();
         let push_adapter = PushAdapter::new(Arc::clone(&initial_queue));
+
+        // An operator explicitly configured a Tier 2 model and it failed to
+        // load: the user must not be silently left on the Tier 1/3 fallback
+        // path indefinitely without notification (see README "On-Device
+        // Classification").
+        if tier2_unavailable {
+            push_adapter
+                .push_service_status(
+                    velvt_shared_types::ServiceState::Degraded,
+                    Some("tier2_classification_unavailable"),
+                )
+                .await;
+        }
+
+        // Watches device-bound auth state and forwards terminal transitions
+        // to Swift as proactive IPC pushes, independent of any in-flight
+        // request.
+        {
+            let mut auth_state_changes = auth_state.subscribe();
+            let push_adapter_for_auth = Arc::clone(&push_adapter);
+            let mut auth_shutdown = token.subscribe();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        changed = auth_state_changes.changed() => {
+                            if changed.is_err() {
+                                return;
+                            }
+                            let current = auth_state_changes.borrow().clone();
+                            match current {
+                                AuthState::DeviceRevoked => {
+                                    push_adapter_for_auth
+                                        .push_device_revoked(
+                                            "This device was removed from your account.",
+                                        )
+                                        .await;
+                                }
+                                AuthState::NeedsReauth => {
+                                    push_adapter_for_auth
+                                        .push_needs_reauth("session_expired")
+                                        .await;
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ = auth_shutdown.changed() => {
+                            if *auth_shutdown.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         // R6 — fetch service and scheduler.
         let fetch_config = FetchConfig {
@@ -131,13 +234,13 @@ async fn main() {
         );
         let fetch_task = tokio::spawn(async move { fetch_scheduler.run().await });
 
-        let uploader = HttpBatchUploader::new(authenticated_http);
+        let uploader = HttpBatchUploader::new(Arc::clone(&authenticated_http));
         let upload_coordinator = UploadCoordinator::new(
             Arc::clone(&upload_batch_repo),
             uploader,
             PushAdapterAlertSink::new(Arc::clone(&push_adapter)),
         )
-        .with_host(upload_host);
+        .with_host(upload_host.clone());
         let retry_scan_interval = config.upload_retry_scan_interval;
         let upload_shutdown = token.subscribe();
         let recovery_task = tokio::spawn(async move {
@@ -152,9 +255,66 @@ async fn main() {
                 .await;
         });
 
+        // Live ingestion path: connects IPC RawEvent receipt to the
+        // abstraction engine and upload pipeline. This uses its own
+        // `UploadCoordinator` (sharing the same persistence, uploader
+        // target, and alert sink as the retry-loop coordinator above) so
+        // the router can hold it independently of the retry task; the
+        // persisted per-host backoff state in SQLite is what actually gates
+        // concurrent senders, so two in-memory backoff trackers do not risk
+        // a correctness issue, only a minor heuristic duplication.
+        let device_id_for_batching = device_id
+            .clone()
+            .unwrap_or_else(|| "unregistered-device".into());
+        let ingestion_coordinator = UploadCoordinator::new(
+            Arc::clone(&upload_batch_repo),
+            HttpBatchUploader::new(Arc::clone(&authenticated_http)),
+            PushAdapterAlertSink::new(Arc::clone(&push_adapter)),
+        )
+        .with_host(upload_host);
+        let upload_batcher = UploadBatcher::new(
+            BatchAssembler::from_config(device_id_for_batching, &config),
+            ingestion_coordinator,
+        );
+        let shared_batcher: Arc<dyn EventIngestor> =
+            Arc::new(SharedUploadBatcher::new(upload_batcher));
+
+        let account_service = Arc::new(AccountAuthService::new(
+            Arc::clone(&raw_http) as Arc<dyn HttpClient>,
+            Arc::clone(&authenticated_http) as Arc<dyn HttpClient>,
+        ));
+
+        // Periodic age-based flush: count-based flush happens inline on
+        // ingest, but events that never reach the batch-size threshold must
+        // still flush after `upload_flush_interval`.
+        let flush_interval = config.upload_flush_interval;
+        let flush_shutdown_token = token.subscribe();
+        let flush_batcher = Arc::clone(&shared_batcher);
+        let flush_task = tokio::spawn(async move {
+            let mut shutdown = flush_shutdown_token;
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(flush_interval) => {
+                        if let Err(error) = flush_batcher.flush_due(chrono::Utc::now()).await {
+                            tracing::error!(
+                                error_code = "upload_flush_due_failed",
+                                error = %error,
+                                "periodic age-based flush failed"
+                            );
+                        }
+                    }
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+
         // R8 — retention scheduler.
         let raw_event_target = RawEventRetentionTarget::new(
-            raw_event_repo,
+            Arc::clone(&raw_event_repo),
             config.raw_event_ttl,
             config.retention_batch_size,
         );
@@ -181,7 +341,13 @@ async fn main() {
         let transport = TokioUnixTransport::new_with_router(
             config.socket_path,
             config.ipc_max_errors,
-            R7Router::new(cache_manager),
+            R7Router::new(
+                cache_manager,
+                Arc::clone(&abstraction_engine),
+                raw_event_repo,
+                Arc::clone(&shared_batcher),
+                account_service,
+            ),
         )
         .with_auth_state(auth_state.subscribe())
         .with_reconnect_tracker(reconnect_tracker, config.push_write_timeout)
@@ -213,12 +379,21 @@ async fn main() {
         push_adapter.push_shutting_down(reason).await;
         token.cancel();
 
+        if let Err(error) = shared_batcher.flush_shutdown().await {
+            tracing::error!(
+                error_code = "upload_flush_shutdown_failed",
+                error = %error,
+                "failed to flush in-flight batch during shutdown"
+            );
+        }
+
         let shutdown_deadline = config.shutdown_deadline;
         let _ = tokio::time::timeout(shutdown_deadline, async {
             let _ = fetch_task.await;
             let _ = recovery_task.await;
             let _ = server_task.await;
             let _ = retention_task.await;
+            let _ = flush_task.await;
         })
         .await;
 

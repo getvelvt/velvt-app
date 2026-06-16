@@ -40,7 +40,24 @@ make build-swift
 make test-swift
 ```
 
-### Build Both Local Targets
+### Build a Single Runnable App
+
+```sh
+make build-app
+```
+
+Produces `dist/velvt-mac.app` — one double-clickable artifact with both the
+Swift UI and the Rust service binary embedded at
+`Contents/MacOS/velvt-service`. `AppDelegate` launches the bundled helper at
+startup (see `ServiceProcessLauncher.swift`) and stops it on quit, so this
+is the one command a real user (or you, verifying locally) needs to get a
+working install — no exported environment variables, no separate terminal
+running the Rust service. `Info.plist` ships built-in `VELVT_SOCKET_PATH`/
+`VELVT_PROTOCOL_VERSION`/`VELVT_CLIENT_VERSION` defaults for exactly this
+reason; keep them in sync with `proto/` per the version-bump checklist in
+`CONTRIBUTING.md`.
+
+### Build Both Local Targets (development)
 
 From the repository root, build the Rust service and macOS-only Swift app
 without changing either workspace's build configuration:
@@ -50,8 +67,9 @@ make build-all
 ```
 
 The native macOS application target is `velvt-mac` in
-`swift-client/VelvtMac.xcodeproj`. It produces `velvt-mac.app`; SwiftPM remains
-the unit-test harness.
+`swift-client/VelvtMac.xcodeproj`. It produces `velvt-mac.app` without the
+Rust binary embedded (use `make build-app` for that); SwiftPM remains the
+unit-test harness.
 
 To run the SwiftPM development executable against the local service, source the
 canonical socket path and protocol version from `proto/`:
@@ -176,9 +194,49 @@ the full threading model, stream lifecycle, and privacy invariants.
 
 ## Architecture
 
-Start with [`docs/architecture/`](docs/architecture/) for architecture and IPC
-contract documentation. Contributors must also read [`AGENTS.md`](AGENTS.md)
-and [`CONTRIBUTING.md`](CONTRIBUTING.md) before making changes.
+Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) for the system diagram, IPC
+contract, auth state machine, and module responsibility table, and
+[`docs/architecture/`](docs/architecture/) for subsystem deep dives.
+Contributors must also read [`AGENTS.md`](AGENTS.md) and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) before making changes. See
+[`PRIVACY.md`](PRIVACY.md) for what is collected, stored, and transmitted,
+and [`DEFERRED.md`](DEFERRED.md) for seams intentionally left for post-MVP
+work.
+
+## Verifying the ONNX model is loaded
+
+Tier 2 classification is optional. At startup, check the structured log:
+
+- No `tier2_*` warning at all, and Tier 2 events classify with a real
+  category instead of falling through to `unclassified` → the model is
+  loaded.
+- `tier2_model_unavailable` / `tier2_centroids_unavailable` /
+  `tier2_centroids_invalid` → Tier 2 is disabled; Tier 1/3 continue.
+- If you explicitly configured `VELVT_ABSTRACTION_MODEL_PATH` and it failed
+  to load, the service additionally pushes a `service_status` IPC message
+  with `state: "degraded"` so the menu bar UI can surface this rather than
+  leaving you silently on the Tier 1/3 path indefinitely.
+
+## Running the Test Suite
+
+```sh
+make test-all          # both workspaces
+make test-rust         # cargo test --workspace (includes the 7-path
+                        # end-to-end integration suite in
+                        # rust-service/tests/e2e_integration.rs)
+make test-swift         # swift test --package-path swift-client
+```
+
+## Smoke-Testing Against a Local velvt-core Instance
+
+1. Point the Rust service at your local `velvt-core` instance:
+   `VELVT_API_BASE_URL=http://localhost:8000`.
+2. Run `make build-app`, then open `dist/velvt-mac.app`.
+3. Grant Accessibility and Notifications when prompted.
+4. Switch applications a few times, then check
+   `~/.velvt/velvt-service.sqlite3`'s `upload_batch` table for a `sent` row,
+   and your local `velvt-core` logs for the corresponding
+   `POST /v1/events/batches` call.
 
 The macOS collection-agent lifecycle, private AX run-loop threading model, and
 no-polling rules are documented in

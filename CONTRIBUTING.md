@@ -175,6 +175,77 @@ core and existing plugins must remain unchanged.
 
 ***
 
+## Adding A New Abstraction Type
+
+MVP supports `document:edit` only; adding a new type (e.g. `tab:A`) is
+cross-cutting:
+
+1. Add the type identifier to the IPC contract: `proto/schema/raw_event.json`
+   if it changes what Swift sends, and confirm `BatchPayload.supported_abstraction_types`
+   in `rust-service/src/upload/dto.rs`/`assembly.rs` lists it.
+2. Implement or extend the `ClassificationPlugin` that produces it (see
+   "Adding A Classification Category" below for the category side).
+3. Add a privacy boundary test proving the new label is reachable from a
+   raw event without ever re-exposing the raw event's content.
+4. Update `ARCHITECTURE.md`'s classification pipeline section.
+
+## Adding A New IPC Message Type
+
+See "IPC Contract Changes" above for the five-step process. In addition:
+
+- Add the message to both `ClientMessage`/`ServerMessage` enums in
+  `rust-service/shared-types/src/lib.rs` **and** the corresponding Swift
+  enum case in `IPCTypes.swift` in the same commit — `proto/version` v6→v7
+  in this repository's history is a real example of what happens when this
+  is skipped (a message type existed in Swift for an entire release with no
+  Rust counterpart, no schema entry, and no version bump; see
+  `proto/CHANGELOG.md` "Version 7").
+- If the new message can carry a credential or token, give it a
+  hand-written `Debug` impl that redacts the sensitive field (see
+  `SignUp`/`LogIn`/`AuthSuccess` in `shared-types/src/lib.rs` for the
+  pattern) — the type's derived `Serialize`/`Deserialize` still needs the
+  real field for the wire format, so the type wrapper approach
+  (`RedactedString`) used internally doesn't apply at the DTO layer.
+- Add a round-trip test asserting the exact JSON shape (see
+  `v6_auth_contract`/`v7` tests in `shared-types/src/lib.rs`), not just that
+  serialization succeeds.
+
+## Adding A New Retention Target
+
+1. Implement `RetentionTarget` in `rust-service/src/retention/targets.rs`,
+   following the existing `RawEventRetentionTarget`/`UploadBatchRetentionTarget`/`CacheRetentionTarget`
+   pattern: a `run_cleanup` method that deletes at most `batch_size` rows
+   older than a cutoff and returns the count deleted.
+2. Register it via `RetentionScheduler::add_target` at the call site in
+   `main.rs` — do not modify `RetentionScheduler` itself.
+3. Add a test proving only expired rows are deleted and fresh rows survive
+   (mirror `tests/retention.rs`).
+
+## Privacy Review Checklist
+
+Any PR touching the abstraction engine (`rust-service/src/abstraction/`),
+the upload batcher (`rust-service/src/upload/`), or the IPC layer
+(`rust-service/src/ipc/`, `proto/`, or `swift-client/Sources/VelvtMac/IPC/`)
+must confirm, in the PR description:
+
+- [ ] No new struct field carrying raw app names, window titles, URLs,
+      paths, filenames, contacts, emails, or phone numbers crosses out of
+      `abstraction/` into a serializable or loggable type.
+- [ ] No new `tracing::`/`Logger(` call site interpolates a variable that
+      could carry raw event content or a token/credential without
+      redaction.
+- [ ] If the change adds or modifies a field on `BatchEventPayload` or
+      `BatchPayload`, it is checked against the forbidden-field list in
+      `tests/upload_batching.rs::payload_serialization_contains_only_audited_safe_fields`.
+- [ ] If the change adds a token- or credential-carrying type, it has
+      either a `RedactedString` field (Rust-internal types) or a
+      hand-written `Debug` impl that redacts it (wire DTOs — see
+      `shared-types/src/lib.rs`).
+- [ ] Re-run the relevant section of `PRIVACY_AUDIT.md` and update it if a
+      finding changed.
+
+***
+
 ## MVP Scope
 
 **In scope:**

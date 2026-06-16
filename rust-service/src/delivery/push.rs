@@ -55,6 +55,12 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::RawEventAck(_) => "raw_event_ack",
         ServerMessage::ErrorResponse(_) => "error_response",
         ServerMessage::ShuttingDown(_) => "shutting_down",
+        ServerMessage::AuthSuccess(_) => "auth_success",
+        ServerMessage::AuthFailure(_) => "auth_failure",
+        ServerMessage::AccountDeletionAccepted(_) => "account_deletion_accepted",
+        ServerMessage::NeedsReauth(_) => "needs_reauth",
+        ServerMessage::DeviceRevoked(_) => "device_revoked",
+        ServerMessage::NotificationPayload(_) => "notification_payload",
     }
 }
 
@@ -231,6 +237,70 @@ impl PushAdapter {
             .enqueue_urgent(ServerMessage::ShuttingDown(
                 velvt_shared_types::ShuttingDown {
                     reason: reason.to_owned(),
+                },
+            ))
+            .await;
+    }
+
+    /// Pushed when the device registration is permanently revoked. Urgent:
+    /// Swift must clear Keychain and show the Device Revoked screen promptly.
+    pub async fn push_device_revoked(&self, message: &str) {
+        self.queue
+            .enqueue_urgent(ServerMessage::DeviceRevoked(
+                velvt_shared_types::DeviceRevoked {
+                    message: message.to_owned(),
+                },
+            ))
+            .await;
+    }
+
+    /// Pushed when the session expires and cannot be refreshed. Urgent:
+    /// Swift must clear Keychain and show the login screen promptly.
+    pub async fn push_needs_reauth(&self, reason: &str) {
+        self.queue
+            .enqueue_urgent(ServerMessage::NeedsReauth(
+                velvt_shared_types::NeedsReauth {
+                    reason: reason.to_owned(),
+                },
+            ))
+            .await;
+    }
+
+    /// Pushed after a fresh (non-cached) daily insight fetch so Swift can
+    /// schedule a notification. `title`/`body` are Rust-authored display
+    /// copy; Swift never generates notification text itself.
+    pub async fn push_notification(
+        &self,
+        notification_id: uuid::Uuid,
+        title: &str,
+        body: &str,
+        insight_date: chrono::NaiveDate,
+    ) {
+        self.queue
+            .enqueue(ServerMessage::NotificationPayload(
+                velvt_shared_types::NotificationPayload {
+                    notification_id,
+                    title: title.to_owned(),
+                    body: body.to_owned(),
+                    insight_date,
+                    do_not_disturb_until: None,
+                },
+            ))
+            .await;
+    }
+
+    /// Pushed to report a service health transition, such as Tier 2
+    /// classification being unavailable so the device degrades to Tier 1/3.
+    pub async fn push_service_status(
+        &self,
+        state: velvt_shared_types::ServiceState,
+        reason: Option<&str>,
+    ) {
+        self.queue
+            .enqueue(ServerMessage::ServiceStatus(
+                velvt_shared_types::ServiceStatus {
+                    state,
+                    reason: reason.map(str::to_owned),
                 },
             ))
             .await;

@@ -29,6 +29,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
     private var notificationDeliveryCoordinator: NotificationDeliveryCoordinator?
     private var notificationResponseRouter: NotificationResponseRouter?
+    private let serviceProcessLauncher = ServiceProcessLauncher()
 
     public override init() {
         let permissionManager = PermissionManager()
@@ -42,6 +43,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        // Starts the bundled Rust helper (Contents/MacOS/velvt-service) when
+        // running as a packaged .app; a no-op under `swift run`, where the
+        // service is started separately per README development instructions.
+        serviceProcessLauncher.start()
+
         permissionManager.startMonitoring()
         Task {
             _ = await permissionManager.checkStatus(for: .accessibility)
@@ -136,6 +142,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let relay = eventRelay
         Task { await relay?.stop() }
         ipcClient?.disconnect()
+        serviceProcessLauncher.stop()
     }
 }
 

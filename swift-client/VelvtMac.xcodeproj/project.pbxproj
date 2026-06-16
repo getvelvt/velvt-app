@@ -23,6 +23,21 @@
 		FEF395332D1059B366BF6D9A /* IPCTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39C7506861C548B6BD42DE38 /* IPCTypes.swift */; };
 		FF20FC65F747233FBF419F69 /* DeliveryModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */; };
 		FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */; };
+		443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */; };
+		4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81032E99C0684420AFA1791A /* AuthViewModel.swift */; };
+		E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */; };
+		C6FEFBE12367472398E2ECBC /* NotificationDeliveryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */; };
+		1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945E765C974B4023B7362068 /* NotificationScheduler.swift */; };
+		18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30FB3399A5C45808376ACF1 /* EventRelay.swift */; };
+		043E5190EF3742C6AC307569 /* EventRelayProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 523890083299444A9CF45601 /* EventRelayProtocol.swift */; };
+		8AC53105D9E0437AB5B5E703 /* HistoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */; };
+		9CDDE6FAD40B420D9DC4F3F7 /* HistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F5611EE8684F0C8736139F /* HistoryViewModel.swift */; };
+		69E8878A13154473938407D3 /* InsightCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */; };
+		119E08E3913F45F0933336D7 /* InsightViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04D5396399374660825D54B5 /* InsightViewModel.swift */; };
+		16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */; };
+		2A54D43BF50F47D9BE9ADA1C /* OnboardingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */; };
+		E7695F6AD86A41B6B9D74D9F /* VelvtPopoverContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */; };
+		97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +58,21 @@
 		C9F1ADB76DD4328B7586E87C /* UIModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UIModule.swift; path = UI/UIModule.swift; sourceTree = "<group>"; };
 		D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeliveryModule.swift; path = Delivery/DeliveryModule.swift; sourceTree = "<group>"; };
 		EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FakeIPCClient.swift; path = IPC/FakeIPCClient.swift; sourceTree = "<group>"; };
+		2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarController.swift; path = App/MenuBarController.swift; sourceTree = "<group>"; };
+		81032E99C0684420AFA1791A /* AuthViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthViewModel.swift; path = Auth/AuthViewModel.swift; sourceTree = "<group>"; };
+		E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DisplayDataCoordinator.swift; path = Delivery/DisplayDataCoordinator.swift; sourceTree = "<group>"; };
+		5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationDeliveryCoordinator.swift; path = Delivery/NotificationDeliveryCoordinator.swift; sourceTree = "<group>"; };
+		945E765C974B4023B7362068 /* NotificationScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationScheduler.swift; path = Delivery/NotificationScheduler.swift; sourceTree = "<group>"; };
+		F30FB3399A5C45808376ACF1 /* EventRelay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelay.swift; path = Relay/EventRelay.swift; sourceTree = "<group>"; };
+		523890083299444A9CF45601 /* EventRelayProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelayProtocol.swift; path = Relay/EventRelayProtocol.swift; sourceTree = "<group>"; };
+		8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HistoryListView.swift; path = UI/HistoryListView.swift; sourceTree = "<group>"; };
+		75F5611EE8684F0C8736139F /* HistoryViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HistoryViewModel.swift; path = UI/HistoryViewModel.swift; sourceTree = "<group>"; };
+		9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightCardView.swift; path = UI/InsightCardView.swift; sourceTree = "<group>"; };
+		04D5396399374660825D54B5 /* InsightViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightViewModel.swift; path = UI/InsightViewModel.swift; sourceTree = "<group>"; };
+		ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarPopoverView.swift; path = UI/MenuBarPopoverView.swift; sourceTree = "<group>"; };
+		ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = OnboardingViews.swift; path = UI/OnboardingViews.swift; sourceTree = "<group>"; };
+		7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VelvtPopoverContentView.swift; path = UI/VelvtPopoverContentView.swift; sourceTree = "<group>"; };
+		D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceProcessLauncher.swift; path = App/ServiceProcessLauncher.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -100,6 +130,21 @@
 				C9F1ADB76DD4328B7586E87C /* UIModule.swift */,
 				46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */,
 				93C055AD72C0443A8CD98C13 /* PermissionManager.swift */,
+				D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */,
+				2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */,
+				81032E99C0684420AFA1791A /* AuthViewModel.swift */,
+				E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */,
+				5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */,
+				945E765C974B4023B7362068 /* NotificationScheduler.swift */,
+				F30FB3399A5C45808376ACF1 /* EventRelay.swift */,
+				523890083299444A9CF45601 /* EventRelayProtocol.swift */,
+				8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */,
+				75F5611EE8684F0C8736139F /* HistoryViewModel.swift */,
+				9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */,
+				04D5396399374660825D54B5 /* InsightViewModel.swift */,
+				ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */,
+				ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */,
+				7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */,
 			);
 			name = VelvtMac;
 			path = Sources/VelvtMac;
@@ -190,6 +235,21 @@
 				5C4179B95803E953316EC37F /* UIModule.swift in Sources */,
 				FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */,
 				38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */,
+				97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */,
+				443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */,
+				4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */,
+				E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */,
+				C6FEFBE12367472398E2ECBC /* NotificationDeliveryCoordinator.swift in Sources */,
+				1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */,
+				18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */,
+				043E5190EF3742C6AC307569 /* EventRelayProtocol.swift in Sources */,
+				8AC53105D9E0437AB5B5E703 /* HistoryListView.swift in Sources */,
+				9CDDE6FAD40B420D9DC4F3F7 /* HistoryViewModel.swift in Sources */,
+				69E8878A13154473938407D3 /* InsightCardView.swift in Sources */,
+				119E08E3913F45F0933336D7 /* InsightViewModel.swift in Sources */,
+				16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */,
+				2A54D43BF50F47D9BE9ADA1C /* OnboardingViews.swift in Sources */,
+				E7695F6AD86A41B6B9D74D9F /* VelvtPopoverContentView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -257,7 +317,8 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGNING_ALLOWED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.velvt.mac;
@@ -275,7 +336,8 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGNING_ALLOWED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.velvt.mac;

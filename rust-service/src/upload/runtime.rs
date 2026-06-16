@@ -4,6 +4,9 @@ use super::{
 };
 use crate::abstraction::AbstractedEvent;
 use chrono::{DateTime, Utc};
+use std::future::Future;
+use std::pin::Pin;
+use tokio::sync::Mutex as AsyncMutex;
 
 pub struct UploadBatcher<U, A> {
     assembler: BatchAssembler,
@@ -70,5 +73,76 @@ where
             return Err(error);
         }
         Ok(())
+    }
+}
+
+/// Object-safe facade over [`UploadBatcher`] so the IPC router can hold one
+/// behind `Arc<dyn EventIngestor>` without threading the uploader/alert-sink
+/// generics through `R7Router`.
+pub trait EventIngestor: Send + Sync {
+    fn ingest<'a>(
+        &'a self,
+        event_id: String,
+        event: &'a AbstractedEvent,
+        duration_seconds: u64,
+        now: DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CoordinatorError>> + Send + 'a>>;
+
+    fn flush_due<'a>(
+        &'a self,
+        now: DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>>;
+
+    fn flush_shutdown<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>>;
+}
+
+/// Shares one [`UploadBatcher`] between the IPC router (live ingestion) and
+/// a periodic flush task behind a single async mutex.
+pub struct SharedUploadBatcher<U, A> {
+    inner: AsyncMutex<UploadBatcher<U, A>>,
+}
+
+impl<U, A> SharedUploadBatcher<U, A> {
+    pub fn new(batcher: UploadBatcher<U, A>) -> Self {
+        Self {
+            inner: AsyncMutex::new(batcher),
+        }
+    }
+}
+
+impl<U, A> EventIngestor for SharedUploadBatcher<U, A>
+where
+    U: BatchUploader,
+    A: PrivacyAlertSink,
+{
+    fn ingest<'a>(
+        &'a self,
+        event_id: String,
+        event: &'a AbstractedEvent,
+        duration_seconds: u64,
+        now: DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CoordinatorError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.inner
+                .lock()
+                .await
+                .ingest_abstracted(event_id, event, duration_seconds, now)
+                .await
+        })
+    }
+
+    fn flush_due<'a>(
+        &'a self,
+        now: DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
+        Box::pin(async move { self.inner.lock().await.flush_due(now).await })
+    }
+
+    fn flush_shutdown<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
+        Box::pin(async move { self.inner.lock().await.flush_shutdown().await })
     }
 }

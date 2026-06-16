@@ -6,6 +6,9 @@ rust-service/target/
 swift-client/.build/
 swift-client/.swiftpm/
 DerivedData/
+
+# Packaged app artifact (make build-app)
+/dist/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
 *.xcuserstate

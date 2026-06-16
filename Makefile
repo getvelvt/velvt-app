@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all
+.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -45,3 +45,23 @@ lint-swift: check-swift-toolchain
 build-all: build-rust build-swift
 
 test-all: test-rust test-swift
+
+# Produces a single runnable artifact: dist/velvt-mac.app, with the Rust
+# service binary embedded at Contents/MacOS/velvt-service. AppDelegate
+# launches it at startup (see ServiceProcessLauncher.swift) and terminates
+# it on quit, so a real user can install and double-click dist/velvt-mac.app
+# without a terminal or any manually-exported environment variables.
+build-app: check-rust-toolchain check-swift-toolchain
+	cd rust-service && cargo build --release
+	rm -rf dist
+	mkdir -p dist
+	xcodebuild \
+		-project swift-client/VelvtMac.xcodeproj \
+		-scheme velvt-mac \
+		-destination 'platform=macOS' \
+		-derivedDataPath dist/.derivedData \
+		build
+	cp -R dist/.derivedData/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
+	cp rust-service/target/release/velvt-service dist/velvt-mac.app/Contents/MacOS/velvt-service
+	rm -rf dist/.derivedData
+	@echo "Built dist/velvt-mac.app"

@@ -106,7 +106,7 @@ fn messages_use_tagged_payload_envelope() {
 
     assert_eq!(
         value,
-        json!({"type": "server_hello", "payload": {"protocol_version": 3}})
+        json!({"type": "server_hello", "payload": {"protocol_version": PROTOCOL_VERSION}})
     );
 }
 

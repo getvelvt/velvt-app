@@ -14,7 +14,7 @@ pub use coordinator::{
 };
 pub use dto::{BatchEventPayload, BatchPayload};
 pub use retry::HostBackoff;
-pub use runtime::UploadBatcher;
+pub use runtime::{EventIngestor, SharedUploadBatcher, UploadBatcher};
 pub use transport::{
     BatchUploadError, BatchUploader, FakeBatchUploader, HttpBatchUploader, UploadOutcome,
 };

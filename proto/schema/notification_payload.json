@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "Direction: Rust to Swift. title/body are Rust-authored display copy; Swift schedules exactly this content and never generates notification text itself.",
+  "title": "Notification Payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "notification_payload" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["notification_id", "title", "body", "insight_date"],
+      "properties": {
+        "notification_id": { "type": "string", "format": "uuid" },
+        "title": { "type": "string", "minLength": 1 },
+        "body": { "type": "string", "minLength": 1 },
+        "insight_date": { "type": "string", "format": "date" },
+        "do_not_disturb_until": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

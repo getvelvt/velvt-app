@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "PRIVACY: This message must never contain raw identifying user data. The reason field is a safe diagnostic code, not user content.",
+  "title": "Needs Reauth",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "needs_reauth" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

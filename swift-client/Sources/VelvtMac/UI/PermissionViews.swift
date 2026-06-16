@@ -122,28 +122,83 @@ public final class PermissionOnboardingModel: ObservableObject {
 
 public struct PermissionRootView: View {
     @ObservedObject private var presentation: PermissionPresentationModel
+    @ObservedObject private var accountStateManager: AccountStateManager
     private let permissionManager: any PermissionManagerProtocol
+    private let ipcClient: any IPCClientProtocol
 
     public init(
         presentation: PermissionPresentationModel,
-        permissionManager: any PermissionManagerProtocol
+        permissionManager: any PermissionManagerProtocol,
+        accountStateManager: AccountStateManager,
+        ipcClient: any IPCClientProtocol
     ) {
         self.presentation = presentation
         self.permissionManager = permissionManager
+        self.accountStateManager = accountStateManager
+        self.ipcClient = ipcClient
     }
 
     public var body: some View {
-        Group {
-            if presentation.showsOnboarding {
-                OnboardingView(permissionManager: permissionManager) {
-                    presentation.completeOnboarding()
-                }
-            } else {
-                Text("Velvt is available from the menu bar.")
-                    .foregroundStyle(.secondary)
+        if accountStateManager.isDeviceRevoked {
+            DeviceRevokedView {
+                accountStateManager.clearDeviceRevokedFlag()
             }
+        } else if case .pendingErasure = accountStateManager.accountState {
+            PendingDeletionView {
+                accountStateManager.cancelPendingErasure()
+            }
+        } else if presentation.showsOnboarding || !isLoggedIn {
+            // skipToAuth is true when permissions are done but the user is
+            // logged out (re-auth after session expiry).
+            OnboardingContainer(
+                permissionManager: permissionManager,
+                accountStateManager: accountStateManager,
+                ipcClient: ipcClient,
+                skipToAuth: !presentation.showsOnboarding && !isLoggedIn,
+                onComplete: { presentation.completeOnboarding() }
+            )
+        } else {
+            Text("Velvt is available from the menu bar.")
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 360, minHeight: 240)
         }
-        .frame(minWidth: 360, minHeight: 240)
+    }
+
+    private var isLoggedIn: Bool {
+        if case .loggedIn = accountStateManager.accountState { return true }
+        return false
+    }
+}
+
+/// Creates and owns the `OnboardingCoordinator` and `AuthViewModel` for the
+/// duration of the onboarding session. Using `@StateObject` ensures they are
+/// not recreated on re-renders.
+private struct OnboardingContainer: View {
+    @StateObject private var coordinator: OnboardingCoordinator
+
+    init(
+        permissionManager: any PermissionManagerProtocol,
+        accountStateManager: AccountStateManager,
+        ipcClient: any IPCClientProtocol,
+        skipToAuth: Bool,
+        onComplete: @escaping () -> Void
+    ) {
+        let authVM = AuthViewModel(
+            accountStateManager: accountStateManager,
+            ipcClient: ipcClient
+        )
+        let coord = OnboardingCoordinator(
+            permissionManager: permissionManager,
+            accountStateManager: accountStateManager,
+            authViewModel: authVM,
+            onComplete: onComplete
+        )
+        if skipToAuth { coord.skipToAuth() }
+        _coordinator = StateObject(wrappedValue: coord)
+    }
+
+    var body: some View {
+        OnboardingFlowView(coordinator: coordinator)
     }
 }
 

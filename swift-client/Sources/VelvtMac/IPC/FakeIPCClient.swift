@@ -34,7 +34,11 @@ public final class FakeIPCClient: IPCClientProtocol, @unchecked Sendable {
         statusSubject.send(.disconnected)
     }
 
+    /// When set, `send(_:)` throws this error instead of recording the message.
+    public var shouldThrowOnSend: (any Error)?
+
     public func send(_ message: ClientMessage) async throws {
+        if let error = shouldThrowOnSend { throw error }
         lock.withLock {
             recordedMessages.append(message)
         }
@@ -42,6 +46,12 @@ public final class FakeIPCClient: IPCClientProtocol, @unchecked Sendable {
 
     public func inject(_ message: ServerMessage) {
         continuation.yield(message)
+    }
+
+    /// Finishes the `incomingMessages` stream, simulating a hard IPC disconnect.
+    /// After this call no further messages can be injected on this instance.
+    public func closeStream() {
+        continuation.finish()
     }
 
     public func setConnectionStatus(_ status: ConnectionStatus) {

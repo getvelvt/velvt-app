@@ -125,3 +125,194 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertEqual(ReconnectBackoff(jitter: { 1.2 }).delay(forAttempt: 3), 4.8, accuracy: 0.0001)
     }
 }
+
+// MARK: - Auth IPC DTO contract tests (proto v6)
+
+final class AuthIPCContractTests: XCTestCase {
+    private let encoder = IPCMessageCodec.makeEncoder()
+    private let decoder = IPCMessageCodec.makeDecoder()
+
+    // MARK: ClientMessage auth variants
+
+    func testSignUpRoundTrip() throws {
+        let msg = ClientMessage.signUp(SignUpRequest(email: "a@b.com", password: "pw"))
+        let data = try encoder.encode(msg)
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), msg)
+    }
+
+    func testSignUpDiscriminator() throws {
+        let data = try encoder.encode(ClientMessage.signUp(SignUpRequest(email: "a@b.com", password: "pw")))
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["type"] as? String, "sign_up")
+        let payload = try XCTUnwrap(obj["payload"] as? [String: Any])
+        XCTAssertEqual(payload["email"] as? String, "a@b.com")
+        // Password must be in the payload (not echoed in logs but encoded correctly)
+        XCTAssertNotNil(payload["password"])
+    }
+
+    func testLogInRoundTrip() throws {
+        let msg = ClientMessage.logIn(LogInRequest(email: "x@y.com", password: "secret"))
+        let data = try encoder.encode(msg)
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), msg)
+    }
+
+    func testLogInDiscriminator() throws {
+        let data = try encoder.encode(ClientMessage.logIn(LogInRequest(email: "x@y.com", password: "s")))
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["type"] as? String, "log_in")
+    }
+
+    func testLogOutRoundTrip() throws {
+        let data = try encoder.encode(ClientMessage.logOut)
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), .logOut)
+    }
+
+    func testLogOutDiscriminator() throws {
+        let data = try encoder.encode(ClientMessage.logOut)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["type"] as? String, "log_out")
+    }
+
+    func testDeleteAccountRoundTrip() throws {
+        let data = try encoder.encode(ClientMessage.deleteAccount)
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), .deleteAccount)
+    }
+
+    func testDeleteAccountDiscriminator() throws {
+        let data = try encoder.encode(ClientMessage.deleteAccount)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["type"] as? String, "delete_account")
+    }
+
+    // MARK: ServerMessage auth variants
+
+    func testAuthSuccessRoundTrip() throws {
+        let expires = Date(timeIntervalSince1970: 1_750_000_000)
+        let msg = ServerMessage.authSuccess(
+            AuthSuccess(userId: "u1", accessToken: "at", refreshToken: "rt", expiresAt: expires)
+        )
+        let data = try encoder.encode(msg)
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg)
+    }
+
+    func testAuthSuccessPayloadUsesSnakeCaseKeys() throws {
+        let msg = ServerMessage.authSuccess(
+            AuthSuccess(userId: "u1", accessToken: "at", refreshToken: "rt",
+                        expiresAt: Date(timeIntervalSince1970: 1_750_000_000))
+        )
+        let data = try encoder.encode(msg)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["type"] as? String, "auth_success")
+        let payload = try XCTUnwrap(obj["payload"] as? [String: Any])
+        XCTAssertNotNil(payload["user_id"])
+        XCTAssertNotNil(payload["access_token"])
+        XCTAssertNotNil(payload["refresh_token"])
+        XCTAssertNotNil(payload["expires_at"])
+        // Must not leak tokens via raw key names
+        XCTAssertNil(payload["userId"])
+        XCTAssertNil(payload["accessToken"])
+    }
+
+    func testAuthFailureRoundTrip() throws {
+        let msg = ServerMessage.authFailure(AuthFailure(code: .invalidCredentials, message: "Bad creds"))
+        let data = try encoder.encode(msg)
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg)
+    }
+
+    func testAuthFailureAllCodes() throws {
+        let codes: [AuthFailureCode] = [.invalidCredentials, .networkError, .serverError]
+        for code in codes {
+            let msg = ServerMessage.authFailure(AuthFailure(code: code, message: "m"))
+            let data = try encoder.encode(msg)
+            let decoded = try decoder.decode(ServerMessage.self, from: data)
+            XCTAssertEqual(decoded, msg, "Round-trip failed for code \(code)")
+        }
+    }
+
+    func testAccountDeletionAcceptedRoundTrip() throws {
+        let data = try encoder.encode(ServerMessage.accountDeletionAccepted)
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), .accountDeletionAccepted)
+    }
+
+    func testNeedsReauthRoundTrip() throws {
+        let msg = ServerMessage.needsReauth(NeedsReauth(reason: "token_expired"))
+        let data = try encoder.encode(msg)
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg)
+    }
+
+    func testDeviceRevokedRoundTrip() throws {
+        let msg = ServerMessage.deviceRevoked(DeviceRevoked(message: "Revoked by admin"))
+        let data = try encoder.encode(msg)
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg)
+    }
+
+    func testDeviceRevokedDiscriminator() throws {
+        let data = try encoder.encode(ServerMessage.deviceRevoked(DeviceRevoked(message: "x")))
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(obj["type"] as? String, "device_revoked")
+    }
+
+    func testAuthSuccessDoesNotDecodeAsUnknown() throws {
+        let raw = #"{"type":"auth_success","payload":{"user_id":"u","access_token":"a","refresh_token":"r","expires_at":"2026-06-15T00:00:00Z"}}"#
+        let decoded = try decoder.decode(ServerMessage.self, from: Data(raw.utf8))
+        guard case .authSuccess(let s) = decoded else {
+            XCTFail("Expected .authSuccess, got \(decoded)")
+            return
+        }
+        XCTAssertEqual(s.userId, "u")
+    }
+
+    func testAllNewClientMessagesRoundTripTogether() throws {
+        let messages: [ClientMessage] = [
+            .signUp(SignUpRequest(email: "a@b.com", password: "pw")),
+            .logIn(LogInRequest(email: "x@y.com", password: "s")),
+            .logOut,
+            .deleteAccount,
+        ]
+        for msg in messages {
+            let data = try encoder.encode(msg)
+            XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), msg,
+                           "Round-trip failed for \(msg)")
+        }
+    }
+
+    // MARK: DTO extensibility
+
+    func testUnknownServerMessageTypeIsForwardCompatible() throws {
+        // Any future server message type the Swift client doesn't know about must
+        // produce .unknown(type:) and must not crash or corrupt state. This is the
+        // forward-compatibility guarantee for proto extensibility.
+        let raw = #"{"type":"future_server_feature","payload":{"sensitive_field":"must-not-be-retained"}}"#
+        let decoded = try decoder.decode(ServerMessage.self, from: Data(raw.utf8))
+        guard case .unknown(let t) = decoded else {
+            XCTFail("Expected .unknown; got \(decoded)")
+            return
+        }
+        XCTAssertEqual(t, "future_server_feature")
+    }
+
+    func testUnknownClientMessageTypeThrowsOnDecode() {
+        // ClientMessage decode is intentionally strict: the Swift client is the
+        // authoritative source of client messages and should never receive unknown
+        // ones. Decoding an unknown type must throw rather than silently succeed.
+        let raw = #"{"type":"unknown_client_cmd","payload":{}}"#
+        XCTAssertThrowsError(try decoder.decode(ClientMessage.self, from: Data(raw.utf8)),
+                             "Unknown ClientMessage types must throw DecodingError")
+    }
+
+    func testAllNewServerMessagesRoundTripTogether() throws {
+        let expires = Date(timeIntervalSince1970: 1_750_000_000)
+        let messages: [ServerMessage] = [
+            .authSuccess(AuthSuccess(userId: "u", accessToken: "a", refreshToken: "r", expiresAt: expires)),
+            .authFailure(AuthFailure(code: .serverError, message: "oops")),
+            .accountDeletionAccepted,
+            .needsReauth(NeedsReauth(reason: "expired")),
+            .deviceRevoked(DeviceRevoked(message: "revoked")),
+        ]
+        for msg in messages {
+            let data = try encoder.encode(msg)
+            XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg,
+                           "Round-trip failed for \(msg)")
+        }
+    }
+}

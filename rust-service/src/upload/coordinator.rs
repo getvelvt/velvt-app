@@ -87,7 +87,7 @@ where
             repository,
             uploader,
             alerts,
-            host: "api.velvt.test".into(),
+            host: "api-dev.getvelvt.com".into(),
             backoff: Mutex::new(HostBackoff::production(
                 StdDuration::from_secs(30),
                 StdDuration::from_secs(15 * 60),

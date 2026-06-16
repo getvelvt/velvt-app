@@ -8,7 +8,7 @@ let package = Package(
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "velvt-mac", targets: ["VelvtMac"])
+        .executable(name: "velvt-mac", targets: ["VelvtMac"])	
     ],
     targets: [
         .executableTarget(
@@ -22,3 +22,5 @@ let package = Package(
         )
     ]
 )
+	
+	

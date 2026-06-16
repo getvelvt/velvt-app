@@ -34,10 +34,13 @@ lint-rust: check-rust-toolchain
 	cd rust-service && cargo fmt --check
 
 build-swift: check-swift-toolchain
-	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' build
+	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' CONFIGURATION_BUILD_DIR=$(PWD)/swift-client/.build build
 
 test-swift: check-swift-toolchain
-	swift test --package-path swift-client
+	xcodebuild -project swift-client/VelvtMac.xcodeproj \
+	           -scheme velvt-mac \
+	           -destination 'platform=macOS' \
+	           test
 
 lint-swift: check-swift-toolchain
 	cd swift-client && swift format lint --recursive Sources Tests
@@ -45,3 +48,9 @@ lint-swift: check-swift-toolchain
 build-all: build-rust build-swift
 
 test-all: test-rust test-swift
+
+.PHONY: clean
+clean:
+	cd rust-service && cargo clean
+	rm -rf swift-client/.build
+	rm -rf swift-client/DerivedData

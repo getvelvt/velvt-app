@@ -8,9 +8,8 @@ use super::IpcError;
 
 /// Routes validated post-handshake messages independently of their transport.
 #[allow(async_fn_in_trait)]
-pub trait MessageRouter: Send + Sync {
-    /// Handles one validated client message and optionally returns a response.
-    async fn route(&self, message: ClientMessage) -> Result<Option<ServerMessage>, IpcError>;
+pub trait MessageRouter {
+    fn route(&self, message: ClientMessage) -> impl std::future::Future<Output = Result<Option<ServerMessage>, IpcError>> + Send;
 }
 
 /// Minimal R1 router used until business handlers are introduced.

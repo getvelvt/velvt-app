@@ -6,8 +6,9 @@ rust-service/target/
 swift-client/.build/
 swift-client/.swiftpm/
 DerivedData/
-*.xcworkspace/xcuserdata/
-*.xcodeproj/xcuserdata/
+swift-client/VelvtMac.xcodeproj/project.xcworkspace
+swift-client/VelvtMac.xcodeproj/xcuserdata
+swift-client/VelvtMac.xcodeproj/project.pbxproj
 *.xcuserstate
 
 # macOS

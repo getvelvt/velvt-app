@@ -28,6 +28,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public let permissionManager: PermissionManager
     public let permissionPresentation: PermissionPresentationModel
     public let accountStateManager: AccountStateManager
+    public private(set) var displayCoordinator: ConcreteDisplayDataCoordinator?
 
     var ipcClient: (any IPCClientProtocol)?
     private var eventRelay: (any EventRelayProtocol)?
@@ -64,6 +65,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             // AccountStateManager is the sole consumer of incomingMessages.
             // It re-publishes to serverMessages for downstream consumers.
             accountStateManager.startListening(to: client)
+
+            let displayCoord = ConcreteDisplayDataCoordinator()
+            displayCoord.start(
+                serverMessages: accountStateManager.serverMessages,
+                connectionStatus: client.connectionStatus
+            )
+            displayCoordinator = displayCoord
 
             let relay = EventRelay(ipcClient: client)
             let collectionAgent = AXCollectionAgent(eventSink: relay)
@@ -133,7 +141,10 @@ public struct VelvtMacApp: App {
             )
         }
         MenuBarExtra {
-            MenuBarView(presentation: appDelegate.permissionPresentation)
+            MenuBarView(
+                presentation: appDelegate.permissionPresentation,
+                displayCoordinator: appDelegate.displayCoordinator
+            )
         } label: {
             PermissionMenuBarLabel(presentation: appDelegate.permissionPresentation)
         }

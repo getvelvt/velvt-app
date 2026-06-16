@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app
+.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app clean
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -34,10 +34,13 @@ lint-rust: check-rust-toolchain
 	cd rust-service && cargo fmt --check
 
 build-swift: check-swift-toolchain
-	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' build
+	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' CONFIGURATION_BUILD_DIR=$(PWD)/swift-client/.build build
 
 test-swift: check-swift-toolchain
-	swift test --package-path swift-client
+	xcodebuild -project swift-client/VelvtMac.xcodeproj \
+	           -scheme velvt-mac \
+	           -destination 'platform=macOS' \
+	           test
 
 lint-swift: check-swift-toolchain
 	cd swift-client && swift format lint --recursive Sources Tests
@@ -65,3 +68,8 @@ build-app: check-rust-toolchain check-swift-toolchain
 	cp rust-service/target/release/velvt-service dist/velvt-mac.app/Contents/MacOS/velvt-service
 	rm -rf dist/.derivedData
 	@echo "Built dist/velvt-mac.app"
+
+clean:
+	cd rust-service && cargo clean
+	rm -rf swift-client/.build
+	rm -rf swift-client/DerivedData

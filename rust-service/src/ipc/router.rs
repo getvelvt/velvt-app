@@ -19,8 +19,7 @@ use super::IpcError;
 /// `async fn` desugaring) keeps that requirement visible at the trait
 /// definition instead of surfacing as a confusing error deep in `transport.rs`.
 #[allow(async_fn_in_trait)]
-pub trait MessageRouter: Send + Sync {
-    /// Handles one validated client message and optionally returns a response.
+pub trait MessageRouter {
     fn route(
         &self,
         message: ClientMessage,

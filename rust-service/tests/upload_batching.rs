@@ -294,11 +294,11 @@ fn retry_after_and_exponential_fallback_are_host_scoped() {
     let mut backoff = HostBackoff::new(Duration::from_secs(30), Duration::from_secs(900), || 1.0);
 
     assert_eq!(
-        backoff.next_delay("api.velvt.test", Some("120")),
+        backoff.next_delay("api-dev.getvelvt.com", Some("120")),
         Duration::from_secs(120)
     );
     assert_eq!(
-        backoff.next_delay("api.velvt.test", Some("1800")),
+        backoff.next_delay("api-dev.getvelvt.com", Some("1800")),
         Duration::from_secs(1800)
     );
     assert_eq!(
@@ -438,7 +438,7 @@ async fn submitted_batch_is_persisted_before_upload() {
         FakePrivacyAlertSink::default(),
     )
     .with_host_and_backoff(
-        "api.velvt.test",
+        "api-dev.getvelvt.com",
         HostBackoff::new(Duration::from_secs(30), Duration::from_secs(900), || 1.0),
     );
 
@@ -470,7 +470,7 @@ async fn transport_failure_persists_retry_state() {
         FakePrivacyAlertSink::default(),
     )
     .with_host_and_backoff(
-        "api.velvt.test",
+        "api-dev.getvelvt.com",
         HostBackoff::new(Duration::from_secs(30), Duration::from_secs(900), || 1.0),
     );
 
@@ -491,7 +491,7 @@ async fn transport_failure_persists_retry_state() {
         UploadBatchStatus::Pending
     );
     assert_eq!(
-        repository.host_backoff_attempt("api.velvt.test").unwrap(),
+        repository.host_backoff_attempt("api-dev.getvelvt.com").unwrap(),
         1
     );
 }
@@ -504,7 +504,7 @@ async fn network_failure_is_retried_on_next_cycle() {
     let coordinator =
         UploadCoordinator::new(repository.clone(), first, FakePrivacyAlertSink::default())
             .with_host_and_backoff(
-                "api.velvt.test",
+                "api-dev.getvelvt.com",
                 HostBackoff::new(Duration::ZERO, Duration::from_secs(900), || 1.0),
             );
     coordinator
@@ -688,7 +688,7 @@ async fn rate_limit_retry_after_is_persisted() {
         FakePrivacyAlertSink::default(),
     )
     .with_host_and_backoff(
-        "api.velvt.test",
+        "api-dev.getvelvt.com",
         HostBackoff::new(Duration::from_secs(30), Duration::from_secs(900), || 1.0),
     );
     let before = Utc::now();
@@ -742,7 +742,7 @@ async fn host_backoff_pauses_other_batches_for_same_host() {
         FakePrivacyAlertSink::default(),
     )
     .with_host_and_backoff(
-        "api.velvt.test",
+        "api-dev.getvelvt.com",
         HostBackoff::new(Duration::from_secs(30), Duration::from_secs(900), || 1.0),
     );
 

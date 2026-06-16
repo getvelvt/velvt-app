@@ -151,7 +151,7 @@ impl ServiceConfig {
             upload_batch_event_limit,
             upload_flush_interval: Duration::from_secs(upload_flush_seconds),
             upload_api_base_url: std::env::var("VELVT_API_BASE_URL")
-                .unwrap_or_else(|_| "https://api.velvt.test".into()),
+                .unwrap_or_else(|_| "https://api-dev.getvelvt.com".into()),
             upload_retry_scan_interval: Duration::from_secs(upload_retry_scan_seconds),
             history_ttl: Duration::from_secs(history_ttl_seconds),
             insight_ttl: Duration::from_secs(insight_ttl_seconds),

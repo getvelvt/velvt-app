@@ -1,5 +1,5 @@
 // Debug build — staging API, APNs sandbox.
-VELVT_API_BASE_URL = https:/$()/dev-api.getvelvt.com
+VELVT_API_BASE_URL = https://api.getvelvt.com
 VELVT_APNS_ENV = development
 VELVT_SOCKET_PATH = ~/.velvt/velvt-service.sock
 VELVT_PROTOCOL_VERSION = 7

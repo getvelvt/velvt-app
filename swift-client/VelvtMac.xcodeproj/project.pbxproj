@@ -7,86 +7,98 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		043E5190EF3742C6AC307569 /* EventRelayProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 523890083299444A9CF45601 /* EventRelayProtocol.swift */; };
 		06C9D8301CC9C73FD56ECEB7 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 08FF548B5CFC292896112B45 /* Cocoa.framework */; };
-		A1B2C3D4E5F601234567890A /* BundleConfigLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */; };
-		A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890D /* ServiceManager.swift */; };
-		A1B2C3D4E5F601234567890E /* ServiceUnavailableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */; };
-		A1B2C3D4E5F60123456789AA /* com.velvt.service.plist.template in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60123456789AB /* com.velvt.service.plist.template */; };
-		A1B2C3D4E5F60123456789B0 /* ServiceManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60123456789B1 /* ServiceManagerTests.swift */; };
-		A1B2C3D4E5F60123456789B2 /* ConfigModuleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60123456789B3 /* ConfigModuleTests.swift */; };
 		07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */; };
+		119E08E3913F45F0933336D7 /* InsightViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04D5396399374660825D54B5 /* InsightViewModel.swift */; };
 		143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */; };
+		16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */; };
+		18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30FB3399A5C45808376ACF1 /* EventRelay.swift */; };
+		1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945E765C974B4023B7362068 /* NotificationScheduler.swift */; };
+		2A54D43BF50F47D9BE9ADA1C /* OnboardingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */; };
 		38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93C055AD72C0443A8CD98C13 /* PermissionManager.swift */; };
+		4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81032E99C0684420AFA1791A /* AuthViewModel.swift */; };
+		443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */; };
 		45E74D92600605D1450A1281 /* IPCClientProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */; };
 		55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31C752D40A995E1401F41A8E /* AppModule.swift */; };
 		59171A93B002F17C0349992E /* DeviceModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */; };
 		5C4179B95803E953316EC37F /* UIModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9F1ADB76DD4328B7586E87C /* UIModule.swift */; };
+		69E8878A13154473938407D3 /* InsightCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */; };
 		88D5FC587687DD9AB0300E53 /* ConfigModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 928E12E20A85E864E9B7E683 /* ConfigModule.swift */; };
 		89AC090DEEE9F19A1A61543B /* UnixSocketIPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */; };
+		8AC53105D9E0437AB5B5E703 /* HistoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */; };
+		97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */; };
 		9A6928BC73B9B53A90E1B4E3 /* FakeIPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */; };
+		9CDDE6FAD40B420D9DC4F3F7 /* HistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F5611EE8684F0C8736139F /* HistoryViewModel.swift */; };
+		9DB1CFA62FE2CD6F00632E03 /* Debug.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */; };
+		9DB1CFA72FE2CD6F00632E03 /* Release.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */; };
+		9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist in PList Copy */ = {isa = PBXBuildFile; fileRef = 9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist */; };
 		A03B3DF738D28A838B7E16A5 /* ReconnectBackoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */; };
+		A1B2C3D4E5F601234567890A /* BundleConfigLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */; };
+		A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890D /* ServiceManager.swift */; };
+		A1B2C3D4E5F601234567890E /* ServiceUnavailableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */; };
 		AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */; };
+		C6FEFBE12367472398E2ECBC /* NotificationDeliveryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */; };
+		E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */; };
+		E7695F6AD86A41B6B9D74D9F /* VelvtPopoverContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */; };
 		FEF395332D1059B366BF6D9A /* IPCTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39C7506861C548B6BD42DE38 /* IPCTypes.swift */; };
 		FF20FC65F747233FBF419F69 /* DeliveryModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */; };
 		FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */; };
-		443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */; };
-		4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81032E99C0684420AFA1791A /* AuthViewModel.swift */; };
-		E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */; };
-		C6FEFBE12367472398E2ECBC /* NotificationDeliveryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */; };
-		1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945E765C974B4023B7362068 /* NotificationScheduler.swift */; };
-		18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30FB3399A5C45808376ACF1 /* EventRelay.swift */; };
-		043E5190EF3742C6AC307569 /* EventRelayProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 523890083299444A9CF45601 /* EventRelayProtocol.swift */; };
-		8AC53105D9E0437AB5B5E703 /* HistoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */; };
-		9CDDE6FAD40B420D9DC4F3F7 /* HistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F5611EE8684F0C8736139F /* HistoryViewModel.swift */; };
-		69E8878A13154473938407D3 /* InsightCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */; };
-		119E08E3913F45F0933336D7 /* InsightViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04D5396399374660825D54B5 /* InsightViewModel.swift */; };
-		16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */; };
-		2A54D43BF50F47D9BE9ADA1C /* OnboardingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */; };
-		E7695F6AD86A41B6B9D74D9F /* VelvtPopoverContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */; };
-		97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		9DB1CFA82FE2D0A000632E03 /* PList Copy */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 1;
+			files = (
+				9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist in PList Copy */,
+			);
+			name = "PList Copy";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ReconnectBackoff.swift; path = IPC/ReconnectBackoff.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BundleConfigLoader.swift; path = Config/BundleConfigLoader.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F601234567890D /* ServiceManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceManager.swift; path = Service/ServiceManager.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceUnavailableView.swift; path = UI/ServiceUnavailableView.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60123456789AB /* com.velvt.service.plist.template */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = "com.velvt.service.plist.template"; path = "../../Resources/com.velvt.service.plist.template"; sourceTree = "<group>"; };
-		A1B2C3D4E5F60123456789AC /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = "../Configs/Debug.xcconfig"; sourceTree = "<group>"; };
-		A1B2C3D4E5F60123456789AD /* Release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = "../Configs/Release.xcconfig"; sourceTree = "<group>"; };
-		A1B2C3D4E5F60123456789B1 /* ServiceManagerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceManagerTests.swift; path = ServiceManagerTests.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60123456789B3 /* ConfigModuleTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfigModuleTests.swift; path = ConfigModuleTests.swift; sourceTree = "<group>"; };
+		04D5396399374660825D54B5 /* InsightViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightViewModel.swift; path = UI/InsightViewModel.swift; sourceTree = "<group>"; };
 		08FF548B5CFC292896112B45 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UnixSocketIPCClient.swift; path = IPC/UnixSocketIPCClient.swift; sourceTree = "<group>"; };
 		28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionCollectionCoordinator.swift; path = App/PermissionCollectionCoordinator.swift; sourceTree = "<group>"; };
+		2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarController.swift; path = App/MenuBarController.swift; sourceTree = "<group>"; };
 		31C752D40A995E1401F41A8E /* AppModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppModule.swift; path = App/AppModule.swift; sourceTree = "<group>"; };
 		3342626EEF1A344019727851 /* velvt-mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "velvt-mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		39C7506861C548B6BD42DE38 /* IPCTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCTypes.swift; path = IPC/IPCTypes.swift; sourceTree = "<group>"; };
 		46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionViews.swift; path = UI/PermissionViews.swift; sourceTree = "<group>"; };
+		523890083299444A9CF45601 /* EventRelayProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelayProtocol.swift; path = Relay/EventRelayProtocol.swift; sourceTree = "<group>"; };
+		5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationDeliveryCoordinator.swift; path = Delivery/NotificationDeliveryCoordinator.swift; sourceTree = "<group>"; };
+		75F5611EE8684F0C8736139F /* HistoryViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HistoryViewModel.swift; path = UI/HistoryViewModel.swift; sourceTree = "<group>"; };
+		7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VelvtPopoverContentView.swift; path = UI/VelvtPopoverContentView.swift; sourceTree = "<group>"; };
+		81032E99C0684420AFA1791A /* AuthViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthViewModel.swift; path = Auth/AuthViewModel.swift; sourceTree = "<group>"; };
 		89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCClientProtocol.swift; path = IPC/IPCClientProtocol.swift; sourceTree = "<group>"; };
+		8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HistoryListView.swift; path = UI/HistoryListView.swift; sourceTree = "<group>"; };
 		8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CollectionModule.swift; path = Collection/CollectionModule.swift; sourceTree = "<group>"; };
-		93C055AD72C0443A8CD98C13 /* PermissionManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionManager.swift; path = Permissions/PermissionManager.swift; sourceTree = "<group>"; };
 		928E12E20A85E864E9B7E683 /* ConfigModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfigModule.swift; path = Config/ConfigModule.swift; sourceTree = "<group>"; };
+		93C055AD72C0443A8CD98C13 /* PermissionManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionManager.swift; path = Permissions/PermissionManager.swift; sourceTree = "<group>"; };
+		945E765C974B4023B7362068 /* NotificationScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationScheduler.swift; path = Delivery/NotificationScheduler.swift; sourceTree = "<group>"; };
 		9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceModule.swift; path = Device/DeviceModule.swift; sourceTree = "<group>"; };
+		9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightCardView.swift; path = UI/InsightCardView.swift; sourceTree = "<group>"; };
+		9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = com.velvt.service.plist; path = ../../Resources/com.velvt.service.plist; sourceTree = "<group>"; };
+		A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BundleConfigLoader.swift; path = Config/BundleConfigLoader.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F601234567890D /* ServiceManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceManager.swift; path = Service/ServiceManager.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceUnavailableView.swift; path = UI/ServiceUnavailableView.swift; sourceTree = "<group>"; };
 		BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthModule.swift; path = Auth/AuthModule.swift; sourceTree = "<group>"; };
 		C9F1ADB76DD4328B7586E87C /* UIModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UIModule.swift; path = UI/UIModule.swift; sourceTree = "<group>"; };
+		D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceProcessLauncher.swift; path = App/ServiceProcessLauncher.swift; sourceTree = "<group>"; };
 		D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeliveryModule.swift; path = Delivery/DeliveryModule.swift; sourceTree = "<group>"; };
-		EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FakeIPCClient.swift; path = IPC/FakeIPCClient.swift; sourceTree = "<group>"; };
-		2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarController.swift; path = App/MenuBarController.swift; sourceTree = "<group>"; };
-		81032E99C0684420AFA1791A /* AuthViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthViewModel.swift; path = Auth/AuthViewModel.swift; sourceTree = "<group>"; };
 		E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DisplayDataCoordinator.swift; path = Delivery/DisplayDataCoordinator.swift; sourceTree = "<group>"; };
-		5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationDeliveryCoordinator.swift; path = Delivery/NotificationDeliveryCoordinator.swift; sourceTree = "<group>"; };
-		945E765C974B4023B7362068 /* NotificationScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationScheduler.swift; path = Delivery/NotificationScheduler.swift; sourceTree = "<group>"; };
-		F30FB3399A5C45808376ACF1 /* EventRelay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelay.swift; path = Relay/EventRelay.swift; sourceTree = "<group>"; };
-		523890083299444A9CF45601 /* EventRelayProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelayProtocol.swift; path = Relay/EventRelayProtocol.swift; sourceTree = "<group>"; };
-		8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HistoryListView.swift; path = UI/HistoryListView.swift; sourceTree = "<group>"; };
-		75F5611EE8684F0C8736139F /* HistoryViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HistoryViewModel.swift; path = UI/HistoryViewModel.swift; sourceTree = "<group>"; };
-		9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightCardView.swift; path = UI/InsightCardView.swift; sourceTree = "<group>"; };
-		04D5396399374660825D54B5 /* InsightViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightViewModel.swift; path = UI/InsightViewModel.swift; sourceTree = "<group>"; };
 		ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarPopoverView.swift; path = UI/MenuBarPopoverView.swift; sourceTree = "<group>"; };
 		ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = OnboardingViews.swift; path = UI/OnboardingViews.swift; sourceTree = "<group>"; };
-		7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VelvtPopoverContentView.swift; path = UI/VelvtPopoverContentView.swift; sourceTree = "<group>"; };
-		D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceProcessLauncher.swift; path = App/ServiceProcessLauncher.swift; sourceTree = "<group>"; };
+		EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FakeIPCClient.swift; path = IPC/FakeIPCClient.swift; sourceTree = "<group>"; };
+		F30FB3399A5C45808376ACF1 /* EventRelay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelay.swift; path = Relay/EventRelay.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -129,9 +141,6 @@
 		F43051B39D83B4CA7E178F6C /* VelvtMac */ = {
 			isa = PBXGroup;
 			children = (
-				A1B2C3D4E5F60123456789AC /* Debug.xcconfig */,
-				A1B2C3D4E5F60123456789AD /* Release.xcconfig */,
-				A1B2C3D4E5F60123456789AB /* com.velvt.service.plist.template */,
 				31C752D40A995E1401F41A8E /* AppModule.swift */,
 				28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */,
 				BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */,
@@ -165,6 +174,9 @@
 				ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */,
 				7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */,
 				A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */,
+				9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */,
+				9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */,
+				9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist */,
 			);
 			name = VelvtMac;
 			path = Sources/VelvtMac;
@@ -186,6 +198,7 @@
 			buildConfigurationList = 8A7F96CAB8DEDE2A664DFD54 /* Build configuration list for PBXNativeTarget "velvt-mac" */;
 			buildPhases = (
 				5ED7FFF41BDCDD531CCEBA0A /* Sources */,
+				9DB1CFA82FE2D0A000632E03 /* PList Copy */,
 				7294A54385813BCC9BAC078F /* Frameworks */,
 				A1B2C3D4E5F60123456789AE /* Bundle Rust Service */,
 				41C9B34E074030B53412BB04 /* Resources */,
@@ -231,7 +244,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1B2C3D4E5F60123456789AA /* com.velvt.service.plist.template in Resources */,
+				9DB1CFA62FE2CD6F00632E03 /* Debug.xcconfig in Resources */,
+				9DB1CFA72FE2CD6F00632E03 /* Release.xcconfig in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -352,15 +366,13 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_OPTIMIZATION_LEVEL = "-Owholemodule";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};
 		79848A31ABC0FFCF22D2B51F /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A1B2C3D4E5F60123456789AD /* Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -380,7 +392,6 @@
 		};
 		86A7CC56EEF9A19A13A9B2CE /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A1B2C3D4E5F60123456789AC /* Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;

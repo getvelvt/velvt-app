@@ -1,0 +1,12 @@
+// Release build — production API, APNs production push.
+VELVT_API_BASE_URL = https://api.getvelvt.com
+VELVT_APNS_ENV = production
+VELVT_SOCKET_PATH = ~/.velvt/velvt-service.sock
+VELVT_PROTOCOL_VERSION = 7
+
+// Injected into the processed Info.plist at build time.
+INFOPLIST_KEY_VelvtAPIBaseURL = $(VELVT_API_BASE_URL)
+INFOPLIST_KEY_VelvtAPNSEnv = $(VELVT_APNS_ENV)
+INFOPLIST_KEY_VelvtSocketPath = $(VELVT_SOCKET_PATH)
+INFOPLIST_KEY_VelvtProtocolVersion = $(VELVT_PROTOCOL_VERSION)
+INFOPLIST_KEY_VelvtClientVersion = $(MARKETING_VERSION)

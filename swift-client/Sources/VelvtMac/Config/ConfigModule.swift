@@ -36,6 +36,9 @@ public protocol ConfigLoading {
 }
 
 /// Loads IPC and application configuration from the process environment.
+/// Available in debug builds and tests only — use BundleConfigLoader in
+/// production. Kept for local `swift run` development workflows.
+#if DEBUG
 public struct EnvironmentConfigLoader: ConfigLoading {
     private let environment: [String: String]
 
@@ -66,6 +69,7 @@ public struct EnvironmentConfigLoader: ConfigLoading {
         )
     }
 }
+#endif
 
 public enum ConfigError: Error, Equatable {
     case missingValue(name: String)

@@ -8,6 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		06C9D8301CC9C73FD56ECEB7 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 08FF548B5CFC292896112B45 /* Cocoa.framework */; };
+		A1B2C3D4E5F601234567890A /* BundleConfigLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */; };
+		A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890D /* ServiceManager.swift */; };
+		A1B2C3D4E5F601234567890E /* ServiceUnavailableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */; };
+		A1B2C3D4E5F60123456789AA /* com.velvt.service.plist.template in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60123456789AB /* com.velvt.service.plist.template */; };
 		07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */; };
 		143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */; };
 		38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93C055AD72C0443A8CD98C13 /* PermissionManager.swift */; };
@@ -42,6 +46,12 @@
 
 /* Begin PBXFileReference section */
 		010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ReconnectBackoff.swift; path = IPC/ReconnectBackoff.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BundleConfigLoader.swift; path = Config/BundleConfigLoader.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F601234567890D /* ServiceManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceManager.swift; path = Service/ServiceManager.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceUnavailableView.swift; path = UI/ServiceUnavailableView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60123456789AB /* com.velvt.service.plist.template */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = "com.velvt.service.plist.template"; path = "../../Resources/com.velvt.service.plist.template"; sourceTree = "<group>"; };
+		A1B2C3D4E5F60123456789AC /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = "../Configs/Debug.xcconfig"; sourceTree = "<group>"; };
+		A1B2C3D4E5F60123456789AD /* Release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = "../Configs/Release.xcconfig"; sourceTree = "<group>"; };
 		08FF548B5CFC292896112B45 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UnixSocketIPCClient.swift; path = IPC/UnixSocketIPCClient.swift; sourceTree = "<group>"; };
 		28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionCollectionCoordinator.swift; path = App/PermissionCollectionCoordinator.swift; sourceTree = "<group>"; };
@@ -115,11 +125,15 @@
 		F43051B39D83B4CA7E178F6C /* VelvtMac */ = {
 			isa = PBXGroup;
 			children = (
+				A1B2C3D4E5F60123456789AC /* Debug.xcconfig */,
+				A1B2C3D4E5F60123456789AD /* Release.xcconfig */,
+				A1B2C3D4E5F60123456789AB /* com.velvt.service.plist.template */,
 				31C752D40A995E1401F41A8E /* AppModule.swift */,
 				28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */,
 				BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */,
 				8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */,
 				928E12E20A85E864E9B7E683 /* ConfigModule.swift */,
+				A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */,
 				D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */,
 				9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */,
 				EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */,
@@ -131,6 +145,7 @@
 				46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */,
 				93C055AD72C0443A8CD98C13 /* PermissionManager.swift */,
 				D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */,
+				A1B2C3D4E5F601234567890D /* ServiceManager.swift */,
 				2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */,
 				81032E99C0684420AFA1791A /* AuthViewModel.swift */,
 				E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */,
@@ -145,6 +160,7 @@
 				ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */,
 				ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */,
 				7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */,
+				A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */,
 			);
 			name = VelvtMac;
 			path = Sources/VelvtMac;
@@ -167,6 +183,7 @@
 			buildPhases = (
 				5ED7FFF41BDCDD531CCEBA0A /* Sources */,
 				7294A54385813BCC9BAC078F /* Frameworks */,
+				A1B2C3D4E5F60123456789AE /* Bundle Rust Service */,
 				41C9B34E074030B53412BB04 /* Resources */,
 			);
 			buildRules = (
@@ -210,10 +227,34 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1B2C3D4E5F60123456789AA /* com.velvt.service.plist.template in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A1B2C3D4E5F60123456789AE /* Bundle Rust Service */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../rust-service/src",
+			);
+			name = "Bundle Rust Service";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/velvt-service",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\ncd \"$RUST_DIR\"\ncargo build --release 2>&1\ncp target/release/velvt-service \"$RESOURCES_DIR/velvt-service\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		5ED7FFF41BDCDD531CCEBA0A /* Sources */ = {
@@ -225,6 +266,9 @@
 				AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */,
 				07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */,
 				88D5FC587687DD9AB0300E53 /* ConfigModule.swift in Sources */,
+				A1B2C3D4E5F601234567890A /* BundleConfigLoader.swift in Sources */,
+				A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */,
+				A1B2C3D4E5F601234567890E /* ServiceUnavailableView.swift in Sources */,
 				FF20FC65F747233FBF419F69 /* DeliveryModule.swift in Sources */,
 				59171A93B002F17C0349992E /* DeviceModule.swift in Sources */,
 				9A6928BC73B9B53A90E1B4E3 /* FakeIPCClient.swift in Sources */,
@@ -312,6 +356,7 @@
 		};
 		79848A31ABC0FFCF22D2B51F /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A1B2C3D4E5F60123456789AD /* Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -331,6 +376,7 @@
 		};
 		86A7CC56EEF9A19A13A9B2CE /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A1B2C3D4E5F60123456789AC /* Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;

@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 import UserNotifications
 
@@ -8,10 +9,7 @@ import UserNotifications
 
 /// Coordinates startup and shutdown of the application.
 public protocol AppLifecycleManaging: AnyObject {
-    /// Starts application-owned services.
     func start() async throws
-
-    /// Stops application-owned services.
     func stop() async
 }
 
@@ -29,7 +27,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
     private var notificationDeliveryCoordinator: NotificationDeliveryCoordinator?
     private var notificationResponseRouter: NotificationResponseRouter?
-    private let serviceProcessLauncher = ServiceProcessLauncher()
+    let serviceManager = ServiceManager()
 
     public override init() {
         let permissionManager = PermissionManager()
@@ -43,19 +41,33 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        // Starts the bundled Rust helper (Contents/MacOS/velvt-service) when
-        // running as a packaged .app; a no-op under `swift run`, where the
-        // service is started separately per README development instructions.
-        serviceProcessLauncher.start()
-
         permissionManager.startMonitoring()
         Task {
             _ = await permissionManager.checkStatus(for: .accessibility)
             _ = await permissionManager.checkStatus(for: .notifications)
         }
 
+        Task { @MainActor in
+            do {
+                try await serviceManager.ensureInstalled()
+                try await serviceManager.ensureUpToDate()
+                try await serviceManager.start()
+            } catch {
+                serviceManager.state = .failed(error)
+                return
+            }
+            startIPC()
+        }
+    }
+
+    @MainActor
+    private func startIPC() {
         do {
+            #if DEBUG
             let config = try EnvironmentConfigLoader().load()
+            #else
+            let config = try BundleConfigLoader().load()
+            #endif
             let client: any IPCClientProtocol = UnixSocketIPCClient(
                 socketPath: config.socketPath,
                 protocolVersion: config.protocolVersion,
@@ -122,7 +134,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                         let alert = NSAlert()
                         alert.alertStyle = .critical
                         alert.messageText = "Velvt update required"
-                        alert.informativeText = "IPC protocol version \(got) is incompatible with required version \(expected)."
+                        alert.informativeText =
+                            "IPC protocol version \(got) is incompatible with required version \(expected)."
                         alert.runModal()
                     }
                 } catch {
@@ -142,7 +155,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let relay = eventRelay
         Task { await relay?.stop() }
         ipcClient?.disconnect()
-        serviceProcessLauncher.stop()
     }
 }
 
@@ -155,12 +167,16 @@ public struct VelvtMacApp: App {
 
     public var body: some Scene {
         WindowGroup {
-            PermissionRootView(
-                presentation: appDelegate.permissionPresentation,
-                permissionManager: appDelegate.permissionManager,
-                accountStateManager: appDelegate.accountStateManager,
-                ipcClient: appDelegate.ipcClient ?? FakeIPCClient()
-            )
+            if case .failed = appDelegate.serviceManager.state {
+                ServiceUnavailableView(serviceManager: appDelegate.serviceManager)
+            } else {
+                PermissionRootView(
+                    presentation: appDelegate.permissionPresentation,
+                    permissionManager: appDelegate.permissionManager,
+                    accountStateManager: appDelegate.accountStateManager,
+                    ipcClient: appDelegate.ipcClient ?? FakeIPCClient()
+                )
+            }
         }
     }
 }

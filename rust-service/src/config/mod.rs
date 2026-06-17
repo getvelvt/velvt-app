@@ -247,3 +247,49 @@ pub enum ConfigError {
     #[error("invalid service configuration")]
     Invalid,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_time_api_url_is_non_empty() {
+        let url = env!("VELVT_API_BASE_URL_COMPILED");
+        assert!(!url.is_empty(), "VELVT_API_BASE_URL_COMPILED must not be empty");
+    }
+
+    #[test]
+    fn compile_time_api_url_is_not_stale_default() {
+        // Guard against an accidental revert to the old runtime default that
+        // indicated a missing build-env configuration.
+        let url = env!("VELVT_API_BASE_URL_COMPILED");
+        assert_ne!(
+            url,
+            "https://api.velvt.test",
+            "VELVT_API_BASE_URL_COMPILED must not be the old misconfiguration sentinel"
+        );
+    }
+
+    #[test]
+    fn compile_time_apns_env_is_valid() {
+        let apns_env = env!("VELVT_APNS_ENV_COMPILED");
+        assert!(
+            apns_env == "development" || apns_env == "production",
+            "VELVT_APNS_ENV_COMPILED must be 'development' or 'production', got '{apns_env}'"
+        );
+    }
+
+    #[test]
+    fn service_config_loads_without_api_base_url_env_var() {
+        // Ensure ServiceConfig::load() succeeds even when VELVT_API_BASE_URL is
+        // absent from the runtime environment — the compile-time constant applies.
+        std::env::remove_var("VELVT_API_BASE_URL");
+        let config = ServiceConfig::load();
+        assert!(
+            config.is_ok(),
+            "ServiceConfig::load() must succeed without VELVT_API_BASE_URL in env"
+        );
+        let url = config.unwrap().upload_api_base_url;
+        assert!(!url.is_empty(), "upload_api_base_url must not be empty");
+    }
+}

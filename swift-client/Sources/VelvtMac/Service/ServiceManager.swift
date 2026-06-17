@@ -3,7 +3,7 @@ import os
 import ServiceManagement
 
 /// Lifecycle state of the bundled Rust service.
-public enum ServiceState {
+public enum ManagedServiceState {
     case notInstalled
     case installing
     case running
@@ -12,10 +12,9 @@ public enum ServiceState {
     case failed(Error)
 }
 
-// Equatable conformance: failed carries an opaque Error, so we compare by case
-// only for the error variant.
-extension ServiceState: Equatable {
-    public static func == (lhs: ServiceState, rhs: ServiceState) -> Bool {
+// Equatable conformance: failed carries an opaque Error, so we compare by case only.
+extension ManagedServiceState: Equatable {
+    public static func == (lhs: ManagedServiceState, rhs: ManagedServiceState) -> Bool {
         switch (lhs, rhs) {
         case (.notInstalled, .notInstalled),
              (.installing, .installing),
@@ -31,167 +30,221 @@ extension ServiceState: Equatable {
     }
 }
 
+// MARK: - ServiceRegistrar
+
+/// Abstracts SMAppService operations for testability.
+protocol ServiceRegistrar {
+    var isEnabled: Bool { get }
+    func register() throws
+    func unregister() throws
+}
+
+/// Production registrar backed by SMAppService.
+final class SMServiceRegistrar: ServiceRegistrar {
+    private let plistName: String
+
+    init(plistName: String) { self.plistName = plistName }
+
+    var isEnabled: Bool {
+        SMAppService.agent(plistName: plistName).status == .enabled
+    }
+
+    func register() throws {
+        try SMAppService.agent(plistName: plistName).register()
+    }
+
+    func unregister() throws {
+        try SMAppService.agent(plistName: plistName).unregister()
+    }
+}
+
+// MARK: - ServiceManager
+
 /// Manages installation, versioning, and SMAppService registration of the
 /// bundled Rust helper binary. All launchd interaction goes through
-/// SMAppService (macOS 13+). No shell-outs.
+/// SMAppService (macOS 13+). No shell-outs, no Process().
 ///
 /// Version sidecar: the Run Script build phase writes the Rust binary's
 /// semver string to Contents/Resources/velvt-service.version next to the
-/// binary. ServiceManager copies that file alongside the binary to
+/// binary. ServiceManager copies that sidecar alongside the binary to
 /// ~/Library/Application Support/Velvt/velvt-service.version and compares
 /// the two strings on each launch to detect updates.
 @MainActor
 public final class ServiceManager: ObservableObject {
-    @Published public var state: ServiceState = .notInstalled
+    @Published public var state: ManagedServiceState = .notInstalled
 
-    private let plistName = "com.velvt.service.plist"
-    private let supportDir: URL
-    private let binaryDest: URL
-    private let versionSidecar: URL
+    private let fileManager: FileManager
+    private let plistName: String
+    let supportDir: URL      // internal for testing
+    let binaryDest: URL      // internal for testing
+    let versionSidecar: URL  // internal for testing
+    private let launchAgentsDir: URL
+    let registrar: any ServiceRegistrar  // internal for testing
+
+    // Resource providers — closures so tests can substitute temp files.
+    var bundledBinaryProvider: () throws -> URL
+    var bundledVersionProvider: () throws -> URL
+    var bundledTemplateProvider: () throws -> URL
 
     private static let log = Logger(subsystem: "com.velvt.mac", category: "ServiceManager")
 
-    public init() {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first!
-        supportDir = appSupport.appendingPathComponent("Velvt", isDirectory: true)
-        binaryDest = supportDir.appendingPathComponent("velvt-service")
-        versionSidecar = supportDir.appendingPathComponent("velvt-service.version")
+    // MARK: - Initialisers
+
+    public nonisolated convenience init() {
+        let bundle = Bundle.main
+        let fm = FileManager.default
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let support = appSupport.appendingPathComponent("Velvt", isDirectory: true)
+        let launchAgents = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+
+        self.init(
+            fileManager: fm,
+            supportDir: support,
+            launchAgentsDir: launchAgents,
+            registrar: SMServiceRegistrar(plistName: "com.velvt.service.plist"),
+            bundledBinaryProvider: {
+                guard let url = bundle.url(forResource: "velvt-service", withExtension: nil)
+                else { throw ServiceManagerError.binaryNotFoundInBundle }
+                return url
+            },
+            bundledVersionProvider: {
+                guard let url = bundle.url(forResource: "velvt-service", withExtension: "version")
+                else { throw ServiceManagerError.versionSidecarNotFoundInBundle }
+                return url
+            },
+            bundledTemplateProvider: {
+                guard let url = bundle.url(forResource: "com.velvt.service", withExtension: "plist.template")
+                else { throw ServiceManagerError.templateNotFoundInBundle }
+                return url
+            }
+        )
     }
 
-    // MARK: - Public API
+    /// Designated initialiser — used directly by unit tests.
+    nonisolated init(
+        fileManager: FileManager = .default,
+        supportDir: URL,
+        launchAgentsDir: URL,
+        registrar: any ServiceRegistrar,
+        bundledBinaryProvider: @escaping () throws -> URL,
+        bundledVersionProvider: @escaping () throws -> URL,
+        bundledTemplateProvider: @escaping () throws -> URL
+    ) {
+        self.fileManager = fileManager
+        self.supportDir = supportDir
+        self.binaryDest = supportDir.appendingPathComponent("velvt-service")
+        self.versionSidecar = supportDir.appendingPathComponent("velvt-service.version")
+        self.launchAgentsDir = launchAgentsDir
+        self.plistName = "com.velvt.service.plist"
+        self.registrar = registrar
+        self.bundledBinaryProvider = bundledBinaryProvider
+        self.bundledVersionProvider = bundledVersionProvider
+        self.bundledTemplateProvider = bundledTemplateProvider
+    }
+
+    // MARK: - Public API (non-throwing; errors set state = .failed)
 
     /// Installs the binary and registers the LaunchAgent if not already present.
-    public func ensureInstalled() async throws {
-        guard !FileManager.default.fileExists(atPath: binaryDest.path) else { return }
+    /// Idempotent: returns immediately if the binary already exists at the install path.
+    public func ensureInstalled() async {
+        guard !fileManager.fileExists(atPath: binaryDest.path) else { return }
         state = .installing
-        try await install()
+        do {
+            try install()
+        } catch {
+            state = .failed(error)
+        }
     }
 
-    /// Compares bundled vs installed version; re-installs if they differ.
-    public func ensureUpToDate() async throws {
-        let bundledVersion = try bundledVersionString()
-        let installedVersion = (try? String(contentsOf: versionSidecar, encoding: .utf8))
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-        guard bundledVersion != installedVersion else { return }
-        state = .updateInProgress
-        let service = SMAppService.agent(plistName: plistName)
-        try? service.unregister()
-        try await install()
+    /// Compares bundled vs installed version sidecar. Re-installs only if they differ.
+    public func ensureUpToDate() async {
+        do {
+            let bundledVersion = try bundledVersionString()
+            let installedVersion = installedVersionString()
+            guard bundledVersion != installedVersion else { return }
+            state = .updateInProgress
+            try? registrar.unregister()
+            try install()
+        } catch {
+            state = .failed(error)
+        }
     }
 
-    /// Registers and starts the agent. No-op if already running.
-    public func start() async throws {
-        let service = SMAppService.agent(plistName: plistName)
-        if service.status == .enabled { state = .running; return }
-        try service.register()
-        state = .running
+    /// Registers the LaunchAgent if not already enabled. No-op when already running.
+    public func start() async {
+        guard !registrar.isEnabled else { state = .running; return }
+        do {
+            try registrar.register()
+            state = .running
+        } catch {
+            state = .failed(error)
+        }
     }
 
-    /// Unregisters the agent.
-    public func stop() async throws {
-        let service = SMAppService.agent(plistName: plistName)
-        try service.unregister()
-        state = .stopped
+    /// Unregisters the LaunchAgent.
+    public func stop() async {
+        do {
+            try registrar.unregister()
+            state = .stopped
+        } catch {
+            state = .failed(error)
+        }
     }
 
     // MARK: - Private
 
-    private func install() async throws {
-        let fm = FileManager.default
+    private func install() throws {
+        try fileManager.createDirectory(at: supportDir, withIntermediateDirectories: true)
 
-        // Ensure ~/Library/Application Support/Velvt/ exists.
-        try fm.createDirectory(at: supportDir, withIntermediateDirectories: true)
-
-        // Copy binary from bundle.
-        let bundledBinary = try bundledBinaryURL()
-        if fm.fileExists(atPath: binaryDest.path) {
-            try fm.removeItem(at: binaryDest)
+        let bundledBinary = try bundledBinaryProvider()
+        if fileManager.fileExists(atPath: binaryDest.path) {
+            try fileManager.removeItem(at: binaryDest)
         }
-        try fm.copyItem(at: bundledBinary, to: binaryDest)
+        try fileManager.copyItem(at: bundledBinary, to: binaryDest)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binaryDest.path)
 
-        // Set executable bit (0o755).
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binaryDest.path)
-
-        // Copy version sidecar.
-        let bundledSidecar = try bundledVersionSidecarURL()
-        if fm.fileExists(atPath: versionSidecar.path) {
-            try fm.removeItem(at: versionSidecar)
+        let bundledSidecar = try bundledVersionProvider()
+        if fileManager.fileExists(atPath: versionSidecar.path) {
+            try fileManager.removeItem(at: versionSidecar)
         }
-        try fm.copyItem(at: bundledSidecar, to: versionSidecar)
+        try fileManager.copyItem(at: bundledSidecar, to: versionSidecar)
 
-        // Write LaunchAgent plist from template.
         try writeLaunchAgentPlist()
-
-        // Register with SMAppService.
-        let service = SMAppService.agent(plistName: plistName)
-        try service.register()
+        try registrar.register()
         state = .running
-
         Self.log.info("velvt-service installed and registered")
     }
 
     private func writeLaunchAgentPlist() throws {
-        // SMAppService expects the plist in ~/Library/LaunchAgents/ and resolves
-        // it by name — we write it there ourselves from the bundled template.
-        let launchAgentsDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: launchAgentsDir, withIntermediateDirectories: true
-        )
-
-        let templateURL = try bundledTemplateURL()
+        try fileManager.createDirectory(at: launchAgentsDir, withIntermediateDirectories: true)
+        let templateURL = try bundledTemplateProvider()
         var contents = try String(contentsOf: templateURL, encoding: .utf8)
         contents = contents.replacingOccurrences(of: "{{BINARY_PATH}}", with: binaryDest.path)
-
         let destURL = launchAgentsDir.appendingPathComponent(plistName)
         try contents.write(to: destURL, atomically: true, encoding: .utf8)
     }
 
-    // MARK: - Bundle helpers
-
-    private func bundledBinaryURL() throws -> URL {
-        guard let url = Bundle.main.url(
-            forResource: "velvt-service", withExtension: nil, subdirectory: nil
-        ) else {
-            throw ServiceManagerError.binaryNotFoundInBundle
-        }
-        return url
-    }
-
-    private func bundledVersionSidecarURL() throws -> URL {
-        guard let url = Bundle.main.url(
-            forResource: "velvt-service", withExtension: "version", subdirectory: nil
-        ) else {
-            throw ServiceManagerError.versionSidecarNotFoundInBundle
-        }
-        return url
-    }
-
-    private func bundledTemplateURL() throws -> URL {
-        guard let url = Bundle.main.url(
-            forResource: "com.velvt.service", withExtension: "plist.template"
-        ) else {
-            throw ServiceManagerError.templateNotFoundInBundle
-        }
-        return url
-    }
-
     private func bundledVersionString() throws -> String {
-        let url = try bundledVersionSidecarURL()
+        let url = try bundledVersionProvider()
         return try String(contentsOf: url, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private func installedVersionString() -> String? {
+        (try? String(contentsOf: versionSidecar, encoding: .utf8))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
 }
 
-enum ServiceManagerError: LocalizedError {
+// MARK: - Errors
+
+public enum ServiceManagerError: LocalizedError {
     case binaryNotFoundInBundle
     case versionSidecarNotFoundInBundle
     case templateNotFoundInBundle
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .binaryNotFoundInBundle:
             return "The bundled velvt-service binary could not be located in the app bundle."

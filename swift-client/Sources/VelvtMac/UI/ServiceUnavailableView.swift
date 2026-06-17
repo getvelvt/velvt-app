@@ -23,13 +23,9 @@ struct ServiceUnavailableView: View {
 
             Button("Try Again") {
                 Task { @MainActor in
-                    do {
-                        try await serviceManager.ensureInstalled()
-                        try await serviceManager.ensureUpToDate()
-                        try await serviceManager.start()
-                    } catch {
-                        serviceManager.state = .failed(error)
-                    }
+                    await serviceManager.ensureInstalled()
+                    await serviceManager.ensureUpToDate()
+                    await serviceManager.start()
                 }
             }
             .buttonStyle(.borderedProminent)

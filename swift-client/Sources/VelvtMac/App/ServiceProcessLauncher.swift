@@ -1,5 +1,9 @@
 import Foundation
 
+// ServiceProcessLauncher is the pre-SMAppService subprocess-based launcher retained
+// for local `swift run` development workflows only. Release builds use ServiceManager.
+#if DEBUG
+
 /// Launches and stops the bundled `velvt-service` helper binary.
 ///
 /// `make build-app` copies the Rust release binary into
@@ -64,3 +68,5 @@ import os
 enum ServiceProcessLauncherLog {
     static let shared = Logger(subsystem: "com.velvt.mac", category: "ServiceProcessLauncher")
 }
+
+#endif

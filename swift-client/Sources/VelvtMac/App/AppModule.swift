@@ -7,7 +7,6 @@ import UserNotifications
 /// Does NOT own event capture, IPC processing, abstraction, cloud calls, or
 /// insight generation.
 
-/// Coordinates startup and shutdown of the application.
 public protocol AppLifecycleManaging: AnyObject {
     func start() async throws
     func stop() async
@@ -48,12 +47,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Task { @MainActor in
-            do {
-                try await serviceManager.ensureInstalled()
-                try await serviceManager.ensureUpToDate()
-                try await serviceManager.start()
-            } catch {
-                serviceManager.state = .failed(error)
+            await serviceManager.ensureInstalled()
+            await serviceManager.ensureUpToDate()
+            await serviceManager.start()
+            guard case .running = serviceManager.state else {
+                // ServiceUnavailableView is rendered via the @Published state in VelvtMacApp.body
                 return
             }
             startIPC()

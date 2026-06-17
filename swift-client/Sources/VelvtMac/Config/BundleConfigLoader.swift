@@ -4,14 +4,19 @@ import Foundation
 /// build time via xcconfig INFOPLIST_KEY_ settings. No runtime environment
 /// reads occur in this path.
 public struct BundleConfigLoader: ConfigLoading {
-    private let bundle: Bundle
+    private let infoDictionary: [String: Any]
 
     public init(bundle: Bundle = .main) {
-        self.bundle = bundle
+        self.infoDictionary = bundle.infoDictionary ?? [:]
+    }
+
+    /// Initialiser for tests: supply the dictionary directly without a real Bundle.
+    init(infoDictionary: [String: Any]) {
+        self.infoDictionary = infoDictionary
     }
 
     public func load() throws -> FocusAgentConfig {
-        let info = bundle.infoDictionary ?? [:]
+        let info = infoDictionary
 
         guard let socketPath = info["VelvtSocketPath"] as? String, !socketPath.isEmpty else {
             throw ConfigError.missingValue(name: "VelvtSocketPath")

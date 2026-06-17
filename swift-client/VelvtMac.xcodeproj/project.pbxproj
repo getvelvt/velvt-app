@@ -12,6 +12,8 @@
 		A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890D /* ServiceManager.swift */; };
 		A1B2C3D4E5F601234567890E /* ServiceUnavailableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */; };
 		A1B2C3D4E5F60123456789AA /* com.velvt.service.plist.template in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60123456789AB /* com.velvt.service.plist.template */; };
+		A1B2C3D4E5F60123456789B0 /* ServiceManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60123456789B1 /* ServiceManagerTests.swift */; };
+		A1B2C3D4E5F60123456789B2 /* ConfigModuleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60123456789B3 /* ConfigModuleTests.swift */; };
 		07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */; };
 		143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */; };
 		38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93C055AD72C0443A8CD98C13 /* PermissionManager.swift */; };
@@ -52,6 +54,8 @@
 		A1B2C3D4E5F60123456789AB /* com.velvt.service.plist.template */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = "com.velvt.service.plist.template"; path = "../../Resources/com.velvt.service.plist.template"; sourceTree = "<group>"; };
 		A1B2C3D4E5F60123456789AC /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = "../Configs/Debug.xcconfig"; sourceTree = "<group>"; };
 		A1B2C3D4E5F60123456789AD /* Release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = "../Configs/Release.xcconfig"; sourceTree = "<group>"; };
+		A1B2C3D4E5F60123456789B1 /* ServiceManagerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceManagerTests.swift; path = ServiceManagerTests.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60123456789B3 /* ConfigModuleTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfigModuleTests.swift; path = ConfigModuleTests.swift; sourceTree = "<group>"; };
 		08FF548B5CFC292896112B45 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UnixSocketIPCClient.swift; path = IPC/UnixSocketIPCClient.swift; sourceTree = "<group>"; };
 		28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionCollectionCoordinator.swift; path = App/PermissionCollectionCoordinator.swift; sourceTree = "<group>"; };

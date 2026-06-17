@@ -32,4 +32,15 @@ fn main() {
     let output = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set"))
         .join("embedded_migrations.rs");
     fs::write(output, generated).expect("generated migrations must be writable");
+
+    // Compile-time API config. Set these in the environment when building via
+    // the Xcode Run Script phase; bare `cargo build` uses staging defaults so
+    // local development needs no env setup.
+    let api_base_url =
+        option_env!("VELVT_API_BASE_URL").unwrap_or("https://staging.api.velvt.test");
+    let apns_env = option_env!("VELVT_APNS_ENV").unwrap_or("development");
+    println!("cargo:rustc-env=VELVT_API_BASE_URL_COMPILED={api_base_url}");
+    println!("cargo:rustc-env=VELVT_APNS_ENV_COMPILED={apns_env}");
+    println!("cargo:rerun-if-env-changed=VELVT_API_BASE_URL");
+    println!("cargo:rerun-if-env-changed=VELVT_APNS_ENV");
 }

@@ -150,8 +150,14 @@ impl ServiceConfig {
             abstraction_similarity_threshold: parse_threshold()?,
             upload_batch_event_limit,
             upload_flush_interval: Duration::from_secs(upload_flush_seconds),
-            upload_api_base_url: std::env::var("VELVT_API_BASE_URL")
-                .unwrap_or_else(|_| "https://api-dev.getvelvt.com".into()),
+            upload_api_base_url: {
+                const URL: &str = env!("VELVT_API_BASE_URL_COMPILED");
+                assert!(
+                    !URL.is_empty(),
+                    "VELVT_API_BASE_URL_COMPILED must not be empty"
+                );
+                URL.to_owned()
+            },
             upload_retry_scan_interval: Duration::from_secs(upload_retry_scan_seconds),
             history_ttl: Duration::from_secs(history_ttl_seconds),
             insight_ttl: Duration::from_secs(insight_ttl_seconds),

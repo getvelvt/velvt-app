@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import ServiceManagement
 import SwiftUI
 import UserNotifications
@@ -13,13 +14,18 @@ public protocol AppLifecycleManaging: AnyObject {
 }
 
 /// AppKit delegate used by the SwiftUI application entry point.
-public final class AppDelegate: NSObject, NSApplicationDelegate {
+public final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     public let permissionManager: PermissionManager
     public let permissionPresentation: PermissionPresentationModel
     public let accountStateManager: AccountStateManager
     public private(set) var displayCoordinator: ConcreteDisplayDataCoordinator?
 
+    /// Tracks the live IPC connection state so `VelvtMacApp.body` can gate the
+    /// auth UI — preventing any `send()` call before the socket handshake is done.
+    @Published public private(set) var ipcConnectionStatus: ConnectionStatus = .disconnected
+
     var ipcClient: (any IPCClientProtocol)?
+    private var connectionStatusCancellable: AnyCancellable?
     private var eventRelay: (any EventRelayProtocol)?
     private var collectionAgent: (any CollectionAgentProtocol)?
     private var permissionCoordinator: PermissionCollectionCoordinator?
@@ -72,6 +78,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 clientVersion: config.clientVersion
             )
             ipcClient = client
+            connectionStatusCancellable = client.connectionStatus
+                .receive(on: RunLoop.main)
+                .sink { [weak self] in self?.ipcConnectionStatus = $0 }
 
             // AccountStateManager is the sole consumer of incomingMessages.
             // It re-publishes to serverMessages for downstream consumers.
@@ -167,14 +176,29 @@ public struct VelvtMacApp: App {
         WindowGroup {
             if case .failed = appDelegate.serviceManager.state {
                 ServiceUnavailableView(serviceManager: appDelegate.serviceManager)
-            } else {
+            } else if appDelegate.ipcConnectionStatus == .connected,
+                      let ipcClient = appDelegate.ipcClient {
                 PermissionRootView(
                     presentation: appDelegate.permissionPresentation,
                     permissionManager: appDelegate.permissionManager,
                     accountStateManager: appDelegate.accountStateManager,
-                    ipcClient: appDelegate.ipcClient ?? FakeIPCClient()
+                    ipcClient: ipcClient
                 )
+            } else {
+                ConnectingView()
             }
         }
+    }
+}
+
+private struct ConnectingView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Connecting to Velvt service…")
+                .foregroundStyle(.secondary)
+        }
+        .padding(32)
+        .frame(minWidth: 320)
     }
 }

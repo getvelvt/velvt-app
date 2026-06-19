@@ -30,13 +30,12 @@
 		97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */; };
 		9A6928BC73B9B53A90E1B4E3 /* FakeIPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */; };
 		9CDDE6FAD40B420D9DC4F3F7 /* HistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F5611EE8684F0C8736139F /* HistoryViewModel.swift */; };
-		9DB1CFA62FE2CD6F00632E03 /* Debug.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */; };
-		9DB1CFA72FE2CD6F00632E03 /* Release.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */; };
-		9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist in PList Copy */ = {isa = PBXBuildFile; fileRef = 9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist */; };
+		9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist.template in Resources */ = {isa = PBXBuildFile; fileRef = 9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */; };
 		A03B3DF738D28A838B7E16A5 /* ReconnectBackoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */; };
 		A1B2C3D4E5F601234567890A /* BundleConfigLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */; };
 		A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890D /* ServiceManager.swift */; };
 		A1B2C3D4E5F601234567890E /* ServiceUnavailableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */; };
+		B7C8D9E0F1A2B3C4D5E6F709 /* RemoteTextInputResilience.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C8D9E0F1A2B3C4D5E6F708 /* RemoteTextInputResilience.swift */; };
 		AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */; };
 		C6FEFBE12367472398E2ECBC /* NotificationDeliveryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */; };
 		E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */; };
@@ -45,20 +44,6 @@
 		FF20FC65F747233FBF419F69 /* DeliveryModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */; };
 		FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */; };
 /* End PBXBuildFile section */
-
-/* Begin PBXCopyFilesBuildPhase section */
-		9DB1CFA82FE2D0A000632E03 /* PList Copy */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 1;
-			files = (
-				9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist in PList Copy */,
-			);
-			name = "PList Copy";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ReconnectBackoff.swift; path = IPC/ReconnectBackoff.swift; sourceTree = "<group>"; };
@@ -84,12 +69,13 @@
 		945E765C974B4023B7362068 /* NotificationScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationScheduler.swift; path = Delivery/NotificationScheduler.swift; sourceTree = "<group>"; };
 		9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceModule.swift; path = Device/DeviceModule.swift; sourceTree = "<group>"; };
 		9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightCardView.swift; path = UI/InsightCardView.swift; sourceTree = "<group>"; };
-		9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
-		9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
-		9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = com.velvt.service.plist; path = ../../Resources/com.velvt.service.plist; sourceTree = "<group>"; };
+		9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = "../../Configs/Debug.xcconfig"; sourceTree = "<group>"; };
+		9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = "../../Configs/Release.xcconfig"; sourceTree = "<group>"; };
+		9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = "com.velvt.service.plist.template"; path = "../../Resources/com.velvt.service.plist.template"; sourceTree = "<group>"; };
 		A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BundleConfigLoader.swift; path = Config/BundleConfigLoader.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F601234567890D /* ServiceManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceManager.swift; path = Service/ServiceManager.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceUnavailableView.swift; path = UI/ServiceUnavailableView.swift; sourceTree = "<group>"; };
+		B7C8D9E0F1A2B3C4D5E6F708 /* RemoteTextInputResilience.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteTextInputResilience.swift; path = UI/RemoteTextInputResilience.swift; sourceTree = "<group>"; };
 		BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthModule.swift; path = Auth/AuthModule.swift; sourceTree = "<group>"; };
 		C9F1ADB76DD4328B7586E87C /* UIModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UIModule.swift; path = UI/UIModule.swift; sourceTree = "<group>"; };
 		D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceProcessLauncher.swift; path = App/ServiceProcessLauncher.swift; sourceTree = "<group>"; };
@@ -174,9 +160,10 @@
 				ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */,
 				7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */,
 				A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */,
+				B7C8D9E0F1A2B3C4D5E6F708 /* RemoteTextInputResilience.swift */,
 				9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */,
 				9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */,
-				9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist */,
+				9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */,
 			);
 			name = VelvtMac;
 			path = Sources/VelvtMac;
@@ -198,7 +185,6 @@
 			buildConfigurationList = 8A7F96CAB8DEDE2A664DFD54 /* Build configuration list for PBXNativeTarget "velvt-mac" */;
 			buildPhases = (
 				5ED7FFF41BDCDD531CCEBA0A /* Sources */,
-				9DB1CFA82FE2D0A000632E03 /* PList Copy */,
 				7294A54385813BCC9BAC078F /* Frameworks */,
 				A1B2C3D4E5F60123456789AE /* Bundle Rust Service */,
 				41C9B34E074030B53412BB04 /* Resources */,
@@ -244,8 +230,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				9DB1CFA62FE2CD6F00632E03 /* Debug.xcconfig in Resources */,
-				9DB1CFA72FE2CD6F00632E03 /* Release.xcconfig in Resources */,
+				9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist.template in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -312,6 +297,7 @@
 				16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */,
 				2A54D43BF50F47D9BE9ADA1C /* OnboardingViews.swift in Sources */,
 				E7695F6AD86A41B6B9D74D9F /* VelvtPopoverContentView.swift in Sources */,
+				B7C8D9E0F1A2B3C4D5E6F709 /* RemoteTextInputResilience.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -373,6 +359,7 @@
 		};
 		79848A31ABC0FFCF22D2B51F /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -392,6 +379,7 @@
 		};
 		86A7CC56EEF9A19A13A9B2CE /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;

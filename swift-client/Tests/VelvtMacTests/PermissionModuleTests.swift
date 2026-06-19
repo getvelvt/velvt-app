@@ -94,6 +94,36 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(accessibility.mainThreadValues, [true])
     }
 
+    func testAccessibilityRequestSkipsPromptWhenAlreadyTrusted() async {
+        let accessibility = FakeAccessibilityPermissionClient(isTrusted: true)
+        let manager = PermissionManager(
+            accessibilityClient: accessibility,
+            notificationClient: FakeNotificationPermissionClient()
+        )
+
+        let status = await manager.requestPermission(for: .accessibility)
+
+        XCTAssertEqual(status, .granted)
+        // Only the non-prompting check should run — re-prompting on every
+        // launch after access was already granted is exactly the bug being fixed.
+        XCTAssertEqual(accessibility.promptValues, [false])
+    }
+
+    func testAccessibilityRequestPromptsWhenNotYetTrusted() async {
+        let accessibility = FakeAccessibilityPermissionClient(isTrusted: false)
+        let manager = PermissionManager(
+            accessibilityClient: accessibility,
+            notificationClient: FakeNotificationPermissionClient()
+        )
+
+        let status = await manager.requestPermission(for: .accessibility)
+
+        XCTAssertEqual(status, .denied)
+        // Not yet trusted: the non-prompting check runs first, then falls
+        // through to the prompting check so the system dialog can appear.
+        XCTAssertEqual(accessibility.promptValues, [false, true])
+    }
+
     func testBackgroundedAppSkipsAccessibilityMonitorCycle() {
         let accessibility = FakeAccessibilityPermissionClient(isTrusted: true)
         let scheduler = FakePermissionMonitorScheduler()

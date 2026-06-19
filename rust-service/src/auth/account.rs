@@ -68,28 +68,48 @@ impl AccountAuthService {
     }
 
     async fn credential_flow(&self, path: &str, email: String, password: String) -> ServerMessage {
+        tracing::debug!(path, email = %email, "auth.credential_flow: sending request");
         let mut request = HttpRequest::post(path);
         request.json_body = Some(serde_json::json!({ "email": email, "password": password }));
         match self.raw_http.send(request).await {
             Ok(response) if (200..300).contains(&response.status) => {
                 match (response.user_id, response.tokens) {
-                    (Some(user_id), Some(tokens)) => ServerMessage::AuthSuccess(AuthSuccess {
-                        user_id,
-                        access_token: tokens.access_token().expose().to_owned(),
-                        refresh_token: tokens.refresh_token().expose().to_owned(),
-                        expires_at: tokens.expires_at(),
-                    }),
-                    _ => ServerMessage::AuthFailure(AuthFailure {
-                        code: AuthFailureCode::ServerError,
-                        message: "The server response was invalid.".into(),
-                    }),
+                    (Some(user_id), Some(tokens)) => {
+                        tracing::debug!(user_id = %user_id, "auth.credential_flow: success, got tokens");
+                        ServerMessage::AuthSuccess(AuthSuccess {
+                            user_id,
+                            access_token: tokens.access_token().expose().to_owned(),
+                            refresh_token: tokens.refresh_token().expose().to_owned(),
+                            expires_at: tokens.expires_at(),
+                        })
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "auth.credential_flow: 2xx response but missing user_id or tokens"
+                        );
+                        ServerMessage::AuthFailure(AuthFailure {
+                            code: AuthFailureCode::ServerError,
+                            message: "The server response was invalid.".into(),
+                        })
+                    }
                 }
             }
-            Ok(response) => ServerMessage::AuthFailure(map_auth_failure(&response)),
-            Err(_) => ServerMessage::AuthFailure(AuthFailure {
-                code: AuthFailureCode::NetworkError,
-                message: "Could not reach the server. Check your connection and try again.".into(),
-            }),
+            Ok(response) => {
+                tracing::warn!(
+                    status = response.status,
+                    error_code = ?response.error_code,
+                    "auth.credential_flow: non-2xx response"
+                );
+                ServerMessage::AuthFailure(map_auth_failure(&response))
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "auth.credential_flow: HTTP send failed");
+                ServerMessage::AuthFailure(AuthFailure {
+                    code: AuthFailureCode::NetworkError,
+                    message: "Could not reach the server. Check your connection and try again."
+                        .into(),
+                })
+            }
         }
     }
 }

@@ -178,10 +178,7 @@ public final class AccountStateManager: ObservableObject {
     private let keychain: any KeychainProtocol
     private var listenerTask: Task<Void, Never>?
 
-    /// `nonisolated` so callers (e.g. `AppDelegate.init`) can construct this
-    /// from a non-isolated context. Setting `@Published` backing stores via
-    /// their `_`-prefixed wrappers during the init phase is safe per SE-0327.
-    nonisolated public init(keychain: any KeychainProtocol) {
+    public init(keychain: any KeychainProtocol) {
         self.keychain = keychain
         let storedUserId = try? keychain.load(for: .userId)
         let isPendingDeletion = (try? keychain.load(for: .pendingDeletion)) != nil
@@ -203,10 +200,13 @@ public final class AccountStateManager: ObservableObject {
     public func transition(to newState: AccountState) {
         guard isValidTransition(from: accountState, to: newState) else {
             authLogger.error(
-                "Rejected invalid AccountState transition: \(String(describing: self.accountState)) → \(String(describing: newState))"
+                "auth.transition: REJECTED \(String(describing: self.accountState)) → \(String(describing: newState))"
             )
             return
         }
+        authLogger.debug(
+            "auth.transition: \(String(describing: self.accountState)) → \(String(describing: newState))"
+        )
         // Persist the pendingDeletion sentinel so a relaunch mid-erasure can
         // restore the correct blocking state.
         if case .pendingErasure = newState {
@@ -274,8 +274,14 @@ public final class AccountStateManager: ObservableObject {
             // have already received the delete request and the sentinel must
             // survive until the next connection confirms or cancels the erasure.
             guard let self, !Task.isCancelled else { return }
+            authLogger.warning(
+                "auth.startListening: incomingMessages stream ended unexpectedly, current state=\(String(describing: self.accountState))"
+            )
             switch self.accountState {
             case .loggingIn, .loggingOut:
+                authLogger.warning(
+                    "auth.startListening: reverting \(String(describing: self.accountState)) → loggedOut due to stream drop"
+                )
                 self.accountState = .loggedOut
             default:
                 break
@@ -291,11 +297,16 @@ public final class AccountStateManager: ObservableObject {
     // MARK: - Private
 
     private func handle(_ message: ServerMessage) {
+        authLogger.debug("IPC message received: \(String(describing: message))")
         serverMessages.send(message)
         switch message {
         case .authSuccess(let success):
+            authLogger.debug("auth.handle: authSuccess received for userId \(success.userId)")
             handleAuthSuccess(success)
-        case .authFailure:
+        case .authFailure(let failure):
+            authLogger.debug(
+                "auth.handle: authFailure received — code=\(String(describing: failure.code)) message=\(failure.message)"
+            )
             if case .loggingIn = accountState {
                 accountState = .loggedOut
             }
@@ -315,15 +326,25 @@ public final class AccountStateManager: ObservableObject {
     }
 
     private func handleAuthSuccess(_ success: AuthSuccess) {
-        guard case .loggingIn = accountState else { return }
+        guard case .loggingIn = accountState else {
+            authLogger.warning(
+                "auth.handleAuthSuccess: received authSuccess but state is \(String(describing: self.accountState)), ignoring"
+            )
+            return
+        }
+        authLogger.debug("auth.handleAuthSuccess: writing tokens to Keychain")
         do {
             try keychain.store(token: success.accessToken, for: .accessToken)
             try keychain.store(token: success.refreshToken, for: .refreshToken)
             try keychain.store(token: success.userId, for: .userId)
+            authLogger.debug(
+                "auth.handleAuthSuccess: Keychain writes succeeded, transitioning to loggedIn"
+            )
             transition(to: .loggedIn(userId: success.userId))
         } catch {
-            // Keychain failure — revert so the user can retry.
-            authLogger.error("Keychain write failed during auth success; reverting to loggedOut")
+            authLogger.error(
+                "auth.handleAuthSuccess: Keychain write failed — \(error.localizedDescription)"
+            )
             keychain.deleteAll()
             accountState = .loggedOut
         }

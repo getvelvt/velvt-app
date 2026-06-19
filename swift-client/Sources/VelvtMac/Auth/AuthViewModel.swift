@@ -1,5 +1,8 @@
 import Combine
 import Foundation
+import os.log
+
+private let authLogger = Logger(subsystem: "com.velvt.mac", category: "AuthViewModel")
 
 /// Drives the signup, login, logout, and account-deletion UI flows.
 ///
@@ -48,6 +51,9 @@ public final class AuthViewModel: ObservableObject {
         startLoading()
         do {
             try await ipcClient.send(.signUp(SignUpRequest(email: email, password: password)))
+        } catch IPCError.notConnected {
+            accountStateManager.transition(to: .loggedOut)
+            finishLoading(withError: "Service not ready. Please wait a moment and try again.")
         } catch {
             accountStateManager.cancelAuthentication()
             finishLoading(withError: "Connection error. Please try again.")
@@ -67,6 +73,9 @@ public final class AuthViewModel: ObservableObject {
         startLoading()
         do {
             try await ipcClient.send(.logIn(LogInRequest(email: email, password: password)))
+        } catch IPCError.notConnected {
+            accountStateManager.transition(to: .loggedOut)
+            finishLoading(withError: "Service not ready. Please wait a moment and try again.")
         } catch {
             accountStateManager.cancelAuthentication()
             finishLoading(withError: "Connection error. Please try again.")
@@ -116,7 +125,12 @@ public final class AuthViewModel: ObservableObject {
             .dropFirst()
             .receive(on: RunLoop.main)
             .sink { [weak self] state in
-                guard let self, self.isLoading else { return }
+                guard let self else { return }
+                let loading = self.isLoading
+                authLogger.debug(
+                    "auth.viewModel: accountState → \(String(describing: state)), isLoading=\(loading)"
+                )
+                guard loading else { return }
                 switch state {
                 case .loggedIn:
                     self.isLoading = false

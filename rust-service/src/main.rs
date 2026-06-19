@@ -13,7 +13,9 @@ async fn main() {
     let Ok(config) = ServiceConfig::load() else {
         return;
     };
-    let Ok(filter) = EnvFilter::try_new(&config.log_level) else {
+    let Ok(filter) = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(&config.log_level))
+    else {
         return;
     };
     if tracing_subscriber::fmt()

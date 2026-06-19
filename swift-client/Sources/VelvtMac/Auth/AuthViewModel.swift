@@ -41,12 +41,15 @@ public final class AuthViewModel: ObservableObject {
             errorMessage = "Email and password are required."
             return
         }
+        guard accountStateManager.beginAuthentication() else {
+            errorMessage = "Authentication is already in progress."
+            return
+        }
         startLoading()
-        accountStateManager.transition(to: .loggingIn)
         do {
             try await ipcClient.send(.signUp(SignUpRequest(email: email, password: password)))
         } catch {
-            accountStateManager.transition(to: .loggedOut)
+            accountStateManager.cancelAuthentication()
             finishLoading(withError: "Connection error. Please try again.")
         }
     }
@@ -57,12 +60,15 @@ public final class AuthViewModel: ObservableObject {
             errorMessage = "Email and password are required."
             return
         }
+        guard accountStateManager.beginAuthentication() else {
+            errorMessage = "Authentication is already in progress."
+            return
+        }
         startLoading()
-        accountStateManager.transition(to: .loggingIn)
         do {
             try await ipcClient.send(.logIn(LogInRequest(email: email, password: password)))
         } catch {
-            accountStateManager.transition(to: .loggedOut)
+            accountStateManager.cancelAuthentication()
             finishLoading(withError: "Connection error. Please try again.")
         }
     }

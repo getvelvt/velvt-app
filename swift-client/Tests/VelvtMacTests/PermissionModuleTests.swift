@@ -266,10 +266,12 @@ final class PermissionModuleTests: XCTestCase {
         await model.requestCurrentPermission()
         XCTAssertEqual(model.step, .notifications)
         XCTAssertEqual(completionCount, 0)
+        XCTAssertFalse(model.isComplete)
 
         await model.requestCurrentPermission()
         XCTAssertEqual(permissions.requestedPermissions, [.accessibility, .notifications])
         XCTAssertEqual(completionCount, 1)
+        XCTAssertTrue(model.isComplete)
     }
 
     @MainActor

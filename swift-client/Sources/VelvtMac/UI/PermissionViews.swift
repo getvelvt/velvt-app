@@ -83,6 +83,7 @@ public final class PermissionOnboardingModel: ObservableObject {
 
     @Published public private(set) var step: Step = .accessibility
     @Published public private(set) var isRequesting = false
+    @Published public private(set) var isComplete = false
 
     private let permissionManager: any PermissionManagerProtocol
     private let onCompletion: () -> Void
@@ -106,6 +107,7 @@ public final class PermissionOnboardingModel: ObservableObject {
             step = .notifications
         case .notifications:
             _ = await permissionManager.requestPermission(for: .notifications)
+            isComplete = true
             onCompletion()
         }
         isRequesting = false

@@ -23,6 +23,7 @@
 		FEF395332D1059B366BF6D9A /* IPCTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39C7506861C548B6BD42DE38 /* IPCTypes.swift */; };
 		FF20FC65F747233FBF419F69 /* DeliveryModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */; };
 		FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */; };
+		A19C7D204B9345F3A6E1C101 /* CredentialTextField.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19C7D204B9345F3A6E1C102 /* CredentialTextField.swift */; };
 		443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */; };
 		4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81032E99C0684420AFA1791A /* AuthViewModel.swift */; };
 		E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */; };
@@ -49,6 +50,7 @@
 		3342626EEF1A344019727851 /* velvt-mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "velvt-mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		39C7506861C548B6BD42DE38 /* IPCTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCTypes.swift; path = IPC/IPCTypes.swift; sourceTree = "<group>"; };
 		46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionViews.swift; path = UI/PermissionViews.swift; sourceTree = "<group>"; };
+		A19C7D204B9345F3A6E1C102 /* CredentialTextField.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CredentialTextField.swift; path = UI/CredentialTextField.swift; sourceTree = "<group>"; };
 		89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCClientProtocol.swift; path = IPC/IPCClientProtocol.swift; sourceTree = "<group>"; };
 		8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CollectionModule.swift; path = Collection/CollectionModule.swift; sourceTree = "<group>"; };
 		93C055AD72C0443A8CD98C13 /* PermissionManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionManager.swift; path = Permissions/PermissionManager.swift; sourceTree = "<group>"; };
@@ -129,6 +131,7 @@
 				22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */,
 				C9F1ADB76DD4328B7586E87C /* UIModule.swift */,
 				46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */,
+				A19C7D204B9345F3A6E1C102 /* CredentialTextField.swift */,
 				93C055AD72C0443A8CD98C13 /* PermissionManager.swift */,
 				D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */,
 				2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */,
@@ -234,6 +237,7 @@
 				89AC090DEEE9F19A1A61543B /* UnixSocketIPCClient.swift in Sources */,
 				5C4179B95803E953316EC37F /* UIModule.swift in Sources */,
 				FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */,
+				A19C7D204B9345F3A6E1C101 /* CredentialTextField.swift in Sources */,
 				38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */,
 				97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */,
 				443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */,

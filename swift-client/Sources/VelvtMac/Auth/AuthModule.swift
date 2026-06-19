@@ -217,6 +217,23 @@ public final class AccountStateManager: ObservableObject {
 
     // MARK: - Auth actions
 
+    /// Starts authentication only when no other authentication request is active.
+    public func beginAuthentication() -> Bool {
+        guard case .loggedOut = accountState else {
+            return false
+        }
+        accountState = .loggingIn
+        return true
+    }
+
+    /// Returns an in-flight authentication request to the logged-out state.
+    public func cancelAuthentication() {
+        guard case .loggingIn = accountState else {
+            return
+        }
+        accountState = .loggedOut
+    }
+
     /// Clears all tokens from Keychain and transitions to `.loggedOut`.
     /// Does NOT send an IPC message — callers are responsible for that if needed.
     public func logOut() {

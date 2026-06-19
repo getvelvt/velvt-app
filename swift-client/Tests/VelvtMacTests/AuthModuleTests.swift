@@ -582,6 +582,20 @@ final class AuthViewModelTests: XCTestCase {
         XCTAssertNotNil(sut.errorMessage)
     }
 
+    func testSignUpDoesNotSendWhenAuthenticationIsAlreadyInProgress() async {
+        let (sut, manager, client) = makeViewModelWithDependencies()
+        sut.email = "user@example.com"
+        sut.password = "secret"
+        manager.transition(to: .loggingIn)
+
+        await sut.signUp()
+
+        XCTAssertEqual(manager.accountState, .loggingIn)
+        XCTAssertFalse(client.sentMessages.contains(where: { if case .signUp = $0 { return true }; return false }))
+        XCTAssertEqual(sut.errorMessage, "Authentication is already in progress.")
+        XCTAssertFalse(sut.isLoading)
+    }
+
     // MARK: IPC disconnect mid-login
 
     func testIPCDisconnectMidLoginShowsConnectionLostError() async {

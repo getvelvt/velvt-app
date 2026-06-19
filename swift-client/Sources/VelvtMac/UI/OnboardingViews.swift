@@ -142,9 +142,7 @@ public struct PermissionsStepView: View {
         _model = StateObject(wrappedValue: PermissionOnboardingModel(
             permissionManager: coordinator.permissionManager_,
             onCompletion: {
-                // Advancing is handled via coordinator in the button action below
-                // so we don't call it here; this closure satisfies the existing
-                // PermissionOnboardingModel API when used standalone.
+                coordinator.finishOnboarding()
             }
         ))
     }
@@ -189,7 +187,7 @@ public struct PermissionsStepView: View {
 
     private func requestAndAdvanceIfDone() async {
         await model.requestCurrentPermission()
-        if model.step == .notifications {
+        if model.isComplete {
             // Both permissions have been requested; advance regardless of grant
             // status (users can deny and still use the app with degraded features).
             coordinator.advanceFromPermissions()
@@ -216,18 +214,17 @@ public struct AuthStepView: View {
                 .font(.title2)
                 .bold()
 
-            // Wrapped so AppKit's remote text-input service (cursor UI / IME)
-            // has an NSViewController ancestor that can react if it crashes —
-            // see RemoteTextInputResilience.swift.
-            TextInputResilientContainer {
-                VStack(alignment: .leading, spacing: 12) {
-                    TextField("Email", text: $authViewModel.email)
-                        .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled()
+            VStack(alignment: .leading, spacing: 12) {
+                CredentialTextField(
+                    placeholder: "Email",
+                    text: $authViewModel.email
+                )
 
-                    SecureField("Password", text: $authViewModel.password)
-                        .textFieldStyle(.roundedBorder)
-                }
+                CredentialTextField(
+                    placeholder: "Password",
+                    text: $authViewModel.password,
+                    isSecure: true
+                )
             }
 
             if let error = authViewModel.errorMessage {

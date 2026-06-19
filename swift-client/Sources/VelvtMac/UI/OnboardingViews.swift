@@ -216,13 +216,18 @@ public struct AuthStepView: View {
                 .font(.title2)
                 .bold()
 
-            VStack(alignment: .leading, spacing: 12) {
-                TextField("Email", text: $authViewModel.email)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
+            // Wrapped so AppKit's remote text-input service (cursor UI / IME)
+            // has an NSViewController ancestor that can react if it crashes —
+            // see RemoteTextInputResilience.swift.
+            TextInputResilientContainer {
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField("Email", text: $authViewModel.email)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
 
-                SecureField("Password", text: $authViewModel.password)
-                    .textFieldStyle(.roundedBorder)
+                    SecureField("Password", text: $authViewModel.password)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
 
             if let error = authViewModel.errorMessage {

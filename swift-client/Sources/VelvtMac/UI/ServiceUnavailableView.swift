@@ -5,6 +5,13 @@ import SwiftUI
 struct ServiceUnavailableView: View {
     @ObservedObject var serviceManager: ServiceManager
 
+    /// Re-runs the full launch sequence (install → start → wait for IPC
+    /// socket → connect), not just the SMAppService steps — the failure may
+    /// have come from the socket/IPC stage rather than from ServiceManager
+    /// itself. Falls back to the SMAppService-only retry when no closure is
+    /// injected (e.g. existing call sites / previews).
+    var onRetry: (() async -> Void)?
+
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle")
@@ -23,9 +30,13 @@ struct ServiceUnavailableView: View {
 
             Button("Try Again") {
                 Task { @MainActor in
-                    await serviceManager.ensureInstalled()
-                    await serviceManager.ensureUpToDate()
-                    await serviceManager.start()
+                    if let onRetry {
+                        await onRetry()
+                    } else {
+                        await serviceManager.ensureInstalled()
+                        await serviceManager.ensureUpToDate()
+                        await serviceManager.start()
+                    }
                 }
             }
             .buttonStyle(.borderedProminent)

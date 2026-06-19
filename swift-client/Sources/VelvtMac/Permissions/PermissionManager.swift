@@ -123,7 +123,13 @@ public final class PermissionManager: PermissionManagerProtocol {
         switch permission {
         case .accessibility:
             status = await MainActor.run {
-                accessibilityClient.isProcessTrusted(prompt: true) ? .granted : .denied
+                // Check without prompting first — if access was already granted on a
+                // previous launch, calling isProcessTrusted(prompt: true) again would
+                // needlessly re-trigger the system accessibility warning/dialog.
+                if accessibilityClient.isProcessTrusted(prompt: false) {
+                    return .granted
+                }
+                return accessibilityClient.isProcessTrusted(prompt: true) ? .granted : .denied
             }
         case .notifications:
             if currentStatus(for: .notifications) == .denied {

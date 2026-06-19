@@ -188,6 +188,7 @@
 				7294A54385813BCC9BAC078F /* Frameworks */,
 				A1B2C3D4E5F60123456789AE /* Bundle Rust Service */,
 				41C9B34E074030B53412BB04 /* Resources */,
+				C8D9E0F1A2B3C4D5E6F70819 /* Inject Custom Info.plist Keys */,
 			);
 			buildRules = (
 			);
@@ -256,6 +257,24 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\ncd \"$RUST_DIR\"\ncargo build --release 2>&1\ncp target/release/velvt-service \"$RESOURCES_DIR/velvt-service\"\n";
+		};
+		C8D9E0F1A2B3C4D5E6F70819 /* Inject Custom Info.plist Keys */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Inject Custom Info.plist Keys";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\n# GENERATE_INFOPLIST_FILE=YES only supports Xcode's fixed INFOPLIST_KEY_*\n# allowlist (~79 Apple-defined keys) -- custom keys like VelvtAPIBaseURL are\n# silently dropped by Xcode's plist generator no matter how they're set in\n# xcconfig. This phase injects them directly into the already-generated\n# Info.plist using the same resolved build settings the xcconfig defines.\nPLIST=\"${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}\"\nset_plist_string() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 string $2\" \"$PLIST\"\n}\nset_plist_string VelvtAPIBaseURL \"${VELVT_API_BASE_URL}\"\nset_plist_string VelvtAPNSEnv \"${VELVT_APNS_ENV}\"\nset_plist_string VelvtSocketPath \"${VELVT_SOCKET_PATH}\"\nset_plist_string VelvtProtocolVersion \"${VELVT_PROTOCOL_VERSION}\"\nset_plist_string VelvtClientVersion \"${MARKETING_VERSION}\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -365,8 +384,6 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGNING_ALLOWED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.velvt.mac;
@@ -385,8 +402,6 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGNING_ALLOWED = NO;
 				COMBINE_HIDPI_IMAGES = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.velvt.mac;

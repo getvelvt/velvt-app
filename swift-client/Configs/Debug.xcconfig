@@ -4,9 +4,29 @@ VELVT_APNS_ENV = development
 VELVT_SOCKET_PATH = ~/.velvt/velvt-service.sock
 VELVT_PROTOCOL_VERSION = 7
 
+// Auto-generate Info.plist from build settings instead of a literal file —
+// INFOPLIST_KEY_* below is silently ignored otherwise.
+GENERATE_INFOPLIST_FILE = YES
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
+
 // Injected into the processed Info.plist at build time.
 INFOPLIST_KEY_VelvtAPIBaseURL = $(VELVT_API_BASE_URL)
 INFOPLIST_KEY_VelvtAPNSEnv = $(VELVT_APNS_ENV)
 INFOPLIST_KEY_VelvtSocketPath = $(VELVT_SOCKET_PATH)
 INFOPLIST_KEY_VelvtProtocolVersion = $(VELVT_PROTOCOL_VERSION)
 INFOPLIST_KEY_VelvtClientVersion = $(MARKETING_VERSION)
+
+// Migrated from the former literal Resources/Info.plist (see CONFIGURATION.md).
+INFOPLIST_KEY_CFBundleDisplayName = Velvt
+INFOPLIST_KEY_CFBundleIconName = AppIcon
+INFOPLIST_KEY_LSMinimumSystemVersion = $(MACOSX_DEPLOYMENT_TARGET)
+INFOPLIST_KEY_LSUIElement = YES
+
+// TODO: the former literal plist's LSEnvironment dict (VELVT_SOCKET_PATH,
+// VELVT_PROTOCOL_VERSION, VELVT_CLIENT_VERSION defaults for a Debug build
+// launched directly from Xcode without explicit env vars) has no
+// INFOPLIST_KEY_* equivalent — Xcode's auto-generation only supports
+// flat string/boolean/number values, not nested dictionaries. Until this
+// is addressed, set those three env vars explicitly in the Xcode scheme's
+// Run > Arguments > Environment Variables panel for a Cmd+R debug launch.

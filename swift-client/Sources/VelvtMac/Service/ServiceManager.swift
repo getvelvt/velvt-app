@@ -90,7 +90,7 @@ public final class ServiceManager: ObservableObject {
 
     // MARK: - Initialisers
 
-    public nonisolated convenience init() {
+    public convenience init() {
         let bundle = Bundle.main
         let fm = FileManager.default
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -122,7 +122,7 @@ public final class ServiceManager: ObservableObject {
     }
 
     /// Designated initialiser — used directly by unit tests.
-    nonisolated init(
+    init(
         fileManager: FileManager = .default,
         supportDir: URL,
         launchAgentsDir: URL,

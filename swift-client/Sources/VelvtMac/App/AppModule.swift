@@ -32,9 +32,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObjec
     private var menuBarController: MenuBarController?
     private var notificationDeliveryCoordinator: NotificationDeliveryCoordinator?
     private var notificationResponseRouter: NotificationResponseRouter?
-    let serviceManager = ServiceManager()
+    let serviceManager: ServiceManager
 
-    public override init() {
+    @MainActor public override init() {
         let permissionManager = PermissionManager()
         self.permissionManager = permissionManager
         permissionPresentation = PermissionPresentationModel(
@@ -42,6 +42,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObjec
             onboardingStateStore: UserDefaultsOnboardingStateStore()
         )
         accountStateManager = AccountStateManager(keychain: KeychainService())
+        serviceManager = ServiceManager()
         super.init()
     }
 

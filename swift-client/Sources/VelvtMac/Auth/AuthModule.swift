@@ -178,10 +178,7 @@ public final class AccountStateManager: ObservableObject {
     private let keychain: any KeychainProtocol
     private var listenerTask: Task<Void, Never>?
 
-    /// `nonisolated` so callers (e.g. `AppDelegate.init`) can construct this
-    /// from a non-isolated context. Setting `@Published` backing stores via
-    /// their `_`-prefixed wrappers during the init phase is safe per SE-0327.
-    nonisolated public init(keychain: any KeychainProtocol) {
+    public init(keychain: any KeychainProtocol) {
         self.keychain = keychain
         let storedUserId = try? keychain.load(for: .userId)
         let isPendingDeletion = (try? keychain.load(for: .pendingDeletion)) != nil

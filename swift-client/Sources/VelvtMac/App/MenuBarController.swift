@@ -125,6 +125,7 @@ public final class MenuBarController: NSObject {
     private let resolver = MenuBarStateResolver()
     private let popover: NSPopover
     private let activateApp: () -> Void
+    private let serviceConnectionStatus: ServiceConnectionStatusModel
     private var statusItem: NSStatusItem?
     private var cancellables = Set<AnyCancellable>()
 
@@ -135,11 +136,14 @@ public final class MenuBarController: NSObject {
     public init(
         presentation: PermissionPresentationModel,
         displayCoordinator: ConcreteDisplayDataCoordinator,
+        connectionStatus: AnyPublisher<ConnectionStatus, Never> = Just(.disconnected).eraseToAnyPublisher(),
         activateApp: @escaping @MainActor () -> Void = {
             NSApp.unhide(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
     ) {
+        let serviceConnectionStatus = ServiceConnectionStatusModel(connectionStatus: connectionStatus)
+        self.serviceConnectionStatus = serviceConnectionStatus
         popover = NSPopover()
         self.activateApp = activateApp
         super.init()
@@ -152,6 +156,7 @@ public final class MenuBarController: NSObject {
             rootView: MenuBarPopoverView(
                 presentation: presentation,
                 coordinator: displayCoordinator,
+                serviceConnectionStatus: serviceConnectionStatus,
                 onEscape: { [weak self] in self?.closePopover() }
             )
         )
@@ -230,10 +235,20 @@ public final class MenuBarController: NSObject {
         togglePopover()
     }
 
+    /// The four SF Symbols used here (`circle.fill`, `pause.circle`,
+    /// `wifi.slash`, `exclamationmark.triangle.fill`) each report a
+    /// different natural glyph width. Left at their default size, the
+    /// status item visibly shifts left/right in the menu bar every time the
+    /// icon switches between them. Rendering every symbol at the same fixed
+    /// point size pins them to a consistent canvas so the icon's apparent
+    /// position never moves, only its glyph.
+    private static let iconConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+
     private func applyIcon(for state: MenuBarState) {
         let symbolName = MenuBarIconProvider.symbolName(for: state)
         let description = MenuBarIconProvider.accessibilityDescription(for: state)
-        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)?
+            .withSymbolConfiguration(Self.iconConfiguration)
         // Template rendering is required for automatic light/dark adaptation.
         image?.isTemplate = true
         statusItem?.button?.image = image

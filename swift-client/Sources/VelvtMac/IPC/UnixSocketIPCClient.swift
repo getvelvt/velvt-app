@@ -34,6 +34,7 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
     private let socketPath: String
     private let protocolVersion: Int
     private let clientVersion: String
+    private let connectionTimeout: Duration
     private let backoff: ReconnectBackoff
     private let sleeper: any IPCSleeping
     private let transportFactory: @Sendable () -> any IPCTransportProtocol
@@ -57,7 +58,15 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
         self.socketPath = socketPath
         self.protocolVersion = protocolVersion
         self.clientVersion = clientVersion
-        backoff = ReconnectBackoff()
+        connectionTimeout = .seconds(5)
+        // A fast initial retry cadence, not the default 1s base: the very
+        // first connection attempt typically races the bundled
+        // velvt-service binary's own startup (ServiceProcessLauncher spawns
+        // it and AppDelegate connects concurrently), so the first failure
+        // almost always just means "give it a moment," not "unreachable."
+        // Still escalates exponentially up to the same 60s cap for a
+        // genuinely down service.
+        backoff = ReconnectBackoff(baseDelay: 0.25)
         sleeper = TaskSleeper()
         transportFactory = { UnixSocketTransport() }
     }
@@ -66,6 +75,7 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
         socketPath: String,
         protocolVersion: Int,
         clientVersion: String,
+        connectionTimeout: Duration = .seconds(5),
         backoff: ReconnectBackoff = ReconnectBackoff(),
         sleeper: any IPCSleeping = TaskSleeper(),
         transportFactory: @escaping @Sendable () -> any IPCTransportProtocol
@@ -79,6 +89,7 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
         self.socketPath = socketPath
         self.protocolVersion = protocolVersion
         self.clientVersion = clientVersion
+        self.connectionTimeout = connectionTimeout
         self.backoff = backoff
         self.sleeper = sleeper
         self.transportFactory = transportFactory
@@ -89,7 +100,7 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
         reconnectTask?.cancel()
         reconnectTask = nil
         do {
-            try await connectOnce()
+            try await connectOnceWithTimeout()
             startReceiveLoop()
         } catch let error as IPCError {
             await closeTransport()
@@ -160,6 +171,20 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
         }
     }
 
+    private func connectOnceWithTimeout() async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { [self] in
+                try await connectOnce()
+            }
+            group.addTask { [connectionTimeout] in
+                try await Task.sleep(for: connectionTimeout)
+                throw IPCError.connectionClosed
+            }
+            defer { group.cancelAll() }
+            _ = try await group.next()
+        }
+    }
+
     private func startReceiveLoop() {
         receiveTask?.cancel()
         receiveTask = Task {
@@ -193,7 +218,7 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
             publish(.reconnecting(attempt: attempt, nextRetryIn: delay))
             do {
                 try await sleeper.sleep(for: delay)
-                try await connectOnce()
+                try await connectOnceWithTimeout()
                 reconnectTask = nil
                 startReceiveLoop()
                 return
@@ -272,23 +297,27 @@ actor UnixSocketTransport: IPCTransportProtocol {
         }
         let connection = NWConnection(to: .unix(path: path), using: .tcp)
         self.connection = connection
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let gate = ContinuationGate(continuation)
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    gate.resume()
-                case let .failed(error):
-                    gate.resume(throwing: IPCError.socket(code: error.safeCode))
-                case .cancelled:
-                    gate.resume(throwing: IPCError.connectionClosed)
-                default:
-                    break
+        defer { connection.stateUpdateHandler = nil }
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let gate = ContinuationGate(continuation)
+                connection.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        gate.resume()
+                    case let .failed(error):
+                        gate.resume(throwing: IPCError.socket(code: error.safeCode))
+                    case .cancelled:
+                        gate.resume(throwing: IPCError.connectionClosed)
+                    default:
+                        break
+                    }
                 }
+                connection.start(queue: DispatchQueue(label: "com.velvt.mac.ipc.socket"))
             }
-            connection.start(queue: DispatchQueue(label: "com.velvt.mac.ipc.socket"))
-        }
-        connection.stateUpdateHandler = nil
+        }, onCancel: {
+            connection.cancel()
+        })
     }
 
     func send(frame: Data) async throws {

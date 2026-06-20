@@ -22,6 +22,7 @@ public final class AuthViewModel: ObservableObject {
     @Published public private(set) var isLoading: Bool = false
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var showDeleteConfirmation: Bool = false
+    @Published public private(set) var connectionStatus: ConnectionStatus = .disconnected
 
     private let accountStateManager: AccountStateManager
     private let ipcClient: any IPCClientProtocol
@@ -154,6 +155,13 @@ public final class AuthViewModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] msg in
                 self?.errorMessage = msg
+            }
+            .store(in: &cancellables)
+
+        ipcClient.connectionStatus
+            .receive(on: RunLoop.main)
+            .sink { [weak self] status in
+                self?.connectionStatus = status
             }
             .store(in: &cancellables)
     }

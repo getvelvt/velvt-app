@@ -1,5 +1,5 @@
 use super::{AuthError, RedactedString, TokenPair};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value;
 use std::future::Future;
@@ -9,6 +9,7 @@ use std::pin::Pin;
 pub enum HttpMethod {
     Get,
     Post,
+    Delete,
 }
 
 #[derive(Clone)]
@@ -34,6 +35,16 @@ impl HttpRequest {
     pub fn post(path: impl Into<String>) -> Self {
         Self {
             method: HttpMethod::Post,
+            path: path.into(),
+            authorization: None,
+            refresh_token: None,
+            json_body: None,
+        }
+    }
+
+    pub fn delete(path: impl Into<String>) -> Self {
+        Self {
+            method: HttpMethod::Delete,
             path: path.into(),
             authorization: None,
             refresh_token: None,
@@ -94,6 +105,7 @@ impl HttpClient for ReqwestHttpClient {
             let mut builder = match request.method {
                 HttpMethod::Get => self.client.get(url),
                 HttpMethod::Post => self.client.post(url),
+                HttpMethod::Delete => self.client.delete(url),
             };
             if let Some(token) = request.authorization {
                 builder = builder.bearer_auth(token.expose());
@@ -113,10 +125,10 @@ impl HttpClient for ReqwestHttpClient {
             let bytes = response.bytes().await.unwrap_or_default();
             let raw_body: Option<serde_json::Value> = serde_json::from_slice(&bytes).ok();
             let body: ApiResponse = serde_json::from_slice(&bytes).unwrap_or_default();
-            let error_code = body.code.clone();
-            let message = body.message.clone();
-            let user_id = body.user_id.clone();
-            let device_id = body.device_id.clone();
+            let error_code = body.error_code();
+            let message = body.message();
+            let user_id = body.user_id();
+            let device_id = body.device_id();
             Ok(HttpResponse {
                 status,
                 error_code,
@@ -133,21 +145,123 @@ impl HttpClient for ReqwestHttpClient {
 
 #[derive(Default, Deserialize)]
 struct ApiResponse {
+    error: Option<ApiError>,
+    user: Option<ApiUser>,
+    device: Option<ApiDevice>,
+    tokens: Option<ApiTokens>,
+    #[serde(flatten)]
+    flat_tokens: ApiTokens,
+}
+
+#[derive(Default, Deserialize)]
+struct ApiError {
     code: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct ApiUser {
+    id: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct ApiDevice {
+    id: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct ApiTokens {
     access_token: Option<RedactedString>,
     refresh_token: Option<RedactedString>,
-    expires_at: Option<DateTime<Utc>>,
-    message: Option<String>,
-    user_id: Option<String>,
+    expires_in: Option<i64>,
     device_id: Option<String>,
 }
 
 impl ApiResponse {
+    fn error_code(&self) -> Option<String> {
+        self.error.as_ref().and_then(|error| error.code.clone())
+    }
+
+    fn message(&self) -> Option<String> {
+        self.error.as_ref().and_then(|error| error.message.clone())
+    }
+
+    fn user_id(&self) -> Option<String> {
+        self.user.as_ref().and_then(|user| user.id.clone())
+    }
+
+    fn device_id(&self) -> Option<String> {
+        self.device
+            .as_ref()
+            .and_then(|device| device.id.clone())
+            .or_else(|| {
+                self.tokens
+                    .as_ref()
+                    .and_then(|tokens| tokens.device_id.clone())
+            })
+            .or_else(|| self.flat_tokens.device_id.clone())
+    }
+
     fn into_tokens(self) -> Option<TokenPair> {
+        let tokens = self.tokens.unwrap_or(self.flat_tokens);
         Some(TokenPair::new(
-            self.access_token?,
-            self.refresh_token?,
-            self.expires_at?,
+            tokens.access_token?,
+            tokens.refresh_token?,
+            Utc::now().checked_add_signed(chrono::Duration::seconds(tokens.expires_in?))?,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signup_response_uses_nested_tokens_with_expires_in() {
+        let response: ApiResponse = serde_json::from_value(serde_json::json!({
+            "user": { "id": "user-1", "email": "person@example.test", "status": "active" },
+            "tokens": {
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "token_type": "bearer",
+                "expires_in": 3600,
+                "refresh_expires_in": 86400,
+                "device_id": "device-1"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(response.user_id().as_deref(), Some("user-1"));
+        assert!(response.into_tokens().is_some());
+    }
+
+    #[test]
+    fn error_response_uses_nested_error_envelope() {
+        let response: ApiResponse = serde_json::from_value(serde_json::json!({
+            "error": { "code": "invalid_credentials", "message": "Invalid credentials" }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            response.error_code().as_deref(),
+            Some("invalid_credentials")
+        );
+        assert_eq!(response.message().as_deref(), Some("Invalid credentials"));
+    }
+
+    #[test]
+    fn device_reissue_response_uses_top_level_tokens() {
+        let response: ApiResponse = serde_json::from_value(serde_json::json!({
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "refresh_expires_in": 86400,
+            "device_id": "device-1"
+        }))
+        .unwrap();
+
+        assert_eq!(response.device_id().as_deref(), Some("device-1"));
+        assert!(response.into_tokens().is_some());
     }
 }

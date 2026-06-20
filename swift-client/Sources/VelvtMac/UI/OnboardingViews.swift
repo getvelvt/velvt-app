@@ -227,6 +227,8 @@ public struct AuthStepView: View {
                 )
             }
 
+            ServiceConnectionStatusLabel(status: authViewModel.connectionStatus)
+
             if let error = authViewModel.errorMessage {
                 Text(error)
                     .font(.caption)
@@ -245,7 +247,12 @@ public struct AuthStepView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(authViewModel.isLoading || authViewModel.email.isEmpty || authViewModel.password.isEmpty)
+                .disabled(
+                    authViewModel.isLoading
+                        || authViewModel.email.isEmpty
+                        || authViewModel.password.isEmpty
+                        || authViewModel.connectionStatus != .connected
+                )
                 .frame(maxWidth: .infinity)
 
                 Button(authViewModel.authMode == .signUp ? "I already have an account" : "Create a new account") {

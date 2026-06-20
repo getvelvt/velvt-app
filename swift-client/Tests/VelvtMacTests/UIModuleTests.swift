@@ -7,6 +7,18 @@ import XCTest
 @MainActor
 final class OnboardingCoordinatorTests: XCTestCase {
 
+    func testServiceConnectionStatusModelReflectsSocketUpdates() async {
+        let client = FakeIPCClient()
+        let model = ServiceConnectionStatusModel(connectionStatus: client.connectionStatus)
+
+        XCTAssertEqual(model.status, .disconnected)
+
+        client.setConnectionStatus(.reconnecting(attempt: 2, nextRetryIn: 1))
+        await Task.yield()
+
+        XCTAssertEqual(model.status, .reconnecting(attempt: 2, nextRetryIn: 1))
+    }
+
     func testInitialStepIsWelcome() {
         let sut = makeCoordinator()
         XCTAssertTrue(sut.path.isEmpty, "Path should be empty (Welcome is the NavigationStack root)")

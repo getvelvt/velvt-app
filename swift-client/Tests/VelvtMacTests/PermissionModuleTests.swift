@@ -143,6 +143,32 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertTrue(accessibility.promptValues.isEmpty)
     }
 
+    func testBecomingActiveRechecksAccessibilityImmediatelyWithoutWaitingForFirstTick() async {
+        let accessibility = FakeAccessibilityPermissionClient(isTrusted: true)
+        let scheduler = FakePermissionMonitorScheduler()
+        let activityNotifications = NotificationCenter()
+        let manager = PermissionManager(
+            accessibilityClient: accessibility,
+            notificationClient: FakeNotificationPermissionClient(),
+            applicationIsActive: { true },
+            monitorScheduler: scheduler,
+            activityNotifications: activityNotifications
+        )
+        var statuses: [[PermissionType: PermissionStatus]] = []
+        manager.statusPublisher.sink { statuses.append($0) }.store(in: &cancellables)
+
+        manager.startMonitoring()
+
+        // The immediate re-check runs on a detached Task; give it a chance
+        // to complete without relying on the (never-fired) periodic timer.
+        for _ in 0..<50 where statuses.last?[.accessibility] != .granted {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(statuses.last?[.accessibility], .granted)
+        XCTAssertEqual(scheduler.startCallCount, 1, "periodic monitoring should still be scheduled")
+    }
+
     func testAccessibilityMonitorPausesWhenAppMovesToBackground() {
         var isActive = true
         let scheduler = FakePermissionMonitorScheduler()

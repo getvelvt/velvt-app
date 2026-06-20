@@ -80,31 +80,19 @@ impl MessageRouter for R7Router {
             ClientMessage::RawEvent(event) => Ok(Some(self.handle_raw_event(event).await)),
 
             ClientMessage::SignUp(req) => {
-                tracing::debug!(email = %req.email, "auth.signup: IPC message received");
-                let result = self.account.sign_up(req.email, req.password).await;
-                tracing::debug!(
-                    response_type = %match &result {
-                        ServerMessage::AuthSuccess(_) => "auth_success",
-                        ServerMessage::AuthFailure(_) => "auth_failure",
-                        _ => "unexpected",
-                    },
-                    "auth.signup: sending response to Swift"
+                tracing::info!(
+                    message_type = "sign_up",
+                    "received account credential request"
                 );
-                Ok(Some(result))
+                Ok(Some(self.account.sign_up(req.email, req.password).await))
             }
 
             ClientMessage::LogIn(req) => {
-                tracing::debug!(email = %req.email, "auth.login: IPC message received");
-                let result = self.account.log_in(req.email, req.password).await;
-                tracing::debug!(
-                    response_type = %match &result {
-                        ServerMessage::AuthSuccess(_) => "auth_success",
-                        ServerMessage::AuthFailure(_) => "auth_failure",
-                        _ => "unexpected",
-                    },
-                    "auth.login: sending response to Swift"
+                tracing::info!(
+                    message_type = "log_in",
+                    "received account credential request"
                 );
-                Ok(Some(result))
+                Ok(Some(self.account.log_in(req.email, req.password).await))
             }
 
             ClientMessage::LogOut(_) => {

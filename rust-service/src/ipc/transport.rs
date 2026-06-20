@@ -10,6 +10,19 @@ pub trait IpcTransport {
     async fn run(&self) -> Result<(), IpcError>;
 }
 
+/// True if another process is already listening on `socket_path`.
+///
+/// `TokioUnixTransport::bind` already refuses to bind over a live listener,
+/// but that failure surfaces deep inside a spawned task whose `Result` is
+/// never awaited until shutdown — so a second launch used to fail to bind
+/// silently and then idle forever as a zombie with no working IPC listener,
+/// instead of exiting. Callers should check this *before* doing any other
+/// startup work and exit immediately if it's true.
+#[cfg(unix)]
+pub async fn socket_already_in_use(socket_path: &std::path::Path) -> bool {
+    tokio::net::UnixStream::connect(socket_path).await.is_ok()
+}
+
 /// Tokio Unix-domain-socket transport for the macOS service.
 ///
 /// Generic over the message router `R` so business handlers can be swapped

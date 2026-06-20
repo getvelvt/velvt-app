@@ -582,6 +582,17 @@ final class AuthViewModelTests: XCTestCase {
         XCTAssertNotNil(sut.errorMessage)
     }
 
+    func testConnectionStatusTracksTheIPCClient() async {
+        let (sut, _, client) = makeViewModelWithDependencies()
+
+        XCTAssertEqual(sut.connectionStatus, .disconnected)
+
+        client.setConnectionStatus(.connected)
+        await Task.yield()
+
+        XCTAssertEqual(sut.connectionStatus, .connected)
+    }
+
     func testSignUpDoesNotSendWhenAuthenticationIsAlreadyInProgress() async {
         let (sut, manager, client) = makeViewModelWithDependencies()
         sut.email = "user@example.com"

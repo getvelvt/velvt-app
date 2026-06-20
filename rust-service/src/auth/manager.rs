@@ -180,6 +180,7 @@ where
     ) -> Result<super::TokenPair, AuthError> {
         let mut request = HttpRequest::post("/v1/auth/devices/reissue");
         request.authorization = Some(tokens.access_token().clone());
+        request.json_body = Some(serde_json::json!({ "device_id": device_id.clone() }));
         let response = match self.http.send(request).await {
             Ok(response) => response,
             Err(_) => {

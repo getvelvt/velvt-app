@@ -345,19 +345,23 @@ fn host_backoff_attempt_survives_repository_recreation() {
     let database = database();
     let repository = database.upload_batch_repo();
     repository
-        .set_host_backoff("api-dev.getvelvt.com", 3, timestamp(120))
+        .set_host_backoff("dev-api.getvelvt.com", 3, timestamp(120))
         .unwrap();
 
     assert_eq!(
         database
             .upload_batch_repo()
-            .host_backoff_attempt("api-dev.getvelvt.com")
+            .host_backoff_attempt("dev-api.getvelvt.com")
             .unwrap(),
         3
     );
-    repository.clear_host_backoff("api-dev.getvelvt.com").unwrap();
+    repository
+        .clear_host_backoff("dev-api.getvelvt.com")
+        .unwrap();
     assert_eq!(
-        repository.host_backoff_attempt("api-dev.getvelvt.com").unwrap(),
+        repository
+            .host_backoff_attempt("dev-api.getvelvt.com")
+            .unwrap(),
         0
     );
 }

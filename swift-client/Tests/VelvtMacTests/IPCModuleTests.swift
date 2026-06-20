@@ -124,6 +124,16 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertEqual(ReconnectBackoff(jitter: { 0.8 }).delay(forAttempt: 3), 3.2, accuracy: 0.0001)
         XCTAssertEqual(ReconnectBackoff(jitter: { 1.2 }).delay(forAttempt: 3), 4.8, accuracy: 0.0001)
     }
+
+    func testBackoffBaseDelayScalesEveryAttemptProportionally() {
+        let backoff = ReconnectBackoff(baseDelay: 0.25, maximumDelay: 10, jitter: { 1 })
+
+        XCTAssertEqual(backoff.delay(forAttempt: 1), 0.25, accuracy: 0.0001)
+        XCTAssertEqual(backoff.delay(forAttempt: 2), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(backoff.delay(forAttempt: 3), 1, accuracy: 0.0001)
+        XCTAssertEqual(backoff.delay(forAttempt: 6), 8, accuracy: 0.0001)
+        XCTAssertEqual(backoff.delay(forAttempt: 7), 10, accuracy: 0.0001, "capped at maximumDelay")
+    }
 }
 
 // MARK: - Auth IPC DTO contract tests (proto v6)
@@ -193,6 +203,37 @@ final class AuthIPCContractTests: XCTestCase {
         )
         let data = try encoder.encode(msg)
         XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg)
+    }
+
+    /// Regression test for a real bug: the Rust service serializes
+    /// `chrono::DateTime<Utc>` with fractional seconds (captured verbatim
+    /// from a live `/v1/auth/signup` response relayed over IPC), but
+    /// Foundation's `.iso8601` decoding strategy cannot parse fractional
+    /// seconds. Every `AuthSuccess` was silently failing to decode, which
+    /// `UnixSocketIPCClient` treated as a dropped connection and
+    /// reconnected on — so login/signup spun forever even though the
+    /// server had already responded 200/201. This must decode without
+    /// throwing and without going through `encoder` (a round-trip through
+    /// Swift's own encoder never reproduces the bug, since Swift never
+    /// emits fractional seconds itself).
+    func testAuthSuccessWithFractionalSecondsFromRealServerDecodesSuccessfully() throws {
+        let wire = """
+        {"type":"auth_success","payload":{"user_id":"f14e0762-cc11-44c3-92f3-302e1762719f",\
+        "access_token":"at","refresh_token":"rt","expires_at":"2026-06-19T21:36:13.182093Z"}}
+        """.data(using: .utf8)!
+
+        let message = try decoder.decode(ServerMessage.self, from: wire)
+
+        guard case .authSuccess(let success) = message else {
+            XCTFail("Expected authSuccess, got \(message)")
+            return
+        }
+        XCTAssertEqual(success.userId, "f14e0762-cc11-44c3-92f3-302e1762719f")
+        XCTAssertEqual(
+            success.expiresAt.timeIntervalSince1970,
+            1_781_904_973.182093,
+            accuracy: 0.001
+        )
     }
 
     func testAuthSuccessPayloadUsesSnakeCaseKeys() throws {

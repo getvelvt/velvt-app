@@ -1,4 +1,65 @@
+import Combine
 import SwiftUI
+
+@MainActor
+public final class ServiceConnectionStatusModel: ObservableObject {
+    @Published public private(set) var status: ConnectionStatus = .disconnected
+
+    private var cancellable: AnyCancellable?
+
+    public init(connectionStatus: AnyPublisher<ConnectionStatus, Never>) {
+        cancellable = connectionStatus
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in
+                self?.status = $0
+            }
+    }
+}
+
+struct ServiceConnectionStatusLabel: View {
+    let status: ConnectionStatus
+
+    var body: some View {
+        Label(text, systemImage: symbolName)
+            .font(.caption2)
+            .foregroundStyle(color)
+    }
+
+    private var text: String {
+        switch status {
+        case .connected:
+            return "Service connected"
+        case .connecting, .handshaking:
+            return "Starting service"
+        case .reconnecting:
+            return "Reconnecting service"
+        case .disconnected:
+            return "Service unavailable"
+        }
+    }
+
+    private var symbolName: String {
+        switch status {
+        case .connected:
+            return "checkmark.circle.fill"
+        case .connecting, .handshaking, .reconnecting:
+            return "arrow.triangle.2.circlepath"
+        case .disconnected:
+            return "wifi.slash"
+        }
+    }
+
+    private var color: Color {
+        switch status {
+        case .connected:
+            return .green
+        case .connecting, .handshaking, .reconnecting:
+            return .orange
+        case .disconnected:
+            return .secondary
+        }
+    }
+}
 
 // MARK: - MenuBarPopoverView
 
@@ -13,15 +74,18 @@ import SwiftUI
 public struct MenuBarPopoverView: View {
     @ObservedObject private var presentation: PermissionPresentationModel
     @ObservedObject private var coordinator: ConcreteDisplayDataCoordinator
+    @ObservedObject private var serviceConnectionStatus: ServiceConnectionStatusModel
     private let onEscape: () -> Void
 
     public init(
         presentation: PermissionPresentationModel,
         coordinator: ConcreteDisplayDataCoordinator,
+        serviceConnectionStatus: ServiceConnectionStatusModel,
         onEscape: @escaping () -> Void
     ) {
         self.presentation = presentation
         self.coordinator = coordinator
+        self.serviceConnectionStatus = serviceConnectionStatus
         self.onEscape = onEscape
     }
 
@@ -32,6 +96,7 @@ public struct MenuBarPopoverView: View {
                     .font(.headline)
                     .foregroundStyle(.primary)
                 Spacer()
+                ServiceConnectionStatusLabel(status: serviceConnectionStatus.status)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)

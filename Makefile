@@ -62,6 +62,12 @@ build-app: check-swift-toolchain
 		build
 	cp -R dist/.derivedData/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
 	rm -rf dist/.derivedData
+	# Ad-hoc sign with a stable identity derived from the bundle. The Xcode
+	# project has CODE_SIGNING_ALLOWED=NO, so without this the app ships
+	# fully unsigned: macOS then can't reliably remember a granted
+	# Accessibility permission across relaunches (and especially rebuilds),
+	# since TCC has no stable code identity to key the grant on.
+	codesign --force --deep --sign - dist/velvt-mac.app
 	@echo "Built dist/velvt-mac.app"
 
 clean:

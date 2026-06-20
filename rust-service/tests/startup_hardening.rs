@@ -19,6 +19,13 @@ fn service_output(env: &[(&str, &Path)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_velvt-service"));
     command.env("VELVT_LOG_LEVEL", "info");
     command.env("VELVT_DATABASE_PATH", temp_path("startup.sqlite3"));
+    // Each invocation needs its own socket: the service now exits
+    // immediately if another process is already listening on the configured
+    // socket path (see `ipc::transport::socket_already_in_use`), and without
+    // this these tests would otherwise race each other — or a real,
+    // already-running velvt-service on the canonical default path — for the
+    // same socket.
+    command.env("VELVT_IPC_SOCKET_PATH", temp_path("startup.sock"));
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, value) in env {
         command.env(key, value);
@@ -131,5 +138,41 @@ fn missing_database_file_is_created_and_migrated_at_startup() {
     assert!(
         !logs.contains("persistence_initialization_failed"),
         "{logs}"
+    );
+}
+
+/// `main.rs` calls `socket_already_in_use` before doing any other startup
+/// work and exits immediately if it returns `true`, instead of silently
+/// failing to bind deep inside a spawned task whose result nobody awaits
+/// (the old behavior: a zombie process with no working IPC listener). This
+/// exercises the check itself directly against a real bound listener rather
+/// than spawning two full service processes — full startup additionally
+/// touches the macOS Keychain via `KeychainTokenStore`, which is slow and
+/// occasionally contends with other processes on this machine when spawned
+/// from inside the test harness, making an end-to-end subprocess version of
+/// this test flaky for reasons unrelated to the behavior under test.
+#[tokio::test]
+async fn detects_a_live_listener_but_not_a_stale_or_absent_socket_path() {
+    // `/tmp` directly, not `temp_path()`: a Unix domain socket path is
+    // limited to `SUN_LEN` (~104 bytes on macOS), and `std::env::temp_dir()`
+    // combined with `temp_path()`'s UUID suffix routinely exceeds that.
+    let socket = PathBuf::from(format!("/tmp/velvt-duplicate-{}.sock", Uuid::new_v4()));
+
+    assert!(
+        !velvt_service::ipc::transport::socket_already_in_use(&socket).await,
+        "nothing is listening yet"
+    );
+
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    assert!(
+        velvt_service::ipc::transport::socket_already_in_use(&socket).await,
+        "a real listener is bound at this path"
+    );
+
+    drop(listener);
+    std::fs::remove_file(&socket).unwrap();
+    assert!(
+        !velvt_service::ipc::transport::socket_already_in_use(&socket).await,
+        "the listener is gone and the path no longer exists"
     );
 }

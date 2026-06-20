@@ -113,6 +113,33 @@ final class UnixSocketIPCClientTests: XCTestCase {
         client.disconnect()
     }
 
+    func testStalledInitialConnectTimesOutAndEntersReconnectingState() async {
+        let transport = ScriptedIPCTransport(blockConnect: true)
+        let sleeper = RecordingSleeper(stopAfter: 1)
+        let client = UnixSocketIPCClient(
+            socketPath: "/tmp/velvt-test.sock",
+            protocolVersion: 1,
+            clientVersion: "1.0.0",
+            connectionTimeout: .milliseconds(10),
+            backoff: ReconnectBackoff(jitter: { 1 }),
+            sleeper: sleeper,
+            transportFactory: { transport }
+        )
+        var statuses: [ConnectionStatus] = []
+        client.connectionStatus.sink { statuses.append($0) }.store(in: &cancellables)
+
+        do {
+            try await client.connect()
+            XCTFail("Expected stalled connection to time out")
+        } catch {
+            XCTAssertEqual(error as? IPCError, .connectionClosed)
+        }
+        await fulfillment(of: [sleeper.completedExpectation], timeout: 1)
+
+        XCTAssertTrue(statuses.contains(.reconnecting(attempt: 1, nextRetryIn: 1)))
+        client.disconnect()
+    }
+
     func testMissingSocketPathThrowsTypedSocketError() async {
         let client = UnixSocketIPCClient(
             socketPath: "/tmp/velvt-definitely-missing/socket.sock",
@@ -248,6 +275,7 @@ private actor ScriptedIPCTransport: IPCTransportProtocol {
     nonisolated let handshakeBlockedExpectation = XCTestExpectation(description: "handshake response blocked")
     nonisolated let publicSendBlockedExpectation = XCTestExpectation(description: "public send blocked")
     private let connectError: Error?
+    private let blockConnect: Bool
     private let blockHandshakeResponse: Bool
     private let blockPublicSend: Bool
     private var receives: [Result<Data, Error>]
@@ -261,11 +289,13 @@ private actor ScriptedIPCTransport: IPCTransportProtocol {
     init(
         connectError: Error? = nil,
         receives: [Result<Data, Error>] = [],
+        blockConnect: Bool = false,
         blockHandshakeResponse: Bool = false,
         blockPublicSend: Bool = false
     ) {
         self.connectError = connectError
         self.receives = receives
+        self.blockConnect = blockConnect
         self.blockHandshakeResponse = blockHandshakeResponse
         self.blockPublicSend = blockPublicSend
     }
@@ -273,6 +303,9 @@ private actor ScriptedIPCTransport: IPCTransportProtocol {
     func connect(to path: String) async throws {
         if let connectError {
             throw connectError
+        }
+        if blockConnect {
+            try await Task.sleep(for: .seconds(60))
         }
     }
 

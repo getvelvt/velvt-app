@@ -26,6 +26,15 @@ async fn main() {
         return;
     }
 
+    #[cfg(unix)]
+    if velvt_service::ipc::transport::socket_already_in_use(&config.socket_path).await {
+        tracing::error!(
+            error_code = "duplicate_service_instance",
+            "another velvt-service instance is already listening on this socket; exiting"
+        );
+        return;
+    }
+
     let Ok(persistence) = SqlitePersistence::open(&config.database_path) else {
         tracing::error!(
             error_code = "persistence_initialization_failed",
@@ -70,8 +79,8 @@ async fn main() {
     {
         use std::sync::Arc;
         use velvt_service::auth::{
-            AccountAuthService, AuthManager, AuthState, AuthStateMachine, DeviceRegistrar,
-            HttpClient, HttpDeviceRegistrar, KeychainTokenStore, ReqwestHttpClient, TokenStore,
+            AccountAuthService, AuthManager, AuthState, AuthStateMachine, HttpClient,
+            KeychainTokenStore, ReqwestHttpClient, TokenStore,
         };
         use velvt_service::delivery::{
             CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable, PushAdapter,
@@ -100,28 +109,14 @@ async fn main() {
         let token_store = Arc::new(KeychainTokenStore::default());
         let raw_http = Arc::new(ReqwestHttpClient::new(config.upload_api_base_url.clone()));
 
-        // Device registration is the seam connecting Swift onboarding (S5) to
-        // this auth layer (R4): without a registered device, AuthManager
-        // never has tokens to attach to outbound requests, so uploads and
-        // fetches can never authenticate. Register once and persist the
-        // result; subsequent starts reuse the stored device_id and tokens.
+        // Device registration requires a logged-in user's access token --
+        // `/v1/devices` has no anonymous mode -- so it cannot happen here at
+        // startup. It is instead triggered by `AccountAuthService` the first
+        // time sign-up or login succeeds (see ensure_device_registered),
+        // using the access token issued by that call. Here we only load
+        // whatever was already persisted by a prior login.
         let device_id = match token_store.load_device_id() {
-            Ok(Some(device_id)) => Some(device_id),
-            Ok(None) => {
-                let registrar =
-                    HttpDeviceRegistrar::new(Arc::clone(&raw_http), Arc::clone(&token_store));
-                match registrar.register().await {
-                    Ok(()) => token_store.load_device_id().unwrap_or(None),
-                    Err(error) => {
-                        tracing::error!(
-                            error_code = "device_registration_failed",
-                            error = %error,
-                            "device registration failed at startup; uploads and fetches will be unavailable until the next successful attempt"
-                        );
-                        None
-                    }
-                }
-            }
+            Ok(device_id) => device_id,
             Err(error) => {
                 tracing::error!(
                     error_code = "device_id_load_failed",
@@ -265,6 +260,12 @@ async fn main() {
         // persisted per-host backoff state in SQLite is what actually gates
         // concurrent senders, so two in-memory backoff trackers do not risk
         // a correctness issue, only a minor heuristic duplication.
+        // Fixed for this process's lifetime: if this is the very first login
+        // (no device_id persisted yet), registration happens later via
+        // AccountAuthService and events batched before the next restart are
+        // tagged "unregistered-device". They still upload successfully; the
+        // service is restarted alongside the menu bar app often enough
+        // (login is a rare, early-session event) that this is acceptable.
         let device_id_for_batching = device_id
             .clone()
             .unwrap_or_else(|| "unregistered-device".into());
@@ -284,6 +285,8 @@ async fn main() {
         let account_service = Arc::new(AccountAuthService::new(
             Arc::clone(&raw_http) as Arc<dyn HttpClient>,
             Arc::clone(&authenticated_http) as Arc<dyn HttpClient>,
+            Arc::clone(&token_store) as Arc<dyn TokenStore>,
+            Arc::clone(&auth_state),
         ));
 
         // Periodic age-based flush: count-based flush happens inline on

@@ -98,7 +98,17 @@ where
                 .await
                 .map_err(|_| BatchUploadError::Transport)?;
             Ok(match (response.status, response.error_code.as_deref()) {
-                (200..=299, _) => UploadOutcome::Accepted,
+                (202, _)
+                    if response
+                        .raw_body
+                        .as_ref()
+                        .and_then(|body| body.get("status"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("duplicate") =>
+                {
+                    UploadOutcome::Duplicate
+                }
+                (202, _) => UploadOutcome::Accepted,
                 (409, Some("duplicate_batch" | "duplicate")) => UploadOutcome::Duplicate,
                 (422, Some("raw_field_rejected")) => UploadOutcome::RawFieldRejected {
                     message: response

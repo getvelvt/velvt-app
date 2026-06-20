@@ -105,7 +105,12 @@ fn build_router(
     let abstraction_engine = Arc::new(
         AbstractionEngine::from_builtin_taxonomy(persistence.abstraction_mapping_store()).unwrap(),
     );
-    let account = Arc::new(AccountAuthService::new(raw_http, authenticated_http));
+    let account = Arc::new(AccountAuthService::new(
+        raw_http,
+        authenticated_http,
+        Arc::new(FakeTokenStore::default()),
+        Arc::new(AuthStateMachine::new(AuthState::Unauthenticated)),
+    ));
     R7Router::new(
         cache,
         abstraction_engine,

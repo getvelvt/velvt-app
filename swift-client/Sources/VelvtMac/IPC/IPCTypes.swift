@@ -753,7 +753,42 @@ public enum IPCMessageCodec {
 
     public static func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let string = try container.decode(String.self)
+            if let date = fractionalSecondsFormatter.date(from: string) {
+                return date
+            }
+            if let date = standardFormatter.date(from: string) {
+                return date
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Expected date string to be ISO8601-formatted: \(string)"
+            )
+        }
         return decoder
     }
+
+    /// The Rust service serializes `chrono::DateTime<Utc>` (e.g.
+    /// `AuthSuccess.expires_at`) with fractional seconds, such as
+    /// "2026-06-19T21:36:13.182093Z". Foundation's built-in `.iso8601`
+    /// decoding strategy cannot parse that: `ISO8601DateFormatter` without
+    /// `.withFractionalSeconds` returns nil, so the decode throws. Because
+    /// the IPC receive loop treats any decode failure as a dropped
+    /// connection and reconnects, this previously discarded `AuthSuccess`
+    /// entirely — the login/signup spinner span forever even though the
+    /// server had already responded 200/201. Try fractional seconds first,
+    /// then fall back to whole seconds for any other ISO8601 producer.
+    private static let fractionalSecondsFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let standardFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 }

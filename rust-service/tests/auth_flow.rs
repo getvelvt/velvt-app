@@ -389,6 +389,10 @@ async fn device_token_revoked_from_refresh_attempts_reissue() {
         .unwrap();
 
     assert_eq!(http.requests()[1].path, "/v1/auth/devices/reissue");
+    assert_eq!(
+        http.requests()[1].json_body,
+        Some(serde_json::json!({ "device_id": "device-1" }))
+    );
     assert_eq!(store.load_tokens().unwrap(), Some(fresh));
     assert!(matches!(state.current(), AuthState::Authenticated { .. }));
 }

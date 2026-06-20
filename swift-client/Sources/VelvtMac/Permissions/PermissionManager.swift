@@ -199,13 +199,14 @@ public final class PermissionManager: PermissionManagerProtocol {
         guard lock.withLock({ isMonitoring }), applicationIsActive() else {
             return
         }
-        // Re-check immediately on becoming active, rather than waiting for
-        // the first periodic tick: a user who grants Accessibility in System
-        // Settings and switches straight back to Velvt should see it
-        // reflected right away, not up to `timerInterval` seconds later.
-        Task { [weak self] in
-            _ = await self?.checkStatus(for: .accessibility)
-        }
+        // `scheduleMonitor()` runs from the main application lifecycle or a
+        // main-queue activation notification. Publish this first check inline
+        // so activation cannot leave the UI in its stale state while an
+        // unstructured task waits for the main actor.
+        let accessibilityStatus: PermissionStatus = accessibilityClient.isProcessTrusted(prompt: false)
+            ? .granted
+            : .denied
+        publish(accessibilityStatus, for: .accessibility)
         monitorScheduler.start(interval: timerInterval) { [weak self] in
             guard let self, self.applicationIsActive() else {
                 return

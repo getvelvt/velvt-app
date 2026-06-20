@@ -26,9 +26,17 @@ public struct VelvtPopoverContentView: View {
                     .padding(.bottom, 8)
 
             case .populated(let insightVM, let historyVM):
-                InsightCardView(viewModel: insightVM)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
+                if coordinator.insightAvailability == .notGenerated {
+                    Label("Not generated yet", systemImage: "sparkles")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                } else {
+                    InsightCardView(viewModel: insightVM)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                }
                 sectionDivider
                 HistoryListView(viewModel: historyVM)
                     .padding(.bottom, 8)

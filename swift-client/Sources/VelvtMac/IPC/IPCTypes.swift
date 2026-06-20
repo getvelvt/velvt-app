@@ -5,6 +5,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case clientHello(ClientHello)
     case rawEvent(RawEventMessage)
     case errorResponse(ErrorResponse)
+    case requestLatestInsight(RequestLatestInsight)
+    case requestLatestHistory(RequestLatestHistory)
     // Auth messages (proto v6)
     case signUp(SignUpRequest)
     case logIn(LogInRequest)
@@ -22,6 +24,10 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .rawEvent(try RawEventMessage(from: payload))
         case "error_response":
             self = .errorResponse(try ErrorResponse(from: payload))
+        case "request_latest_insight":
+            self = .requestLatestInsight(try RequestLatestInsight(from: payload))
+        case "request_latest_history":
+            self = .requestLatestHistory(try RequestLatestHistory(from: payload))
         case "sign_up":
             self = .signUp(try SignUpRequest(from: payload))
         case "log_in":
@@ -46,6 +52,12 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .errorResponse(value):
             try envelope.encode("error_response", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .requestLatestInsight(value):
+            try envelope.encode("request_latest_insight", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .requestLatestHistory(value):
+            try envelope.encode("request_latest_history", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .signUp(value):
             try envelope.encode("sign_up", forKey: .type)
@@ -75,6 +87,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case serviceStatus(ServiceStatus)
     case privacyViolationAlert(PrivacyViolationAlert)
     case errorResponse(ErrorResponse)
+    case cacheEmpty(CacheEmpty)
     /// Sent by the Rust service before a graceful shutdown.
     case shuttingDown(ShuttingDown)
     // Auth messages (proto v6)
@@ -114,6 +127,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .privacyViolationAlert(try PrivacyViolationAlert(from: payload))
         case "error_response":
             self = .errorResponse(try ErrorResponse(from: payload))
+        case "cache_empty":
+            self = .cacheEmpty(try CacheEmpty(from: payload))
         case "shutting_down":
             self = .shuttingDown(try ShuttingDown(from: payload))
         case "auth_success":
@@ -166,6 +181,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case let .errorResponse(value):
             try envelope.encode("error_response", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .cacheEmpty(value):
+            try envelope.encode("cache_empty", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .shuttingDown(value):
             try envelope.encode("shutting_down", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
@@ -196,6 +214,34 @@ public enum ServerMessage: Codable, Equatable, Sendable {
 
 private enum EnvelopeCodingKeys: String, CodingKey { case type, payload }
 private struct EmptyPayload: Codable {}
+
+public struct RequestLatestInsight: Codable, Equatable, Sendable {
+    public let date: String
+
+    public init(date: String) {
+        self.date = date
+    }
+}
+
+public struct RequestLatestHistory: Codable, Equatable, Sendable {
+    public let days: Int
+
+    public init(days: Int) {
+        self.days = days
+    }
+}
+
+public struct CacheEmpty: Codable, Equatable, Sendable {
+    public let payloadType: String
+
+    public init(payloadType: String) {
+        self.payloadType = payloadType
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case payloadType = "payload_type"
+    }
+}
 
 /// Announces the server protocol version after a socket connection opens.
 public struct ServerHello: Codable, Equatable, Sendable {

@@ -82,6 +82,21 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertEqual(payload["expected_protocol_version"] as? Int, 3)
     }
 
+    func testLatestInsightRequestUsesProtocolWireShape() throws {
+        let message = ClientMessage.requestLatestInsight(RequestLatestInsight(date: "2026-06-20"))
+        let data = try encoder.encode(message)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
+
+        XCTAssertEqual(object["type"] as? String, "request_latest_insight")
+        XCTAssertEqual(payload["date"] as? String, "2026-06-20")
+    }
+
+    func testCacheEmptyRoundTrips() throws {
+        let message = ServerMessage.cacheEmpty(CacheEmpty(payloadType: "insight_payload"))
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: encoder.encode(message)), message)
+    }
+
     func testDecoderRejectsMissingPayload() {
         let data = Data(#"{"type":"server_hello"}"#.utf8)
 

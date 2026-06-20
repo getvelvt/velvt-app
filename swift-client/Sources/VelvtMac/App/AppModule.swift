@@ -30,6 +30,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
     private var notificationDeliveryCoordinator: NotificationDeliveryCoordinator?
     private var notificationResponseRouter: NotificationResponseRouter?
+    private var menuBarDataLoader: MenuBarDataLoader?
     private let serviceProcessLauncher = ServiceProcessLauncher()
 
     public override convenience init() {
@@ -79,6 +80,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             connectionStatus: client.connectionStatus
         )
         displayCoordinator = displayCoord
+
+        let dataLoader = MenuBarDataLoader(ipcClient: client)
+        dataLoader.start(accountState: accountStateManager.$accountState.eraseToAnyPublisher())
+        menuBarDataLoader = dataLoader
 
         let relay = EventRelay(ipcClient: client)
         let collectionAgent = AXCollectionAgent(eventSink: relay)

@@ -14,6 +14,12 @@ public enum DisplayState {
     case error(String)
 }
 
+public enum InsightAvailability: Equatable {
+    case loading
+    case available
+    case notGenerated
+}
+
 // MARK: - DisplayDataCoordinating
 
 /// Interface through which the IPC delivery layer feeds the display layer.
@@ -40,6 +46,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     // MARK: Published state
 
     @Published public private(set) var state: DisplayState = .loading
+    @Published public private(set) var insightAvailability: InsightAvailability = .loading
 
     public var displayState: AnyPublisher<DisplayState, Never> {
         $state.eraseToAnyPublisher()
@@ -89,6 +96,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
                 switch message {
                 case .insightPayload(let p): self.updateInsight(p)
                 case .historyPayload(let p): self.updateHistory(p)
+                case .cacheEmpty(let empty): self.handleCacheEmpty(empty)
                 default: break
                 }
             }
@@ -106,12 +114,18 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
 
     public func updateInsight(_ payload: InsightPayload) {
         insightViewModel.update(from: payload)
+        insightAvailability = .available
         transitionToPopulatedIfNeeded()
     }
 
     public func updateHistory(_ payload: HistoryPayload) {
         historyViewModel.update(from: payload)
         transitionToPopulatedIfNeeded()
+    }
+
+    public func handleCacheEmpty(_ payload: CacheEmpty) {
+        guard payload.payloadType == "insight_payload" else { return }
+        insightAvailability = .notGenerated
     }
 
     // MARK: Private

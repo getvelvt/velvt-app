@@ -66,8 +66,13 @@ where
 
     pub async fn flush_now(&mut self) -> Result<bool, CoordinatorError> {
         let flushed = if let Some(batch) = self.assembler.flush_shutdown() {
-            if let Err(error) = self.submit(batch.clone()).await {
+            if let Err(error) = self.coordinator.persist_batch(&batch) {
+                Self::log_submit_failure(&error);
                 self.assembler.requeue(batch);
+                return Err(error);
+            }
+            if let Err(error) = self.coordinator.upload_batch(batch).await {
+                Self::log_submit_failure(&error);
                 return Err(error);
             }
             true
@@ -89,14 +94,18 @@ where
         batch: super::BatchPayload,
     ) -> Result<(), CoordinatorError> {
         if let Err(error) = coordinator.submit_batch(batch).await {
-            tracing::error!(
-                error_code = "upload_batch_submit_failed",
-                error = %error,
-                "failed to persist or submit upload batch"
-            );
+            Self::log_submit_failure(&error);
             return Err(error);
         }
         Ok(())
+    }
+
+    fn log_submit_failure(error: &CoordinatorError) {
+        tracing::error!(
+            error_code = "upload_batch_submit_failed",
+            error = %error,
+            "failed to persist or submit upload batch"
+        );
     }
 }
 
@@ -130,12 +139,14 @@ pub trait EventIngestor: Send + Sync {
 /// a periodic flush task behind a single async mutex.
 pub struct SharedUploadBatcher<U, A> {
     inner: AsyncMutex<UploadBatcher<U, A>>,
+    flush_gate: AsyncMutex<()>,
 }
 
 impl<U, A> SharedUploadBatcher<U, A> {
     pub fn new(batcher: UploadBatcher<U, A>) -> Self {
         Self {
             inner: AsyncMutex::new(batcher),
+            flush_gate: AsyncMutex::new(()),
         }
     }
 }
@@ -178,6 +189,7 @@ where
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
         Box::pin(async move {
+            let _flush_gate = self.flush_gate.lock().await;
             let (batch, coordinator) = {
                 let mut batcher = self.inner.lock().await;
                 (
@@ -186,10 +198,13 @@ where
                 )
             };
             let flushed = if let Some(batch) = batch {
-                if let Err(error) =
-                    UploadBatcher::<U, A>::submit_with(&coordinator, batch.clone()).await
-                {
+                if let Err(error) = coordinator.persist_batch(&batch) {
+                    UploadBatcher::<U, A>::log_submit_failure(&error);
                     self.inner.lock().await.assembler.requeue(batch);
+                    return Err(error);
+                }
+                if let Err(error) = coordinator.upload_batch(batch).await {
+                    UploadBatcher::<U, A>::log_submit_failure(&error);
                     return Err(error);
                 }
                 true

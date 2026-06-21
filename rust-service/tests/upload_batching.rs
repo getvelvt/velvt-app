@@ -71,14 +71,24 @@ impl RecordingUploader {
 
 struct FailFirstInsertRepo {
     inner: Arc<dyn UploadBatchRepo>,
-    failed: std::sync::atomic::AtomicBool,
+    fail_insert: std::sync::atomic::AtomicBool,
+    fail_mark_sent: std::sync::atomic::AtomicBool,
 }
 
 impl FailFirstInsertRepo {
     fn new(inner: Arc<dyn UploadBatchRepo>) -> Self {
         Self {
             inner,
-            failed: std::sync::atomic::AtomicBool::new(false),
+            fail_insert: std::sync::atomic::AtomicBool::new(true),
+            fail_mark_sent: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn with_first_mark_sent_failure(inner: Arc<dyn UploadBatchRepo>) -> Self {
+        Self {
+            inner,
+            fail_insert: std::sync::atomic::AtomicBool::new(false),
+            fail_mark_sent: std::sync::atomic::AtomicBool::new(true),
         }
     }
 }
@@ -93,7 +103,10 @@ impl UploadBatchRepo for FailFirstInsertRepo {
         batch: &NewUploadBatch,
         events: &[BatchEvent],
     ) -> Result<(), PersistenceError> {
-        if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .fail_insert
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
             return Err(PersistenceError::NotFound {
                 entity: "upload_batch",
             });
@@ -102,6 +115,14 @@ impl UploadBatchRepo for FailFirstInsertRepo {
     }
 
     fn mark_sent(&self, batch_id: &str) -> Result<(), PersistenceError> {
+        if self
+            .fail_mark_sent
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(PersistenceError::NotFound {
+                entity: "upload_batch",
+            });
+        }
         self.inner.mark_sent(batch_id)
     }
 
@@ -1086,6 +1107,39 @@ async fn flush_now_requeues_events_after_a_persistence_failure() {
     assert!(batcher.flush_now().await.is_err());
     assert!(batcher.flush_now().await.unwrap());
     assert_eq!(inspection.upload_count(), 1);
+}
+
+#[tokio::test]
+async fn flush_now_does_not_requeue_after_persisted_batch_upload_error() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository: Arc<dyn UploadBatchRepo> = Arc::new(
+        FailFirstInsertRepo::with_first_mark_sent_failure(database.upload_batch_repo()),
+    );
+    let uploader = RecordingUploader::with_outcomes(vec![UploadOutcome::Accepted; 2]);
+    let inspection = uploader.clone();
+    let mut batcher = UploadBatcher::new(
+        BatchAssembler::new("device-1", 100, Duration::from_secs(180)),
+        UploadCoordinator::new(repository, uploader, FakePrivacyAlertSink::default()),
+    );
+    let abstraction =
+        AbstractionEngine::from_builtin_taxonomy(Arc::new(InMemoryMappingStore::default()))
+            .unwrap()
+            .process(RawEvent {
+                event_id: uuid::Uuid::new_v4(),
+                occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+                app_name: "VS Code".into(),
+                window_title: "private title".into(),
+                bundle_id: None,
+            })
+            .unwrap();
+    batcher
+        .ingest_abstracted("event-buffered", &abstraction, 5, Utc::now())
+        .await
+        .unwrap();
+
+    assert!(batcher.flush_now().await.is_err());
+    assert!(!batcher.flush_now().await.unwrap());
+    assert_eq!(inspection.batches().len(), 2);
 }
 
 #[tokio::test]

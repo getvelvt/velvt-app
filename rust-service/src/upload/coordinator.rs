@@ -189,6 +189,11 @@ where
     }
 
     pub async fn submit_batch(&self, batch: BatchPayload) -> Result<(), CoordinatorError> {
+        self.persist_batch(&batch)?;
+        self.upload_batch(batch).await
+    }
+
+    pub(crate) fn persist_batch(&self, batch: &BatchPayload) -> Result<(), CoordinatorError> {
         let events = batch
             .events
             .iter()
@@ -208,7 +213,7 @@ where
             },
             &events,
         )?;
-        self.upload_batch(batch).await
+        Ok(())
     }
 
     pub async fn resume_pending(

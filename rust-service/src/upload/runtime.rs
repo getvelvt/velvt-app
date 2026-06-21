@@ -6,11 +6,12 @@ use crate::abstraction::AbstractedEvent;
 use chrono::{DateTime, Utc};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 
 pub struct UploadBatcher<U, A> {
     assembler: BatchAssembler,
-    coordinator: UploadCoordinator<U, A>,
+    coordinator: Arc<UploadCoordinator<U, A>>,
 }
 
 impl<U, A> UploadBatcher<U, A>
@@ -21,7 +22,7 @@ where
     pub fn new(assembler: BatchAssembler, coordinator: UploadCoordinator<U, A>) -> Self {
         Self {
             assembler,
-            coordinator,
+            coordinator: Arc::new(coordinator),
         }
     }
 
@@ -65,7 +66,10 @@ where
 
     pub async fn flush_now(&mut self) -> Result<bool, CoordinatorError> {
         let flushed = if let Some(batch) = self.assembler.flush_shutdown() {
-            self.submit(batch).await?;
+            if let Err(error) = self.submit(batch.clone()).await {
+                self.assembler.requeue(batch);
+                return Err(error);
+            }
             true
         } else {
             false
@@ -77,7 +81,14 @@ where
     }
 
     async fn submit(&self, batch: super::BatchPayload) -> Result<(), CoordinatorError> {
-        if let Err(error) = self.coordinator.submit_batch(batch).await {
+        Self::submit_with(&self.coordinator, batch).await
+    }
+
+    async fn submit_with(
+        coordinator: &UploadCoordinator<U, A>,
+        batch: super::BatchPayload,
+    ) -> Result<(), CoordinatorError> {
+        if let Err(error) = coordinator.submit_batch(batch).await {
             tracing::error!(
                 error_code = "upload_batch_submit_failed",
                 error = %error,
@@ -166,6 +177,29 @@ where
     fn flush_now<'a>(
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
-        Box::pin(async move { self.inner.lock().await.flush_now().await })
+        Box::pin(async move {
+            let (batch, coordinator) = {
+                let mut batcher = self.inner.lock().await;
+                (
+                    batcher.assembler.flush_shutdown(),
+                    Arc::clone(&batcher.coordinator),
+                )
+            };
+            let flushed = if let Some(batch) = batch {
+                if let Err(error) =
+                    UploadBatcher::<U, A>::submit_with(&coordinator, batch.clone()).await
+                {
+                    self.inner.lock().await.assembler.requeue(batch);
+                    return Err(error);
+                }
+                true
+            } else {
+                false
+            };
+            coordinator
+                .resume_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
+                .await?;
+            Ok(flushed)
+        })
     }
 }

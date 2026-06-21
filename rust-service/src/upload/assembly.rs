@@ -61,6 +61,19 @@ impl BatchAssembler {
         self.take_batch()
     }
 
+    pub fn requeue(&mut self, mut batch: BatchPayload) {
+        if batch.events.is_empty() {
+            return;
+        }
+        let reopened_at = batch.events.iter().map(|event| event.occurred_at).min();
+        batch.events.append(&mut self.events);
+        self.events = batch.events;
+        self.opened_at = match (self.opened_at, reopened_at) {
+            (Some(current), Some(reopened)) => Some(current.min(reopened)),
+            (current, reopened) => current.or(reopened),
+        };
+    }
+
     fn take_batch(&mut self) -> Option<BatchPayload> {
         if self.events.is_empty() {
             return None;

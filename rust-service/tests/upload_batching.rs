@@ -1,4 +1,4 @@
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde_json::Value;
 use std::time::Duration;
 use std::{
@@ -10,12 +10,13 @@ use std::{
 use velvt_service::abstraction::{AbstractionEngine, InMemoryMappingStore};
 use velvt_service::auth::{AuthError, HttpClient, HttpRequest, HttpResponse};
 use velvt_service::persistence::{
-    BatchEvent, NewUploadBatch, SqlitePersistence, UploadBatchStatus,
+    BatchEvent, NewUploadBatch, PersistenceError, SqlitePersistence, UploadBatch, UploadBatchRepo,
+    UploadBatchStatus,
 };
 use velvt_service::upload::{
     BatchAssembler, BatchEventPayload, BatchPayload, BatchRetentionPolicy, BatchUploader,
-    FakeBatchUploader, FakePrivacyAlertSink, HostBackoff, HttpBatchUploader, IpcPrivacyAlertSink,
-    UploadBatcher, UploadCoordinator, UploadOutcome,
+    EventIngestor, FakeBatchUploader, FakePrivacyAlertSink, HostBackoff, HttpBatchUploader,
+    IpcPrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator, UploadOutcome,
 };
 use velvt_shared_types::RawEvent;
 
@@ -47,6 +48,129 @@ struct InFlightUploader {
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     uploads: Arc<Mutex<usize>>,
+}
+
+struct FailFirstInsertRepo {
+    inner: Arc<dyn UploadBatchRepo>,
+    failed: std::sync::atomic::AtomicBool,
+}
+
+impl FailFirstInsertRepo {
+    fn new(inner: Arc<dyn UploadBatchRepo>) -> Self {
+        Self {
+            inner,
+            failed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl UploadBatchRepo for FailFirstInsertRepo {
+    fn insert_batch(&self, batch: &NewUploadBatch) -> Result<(), PersistenceError> {
+        self.inner.insert_batch(batch)
+    }
+
+    fn insert_batch_with_events(
+        &self,
+        batch: &NewUploadBatch,
+        events: &[BatchEvent],
+    ) -> Result<(), PersistenceError> {
+        if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Err(PersistenceError::NotFound {
+                entity: "upload_batch",
+            });
+        }
+        self.inner.insert_batch_with_events(batch, events)
+    }
+
+    fn mark_sent(&self, batch_id: &str) -> Result<(), PersistenceError> {
+        self.inner.mark_sent(batch_id)
+    }
+
+    fn pending_batches(&self) -> Result<Vec<UploadBatch>, PersistenceError> {
+        self.inner.pending_batches()
+    }
+
+    fn resumable_batches(&self, now: DateTime<Utc>) -> Result<Vec<UploadBatch>, PersistenceError> {
+        self.inner.resumable_batches(now)
+    }
+
+    fn mark_failed(
+        &self,
+        batch_id: &str,
+        next_attempt_at: DateTime<Utc>,
+        error_code: &str,
+    ) -> Result<(), PersistenceError> {
+        self.inner
+            .mark_failed(batch_id, next_attempt_at, error_code)
+    }
+
+    fn mark_pending_retry(
+        &self,
+        batch_id: &str,
+        next_attempt_at: DateTime<Utc>,
+        error_code: &str,
+    ) -> Result<(), PersistenceError> {
+        self.inner
+            .mark_pending_retry(batch_id, next_attempt_at, error_code)
+    }
+
+    fn mark_rejected(&self, batch_id: &str, error_code: &str) -> Result<(), PersistenceError> {
+        self.inner.mark_rejected(batch_id, error_code)
+    }
+
+    fn discard_batch(&self, batch_id: &str) -> Result<(), PersistenceError> {
+        self.inner.discard_batch(batch_id)
+    }
+
+    fn batch_status(&self, batch_id: &str) -> Result<UploadBatchStatus, PersistenceError> {
+        self.inner.batch_status(batch_id)
+    }
+
+    fn host_backoff_attempt(&self, host: &str) -> Result<u32, PersistenceError> {
+        self.inner.host_backoff_attempt(host)
+    }
+
+    fn host_backoff_until(&self, host: &str) -> Result<Option<DateTime<Utc>>, PersistenceError> {
+        self.inner.host_backoff_until(host)
+    }
+
+    fn set_host_backoff(
+        &self,
+        host: &str,
+        attempt_count: u32,
+        next_attempt_at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        self.inner
+            .set_host_backoff(host, attempt_count, next_attempt_at)
+    }
+
+    fn clear_host_backoff(&self, host: &str) -> Result<(), PersistenceError> {
+        self.inner.clear_host_backoff(host)
+    }
+
+    fn add_event_to_batch(
+        &self,
+        batch_id: &str,
+        event: &BatchEvent,
+    ) -> Result<(), PersistenceError> {
+        self.inner.add_event_to_batch(batch_id, event)
+    }
+
+    fn delete_sent_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        self.inner.delete_sent_batch(cutoff, limit)
+    }
+
+    fn delete_rejected_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        self.inner.delete_rejected_batch(cutoff, limit)
+    }
 }
 
 impl BatchUploader for InFlightUploader {
@@ -882,4 +1006,103 @@ async fn upload_batcher_flush_now_drains_memory_and_resumes_ready_batches() {
         UploadBatchStatus::Sent
     );
     assert!(repository.pending_batches().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn flush_now_requeues_events_after_a_persistence_failure() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository: Arc<dyn UploadBatchRepo> =
+        Arc::new(FailFirstInsertRepo::new(database.upload_batch_repo()));
+    let uploader = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]);
+    let inspection = uploader.clone();
+    let coordinator = UploadCoordinator::new(repository, uploader, FakePrivacyAlertSink::default());
+    let mut batcher = UploadBatcher::new(
+        BatchAssembler::new("device-1", 100, Duration::from_secs(180)),
+        coordinator,
+    );
+    let abstraction =
+        AbstractionEngine::from_builtin_taxonomy(Arc::new(InMemoryMappingStore::default()))
+            .unwrap()
+            .process(RawEvent {
+                event_id: uuid::Uuid::new_v4(),
+                occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+                app_name: "VS Code".into(),
+                window_title: "private title".into(),
+                bundle_id: None,
+            })
+            .unwrap();
+
+    batcher
+        .ingest_abstracted(
+            "event-buffered",
+            &abstraction,
+            5,
+            Utc.timestamp_opt(10, 0).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(batcher.flush_now().await.is_err());
+    assert!(batcher.flush_now().await.unwrap());
+    assert_eq!(inspection.upload_count(), 1);
+}
+
+#[tokio::test]
+async fn shared_flush_now_does_not_block_ingestion_during_persisted_replay() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository = database.upload_batch_repo();
+    repository
+        .insert_batch_with_events(
+            &NewUploadBatch {
+                batch_id: "batch-pending".into(),
+            },
+            &[BatchEvent {
+                event_id: "event-pending".into(),
+                stable_id: "stable-pending".into(),
+                label: "document:edit".into(),
+                category: "FOCUS_WORK".into(),
+                taxonomy_version: "mvp-1".into(),
+                occurred_at: Utc.timestamp_opt(9, 0).unwrap(),
+                duration_seconds: 0,
+            }],
+        )
+        .unwrap();
+    let uploader = InFlightUploader {
+        started: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        uploads: Arc::new(Mutex::new(0)),
+    };
+    let started = Arc::clone(&uploader.started);
+    let release = Arc::clone(&uploader.release);
+    let shared = Arc::new(SharedUploadBatcher::new(UploadBatcher::new(
+        BatchAssembler::new("device-1", 100, Duration::from_secs(180)),
+        UploadCoordinator::new(repository, uploader, FakePrivacyAlertSink::default()),
+    )));
+    let abstraction =
+        AbstractionEngine::from_builtin_taxonomy(Arc::new(InMemoryMappingStore::default()))
+            .unwrap()
+            .process(RawEvent {
+                event_id: uuid::Uuid::new_v4(),
+                occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+                app_name: "VS Code".into(),
+                window_title: "private title".into(),
+                bundle_id: None,
+            })
+            .unwrap();
+    let flush_task = tokio::spawn({
+        let shared = Arc::clone(&shared);
+        async move { shared.flush_now().await }
+    });
+
+    started.notified().await;
+    let ingestion = tokio::time::timeout(
+        Duration::from_millis(100),
+        shared.ingest("event-buffered".into(), &abstraction, 5, Utc::now()),
+    )
+    .await;
+    release.notify_one();
+    flush_task.await.unwrap().unwrap();
+
+    assert!(ingestion.is_ok());
+    assert!(ingestion.unwrap().is_ok());
 }

@@ -186,6 +186,18 @@ impl MessageRouter for R7Router {
                 self.menu_status.snapshot().await,
             ))),
 
+            ClientMessage::FlushUploadQueue(_) => {
+                if self.ingestor.flush_now().await.is_err() {
+                    tracing::error!(
+                        error_code = "upload_flush_now_failed",
+                        "failed to flush the upload queue"
+                    );
+                }
+                Ok(Some(ServerMessage::MenuStatus(
+                    self.menu_status.snapshot().await,
+                )))
+            }
+
             ClientMessage::RequestLatestInsight(req) => {
                 let result = self.cache.daily_insight(req.date).await;
                 let response = match result {

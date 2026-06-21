@@ -63,6 +63,19 @@ where
         Ok(true)
     }
 
+    pub async fn flush_now(&mut self) -> Result<bool, CoordinatorError> {
+        let flushed = if let Some(batch) = self.assembler.flush_shutdown() {
+            self.submit(batch).await?;
+            true
+        } else {
+            false
+        };
+        self.coordinator
+            .resume_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
+            .await?;
+        Ok(flushed)
+    }
+
     async fn submit(&self, batch: super::BatchPayload) -> Result<(), CoordinatorError> {
         if let Err(error) = self.coordinator.submit_batch(batch).await {
             tracing::error!(
@@ -94,6 +107,10 @@ pub trait EventIngestor: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>>;
 
     fn flush_shutdown<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>>;
+
+    fn flush_now<'a>(
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>>;
 }
@@ -144,5 +161,11 @@ where
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
         Box::pin(async move { self.inner.lock().await.flush_shutdown().await })
+    }
+
+    fn flush_now<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
+        Box::pin(async move { self.inner.lock().await.flush_now().await })
     }
 }

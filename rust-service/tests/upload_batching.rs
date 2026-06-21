@@ -821,3 +821,65 @@ async fn upload_batcher_accumulates_abstracted_events_and_flushes_on_count() {
 
     assert_eq!(repository.pending_batches().unwrap().len(), 0);
 }
+
+#[tokio::test]
+async fn upload_batcher_flush_now_drains_memory_and_resumes_ready_batches() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository = database.upload_batch_repo();
+    repository
+        .insert_batch_with_events(
+            &NewUploadBatch {
+                batch_id: "batch-pending".into(),
+            },
+            &[BatchEvent {
+                event_id: "event-pending".into(),
+                stable_id: "stable-pending".into(),
+                label: "document:edit".into(),
+                category: "FOCUS_WORK".into(),
+                taxonomy_version: "mvp-1".into(),
+                occurred_at: Utc.timestamp_opt(9, 0).unwrap(),
+                duration_seconds: 0,
+            }],
+        )
+        .unwrap();
+    let uploader = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted; 2]);
+    let inspection = uploader.clone();
+    let coordinator = UploadCoordinator::new(
+        repository.clone(),
+        uploader,
+        FakePrivacyAlertSink::default(),
+    );
+    let mut batcher = UploadBatcher::new(
+        BatchAssembler::new("device-1", 100, Duration::from_secs(180)),
+        coordinator,
+    );
+    let abstraction =
+        AbstractionEngine::from_builtin_taxonomy(Arc::new(InMemoryMappingStore::default()))
+            .unwrap()
+            .process(RawEvent {
+                event_id: uuid::Uuid::new_v4(),
+                occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+                app_name: "VS Code".into(),
+                window_title: "private title".into(),
+                bundle_id: None,
+            })
+            .unwrap();
+
+    batcher
+        .ingest_abstracted(
+            "event-buffered",
+            &abstraction,
+            5,
+            Utc.timestamp_opt(10, 0).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(batcher.flush_now().await.unwrap());
+    assert_eq!(inspection.upload_count(), 2);
+    assert_eq!(
+        repository.batch_status("batch-pending").unwrap(),
+        UploadBatchStatus::Sent
+    );
+    assert!(repository.pending_batches().unwrap().is_empty());
+}

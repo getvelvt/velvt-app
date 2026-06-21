@@ -15,7 +15,10 @@ use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 use std::time::Duration as StdDuration;
 use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -26,16 +29,17 @@ use velvt_service::auth::{
 };
 use velvt_service::delivery::{FakeCacheManager, PushAdapter, PushQueue};
 use velvt_service::ipc::{
-    serve_connection_with_push_queue, serve_connection_with_push_queue_and_shutdown, R7Router,
+    serve_connection_with_push_queue, serve_connection_with_push_queue_and_shutdown, MessageRouter,
+    R7Router,
 };
 use velvt_service::persistence::SqlitePersistence;
 use velvt_service::upload::{
-    BatchAssembler, FakeBatchUploader, FakePrivacyAlertSink, IpcPrivacyAlertSink,
-    SharedUploadBatcher, UploadBatcher, UploadCoordinator, UploadOutcome,
+    BatchAssembler, CoordinatorError, EventIngestor, FakeBatchUploader, FakePrivacyAlertSink,
+    IpcPrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator, UploadOutcome,
 };
 use velvt_shared_types::{
-    Acknowledged, ClientHello, ClientMessage, PrivacyViolationAlert, RawEvent, RawEventAck,
-    RawEventStatus, ServerMessage, ShuttingDown, PROTOCOL_VERSION,
+    Acknowledged, ClientHello, ClientMessage, FlushUploadQueue, PrivacyViolationAlert, RawEvent,
+    RawEventAck, RawEventStatus, ServerMessage, ShuttingDown, PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -120,6 +124,43 @@ fn build_router(
     )
 }
 
+#[derive(Default)]
+struct RecordingIngestor {
+    flush_now_calls: AtomicUsize,
+}
+
+impl EventIngestor for RecordingIngestor {
+    fn ingest<'a>(
+        &'a self,
+        _event_id: String,
+        _event: &'a velvt_service::abstraction::AbstractedEvent,
+        _duration_seconds: u64,
+        _now: chrono::DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CoordinatorError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn flush_due<'a>(
+        &'a self,
+        _now: chrono::DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+
+    fn flush_shutdown<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+
+    fn flush_now<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
+        self.flush_now_calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(false) })
+    }
+}
+
 /// Minimal fake `HttpClient` shared by the paths that need an unauthenticated
 /// or device-authenticated transport (account auth relay, device auth).
 #[derive(Clone, Default)]
@@ -176,6 +217,27 @@ fn token_pair(expires_in: ChronoDuration, access: &str, refresh: &str) -> TokenP
         RedactedString::new(refresh),
         Utc::now() + expires_in,
     )
+}
+
+#[tokio::test]
+async fn flush_upload_queue_uses_shared_ingestor_and_returns_menu_status() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let ingestor = Arc::new(RecordingIngestor::default());
+    let router = build_router(
+        Arc::new(FakeCacheManager::new()),
+        &persistence,
+        Arc::clone(&ingestor) as Arc<dyn EventIngestor>,
+        Arc::new(FakeHttp::default()),
+        Arc::new(FakeHttp::default()),
+    );
+
+    let response = router
+        .route(ClientMessage::FlushUploadQueue(FlushUploadQueue {}))
+        .await
+        .unwrap();
+
+    assert!(matches!(response, Some(ServerMessage::MenuStatus(_))));
+    assert_eq!(ingestor.flush_now_calls.load(Ordering::SeqCst), 1);
 }
 
 // ---------------------------------------------------------------------------

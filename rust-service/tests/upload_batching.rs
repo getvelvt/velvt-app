@@ -50,6 +50,25 @@ struct InFlightUploader {
     uploads: Arc<Mutex<usize>>,
 }
 
+#[derive(Clone)]
+struct RecordingUploader {
+    outcomes: Arc<Mutex<VecDeque<UploadOutcome>>>,
+    batches: Arc<Mutex<Vec<BatchPayload>>>,
+}
+
+impl RecordingUploader {
+    fn with_outcomes(outcomes: Vec<UploadOutcome>) -> Self {
+        Self {
+            outcomes: Arc::new(Mutex::new(outcomes.into())),
+            batches: Arc::default(),
+        }
+    }
+
+    fn batches(&self) -> Vec<BatchPayload> {
+        self.batches.lock().unwrap().clone()
+    }
+}
+
 struct FailFirstInsertRepo {
     inner: Arc<dyn UploadBatchRepo>,
     failed: std::sync::atomic::AtomicBool,
@@ -189,6 +208,28 @@ impl BatchUploader for InFlightUploader {
             self.started.notify_one();
             self.release.notified().await;
             Ok(UploadOutcome::Accepted)
+        })
+    }
+}
+
+impl BatchUploader for RecordingUploader {
+    fn upload<'a>(
+        &'a self,
+        batch: &'a BatchPayload,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<UploadOutcome, velvt_service::upload::BatchUploadError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.batches.lock().unwrap().push(batch.clone());
+            self.outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or(velvt_service::upload::BatchUploadError::Transport)
         })
     }
 }
@@ -1045,6 +1086,65 @@ async fn flush_now_requeues_events_after_a_persistence_failure() {
     assert!(batcher.flush_now().await.is_err());
     assert!(batcher.flush_now().await.unwrap());
     assert_eq!(inspection.upload_count(), 1);
+}
+
+#[tokio::test]
+async fn flush_now_requeues_multiple_events_ahead_of_later_ingestion() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository: Arc<dyn UploadBatchRepo> =
+        Arc::new(FailFirstInsertRepo::new(database.upload_batch_repo()));
+    let uploader = RecordingUploader::with_outcomes(vec![UploadOutcome::Accepted]);
+    let inspection = uploader.clone();
+    let shared = SharedUploadBatcher::new(UploadBatcher::new(
+        BatchAssembler::new("device-1", 100, Duration::from_secs(180)),
+        UploadCoordinator::new(repository, uploader, FakePrivacyAlertSink::default()),
+    ));
+    let abstraction =
+        AbstractionEngine::from_builtin_taxonomy(Arc::new(InMemoryMappingStore::default()))
+            .unwrap()
+            .process(RawEvent {
+                event_id: uuid::Uuid::new_v4(),
+                occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+                app_name: "VS Code".into(),
+                window_title: "private title".into(),
+                bundle_id: None,
+            })
+            .unwrap();
+
+    for (event_id, occurred_at) in [("event-first", 10), ("event-second", 11)] {
+        shared
+            .ingest(
+                event_id.into(),
+                &abstraction,
+                5,
+                Utc.timestamp_opt(occurred_at, 0).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    assert!(shared.flush_now().await.is_err());
+    shared
+        .ingest(
+            "event-later".into(),
+            &abstraction,
+            5,
+            Utc.timestamp_opt(12, 0).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(shared.flush_now().await.unwrap());
+    let uploads = inspection.batches();
+    assert_eq!(uploads.len(), 1);
+    assert_eq!(
+        uploads[0]
+            .events
+            .iter()
+            .map(|event| event.event_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["event-first", "event-second", "event-later"]
+    );
 }
 
 #[tokio::test]

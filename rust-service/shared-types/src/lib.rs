@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,6 +32,8 @@ pub enum ClientMessage {
     DeleteAccount(DeleteAccount),
     /// Swift requests privacy-safe local/cloud status for the menu popover.
     RequestMenuStatus(RequestMenuStatus),
+    /// Swift requests that the service flush its upload queue.
+    FlushUploadQueue(FlushUploadQueue),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -299,6 +301,11 @@ pub struct RequestLatestHistory {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestMenuStatus {}
+
+/// Swift requests an explicit upload queue flush.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlushUploadQueue {}
 
 /// One abstracted event waiting in the upload queue. Raw source fields are
 /// intentionally absent from this IPC payload.

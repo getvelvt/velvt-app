@@ -13,6 +13,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case logOut
     case deleteAccount
     case requestMenuStatus
+    case flushUploadQueue
 
     public init(from decoder: Decoder) throws {
         let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
@@ -39,6 +40,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .deleteAccount
         case "request_menu_status":
             self = .requestMenuStatus
+        case "flush_upload_queue":
+            self = .flushUploadQueue
         default:
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
         }
@@ -76,6 +79,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
         case .requestMenuStatus:
             try envelope.encode("request_menu_status", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case .flushUploadQueue:
+            try envelope.encode("flush_upload_queue", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
         }
     }

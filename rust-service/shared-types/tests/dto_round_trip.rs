@@ -48,6 +48,17 @@ fn client_message_variants_round_trip() {
 }
 
 #[test]
+fn flush_upload_queue_uses_empty_payload_and_round_trips() {
+    let message = ClientMessage::FlushUploadQueue(FlushUploadQueue {});
+
+    assert_eq!(
+        serde_json::to_value(&message).unwrap(),
+        json!({"type": "flush_upload_queue", "payload": {}})
+    );
+    assert_round_trip(message);
+}
+
+#[test]
 fn server_message_variants_round_trip() {
     let messages = [
         ServerMessage::ServerHello(ServerHello {

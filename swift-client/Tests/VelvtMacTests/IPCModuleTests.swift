@@ -92,6 +92,21 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertEqual(payload["date"] as? String, "2026-06-20")
     }
 
+    func testFlushUploadQueueUsesEmptyProtocolWireShape() throws {
+        let data = try encoder.encode(ClientMessage.flushUploadQueue)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
+
+        XCTAssertEqual(object["type"] as? String, "flush_upload_queue")
+        XCTAssertTrue(payload.isEmpty)
+    }
+
+    func testFlushUploadQueueRoundTrips() throws {
+        let message = ClientMessage.flushUploadQueue
+
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: encoder.encode(message)), message)
+    }
+
     func testCacheEmptyRoundTrips() throws {
         let message = ServerMessage.cacheEmpty(CacheEmpty(payloadType: "insight_payload"))
         XCTAssertEqual(try decoder.decode(ServerMessage.self, from: encoder.encode(message)), message)

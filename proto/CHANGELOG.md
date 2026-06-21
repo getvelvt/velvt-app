@@ -1,5 +1,11 @@
 # IPC Protocol Changelog
 
+## Version 9 - 2026-06-21
+
+- Added `flush_upload_queue`, an empty client request for an explicit upload
+  queue flush. This version defines the wire contract only; service routing and
+  upload behavior are introduced separately.
+
 ## Version 8 - 2026-06-20
 
 - Added `request_menu_status` / `menu_status` for privacy-safe menu settings.

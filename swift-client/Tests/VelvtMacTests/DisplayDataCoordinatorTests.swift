@@ -97,6 +97,28 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         }
     }
 
+    func testEmptyInsightTransitionsToPopulatedWithNotGeneratedAvailability() {
+        let sut = ConcreteDisplayDataCoordinator()
+
+        sut.handleCacheEmpty(CacheEmpty(payloadType: "insight_payload"))
+
+        XCTAssertEqual(sut.insightAvailability, .notGenerated)
+        if case .populated = sut.state {} else {
+            XCTFail("Expected cache-empty insight response to finish loading")
+        }
+    }
+
+    func testEmptyHistoryTransitionsToPopulatedWithNotGeneratedAvailability() {
+        let sut = ConcreteDisplayDataCoordinator()
+
+        sut.handleCacheEmpty(CacheEmpty(payloadType: "history_payload"))
+
+        XCTAssertEqual(sut.historyAvailability, .notGenerated)
+        if case .populated = sut.state {} else {
+            XCTFail("Expected cache-empty history response to finish loading")
+        }
+    }
+
     func testPopulatedStateHoldsNoDataDayCorrectly() {
         let sut = ConcreteDisplayDataCoordinator()
         let payload = HistoryPayload(days: 1, summaries: [

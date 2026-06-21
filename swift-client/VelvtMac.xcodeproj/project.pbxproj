@@ -31,6 +31,7 @@
 		9A6928BC73B9B53A90E1B4E3 /* FakeIPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */; };
 		9CDDE6FAD40B420D9DC4F3F7 /* HistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F5611EE8684F0C8736139F /* HistoryViewModel.swift */; };
 		9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist.template in Resources */ = {isa = PBXBuildFile; fileRef = 9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */; };
+		AF894F952FE76B6B0023DA87 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AF894F942FE76B6B0023DA87 /* Assets.xcassets */; };
 		A03B3DF738D28A838B7E16A5 /* ReconnectBackoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */; };
 		A1B2C3D4E5F601234567890A /* BundleConfigLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */; };
 		A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890D /* ServiceManager.swift */; };
@@ -73,6 +74,7 @@
 		9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = "../../Configs/Debug.xcconfig"; sourceTree = "<group>"; };
 		9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = "../../Configs/Release.xcconfig"; sourceTree = "<group>"; };
 		9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = "com.velvt.service.plist.template"; path = "../../Resources/com.velvt.service.plist.template"; sourceTree = "<group>"; };
+		AF894F942FE76B6B0023DA87 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BundleConfigLoader.swift; path = Config/BundleConfigLoader.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F601234567890D /* ServiceManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceManager.swift; path = Service/ServiceManager.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceUnavailableView.swift; path = UI/ServiceUnavailableView.swift; sourceTree = "<group>"; };
@@ -105,6 +107,7 @@
 				EBE03290841BF7E9688A9514 /* Products */,
 				CF4946C49B4BE1474322DE94 /* Frameworks */,
 				F43051B39D83B4CA7E178F6C /* VelvtMac */,
+				AF894F942FE76B6B0023DA87 /* Assets.xcassets */,
 			);
 			sourceTree = "<group>";
 		};
@@ -232,6 +235,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist.template in Resources */,
+				AF894F952FE76B6B0023DA87 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

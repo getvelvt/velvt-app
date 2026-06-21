@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,6 +30,8 @@ pub enum ClientMessage {
     LogOut(LogOut),
     /// Swift requests permanent account deletion.
     DeleteAccount(DeleteAccount),
+    /// Swift requests privacy-safe local/cloud status for the menu popover.
+    RequestMenuStatus(RequestMenuStatus),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -84,6 +86,8 @@ pub enum ServerMessage {
     DeviceRevoked(DeviceRevoked),
     /// A ready-to-schedule notification pushed after a fresh daily insight fetch.
     NotificationPayload(NotificationPayload),
+    /// Privacy-safe menu-bar settings data.
+    MenuStatus(MenuStatus),
 }
 
 /// Server's first message on every connection.
@@ -289,6 +293,31 @@ pub struct RequestLatestInsight {
 pub struct RequestLatestHistory {
     /// Number of days of history to return (1–30).
     pub days: u8,
+}
+
+/// Swift requests a fresh menu-bar status snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestMenuStatus {}
+
+/// One abstracted event waiting in the upload queue. Raw source fields are
+/// intentionally absent from this IPC payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueuedEventSummary {
+    pub label: String,
+    pub category: String,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Settings snapshot for the menu popover.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MenuStatus {
+    pub device_id: Option<String>,
+    pub cloud_ready: bool,
+    pub queued_event_count: u64,
+    pub queued_events: Vec<QueuedEventSummary>,
 }
 
 /// Sent when Swift requested a payload that is not yet in the cache.

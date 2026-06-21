@@ -87,7 +87,7 @@ async fn main() {
             PushAdapterAlertSink,
         };
         use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
-        use velvt_service::ipc::{R7Router, ReconnectTracker};
+        use velvt_service::ipc::{MenuStatusProvider, R7Router, ReconnectTracker};
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
             CacheRetentionTarget, RawEventRetentionTarget, RetentionScheduler,
@@ -324,7 +324,7 @@ async fn main() {
             config.retention_batch_size,
         );
         let upload_batch_target = UploadBatchRetentionTarget::new(
-            upload_batch_repo,
+            Arc::clone(&upload_batch_repo),
             config.sent_batch_retention,
             config.rejected_batch_audit_period,
             config.retention_batch_size,
@@ -352,7 +352,12 @@ async fn main() {
                 raw_event_repo,
                 Arc::clone(&shared_batcher),
                 account_service,
-            ),
+            )
+            .with_menu_status(Arc::new(MenuStatusProvider::new(
+                Arc::clone(&raw_http) as Arc<dyn HttpClient>,
+                Arc::clone(&token_store) as Arc<dyn TokenStore>,
+                Arc::clone(&upload_batch_repo),
+            ))),
         )
         .with_auth_state(auth_state.subscribe())
         .with_reconnect_tracker(reconnect_tracker, config.push_write_timeout)

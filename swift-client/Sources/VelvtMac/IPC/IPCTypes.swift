@@ -12,6 +12,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case logIn(LogInRequest)
     case logOut
     case deleteAccount
+    case requestMenuStatus
 
     public init(from decoder: Decoder) throws {
         let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
@@ -36,6 +37,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .logOut
         case "delete_account":
             self = .deleteAccount
+        case "request_menu_status":
+            self = .requestMenuStatus
         default:
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
         }
@@ -71,6 +74,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .deleteAccount:
             try envelope.encode("delete_account", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case .requestMenuStatus:
+            try envelope.encode("request_menu_status", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
 }
@@ -98,6 +104,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case deviceRevoked(DeviceRevoked)
     // Notification push (S7)
     case notificationPayload(NotificationPayload)
+    case menuStatus(MenuStatus)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
@@ -143,6 +150,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .deviceRevoked(try DeviceRevoked(from: payload))
         case "notification_payload":
             self = .notificationPayload(try NotificationPayload(from: payload))
+        case "menu_status":
+            self = .menuStatus(try MenuStatus(from: payload))
         default:
             self = .unknown(type: type)
         }
@@ -204,6 +213,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .notificationPayload(value):
             try envelope.encode("notification_payload", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .menuStatus(value):
+            try envelope.encode("menu_status", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .unknown(type):
             try envelope.encode(type, forKey: .type)
@@ -571,6 +583,35 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(state, forKey: .state)
         try container.encodeIfPresent(reason, forKey: .reason)
+    }
+}
+
+/// Privacy-safe queued event metadata for the menu-bar settings UI.
+public struct QueuedEventSummary: Codable, Equatable, Sendable, Identifiable {
+    public let label: String
+    public let category: String
+    public let occurredAt: Date
+
+    public var id: String { "\(label)-\(category)-\(occurredAt.timeIntervalSince1970)" }
+
+    private enum CodingKeys: String, CodingKey {
+        case label, category
+        case occurredAt = "occurred_at"
+    }
+}
+
+/// Snapshot returned by the Rust privacy boundary for the settings popover.
+public struct MenuStatus: Codable, Equatable, Sendable {
+    public let deviceID: String?
+    public let cloudReady: Bool
+    public let queuedEventCount: Int
+    public let queuedEvents: [QueuedEventSummary]
+
+    private enum CodingKeys: String, CodingKey {
+        case deviceID = "device_id"
+        case cloudReady = "cloud_ready"
+        case queuedEventCount = "queued_event_count"
+        case queuedEvents = "queued_events"
     }
 }
 

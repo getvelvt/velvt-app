@@ -61,6 +61,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::NeedsReauth(_) => "needs_reauth",
         ServerMessage::DeviceRevoked(_) => "device_revoked",
         ServerMessage::NotificationPayload(_) => "notification_payload",
+        ServerMessage::MenuStatus(_) => "menu_status",
     }
 }
 

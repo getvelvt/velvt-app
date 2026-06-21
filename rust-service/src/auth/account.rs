@@ -13,7 +13,9 @@
 //! persisted), using that access token only for the lifetime of the single
 //! `/v1/devices` call. See [`AccountAuthService::ensure_device_registered`].
 
-use super::{AuthState, AuthStateMachine, HttpClient, HttpRequest, RedactedString, TokenPair, TokenStore};
+use super::{
+    AuthState, AuthStateMachine, HttpClient, HttpRequest, RedactedString, TokenPair, TokenStore,
+};
 use std::sync::Arc;
 use velvt_shared_types::{
     AccountDeletionAccepted, AuthFailure, AuthFailureCode, AuthSuccess, ErrorResponse,
@@ -80,7 +82,9 @@ impl AccountAuthService {
                     success.expires_at,
                 );
                 if self.token_store.store_pair(tokens).is_ok() {
-                    let _ = self.auth_state.transition(AuthState::Authenticated { device_id });
+                    let _ = self
+                        .auth_state
+                        .transition(AuthState::Authenticated { device_id });
                 }
                 return;
             }

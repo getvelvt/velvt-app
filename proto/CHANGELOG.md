@@ -1,5 +1,9 @@
 # IPC Protocol Changelog
 
+## Version 8 - 2026-06-20
+
+- Added `request_menu_status` / `menu_status` for privacy-safe menu settings.
+
 ## Version 7 - 2026-06-16
 
 - Added `notification_payload` server message: a ready-to-schedule

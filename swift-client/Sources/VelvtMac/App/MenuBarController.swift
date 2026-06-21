@@ -135,7 +135,11 @@ public final class MenuBarController: NSObject {
 
     public init(
         presentation: PermissionPresentationModel,
+        permissionManager: (any PermissionManagerProtocol)? = nil,
         displayCoordinator: ConcreteDisplayDataCoordinator,
+        accountStateManager: AccountStateManager? = nil,
+        ipcClient: (any IPCClientProtocol)? = nil,
+        menuStatusViewModel: MenuStatusViewModel? = nil,
         connectionStatus: AnyPublisher<ConnectionStatus, Never> = Just(.disconnected).eraseToAnyPublisher(),
         activateApp: @escaping @MainActor () -> Void = {
             NSApp.unhide(nil)
@@ -155,8 +159,12 @@ public final class MenuBarController: NSObject {
         popover.contentViewController = NSHostingController(
             rootView: MenuBarPopoverView(
                 presentation: presentation,
+                permissionManager: permissionManager,
                 coordinator: displayCoordinator,
                 serviceConnectionStatus: serviceConnectionStatus,
+                accountStateManager: accountStateManager,
+                ipcClient: ipcClient,
+                menuStatusViewModel: menuStatusViewModel,
                 onEscape: { [weak self] in self?.closePopover() }
             )
         )
@@ -245,12 +253,8 @@ public final class MenuBarController: NSObject {
     private static let iconConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
 
     private func applyIcon(for state: MenuBarState) {
-        let symbolName = MenuBarIconProvider.symbolName(for: state)
         let description = MenuBarIconProvider.accessibilityDescription(for: state)
-        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)?
-            .withSymbolConfiguration(Self.iconConfiguration)
-        // Template rendering is required for automatic light/dark adaptation.
-        image?.isTemplate = true
-        statusItem?.button?.image = image
+        statusItem?.button?.image = NSImage(named: "VelvtMenuBarIcon")
+        statusItem?.button?.image?.isTemplate = true
     }
 }

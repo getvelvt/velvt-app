@@ -26,20 +26,9 @@ public struct VelvtPopoverContentView: View {
                     .padding(.bottom, 8)
 
             case .populated(let insightVM, let historyVM):
-                if coordinator.insightAvailability == .notGenerated {
-                    Label("Not generated yet", systemImage: "sparkles")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 16)
-                } else {
-                    InsightCardView(viewModel: insightVM)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
-                }
+                insightSection(viewModel: insightVM)
                 sectionDivider
-                HistoryListView(viewModel: historyVM)
-                    .padding(.bottom, 8)
+                historySection(viewModel: historyVM)
 
             case .error(let message):
                 InsightCardSkeletonView()
@@ -59,6 +48,51 @@ public struct VelvtPopoverContentView: View {
         Divider()
             .opacity(0.15)
             .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func insightSection(viewModel: InsightViewModel) -> some View {
+        switch coordinator.insightAvailability {
+        case .available:
+            InsightCardView(viewModel: viewModel)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+        case .notGenerated:
+            EmptyDeliveryState(text: "No daily insight generated yet", systemImage: "sparkles")
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+        case .loading:
+            InsightCardSkeletonView()
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+        }
+    }
+
+    @ViewBuilder
+    private func historySection(viewModel: HistoryViewModel) -> some View {
+        switch coordinator.historyAvailability {
+        case .available:
+            HistoryListView(viewModel: viewModel)
+                .padding(.bottom, 8)
+        case .notGenerated:
+            EmptyDeliveryState(text: "No daily history generated yet", systemImage: "calendar")
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+        case .loading:
+            HistorySkeletonView()
+                .padding(.bottom, 8)
+        }
+    }
+}
+
+struct EmptyDeliveryState: View {
+    let text: String
+    let systemImage: String
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 }
 

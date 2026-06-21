@@ -1,12 +1,15 @@
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use chrono::Utc;
-use velvt_shared_types::{CacheEmpty, ClientMessage, RawEventAck, RawEventStatus, ServerMessage};
+use velvt_shared_types::{
+    CacheEmpty, ClientMessage, MenuStatus, QueuedEventSummary, RawEventAck, RawEventStatus,
+    ServerMessage,
+};
 
 use crate::abstraction::AbstractionEngine;
-use crate::auth::AccountAuthService;
+use crate::auth::{AccountAuthService, HttpClient, HttpRequest, TokenStore};
 use crate::delivery::{shaper, CacheManager};
-use crate::persistence::{RawEventEntry, RawEventRepo};
+use crate::persistence::{RawEventEntry, RawEventRepo, UploadBatchRepo};
 use crate::upload::EventIngestor;
 
 use super::IpcError;
@@ -24,6 +27,76 @@ pub trait MessageRouter {
         &self,
         message: ClientMessage,
     ) -> impl std::future::Future<Output = Result<Option<ServerMessage>, IpcError>> + Send;
+}
+
+pub trait MenuStatusProviding: Send + Sync {
+    fn snapshot<'a>(&'a self) -> Pin<Box<dyn Future<Output = MenuStatus> + Send + 'a>>;
+}
+
+pub struct MenuStatusProvider {
+    http: Arc<dyn HttpClient>,
+    tokens: Arc<dyn TokenStore>,
+    batches: Arc<dyn UploadBatchRepo>,
+}
+
+impl MenuStatusProvider {
+    pub fn new(
+        http: Arc<dyn HttpClient>,
+        tokens: Arc<dyn TokenStore>,
+        batches: Arc<dyn UploadBatchRepo>,
+    ) -> Self {
+        Self {
+            http,
+            tokens,
+            batches,
+        }
+    }
+}
+
+impl MenuStatusProviding for MenuStatusProvider {
+    fn snapshot<'a>(&'a self) -> Pin<Box<dyn Future<Output = MenuStatus> + Send + 'a>> {
+        Box::pin(async move {
+            let cloud_ready = matches!(self.http.send(HttpRequest::get("/v1/ready")).await, Ok(response) if response.status / 100 == 2 && response.raw_body.as_ref().and_then(|body| body.get("status")).and_then(|value| value.as_str()) == Some("ready"));
+            let mut events: Vec<_> = self
+                .batches
+                .pending_batches()
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|batch| batch.events)
+                .collect();
+            events.sort_by_key(|event| std::cmp::Reverse(event.occurred_at));
+            let queued_event_count = events.len() as u64;
+            let queued_events = events
+                .into_iter()
+                .take(10)
+                .map(|event| QueuedEventSummary {
+                    label: event.label,
+                    category: event.category,
+                    occurred_at: event.occurred_at,
+                })
+                .collect();
+            MenuStatus {
+                device_id: self.tokens.load_device_id().ok().flatten(),
+                cloud_ready,
+                queued_event_count,
+                queued_events,
+            }
+        })
+    }
+}
+
+struct EmptyMenuStatusProvider;
+impl MenuStatusProviding for EmptyMenuStatusProvider {
+    fn snapshot<'a>(&'a self) -> Pin<Box<dyn Future<Output = MenuStatus> + Send + 'a>> {
+        Box::pin(async {
+            MenuStatus {
+                device_id: None,
+                cloud_ready: false,
+                queued_event_count: 0,
+                queued_events: vec![],
+            }
+        })
+    }
 }
 
 /// Minimal R1 router used until business handlers are introduced.
@@ -52,6 +125,7 @@ pub struct R7Router {
     raw_event_repo: Arc<dyn RawEventRepo>,
     ingestor: Arc<dyn EventIngestor>,
     account: Arc<AccountAuthService>,
+    menu_status: Arc<dyn MenuStatusProviding>,
 }
 
 impl R7Router {
@@ -68,7 +142,13 @@ impl R7Router {
             raw_event_repo,
             ingestor,
             account,
+            menu_status: Arc::new(EmptyMenuStatusProvider),
         }
+    }
+
+    pub fn with_menu_status(mut self, menu_status: Arc<dyn MenuStatusProviding>) -> Self {
+        self.menu_status = menu_status;
+        self
     }
 }
 
@@ -101,6 +181,10 @@ impl MessageRouter for R7Router {
             }
 
             ClientMessage::DeleteAccount(_) => Ok(Some(self.account.delete_account().await)),
+
+            ClientMessage::RequestMenuStatus(_) => Ok(Some(ServerMessage::MenuStatus(
+                self.menu_status.snapshot().await,
+            ))),
 
             ClientMessage::RequestLatestInsight(req) => {
                 let result = self.cache.daily_insight(req.date).await;

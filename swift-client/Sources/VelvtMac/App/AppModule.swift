@@ -31,6 +31,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notificationDeliveryCoordinator: NotificationDeliveryCoordinator?
     private var notificationResponseRouter: NotificationResponseRouter?
     private var menuBarDataLoader: MenuBarDataLoader?
+    private var menuStatusViewModel: MenuStatusViewModel?
     private let serviceProcessLauncher = ServiceProcessLauncher()
 
     public override convenience init() {
@@ -85,6 +86,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         dataLoader.start(accountState: accountStateManager.$accountState.eraseToAnyPublisher())
         menuBarDataLoader = dataLoader
 
+        let statusViewModel = MenuStatusViewModel(ipcClient: client, messages: accountStateManager.serverMessages)
+        statusViewModel.start()
+        menuStatusViewModel = statusViewModel
+
         let relay = EventRelay(ipcClient: client)
         let collectionAgent = AXCollectionAgent(eventSink: relay)
         let coordinator = PermissionCollectionCoordinator(
@@ -98,7 +103,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menuBar = MenuBarController(
             presentation: permissionPresentation,
+            permissionManager: permissionManager,
             displayCoordinator: displayCoord,
+            accountStateManager: accountStateManager,
+            ipcClient: client,
+            menuStatusViewModel: statusViewModel,
             connectionStatus: client.connectionStatus
         )
         menuBar.install()
@@ -182,21 +191,15 @@ private final class UnavailableIPCClient: IPCClientProtocol {
     }
 }
 
-/// FocusAgent executable entry point.
+/// Menu-bar-only executable entry point. No `WindowGroup` is created: every
+/// user-facing route is hosted by `MenuBarController`'s popover.
 @main
-public struct VelvtMacApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-
-    public init() {}
-
-    public var body: some Scene {
-        WindowGroup {
-            PermissionRootView(
-                presentation: appDelegate.permissionPresentation,
-                permissionManager: appDelegate.permissionManager,
-                accountStateManager: appDelegate.accountStateManager,
-                ipcClient: appDelegate.ipcClient
-            )
-        }
+public enum VelvtMacApp {
+    public static func main() {
+        let application = NSApplication.shared
+        let delegate = AppDelegate()
+        application.delegate = delegate
+        application.setActivationPolicy(.accessory)
+        application.run()
     }
 }

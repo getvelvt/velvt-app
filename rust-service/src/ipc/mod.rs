@@ -19,7 +19,7 @@ pub use connection::{
     serve_connection_with_push_queue, serve_connection_with_push_queue_and_shutdown,
 };
 pub use reconnect::ReconnectTracker;
-pub use router::{DefaultRouter, MessageRouter, R7Router};
+pub use router::{DefaultRouter, MenuStatusProvider, MessageRouter, R7Router};
 
 /// Errors produced by IPC transport or protocol handling.
 #[derive(Debug, thiserror::Error)]

@@ -2,6 +2,29 @@ import Combine
 import Foundation
 
 @MainActor
+public final class MenuStatusViewModel: ObservableObject {
+    @Published public private(set) var status: MenuStatus?
+    private let ipcClient: any IPCClientProtocol
+    private var cancellables = Set<AnyCancellable>()
+    private var timer: AnyCancellable?
+
+    public init(ipcClient: any IPCClientProtocol, messages: some Publisher<ServerMessage, Never>) {
+        self.ipcClient = ipcClient
+        messages.compactMap { message -> MenuStatus? in
+            guard case .menuStatus(let status) = message else { return nil }
+            return status
+        }.receive(on: RunLoop.main).sink { [weak self] in self?.status = $0 }.store(in: &cancellables)
+    }
+
+    public func start() {
+        refresh()
+        timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.refresh() }
+    }
+
+    public func refresh() { Task { try? await ipcClient.send(.requestMenuStatus) } }
+}
+
+@MainActor
 final class MenuBarDataLoader {
     private let ipcClient: any IPCClientProtocol
     private let today: () -> String
@@ -47,11 +70,13 @@ public enum DisplayState {
     case error(String)
 }
 
-public enum InsightAvailability: Equatable {
+public enum DeliveryAvailability: Equatable {
     case loading
     case available
     case notGenerated
 }
+
+public typealias InsightAvailability = DeliveryAvailability
 
 // MARK: - DisplayDataCoordinating
 
@@ -80,6 +105,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
 
     @Published public private(set) var state: DisplayState = .loading
     @Published public private(set) var insightAvailability: InsightAvailability = .loading
+    @Published public private(set) var historyAvailability: DeliveryAvailability = .loading
 
     public var displayState: AnyPublisher<DisplayState, Never> {
         $state.eraseToAnyPublisher()
@@ -153,12 +179,20 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
 
     public func updateHistory(_ payload: HistoryPayload) {
         historyViewModel.update(from: payload)
+        historyAvailability = .available
         transitionToPopulatedIfNeeded()
     }
 
     public func handleCacheEmpty(_ payload: CacheEmpty) {
-        guard payload.payloadType == "insight_payload" else { return }
-        insightAvailability = .notGenerated
+        switch payload.payloadType {
+        case "insight_payload":
+            insightAvailability = .notGenerated
+        case "history_payload":
+            historyAvailability = .notGenerated
+        default:
+            return
+        }
+        transitionToPopulatedIfNeeded()
     }
 
     // MARK: Private

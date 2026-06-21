@@ -2,10 +2,10 @@ import Combine
 import XCTest
 @testable import VelvtMac
 
-// MARK: - OnboardingCoordinator sequencing tests
+// MARK: - Menu bar navigation tests
 
 @MainActor
-final class OnboardingCoordinatorTests: XCTestCase {
+final class MenuBarNavigationTests: XCTestCase {
 
     func testServiceConnectionStatusModelReflectsSocketUpdates() async {
         let client = FakeIPCClient()
@@ -19,86 +19,41 @@ final class OnboardingCoordinatorTests: XCTestCase {
         XCTAssertEqual(model.status, .reconnecting(attempt: 2, nextRetryIn: 1))
     }
 
-    func testInitialStepIsWelcome() {
-        let sut = makeCoordinator()
-        XCTAssertTrue(sut.path.isEmpty, "Path should be empty (Welcome is the NavigationStack root)")
+    func testSettingsNavigationMovesForwardAndBack() {
+        var navigator = MenuBarPopoverNavigator()
+
+        navigator.showSettings()
+        XCTAssertEqual(navigator.route, .settings)
+        XCTAssertEqual(navigator.direction, .forward)
+
+        navigator.goBack()
+        XCTAssertEqual(navigator.route, .main)
+        XCTAssertEqual(navigator.direction, .backward)
     }
 
-    func testAdvanceFromWelcomePushesPermissions() {
-        let sut = makeCoordinator()
-        sut.advanceFromWelcome()
-        XCTAssertEqual(sut.path, [.permissions])
+    func testSettingsSubpagesMoveForwardAndReturnToSettings() {
+        var navigator = MenuBarPopoverNavigator()
+
+        navigator.showSettings()
+        navigator.showAppInfo()
+        XCTAssertEqual(navigator.route, .appInfo)
+        XCTAssertEqual(navigator.direction, .forward)
+
+        navigator.goBack()
+        XCTAssertEqual(navigator.route, .settings)
+        XCTAssertEqual(navigator.direction, .backward)
     }
 
-    func testAdvanceFromPermissionsPushesAuth() {
-        let sut = makeCoordinator()
-        sut.advanceFromWelcome()
-        sut.advanceFromPermissions()
-        XCTAssertEqual(sut.path, [.permissions, .auth])
+    func testQueuedEventsIsSettingsSubpage() {
+        var navigator = MenuBarPopoverNavigator()
+        navigator.showSettings()
+        navigator.showQueuedEvents()
+
+        XCTAssertEqual(navigator.route, .queuedEvents)
+        navigator.goBack()
+        XCTAssertEqual(navigator.route, .settings)
     }
 
-    func testAuthDidCompletePushesComplete() {
-        let sut = makeCoordinator()
-        sut.advanceFromWelcome()
-        sut.advanceFromPermissions()
-        sut.authDidComplete()
-        XCTAssertEqual(sut.path, [.permissions, .auth, .complete])
-    }
-
-    func testCannotReachAuthWithoutGoingThroughPermissions() {
-        let sut = makeCoordinator()
-        sut.advanceFromWelcome()
-        XCTAssertEqual(sut.path.last, .permissions, "First step after welcome must be permissions")
-        XCTAssertFalse(sut.path.contains(.auth), "Auth must not appear without permissions step first")
-    }
-
-    func testIAlreadyHaveAnAccountSwitchesAuthModeNotNavigationPath() {
-        let client = FakeIPCClient()
-        let keychain = FakeKeychain()
-        let manager = AccountStateManager(keychain: keychain)
-        let authVM = AuthViewModel(accountStateManager: manager, ipcClient: client)
-        let sut = makeCoordinator(authViewModel: authVM)
-
-        sut.advanceFromWelcome()
-        sut.advanceFromPermissions()
-
-        // "I already have an account" toggles mode within AuthView, not the nav path.
-        authVM.toggleAuthMode()
-        XCTAssertEqual(authVM.authMode, .logIn, "Toggling mode should switch to logIn")
-        XCTAssertEqual(sut.path.last, .auth, "Navigation path must not change when toggling mode")
-    }
-
-    func testSkipToAuthSetsPathDirectlyToAuth() {
-        let sut = makeCoordinator()
-        sut.skipToAuth()
-        XCTAssertEqual(sut.path, [.auth])
-    }
-
-    func testFinishOnboardingCallsCompletionClosure() {
-        var completionCalled = false
-        let sut = makeCoordinator(onComplete: { completionCalled = true })
-        sut.finishOnboarding()
-        XCTAssertTrue(completionCalled)
-    }
-
-    // MARK: - Helpers
-
-    private func makeCoordinator(
-        keychain: FakeKeychain = FakeKeychain(),
-        client: FakeIPCClient = FakeIPCClient(),
-        authViewModel: AuthViewModel? = nil,
-        onComplete: @escaping () -> Void = {}
-    ) -> OnboardingCoordinator {
-        let manager = AccountStateManager(keychain: keychain)
-        manager.startListening(to: client)
-        let vm = authViewModel ?? AuthViewModel(accountStateManager: manager, ipcClient: client)
-        return OnboardingCoordinator(
-            permissionManager: FakePermissionManager(),
-            accountStateManager: manager,
-            authViewModel: vm,
-            onComplete: onComplete
-        )
-    }
 }
 
 // MARK: - DeviceRevoked integration tests

@@ -15,6 +15,7 @@ public enum KeychainKey: String, CaseIterable, Sendable {
     case accessToken = "velvt.access_token"
     case refreshToken = "velvt.refresh_token"
     case userId = "velvt.user_id"
+    case email = "velvt.email"
     /// Sentinel written when the state machine enters `.pendingErasure` so that
     /// a relaunch mid-deletion can restore the correct state and block normal use.
     case pendingDeletion = "velvt.pending_deletion"
@@ -177,6 +178,7 @@ public final class AccountStateManager: ObservableObject {
 
     private let keychain: any KeychainProtocol
     private var listenerTask: Task<Void, Never>?
+    private var pendingEmail: String?
 
     public init(keychain: any KeychainProtocol) {
         self.keychain = keychain
@@ -226,12 +228,25 @@ public final class AccountStateManager: ObservableObject {
         return true
     }
 
+    /// Retains the email only until the service confirms authentication, then
+    /// stores it with the session in Keychain for local account display.
+    public func beginAuthentication(email: String) -> Bool {
+        guard beginAuthentication() else { return false }
+        pendingEmail = email
+        return true
+    }
+
+    public var accountEmail: String? {
+        try? keychain.load(for: .email)
+    }
+
     /// Returns an in-flight authentication request to the logged-out state.
     public func cancelAuthentication() {
         guard case .loggingIn = accountState else {
             return
         }
         accountState = .loggedOut
+        pendingEmail = nil
     }
 
     /// Clears all tokens from Keychain and transitions to `.loggedOut`.
@@ -239,6 +254,7 @@ public final class AccountStateManager: ObservableObject {
     public func logOut() {
         transition(to: .loggingOut)
         keychain.deleteAll()
+        pendingEmail = nil
         accountState = .loggedOut
     }
 
@@ -309,15 +325,19 @@ public final class AccountStateManager: ObservableObject {
             )
             if case .loggingIn = accountState {
                 accountState = .loggedOut
+                pendingEmail = nil
             }
         case .accountDeletionAccepted:
             keychain.deleteAll()
+            pendingEmail = nil
             accountState = .loggedOut
         case .needsReauth:
             keychain.deleteAll()
+            pendingEmail = nil
             accountState = .loggedOut
         case .deviceRevoked:
             keychain.deleteAll()
+            pendingEmail = nil
             accountState = .loggedOut
             isDeviceRevoked = true
         default:
@@ -337,15 +357,20 @@ public final class AccountStateManager: ObservableObject {
             try keychain.store(token: success.accessToken, for: .accessToken)
             try keychain.store(token: success.refreshToken, for: .refreshToken)
             try keychain.store(token: success.userId, for: .userId)
+            if let pendingEmail {
+                try keychain.store(token: pendingEmail, for: .email)
+            }
             authLogger.debug(
                 "auth.handleAuthSuccess: Keychain writes succeeded, transitioning to loggedIn"
             )
             transition(to: .loggedIn(userId: success.userId))
+            pendingEmail = nil
         } catch {
             authLogger.error(
                 "auth.handleAuthSuccess: Keychain write failed — \(error.localizedDescription)"
             )
             keychain.deleteAll()
+            pendingEmail = nil
             accountState = .loggedOut
         }
     }

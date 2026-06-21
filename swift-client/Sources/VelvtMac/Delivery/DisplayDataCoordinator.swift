@@ -22,6 +22,13 @@ public final class MenuStatusViewModel: ObservableObject {
     }
 
     public func refresh() { Task { try? await ipcClient.send(.requestMenuStatus) } }
+
+    public func sendAllNow() {
+        Task {
+            try? await ipcClient.send(.flushUploadQueue)
+            try? await ipcClient.send(.requestMenuStatus)
+        }
+    }
 }
 
 @MainActor

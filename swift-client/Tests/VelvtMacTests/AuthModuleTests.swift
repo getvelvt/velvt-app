@@ -45,6 +45,34 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(keychain.storedValue(for: .userId), "u123")
     }
 
+    func testSuccessfulAuthenticationStoresEmailInKeychain() async {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+
+        XCTAssertTrue(sut.beginAuthentication(email: "ada@example.com"))
+        client.inject(.authSuccess(AuthSuccess(
+            userId: "u123", accessToken: "tok-access", refreshToken: "tok-refresh",
+            expiresAt: Date(timeIntervalSinceNow: 3600)
+        )))
+
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        XCTAssertEqual(keychain.storedValue(for: .email), "ada@example.com")
+        XCTAssertEqual(sut.accountEmail, "ada@example.com")
+    }
+
+    func testLogoutDeletesStoredEmail() throws {
+        let keychain = FakeKeychain()
+        try keychain.store(token: "u123", for: .userId)
+        try keychain.store(token: "ada@example.com", for: .email)
+        let sut = AccountStateManager(keychain: keychain)
+
+        sut.logOut()
+
+        XCTAssertNil(keychain.storedValue(for: .email))
+    }
+
     func testLoggingInToLoggedOutViaAuthFailure() async {
         let client = FakeIPCClient()
         let sut = makeManager(client: client)

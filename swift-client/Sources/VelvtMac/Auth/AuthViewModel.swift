@@ -45,7 +45,7 @@ public final class AuthViewModel: ObservableObject {
             errorMessage = "Email and password are required."
             return
         }
-        guard accountStateManager.beginAuthentication() else {
+        guard accountStateManager.beginAuthentication(email: email) else {
             errorMessage = "Authentication is already in progress."
             return
         }
@@ -67,7 +67,7 @@ public final class AuthViewModel: ObservableObject {
             errorMessage = "Email and password are required."
             return
         }
-        guard accountStateManager.beginAuthentication() else {
+        guard accountStateManager.beginAuthentication(email: email) else {
             errorMessage = "Authentication is already in progress."
             return
         }

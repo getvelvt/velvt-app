@@ -108,7 +108,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             accountStateManager: accountStateManager,
             ipcClient: client,
             menuStatusViewModel: statusViewModel,
-            connectionStatus: client.connectionStatus
+            connectionStatus: client.connectionStatus,
+            terminateApp: { NSApp.terminate(nil) }
         )
         menuBar.install()
         menuBar.observe(

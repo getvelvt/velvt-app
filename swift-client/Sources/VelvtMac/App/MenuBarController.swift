@@ -125,6 +125,7 @@ public final class MenuBarController: NSObject {
     private let resolver = MenuBarStateResolver()
     private let popover: NSPopover
     private let activateApp: () -> Void
+    private let terminateApp: () -> Void
     private let serviceConnectionStatus: ServiceConnectionStatusModel
     private var statusItem: NSStatusItem?
     private var cancellables = Set<AnyCancellable>()
@@ -144,12 +145,14 @@ public final class MenuBarController: NSObject {
         activateApp: @escaping @MainActor () -> Void = {
             NSApp.unhide(nil)
             NSApp.activate(ignoringOtherApps: true)
-        }
+        },
+        terminateApp: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }
     ) {
         let serviceConnectionStatus = ServiceConnectionStatusModel(connectionStatus: connectionStatus)
         self.serviceConnectionStatus = serviceConnectionStatus
         popover = NSPopover()
         self.activateApp = activateApp
+        self.terminateApp = terminateApp
         super.init()
         popover.behavior = .transient
         // Disabling the fade keeps show/close synchronous (isShown flips
@@ -165,7 +168,8 @@ public final class MenuBarController: NSObject {
                 accountStateManager: accountStateManager,
                 ipcClient: ipcClient,
                 menuStatusViewModel: menuStatusViewModel,
-                onEscape: { [weak self] in self?.closePopover() }
+                onEscape: { [weak self] in self?.closePopover() },
+                onTerminate: { [weak self] in self?.terminateApp() }
             )
         )
     }

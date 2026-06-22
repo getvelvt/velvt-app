@@ -14,7 +14,7 @@
 //! `/v1/devices` call. See [`AccountAuthService::ensure_device_registered`].
 
 use super::{
-    AuthState, AuthStateMachine, HttpClient, HttpRequest, RedactedString, TokenPair, TokenStore,
+    AuthState, AuthStateMachine, HttpClient, HttpRequest, RedactedString, TokenStore,
 };
 use std::sync::Arc;
 use velvt_shared_types::{
@@ -76,16 +76,9 @@ impl AccountAuthService {
         };
         match self.token_store.load_device_id() {
             Ok(Some(device_id)) => {
-                let tokens = TokenPair::new(
-                    RedactedString::new(success.access_token.clone()),
-                    RedactedString::new(success.refresh_token.clone()),
-                    success.expires_at,
-                );
-                if self.token_store.store_pair(tokens).is_ok() {
-                    let _ = self
-                        .auth_state
-                        .transition(AuthState::Authenticated { device_id });
-                }
+                let _ = self
+                    .auth_state
+                    .transition(AuthState::Authenticated { device_id });
                 return;
             }
             Err(error) => {
@@ -358,13 +351,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_skips_device_registration_when_device_id_already_stored() {
+    async fn login_keeps_existing_device_tokens_when_device_id_already_stored() {
         let raw_http = Arc::new(FakeHttpClient::with_responses(vec![HttpResponse {
             status: 200,
             ..signup_response()
         }]));
         let (service, token_store) = service(Arc::clone(&raw_http));
         token_store.store_device_id("existing-device").unwrap();
+        token_store
+            .store_pair(TokenPair::new(
+                RedactedString::new("device-access"),
+                RedactedString::new("device-refresh"),
+                Utc::now() + Duration::hours(1),
+            ))
+            .unwrap();
 
         let outcome = service
             .log_in("a@example.test".into(), "password".into())
@@ -372,6 +372,9 @@ mod tests {
 
         assert!(matches!(outcome, ServerMessage::AuthSuccess(_)));
         assert_eq!(raw_http.requests().len(), 1, "no /v1/devices call expected");
+        let stored = token_store.load_tokens().unwrap().unwrap();
+        assert_eq!(stored.access_token().expose(), "device-access");
+        assert_eq!(stored.refresh_token().expose(), "device-refresh");
     }
 
     #[tokio::test]

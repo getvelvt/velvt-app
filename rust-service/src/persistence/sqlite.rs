@@ -6,6 +6,7 @@ use super::{
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
+    collections::HashMap,
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -324,12 +325,13 @@ impl RawEventRepo for SqliteRawEventRepo {
         let connection = self.0.connection()?;
         connection.execute(
             "INSERT INTO raw_event_buffer(
-                event_id, stable_id, label, category, taxonomy_version, occurred_at, duration_seconds
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                event_id, stable_id, label, local_display_label, category, taxonomy_version, occurred_at, duration_seconds
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 event.event_id,
                 event.stable_id,
                 event.label,
+                event.local_display_label,
                 event.category,
                 event.taxonomy_version,
                 event.occurred_at.timestamp(),
@@ -342,10 +344,30 @@ impl RawEventRepo for SqliteRawEventRepo {
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError> {
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
-            "SELECT event_id, stable_id, label, category, taxonomy_version, occurred_at, duration_seconds
+            "SELECT event_id, stable_id, label, local_display_label, category, taxonomy_version, occurred_at, duration_seconds
              FROM raw_event_buffer WHERE occurred_at < ?1 ORDER BY occurred_at",
         )?;
         let rows = statement.query_map([cutoff.timestamp()], raw_event_from_row)?;
+        rows.map(|row| row.map_err(PersistenceError::from))
+            .collect()
+    }
+
+    fn local_display_labels(
+        &self,
+        event_ids: &[String],
+    ) -> Result<HashMap<String, String>, PersistenceError> {
+        if event_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let connection = self.0.connection()?;
+        let placeholders = vec!["?"; event_ids.len()].join(",");
+        let query = format!(
+            "SELECT event_id, local_display_label FROM raw_event_buffer WHERE event_id IN ({placeholders}) AND local_display_label IS NOT NULL"
+        );
+        let mut statement = connection.prepare(&query)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(event_ids), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
         rows.map(|row| row.map_err(PersistenceError::from))
             .collect()
     }
@@ -751,10 +773,11 @@ fn raw_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEventEntry
         event_id: row.get(0)?,
         stable_id: row.get(1)?,
         label: row.get(2)?,
-        category: row.get(3)?,
-        taxonomy_version: row.get(4)?,
-        occurred_at: timestamp_from_row(row, 5)?,
-        duration_seconds: row.get(6)?,
+        local_display_label: row.get(3)?,
+        category: row.get(4)?,
+        taxonomy_version: row.get(5)?,
+        occurred_at: timestamp_from_row(row, 6)?,
+        duration_seconds: row.get(7)?,
     })
 }
 

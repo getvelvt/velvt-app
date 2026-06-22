@@ -37,6 +37,7 @@ pub struct MenuStatusProvider {
     http: Arc<dyn HttpClient>,
     tokens: Arc<dyn TokenStore>,
     batches: Arc<dyn UploadBatchRepo>,
+    raw_events: Arc<dyn RawEventRepo>,
 }
 
 impl MenuStatusProvider {
@@ -44,11 +45,13 @@ impl MenuStatusProvider {
         http: Arc<dyn HttpClient>,
         tokens: Arc<dyn TokenStore>,
         batches: Arc<dyn UploadBatchRepo>,
+        raw_events: Arc<dyn RawEventRepo>,
     ) -> Self {
         Self {
             http,
             tokens,
             batches,
+            raw_events,
         }
     }
 }
@@ -66,11 +69,20 @@ impl MenuStatusProviding for MenuStatusProvider {
                 .collect();
             events.sort_by_key(|event| std::cmp::Reverse(event.occurred_at));
             let queued_event_count = events.len() as u64;
+            let event_ids = events
+                .iter()
+                .map(|event| event.event_id.clone())
+                .collect::<Vec<_>>();
+            let local_labels = self
+                .raw_events
+                .local_display_labels(&event_ids)
+                .unwrap_or_default();
             let queued_events = events
                 .into_iter()
                 .take(10)
                 .map(|event| QueuedEventSummary {
                     label: event.label,
+                    local_label: local_labels.get(&event.event_id).cloned(),
                     category: event.category,
                     occurred_at: event.occurred_at,
                 })
@@ -268,12 +280,14 @@ impl R7Router {
     async fn handle_raw_event(&self, event: velvt_shared_types::RawEvent) -> ServerMessage {
         let event_id = event.event_id;
         let occurred_at = event.occurred_at;
+        let local_display_label = raw_display_label(&event.app_name, &event.window_title);
         match self.abstraction_engine.process(event) {
             Ok(abstracted) => {
                 let entry = RawEventEntry {
                     event_id: event_id.to_string(),
                     stable_id: abstracted.stable_id().to_owned(),
                     label: abstracted.label().to_owned(),
+                    local_display_label,
                     category: abstracted.category().to_owned(),
                     taxonomy_version: abstracted.taxonomy_version().to_owned(),
                     occurred_at,
@@ -321,6 +335,16 @@ impl R7Router {
                 })
             }
         }
+    }
+}
+
+fn raw_display_label(app_name: &str, window_title: &str) -> Option<String> {
+    let title = window_title.trim();
+    if !title.is_empty() {
+        Some(title.to_owned())
+    } else {
+        let app = app_name.trim();
+        (!app.is_empty()).then(|| app.to_owned())
     }
 }
 

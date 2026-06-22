@@ -14,6 +14,7 @@ pub struct RawEventEntry {
     pub event_id: String,
     pub stable_id: String,
     pub label: String,
+    pub local_display_label: Option<String>,
     pub category: String,
     pub taxonomy_version: String,
     pub occurred_at: DateTime<Utc>,

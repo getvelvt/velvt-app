@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -307,12 +307,14 @@ pub struct RequestMenuStatus {}
 #[serde(deny_unknown_fields)]
 pub struct FlushUploadQueue {}
 
-/// One abstracted event waiting in the upload queue. Raw source fields are
-/// intentionally absent from this IPC payload.
+/// One event waiting in the upload queue. `local_label` is display-only data
+/// sent over the device-local Unix socket and never appears in cloud DTOs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueuedEventSummary {
     pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_label: Option<String>,
     pub category: String,
     pub occurred_at: DateTime<Utc>,
 }

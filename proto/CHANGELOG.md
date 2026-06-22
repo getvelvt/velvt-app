@@ -1,5 +1,11 @@
 # IPC Protocol Changelog
 
+## Version 10 - 2026-06-21
+
+- Added optional `local_label` to `menu_status.queued_events`. It is a
+  device-local display field for the queue inspector and must never be copied
+  into cloud upload payloads or logs.
+
 ## Version 9 - 2026-06-21
 
 - Added `flush_upload_queue`, an empty client request for an explicit upload

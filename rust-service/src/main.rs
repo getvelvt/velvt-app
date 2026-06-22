@@ -349,7 +349,7 @@ async fn main() {
             R7Router::new(
                 cache_manager,
                 Arc::clone(&abstraction_engine),
-                raw_event_repo,
+                Arc::clone(&raw_event_repo),
                 Arc::clone(&shared_batcher),
                 account_service,
             )
@@ -357,6 +357,7 @@ async fn main() {
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,
                 Arc::clone(&token_store) as Arc<dyn TokenStore>,
                 Arc::clone(&upload_batch_repo),
+                Arc::clone(&raw_event_repo),
             ))),
         )
         .with_auth_state(auth_state.subscribe())

@@ -101,6 +101,13 @@ impl TokenStore for FakeTokenStore {
 pub struct KeychainTokenStore {
     service: String,
     account: String,
+    cache: Mutex<KeychainCache>,
+}
+
+#[derive(Default)]
+struct KeychainCache {
+    tokens: Option<Option<TokenPair>>,
+    device_id: Option<Option<String>>,
 }
 
 impl KeychainTokenStore {
@@ -108,6 +115,7 @@ impl KeychainTokenStore {
         Self {
             service: service.into(),
             account: account.into(),
+            cache: Mutex::new(KeychainCache::default()),
         }
     }
 }
@@ -149,29 +157,56 @@ impl TokenStore for KeychainTokenStore {
         };
         let bytes = serde_json::to_vec(&record).map_err(|_| TokenStoreError::InvalidData)?;
         security_framework::passwords::set_generic_password(&self.service, &self.account, &bytes)
-            .map_err(|_| TokenStoreError::Unavailable)
+            .map_err(|_| TokenStoreError::Unavailable)?;
+        self.cache
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)?
+            .tokens = Some(Some(TokenPair::new(access, refresh, expiry)));
+        Ok(())
     }
 
     fn load_tokens(&self) -> Result<Option<TokenPair>, TokenStoreError> {
+        if let Some(tokens) = self
+            .cache
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)?
+            .tokens
+            .clone()
+        {
+            return Ok(tokens);
+        }
         let bytes =
             match security_framework::passwords::get_generic_password(&self.service, &self.account)
             {
                 Ok(bytes) => bytes,
-                Err(error) if error.code() == -25300 => return Ok(None),
+                Err(error) if error.code() == -25300 => {
+                    self.cache
+                        .lock()
+                        .map_err(|_| TokenStoreError::Unavailable)?
+                        .tokens = Some(None);
+                    return Ok(None);
+                }
                 Err(_) => return Err(TokenStoreError::Unavailable),
             };
         let record: KeychainReadRecord =
             serde_json::from_slice(&bytes).map_err(|_| TokenStoreError::InvalidData)?;
-        Ok(Some(TokenPair::new(
-            record.access,
-            record.refresh,
-            record.expiry,
-        )))
+        let tokens = Some(TokenPair::new(record.access, record.refresh, record.expiry));
+        self.cache
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)?
+            .tokens = Some(tokens.clone());
+        Ok(tokens)
     }
 
     fn clear_tokens(&self) -> Result<(), TokenStoreError> {
         match security_framework::passwords::delete_generic_password(&self.service, &self.account) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.cache
+                    .lock()
+                    .map_err(|_| TokenStoreError::Unavailable)?
+                    .tokens = Some(None);
+                Ok(())
+            }
             Err(error) if error.code() == -25300 => Ok(()),
             Err(_) => Err(TokenStoreError::Unavailable),
         }
@@ -183,20 +218,45 @@ impl TokenStore for KeychainTokenStore {
             &self.device_id_account(),
             device_id.as_bytes(),
         )
-        .map_err(|_| TokenStoreError::Unavailable)
+        .map_err(|_| TokenStoreError::Unavailable)?;
+        self.cache
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)?
+            .device_id = Some(Some(device_id.to_owned()));
+        Ok(())
     }
 
     fn load_device_id(&self) -> Result<Option<String>, TokenStoreError> {
-        match security_framework::passwords::get_generic_password(
+        if let Some(device_id) = self
+            .cache
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)?
+            .device_id
+            .clone()
+        {
+            return Ok(device_id);
+        }
+        let device_id = match security_framework::passwords::get_generic_password(
             &self.service,
             &self.device_id_account(),
         ) {
             Ok(bytes) => String::from_utf8(bytes)
                 .map(Some)
                 .map_err(|_| TokenStoreError::InvalidData),
-            Err(error) if error.code() == -25300 => Ok(None),
+            Err(error) if error.code() == -25300 => {
+                self.cache
+                    .lock()
+                    .map_err(|_| TokenStoreError::Unavailable)?
+                    .device_id = Some(None);
+                return Ok(None);
+            }
             Err(_) => Err(TokenStoreError::Unavailable),
-        }
+        }?;
+        self.cache
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)?
+            .device_id = Some(device_id.clone());
+        Ok(device_id)
     }
 
     fn clear_device_id(&self) -> Result<(), TokenStoreError> {
@@ -204,7 +264,13 @@ impl TokenStore for KeychainTokenStore {
             &self.service,
             &self.device_id_account(),
         ) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.cache
+                    .lock()
+                    .map_err(|_| TokenStoreError::Unavailable)?
+                    .device_id = Some(None);
+                Ok(())
+            }
             Err(error) if error.code() == -25300 => Ok(()),
             Err(_) => Err(TokenStoreError::Unavailable),
         }

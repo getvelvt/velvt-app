@@ -73,6 +73,17 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertNil(keychain.storedValue(for: .email))
     }
 
+    func testAccountEmailIsReadOnceThenServedFromMemory() throws {
+        let keychain = FakeKeychain()
+        try keychain.store(token: "ada@example.com", for: .email)
+        let sut = AccountStateManager(keychain: keychain)
+
+        XCTAssertEqual(sut.accountEmail, "ada@example.com")
+        let loadsAfterFirstRead = keychain.loadCount
+        XCTAssertEqual(sut.accountEmail, "ada@example.com")
+        XCTAssertEqual(keychain.loadCount, loadsAfterFirstRead)
+    }
+
     func testLoggingInToLoggedOutViaAuthFailure() async {
         let client = FakeIPCClient()
         let sut = makeManager(client: client)

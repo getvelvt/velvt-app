@@ -22,6 +22,7 @@ fn make_event(n: u64) -> RawEventEntry {
         event_id: format!("evt-{n:04}"),
         stable_id: format!("abs_{n}"),
         label: "document:edit".into(),
+        local_display_label: None,
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
         occurred_at: Utc::now(),

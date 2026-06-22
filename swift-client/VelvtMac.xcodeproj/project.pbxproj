@@ -15,7 +15,6 @@
 		16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */; };
 		18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30FB3399A5C45808376ACF1 /* EventRelay.swift */; };
 		1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945E765C974B4023B7362068 /* NotificationScheduler.swift */; };
-		2A54D43BF50F47D9BE9ADA1C /* OnboardingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */; };
 		38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93C055AD72C0443A8CD98C13 /* PermissionManager.swift */; };
 		4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81032E99C0684420AFA1791A /* AuthViewModel.swift */; };
 		443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */; };
@@ -84,7 +83,6 @@
 		D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeliveryModule.swift; path = Delivery/DeliveryModule.swift; sourceTree = "<group>"; };
 		E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DisplayDataCoordinator.swift; path = Delivery/DisplayDataCoordinator.swift; sourceTree = "<group>"; };
 		ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarPopoverView.swift; path = UI/MenuBarPopoverView.swift; sourceTree = "<group>"; };
-		ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = OnboardingViews.swift; path = UI/OnboardingViews.swift; sourceTree = "<group>"; };
 		EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FakeIPCClient.swift; path = IPC/FakeIPCClient.swift; sourceTree = "<group>"; };
 		F30FB3399A5C45808376ACF1 /* EventRelay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelay.swift; path = Relay/EventRelay.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -161,7 +159,6 @@
 				9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */,
 				04D5396399374660825D54B5 /* InsightViewModel.swift */,
 				ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */,
-				ED8D5FB455974BC09CE564D2 /* OnboardingViews.swift */,
 				7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */,
 				A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */,
 				9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */,
@@ -319,7 +316,6 @@
 				69E8878A13154473938407D3 /* InsightCardView.swift in Sources */,
 				119E08E3913F45F0933336D7 /* InsightViewModel.swift in Sources */,
 				16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */,
-				2A54D43BF50F47D9BE9ADA1C /* OnboardingViews.swift in Sources */,
 				E7695F6AD86A41B6B9D74D9F /* VelvtPopoverContentView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -92,6 +92,7 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
         event_id: "event-1".into(),
         stable_id: "abs_1".into(),
         label: "document:edit".into(),
+        local_display_label: Some("Draft proposal".into()),
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
         occurred_at: timestamp(10),

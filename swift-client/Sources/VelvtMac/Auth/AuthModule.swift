@@ -116,6 +116,7 @@ public final class KeychainService: KeychainProtocol {
 /// run without Keychain entitlements.
 public final class FakeKeychain: KeychainProtocol {
     private var storage: [KeychainKey: String] = [:]
+    public private(set) var loadCount = 0
     public var shouldThrowOnStore: AuthError?
     public var shouldThrowOnLoad: AuthError?
     public var shouldThrowOnDelete: AuthError?
@@ -128,6 +129,7 @@ public final class FakeKeychain: KeychainProtocol {
     }
 
     public func load(for key: KeychainKey) throws -> String {
+        loadCount += 1
         if let error = shouldThrowOnLoad { throw error }
         guard let token = storage[key] else { throw AuthError.keychainItemNotFound }
         return token
@@ -179,6 +181,7 @@ public final class AccountStateManager: ObservableObject {
     private let keychain: any KeychainProtocol
     private var listenerTask: Task<Void, Never>?
     private var pendingEmail: String?
+    private var accountEmailCache: String??
 
     public init(keychain: any KeychainProtocol) {
         self.keychain = keychain
@@ -237,7 +240,12 @@ public final class AccountStateManager: ObservableObject {
     }
 
     public var accountEmail: String? {
-        try? keychain.load(for: .email)
+        if let accountEmailCache {
+            return accountEmailCache
+        }
+        let email = try? keychain.load(for: .email)
+        accountEmailCache = email
+        return email
     }
 
     /// Returns an in-flight authentication request to the logged-out state.
@@ -255,6 +263,7 @@ public final class AccountStateManager: ObservableObject {
         transition(to: .loggingOut)
         keychain.deleteAll()
         pendingEmail = nil
+        accountEmailCache = .some(nil)
         accountState = .loggedOut
     }
 
@@ -330,14 +339,17 @@ public final class AccountStateManager: ObservableObject {
         case .accountDeletionAccepted:
             keychain.deleteAll()
             pendingEmail = nil
+            accountEmailCache = .some(nil)
             accountState = .loggedOut
         case .needsReauth:
             keychain.deleteAll()
             pendingEmail = nil
+            accountEmailCache = .some(nil)
             accountState = .loggedOut
         case .deviceRevoked:
             keychain.deleteAll()
             pendingEmail = nil
+            accountEmailCache = .some(nil)
             accountState = .loggedOut
             isDeviceRevoked = true
         default:
@@ -359,6 +371,7 @@ public final class AccountStateManager: ObservableObject {
             try keychain.store(token: success.userId, for: .userId)
             if let pendingEmail {
                 try keychain.store(token: pendingEmail, for: .email)
+                accountEmailCache = .some(pendingEmail)
             }
             authLogger.debug(
                 "auth.handleAuthSuccess: Keychain writes succeeded, transitioning to loggedIn"
@@ -371,6 +384,7 @@ public final class AccountStateManager: ObservableObject {
             )
             keychain.deleteAll()
             pendingEmail = nil
+            accountEmailCache = .some(nil)
             accountState = .loggedOut
         }
     }

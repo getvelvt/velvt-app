@@ -3,6 +3,7 @@ use super::{
     PersistenceError, RawEventEntry, UploadBatch,
 };
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 pub trait AbstractionMapRepo: Send + Sync {
     fn upsert(&self, mapping: &AbstractionMapping) -> Result<(), PersistenceError>;
@@ -105,6 +106,10 @@ pub trait InsightCacheRepo: Send + Sync {
 pub trait RawEventRepo: Send + Sync {
     fn insert(&self, event: &RawEventEntry) -> Result<(), PersistenceError>;
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError>;
+    fn local_display_labels(
+        &self,
+        event_ids: &[String],
+    ) -> Result<HashMap<String, String>, PersistenceError>;
     fn delete_before(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError>;
     /// Deletes at most `limit` rows whose `created_at` is before `cutoff`.
     /// Returns the number of rows actually deleted.

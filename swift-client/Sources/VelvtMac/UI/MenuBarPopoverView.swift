@@ -26,6 +26,25 @@ public final class ServiceConnectionStatusModel: ObservableObject {
     }
 }
 
+public struct PopoverConnectionPresentation {
+    public let label: String
+    public let color: Color
+
+    public init(status: ConnectionStatus) {
+        switch status {
+        case .connected:
+            label = "Connected"
+            color = .green
+        case .disconnected:
+            label = "Disconnected"
+            color = .red
+        case .connecting, .handshaking, .reconnecting:
+            label = "Connecting"
+            color = .yellow
+        }
+    }
+}
+
 public enum MenuBarPopoverRoute: Equatable {
     case main
     case settings
@@ -93,27 +112,25 @@ public struct MenuBarPopoverView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().opacity(0.2)
-            ZStack {
-                routeContent
-                    .id(navigator.route)
-                    .transition(transition)
-            }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: navigator.route)
+        ZStack {
+            routeContent
+                .id(navigator.route)
+                .transition(transition)
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: navigator.route)
         .frame(width: 300)
         .preferredColorScheme(.dark)
         .onExitCommand(perform: onEscape)
     }
 
-    private var header: some View {
+    private var mainHeader: some View {
         HStack(spacing: 8) {
             Text("Velvt").font(.headline)
             Spacer()
-            Circle().fill(connectionColor).frame(width: 7, height: 7)
-            Text(connectionLabel).font(.caption).foregroundStyle(.secondary)
+            Text(connectionPresentation.label)
+                .font(.caption)
+                .foregroundStyle(connectionPresentation.color)
+            Circle().fill(connectionPresentation.color).frame(width: 7, height: 7)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
     }
@@ -129,6 +146,8 @@ public struct MenuBarPopoverView: View {
 
     private var mainContent: some View {
         VStack(spacing: 0) {
+            mainHeader
+            Divider().opacity(0.2)
             if presentation.showsAccessibilityRecovery {
                 PermissionRecoveryView().padding(16)
             } else {
@@ -164,24 +183,31 @@ public struct MenuBarPopoverView: View {
             SettingsTitle(title: "App Info", goBack: { navigator.goBack() })
             infoRow("Version", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development")
             infoRow("Device ID", menuStatusViewModel?.status?.deviceID ?? "Not registered")
-            infoRow("Auth", accountStateManager?.accountEmail ?? "Not signed in")
-            statusRow("Local", ready: serviceConnectionStatus.status == .connected)
-            statusRow("Cloud", ready: menuStatusViewModel?.status?.cloudReady == true)
-            Button("Refresh") { menuStatusViewModel?.refresh() }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
+            infoRow("Authentication", authenticationDescription)
+            statusRow(
+                "Local service",
+                presentation: connectionPresentation,
+                refresh: { menuStatusViewModel?.refresh() }
+            )
+            statusRow(
+                "Cloud server",
+                presentation: menuStatusViewModel?.status?.cloudReady == true
+                    ? PopoverConnectionPresentation(status: .connected)
+                    : PopoverConnectionPresentation(status: .disconnected),
+                refresh: { menuStatusViewModel?.refresh() }
+            )
         }
         .onAppear { menuStatusViewModel?.refresh() }
     }
 
     private var queuedEventsContent: some View {
         VStack(spacing: 0) {
-            SettingsTitle(title: "Queued Events", goBack: { navigator.goBack() })
+            SettingsTitle(title: "Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))", goBack: { navigator.goBack() })
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array((menuStatusViewModel?.status?.queuedEvents ?? []).prefix(10))) { event in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(event.label).font(.subheadline)
+                            Text(event.localLabel ?? event.label).font(.subheadline)
                             Text(event.category.replacingOccurrences(of: "_", with: " ").capitalized)
                                 .font(.caption).foregroundStyle(.secondary)
                         }
@@ -208,13 +234,16 @@ public struct MenuBarPopoverView: View {
             : .asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .trailing))
     }
 
-    private var connectionLabel: String {
-        serviceConnectionStatus.status == .connected ? "Connected" :
-            (serviceConnectionStatus.status == .disconnected ? "Disconnected" : "Connecting")
+    private var connectionPresentation: PopoverConnectionPresentation {
+        PopoverConnectionPresentation(status: serviceConnectionStatus.status)
     }
-    private var connectionColor: Color {
-        serviceConnectionStatus.status == .connected ? .green :
-            (serviceConnectionStatus.status == .disconnected ? .red : .yellow)
+
+    private var authenticationDescription: String {
+        guard let accountStateManager else { return "Not signed in" }
+        if let email = accountStateManager.accountEmail {
+            return "Authenticated · \(email)"
+        }
+        return "Not signed in"
     }
 
     private func settingsRow(_ title: String, action: @escaping () -> Void) -> some View {
@@ -227,9 +256,15 @@ public struct MenuBarPopoverView: View {
         HStack { Text(title).foregroundStyle(.secondary); Spacer(); Text(value).lineLimit(1).truncationMode(.middle) }
             .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
     }
-    private func statusRow(_ title: String, ready: Bool) -> some View {
-        HStack(spacing: 7) { Circle().fill(ready ? .green : .red).frame(width: 7, height: 7); Text(title); Spacer(); Text(ready ? "Ready" : "Unavailable").foregroundStyle(.secondary) }
-            .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
+    private func statusRow(_ title: String, presentation: PopoverConnectionPresentation, refresh: @escaping () -> Void) -> some View {
+        HStack(spacing: 7) {
+            Text(title).foregroundStyle(.secondary)
+            Spacer()
+            Text(presentation.label).foregroundStyle(presentation.color)
+            Circle().fill(presentation.color).frame(width: 7, height: 7)
+            Button("Refresh", action: refresh).buttonStyle(.plain)
+        }
+        .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
     }
 }
 
@@ -238,11 +273,11 @@ private struct SettingsTitle: View {
     let goBack: () -> Void
     var body: some View {
         HStack {
-            Button(action: goBack) { Image(systemName: "chevron.left").frame(width: 30, height: 30) }.buttonStyle(.plain)
+            Button(action: goBack) { Image(systemName: "chevron.left").padding(8) }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
             Spacer()
             Text(title).font(.headline)
-            Spacer()
-            Color.clear.frame(width: 30, height: 30)
         }.padding(.horizontal, 10).padding(.vertical, 8)
     }
 }

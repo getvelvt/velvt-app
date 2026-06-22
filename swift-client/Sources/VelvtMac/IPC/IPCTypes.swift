@@ -595,6 +595,7 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
 /// Privacy-safe queued event metadata for the menu-bar settings UI.
 public struct QueuedEventSummary: Codable, Equatable, Sendable, Identifiable {
     public let label: String
+    public let localLabel: String?
     public let category: String
     public let occurredAt: Date
 
@@ -602,6 +603,7 @@ public struct QueuedEventSummary: Codable, Equatable, Sendable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case label, category
+        case localLabel = "local_label"
         case occurredAt = "occurred_at"
     }
 }

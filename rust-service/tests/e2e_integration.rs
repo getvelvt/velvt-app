@@ -245,7 +245,7 @@ async fn flush_upload_queue_uses_shared_ingestor_and_returns_menu_status() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn path1_raw_event_is_abstracted_and_persisted_without_raw_content() {
+async fn path1_raw_event_is_abstracted_with_local_only_queue_labels() {
     let persistence = SqlitePersistence::open_in_memory().unwrap();
     let cache: Arc<dyn velvt_service::delivery::CacheManager> = Arc::new(FakeCacheManager::new());
     let coordinator = UploadCoordinator::new(
@@ -314,8 +314,8 @@ async fn path1_raw_event_is_abstracted_and_persisted_without_raw_content() {
     drop(read);
     let _ = task.await;
 
-    // Step 3: verify AbstractedEvent rows landed in the abstraction_map table
-    // and that the raw_event_buffer audit rows carry no raw content.
+    // Step 3: verify the abstracted audit data remains privacy-safe while
+    // local-only display labels stay in their dedicated raw-event field.
     let conn_check = persistence.raw_event_repo();
     let entries = conn_check
         .events_before(Utc::now() + ChronoDuration::days(1))
@@ -323,27 +323,21 @@ async fn path1_raw_event_is_abstracted_and_persisted_without_raw_content() {
     assert_eq!(
         entries.len(),
         2,
-        "both events should be persisted as privacy-safe audit rows"
+        "both events should be persisted for local queue display"
     );
     for entry in &entries {
-        let debugged = format!("{entry:?}");
-        assert!(
-            !debugged.contains("VS Code"),
-            "raw app name leaked into persisted row: {debugged}"
-        );
-        assert!(
-            !debugged.contains("TotallyUnknownApp9000"),
-            "raw app name leaked into persisted row: {debugged}"
-        );
-        assert!(
-            !debugged.contains("main.rs"),
-            "raw window title leaked into persisted row: {debugged}"
-        );
+        assert_ne!(entry.label, "VS Code");
+        assert_ne!(entry.label, "main.rs — velvt");
         assert!(
             !entry.label.is_empty(),
             "every persisted row must carry a privacy-safe label"
         );
     }
+    assert_eq!(
+        entries[0].local_display_label.as_deref(),
+        Some("main.rs — velvt")
+    );
+    assert_eq!(entries[1].local_display_label.as_deref(), Some("untitled"));
 }
 
 // ---------------------------------------------------------------------------

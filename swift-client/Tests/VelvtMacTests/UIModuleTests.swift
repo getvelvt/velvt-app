@@ -7,6 +7,12 @@ import XCTest
 @MainActor
 final class MenuBarNavigationTests: XCTestCase {
 
+    func testConnectionPresentationUsesRequestedLabelsAndColors() {
+        XCTAssertEqual(PopoverConnectionPresentation(status: .connected).label, "Connected")
+        XCTAssertEqual(PopoverConnectionPresentation(status: .connecting).label, "Connecting")
+        XCTAssertEqual(PopoverConnectionPresentation(status: .disconnected).label, "Disconnected")
+    }
+
     func testServiceConnectionStatusModelReflectsSocketUpdates() async {
         let client = FakeIPCClient()
         let model = ServiceConnectionStatusModel(connectionStatus: client.connectionStatus)

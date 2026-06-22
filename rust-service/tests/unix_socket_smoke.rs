@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
 use velvt_shared_types::{
@@ -9,7 +9,10 @@ use velvt_shared_types::{
 
 async fn read_message(reader: &mut BufReader<impl tokio::io::AsyncRead + Unpin>) -> ServerMessage {
     let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line))
+        .await
+        .expect("timed out waiting for IPC frame")
+        .unwrap();
     serde_json::from_str(line.trim_end()).unwrap()
 }
 
@@ -20,12 +23,16 @@ async fn write_message(writer: &mut (impl tokio::io::AsyncWrite + Unpin), messag
 }
 
 async fn connect_and_handshake(socket_path: &std::path::Path) -> tokio::net::unix::OwnedWriteHalf {
-    let stream = loop {
-        match tokio::net::UnixStream::connect(socket_path).await {
-            Ok(stream) => break stream,
-            Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+    let stream = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match tokio::net::UnixStream::connect(socket_path).await {
+                Ok(stream) => break stream,
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
         }
-    };
+    })
+    .await
+    .expect("timed out waiting for IPC socket");
     let (read, mut write) = stream.into_split();
     let mut read = BufReader::new(read);
     assert!(matches!(
@@ -47,25 +54,33 @@ async fn connect_and_handshake(socket_path: &std::path::Path) -> tokio::net::uni
     write
 }
 
-#[tokio::test]
-async fn unix_socket_smoke_covers_success_and_rejection() {
-    let socket_path = std::env::temp_dir().join(format!(
-        "velvt-{}-{}.sock",
+fn socket_path(name: &str) -> PathBuf {
+    PathBuf::from(format!(
+        "/tmp/velvt-ipc-tests/{name}-{}-{}.sock",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
-    ));
+    ))
+}
+
+#[tokio::test]
+async fn unix_socket_smoke_covers_success_and_rejection() {
+    let socket_path = socket_path("single-client");
     let transport = TokioUnixTransport::new(socket_path.clone(), 3);
     let server = tokio::spawn(async move { transport.run().await });
 
-    let stream = loop {
-        match tokio::net::UnixStream::connect(&socket_path).await {
-            Ok(stream) => break stream,
-            Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+    let stream = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match tokio::net::UnixStream::connect(&socket_path).await {
+                Ok(stream) => break stream,
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
         }
-    };
+    })
+    .await
+    .expect("timed out waiting for IPC socket");
     let (read, mut write) = stream.into_split();
     let mut read = BufReader::new(read);
     assert!(matches!(
@@ -108,14 +123,7 @@ async fn unix_socket_smoke_covers_success_and_rejection() {
 
 #[tokio::test]
 async fn unix_socket_accepts_two_simultaneous_clients() {
-    let socket_path = std::env::temp_dir().join(format!(
-        "velvt-two-clients-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let socket_path = socket_path("two-clients");
     let transport = TokioUnixTransport::new(socket_path.clone(), 3);
     let server = tokio::spawn(async move { transport.run().await });
 

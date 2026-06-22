@@ -26,6 +26,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     let ipcClient: any IPCClientProtocol
     private var eventRelay: (any EventRelayProtocol)?
+    private var eventSinkFanout: EventSinkFanout?
     private var collectionAgent: (any CollectionAgentProtocol)?
     private var permissionCoordinator: PermissionCollectionCoordinator?
     private var menuBarController: MenuBarController?
@@ -92,12 +93,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         menuStatusViewModel = statusViewModel
 
         let relay = EventRelay(ipcClient: client)
-        let collectionAgent = AXCollectionAgent(eventSink: relay)
+        let currentActivity = CurrentActivityModel()
+        let eventSinkFanout = EventSinkFanout([relay, currentActivity])
+        let collectionAgent = AXCollectionAgent(eventSink: eventSinkFanout)
         let coordinator = PermissionCollectionCoordinator(
             permissionManager: permissionManager,
             collectionAgent: collectionAgent
         )
         self.eventRelay = relay
+        self.eventSinkFanout = eventSinkFanout
         self.collectionAgent = collectionAgent
         permissionCoordinator = coordinator
         coordinator.start()
@@ -109,6 +113,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             accountStateManager: accountStateManager,
             ipcClient: client,
             menuStatusViewModel: statusViewModel,
+            currentActivity: currentActivity,
+            collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
             terminateApp: { NSApp.terminate(nil) }
         )
@@ -166,7 +172,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static func makeIPCClient() throws -> any IPCClientProtocol {
-        let config = try EnvironmentConfigLoader().load()
+        let config: FocusAgentConfig
+        #if DEBUG
+        do {
+            config = try BundleConfigLoader().load()
+        } catch {
+            config = try EnvironmentConfigLoader().load()
+        }
+        #else
+        config = try BundleConfigLoader().load()
+        #endif
         return UnixSocketIPCClient(
             socketPath: config.socketPath,
             protocolVersion: config.protocolVersion,

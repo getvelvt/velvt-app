@@ -18,6 +18,18 @@ final class CollectionModuleTests: XCTestCase {
         XCTAssertEqual(sink.events, [event])
     }
 
+    func testEventSinkFanoutForwardsEventsToEverySink() {
+        let first = RecordingEventSink()
+        let second = RecordingEventSink()
+        let fanout = EventSinkFanout([first, second])
+        let event = RawEvent(appName: "Editor", windowTitle: "Draft", occurredAt: Date(timeIntervalSince1970: 1))
+
+        fanout.receive(event)
+
+        XCTAssertEqual(first.events, [event])
+        XCTAssertEqual(second.events, [event])
+    }
+
     func testFakeCollectionAgentStartIsIdempotent() throws {
         let sink = RecordingEventSink()
         let agent = FakeCollectionAgent(eventSink: sink)

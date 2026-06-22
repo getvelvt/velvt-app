@@ -117,7 +117,9 @@ public actor EventRelay: EventRelayProtocol {
     // MARK: EventSink — nonisolated, O(1), never blocks
 
     public nonisolated func receive(_ event: RawEvent) {
-        continuationLock.withLock { _ingestContinuation?.yield(event) }
+        continuationLock.withLock {
+            _ = _ingestContinuation?.yield(event)
+        }
     }
 
     // MARK: EventRelayProtocol

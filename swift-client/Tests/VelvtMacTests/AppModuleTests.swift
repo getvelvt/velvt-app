@@ -6,6 +6,7 @@ final class AppModuleTests: XCTestCase {
         XCTAssertTrue(true)
     }
 
+    @MainActor
     func testDelegateUsesItsConfiguredIPCClientBeforeLaunching() {
         let client = FakeIPCClient()
         let permissionManager = PermissionManager(

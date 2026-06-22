@@ -1,8 +1,5 @@
 import Foundation
-
-// ServiceProcessLauncher is the pre-SMAppService subprocess-based launcher retained
-// for local `swift run` development workflows only. Release builds use ServiceManager.
-#if DEBUG
+import os
 
 /// Launches and stops the bundled `velvt-service` helper binary.
 ///
@@ -33,7 +30,10 @@ public final class ServiceProcessLauncher {
     /// with backoff if the socket is not yet available.
     public func start(environment: [String: String] = ProcessInfo.processInfo.environment) {
         guard process == nil else { return }
-        guard let serviceURL = bundledServiceURL() else { return }
+        guard let serviceURL = bundledServiceURL() else {
+            ServiceProcessLauncherLog.shared.info("No bundled velvt-service helper found")
+            return
+        }
 
         let task = Process()
         task.executableURL = serviceURL
@@ -41,6 +41,9 @@ public final class ServiceProcessLauncher {
         do {
             try task.run()
             process = task
+            ServiceProcessLauncherLog.shared.info(
+                "Launched bundled velvt-service helper at \(serviceURL.path, privacy: .public)"
+            )
         } catch {
             // The IPC client's reconnect-with-backoff covers the case where
             // no backend is reachable; this is a startup diagnostic only.
@@ -63,19 +66,6 @@ public final class ServiceProcessLauncher {
     }
 }
 
-import os
-
 enum ServiceProcessLauncherLog {
     static let shared = Logger(subsystem: "com.velvt.mac", category: "ServiceProcessLauncher")
 }
-
-#else
-
-public final class ServiceProcessLauncher {
-    public init() {}
-    public func bundledServiceURL(bundle: Bundle = .main) -> URL? { nil }
-    public func start(environment: [String: String] = ProcessInfo.processInfo.environment) {}
-    public func stop() {}
-}
-
-#endif

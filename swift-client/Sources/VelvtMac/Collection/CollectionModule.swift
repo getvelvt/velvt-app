@@ -24,6 +24,20 @@ public protocol EventSink: AnyObject {
     func receive(_ event: RawEvent)
 }
 
+public final class EventSinkFanout: EventSink {
+    private let sinks: [any EventSink]
+
+    public init(_ sinks: [any EventSink]) {
+        self.sinks = sinks
+    }
+
+    public func receive(_ event: RawEvent) {
+        for sink in sinks {
+            sink.receive(event)
+        }
+    }
+}
+
 public enum CollectionStatus: Equatable, Sendable {
     case idle
     case running

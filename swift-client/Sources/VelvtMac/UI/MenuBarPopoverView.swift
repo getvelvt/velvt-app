@@ -26,6 +26,39 @@ public final class ServiceConnectionStatusModel: ObservableObject {
     }
 }
 
+@MainActor
+public final class CollectionActivityStatusModel: ObservableObject {
+    @Published public private(set) var status: CollectionStatus = .idle
+    private var cancellable: AnyCancellable?
+
+    public init(collectionStatus: AnyPublisher<CollectionStatus, Never>) {
+        cancellable = collectionStatus.receive(on: RunLoop.main).sink { [weak self] in self?.status = $0 }
+    }
+}
+
+public struct CurrentActivity: Equatable, Sendable {
+    public let appName: String
+    public let windowTitle: String
+
+    public init(appName: String, windowTitle: String) {
+        self.appName = appName
+        self.windowTitle = windowTitle
+    }
+}
+
+public final class CurrentActivityModel: ObservableObject, EventSink {
+    @Published public private(set) var activity: CurrentActivity?
+
+    public init() {}
+
+    public func receive(_ event: RawEvent) {
+        let activity = CurrentActivity(appName: event.appName, windowTitle: event.windowTitle)
+        DispatchQueue.main.async { [weak self] in
+            self?.activity = activity
+        }
+    }
+}
+
 public struct PopoverConnectionPresentation {
     public let label: String
     public let color: Color
@@ -81,6 +114,8 @@ public struct MenuBarPopoverView: View {
     private let permissionManager: (any PermissionManagerProtocol)?
     @ObservedObject private var coordinator: ConcreteDisplayDataCoordinator
     @ObservedObject private var serviceConnectionStatus: ServiceConnectionStatusModel
+    @ObservedObject private var collectionActivityStatus: CollectionActivityStatusModel
+    @ObservedObject private var currentActivity: CurrentActivityModel
     private let accountStateManager: AccountStateManager?
     private let ipcClient: (any IPCClientProtocol)?
     private let menuStatusViewModel: MenuStatusViewModel?
@@ -94,6 +129,8 @@ public struct MenuBarPopoverView: View {
         permissionManager: (any PermissionManagerProtocol)? = nil,
         coordinator: ConcreteDisplayDataCoordinator,
         serviceConnectionStatus: ServiceConnectionStatusModel,
+        collectionActivityStatus: CollectionActivityStatusModel,
+        currentActivity: CurrentActivityModel,
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
@@ -104,6 +141,8 @@ public struct MenuBarPopoverView: View {
         self.permissionManager = permissionManager
         self.coordinator = coordinator
         self.serviceConnectionStatus = serviceConnectionStatus
+        self.collectionActivityStatus = collectionActivityStatus
+        self.currentActivity = currentActivity
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
@@ -148,6 +187,13 @@ public struct MenuBarPopoverView: View {
         VStack(spacing: 0) {
             mainHeader
             Divider().opacity(0.2)
+            if collectionActivityStatus.status == .running {
+                gatheringInfoStatus
+                if let activity = currentActivity.activity {
+                    currentActivityStatus(activity)
+                }
+                Divider().opacity(0.15)
+            }
             if presentation.showsAccessibilityRecovery {
                 PermissionRecoveryView().padding(16)
             } else {
@@ -163,6 +209,44 @@ public struct MenuBarPopoverView: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
         }
+        .task {
+            _ = await permissionManager?.checkStatus(for: .accessibility)
+        }
+    }
+
+    private var gatheringInfoStatus: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 14, height: 14)
+            Text("Gathering info")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+    }
+
+    private func currentActivityStatus(_ activity: CurrentActivity) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Currently on")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(activity.appName)
+                .font(.caption.bold())
+                .lineLimit(1)
+            if !activity.windowTitle.isEmpty {
+                Text(activity.windowTitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 9)
     }
 
     private var settingsContent: some View {

@@ -156,4 +156,38 @@ final class MenuBarControllerTests: XCTestCase {
 
         sut.remove()
     }
+
+    func testCollectionActivityStatusModelPublishesRunningState() {
+        let subject = PassthroughSubject<CollectionStatus, Never>()
+        let sut = CollectionActivityStatusModel(collectionStatus: subject.eraseToAnyPublisher())
+
+        XCTAssertEqual(sut.status, .idle)
+
+        subject.send(.running)
+
+        let update = expectation(description: "Collection activity status updates")
+        DispatchQueue.main.async {
+            XCTAssertEqual(sut.status, .running)
+            update.fulfill()
+        }
+        wait(for: [update], timeout: 1)
+    }
+
+    func testCurrentActivityModelPublishesTheLatestCollectedEvent() {
+        let sut = CurrentActivityModel()
+        let event = RawEvent(
+            appName: "Browser",
+            windowTitle: "Velvt Dashboard",
+            occurredAt: Date(timeIntervalSince1970: 1)
+        )
+
+        sut.receive(event)
+
+        let update = expectation(description: "Current activity updates")
+        DispatchQueue.main.async {
+            XCTAssertEqual(sut.activity, CurrentActivity(appName: "Browser", windowTitle: "Velvt Dashboard"))
+            update.fulfill()
+        }
+        wait(for: [update], timeout: 1)
+    }
 }

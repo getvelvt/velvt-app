@@ -127,6 +127,8 @@ public final class MenuBarController: NSObject {
     private let activateApp: () -> Void
     private let terminateApp: () -> Void
     private let serviceConnectionStatus: ServiceConnectionStatusModel
+    private let collectionActivityStatus: CollectionActivityStatusModel
+    private let currentActivity: CurrentActivityModel
     private var statusItem: NSStatusItem?
     private var cancellables = Set<AnyCancellable>()
 
@@ -141,6 +143,8 @@ public final class MenuBarController: NSObject {
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
+        currentActivity: CurrentActivityModel = CurrentActivityModel(),
+        collectionStatus: AnyPublisher<CollectionStatus, Never> = Just(.idle).eraseToAnyPublisher(),
         connectionStatus: AnyPublisher<ConnectionStatus, Never> = Just(.disconnected).eraseToAnyPublisher(),
         activateApp: @escaping @MainActor () -> Void = {
             NSApp.unhide(nil)
@@ -149,7 +153,10 @@ public final class MenuBarController: NSObject {
         terminateApp: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }
     ) {
         let serviceConnectionStatus = ServiceConnectionStatusModel(connectionStatus: connectionStatus)
+        let collectionActivityStatus = CollectionActivityStatusModel(collectionStatus: collectionStatus)
         self.serviceConnectionStatus = serviceConnectionStatus
+        self.collectionActivityStatus = collectionActivityStatus
+        self.currentActivity = currentActivity
         popover = NSPopover()
         self.activateApp = activateApp
         self.terminateApp = terminateApp
@@ -165,6 +172,8 @@ public final class MenuBarController: NSObject {
                 permissionManager: permissionManager,
                 coordinator: displayCoordinator,
                 serviceConnectionStatus: serviceConnectionStatus,
+                collectionActivityStatus: collectionActivityStatus,
+                currentActivity: currentActivity,
                 accountStateManager: accountStateManager,
                 ipcClient: ipcClient,
                 menuStatusViewModel: menuStatusViewModel,

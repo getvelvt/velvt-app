@@ -204,6 +204,13 @@ impl MessageRouter for R7Router {
                         error_code = "upload_flush_now_failed",
                         "failed to flush the upload queue"
                     );
+                    return Ok(Some(ServerMessage::ErrorResponse(
+                        velvt_shared_types::ErrorResponse {
+                            code: "upload_flush_failed".into(),
+                            message: "Unable to send queued events. Try again later.".into(),
+                            related_event_id: None,
+                        },
+                    )));
                 }
                 Ok(Some(ServerMessage::MenuStatus(
                     self.menu_status.snapshot().await,

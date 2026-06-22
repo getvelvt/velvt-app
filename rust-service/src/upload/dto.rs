@@ -1,10 +1,9 @@
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 /// Auditable outbound event DTO. It deliberately has no raw-content fields.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchEventPayload {
-    #[serde(skip)]
     pub event_id: String,
     pub stable_id: String,
     pub label: String,
@@ -12,6 +11,40 @@ pub struct BatchEventPayload {
     pub taxonomy_version: String,
     pub occurred_at: DateTime<Utc>,
     pub duration_seconds: u64,
+}
+
+impl Serialize for BatchEventPayload {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct ApiEventPayload<'a> {
+            duration_seconds: u64,
+            category: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct ApiBatchEvent<'a> {
+            event_id: &'a str,
+            occurred_at: DateTime<Utc>,
+            abstraction_type: &'static str,
+            abstraction_type_version: &'static str,
+            payload: ApiEventPayload<'a>,
+        }
+
+        ApiBatchEvent {
+            event_id: &self.event_id,
+            occurred_at: self.occurred_at,
+            abstraction_type: "document:edit",
+            abstraction_type_version: "1",
+            payload: ApiEventPayload {
+                duration_seconds: self.duration_seconds,
+                category: &self.category,
+            },
+        }
+        .serialize(serializer)
+    }
 }
 
 impl BatchEventPayload {

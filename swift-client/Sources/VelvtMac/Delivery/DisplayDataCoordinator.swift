@@ -4,16 +4,24 @@ import Foundation
 @MainActor
 public final class MenuStatusViewModel: ObservableObject {
     @Published public private(set) var status: MenuStatus?
+    @Published public private(set) var sendError: String?
     private let ipcClient: any IPCClientProtocol
     private var cancellables = Set<AnyCancellable>()
     private var timer: AnyCancellable?
 
     public init(ipcClient: any IPCClientProtocol, messages: some Publisher<ServerMessage, Never>) {
         self.ipcClient = ipcClient
-        messages.compactMap { message -> MenuStatus? in
-            guard case .menuStatus(let status) = message else { return nil }
-            return status
-        }.receive(on: RunLoop.main).sink { [weak self] in self?.status = $0 }.store(in: &cancellables)
+        messages.receive(on: RunLoop.main).sink { [weak self] message in
+            switch message {
+            case .menuStatus(let status):
+                self?.status = status
+                self?.sendError = nil
+            case .errorResponse(let error) where error.code == "upload_flush_failed":
+                self?.sendError = error.message
+            default:
+                break
+            }
+        }.store(in: &cancellables)
     }
 
     public func start() {
@@ -25,8 +33,12 @@ public final class MenuStatusViewModel: ObservableObject {
 
     public func sendAllNow() {
         Task {
-            try? await ipcClient.send(.flushUploadQueue)
-            try? await ipcClient.send(.requestMenuStatus)
+            do {
+                try await ipcClient.send(.flushUploadQueue)
+                try await ipcClient.send(.requestMenuStatus)
+            } catch {
+                sendError = "Unable to send queued events. Try again later."
+            }
         }
     }
 }

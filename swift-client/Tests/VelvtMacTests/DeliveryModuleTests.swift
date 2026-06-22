@@ -18,4 +18,20 @@ final class DeliveryModuleTests: XCTestCase {
 
         XCTAssertEqual(client.sentMessages, [.flushUploadQueue, .requestMenuStatus])
     }
+
+    @MainActor
+    func testUploadFlushFailureIsPublishedForTheMenu() async {
+        let client = FakeIPCClient()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let sut = MenuStatusViewModel(ipcClient: client, messages: messages)
+
+        messages.send(.errorResponse(ErrorResponse(
+            code: "upload_flush_failed",
+            message: "Unable to send queued events.",
+            relatedEventID: nil
+        )))
+        await Task.yield()
+
+        XCTAssertEqual(sut.sendError, "Unable to send queued events.")
+    }
 }

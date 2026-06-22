@@ -357,7 +357,7 @@ fn simultaneous_count_and_time_flush_only_assembles_one_batch() {
 }
 
 #[test]
-fn payload_serialization_contains_only_audited_safe_fields() {
+fn payload_serialization_matches_the_cloud_event_contract() {
     let payload = BatchPayload::new(
         "batch-1",
         "1",
@@ -369,8 +369,6 @@ fn payload_serialization_contains_only_audited_safe_fields() {
     let value = serde_json::to_value(payload).unwrap();
     let event = &value["events"][0];
 
-    // Test-level reflection: serde exposes the complete serialized field set,
-    // so this exact-key assertion fails if any raw-capable field is added.
     assert_eq!(
         event
             .as_object()
@@ -379,23 +377,34 @@ fn payload_serialization_contains_only_audited_safe_fields() {
             .cloned()
             .collect::<Vec<_>>(),
         vec![
-            "category",
-            "duration_seconds",
-            "label",
+            "abstraction_type",
+            "abstraction_type_version",
+            "event_id",
             "occurred_at",
-            "stable_id",
-            "taxonomy_version"
+            "payload",
         ]
     );
+    assert_eq!(event["event_id"], "one");
+    assert_eq!(event["abstraction_type"], "document:edit");
+    assert_eq!(event["abstraction_type_version"], "1");
+    assert_eq!(
+        event["payload"],
+        serde_json::json!({
+            "duration_seconds": 0,
+            "category": "FOCUS_WORK",
+        })
+    );
+    for local_only_field in ["stable_id", "label", "taxonomy_version"] {
+        assert!(event.get(local_only_field).is_none(), "{local_only_field}");
+    }
     let json = serde_json::to_string(&value).unwrap();
-    for forbidden in [
-        "event_id",
+    for forbidden_raw_field in [
         "raw_app_name",
         "raw_window_title",
         "app_name",
         "window_title",
     ] {
-        assert!(!json.contains(forbidden), "{forbidden}");
+        assert!(!json.contains(forbidden_raw_field), "{forbidden_raw_field}");
     }
 }
 
@@ -424,7 +433,7 @@ async fn http_uploader_posts_exact_payload_and_maps_duplicate() {
         responses: Arc::new(Mutex::new(
             vec![
                 HttpResponse {
-                    status: 202,
+                    status: 200,
                     error_code: None,
                     tokens: None,
                     retry_after: None,
@@ -1068,6 +1077,52 @@ async fn upload_batcher_flush_now_drains_memory_and_resumes_ready_batches() {
         UploadBatchStatus::Sent
     );
     assert!(repository.pending_batches().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn manual_flush_uploads_a_batch_even_while_its_host_is_backed_off() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository = database.upload_batch_repo();
+    repository
+        .insert_batch_with_events(
+            &NewUploadBatch {
+                batch_id: "batch-delayed".into(),
+            },
+            &[BatchEvent {
+                event_id: "event-delayed".into(),
+                stable_id: "stable-delayed".into(),
+                label: "document:edit".into(),
+                category: "FOCUS_WORK".into(),
+                taxonomy_version: "mvp-1".into(),
+                occurred_at: Utc.timestamp_opt(9, 0).unwrap(),
+                duration_seconds: 0,
+            }],
+        )
+        .unwrap();
+    repository
+        .mark_failed(
+            "batch-delayed",
+            Utc::now() + chrono::Duration::minutes(5),
+            "transport",
+        )
+        .unwrap();
+    let uploader = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]);
+    let inspection = uploader.clone();
+    let mut batcher = UploadBatcher::new(
+        BatchAssembler::new("device-1", 100, Duration::from_secs(180)),
+        UploadCoordinator::new(
+            repository.clone(),
+            uploader,
+            FakePrivacyAlertSink::default(),
+        ),
+    );
+
+    assert!(!batcher.flush_now().await.unwrap());
+    assert_eq!(inspection.upload_count(), 1);
+    assert_eq!(
+        repository.batch_status("batch-delayed").unwrap(),
+        UploadBatchStatus::Sent
+    );
 }
 
 #[tokio::test]

@@ -113,11 +113,24 @@ where
     }
 
     pub async fn upload_batch(&self, batch: BatchPayload) -> Result<(), CoordinatorError> {
-        if let Some(next_attempt_at) = self.repository.host_backoff_until(&self.host)? {
-            if next_attempt_at > Utc::now() {
-                self.repository
-                    .mark_failed(&batch.batch_id, next_attempt_at, "host_backoff")?;
-                return Ok(());
+        self.upload_batch_with_backoff(batch, true).await
+    }
+
+    async fn upload_batch_with_backoff(
+        &self,
+        batch: BatchPayload,
+        respect_host_backoff: bool,
+    ) -> Result<(), CoordinatorError> {
+        if respect_host_backoff {
+            if let Some(next_attempt_at) = self.repository.host_backoff_until(&self.host)? {
+                if next_attempt_at > Utc::now() {
+                    self.repository.mark_failed(
+                        &batch.batch_id,
+                        next_attempt_at,
+                        "host_backoff",
+                    )?;
+                    return Ok(());
+                }
             }
         }
         let outcome = match self.uploader.upload(&batch).await {
@@ -186,6 +199,49 @@ where
             }
         }
         Ok(())
+    }
+
+    pub async fn flush_all_pending(
+        &self,
+        schema_version: &str,
+        client_version: &str,
+        supported_abstraction_types: &[String],
+    ) -> Result<usize, CoordinatorError> {
+        let batches = self.repository.pending_batches()?;
+        let count = batches.len();
+        for batch in batches {
+            let taxonomy = batch
+                .events
+                .first()
+                .map(|event| event.taxonomy_version.clone())
+                .unwrap_or_default();
+            let events = batch
+                .events
+                .into_iter()
+                .map(|event| BatchEventPayload {
+                    event_id: event.event_id,
+                    stable_id: event.stable_id,
+                    label: event.label,
+                    category: event.category,
+                    taxonomy_version: event.taxonomy_version,
+                    occurred_at: event.occurred_at,
+                    duration_seconds: event.duration_seconds,
+                })
+                .collect();
+            self.upload_batch_with_backoff(
+                BatchPayload::new(
+                    batch.batch_id,
+                    schema_version,
+                    client_version,
+                    supported_abstraction_types.to_vec(),
+                    taxonomy,
+                    events,
+                ),
+                false,
+            )
+            .await?;
+        }
+        Ok(count)
     }
 
     pub async fn submit_batch(&self, batch: BatchPayload) -> Result<(), CoordinatorError> {

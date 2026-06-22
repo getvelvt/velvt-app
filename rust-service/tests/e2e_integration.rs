@@ -32,7 +32,7 @@ use velvt_service::ipc::{
     serve_connection_with_push_queue, serve_connection_with_push_queue_and_shutdown, MessageRouter,
     R7Router,
 };
-use velvt_service::persistence::SqlitePersistence;
+use velvt_service::persistence::{PersistenceError, SqlitePersistence};
 use velvt_service::upload::{
     BatchAssembler, CoordinatorError, EventIngestor, FakeBatchUploader, FakePrivacyAlertSink,
     IpcPrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator, UploadOutcome,
@@ -127,6 +127,43 @@ fn build_router(
 #[derive(Default)]
 struct RecordingIngestor {
     flush_now_calls: AtomicUsize,
+}
+
+struct FailingFlushIngestor;
+
+impl EventIngestor for FailingFlushIngestor {
+    fn ingest<'a>(
+        &'a self,
+        _event_id: String,
+        _event: &'a velvt_service::abstraction::AbstractedEvent,
+        _duration_seconds: u64,
+        _now: chrono::DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CoordinatorError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn flush_due<'a>(
+        &'a self,
+        _now: chrono::DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+
+    fn flush_shutdown<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
+        Box::pin(async { Ok(false) })
+    }
+
+    fn flush_now<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(CoordinatorError::Persistence(PersistenceError::NotFound {
+                entity: "upload_batch",
+            }))
+        })
+    }
 }
 
 impl EventIngestor for RecordingIngestor {
@@ -238,6 +275,26 @@ async fn flush_upload_queue_uses_shared_ingestor_and_returns_menu_status() {
 
     assert!(matches!(response, Some(ServerMessage::MenuStatus(_))));
     assert_eq!(ingestor.flush_now_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn flush_upload_queue_returns_a_safe_error_when_uploading_fails() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let router = build_router(
+        Arc::new(FakeCacheManager::new()),
+        &persistence,
+        Arc::new(FailingFlushIngestor) as Arc<dyn EventIngestor>,
+        Arc::new(FakeHttp::default()),
+        Arc::new(FakeHttp::default()),
+    );
+
+    let response = router
+        .route(ClientMessage::FlushUploadQueue(FlushUploadQueue {}))
+        .await
+        .unwrap();
+
+    assert!(matches!(response, Some(ServerMessage::ErrorResponse(error))
+        if error.code == "upload_flush_failed"));
 }
 
 // ---------------------------------------------------------------------------

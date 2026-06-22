@@ -303,6 +303,14 @@ public struct MenuBarPopoverView: View {
                     }
                 }
             }.frame(height: 180)
+            if let sendError = menuStatusViewModel?.sendError {
+                Text(sendError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            }
             Divider().padding(.top, 8)
             Button("Send All Now") { menuStatusViewModel?.sendAllNow() }
                 .frame(maxWidth: .infinity, alignment: .leading)

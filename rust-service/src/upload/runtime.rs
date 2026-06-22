@@ -71,7 +71,11 @@ where
                 self.assembler.requeue(batch);
                 return Err(error);
             }
-            if let Err(error) = self.coordinator.upload_batch(batch).await {
+            if let Err(error) = self
+                .coordinator
+                .flush_all_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
+                .await
+            {
                 Self::log_submit_failure(&error);
                 return Err(error);
             }
@@ -80,7 +84,7 @@ where
             false
         };
         self.coordinator
-            .resume_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
+            .flush_all_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
             .await?;
         Ok(flushed)
     }
@@ -203,7 +207,10 @@ where
                     self.inner.lock().await.assembler.requeue(batch);
                     return Err(error);
                 }
-                if let Err(error) = coordinator.upload_batch(batch).await {
+                if let Err(error) = coordinator
+                    .flush_all_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
+                    .await
+                {
                     UploadBatcher::<U, A>::log_submit_failure(&error);
                     return Err(error);
                 }
@@ -212,7 +219,7 @@ where
                 false
             };
             coordinator
-                .resume_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
+                .flush_all_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
                 .await?;
             Ok(flushed)
         })

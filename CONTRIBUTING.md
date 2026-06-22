@@ -87,8 +87,8 @@ The Swift client declares its supported protocol version on every socket connect
 
 ### Build & test
 ```bash
-xcodebuild                              # build
-xcodebuild test -scheme velvt-mac       # run tests (verify scheme name)
+swift test --package-path swift-client
+xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' build
 ```
 
 ***
@@ -110,7 +110,7 @@ xcodebuild test -scheme velvt-mac       # run tests (verify scheme name)
 ### Key constraints
 - **Abstraction happens before any data hits the upload queue.** No raw fields in `abstracted_events` or `upload_batches`.
 - **Analytics is a deferred stub.** `src/analytics/` exists but is feature-flagged off in all MVP builds. Do not activate it.
-- **No full-table scans on hot paths.** Required indexes: `raw_events.retention_expiry` (and any fields used in batch assembly).
+- **No full-table scans on hot paths.** Retention and batch-assembly queries must use indexed paths, including `raw_event_buffer.occurred_at` / `created_at` and batch status/time columns.
 - **Graceful shutdown.** Flush the pending upload queue and close the socket cleanly on `SIGTERM`.
 
 ### Build & test
@@ -122,7 +122,7 @@ cargo fmt --check           # format check
 ```
 
 ### Database migrations
-Migrations are versioned files in `rust-service/migrations/`. They must be **safe and additive** — no destructive schema changes without an explicit migration path. Required tables: `raw_events`, `abstraction_mappings`, `abstracted_events`, `upload_batches`, `device_state`, `cached_daily_summaries`, `cached_daily_insights`.
+Migrations are versioned files in `rust-service/migrations/`. They must be **safe and additive** — no destructive schema changes without an explicit migration path. Current feature tables are `abstraction_map`, `raw_event_buffer`, `upload_batch`, `batch_event`, `history_cache`, `insight_cache`, and `upload_host_backoff`.
 
 ***
 

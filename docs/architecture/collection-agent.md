@@ -5,7 +5,7 @@
 The collection layer is local-only and event-driven. Its only output is:
 
 ```swift
-RawEvent(appName: String, windowTitle: String, occurredAt: Date)
+RawEvent(appName: String, windowTitle: String, bundleID: String?, occurredAt: Date)
 ```
 
 It sends events only through `EventSink.receive(_:)`. It has no IPC, database,

@@ -1,5 +1,8 @@
 # Menu Bar Data States Implementation Plan
 
+> Historical plan. The current IPC protocol is v10; use repository root
+> `README.md` for current run commands.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Render useful authenticated menu-bar content when either daily endpoint has no generated payload, while exposing contextual account actions.
@@ -164,6 +167,6 @@ Expected: all tests pass.
 
 - [ ] **Step 2: Build the Xcode target**
 
-Run: `xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme VelvtMac -configuration Debug build CODE_SIGNING_ALLOWED=NO`
+Run: `xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -configuration Debug build CODE_SIGNING_ALLOWED=NO`
 
 Expected: `** BUILD SUCCEEDED **`.

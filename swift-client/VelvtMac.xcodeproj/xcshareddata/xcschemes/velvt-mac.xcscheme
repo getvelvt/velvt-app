@@ -63,7 +63,7 @@
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "VELVT_SOCKET_PATH"
-            value = "~/.velt/velvt-service.sock"
+            value = "~/.velvt/velvt-service.sock"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>

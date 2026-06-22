@@ -1,5 +1,8 @@
 # Menu Popover UI Overhaul Implementation Plan
 
+> Historical plan. The current IPC protocol is v10; use repository root
+> `README.md` for current run commands.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the menu popover onboarding/settings experience with in-popover navigation, privacy-safe status data, and a service-owned manual upload flush.
@@ -412,7 +415,7 @@ Expected: every command exits 0.
 
 - [ ] **Step 2: Build the macOS app target without code signing.**
 
-Run: `xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme VelvtMac -configuration Debug build CODE_SIGNING_ALLOWED=NO`
+Run: `xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -configuration Debug build CODE_SIGNING_ALLOWED=NO`
 
 Expected: `** BUILD SUCCEEDED **`.
 

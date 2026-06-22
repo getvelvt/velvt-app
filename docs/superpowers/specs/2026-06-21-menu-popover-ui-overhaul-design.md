@@ -1,5 +1,8 @@
 # Menu Popover UI Overhaul Design
 
+> Historical design note. The current IPC protocol is v10; use repository root
+> `README.md` for current run commands.
+
 ## Scope
 
 This change keeps Velvt menu-bar-only. Every user-facing route is hosted in the existing `NSPopover`; no onboarding, authentication, settings, or information window is created. The work spans `swift-client/`, `rust-service/`, and `proto/` because the user-triggered upload flush is a new IPC capability.

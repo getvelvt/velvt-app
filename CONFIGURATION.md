@@ -106,6 +106,11 @@ invalidates the cached binary when these values change between builds.
 
 ## ServiceManager version-check and update loop
 
+This section describes the future `SMAppService` update path for signed
+distribution builds. The default local Debug app launched by `make build-app`
+uses `ServiceProcessLauncher` to start the bundled helper directly from
+`Contents/Resources/velvt-service`.
+
 ### How version comparison works
 
 The Xcode Run Script build phase writes the Rust binary's version (from
@@ -191,4 +196,5 @@ When bumping the IPC protocol version or socket path (changes to `proto/`):
 1. Update `proto/ipc_socket_path` and/or `proto/version`.
 2. Update `VELVT_SOCKET_PATH` and `VELVT_PROTOCOL_VERSION` in both
    `swift-client/Configs/Debug.xcconfig` and `Release.xcconfig`.
-3. Follow the existing IPC contract change checklist in `CONTRIBUTING.md`.
+3. Update the Xcode scheme environment values if they are present.
+4. Follow the existing IPC contract change checklist in `CONTRIBUTING.md`.

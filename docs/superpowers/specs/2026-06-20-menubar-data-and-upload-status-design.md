@@ -1,5 +1,8 @@
 # Menu Bar Data and Upload Status
 
+> Historical design note. The current IPC protocol is v10; use repository root
+> `README.md` for current run commands.
+
 ## Scope
 
 Repair the authenticated menu-bar experience so it requests and renders the

@@ -7,7 +7,7 @@ import Foundation
 /// Launches and stops the bundled `velvt-service` helper binary.
 ///
 /// `make build-app` copies the Rust release binary into
-/// `Contents/MacOS/velvt-service` alongside the Swift executable (see
+/// `Contents/Resources/velvt-service` (see
 /// repository root `Makefile`). A real user double-clicking the resulting
 /// `.app` has no shell, so the Swift process is responsible for starting its
 /// own backend; this is the simplest version of that responsibility — a
@@ -24,7 +24,7 @@ public final class ServiceProcessLauncher {
     /// started separately per the README's development instructions.
     public func bundledServiceURL(bundle: Bundle = .main) -> URL? {
         let candidate = bundle.bundleURL
-            .appendingPathComponent("Contents/MacOS/velvt-service")
+            .appendingPathComponent("Contents/Resources/velvt-service")
         return FileManager.default.isExecutableFile(atPath: candidate.path) ? candidate : nil
     }
 
@@ -67,6 +67,15 @@ import os
 
 enum ServiceProcessLauncherLog {
     static let shared = Logger(subsystem: "com.velvt.mac", category: "ServiceProcessLauncher")
+}
+
+#else
+
+public final class ServiceProcessLauncher {
+    public init() {}
+    public func bundledServiceURL(bundle: Bundle = .main) -> URL? { nil }
+    public func start(environment: [String: String] = ProcessInfo.processInfo.environment) {}
+    public func stop() {}
 }
 
 #endif

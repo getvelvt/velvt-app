@@ -41,6 +41,16 @@ Swift Client                                      Rust Service
      |<-- insight_payload ------------------------------|
      |<-- history_payload ------------------------------|
      |                                                  |
+     |--- request_latest_insight / history ------------>|
+     |<-- insight_payload / history_payload / cache_empty|
+     |                                                  |
+     |--- sign_up / log_in / log_out / delete_account ->|
+     |<-- auth_success / auth_failure / needs_reauth ---|
+     |<-- account_deletion_accepted / device_revoked ---|
+     |                                                  |
+     |--- request_menu_status / flush_upload_queue ---->|
+     |<-- menu_status ----------------------------------|
+     |                                                  |
      |--- error_response ------------------------------>|
      |<-- error_response -------------------------------|
      |                                                  |
@@ -53,10 +63,16 @@ and sent `acknowledged`.
 
 Direction is enforced by the workspace message envelopes:
 
-- Rust accepts only `client_hello`, `raw_event`, and `error_response`.
+- Rust accepts only `client_hello`, `raw_event`, `error_response`,
+  `request_latest_insight`, `request_latest_history`, `sign_up`, `log_in`,
+  `log_out`, `delete_account`, `request_menu_status`, and
+  `flush_upload_queue`.
 - Rust emits only `server_hello`, `acknowledged`, `version_mismatch`,
   `malformed_message`, `raw_event_ack`, `insight_payload`, `history_payload`,
-  `service_status`, `privacy_violation_alert`, and `error_response`.
+  `service_status`, `privacy_violation_alert`, `error_response`,
+  `cache_empty`, `shutting_down`, `auth_success`, `auth_failure`,
+  `account_deletion_accepted`, `needs_reauth`, `device_revoked`,
+  `notification_payload`, and `menu_status`.
 - Swift sends only the Rust inbound set and accepts only the Rust outbound set.
 
 ## 3. Message Catalog
@@ -67,9 +83,11 @@ All schemas use JSON Schema draft-07 and reject undeclared fields with
 Every message uses a `type` discriminant and a `payload` object. Catalog fields
 listed below live inside `payload`.
 
-Optional-field encoding is strict. Omit absent `rejection_reason`,
-`drop_reason`, `reason`, and `related_event_id` properties entirely. Only
-`raw_event.bundle_id` is nullable and may be encoded as JSON `null`.
+Optional-field encoding is strict. Omit absent optional properties entirely,
+including `drop_reason`, `reason`, `related_event_id`,
+`do_not_disturb_until`, and `menu_status.queued_events[].local_label`. The
+`raw_event.bundle_id` property is required by the schema but nullable, so an
+unknown bundle identifier is encoded as JSON `null`.
 
 ### `client_hello`
 
@@ -166,6 +184,75 @@ batch for a terminal privacy violation.
 - `type`: literal `privacy_violation_alert`
 - `code`: literal `raw_field_rejected`
 - `message`: safe server-supplied rejection diagnostic; never the batch payload
+
+### `request_latest_insight`
+
+Direction: Swift to Rust. Purpose: request one cached or freshly fetched daily
+insight.
+
+- `type`: literal `request_latest_insight`
+- `date`: calendar date formatted `YYYY-MM-DD`
+
+### `request_latest_history`
+
+Direction: Swift to Rust. Purpose: request a ready-to-display history window.
+
+- `type`: literal `request_latest_history`
+- `days`: positive number of requested days
+
+### `cache_empty`
+
+Direction: Rust to Swift. Purpose: report that the requested `insight_payload`
+or `history_payload` is not cached or generated yet.
+
+- `type`: literal `cache_empty`
+- `payload_type`: `insight_payload` or `history_payload`
+
+### Auth and account messages
+
+Direction: Swift to Rust for `sign_up`, `log_in`, `log_out`, and
+`delete_account`; Rust to Swift for `auth_success`, `auth_failure`,
+`account_deletion_accepted`, `needs_reauth`, and `device_revoked`.
+
+Credentials and tokens are permitted only in these auth-specific wire
+messages. Rust redacts credential-carrying DTOs in `Debug`, Swift stores
+received tokens in Keychain, and neither workspace may log these payloads.
+
+### `notification_payload`
+
+Direction: Rust to Swift. Purpose: deliver ready-to-schedule notification copy.
+
+- `notification_id`: stable notification identifier
+- `title` / `body`: Rust-authored display copy; Swift schedules exactly this
+- `insight_date`: calendar date formatted `YYYY-MM-DD`
+- `do_not_disturb_until`: optional ISO 8601 UTC timestamp ending in `Z`
+
+### `request_menu_status`
+
+Direction: Swift to Rust. Purpose: request local service/cloud status and a
+privacy-safe queued-event snapshot.
+
+Payload is empty.
+
+### `flush_upload_queue`
+
+Direction: Swift to Rust. Purpose: request an immediate flush/retry of queued
+privacy-safe upload work, then return a fresh `menu_status`.
+
+Payload is empty and never carries event data.
+
+### `menu_status`
+
+Direction: Rust to Swift. Purpose: report service status for the menu popover.
+
+- `device_id`: optional device identifier
+- `cloud_ready`: whether the Rust service's cloud readiness probe succeeded
+- `queued_event_count`: aggregate count of queued events
+- `queued_events`: newest privacy-safe queue summaries, each containing
+  `label`, `category`, optional local-only `local_label`, and `occurred_at`
+
+`local_label` is display-only and must never be copied into upload DTOs or
+logs.
 
 ## 4. Version Negotiation
 

@@ -108,9 +108,9 @@ swift-client/
 ```
 
 ## Key Commands
-- Build: `xcodebuild` or open in Xcode
-- Tests: `xcodebuild test -scheme velvt-mac` (verify scheme name in project)
-- Lint: check `Makefile` or CI config
+- Build: `xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' build`
+- Tests: `swift test --package-path swift-client`
+- Lint: `cd swift-client && swift format lint --recursive Sources Tests`
 
 ## Development Guide
 
@@ -197,8 +197,8 @@ rust-service/
 
 ### Persistence
 - Migrations must be safe and additive. Use versioned migration files.
-- Required tables: `raw_events`, `abstraction_mappings`, `abstracted_events`, `upload_batches`, `device_state`, `cached_daily_summaries`, `cached_daily_insights`.
-- `raw_events.retention_expiry` must have an explicit index. Retention cleanup must use this index path.
+- Current feature tables: `abstraction_map`, `raw_event_buffer`, `upload_batch`, `batch_event`, `history_cache`, `insight_cache`, and `upload_host_backoff`.
+- `raw_event_buffer.occurred_at` and `raw_event_buffer.created_at` must have explicit indexes. Retention cleanup must use an indexed path.
 - Default retention: raw cache 7 days, uploaded abstracted events compacted after 7 days, cached insights 7 days.
 
 ### Upload

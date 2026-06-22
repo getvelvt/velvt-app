@@ -2,7 +2,7 @@
 VELVT_API_BASE_URL = https:/$()/dev-api.getvelvt.com
 VELVT_APNS_ENV = production
 VELVT_SOCKET_PATH = ~/.velvt/velvt-service.sock
-VELVT_PROTOCOL_VERSION = 7
+VELVT_PROTOCOL_VERSION = 10
 
 // Auto-generate Info.plist from build settings instead of a literal file —
 // INFOPLIST_KEY_* below is silently ignored otherwise.

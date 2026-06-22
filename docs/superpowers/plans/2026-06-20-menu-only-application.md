@@ -1,5 +1,8 @@
 # Menu-Only Application Implementation Plan
 
+> Historical plan. The current IPC protocol is v10; use repository root
+> `README.md` for current run commands.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Velvt a fully functional menu-bar-only macOS application, including onboarding, settings, local/cloud health, and privacy-safe queued-upload visibility.
@@ -61,7 +64,7 @@
 ### Task 5: Add custom icon assets and stabilize permissions/credentials
 
 **Files:**
-- Create: `swift-client/Resources/Assets.xcassets/AppIcon.appiconset/*`, `swift-client/Resources/Assets.xcassets/VelvtMenuBarIcon.imageset/*`
+- Create: `swift-client/Assets.xcassets/AppIcon.appiconset/*`, `swift-client/Assets.xcassets/VelvtMenuBarIcon.imageset/*`
 - Modify: `swift-client/Sources/VelvtMac/App/MenuBarController.swift`, `swift-client/Resources/Info.plist`, `swift-client/VelvtMac.xcodeproj/project.pbxproj`
 - Modify: `swift-client/Sources/VelvtMac/Auth/AuthModule.swift`, `swift-client/Sources/VelvtMac/Permissions/PermissionManager.swift`
 - Create: `docs/macos-menu-bar-assets.md`

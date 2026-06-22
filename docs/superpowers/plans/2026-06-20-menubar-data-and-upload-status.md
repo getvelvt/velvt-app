@@ -1,5 +1,8 @@
 # Menu Bar Data and Upload Status Implementation Plan
 
+> Historical plan. The current IPC protocol is v10; use repository root
+> `README.md` for current run commands.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Render available authenticated data in the menu bar, show missing insights as an empty state, and expose contextual account and pending-upload controls.
@@ -12,7 +15,7 @@
 
 ## Files
 
-- `proto/version`, `proto/changelog.md`, `proto/schema/*.json`: v8 source contract.
+- `proto/version`, `proto/CHANGELOG.md`, `proto/schema/*.json`: v8 source contract.
 - `rust-service/shared-types/src/lib.rs`: Rust wire DTOs and version.
 - `rust-service/src/upload/{assembly,runtime}.rs`: buffered-event count.
 - `rust-service/src/persistence/{traits,sqlite}.rs`: persisted-event aggregate.
@@ -66,7 +69,7 @@ public struct CacheEmpty: Codable, Equatable, Sendable {
 ### Task 2: Define the v8 pending-upload aggregate contract atomically
 
 **Files:**
-- Modify: `proto/version`, `proto/changelog.md`
+- Modify: `proto/version`, `proto/CHANGELOG.md`
 - Create: `proto/schema/request_pending_upload_count.json`, `proto/schema/pending_upload_count.json`
 - Modify: `rust-service/shared-types/src/lib.rs`, `rust-service/shared-types/tests/dto_round_trip.rs`
 - Modify: `swift-client/Sources/VelvtMac/IPC/IPCTypes.swift`, `swift-client/Tests/VelvtMacTests/IPCModuleTests.swift`

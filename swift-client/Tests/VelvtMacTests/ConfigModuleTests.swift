@@ -10,7 +10,7 @@ final class ConfigModuleTests: XCTestCase {
         let config = try loader.load()
 
         XCTAssertEqual(config.socketPath, "~/.velvt/velvt-service.sock")
-        XCTAssertEqual(config.protocolVersion, 7)
+        XCTAssertEqual(config.protocolVersion, 10)
         XCTAssertEqual(config.clientVersion, "0.1.0")
         XCTAssertEqual(config.apnsEnvironment, .development)
     }
@@ -102,19 +102,19 @@ final class ConfigModuleTests: XCTestCase {
     func testEnvironmentConfigLoaderHappyPath() throws {
         let env: [String: String] = [
             "VELVT_SOCKET_PATH": "~/.velvt/test.sock",
-            "VELVT_PROTOCOL_VERSION": "7",
+            "VELVT_PROTOCOL_VERSION": "10",
             "VELVT_CLIENT_VERSION": "0.1.0",
         ]
         let config = try EnvironmentConfigLoader(environment: env).load()
         XCTAssertEqual(config.socketPath, "~/.velvt/test.sock")
-        XCTAssertEqual(config.protocolVersion, 7)
+        XCTAssertEqual(config.protocolVersion, 10)
         XCTAssertEqual(config.clientVersion, "0.1.0")
         XCTAssertEqual(config.apnsEnvironment, .development)
     }
 
     func testEnvironmentConfigLoaderMissingSocketPath() {
         let env: [String: String] = [
-            "VELVT_PROTOCOL_VERSION": "7",
+            "VELVT_PROTOCOL_VERSION": "10",
             "VELVT_CLIENT_VERSION": "0.1.0",
         ]
         XCTAssertThrowsError(try EnvironmentConfigLoader(environment: env).load()) { error in
@@ -139,7 +139,7 @@ final class ConfigModuleTests: XCTestCase {
     private func validDictionary() -> [String: Any] {
         [
             "VelvtSocketPath": "~/.velvt/velvt-service.sock",
-            "VelvtProtocolVersion": "7",
+            "VelvtProtocolVersion": "10",
             "VelvtClientVersion": "0.1.0",
             "VelvtAPNSEnv": "development",
             "VelvtAPIBaseURL": "https://staging.api.velvt.test",

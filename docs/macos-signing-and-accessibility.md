@@ -20,4 +20,4 @@ Velvt’s bundle identifier is `com.velvt.mac`. macOS Accessibility (TCC) can on
 ## App and menu icons
 
 - The status icon is assigned through `NSStatusItem.button.image`; use a monochrome template image so macOS adapts it to the menu-bar appearance.
-- The Finder/Dock icon is selected by `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` and must be supplied in `Resources/Assets.xcassets/AppIcon.appiconset`.
+- The Finder/Dock icon is selected by `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` and must be supplied in `Assets.xcassets/AppIcon.appiconset`.

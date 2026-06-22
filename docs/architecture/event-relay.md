@@ -5,7 +5,7 @@
 The event relay sits between the collection agent and the IPC layer. It:
 
 1. Receives every `RawEvent` from `AXCollectionAgent` via `EventSink.receive(_:)`.
-2. Forwards each event to the Rust service as a `send_raw_event` IPC message.
+2. Forwards each event to the Rust service as a `raw_event` IPC message.
 3. Buffers events in memory while the IPC socket is unavailable.
 4. Flushes buffered events in chronological order when the socket reconnects.
 

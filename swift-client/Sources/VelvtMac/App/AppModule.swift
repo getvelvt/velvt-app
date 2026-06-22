@@ -17,6 +17,7 @@ public protocol AppLifecycleManaging: AnyObject {
 }
 
 /// AppKit delegate used by the SwiftUI application entry point.
+@MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     public let permissionManager: PermissionManager
     public let permissionPresentation: PermissionPresentationModel
@@ -58,7 +59,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        // Starts the bundled Rust helper (Contents/MacOS/velvt-service) when
+        // Starts the bundled Rust helper (Contents/Resources/velvt-service) when
         // running as a packaged .app; a no-op under `swift run`, where the
         // service is started separately per README development instructions.
         serviceProcessLauncher.start()

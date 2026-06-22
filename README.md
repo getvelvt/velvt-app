@@ -22,7 +22,13 @@ final privacy enforcement boundary before any cloud request.
 
 ## Build and Test
 
-Prerequisites are a pinned stable Rust toolchain and a macOS Swift toolchain.
+Prerequisites are:
+
+- Rust/Cargo on `PATH` (`rust-service/rust-toolchain.toml` pins the toolchain).
+- Swift 5.10 or later.
+- Full Xcode selected with `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`
+  for `xcodebuild`/`.app` targets. SwiftPM tests can run with Command Line
+  Tools, but the Xcode targets cannot.
 
 ```sh
 make build-all
@@ -48,7 +54,7 @@ make build-app
 
 Produces `dist/velvt-mac.app` — one double-clickable artifact with both the
 Swift UI and the Rust service binary embedded at
-`Contents/MacOS/velvt-service`. `AppDelegate` launches the bundled helper at
+`Contents/Resources/velvt-service`. `AppDelegate` launches the bundled helper at
 startup (see `ServiceProcessLauncher.swift`) and stops it on quit, so this
 is the one command a real user (or you, verifying locally) needs to get a
 working install — no exported environment variables, no separate terminal
@@ -221,7 +227,7 @@ Tier 2 classification is optional. At startup, check the structured log:
 
 ```sh
 make test-all          # both workspaces
-make test-rust         # cargo test --workspace (includes the 7-path
+make test-rust         # cargo test (includes the 7-path
                         # end-to-end integration suite in
                         # rust-service/tests/e2e_integration.rs)
 make test-swift         # swift test --package-path swift-client

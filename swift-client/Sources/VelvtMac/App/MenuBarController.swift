@@ -260,5 +260,6 @@ public final class MenuBarController: NSObject {
         let description = MenuBarIconProvider.accessibilityDescription(for: state)
         statusItem?.button?.image = NSImage(named: "VelvtMenuBarIcon")
         statusItem?.button?.image?.isTemplate = true
+        statusItem?.button?.toolTip = description
     }
 }

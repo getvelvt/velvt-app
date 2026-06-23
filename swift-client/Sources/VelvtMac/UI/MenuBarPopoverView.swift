@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 
@@ -81,6 +82,9 @@ public struct PopoverConnectionPresentation {
 public enum MenuBarPopoverRoute: Equatable {
     case main
     case settings
+}
+
+private enum SettingsSubmenu: Equatable {
     case appInfo
     case queuedEvents
 }
@@ -93,14 +97,11 @@ public struct MenuBarPopoverNavigator {
 
     public init() {}
     public mutating func showSettings() { move(to: .settings) }
-    public mutating func showAppInfo() { move(to: .appInfo) }
-    public mutating func showQueuedEvents() { move(to: .queuedEvents) }
     public mutating func goBack() {
         direction = .backward
         route = switch route {
         case .main: .main
         case .settings: .main
-        case .appInfo, .queuedEvents: .settings
         }
     }
     private mutating func move(to route: MenuBarPopoverRoute) {
@@ -122,6 +123,8 @@ public struct MenuBarPopoverView: View {
     private let onEscape: () -> Void
     private let onTerminate: () -> Void
     @State private var navigator = MenuBarPopoverNavigator()
+    @State private var showsAppInfoSubmenu = false
+    @State private var showsQueuedEventsSubmenu = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -178,8 +181,6 @@ public struct MenuBarPopoverView: View {
         switch navigator.route {
         case .main: mainContent
         case .settings: settingsContent
-        case .appInfo: appInfoContent
-        case .queuedEvents: queuedEventsContent
         }
     }
 
@@ -251,20 +252,27 @@ public struct MenuBarPopoverView: View {
 
     private var settingsContent: some View {
         VStack(spacing: 0) {
-            SettingsTitle(title: "Settings", goBack: { navigator.goBack() })
-            settingsRow("App Info") { navigator.showAppInfo() }
-            settingsRow("Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))") { navigator.showQueuedEvents() }
+            SettingsTitle(title: "Settings", goBack: {
+                dismissSettingsSubmenus()
+                navigator.goBack()
+            })
+            settingsSubmenuRow("App Info", submenu: .appInfo)
+            settingsSubmenuRow("Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))", submenu: .queuedEvents)
             Divider().padding(.vertical, 8)
             Button("Quit velvt", role: .destructive, action: onTerminate)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16).padding(.vertical, 8)
         }
         .padding(.bottom, 12)
+        .onAppear { dismissSettingsSubmenus() }
     }
 
-    private var appInfoContent: some View {
-        VStack(spacing: 0) {
-            SettingsTitle(title: "App Info", goBack: { navigator.goBack() })
+    @ViewBuilder
+    private func settingsSubmenuContent(for submenu: SettingsSubmenu) -> some View {
+        switch submenu {
+        case .appInfo:
+            VStack(spacing: 0) {
+                submenuTitle("App Info")
             infoRow("Version", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development")
             infoRow("Device ID", menuStatusViewModel?.status?.deviceID ?? "Not registered")
             infoRow("Authentication", authenticationDescription)
@@ -280,13 +288,12 @@ public struct MenuBarPopoverView: View {
                     : PopoverConnectionPresentation(status: .disconnected),
                 refresh: { menuStatusViewModel?.refresh() }
             )
-        }
-        .onAppear { menuStatusViewModel?.refresh() }
-    }
+            }
+            .onAppear { menuStatusViewModel?.refresh() }
 
-    private var queuedEventsContent: some View {
-        VStack(spacing: 0) {
-            SettingsTitle(title: "Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))", goBack: { navigator.goBack() })
+        case .queuedEvents:
+            VStack(spacing: 0) {
+                submenuTitle("Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))")
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array((menuStatusViewModel?.status?.queuedEvents ?? []).prefix(10))) { event in
@@ -315,15 +322,16 @@ public struct MenuBarPopoverView: View {
             Button("Send All Now") { menuStatusViewModel?.sendAllNow() }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
+            }
+            .onAppear { menuStatusViewModel?.refresh() }
         }
-        .onAppear { menuStatusViewModel?.refresh() }
     }
 
     private var transition: AnyTransition {
         guard !reduceMotion else { return .identity }
         return navigator.direction == .forward
-            ? .asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading))
-            : .asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .trailing))
+            ? .asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .trailing))
+            : .asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .leading))
     }
 
     private var connectionPresentation: PopoverConnectionPresentation {
@@ -344,6 +352,37 @@ public struct MenuBarPopoverView: View {
                 .contentShape(Rectangle()).padding(.horizontal, 16).padding(.vertical, 12)
         }.buttonStyle(.plain).frame(maxWidth: .infinity)
     }
+
+    private func settingsSubmenuRow(_ title: String, submenu: SettingsSubmenu) -> some View {
+        Button { showSettingsSubmenu(submenu) } label: {
+            HStack { Text(title); Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary) }
+                .contentShape(Rectangle())
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .onHover { if $0 { showSettingsSubmenu(submenu) } }
+        .background(
+            SubmenuPopoverAnchor(
+                isPresented: submenu == .appInfo ? $showsAppInfoSubmenu : $showsQueuedEventsSubmenu
+            ) {
+                settingsSubmenuContent(for: submenu)
+                    .frame(width: 280)
+                    .preferredColorScheme(.dark)
+            }
+        )
+    }
+
+    private func showSettingsSubmenu(_ submenu: SettingsSubmenu) {
+        showsAppInfoSubmenu = submenu == .appInfo
+        showsQueuedEventsSubmenu = submenu == .queuedEvents
+    }
+
+    private func dismissSettingsSubmenus() {
+        showsAppInfoSubmenu = false
+        showsQueuedEventsSubmenu = false
+    }
     private func infoRow(_ title: String, _ value: String) -> some View {
         HStack { Text(title).foregroundStyle(.secondary); Spacer(); Text(value).lineLimit(1).truncationMode(.middle) }
             .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
@@ -358,19 +397,82 @@ public struct MenuBarPopoverView: View {
         }
         .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
     }
+
+    private func submenuTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+    }
 }
 
 private struct SettingsTitle: View {
     let title: String
     let goBack: () -> Void
     var body: some View {
-        HStack {
-            Button(action: goBack) { Image(systemName: "chevron.left").padding(8) }
+        ZStack {
+            Text(title)
+                .font(.headline)
+            .frame(maxWidth: .infinity, alignment: .center)
+
+            HStack {
+                Button(action: goBack) {
+                    Image(systemName: "chevron.left")
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
                 .buttonStyle(.plain)
-                .contentShape(Rectangle())
-            Spacer()
-            Text(title).font(.headline)
-        }.padding(.horizontal, 10).padding(.vertical, 8)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+}
+
+private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    let content: () -> Content
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isPresented: $isPresented)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.updateBinding($isPresented)
+        let popover = context.coordinator.popover
+        popover.contentViewController = NSHostingController(rootView: content())
+
+        if isPresented, !popover.isShown {
+            popover.show(relativeTo: nsView.bounds, of: nsView, preferredEdge: .maxX)
+        } else if !isPresented, popover.isShown {
+            popover.performClose(nil)
+        }
+    }
+
+    final class Coordinator: NSObject, NSPopoverDelegate {
+        let popover = NSPopover()
+        private var setPresented: (Bool) -> Void
+
+        init(isPresented: Binding<Bool>) {
+            setPresented = { isPresented.wrappedValue = $0 }
+            super.init()
+            popover.behavior = .semitransient
+            popover.delegate = self
+        }
+
+        func updateBinding(_ isPresented: Binding<Bool>) {
+            setPresented = { isPresented.wrappedValue = $0 }
+        }
+
+        func popoverDidClose(_ notification: Notification) {
+            setPresented(false)
+        }
     }
 }
 

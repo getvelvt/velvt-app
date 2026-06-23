@@ -107,6 +107,18 @@ impl MenuStatusProviding for MenuStatusProvider {
                     category: event.category,
                     occurred_at: event.occurred_at,
                 })
+                .collect::<Vec<_>>();
+            let unbatched = self.raw_events.unbatched_events(10).unwrap_or_default();
+            let queued_event_count = queued_event_count + unbatched.len() as u64;
+            let queued_events = queued_events
+                .into_iter()
+                .chain(unbatched.into_iter().map(|event| QueuedEventSummary {
+                    label: event.label,
+                    local_label: event.local_display_label,
+                    category: event.category,
+                    occurred_at: event.occurred_at,
+                }))
+                .take(10)
                 .collect();
             MenuStatus {
                 device_id: self.device_id.clone(),

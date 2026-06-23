@@ -341,6 +341,21 @@ impl RawEventRepo for SqliteRawEventRepo {
         Ok(())
     }
 
+    fn unbatched_events(&self, limit: usize) -> Result<Vec<RawEventEntry>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT event_id, stable_id, label, local_display_label, category, taxonomy_version, occurred_at, duration_seconds
+             FROM raw_event_buffer
+             WHERE NOT EXISTS (SELECT 1 FROM batch_event WHERE batch_event.event_id = raw_event_buffer.event_id)
+             ORDER BY occurred_at DESC LIMIT ?1",
+        )?;
+        let events = statement
+            .query_map([limit as i64], raw_event_from_row)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into);
+        events
+    }
+
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError> {
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(

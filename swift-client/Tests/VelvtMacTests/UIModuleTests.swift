@@ -37,27 +37,12 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(navigator.direction, .backward)
     }
 
-    func testSettingsSubpagesMoveForwardAndReturnToSettings() {
+    func testSettingsBackNavigationAlwaysReturnsToMain() {
         var navigator = MenuBarPopoverNavigator()
-
         navigator.showSettings()
-        navigator.showAppInfo()
-        XCTAssertEqual(navigator.route, .appInfo)
-        XCTAssertEqual(navigator.direction, .forward)
-
         navigator.goBack()
-        XCTAssertEqual(navigator.route, .settings)
+        XCTAssertEqual(navigator.route, .main)
         XCTAssertEqual(navigator.direction, .backward)
-    }
-
-    func testQueuedEventsIsSettingsSubpage() {
-        var navigator = MenuBarPopoverNavigator()
-        navigator.showSettings()
-        navigator.showQueuedEvents()
-
-        XCTAssertEqual(navigator.route, .queuedEvents)
-        navigator.goBack()
-        XCTAssertEqual(navigator.route, .settings)
     }
 
 }

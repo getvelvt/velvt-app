@@ -105,6 +105,7 @@ pub trait InsightCacheRepo: Send + Sync {
 
 pub trait RawEventRepo: Send + Sync {
     fn insert(&self, event: &RawEventEntry) -> Result<(), PersistenceError>;
+    fn unbatched_events(&self, limit: usize) -> Result<Vec<RawEventEntry>, PersistenceError>;
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError>;
     fn local_display_labels(
         &self,

@@ -1,5 +1,5 @@
 use super::BatchPayload;
-use crate::auth::{HttpClient, HttpRequest};
+use crate::auth::{AuthError, HttpClient, HttpRequest};
 use std::{
     collections::VecDeque,
     future::Future,
@@ -26,6 +26,8 @@ impl UploadOutcome {
 pub enum BatchUploadError {
     #[error("batch upload transport unavailable")]
     Transport,
+    #[error("batch upload authentication required")]
+    AuthenticationRequired,
 }
 
 pub trait BatchUploader: Send + Sync {
@@ -92,11 +94,12 @@ where
             let mut request = HttpRequest::post("/v1/events/batches");
             request.json_body =
                 Some(serde_json::to_value(batch).map_err(|_| BatchUploadError::Transport)?);
-            let response = self
-                .http
-                .send(request)
-                .await
-                .map_err(|_| BatchUploadError::Transport)?;
+            let response = self.http.send(request).await.map_err(|error| match error {
+                AuthError::NeedsReauth | AuthError::DeviceRevoked | AuthError::Forbidden => {
+                    BatchUploadError::AuthenticationRequired
+                }
+                _ => BatchUploadError::Transport,
+            })?;
             Ok(if (200..300).contains(&response.status) {
                 if response
                     .raw_body

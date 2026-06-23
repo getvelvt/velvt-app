@@ -116,7 +116,8 @@ where
             (response.status, response.error_code.as_deref()),
             (403, Some("device_token_revoked"))
         ) {
-            return self.reissue_tokens(&tokens, device_id).await;
+            self.state.transition(AuthState::NeedsReauth)?;
+            return Err(AuthError::NeedsReauth);
         }
         self.state.transition(AuthState::NeedsReauth)?;
         match response.status {
@@ -129,80 +130,28 @@ where
     async fn handle_response(
         &self,
         response: HttpResponse,
-        request: HttpRequest,
+        _request: HttpRequest,
     ) -> Result<HttpResponse, AuthError> {
         match (response.status, response.error_code.as_deref()) {
             (403, Some("device_revoked")) => {
                 self.state.transition(AuthState::DeviceRevoked)?;
                 Err(AuthError::DeviceRevoked)
             }
-            (403, Some("device_token_revoked")) => self.reissue_device_token(request).await,
+            (403, Some("device_token_revoked")) => {
+                self.state.transition(AuthState::NeedsReauth)?;
+                Err(AuthError::NeedsReauth)
+            }
             (401, Some("invalid_credentials" | "invalid_token" | "token_expired")) => {
                 self.state.transition(AuthState::NeedsReauth)?;
                 Err(AuthError::NeedsReauth)
             }
-            (403, _) => Err(AuthError::Forbidden),
+            (403, _) => {
+                self.state.transition(AuthState::NeedsReauth)?;
+                Err(AuthError::NeedsReauth)
+            }
             (429, _) => Err(AuthError::RateLimited),
             _ => Ok(response),
         }
-    }
-
-    async fn reissue_device_token(
-        &self,
-        mut original: HttpRequest,
-    ) -> Result<HttpResponse, AuthError> {
-        let tokens = self.store.load_tokens()?.ok_or(AuthError::NeedsReauth)?;
-        let device_id = match self.state.current() {
-            AuthState::Authenticated { device_id } => device_id,
-            AuthState::DeviceRevoked => return Err(AuthError::DeviceRevoked),
-            AuthState::Unauthenticated | AuthState::NeedsReauth | AuthState::RefreshInFlight => {
-                return Err(AuthError::NeedsReauth)
-            }
-        };
-        let fresh = self.reissue_tokens(&tokens, device_id).await?;
-        original.authorization = Some(fresh.access_token().clone());
-        let retried = self.http.send(original).await?;
-        match (retried.status, retried.error_code.as_deref()) {
-            (403, Some("device_revoked" | "device_token_revoked")) => {
-                self.state.transition(AuthState::DeviceRevoked)?;
-                Err(AuthError::DeviceRevoked)
-            }
-            (403, _) => Err(AuthError::Forbidden),
-            (429, _) => Err(AuthError::RateLimited),
-            _ => Ok(retried),
-        }
-    }
-
-    async fn reissue_tokens(
-        &self,
-        tokens: &super::TokenPair,
-        device_id: String,
-    ) -> Result<super::TokenPair, AuthError> {
-        let mut request = HttpRequest::post("/v1/auth/devices/reissue");
-        request.authorization = Some(tokens.access_token().clone());
-        request.json_body = Some(serde_json::json!({ "device_id": device_id.clone() }));
-        let response = match self.http.send(request).await {
-            Ok(response) => response,
-            Err(_) => {
-                self.state.transition(AuthState::DeviceRevoked)?;
-                return Err(AuthError::DeviceRevoked);
-            }
-        };
-        if response.status != 200 {
-            self.state.transition(AuthState::DeviceRevoked)?;
-            return Err(AuthError::DeviceRevoked);
-        }
-        let Some(fresh) = response.tokens else {
-            self.state.transition(AuthState::DeviceRevoked)?;
-            return Err(AuthError::DeviceRevoked);
-        };
-        if self.store.store_pair(fresh.clone()).is_err() {
-            self.state.transition(AuthState::DeviceRevoked)?;
-            return Err(AuthError::DeviceRevoked);
-        }
-        self.state
-            .transition(AuthState::Authenticated { device_id })?;
-        Ok(fresh)
     }
 }
 

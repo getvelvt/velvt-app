@@ -13,9 +13,7 @@
 //! persisted), using that access token only for the lifetime of the single
 //! `/v1/devices` call. See [`AccountAuthService::ensure_device_registered`].
 
-use super::{
-    AuthState, AuthStateMachine, HttpClient, HttpRequest, RedactedString, TokenStore,
-};
+use super::{AuthState, AuthStateMachine, HttpClient, HttpRequest, RedactedString, TokenStore};
 use std::sync::Arc;
 use velvt_shared_types::{
     AccountDeletionAccepted, AuthFailure, AuthFailureCode, AuthSuccess, ErrorResponse,
@@ -76,9 +74,8 @@ impl AccountAuthService {
         };
         match self.token_store.load_device_id() {
             Ok(Some(device_id)) => {
-                let _ = self
-                    .auth_state
-                    .transition(AuthState::Authenticated { device_id });
+                self.reissue_device_tokens(&success.access_token, device_id)
+                    .await;
                 return;
             }
             Err(error) => {
@@ -146,6 +143,56 @@ impl AccountAuthService {
                 error_code = "device_registration_state_transition_failed",
                 error = %error,
                 "device registered but auth state transition was rejected"
+            );
+        }
+    }
+
+    async fn reissue_device_tokens(&self, user_access_token: &str, device_id: String) {
+        let mut request = HttpRequest::post("/v1/auth/devices/reissue");
+        request.authorization = Some(RedactedString::new(user_access_token));
+        request.json_body = Some(serde_json::json!({ "device_id": device_id }));
+        let response = match self.raw_http.send(request).await {
+            Ok(response) if response.status == 200 => response,
+            Ok(response) => {
+                tracing::error!(
+                    error_code = "device_token_reissue_rejected",
+                    status = response.status,
+                    "device token reissue was rejected by the server"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::error!(
+                    error_code = "device_token_reissue_failed",
+                    error = %error,
+                    "device token reissue request failed"
+                );
+                return;
+            }
+        };
+        let Some(tokens) = response.tokens else {
+            tracing::error!(
+                error_code = "device_token_reissue_invalid_response",
+                "device token reissue response was missing tokens"
+            );
+            return;
+        };
+        if let Err(error) = self.token_store.store_pair(tokens) {
+            tracing::error!(
+                error_code = "device_token_reissue_persist_failed",
+                error = %error,
+                "failed to persist reissued device tokens"
+            );
+            return;
+        }
+        if let Err(error) = self
+            .auth_state
+            .transition(AuthState::Authenticated { device_id })
+        {
+            tracing::error!(
+                error_code = "device_token_reissue_state_transition_failed",
+                error = %error,
+                "device tokens were reissued but auth state transition was rejected"
             );
         }
     }
@@ -310,6 +357,19 @@ mod tests {
         }
     }
 
+    fn reissued_device_response() -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            tokens: Some(TokenPair::new(
+                RedactedString::new("reissued-device-access"),
+                RedactedString::new("reissued-device-refresh"),
+                Utc::now() + Duration::hours(1),
+            )),
+            device_id: Some("existing-device".into()),
+            ..device_response()
+        }
+    }
+
     fn service(raw_http: Arc<FakeHttpClient>) -> (AccountAuthService, Arc<FakeTokenStore>) {
         let token_store = Arc::new(FakeTokenStore::default());
         let auth_state = Arc::new(AuthStateMachine::new(AuthState::Unauthenticated));
@@ -351,11 +411,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_keeps_existing_device_tokens_when_device_id_already_stored() {
-        let raw_http = Arc::new(FakeHttpClient::with_responses(vec![HttpResponse {
-            status: 200,
-            ..signup_response()
-        }]));
+    async fn login_reissues_device_tokens_when_device_id_already_stored() {
+        let raw_http = Arc::new(FakeHttpClient::with_responses(vec![
+            HttpResponse {
+                status: 200,
+                ..signup_response()
+            },
+            reissued_device_response(),
+        ]));
         let (service, token_store) = service(Arc::clone(&raw_http));
         token_store.store_device_id("existing-device").unwrap();
         token_store
@@ -371,10 +434,19 @@ mod tests {
             .await;
 
         assert!(matches!(outcome, ServerMessage::AuthSuccess(_)));
-        assert_eq!(raw_http.requests().len(), 1, "no /v1/devices call expected");
+        let requests = raw_http.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].path, "/v1/auth/devices/reissue");
+        assert_eq!(
+            requests[1]
+                .authorization
+                .as_ref()
+                .map(|token| token.expose()),
+            Some("user-access")
+        );
         let stored = token_store.load_tokens().unwrap().unwrap();
-        assert_eq!(stored.access_token().expose(), "device-access");
-        assert_eq!(stored.refresh_token().expose(), "device-refresh");
+        assert_eq!(stored.access_token().expose(), "reissued-device-access");
+        assert_eq!(stored.refresh_token().expose(), "reissued-device-refresh");
     }
 
     #[tokio::test]

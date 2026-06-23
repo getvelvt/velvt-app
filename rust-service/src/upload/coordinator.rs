@@ -139,6 +139,19 @@ where
                 self.schedule_network_retry(&batch.batch_id)?;
                 return Ok(());
             }
+            Err(BatchUploadError::AuthenticationRequired) => {
+                let next_attempt_at = Utc::now() + Duration::minutes(15);
+                self.repository.mark_failed(
+                    &batch.batch_id,
+                    next_attempt_at,
+                    "authentication_required",
+                )?;
+                tracing::warn!(
+                    error_code = "upload_authentication_required",
+                    "upload paused pending device reauthentication"
+                );
+                return Ok(());
+            }
         };
         match outcome {
             UploadOutcome::Accepted | UploadOutcome::Duplicate => {

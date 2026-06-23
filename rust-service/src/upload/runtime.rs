@@ -65,7 +65,7 @@ where
     }
 
     pub async fn flush_now(&mut self) -> Result<bool, CoordinatorError> {
-        let flushed = if let Some(batch) = self.assembler.flush_shutdown() {
+        if let Some(batch) = self.assembler.flush_shutdown() {
             if let Err(error) = self.coordinator.persist_batch(&batch) {
                 Self::log_submit_failure(&error);
                 self.assembler.requeue(batch);
@@ -79,14 +79,12 @@ where
                 Self::log_submit_failure(&error);
                 return Err(error);
             }
-            true
-        } else {
-            false
-        };
+            return Ok(true);
+        }
         self.coordinator
             .flush_all_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
             .await?;
-        Ok(flushed)
+        Ok(false)
     }
 
     async fn submit(&self, batch: super::BatchPayload) -> Result<(), CoordinatorError> {
@@ -201,7 +199,7 @@ where
                     Arc::clone(&batcher.coordinator),
                 )
             };
-            let flushed = if let Some(batch) = batch {
+            if let Some(batch) = batch {
                 if let Err(error) = coordinator.persist_batch(&batch) {
                     UploadBatcher::<U, A>::log_submit_failure(&error);
                     self.inner.lock().await.assembler.requeue(batch);
@@ -214,14 +212,12 @@ where
                     UploadBatcher::<U, A>::log_submit_failure(&error);
                     return Err(error);
                 }
-                true
-            } else {
-                false
-            };
+                return Ok(true);
+            }
             coordinator
                 .flush_all_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
                 .await?;
-            Ok(flushed)
+            Ok(false)
         })
     }
 }

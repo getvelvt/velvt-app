@@ -355,7 +355,7 @@ async fn main() {
             )
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,
-                Arc::clone(&token_store) as Arc<dyn TokenStore>,
+                device_id.clone(),
                 Arc::clone(&upload_batch_repo),
                 Arc::clone(&raw_event_repo),
             ))),

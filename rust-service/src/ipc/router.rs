@@ -1,4 +1,9 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use chrono::Utc;
 use velvt_shared_types::{
@@ -7,7 +12,7 @@ use velvt_shared_types::{
 };
 
 use crate::abstraction::AbstractionEngine;
-use crate::auth::{AccountAuthService, HttpClient, HttpRequest, TokenStore};
+use crate::auth::{AccountAuthService, HttpClient, HttpRequest};
 use crate::delivery::{shaper, CacheManager};
 use crate::persistence::{RawEventEntry, RawEventRepo, UploadBatchRepo};
 use crate::upload::EventIngestor;
@@ -35,23 +40,25 @@ pub trait MenuStatusProviding: Send + Sync {
 
 pub struct MenuStatusProvider {
     http: Arc<dyn HttpClient>,
-    tokens: Arc<dyn TokenStore>,
+    device_id: Option<String>,
     batches: Arc<dyn UploadBatchRepo>,
     raw_events: Arc<dyn RawEventRepo>,
+    readiness: Mutex<Option<(Instant, bool)>>,
 }
 
 impl MenuStatusProvider {
     pub fn new(
         http: Arc<dyn HttpClient>,
-        tokens: Arc<dyn TokenStore>,
+        device_id: Option<String>,
         batches: Arc<dyn UploadBatchRepo>,
         raw_events: Arc<dyn RawEventRepo>,
     ) -> Self {
         Self {
             http,
-            tokens,
+            device_id,
             batches,
             raw_events,
+            readiness: Mutex::new(None),
         }
     }
 }
@@ -59,7 +66,21 @@ impl MenuStatusProvider {
 impl MenuStatusProviding for MenuStatusProvider {
     fn snapshot<'a>(&'a self) -> Pin<Box<dyn Future<Output = MenuStatus> + Send + 'a>> {
         Box::pin(async move {
-            let cloud_ready = matches!(self.http.send(HttpRequest::get("/v1/ready")).await, Ok(response) if response.status / 100 == 2 && response.raw_body.as_ref().and_then(|body| body.get("status")).and_then(|value| value.as_str()) == Some("ready"));
+            let cached_ready = self.readiness.lock().ok().and_then(|cache| {
+                cache.as_ref().and_then(|(checked_at, ready)| {
+                    (checked_at.elapsed() < Duration::from_secs(60)).then_some(*ready)
+                })
+            });
+            let cloud_ready = match cached_ready {
+                Some(ready) => ready,
+                None => {
+                    let ready = matches!(self.http.send(HttpRequest::get("/v1/ready")).await, Ok(response) if response.status / 100 == 2 && response.raw_body.as_ref().and_then(|body| body.get("status")).and_then(|value| value.as_str()) == Some("ready"));
+                    if let Ok(mut cache) = self.readiness.lock() {
+                        *cache = Some((Instant::now(), ready));
+                    }
+                    ready
+                }
+            };
             let mut events: Vec<_> = self
                 .batches
                 .pending_batches()
@@ -88,7 +109,7 @@ impl MenuStatusProviding for MenuStatusProvider {
                 })
                 .collect();
             MenuStatus {
-                device_id: self.tokens.load_device_id().ok().flatten(),
+                device_id: self.device_id.clone(),
                 cloud_ready,
                 queued_event_count,
                 queued_events,

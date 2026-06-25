@@ -229,7 +229,7 @@ final class AuthIPCContractTests: XCTestCase {
     func testAuthSuccessRoundTrip() throws {
         let expires = Date(timeIntervalSince1970: 1_750_000_000)
         let msg = ServerMessage.authSuccess(
-            AuthSuccess(userId: "u1", accessToken: "at", refreshToken: "rt", expiresAt: expires)
+            AuthSuccess(userId: "u1", deviceId: "device-1", accessToken: "at", refreshToken: "rt", expiresAt: expires)
         )
         let data = try encoder.encode(msg)
         XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg)
@@ -249,7 +249,7 @@ final class AuthIPCContractTests: XCTestCase {
     func testAuthSuccessWithFractionalSecondsFromRealServerDecodesSuccessfully() throws {
         let wire = """
         {"type":"auth_success","payload":{"user_id":"f14e0762-cc11-44c3-92f3-302e1762719f",\
-        "access_token":"at","refresh_token":"rt","expires_at":"2026-06-19T21:36:13.182093Z"}}
+        "device_id":"device-1","access_token":"at","refresh_token":"rt","expires_at":"2026-06-19T21:36:13.182093Z"}}
         """.data(using: .utf8)!
 
         let message = try decoder.decode(ServerMessage.self, from: wire)
@@ -268,7 +268,7 @@ final class AuthIPCContractTests: XCTestCase {
 
     func testAuthSuccessPayloadUsesSnakeCaseKeys() throws {
         let msg = ServerMessage.authSuccess(
-            AuthSuccess(userId: "u1", accessToken: "at", refreshToken: "rt",
+            AuthSuccess(userId: "u1", deviceId: "device-1", accessToken: "at", refreshToken: "rt",
                         expiresAt: Date(timeIntervalSince1970: 1_750_000_000))
         )
         let data = try encoder.encode(msg)
@@ -276,6 +276,7 @@ final class AuthIPCContractTests: XCTestCase {
         XCTAssertEqual(obj["type"] as? String, "auth_success")
         let payload = try XCTUnwrap(obj["payload"] as? [String: Any])
         XCTAssertNotNil(payload["user_id"])
+        XCTAssertNotNil(payload["device_id"])
         XCTAssertNotNil(payload["access_token"])
         XCTAssertNotNil(payload["refresh_token"])
         XCTAssertNotNil(payload["expires_at"])
@@ -362,7 +363,7 @@ final class AuthIPCContractTests: XCTestCase {
     }
 
     func testAuthSuccessDoesNotDecodeAsUnknown() throws {
-        let raw = #"{"type":"auth_success","payload":{"user_id":"u","access_token":"a","refresh_token":"r","expires_at":"2026-06-15T00:00:00Z"}}"#
+        let raw = #"{"type":"auth_success","payload":{"user_id":"u","device_id":"device-1","access_token":"a","refresh_token":"r","expires_at":"2026-06-15T00:00:00Z"}}"#
         let decoded = try decoder.decode(ServerMessage.self, from: Data(raw.utf8))
         guard case .authSuccess(let s) = decoded else {
             XCTFail("Expected .authSuccess, got \(decoded)")
@@ -375,6 +376,12 @@ final class AuthIPCContractTests: XCTestCase {
         let messages: [ClientMessage] = [
             .signUp(SignUpRequest(email: "a@b.com", password: "pw")),
             .logIn(LogInRequest(email: "x@y.com", password: "s")),
+            .authSession(AuthSession(
+                deviceId: "device-1",
+                accessToken: "a",
+                refreshToken: "r",
+                expiresAt: Date(timeIntervalSince1970: 1_750_000_000)
+            )),
             .logOut,
             .deleteAccount,
         ]
@@ -412,7 +419,8 @@ final class AuthIPCContractTests: XCTestCase {
     func testAllNewServerMessagesRoundTripTogether() throws {
         let expires = Date(timeIntervalSince1970: 1_750_000_000)
         let messages: [ServerMessage] = [
-            .authSuccess(AuthSuccess(userId: "u", accessToken: "a", refreshToken: "r", expiresAt: expires)),
+            .authSuccess(AuthSuccess(userId: "u", deviceId: "device-1", accessToken: "a", refreshToken: "r", expiresAt: expires)),
+            .authSessionUpdated(AuthSession(deviceId: "device-1", accessToken: "a", refreshToken: "r", expiresAt: expires)),
             .authFailure(AuthFailure(code: .serverError, message: "oops")),
             .accountDeletionAccepted,
             .needsReauth(NeedsReauth(reason: "expired")),

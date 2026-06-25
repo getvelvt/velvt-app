@@ -10,6 +10,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     // Auth messages (proto v6)
     case signUp(SignUpRequest)
     case logIn(LogInRequest)
+    case authSession(AuthSession)
     case logOut
     case deleteAccount
     case requestMenuStatus
@@ -34,6 +35,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .signUp(try SignUpRequest(from: payload))
         case "log_in":
             self = .logIn(try LogInRequest(from: payload))
+        case "auth_session":
+            self = .authSession(try AuthSession(from: payload))
         case "log_out":
             self = .logOut
         case "delete_account":
@@ -71,6 +74,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case let .logIn(value):
             try envelope.encode("log_in", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .authSession(value):
+            try envelope.encode("auth_session", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .logOut:
             try envelope.encode("log_out", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
@@ -104,6 +110,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case shuttingDown(ShuttingDown)
     // Auth messages (proto v6)
     case authSuccess(AuthSuccess)
+    case authSessionUpdated(AuthSession)
     case authFailure(AuthFailure)
     case accountDeletionAccepted
     case needsReauth(NeedsReauth)
@@ -146,6 +153,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .shuttingDown(try ShuttingDown(from: payload))
         case "auth_success":
             self = .authSuccess(try AuthSuccess(from: payload))
+        case "auth_session_updated":
+            self = .authSessionUpdated(try AuthSession(from: payload))
         case "auth_failure":
             self = .authFailure(try AuthFailure(from: payload))
         case "account_deletion_accepted":
@@ -204,6 +213,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .authSuccess(value):
             try envelope.encode("auth_success", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .authSessionUpdated(value):
+            try envelope.encode("auth_session_updated", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .authFailure(value):
             try envelope.encode("auth_failure", forKey: .type)
@@ -705,16 +717,41 @@ public struct LogInRequest: Codable, Equatable, Sendable {
     }
 }
 
-/// Tokens returned on successful authentication. Swift stores these in Keychain
-/// only — never in SQLite, logs, or string interpolation.
-public struct AuthSuccess: Codable, Equatable, Sendable {
-    public let userId: String
+/// Portable auth session persisted by the host client. On macOS this lives in
+/// Keychain; Rust keeps it in memory only.
+public struct AuthSession: Codable, Equatable, Sendable {
+    public let deviceId: String
     public let accessToken: String
     public let refreshToken: String
     public let expiresAt: Date
 
-    public init(userId: String, accessToken: String, refreshToken: String, expiresAt: Date) {
+    public init(deviceId: String, accessToken: String, refreshToken: String, expiresAt: Date) {
+        self.deviceId = deviceId
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.expiresAt = expiresAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case deviceId = "device_id"
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresAt = "expires_at"
+    }
+}
+
+/// Tokens returned on successful authentication. Swift stores these in Keychain
+/// only — never in SQLite, logs, or string interpolation.
+public struct AuthSuccess: Codable, Equatable, Sendable {
+    public let userId: String
+    public let deviceId: String
+    public let accessToken: String
+    public let refreshToken: String
+    public let expiresAt: Date
+
+    public init(userId: String, deviceId: String, accessToken: String, refreshToken: String, expiresAt: Date) {
         self.userId = userId
+        self.deviceId = deviceId
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.expiresAt = expiresAt
@@ -722,6 +759,7 @@ public struct AuthSuccess: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case userId = "user_id"
+        case deviceId = "device_id"
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
         case expiresAt = "expires_at"
@@ -730,6 +768,7 @@ public struct AuthSuccess: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         userId = try c.decode(String.self, forKey: .userId)
+        deviceId = try c.decode(String.self, forKey: .deviceId)
         accessToken = try c.decode(String.self, forKey: .accessToken)
         refreshToken = try c.decode(String.self, forKey: .refreshToken)
         expiresAt = try c.decode(Date.self, forKey: .expiresAt)
@@ -738,6 +777,7 @@ public struct AuthSuccess: Codable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(userId, forKey: .userId)
+        try c.encode(deviceId, forKey: .deviceId)
         try c.encode(accessToken, forKey: .accessToken)
         try c.encode(refreshToken, forKey: .refreshToken)
         try c.encode(expiresAt, forKey: .expiresAt)

@@ -33,6 +33,7 @@ final class AccountStateManagerTests: XCTestCase {
 
         client.inject(.authSuccess(AuthSuccess(
             userId: "u123",
+            deviceId: "device-1",
             accessToken: "tok-access",
             refreshToken: "tok-refresh",
             expiresAt: Date(timeIntervalSinceNow: 3600)
@@ -43,6 +44,29 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(keychain.storedValue(for: .accessToken), "tok-access")
         XCTAssertEqual(keychain.storedValue(for: .refreshToken), "tok-refresh")
         XCTAssertEqual(keychain.storedValue(for: .userId), "u123")
+        XCTAssertEqual(keychain.storedValue(for: .deviceId), "device-1")
+    }
+
+    func testStartListeningSendsStoredAuthSessionToRust() async throws {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let expiresAt = Date(timeIntervalSinceNow: 3600)
+        try keychain.store(token: "u123", for: .userId)
+        try keychain.store(token: "device-1", for: .deviceId)
+        try keychain.store(token: "stored-access", for: .accessToken)
+        try keychain.store(token: "stored-refresh", for: .refreshToken)
+        try keychain.store(token: "\(expiresAt.timeIntervalSince1970)", for: .expiresAt)
+
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertTrue(client.sentMessages.contains(.authSession(AuthSession(
+            deviceId: "device-1",
+            accessToken: "stored-access",
+            refreshToken: "stored-refresh",
+            expiresAt: expiresAt
+        ))))
     }
 
     func testSuccessfulAuthenticationStoresEmailInKeychain() async {
@@ -53,7 +77,7 @@ final class AccountStateManagerTests: XCTestCase {
 
         XCTAssertTrue(sut.beginAuthentication(email: "ada@example.com"))
         client.inject(.authSuccess(AuthSuccess(
-            userId: "u123", accessToken: "tok-access", refreshToken: "tok-refresh",
+            userId: "u123", deviceId: "device-1", accessToken: "tok-access", refreshToken: "tok-refresh",
             expiresAt: Date(timeIntervalSinceNow: 3600)
         )))
 
@@ -476,6 +500,7 @@ final class AuthViewModelTests: XCTestCase {
         await sut.signUp()
         client.inject(.authSuccess(AuthSuccess(
             userId: "u-001",
+            deviceId: "device-1",
             accessToken: "at-x",
             refreshToken: "rt-x",
             expiresAt: Date(timeIntervalSinceNow: 3600)

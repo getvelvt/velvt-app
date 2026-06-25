@@ -1,5 +1,15 @@
 # IPC Protocol Changelog
 
+## Version 11 - 2026-06-25
+
+- Added `auth_session` client message: the host client supplies a locally
+  persisted device auth session to Rust after connection. Rust keeps it in
+  memory only.
+- Added `auth_session_updated` server message: Rust tells the host client to
+  persist refreshed or reissued auth credentials in platform credential storage.
+- Added `device_id` to `auth_success`; signup/login now returns a device-bound
+  session for host-side persistence.
+
 ## Version 10 - 2026-06-21
 
 - Added optional `local_label` to `menu_status.queued_events`. It is a

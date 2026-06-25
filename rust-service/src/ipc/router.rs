@@ -220,6 +220,11 @@ impl MessageRouter for R7Router {
                 Ok(Some(self.account.log_in(req.email, req.password).await))
             }
 
+            ClientMessage::AuthSession(session) => {
+                self.account.apply_session(session);
+                Ok(None)
+            }
+
             ClientMessage::LogOut(_) => {
                 self.account.log_out().await;
                 Ok(None)

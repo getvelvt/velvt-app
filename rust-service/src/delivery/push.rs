@@ -56,6 +56,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::ErrorResponse(_) => "error_response",
         ServerMessage::ShuttingDown(_) => "shutting_down",
         ServerMessage::AuthSuccess(_) => "auth_success",
+        ServerMessage::AuthSessionUpdated(_) => "auth_session_updated",
         ServerMessage::AuthFailure(_) => "auth_failure",
         ServerMessage::AccountDeletionAccepted(_) => "account_deletion_accepted",
         ServerMessage::NeedsReauth(_) => "needs_reauth",
@@ -264,6 +265,12 @@ impl PushAdapter {
                     reason: reason.to_owned(),
                 },
             ))
+            .await;
+    }
+
+    pub async fn push_auth_session_updated(&self, session: velvt_shared_types::AuthSession) {
+        self.queue
+            .enqueue_urgent(ServerMessage::AuthSessionUpdated(session))
             .await;
     }
 

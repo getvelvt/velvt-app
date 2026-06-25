@@ -5,17 +5,19 @@ persistence, abstraction, cloud requests, and IPC delivery to the macOS client.
 
 ## Authentication Privacy
 
-Access and refresh tokens are stored together as one record in macOS Keychain
-through `KeychainTokenStore`. They must never be stored in SQLite, plaintext
-files, environment variables, logs, tracing fields, or error messages.
+Access and refresh tokens are supplied by the host client over IPC and kept
+only in the service's in-memory `VolatileTokenStore`. Platform-specific secure
+storage belongs to the host client (Keychain on macOS, an equivalent credential
+store elsewhere). Tokens must never be stored in SQLite, plaintext files,
+environment variables, logs, tracing fields, or error messages.
 
 All token-carrying fields use `RedactedString`. Its `Debug` and `Display`
 implementations emit only `[redacted]`. The underlying value is exposed only
-inside the private Keychain serializer and concrete HTTP authorization/body
-construction. `RedactedString` intentionally does not implement `Serialize`,
+inside concrete HTTP authorization/body construction and IPC session handoff.
+`RedactedString` intentionally does not implement `Serialize`,
 preventing unrelated code from serializing tokens.
 
-Tests use `FakeTokenStore`; they never access the real Keychain.
+Tests use `FakeTokenStore`; they never access platform credential stores.
 
 ## Upload Batching
 
@@ -71,7 +73,7 @@ DeviceRevoked is terminal until a future onboarding recovery flow.
 Before every authenticated request, `AuthManager` checks token expiry against
 the configured refresh buffer. Refresh is single-flight: concurrent callers
 wait for the active refresh and reuse its atomically replaced token pair.
-Transient transport failures preserve the existing Keychain record and retry
+Transient transport failures preserve the existing in-memory token record and retry
 on the next request cycle. Invalid credentials transition to `NeedsReauth`.
 
 `device_token_revoked` attempts `/v1/auth/devices/reissue` once before

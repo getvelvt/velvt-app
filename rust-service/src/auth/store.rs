@@ -1,6 +1,8 @@
 use super::{RedactedString, TokenPair};
 use chrono::{DateTime, Utc};
 use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
+use velvt_shared_types::AuthSession;
 
 pub trait TokenStore: Send + Sync {
     fn store_tokens(
@@ -97,221 +99,94 @@ impl TokenStore for FakeTokenStore {
     }
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub struct KeychainTokenStore {
-    service: String,
-    account: String,
-    cache: Mutex<KeychainCache>,
-}
-
 #[derive(Default)]
-struct KeychainCache {
-    tokens: Option<Option<TokenPair>>,
-    device_id: Option<Option<String>>,
+pub struct VolatileTokenStore {
+    tokens: Mutex<Option<TokenPair>>,
+    device_id: Mutex<Option<String>>,
+    updates: Mutex<Option<mpsc::UnboundedSender<AuthSession>>>,
 }
 
-impl KeychainTokenStore {
-    pub fn new(service: impl Into<String>, account: impl Into<String>) -> Self {
+impl VolatileTokenStore {
+    pub fn with_update_sender(sender: mpsc::UnboundedSender<AuthSession>) -> Self {
         Self {
-            service: service.into(),
-            account: account.into(),
-            cache: Mutex::new(KeychainCache::default()),
+            updates: Mutex::new(Some(sender)),
+            ..Self::default()
         }
     }
-}
 
-impl Default for KeychainTokenStore {
-    fn default() -> Self {
-        Self::new("com.velvt.service.auth", "tokens")
+    fn emit_update(&self) -> Result<(), TokenStoreError> {
+        let tokens = self.load_tokens()?;
+        let device_id = self.load_device_id()?;
+        let (Some(tokens), Some(device_id)) = (tokens, device_id) else {
+            return Ok(());
+        };
+        if let Some(sender) = self
+            .updates
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)?
+            .as_ref()
+        {
+            let _ = sender.send(AuthSession {
+                device_id,
+                access_token: tokens.access_token().expose().to_owned(),
+                refresh_token: tokens.refresh_token().expose().to_owned(),
+                expires_at: tokens.expires_at(),
+            });
+        }
+        Ok(())
     }
 }
 
-#[cfg(target_os = "macos")]
-#[derive(serde::Serialize)]
-struct KeychainWriteRecord<'a> {
-    access: &'a str,
-    refresh: &'a str,
-    expiry: DateTime<Utc>,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(serde::Deserialize)]
-struct KeychainReadRecord {
-    access: RedactedString,
-    refresh: RedactedString,
-    expiry: DateTime<Utc>,
-}
-
-#[cfg(target_os = "macos")]
-impl TokenStore for KeychainTokenStore {
+impl TokenStore for VolatileTokenStore {
     fn store_tokens(
         &self,
         access: RedactedString,
         refresh: RedactedString,
         expiry: DateTime<Utc>,
     ) -> Result<(), TokenStoreError> {
-        let record = KeychainWriteRecord {
-            access: access.expose(),
-            refresh: refresh.expose(),
-            expiry,
-        };
-        let bytes = serde_json::to_vec(&record).map_err(|_| TokenStoreError::InvalidData)?;
-        security_framework::passwords::set_generic_password(&self.service, &self.account, &bytes)
-            .map_err(|_| TokenStoreError::Unavailable)?;
-        self.cache
+        *self
+            .tokens
             .lock()
-            .map_err(|_| TokenStoreError::Unavailable)?
-            .tokens = Some(Some(TokenPair::new(access, refresh, expiry)));
-        Ok(())
+            .map_err(|_| TokenStoreError::Unavailable)? =
+            Some(TokenPair::new(access, refresh, expiry));
+        self.emit_update()
     }
 
     fn load_tokens(&self) -> Result<Option<TokenPair>, TokenStoreError> {
-        if let Some(tokens) = self
-            .cache
+        self.tokens
             .lock()
-            .map_err(|_| TokenStoreError::Unavailable)?
-            .tokens
-            .clone()
-        {
-            return Ok(tokens);
-        }
-        let bytes =
-            match security_framework::passwords::get_generic_password(&self.service, &self.account)
-            {
-                Ok(bytes) => bytes,
-                Err(error) if error.code() == -25300 => {
-                    self.cache
-                        .lock()
-                        .map_err(|_| TokenStoreError::Unavailable)?
-                        .tokens = Some(None);
-                    return Ok(None);
-                }
-                Err(_) => return Err(TokenStoreError::Unavailable),
-            };
-        let record: KeychainReadRecord =
-            serde_json::from_slice(&bytes).map_err(|_| TokenStoreError::InvalidData)?;
-        let tokens = Some(TokenPair::new(record.access, record.refresh, record.expiry));
-        self.cache
-            .lock()
-            .map_err(|_| TokenStoreError::Unavailable)?
-            .tokens = Some(tokens.clone());
-        Ok(tokens)
+            .map(|tokens| tokens.clone())
+            .map_err(|_| TokenStoreError::Unavailable)
     }
 
     fn clear_tokens(&self) -> Result<(), TokenStoreError> {
-        match security_framework::passwords::delete_generic_password(&self.service, &self.account) {
-            Ok(()) => {
-                self.cache
-                    .lock()
-                    .map_err(|_| TokenStoreError::Unavailable)?
-                    .tokens = Some(None);
-                Ok(())
-            }
-            Err(error) if error.code() == -25300 => Ok(()),
-            Err(_) => Err(TokenStoreError::Unavailable),
-        }
+        *self
+            .tokens
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)? = None;
+        Ok(())
     }
 
     fn store_device_id(&self, device_id: &str) -> Result<(), TokenStoreError> {
-        security_framework::passwords::set_generic_password(
-            &self.service,
-            &self.device_id_account(),
-            device_id.as_bytes(),
-        )
-        .map_err(|_| TokenStoreError::Unavailable)?;
-        self.cache
-            .lock()
-            .map_err(|_| TokenStoreError::Unavailable)?
-            .device_id = Some(Some(device_id.to_owned()));
-        Ok(())
-    }
-
-    fn load_device_id(&self) -> Result<Option<String>, TokenStoreError> {
-        if let Some(device_id) = self
-            .cache
-            .lock()
-            .map_err(|_| TokenStoreError::Unavailable)?
+        *self
             .device_id
-            .clone()
-        {
-            return Ok(device_id);
-        }
-        let device_id = match security_framework::passwords::get_generic_password(
-            &self.service,
-            &self.device_id_account(),
-        ) {
-            Ok(bytes) => String::from_utf8(bytes)
-                .map(Some)
-                .map_err(|_| TokenStoreError::InvalidData),
-            Err(error) if error.code() == -25300 => {
-                self.cache
-                    .lock()
-                    .map_err(|_| TokenStoreError::Unavailable)?
-                    .device_id = Some(None);
-                return Ok(None);
-            }
-            Err(_) => Err(TokenStoreError::Unavailable),
-        }?;
-        self.cache
             .lock()
-            .map_err(|_| TokenStoreError::Unavailable)?
-            .device_id = Some(device_id.clone());
-        Ok(device_id)
-    }
-
-    fn clear_device_id(&self) -> Result<(), TokenStoreError> {
-        match security_framework::passwords::delete_generic_password(
-            &self.service,
-            &self.device_id_account(),
-        ) {
-            Ok(()) => {
-                self.cache
-                    .lock()
-                    .map_err(|_| TokenStoreError::Unavailable)?
-                    .device_id = Some(None);
-                Ok(())
-            }
-            Err(error) if error.code() == -25300 => Ok(()),
-            Err(_) => Err(TokenStoreError::Unavailable),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl KeychainTokenStore {
-    fn device_id_account(&self) -> String {
-        format!("{}.device_id", self.account)
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl TokenStore for KeychainTokenStore {
-    fn store_tokens(
-        &self,
-        _access: RedactedString,
-        _refresh: RedactedString,
-        _expiry: DateTime<Utc>,
-    ) -> Result<(), TokenStoreError> {
-        Err(TokenStoreError::Unavailable)
-    }
-
-    fn load_tokens(&self) -> Result<Option<TokenPair>, TokenStoreError> {
-        Err(TokenStoreError::Unavailable)
-    }
-
-    fn clear_tokens(&self) -> Result<(), TokenStoreError> {
-        Err(TokenStoreError::Unavailable)
-    }
-
-    fn store_device_id(&self, _device_id: &str) -> Result<(), TokenStoreError> {
-        Err(TokenStoreError::Unavailable)
+            .map_err(|_| TokenStoreError::Unavailable)? = Some(device_id.to_owned());
+        self.emit_update()
     }
 
     fn load_device_id(&self) -> Result<Option<String>, TokenStoreError> {
-        Err(TokenStoreError::Unavailable)
+        self.device_id
+            .lock()
+            .map(|device_id| device_id.clone())
+            .map_err(|_| TokenStoreError::Unavailable)
     }
 
     fn clear_device_id(&self) -> Result<(), TokenStoreError> {
-        Err(TokenStoreError::Unavailable)
+        *self
+            .device_id
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)? = None;
+        Ok(())
     }
 }

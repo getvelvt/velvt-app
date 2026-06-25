@@ -2,10 +2,9 @@
 //! `log_out`, `delete_account`).
 //!
 //! This is deliberately a thin, stateless HTTP relay: Swift owns its own
-//! session tokens in Keychain (see `swift-client/Sources/VelvtMac/Auth`).
-//! Rust never persists the resulting `access_token` / `refresh_token` — it
-//! only forwards credentials to the cloud and relays the typed result back
-//! over IPC.
+//! session tokens in platform storage (Keychain on macOS; see
+//! `swift-client/Sources/VelvtMac/Auth`). Rust never persists the resulting
+//! `access_token` / `refresh_token` beyond process memory.
 //!
 //! The one exception is device registration: `/v1/devices` requires a
 //! user's access token and has no anonymous mode, so the first successful
@@ -13,7 +12,9 @@
 //! persisted), using that access token only for the lifetime of the single
 //! `/v1/devices` call. See [`AccountAuthService::ensure_device_registered`].
 
-use super::{AuthState, AuthStateMachine, HttpClient, HttpRequest, RedactedString, TokenStore};
+use super::{
+    AuthState, AuthStateMachine, HttpClient, HttpRequest, RedactedString, TokenPair, TokenStore,
+};
 use std::sync::Arc;
 use velvt_shared_types::{
     AccountDeletionAccepted, AuthFailure, AuthFailureCode, AuthSuccess, ErrorResponse,
@@ -50,16 +51,31 @@ impl AccountAuthService {
         let message = self
             .credential_flow("/v1/auth/signup", 201, email, password)
             .await;
-        self.ensure_device_registered(&message).await;
-        message
+        self.ensure_device_registered(message).await
     }
 
     pub async fn log_in(&self, email: String, password: String) -> ServerMessage {
         let message = self
             .credential_flow("/v1/auth/login", 200, email, password)
             .await;
-        self.ensure_device_registered(&message).await;
-        message
+        self.ensure_device_registered(message).await
+    }
+
+    pub fn apply_session(&self, session: velvt_shared_types::AuthSession) {
+        if self
+            .token_store
+            .store_tokens(
+                RedactedString::new(session.access_token),
+                RedactedString::new(session.refresh_token),
+                session.expires_at,
+            )
+            .is_ok()
+            && self.token_store.store_device_id(&session.device_id).is_ok()
+        {
+            let _ = self.auth_state.transition(AuthState::Authenticated {
+                device_id: session.device_id,
+            });
+        }
     }
 
     /// Registers this device with the cloud the first time a user
@@ -68,15 +84,15 @@ impl AccountAuthService {
     /// successful sign-up or login — never speculatively at service startup.
     /// A device_id already on disk means a prior login already registered
     /// it, so this is a no-op on every subsequent app launch.
-    async fn ensure_device_registered(&self, outcome: &ServerMessage) {
+    async fn ensure_device_registered(&self, outcome: ServerMessage) -> ServerMessage {
         let ServerMessage::AuthSuccess(success) = outcome else {
-            return;
+            return outcome;
         };
         match self.token_store.load_device_id() {
             Ok(Some(device_id)) => {
-                self.reissue_device_tokens(&success.access_token, device_id)
+                return self
+                    .reissue_device_tokens(success.user_id, &success.access_token, device_id)
                     .await;
-                return;
             }
             Err(error) => {
                 tracing::error!(
@@ -84,7 +100,7 @@ impl AccountAuthService {
                     error = %error,
                     "failed to read stored device identifier; skipping device registration"
                 );
-                return;
+                return ServerMessage::AuthSuccess(success);
             }
             Ok(None) => {}
         }
@@ -101,7 +117,7 @@ impl AccountAuthService {
                     status = response.status,
                     "device registration was rejected by the server"
                 );
-                return;
+                return ServerMessage::AuthSuccess(success);
             }
             Err(error) => {
                 tracing::error!(
@@ -109,7 +125,7 @@ impl AccountAuthService {
                     error = %error,
                     "device registration request failed"
                 );
-                return;
+                return ServerMessage::AuthSuccess(success);
             }
         };
         let (Some(device_id), Some(tokens)) = (response.device_id, response.tokens) else {
@@ -117,15 +133,15 @@ impl AccountAuthService {
                 error_code = "device_registration_invalid_response",
                 "device registration response was missing tokens or a device id"
             );
-            return;
+            return ServerMessage::AuthSuccess(success);
         };
-        if let Err(error) = self.token_store.store_pair(tokens) {
+        if let Err(error) = self.token_store.store_pair(tokens.clone()) {
             tracing::error!(
                 error_code = "device_registration_persist_failed",
                 error = %error,
                 "failed to persist device tokens after registration"
             );
-            return;
+            return ServerMessage::AuthSuccess(success);
         }
         if let Err(error) = self.token_store.store_device_id(&device_id) {
             tracing::error!(
@@ -133,21 +149,26 @@ impl AccountAuthService {
                 error = %error,
                 "failed to persist device id after registration"
             );
-            return;
+            return ServerMessage::AuthSuccess(success);
         }
-        if let Err(error) = self
-            .auth_state
-            .transition(AuthState::Authenticated { device_id })
-        {
+        if let Err(error) = self.auth_state.transition(AuthState::Authenticated {
+            device_id: device_id.clone(),
+        }) {
             tracing::error!(
                 error_code = "device_registration_state_transition_failed",
                 error = %error,
                 "device registered but auth state transition was rejected"
             );
         }
+        auth_success_from_device_tokens(success.user_id, device_id, tokens)
     }
 
-    async fn reissue_device_tokens(&self, user_access_token: &str, device_id: String) {
+    async fn reissue_device_tokens(
+        &self,
+        user_id: String,
+        user_access_token: &str,
+        device_id: String,
+    ) -> ServerMessage {
         let mut request = HttpRequest::post("/v1/auth/devices/reissue");
         request.authorization = Some(RedactedString::new(user_access_token));
         request.json_body = Some(serde_json::json!({ "device_id": device_id }));
@@ -159,7 +180,10 @@ impl AccountAuthService {
                     status = response.status,
                     "device token reissue was rejected by the server"
                 );
-                return;
+                return ServerMessage::AuthFailure(AuthFailure {
+                    code: AuthFailureCode::ServerError,
+                    message: "Unable to register this device.".into(),
+                });
             }
             Err(error) => {
                 tracing::error!(
@@ -167,7 +191,11 @@ impl AccountAuthService {
                     error = %error,
                     "device token reissue request failed"
                 );
-                return;
+                return ServerMessage::AuthFailure(AuthFailure {
+                    code: AuthFailureCode::NetworkError,
+                    message: "Could not reach the server. Check your connection and try again."
+                        .into(),
+                });
             }
         };
         let Some(tokens) = response.tokens else {
@@ -175,26 +203,32 @@ impl AccountAuthService {
                 error_code = "device_token_reissue_invalid_response",
                 "device token reissue response was missing tokens"
             );
-            return;
+            return ServerMessage::AuthFailure(AuthFailure {
+                code: AuthFailureCode::ServerError,
+                message: "The server response was invalid.".into(),
+            });
         };
-        if let Err(error) = self.token_store.store_pair(tokens) {
+        if let Err(error) = self.token_store.store_pair(tokens.clone()) {
             tracing::error!(
                 error_code = "device_token_reissue_persist_failed",
                 error = %error,
                 "failed to persist reissued device tokens"
             );
-            return;
+            return ServerMessage::AuthFailure(AuthFailure {
+                code: AuthFailureCode::ServerError,
+                message: "Unable to save this device session.".into(),
+            });
         }
-        if let Err(error) = self
-            .auth_state
-            .transition(AuthState::Authenticated { device_id })
-        {
+        if let Err(error) = self.auth_state.transition(AuthState::Authenticated {
+            device_id: device_id.clone(),
+        }) {
             tracing::error!(
                 error_code = "device_token_reissue_state_transition_failed",
                 error = %error,
                 "device tokens were reissued but auth state transition was rejected"
             );
         }
+        auth_success_from_device_tokens(user_id, device_id, tokens)
     }
 
     /// Fire-and-forget per the IPC contract: best-effort server-side
@@ -238,6 +272,7 @@ impl AccountAuthService {
                 match (response.user_id, response.tokens) {
                     (Some(user_id), Some(tokens)) => ServerMessage::AuthSuccess(AuthSuccess {
                         user_id,
+                        device_id: String::new(),
                         access_token: tokens.access_token().expose().to_owned(),
                         refresh_token: tokens.refresh_token().expose().to_owned(),
                         expires_at: tokens.expires_at(),
@@ -280,6 +315,20 @@ fn map_auth_failure(response: &super::HttpResponse) -> AuthFailure {
                 .unwrap_or_else(|| "Something went wrong. Please try again.".into()),
         },
     }
+}
+
+fn auth_success_from_device_tokens(
+    user_id: String,
+    device_id: String,
+    tokens: TokenPair,
+) -> ServerMessage {
+    ServerMessage::AuthSuccess(AuthSuccess {
+        user_id,
+        device_id,
+        access_token: tokens.access_token().expose().to_owned(),
+        refresh_token: tokens.refresh_token().expose().to_owned(),
+        expires_at: tokens.expires_at(),
+    })
 }
 
 #[cfg(test)]

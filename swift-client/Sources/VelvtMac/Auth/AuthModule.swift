@@ -15,6 +15,8 @@ public enum KeychainKey: String, CaseIterable, Sendable {
     case accessToken = "velvt.access_token"
     case refreshToken = "velvt.refresh_token"
     case userId = "velvt.user_id"
+    case deviceId = "velvt.device_id"
+    case expiresAt = "velvt.expires_at"
     case email = "velvt.email"
     /// Sentinel written when the state machine enters `.pendingErasure` so that
     /// a relaunch mid-deletion can restore the correct state and block normal use.
@@ -287,6 +289,7 @@ public final class AccountStateManager: ObservableObject {
     /// after the IPC client is constructed.
     public func startListening(to client: any IPCClientProtocol) {
         listenerTask?.cancel()
+        sendStoredSession(to: client)
         listenerTask = Task { [weak self] in
             for await message in client.incomingMessages {
                 guard let self, !Task.isCancelled else { break }
@@ -328,6 +331,8 @@ public final class AccountStateManager: ObservableObject {
         case .authSuccess(let success):
             authLogger.debug("auth.handle: authSuccess received for userId \(success.userId)")
             handleAuthSuccess(success)
+        case .authSessionUpdated(let session):
+            store(session: session)
         case .authFailure(let failure):
             authLogger.debug(
                 "auth.handle: authFailure received — code=\(String(describing: failure.code)) message=\(failure.message)"
@@ -369,6 +374,8 @@ public final class AccountStateManager: ObservableObject {
             try keychain.store(token: success.accessToken, for: .accessToken)
             try keychain.store(token: success.refreshToken, for: .refreshToken)
             try keychain.store(token: success.userId, for: .userId)
+            try keychain.store(token: success.deviceId, for: .deviceId)
+            try keychain.store(token: "\(success.expiresAt.timeIntervalSince1970)", for: .expiresAt)
             if let pendingEmail {
                 try keychain.store(token: pendingEmail, for: .email)
                 accountEmailCache = .some(pendingEmail)
@@ -386,6 +393,34 @@ public final class AccountStateManager: ObservableObject {
             pendingEmail = nil
             accountEmailCache = .some(nil)
             accountState = .loggedOut
+        }
+    }
+
+    private func store(session: AuthSession) {
+        do {
+            try keychain.store(token: session.accessToken, for: .accessToken)
+            try keychain.store(token: session.refreshToken, for: .refreshToken)
+            try keychain.store(token: session.deviceId, for: .deviceId)
+            try keychain.store(token: "\(session.expiresAt.timeIntervalSince1970)", for: .expiresAt)
+        } catch {
+            authLogger.error("auth.storeSession: Keychain write failed — \(error.localizedDescription)")
+        }
+    }
+
+    private func sendStoredSession(to client: any IPCClientProtocol) {
+        guard let deviceId = try? keychain.load(for: .deviceId),
+              let accessToken = try? keychain.load(for: .accessToken),
+              let refreshToken = try? keychain.load(for: .refreshToken),
+              let expiresRaw = try? keychain.load(for: .expiresAt),
+              let expiresInterval = TimeInterval(expiresRaw) else { return }
+        let session = AuthSession(
+            deviceId: deviceId,
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            expiresAt: Date(timeIntervalSince1970: expiresInterval)
+        )
+        Task {
+            try? await client.send(.authSession(session))
         }
     }
 

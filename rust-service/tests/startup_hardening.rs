@@ -147,7 +147,7 @@ fn missing_database_file_is_created_and_migrated_at_startup() {
 /// (the old behavior: a zombie process with no working IPC listener). This
 /// exercises the check itself directly against a real bound listener rather
 /// than spawning two full service processes — full startup additionally
-/// touches the macOS Keychain via `KeychainTokenStore`, which is slow and
+/// touches platform credential storage, which is slow and
 /// occasionally contends with other processes on this machine when spawned
 /// from inside the test harness, making an end-to-end subprocess version of
 /// this test flaky for reasons unrelated to the behavior under test.

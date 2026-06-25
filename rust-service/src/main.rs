@@ -13,8 +13,8 @@ async fn main() {
     let Ok(config) = ServiceConfig::load() else {
         return;
     };
-    let Ok(filter) = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(&config.log_level))
+    let Ok(filter) =
+        EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(&config.log_level))
     else {
         return;
     };
@@ -80,7 +80,7 @@ async fn main() {
         use std::sync::Arc;
         use velvt_service::auth::{
             AccountAuthService, AuthManager, AuthState, AuthStateMachine, HttpClient,
-            KeychainTokenStore, ReqwestHttpClient, TokenStore,
+            ReqwestHttpClient, TokenStore, VolatileTokenStore,
         };
         use velvt_service::delivery::{
             CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable, PushAdapter,
@@ -106,7 +106,8 @@ async fn main() {
         let insight_cache_repo = persistence.insight_cache_repo();
         let raw_event_repo = persistence.raw_event_repo();
 
-        let token_store = Arc::new(KeychainTokenStore::default());
+        let (auth_session_tx, mut auth_session_rx) = tokio::sync::mpsc::unbounded_channel();
+        let token_store = Arc::new(VolatileTokenStore::with_update_sender(auth_session_tx));
         let raw_http = Arc::new(ReqwestHttpClient::new(config.upload_api_base_url.clone()));
 
         // Device registration requires a logged-in user's access token --
@@ -149,6 +150,16 @@ async fn main() {
         // Acquire the initial queue so PushAdapter can enqueue proactively.
         let initial_queue = reconnect_tracker.acquire();
         let push_adapter = PushAdapter::new(Arc::clone(&initial_queue));
+        {
+            let push_adapter_for_auth_session = Arc::clone(&push_adapter);
+            tokio::spawn(async move {
+                while let Some(session) = auth_session_rx.recv().await {
+                    push_adapter_for_auth_session
+                        .push_auth_session_updated(session)
+                        .await;
+                }
+            });
+        }
 
         // An operator explicitly configured a Tier 2 model and it failed to
         // load: the user must not be silently left on the Tier 1/3 fallback

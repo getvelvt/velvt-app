@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -26,6 +26,8 @@ pub enum ClientMessage {
     SignUp(SignUp),
     /// Swift requests login with email/password credentials.
     LogIn(LogIn),
+    /// Host client provides locally persisted auth for this service process.
+    AuthSession(AuthSession),
     /// Fire-and-forget notification that the client cleared its local session.
     LogOut(LogOut),
     /// Swift requests permanent account deletion.
@@ -78,6 +80,8 @@ pub enum ServerMessage {
     ShuttingDown(ShuttingDown),
     /// Account creation or login succeeded.
     AuthSuccess(AuthSuccess),
+    /// Auth tokens changed; host client must persist this session locally.
+    AuthSessionUpdated(AuthSession),
     /// Account creation or login failed.
     AuthFailure(AuthFailure),
     /// Confirms permanent account deletion was accepted and processed.
@@ -387,6 +391,29 @@ impl std::fmt::Debug for LogIn {
     }
 }
 
+/// Portable auth session exchanged over IPC. The host client owns durable
+/// platform storage; Rust keeps this only in memory.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthSession {
+    pub device_id: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for AuthSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthSession")
+            .field("device_id", &self.device_id)
+            .field("access_token", &"[redacted]")
+            .field("refresh_token", &"[redacted]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 /// Fire-and-forget notification that the client cleared its local session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -407,6 +434,7 @@ pub struct DeleteAccount {}
 #[serde(deny_unknown_fields)]
 pub struct AuthSuccess {
     pub user_id: String,
+    pub device_id: String,
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: DateTime<Utc>,
@@ -417,6 +445,7 @@ impl std::fmt::Debug for AuthSuccess {
         formatter
             .debug_struct("AuthSuccess")
             .field("user_id", &self.user_id)
+            .field("device_id", &self.device_id)
             .field("access_token", &"[redacted]")
             .field("refresh_token", &"[redacted]")
             .field("expires_at", &self.expires_at)
@@ -567,6 +596,7 @@ mod v6_auth_contract {
     fn auth_success_debug_redacts_tokens_but_keeps_user_id() {
         let success = AuthSuccess {
             user_id: "user-123".into(),
+            device_id: "device-1".into(),
             access_token: "secret-access".into(),
             refresh_token: "secret-refresh".into(),
             expires_at: Utc::now(),

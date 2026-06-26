@@ -82,6 +82,39 @@ final class EventRelayTests: XCTestCase {
 
     // MARK: Buffer fill and drop-oldest policy
 
+    func testEventReceivedBeforeStartIsBufferedAndSentAfterConnect() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+
+        relay.receive(makeEvent(index: 1))
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+
+        let sent = sentRawEvents(client)
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(sent.first?.appName, "App1")
+    }
+
+    func testPreStartBufferKeepsNewestEventsWhenFull() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 2)
+
+        relay.receive(makeEvent(index: 1))
+        relay.receive(makeEvent(index: 2))
+        relay.receive(makeEvent(index: 3))
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+
+        let sent = sentRawEvents(client)
+        XCTAssertEqual(sent.map(\.appName), ["App2", "App3"])
+        let dropped = await relay.droppedEventCount
+        XCTAssertEqual(dropped, 0)
+    }
+
     func testBufferFillDropsOldestEventsAndCountsDrops() async throws {
         let client = FakeIPCClient()
         let relay = EventRelay(ipcClient: client, capacity: 500)

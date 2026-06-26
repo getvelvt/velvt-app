@@ -8,6 +8,7 @@ endif
 
 CARGO_VERSION := $(shell cd rust-service && cargo --version 2>$(NULL_DEVICE))
 SWIFT_VERSION := $(shell swift --version 2>$(NULL_DEVICE))
+VELVT_CODESIGN_IDENTITY ?= E24074F5011AE8FF85C0AD97A583E1CCA6688E81
 
 check-rust-toolchain:
 ifeq ($(strip $(CARGO_VERSION)),)
@@ -34,10 +35,10 @@ lint-rust: check-rust-toolchain
 	cd rust-service && cargo fmt --check
 
 build-swift: check-swift-toolchain
-	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' CONFIGURATION_BUILD_DIR=$(PWD)/swift-client/.build build
+	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' -derivedDataPath $(PWD)/swift-client/DerivedData CONFIGURATION_BUILD_DIR=$(PWD)/swift-client/.build build
 
 test-swift: check-swift-toolchain
-	swift test --package-path swift-client
+	CLANG_MODULE_CACHE_PATH=$(PWD)/swift-client/.build/clang-module-cache swift test --package-path swift-client --scratch-path $(PWD)/swift-client/.build --disable-sandbox
 
 lint-swift: check-swift-toolchain
 	cd swift-client && swift format lint --recursive Sources Tests
@@ -62,12 +63,10 @@ build-app: check-swift-toolchain
 		build
 	cp -R dist/.derivedData/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
 	rm -rf dist/.derivedData
-	# Ad-hoc sign with a stable identity derived from the bundle. The Xcode
-	# project has CODE_SIGNING_ALLOWED=NO, so without this the app ships
-	# fully unsigned: macOS then can't reliably remember a granted
-	# Accessibility permission across relaunches (and especially rebuilds),
-	# since TCC has no stable code identity to key the grant on.
-	codesign --force --deep --sign - dist/velvt-mac.app
+	# Sign with a real local development identity so macOS TCC can remember
+	# Accessibility permission across relaunches and rebuilds. Override with
+	# VELVT_CODESIGN_IDENTITY="..." if another certificate should be used.
+	codesign --force --deep --sign "$(VELVT_CODESIGN_IDENTITY)" dist/velvt-mac.app
 	@echo "Built dist/velvt-mac.app"
 
 clean:

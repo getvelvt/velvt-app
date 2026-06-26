@@ -182,8 +182,10 @@ public final class AccountStateManager: ObservableObject {
 
     private let keychain: any KeychainProtocol
     private var listenerTask: Task<Void, Never>?
+    private var connectionStatusCancellable: AnyCancellable?
     private var pendingEmail: String?
     private var accountEmailCache: String??
+    private var cachedSession: AuthSession?
 
     public init(keychain: any KeychainProtocol) {
         self.keychain = keychain
@@ -198,6 +200,7 @@ public final class AccountStateManager: ObservableObject {
         _accountState = Published(wrappedValue: initialState)
         _isDeviceRevoked = Published(wrappedValue: false)
         serverMessages = PassthroughSubject()
+        cachedSession = Self.loadSession(from: keychain)
     }
 
     // MARK: - State machine
@@ -264,6 +267,7 @@ public final class AccountStateManager: ObservableObject {
     public func logOut() {
         transition(to: .loggingOut)
         keychain.deleteAll()
+        cachedSession = nil
         pendingEmail = nil
         accountEmailCache = .some(nil)
         accountState = .loggedOut
@@ -289,7 +293,15 @@ public final class AccountStateManager: ObservableObject {
     /// after the IPC client is constructed.
     public func startListening(to client: any IPCClientProtocol) {
         listenerTask?.cancel()
-        sendStoredSession(to: client)
+        connectionStatusCancellable?.cancel()
+        connectionStatusCancellable = client.connectionStatus
+            .removeDuplicates()
+            .sink { [weak self] status in
+                guard status == .connected else {
+                    return
+                }
+                self?.sendStoredSession(to: client)
+            }
         listenerTask = Task { [weak self] in
             for await message in client.incomingMessages {
                 guard let self, !Task.isCancelled else { break }
@@ -320,6 +332,8 @@ public final class AccountStateManager: ObservableObject {
     public func stopListening() {
         listenerTask?.cancel()
         listenerTask = nil
+        connectionStatusCancellable?.cancel()
+        connectionStatusCancellable = nil
     }
 
     // MARK: - Private
@@ -343,16 +357,19 @@ public final class AccountStateManager: ObservableObject {
             }
         case .accountDeletionAccepted:
             keychain.deleteAll()
+            cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
             accountState = .loggedOut
         case .needsReauth:
             keychain.deleteAll()
+            cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
             accountState = .loggedOut
         case .deviceRevoked:
             keychain.deleteAll()
+            cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
             accountState = .loggedOut
@@ -376,6 +393,12 @@ public final class AccountStateManager: ObservableObject {
             try keychain.store(token: success.userId, for: .userId)
             try keychain.store(token: success.deviceId, for: .deviceId)
             try keychain.store(token: "\(success.expiresAt.timeIntervalSince1970)", for: .expiresAt)
+            cachedSession = AuthSession(
+                deviceId: success.deviceId,
+                accessToken: success.accessToken,
+                refreshToken: success.refreshToken,
+                expiresAt: success.expiresAt
+            )
             if let pendingEmail {
                 try keychain.store(token: pendingEmail, for: .email)
                 accountEmailCache = .some(pendingEmail)
@@ -402,26 +425,33 @@ public final class AccountStateManager: ObservableObject {
             try keychain.store(token: session.refreshToken, for: .refreshToken)
             try keychain.store(token: session.deviceId, for: .deviceId)
             try keychain.store(token: "\(session.expiresAt.timeIntervalSince1970)", for: .expiresAt)
+            cachedSession = session
         } catch {
             authLogger.error("auth.storeSession: Keychain write failed — \(error.localizedDescription)")
         }
     }
 
     private func sendStoredSession(to client: any IPCClientProtocol) {
+        guard let session = cachedSession else { return }
+        Task {
+            try? await client.send(.authSession(session))
+        }
+    }
+
+    private static func loadSession(from keychain: any KeychainProtocol) -> AuthSession? {
         guard let deviceId = try? keychain.load(for: .deviceId),
               let accessToken = try? keychain.load(for: .accessToken),
               let refreshToken = try? keychain.load(for: .refreshToken),
               let expiresRaw = try? keychain.load(for: .expiresAt),
-              let expiresInterval = TimeInterval(expiresRaw) else { return }
-        let session = AuthSession(
+              let expiresInterval = TimeInterval(expiresRaw) else {
+            return nil
+        }
+        return AuthSession(
             deviceId: deviceId,
             accessToken: accessToken,
             refreshToken: refreshToken,
             expiresAt: Date(timeIntervalSince1970: expiresInterval)
         )
-        Task {
-            try? await client.send(.authSession(session))
-        }
     }
 
     private func isValidTransition(from current: AccountState, to next: AccountState) -> Bool {

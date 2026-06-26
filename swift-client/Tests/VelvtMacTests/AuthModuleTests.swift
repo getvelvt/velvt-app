@@ -59,14 +59,41 @@ final class AccountStateManagerTests: XCTestCase {
 
         let sut = AccountStateManager(keychain: keychain)
         sut.startListening(to: client)
+        client.setConnectionStatus(.connected)
         try await Task.sleep(nanoseconds: 50_000_000)
 
-        XCTAssertTrue(client.sentMessages.contains(.authSession(AuthSession(
-            deviceId: "device-1",
-            accessToken: "stored-access",
-            refreshToken: "stored-refresh",
-            expiresAt: expiresAt
-        ))))
+        guard case .authSession(let session)? = client.sentMessages.first else {
+            return XCTFail("Expected stored auth session to be sent to Rust")
+        }
+        XCTAssertEqual(session.deviceId, "device-1")
+        XCTAssertEqual(session.accessToken, "stored-access")
+        XCTAssertEqual(session.refreshToken, "stored-refresh")
+        XCTAssertEqual(session.expiresAt.timeIntervalSince1970, expiresAt.timeIntervalSince1970, accuracy: 0.001)
+    }
+
+    func testStoredAuthSessionIsNotSentBeforeIPCConnect() async throws {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let expiresAt = Date(timeIntervalSinceNow: 3600)
+        try keychain.store(token: "u123", for: .userId)
+        try keychain.store(token: "device-1", for: .deviceId)
+        try keychain.store(token: "stored-access", for: .accessToken)
+        try keychain.store(token: "stored-refresh", for: .refreshToken)
+        try keychain.store(token: "\(expiresAt.timeIntervalSince1970)", for: .expiresAt)
+
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertTrue(client.sentMessages.isEmpty)
+
+        client.setConnectionStatus(.connected)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        guard case .authSession(let session)? = client.sentMessages.first else {
+            return XCTFail("Expected stored auth session after IPC connection")
+        }
+        XCTAssertEqual(session.deviceId, "device-1")
     }
 
     func testSuccessfulAuthenticationStoresEmailInKeychain() async {

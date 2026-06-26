@@ -55,11 +55,15 @@ public final class PermissionManager: PermissionManagerProtocol {
     private let applicationIsActive: () -> Bool
     private let timerInterval: TimeInterval
     private let monitorScheduler: any PermissionMonitorScheduling
+    private let accessibilityPromptPollScheduler: any PermissionMonitorScheduling
+    private let accessibilityPromptPollInterval: TimeInterval
+    private let accessibilityPromptPollLimit: Int
     private let activityNotifications: NotificationCenter
     private let statusSubject: CurrentValueSubject<[PermissionType: PermissionStatus], Never>
     private let lock = NSLock()
     private var activityObservers: [NSObjectProtocol] = []
     private var isMonitoring = false
+    private var accessibilityPromptPollsRemaining = 0
 
     public convenience init() {
         self.init(
@@ -80,6 +84,7 @@ public final class PermissionManager: PermissionManagerProtocol {
             applicationIsActive: applicationIsActive,
             timerInterval: timerInterval,
             monitorScheduler: DispatchPermissionMonitorScheduler(),
+            accessibilityPromptPollScheduler: DispatchPermissionMonitorScheduler(),
             activityNotifications: .default
         )
     }
@@ -90,6 +95,9 @@ public final class PermissionManager: PermissionManagerProtocol {
         applicationIsActive: @escaping () -> Bool,
         timerInterval: TimeInterval = 5,
         monitorScheduler: any PermissionMonitorScheduling,
+        accessibilityPromptPollScheduler: any PermissionMonitorScheduling = DispatchPermissionMonitorScheduler(),
+        accessibilityPromptPollInterval: TimeInterval = 1,
+        accessibilityPromptPollLimit: Int = 120,
         activityNotifications: NotificationCenter = .default
     ) {
         self.accessibilityClient = accessibilityClient
@@ -97,6 +105,9 @@ public final class PermissionManager: PermissionManagerProtocol {
         self.applicationIsActive = applicationIsActive
         self.timerInterval = max(timerInterval, 5)
         self.monitorScheduler = monitorScheduler
+        self.accessibilityPromptPollScheduler = accessibilityPromptPollScheduler
+        self.accessibilityPromptPollInterval = max(accessibilityPromptPollInterval, 1)
+        self.accessibilityPromptPollLimit = max(accessibilityPromptPollLimit, 1)
         self.activityNotifications = activityNotifications
         statusSubject = CurrentValueSubject([
             .accessibility: .unknown,
@@ -127,9 +138,15 @@ public final class PermissionManager: PermissionManagerProtocol {
                 // previous launch, calling isProcessTrusted(prompt: true) again would
                 // needlessly re-trigger the system accessibility warning/dialog.
                 if accessibilityClient.isProcessTrusted(prompt: false) {
+                    stopAccessibilityPromptPolling()
                     return .granted
                 }
-                return accessibilityClient.isProcessTrusted(prompt: true) ? .granted : .denied
+                if accessibilityClient.isProcessTrusted(prompt: true) {
+                    stopAccessibilityPromptPolling()
+                    return .granted
+                }
+                startAccessibilityPromptPolling()
+                return .denied
             }
         case .notifications:
             if currentStatus(for: .notifications) == .denied {
@@ -189,6 +206,7 @@ public final class PermissionManager: PermissionManagerProtocol {
             activityNotifications.removeObserver(observer)
         }
         monitorScheduler.stop()
+        stopAccessibilityPromptPolling()
     }
 
     deinit {
@@ -215,6 +233,29 @@ public final class PermissionManager: PermissionManagerProtocol {
                 _ = await self.checkStatus(for: .accessibility)
             }
         }
+    }
+
+    private func startAccessibilityPromptPolling() {
+        accessibilityPromptPollsRemaining = accessibilityPromptPollLimit
+        accessibilityPromptPollScheduler.start(interval: accessibilityPromptPollInterval) { [weak self] in
+            guard let self else {
+                return
+            }
+            if self.accessibilityClient.isProcessTrusted(prompt: false) {
+                self.stopAccessibilityPromptPolling()
+                self.publish(.granted, for: .accessibility)
+                return
+            }
+            self.accessibilityPromptPollsRemaining -= 1
+            if self.accessibilityPromptPollsRemaining <= 0 {
+                self.stopAccessibilityPromptPolling()
+            }
+        }
+    }
+
+    private func stopAccessibilityPromptPolling() {
+        accessibilityPromptPollsRemaining = 0
+        accessibilityPromptPollScheduler.stop()
     }
 
     private func currentStatus(for permission: PermissionType) -> PermissionStatus {

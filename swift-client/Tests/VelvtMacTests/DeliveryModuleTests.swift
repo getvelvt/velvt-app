@@ -8,7 +8,7 @@ final class DeliveryModuleTests: XCTestCase {
     }
 
     @MainActor
-    func testSendAllNowRequestsFlushThenRefreshesStatus() async {
+    func testSendAllNowRequestsFlushAndWaitsForFlushStatus() async {
         let client = FakeIPCClient()
         let messages = PassthroughSubject<ServerMessage, Never>()
         let sut = MenuStatusViewModel(ipcClient: client, messages: messages)
@@ -16,7 +16,7 @@ final class DeliveryModuleTests: XCTestCase {
         sut.sendAllNow()
         try? await Task.sleep(nanoseconds: 10_000_000)
 
-        XCTAssertEqual(client.sentMessages, [.flushUploadQueue, .requestMenuStatus])
+        XCTAssertEqual(client.sentMessages, [.flushUploadQueue])
     }
 
     @MainActor

@@ -104,7 +104,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.eventSinkFanout = eventSinkFanout
         self.collectionAgent = collectionAgent
         permissionCoordinator = coordinator
-        coordinator.start()
 
         let menuBar = MenuBarController(
             presentation: permissionPresentation,
@@ -141,7 +140,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().delegate = responseRouter
         notificationResponseRouter = responseRouter
 
-        Task { await relay.start() }
+        Task { @MainActor in
+            await relay.start()
+            coordinator.start()
+        }
 
         Task.detached {
             do {

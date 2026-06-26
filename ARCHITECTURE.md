@@ -61,7 +61,7 @@ Daily insights additionally produce a `notification_payload` IPC push (see
 |---|---|---|---|---|
 | R1 — IPC transport | Rust | Unix socket framing, version handshake, malformed-frame rejection | `MessageRouter`, `IpcTransport` | Rejects unparseable frames without echoing content |
 | R2 — Abstraction | Rust | Three-tier classification (seed dictionary, embedding similarity, unlogged fallback) | `ClassificationPlugin`, `TitleAbstractor` | **The privacy enforcement boundary** — raw fields cannot leave this module |
-| R3 — Persistence | Rust | SQLite schema, migrations, DAL | `*Repo` traits in `persistence::traits` | Schema has no column that can hold a raw field (enforced by migration SQL + tests) |
+| R3 — Persistence | Rust | SQLite schema, migrations, DAL | `*Repo` traits in `persistence::traits` | New writes persist only abstracted fields; the legacy nullable `local_display_label` column is forced to `NULL` by the DAL and covered by tests |
 | R4 — Auth | Rust | Device registration, token refresh/reissue, auth state machine | `DeviceRegistrar`, `HttpClient`, `TokenStore` | Tokens never touch SQLite or logs (`RedactedString`, Keychain) |
 | R5 — Upload | Rust | Batch assembly, retry/backoff, privacy-rejection handling | `BatchUploader`, `EventIngestor` | Constructs the one DTO that crosses to the cloud; enforces `raw_field_rejected` is terminal |
 | R6 — Delivery (fetch) | Rust | History/insight fetch, caching, proactive push | `CacheManager`, `Fetchable` | Read-only from cloud; never re-derives raw content |
@@ -98,7 +98,7 @@ the only output type, and it structurally cannot carry a raw field.
 Newline-delimited JSON over a Unix domain socket at the path in
 `proto/ipc_socket_path`. Every message is a tagged
 `{"type": "...", "payload": {...}}` envelope. The current breaking-change
-version is in `proto/version` (currently 10); a version bump requires
+version is in `proto/version` (currently 11); a version bump requires
 coordinated updates to `proto/schema/`, `rust-service/shared-types`,
 `swift-client/Sources/VelvtMac/IPC/IPCTypes.swift`, and
 `swift-client/Configs/{Debug,Release}.xcconfig` in the same commit (see
@@ -123,6 +123,11 @@ NeedsReauth ──(successful login)──▶ Authenticated
 (`device_revoked`/`needs_reauth` messages) independent of any in-flight
 request, so the UI can react even if the user isn't actively triggering a
 network call.
+
+On relaunch, Swift replays any Keychain-backed `auth_session` only after the
+IPC client reports `.connected`. This prevents the session handoff from being
+lost during the app/service startup race and keeps Rust's upload/fetch path in
+sync with Swift's local account state.
 
 ## The graceful shutdown sequence
 

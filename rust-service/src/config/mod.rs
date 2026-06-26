@@ -255,7 +255,10 @@ mod tests {
     #[test]
     fn compile_time_api_url_is_non_empty() {
         let url = env!("VELVT_API_BASE_URL_COMPILED");
-        assert!(!url.is_empty(), "VELVT_API_BASE_URL_COMPILED must not be empty");
+        assert!(
+            !url.is_empty(),
+            "VELVT_API_BASE_URL_COMPILED must not be empty"
+        );
     }
 
     #[test]
@@ -264,8 +267,7 @@ mod tests {
         // indicated a missing build-env configuration.
         let url = env!("VELVT_API_BASE_URL_COMPILED");
         assert_ne!(
-            url,
-            "https://api.velvt.test",
+            url, "https://api.velvt.test",
             "VELVT_API_BASE_URL_COMPILED must not be the old misconfiguration sentinel"
         );
     }

@@ -237,7 +237,7 @@ async fn concurrent_expired_token_checks_send_one_refresh_request() {
         device_id: "device-1".into(),
     }));
     let manager = Arc::new(AuthManager::new(
-        store,
+        Arc::clone(&store),
         Arc::clone(&http),
         state,
         Duration::zero(),
@@ -287,7 +287,7 @@ async fn invalid_credentials_transition_to_needs_reauth_after_one_refresh_cycle(
         device_id: "device-1".into(),
     }));
     let manager = AuthManager::new(
-        store,
+        Arc::clone(&store),
         Arc::clone(&http),
         Arc::clone(&state),
         Duration::zero(),
@@ -350,7 +350,12 @@ async fn device_revoked_from_refresh_is_terminal() {
     let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
         device_id: "device-1".into(),
     }));
-    let manager = AuthManager::new(Arc::clone(&store), http, Arc::clone(&state), Duration::zero());
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        http,
+        Arc::clone(&state),
+        Duration::zero(),
+    );
 
     assert!(matches!(
         manager
@@ -383,7 +388,9 @@ async fn device_token_revoked_from_refresh_requires_reauthentication() {
     );
 
     assert!(matches!(
-        manager.send_authenticated(HttpRequest::get("/v1/events")).await,
+        manager
+            .send_authenticated(HttpRequest::get("/v1/events"))
+            .await,
         Err(AuthError::NeedsReauth)
     ));
     assert_eq!(http.requests().len(), 1);
@@ -402,7 +409,12 @@ async fn malformed_refresh_success_transitions_to_needs_reauth() {
     let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
         device_id: "device-1".into(),
     }));
-    let manager = AuthManager::new(Arc::clone(&store), http, Arc::clone(&state), Duration::zero());
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        http,
+        Arc::clone(&state),
+        Duration::zero(),
+    );
 
     assert!(matches!(
         manager
@@ -439,16 +451,57 @@ async fn refresh_rate_limit_is_typed_and_transitions_to_needs_reauth() {
 }
 
 #[tokio::test]
-async fn device_token_revoked_requires_reauthentication() {
+async fn device_token_revoked_reissues_tokens_and_retries_original_request() {
     let store = Arc::new(FakeTokenStore::default());
+    let fresh = token_pair(Duration::hours(2), "fresh-access", "fresh-refresh");
     store
         .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
         .unwrap();
-    let http = Arc::new(FakeHttpClient::with_responses(vec![response(
-        403,
-        Some("device_token_revoked"),
-        None,
-    )]));
+    let http = Arc::new(FakeHttpClient::with_responses(vec![
+        response(403, Some("device_token_revoked"), None),
+        response(200, None, Some(fresh.clone())),
+        response(200, None, None),
+    ]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    manager
+        .send_authenticated(HttpRequest::get("/v1/events"))
+        .await
+        .unwrap();
+    let requests = http.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].path, "/v1/events");
+    assert_eq!(requests[1].path, "/v1/auth/devices/reissue");
+    assert_eq!(requests[2].path, "/v1/events");
+    assert_eq!(store.load_tokens().unwrap(), Some(fresh));
+    assert_eq!(
+        state.current(),
+        AuthState::Authenticated {
+            device_id: "device-1".into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn device_token_revoked_reissue_uses_current_access_token() {
+    let store = Arc::new(FakeTokenStore::default());
+    let fresh = token_pair(Duration::hours(2), "fresh-access", "fresh-refresh");
+    store
+        .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
+        .unwrap();
+    let http = Arc::new(FakeHttpClient::with_responses(vec![
+        response(403, Some("device_token_revoked"), None),
+        response(200, None, Some(fresh)),
+        response(200, None, None),
+    ]));
     let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
         device_id: "device-1".into(),
     }));
@@ -459,85 +512,29 @@ async fn device_token_revoked_requires_reauthentication() {
         Duration::zero(),
     );
 
-    assert!(matches!(
-        manager
-            .send_authenticated(HttpRequest::get("/v1/events"))
-            .await,
-        Err(AuthError::NeedsReauth)
-    ));
-    assert_eq!(http.requests().len(), 1);
-    assert_eq!(state.current(), AuthState::NeedsReauth);
-}
-
-#[tokio::test]
-async fn device_token_revoked_does_not_call_reissue_with_a_device_token() {
-    let store = Arc::new(FakeTokenStore::default());
-    store
-        .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
+    manager
+        .send_authenticated(HttpRequest::get("/v1/events"))
+        .await
         .unwrap();
-    let http = Arc::new(FakeHttpClient::with_responses(vec![response(
-        403,
-        Some("device_token_revoked"),
-        None,
-    )]));
-    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
-        device_id: "device-1".into(),
-    }));
-    let manager = AuthManager::new(
-        store,
-        Arc::clone(&http),
-        Arc::clone(&state),
-        Duration::zero(),
+    let requests = http.requests();
+    assert_eq!(requests[1].path, "/v1/auth/devices/reissue");
+    assert!(requests[1].authorization.is_some());
+    assert!(requests[1].refresh_token.is_none());
+    assert_eq!(
+        requests[1].json_body.as_ref().unwrap()["device_id"],
+        "device-1"
     );
-
-    assert!(matches!(
-        manager
-            .send_authenticated(HttpRequest::get("/v1/events"))
-            .await,
-        Err(AuthError::NeedsReauth)
-    ));
-    assert_eq!(http.requests().len(), 1);
-    assert_eq!(state.current(), AuthState::NeedsReauth);
 }
 
 #[tokio::test]
-async fn device_token_revoked_preserves_the_existing_device_credentials() {
+async fn failed_device_token_reissue_preserves_existing_credentials() {
     let store = Arc::new(FakeTokenStore::default());
     let original = token_pair(Duration::hours(1), "access", "refresh");
-    store
-        .store_pair(original.clone())
-        .unwrap();
-    let http = Arc::new(FakeHttpClient::with_responses(vec![response(
-        403,
-        Some("device_token_revoked"),
-        None,
-    )]));
-    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
-        device_id: "device-1".into(),
-    }));
-    let manager = AuthManager::new(Arc::clone(&store), http, Arc::clone(&state), Duration::zero());
-
-    assert!(matches!(
-        manager
-            .send_authenticated(HttpRequest::get("/v1/events"))
-            .await,
-        Err(AuthError::NeedsReauth)
-    ));
-    assert_eq!(store.load_tokens().unwrap(), Some(original));
-    assert_eq!(state.current(), AuthState::NeedsReauth);
-}
-
-#[tokio::test]
-async fn device_token_revoked_defers_token_reissue_until_user_login() {
-    let store = Arc::new(FakeTokenStore::default());
-    store
-        .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
-        .unwrap();
-    let http = Arc::new(FakeHttpClient::with_responses(vec![response(
-        403,
-        Some("device_token_revoked"),
-        None,
-    )]));
+    store.store_pair(original.clone()).unwrap();
+    let http = Arc::new(FakeHttpClient::with_responses(vec![
+        response(403, Some("device_token_revoked"), None),
+        response(500, Some("server_error"), None),
+    ]));
     let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
         device_id: "device-1".into(),
     }));
@@ -549,11 +546,44 @@ async fn device_token_revoked_defers_token_reissue_until_user_login() {
     );
 
     assert!(matches!(
-        manager.send_authenticated(HttpRequest::get("/v1/events")).await,
+        manager
+            .send_authenticated(HttpRequest::get("/v1/events"))
+            .await,
         Err(AuthError::NeedsReauth)
     ));
-    assert_eq!(http.requests().len(), 1);
-    assert!(matches!(state.current(), AuthState::NeedsReauth));
+    assert_eq!(http.requests().len(), 2);
+    assert_eq!(store.load_tokens().unwrap(), Some(original));
+    assert_eq!(state.current(), AuthState::NeedsReauth);
+}
+
+#[tokio::test]
+async fn device_revoked_during_token_reissue_is_terminal() {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
+        .unwrap();
+    let http = Arc::new(FakeHttpClient::with_responses(vec![
+        response(403, Some("device_token_revoked"), None),
+        response(403, Some("device_revoked"), None),
+    ]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    assert!(matches!(
+        manager
+            .send_authenticated(HttpRequest::get("/v1/events"))
+            .await,
+        Err(AuthError::DeviceRevoked)
+    ));
+    assert_eq!(http.requests().len(), 2);
+    assert!(matches!(state.current(), AuthState::DeviceRevoked));
 }
 
 #[tokio::test]

@@ -86,8 +86,13 @@ public actor EventRelay: EventRelayProtocol {
     // required mutual exclusion.
     private let continuationLock = NSLock()
     private nonisolated(unsafe) var _ingestContinuation: AsyncStream<RawEvent>.Continuation?
+    private let startupBufferLock = NSLock()
+    private nonisolated(unsafe) var startupBuffer: [RawEvent] = []
+    private nonisolated(unsafe) var startupDroppedEventCount = 0
+    private nonisolated(unsafe) var acceptsStartupEvents = true
 
     private let ipcClient: any IPCClientProtocol
+    private let capacity: Int
 
     // MARK: Actor-isolated state
 
@@ -111,14 +116,65 @@ public actor EventRelay: EventRelayProtocol {
         capacity: Int = 500
     ) {
         self.ipcClient = ipcClient
+        self.capacity = capacity
         ringBuffer = CircularBuffer(capacity: capacity)
     }
 
     // MARK: EventSink — nonisolated, O(1), never blocks
 
     public nonisolated func receive(_ event: RawEvent) {
+        let didYield = continuationLock.withLock { () -> Bool in
+            guard let continuation = _ingestContinuation else {
+                return false
+            }
+            _ = continuation.yield(event)
+            return true
+        }
+        guard !didYield else {
+            return
+        }
+        startupBufferLock.withLock {
+            guard acceptsStartupEvents else {
+                return
+            }
+            if startupBuffer.count >= capacity {
+                startupBuffer.removeFirst()
+                startupDroppedEventCount += 1
+            }
+            startupBuffer.append(event)
+        }
+    }
+
+    private nonisolated func drainStartupBuffer() -> (events: [RawEvent], dropped: Int) {
+        startupBufferLock.withLock {
+            let events = startupBuffer
+            let dropped = startupDroppedEventCount
+            startupBuffer.removeAll(keepingCapacity: true)
+            startupDroppedEventCount = 0
+            return (events, dropped)
+        }
+    }
+
+    private nonisolated func clearStartupBuffer() {
+        startupBufferLock.withLock {
+            startupBuffer.removeAll(keepingCapacity: true)
+            startupDroppedEventCount = 0
+            acceptsStartupEvents = false
+        }
+    }
+
+    private nonisolated func enqueue(_ events: [RawEvent], into continuation: AsyncStream<RawEvent>.Continuation) {
+        for event in events {
+            _ = continuation.yield(event)
+        }
+    }
+
+    private nonisolated func installContinuation(_ continuation: AsyncStream<RawEvent>.Continuation) {
         continuationLock.withLock {
-            _ = _ingestContinuation?.yield(event)
+            _ingestContinuation = continuation
+        }
+        startupBufferLock.withLock {
+            acceptsStartupEvents = false
         }
     }
 
@@ -129,7 +185,10 @@ public actor EventRelay: EventRelayProtocol {
 
         var cont: AsyncStream<RawEvent>.Continuation!
         let stream = AsyncStream<RawEvent> { cont = $0 }
-        continuationLock.withLock { _ingestContinuation = cont }
+        installContinuation(cont)
+        let startup = drainStartupBuffer()
+        droppedEventCount += startup.dropped
+        enqueue(startup.events, into: cont)
 
         sendLoopTask = Task { await runSendLoop(stream: stream) }
         statusObserverTask = Task { await observeConnectionStatus() }
@@ -144,6 +203,7 @@ public actor EventRelay: EventRelayProtocol {
             _ingestContinuation?.finish()
             _ingestContinuation = nil
         }
+        clearStartupBuffer()
         statusObserverTask?.cancel()
         // Wait for both tasks to fully exit before clearing refs, so a
         // subsequent start() always begins with a clean slate.

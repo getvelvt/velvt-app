@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use std::{path::PathBuf, time::Duration};
+use std::{io, path::PathBuf, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
 use velvt_shared_types::{
@@ -56,7 +56,7 @@ async fn connect_and_handshake(socket_path: &std::path::Path) -> tokio::net::uni
 
 fn socket_path(name: &str) -> PathBuf {
     PathBuf::from(format!(
-        "/tmp/velvt-ipc-tests/{name}-{}-{}.sock",
+        "velvt-ipc-tests/{name}-{}-{}.sock",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -65,8 +65,34 @@ fn socket_path(name: &str) -> PathBuf {
     ))
 }
 
+fn filesystem_sockets_available() -> bool {
+    let path = PathBuf::from(format!(
+        "velvt-ipc-preflight-{}-{}.sock",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    match std::os::unix::net::UnixListener::bind(&path) {
+        Ok(listener) => {
+            drop(listener);
+            let _ = std::fs::remove_file(path);
+            true
+        }
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping Unix socket smoke test: filesystem sockets are unavailable");
+            false
+        }
+        Err(error) => panic!("failed to bind Unix socket preflight path: {error}"),
+    }
+}
+
 #[tokio::test]
 async fn unix_socket_smoke_covers_success_and_rejection() {
+    if !filesystem_sockets_available() {
+        return;
+    }
     let socket_path = socket_path("single-client");
     let transport = TokioUnixTransport::new(socket_path.clone(), 3);
     let server = tokio::spawn(async move { transport.run().await });
@@ -123,6 +149,9 @@ async fn unix_socket_smoke_covers_success_and_rejection() {
 
 #[tokio::test]
 async fn unix_socket_accepts_two_simultaneous_clients() {
+    if !filesystem_sockets_available() {
+        return;
+    }
     let socket_path = socket_path("two-clients");
     let transport = TokioUnixTransport::new(socket_path.clone(), 3);
     let server = tokio::spawn(async move { transport.run().await });

@@ -124,6 +124,34 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(accessibility.promptValues, [false, true])
     }
 
+    func testAccessibilityRequestPollsForGrantAfterSystemSettingsToggleWhileInactive() async {
+        let accessibility = FakeAccessibilityPermissionClient(isTrusted: false)
+        let promptPollScheduler = FakePermissionMonitorScheduler()
+        let manager = PermissionManager(
+            accessibilityClient: accessibility,
+            notificationClient: FakeNotificationPermissionClient(),
+            applicationIsActive: { false },
+            monitorScheduler: FakePermissionMonitorScheduler(),
+            accessibilityPromptPollScheduler: promptPollScheduler,
+            accessibilityPromptPollInterval: 1,
+            accessibilityPromptPollLimit: 3
+        )
+        var observed: [PermissionStatus] = []
+        manager.statusPublisher
+            .sink { observed.append($0[.accessibility] ?? .unknown) }
+            .store(in: &cancellables)
+
+        let status = await manager.requestPermission(for: .accessibility)
+        accessibility.isTrusted = true
+        promptPollScheduler.fire()
+
+        XCTAssertEqual(status, .denied)
+        XCTAssertEqual(observed.last, .granted)
+        XCTAssertEqual(promptPollScheduler.startCallCount, 1)
+        XCTAssertEqual(promptPollScheduler.stopCallCount, 1)
+        XCTAssertEqual(accessibility.promptValues, [false, true, false])
+    }
+
     func testBackgroundedAppSkipsAccessibilityMonitorCycle() {
         let accessibility = FakeAccessibilityPermissionClient(isTrusted: true)
         let scheduler = FakePermissionMonitorScheduler()

@@ -150,9 +150,10 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
                 try observe(currentApplication)
             } catch CollectionError.permissionRevoked {
                 stopAfterPermissionRevocation()
+            } catch let CollectionError.observerRegistrationFailed(code) {
+                statusSubject.send(.error("ax_observer_registration_failed:\(code)"))
             } catch {
-                stop()
-                throw error
+                statusSubject.send(.error("ax_observer_registration_failed"))
             }
         }
     }

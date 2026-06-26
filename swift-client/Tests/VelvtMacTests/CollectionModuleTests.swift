@@ -239,6 +239,28 @@ final class CollectionModuleTests: XCTestCase {
         XCTAssertEqual(workspace.stopCallCount, 1)
     }
 
+    func testUnobservableCurrentApplicationDuringStartKeepsListeningForNextActivation() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        workspace.currentApplication = .init(processIdentifier: 10, appName: "Unobservable")
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.startErrors = [
+            10: .observerRegistrationFailed(code: AXError.noValue.rawValue)
+        ]
+        accessibility.initialTitles = [20: "Next Window"]
+        let agent = makeAgent(sink: sink, workspace: workspace, accessibility: accessibility)
+        var statuses: [CollectionStatus] = []
+        agent.status.sink { statuses.append($0) }.store(in: &cancellables)
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 20, appName: "Editor"))
+
+        XCTAssertTrue(statuses.contains(.error("ax_observer_registration_failed:\(AXError.noValue.rawValue)")))
+        XCTAssertEqual(statuses.filter { $0 == .running }.count, 1)
+        XCTAssertEqual(workspace.stopCallCount, 0)
+        XCTAssertEqual(sink.events.map(\.appName), ["Editor"])
+    }
+
     func testNoEventsAreGeneratedWithoutExplicitNotification() throws {
         let sink = RecordingEventSink()
         let workspace = FakeWorkspaceObserver()
@@ -370,6 +392,7 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
 
     var initialTitles: [pid_t: String] = [:]
     var startError: CollectionError?
+    var startErrors: [pid_t: CollectionError] = [:]
     private(set) var operations: [Operation] = []
     private(set) var stopCallCount = 0
     private(set) var startCallCount = 0
@@ -385,6 +408,9 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
     ) throws -> String? {
         operations.append(.start(application.processIdentifier))
         startCallCount += 1
+        if let startError = startErrors[application.processIdentifier] {
+            throw startError
+        }
         if let startError {
             throw startError
         }

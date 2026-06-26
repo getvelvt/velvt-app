@@ -38,6 +38,22 @@ public final class ServiceProcessLauncher {
         let task = Process()
         task.executableURL = serviceURL
         task.environment = environment
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        task.standardOutput = outputPipe
+        task.standardError = errorPipe
+        stream(pipe: outputPipe, label: "stdout")
+        stream(pipe: errorPipe, label: "stderr")
+        task.terminationHandler = { [weak self] process in
+            ServiceProcessLauncherLog.shared.error(
+                "velvt-service exited status=\(process.terminationStatus, privacy: .public)"
+            )
+            DispatchQueue.main.async {
+                if self?.process === process {
+                    self?.process = nil
+                }
+            }
+        }
         do {
             try task.run()
             process = task
@@ -53,6 +69,18 @@ public final class ServiceProcessLauncher {
         }
     }
 
+    private func stream(pipe: Pipe, label: String) {
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else {
+                return
+            }
+            ServiceProcessLauncherLog.shared.error(
+                "velvt-service \(label, privacy: .public): \(line, privacy: .public)"
+            )
+        }
+    }
+
     /// Sends SIGTERM and gives the helper a moment to flush before the app
     /// exits, mirroring the graceful-shutdown sequence the Rust service
     /// implements for its own SIGTERM/SIGINT handling.
@@ -61,6 +89,8 @@ public final class ServiceProcessLauncher {
             process = nil
             return
         }
+        (task.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+        (task.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
         task.terminate()
         process = nil
     }

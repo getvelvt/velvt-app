@@ -35,7 +35,6 @@ public final class MenuStatusViewModel: ObservableObject {
         Task {
             do {
                 try await ipcClient.send(.flushUploadQueue)
-                try await ipcClient.send(.requestMenuStatus)
             } catch {
                 sendError = "Unable to send queued events. Try again later."
             }

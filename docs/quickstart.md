@@ -90,6 +90,24 @@ swift run --package-path swift-client Velvt
 
 The Swift debug path can read configuration from environment variables when no processed app bundle `Info.plist` is available. Release app builds use `BundleConfigLoader` and values baked into `Info.plist` from `swift-client/Configs/*.xcconfig`.
 
+The Rust service polls velvt-core for live insights while authenticated. The
+cloud base URL defaults to the service build configuration and can be
+overridden at runtime with `VELVT_API_BASE_URL`; the long-poll path and timing
+can also be adjusted:
+
+```sh
+VELVT_API_BASE_URL=http://localhost:8000 \
+VELVT_INSIGHT_POLL_PATH=/v1/insights/poll \
+VELVT_INSIGHT_POLL_TIMEOUT_SECONDS=30 \
+VELVT_INSIGHT_POLL_IDLE_SECONDS=1 \
+cargo run --manifest-path rust-service/Cargo.toml
+```
+
+When a poll returns a new insight, Rust pushes both `insight_payload` and
+`notification_payload` to Swift over IPC. In Swift debug builds, open Settings
+from the menu bar popover and use "Simulate Insight" to exercise the same local
+notification handler without a velvt-core response.
+
 ## Tests
 
 Run all tests:
@@ -156,7 +174,9 @@ proto/version
 
 Do not hardcode either value in Swift or Rust. Swift app builds receive them through xcconfig-backed `Info.plist` keys. The Rust service loads the default socket path from `proto/ipc_socket_path` and can be overridden with `VELVT_IPC_SOCKET_PATH`.
 
-Cloud base URL and APNs environment are build-time constants. See `CONFIGURATION.md` for the full flow.
+Cloud base URL and APNs environment have build-time defaults. The Rust service
+also accepts `VELVT_API_BASE_URL` as a runtime override for local velvt-core
+testing. See `CONFIGURATION.md` for the full flow.
 
 ## Common Failure Modes
 

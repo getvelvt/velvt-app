@@ -34,6 +34,7 @@ AbstractionEngine::builder
 Auth/token/device state setup
 PushAdapter + ReconnectTracker setup
 FetchScheduler task
+PollScheduler task
 Upload retry task
 Age-based flush task
 RetentionScheduler task
@@ -95,8 +96,8 @@ Batch IDs are stable for idempotent retry. `raw_field_rejected` is terminal beca
 Delivery is the return path from cloud to UI:
 
 ```text
-FetchScheduler / on-demand IPC request
-FetchService
+FetchScheduler / PollScheduler / on-demand IPC request
+FetchService or PollClient
 history_cache / insight_cache
 shaper validation
 PushAdapter
@@ -105,6 +106,13 @@ Swift display coordinators
 ```
 
 Rust shapes payloads before sending them to Swift so the UI does not need to know cache schema details or cloud response formats.
+
+`PollScheduler` is the live insight path. It waits until the auth state is
+`Authenticated`, calls the velvt-core long-poll endpoint, maps `200` responses
+into `InsightPayload` plus a derived `NotificationPayload`, treats `204` as an
+idle poll miss, and backs off on transient failures. It keeps a lightweight
+in-memory last-ID guard so one repeated poll response does not create duplicate
+Swift pushes.
 
 ## Auth Architecture
 

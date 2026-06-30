@@ -141,6 +141,12 @@ is the **only** place that checks notifications `PermissionStatus`; denied,
 restricted, or undetermined status discards the payload silently (no crash,
 no retry, no re-request).
 
+In debug builds, Settings includes a "Simulate Insight" action. It calls
+`NotificationDeliveryCoordinator.simulateDebugInsightReceipt()`, which creates
+a representative `NotificationPayload` and routes it through the same
+`handle(_:)` method used by real Rust IPC pushes. This is a local test harness
+only; it does not contact velvt-core.
+
 ### Burst de-duplication
 
 `NotificationDeliveryCoordinator` keeps one pending `Task` per insight date

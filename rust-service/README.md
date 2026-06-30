@@ -134,6 +134,27 @@ result.
 Insight `text` is never written to any log or tracing field.  Only `date` and
 `confidence_level` are recorded at `DEBUG` level when an insight is stored.
 
+## Long-Poll Insight Delivery
+
+The service also runs a live long-poll loop while authenticated.  It calls
+`GET /v1/insights/poll` by default, where velvt-core either returns `200` with
+a JSON insight and `id`, or `204 No Content` when no insight is ready.
+
+`PollScheduler` parses `200` responses into a typed insight, suppresses an
+immediate duplicate by remembering the last delivered insight ID, and forwards
+the result to Swift through the existing IPC push queue as both
+`insight_payload` and `notification_payload`.  Swift never calls velvt-core.
+
+Configuration:
+
+| Env var | Default | Description |
+|---|---|---|
+| `VELVT_INSIGHT_POLL_PATH` | `/v1/insights/poll` | Path appended to the configured velvt-core base URL |
+| `VELVT_INSIGHT_POLL_TIMEOUT_SECONDS` | `30` | Client-side timeout for one held request |
+| `VELVT_INSIGHT_POLL_IDLE_SECONDS` | `1` | Delay after `204 No Content` |
+| `VELVT_INSIGHT_POLL_INITIAL_BACKOFF_SECONDS` | `1` | Initial retry delay after transport, timeout, or non-2xx failure |
+| `VELVT_INSIGHT_POLL_MAX_BACKOFF_SECONDS` | `60` | Maximum retry delay |
+
 ## Push Delivery to Swift (R7)
 
 R7 closes the last mile: after R6 fetches or caches history and insight data,

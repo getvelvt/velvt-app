@@ -261,8 +261,39 @@ Rust uses an internal `HttpClient` trait and `ReqwestHttpClient` implementation.
 | `/v1/ready` | GET | `MenuStatusProvider` | Cloud readiness indicator |
 | `/v1/events/batches` | POST | `HttpBatchUploader` | Upload abstracted event batches |
 | History/insight endpoints | GET | `FetchService` | Fetch ready-to-display summaries |
+| `/v1/insights/poll` | GET | `PollScheduler` / `PollClient` | Long-poll for newly delivered insights |
 
 Cloud DTOs must be audited against the forbidden-field list. Tests in `rust-service/tests/upload_batching.rs` are the first place to update when upload shape changes.
+
+### Insight Long-Polling
+
+`PollScheduler` runs as a service-owned background task after startup. It
+reuses the authenticated HTTP stack, so Swift never calls velvt-core directly.
+The default endpoint is `GET /v1/insights/poll`; override only the path with
+`VELVT_INSIGHT_POLL_PATH` when testing a compatible local velvt-core route.
+
+Response handling is typed:
+
+| Status | Behavior |
+|---|---|
+| `200` + JSON | Parse `id` plus the ready-to-display insight fields, push `insight_payload`, then push `notification_payload` over IPC |
+| `204` | Sleep for `VELVT_INSIGHT_POLL_IDLE_SECONDS` and poll again |
+| Non-2xx | Log status/error code only, apply exponential backoff, and continue |
+| Transport/timeout | Log a safe error, apply exponential backoff, and continue |
+
+The scheduler tracks the last delivered insight ID in memory and suppresses an
+immediate duplicate if velvt-core unexpectedly returns the same ID again.
+velvt-core remains the source of truth for durable delivered-state.
+
+Long-poll configuration:
+
+| Env var | Default | Description |
+|---|---|---|
+| `VELVT_INSIGHT_POLL_PATH` | `/v1/insights/poll` | Path appended to the configured velvt-core base URL |
+| `VELVT_INSIGHT_POLL_TIMEOUT_SECONDS` | `30` | Client-side timeout for one held request |
+| `VELVT_INSIGHT_POLL_IDLE_SECONDS` | `1` | Delay after a `204 No Content` response |
+| `VELVT_INSIGHT_POLL_INITIAL_BACKOFF_SECONDS` | `1` | First retry delay after failures |
+| `VELVT_INSIGHT_POLL_MAX_BACKOFF_SECONDS` | `60` | Maximum retry delay |
 
 ## Adding or Changing API Surface
 

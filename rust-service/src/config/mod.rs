@@ -46,6 +46,16 @@ pub struct ServiceConfig {
     pub cache_read_timeout: Duration,
     /// Minimum interval between proactive fetch scheduler runs.
     pub fetch_interval: Duration,
+    /// Path for the velvt-core long-poll insight endpoint.
+    pub insight_poll_path: String,
+    /// Client-side timeout for a single long-poll request.
+    pub insight_poll_timeout: Duration,
+    /// Delay before re-polling after a 204 No Content response.
+    pub insight_poll_idle_interval: Duration,
+    /// Initial retry delay after transient long-poll failures.
+    pub insight_poll_initial_backoff: Duration,
+    /// Maximum retry delay after repeated long-poll failures.
+    pub insight_poll_max_backoff: Duration,
     /// Maximum messages buffered in the IPC push queue while Swift is disconnected.
     pub push_queue_capacity: usize,
     /// Per-message write timeout before a connected Swift client is declared slow.
@@ -99,6 +109,14 @@ impl ServiceConfig {
             parse_env("VELVT_INSIGHT_NEGATIVE_TTL_SECONDS", 300_u64)?;
         let cache_read_timeout_ms = parse_env("VELVT_CACHE_READ_TIMEOUT_MS", 200_u64)?;
         let fetch_interval_seconds = parse_env("VELVT_FETCH_INTERVAL_SECONDS", 600_u64)?;
+        let insight_poll_path =
+            std::env::var("VELVT_INSIGHT_POLL_PATH").unwrap_or_else(|_| "/v1/insights/poll".into());
+        let insight_poll_timeout_seconds = parse_env("VELVT_INSIGHT_POLL_TIMEOUT_SECONDS", 30_u64)?;
+        let insight_poll_idle_seconds = parse_env("VELVT_INSIGHT_POLL_IDLE_SECONDS", 1_u64)?;
+        let insight_poll_initial_backoff_seconds =
+            parse_env("VELVT_INSIGHT_POLL_INITIAL_BACKOFF_SECONDS", 1_u64)?;
+        let insight_poll_max_backoff_seconds =
+            parse_env("VELVT_INSIGHT_POLL_MAX_BACKOFF_SECONDS", 60_u64)?;
         let push_queue_capacity = parse_env("VELVT_PUSH_QUEUE_CAPACITY", 50_usize)?;
         let push_write_timeout_ms = parse_env("VELVT_PUSH_WRITE_TIMEOUT_MS", 500_u64)?;
 
@@ -107,6 +125,11 @@ impl ServiceConfig {
             || insight_negative_ttl_seconds == 0
             || cache_read_timeout_ms == 0
             || fetch_interval_seconds == 0
+            || !insight_poll_path.starts_with('/')
+            || insight_poll_timeout_seconds == 0
+            || insight_poll_idle_seconds == 0
+            || insight_poll_initial_backoff_seconds == 0
+            || insight_poll_max_backoff_seconds < insight_poll_initial_backoff_seconds
             || push_queue_capacity == 0
             || push_write_timeout_ms == 0
         {
@@ -156,7 +179,11 @@ impl ServiceConfig {
                     !URL.is_empty(),
                     "VELVT_API_BASE_URL_COMPILED must not be empty"
                 );
-                URL.to_owned()
+                match std::env::var("VELVT_API_BASE_URL") {
+                    Ok(value) if !value.trim().is_empty() => value,
+                    Ok(_) | Err(std::env::VarError::NotPresent) => URL.to_owned(),
+                    Err(std::env::VarError::NotUnicode(_)) => return Err(ConfigError::Invalid),
+                }
             },
             upload_retry_scan_interval: Duration::from_secs(upload_retry_scan_seconds),
             history_ttl: Duration::from_secs(history_ttl_seconds),
@@ -164,6 +191,11 @@ impl ServiceConfig {
             insight_negative_ttl: Duration::from_secs(insight_negative_ttl_seconds),
             cache_read_timeout: Duration::from_millis(cache_read_timeout_ms),
             fetch_interval: Duration::from_secs(fetch_interval_seconds),
+            insight_poll_path,
+            insight_poll_timeout: Duration::from_secs(insight_poll_timeout_seconds),
+            insight_poll_idle_interval: Duration::from_secs(insight_poll_idle_seconds),
+            insight_poll_initial_backoff: Duration::from_secs(insight_poll_initial_backoff_seconds),
+            insight_poll_max_backoff: Duration::from_secs(insight_poll_max_backoff_seconds),
             push_queue_capacity,
             push_write_timeout: Duration::from_millis(push_write_timeout_ms),
             raw_event_ttl: Duration::from_secs(raw_event_ttl_hours * 3600),
@@ -293,5 +325,14 @@ mod tests {
         );
         let url = config.unwrap().upload_api_base_url;
         assert!(!url.is_empty(), "upload_api_base_url must not be empty");
+    }
+
+    #[test]
+    fn service_config_uses_runtime_api_base_url_override() {
+        std::env::set_var("VELVT_API_BASE_URL", "http://localhost:8000");
+        let config = ServiceConfig::load().unwrap();
+        std::env::remove_var("VELVT_API_BASE_URL");
+
+        assert_eq!(config.upload_api_base_url, "http://localhost:8000");
     }
 }

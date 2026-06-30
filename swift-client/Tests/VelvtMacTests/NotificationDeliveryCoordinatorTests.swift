@@ -90,6 +90,19 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(scheduler.scheduledPayloads.first?.insightDate, "2026-06-15")
     }
 
+    func testDebugSimulationRequestsNotificationPermissionWhenUnknown() async {
+        let scheduler = FakeNotificationScheduler()
+        let permissions = RequestGrantingPermissionManager()
+        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+
+        let now = ISO8601DateFormatter().date(from: "2026-06-15T12:00:00Z")!
+        await sut.simulateDebugInsightReceipt(now: now).value
+
+        XCTAssertEqual(permissions.requestedPermissions, [.notifications])
+        XCTAssertEqual(scheduler.scheduledPayloads.count, 1)
+        XCTAssertEqual(scheduler.scheduledPayloads.first?.insightDate, "2026-06-15")
+    }
+
     func testHandleDiscardsSilentlyWhenDenied() async {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
@@ -204,5 +217,24 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
 
         XCTAssertNil(sut.inFlightTask)
         XCTAssertTrue(scheduler.scheduledPayloads.isEmpty)
+    }
+}
+
+private final class RequestGrantingPermissionManager: PermissionManagerProtocol {
+    var statusPublisher: AnyPublisher<[PermissionType: PermissionStatus], Never> {
+        Just([.accessibility: .unknown, .notifications: status]).eraseToAnyPublisher()
+    }
+
+    private(set) var requestedPermissions: [PermissionType] = []
+    private var status: PermissionStatus = .unknown
+
+    func checkStatus(for permission: PermissionType) async -> PermissionStatus {
+        permission == .notifications ? status : .unknown
+    }
+
+    func requestPermission(for permission: PermissionType) async -> PermissionStatus {
+        requestedPermissions.append(permission)
+        status = .granted
+        return status
     }
 }

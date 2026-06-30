@@ -87,6 +87,7 @@ public enum MenuBarPopoverRoute: Equatable {
 private enum SettingsSubmenu: Equatable {
     case appInfo
     case queuedEvents
+    case debug
 }
 
 public enum MenuBarPopoverDirection: Equatable { case forward, backward }
@@ -127,6 +128,7 @@ public struct MenuBarPopoverView: View {
     @State private var navigator = MenuBarPopoverNavigator()
     @State private var showsAppInfoSubmenu = false
     @State private var showsQueuedEventsSubmenu = false
+    @State private var showsDebugSubmenu = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -288,21 +290,8 @@ public struct MenuBarPopoverView: View {
             settingsSubmenuRow("App Info", submenu: .appInfo)
             settingsSubmenuRow("Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))", submenu: .queuedEvents)
             #if DEBUG
-            if let simulateNotification {
-                Button {
-                    simulateNotification()
-                } label: {
-                    HStack {
-                        Image(systemName: "bell.badge")
-                        Text("Simulate Insight")
-                        Spacer()
-                    }
-                    .contentShape(Rectangle())
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity)
+            if simulateNotification != nil {
+                settingsSubmenuRow("Debug", submenu: .debug)
             }
             #endif
             Divider().padding(.vertical, 8)
@@ -378,6 +367,25 @@ public struct MenuBarPopoverView: View {
                     .padding(16)
             }
             .onAppear { menuStatusViewModel?.refresh() }
+
+        case .debug:
+            VStack(spacing: 0) {
+                submenuTitle("Debug")
+                Button {
+                    simulateNotification?()
+                } label: {
+                    HStack {
+                        Image(systemName: "bell.badge")
+                        Text("Simulate Insight")
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+            }
         }
     }
 
@@ -427,7 +435,7 @@ public struct MenuBarPopoverView: View {
         .onHover { if $0 { showSettingsSubmenu(submenu) } }
         .background(
             SubmenuPopoverAnchor(
-                isPresented: submenu == .appInfo ? $showsAppInfoSubmenu : $showsQueuedEventsSubmenu
+                isPresented: submenuBinding(for: submenu)
             ) {
                 settingsSubmenuContent(for: submenu)
                     .frame(width: 280)
@@ -439,11 +447,24 @@ public struct MenuBarPopoverView: View {
     private func showSettingsSubmenu(_ submenu: SettingsSubmenu) {
         showsAppInfoSubmenu = submenu == .appInfo
         showsQueuedEventsSubmenu = submenu == .queuedEvents
+        showsDebugSubmenu = submenu == .debug
     }
 
     private func dismissSettingsSubmenus() {
         showsAppInfoSubmenu = false
         showsQueuedEventsSubmenu = false
+        showsDebugSubmenu = false
+    }
+
+    private func submenuBinding(for submenu: SettingsSubmenu) -> Binding<Bool> {
+        switch submenu {
+        case .appInfo:
+            return $showsAppInfoSubmenu
+        case .queuedEvents:
+            return $showsQueuedEventsSubmenu
+        case .debug:
+            return $showsDebugSubmenu
+        }
     }
     private func infoRow(_ title: String, _ value: String) -> some View {
         HStack { Text(title).foregroundStyle(.secondary); Spacer(); Text(value).lineLimit(1).truncationMode(.middle) }

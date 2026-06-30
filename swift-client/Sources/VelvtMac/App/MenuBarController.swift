@@ -148,6 +148,7 @@ public final class MenuBarController: NSObject {
         currentActivity: CurrentActivityModel = CurrentActivityModel(),
         collectionStatus: AnyPublisher<CollectionStatus, Never> = Just(.idle).eraseToAnyPublisher(),
         connectionStatus: AnyPublisher<ConnectionStatus, Never> = Just(.disconnected).eraseToAnyPublisher(),
+        simulateNotification: (() -> Void)? = nil,
         activateApp: @escaping @MainActor () -> Void = {
             NSApp.unhide(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -180,6 +181,7 @@ public final class MenuBarController: NSObject {
                 accountStateManager: accountStateManager,
                 ipcClient: ipcClient,
                 menuStatusViewModel: menuStatusViewModel,
+                simulateNotification: simulateNotification,
                 metricsStore: metricsStore,
                 onEscape: { [weak self] in self?.closePopover() },
                 onTerminate: { [weak self] in self?.terminateApp() }

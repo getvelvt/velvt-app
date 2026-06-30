@@ -77,6 +77,24 @@ public final class NotificationDeliveryCoordinator {
         inFlightTask = task
         return task
     }
+
+    /// Debug harness used by the menu bar app to exercise the same
+    /// notification path as a Rust `notification_payload` IPC push.
+    @discardableResult
+    public func simulateDebugInsightReceipt(now: Date = Date()) -> Task<Void, Never> {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return handle(NotificationPayload(
+            notificationID: UUID(),
+            title: "Your Velvt insight is ready",
+            body: "You switched away from your document 23 times in 40 minutes.",
+            insightDate: formatter.string(from: now),
+            doNotDisturbUntil: nil
+        ))
+    }
 }
 
 // MARK: - NotificationResponseRouter

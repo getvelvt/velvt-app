@@ -106,6 +106,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.collectionAgent = collectionAgent
         permissionCoordinator = coordinator
 
+        let scheduler = UNNotificationScheduler(metrics: metricsStore)
+        let notificationCoordinator = NotificationDeliveryCoordinator(
+            scheduler: scheduler,
+            permissionManager: permissionManager
+        )
+        notificationCoordinator.start(serverMessages: accountStateManager.serverMessages)
+        notificationDeliveryCoordinator = notificationCoordinator
+
         let menuBar = MenuBarController(
             presentation: permissionPresentation,
             permissionManager: permissionManager,
@@ -117,6 +125,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             currentActivity: currentActivity,
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
+            simulateNotification: {
+                _ = notificationCoordinator.simulateDebugInsightReceipt()
+            },
             terminateApp: { NSApp.terminate(nil) }
         )
         menuBar.install()
@@ -126,14 +137,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             accountStateManager: accountStateManager
         )
         menuBarController = menuBar
-
-        let scheduler = UNNotificationScheduler(metrics: metricsStore)
-        let notificationCoordinator = NotificationDeliveryCoordinator(
-            scheduler: scheduler,
-            permissionManager: permissionManager
-        )
-        notificationCoordinator.start(serverMessages: accountStateManager.serverMessages)
-        notificationDeliveryCoordinator = notificationCoordinator
 
         let responseRouter = NotificationResponseRouter(
             openPopover: { [weak menuBar] in menuBar?.showPopover() },

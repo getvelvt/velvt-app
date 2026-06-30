@@ -120,6 +120,7 @@ public struct MenuBarPopoverView: View {
     private let accountStateManager: AccountStateManager?
     private let ipcClient: (any IPCClientProtocol)?
     private let menuStatusViewModel: MenuStatusViewModel?
+    private let simulateNotification: (() -> Void)?
     @ObservedObject private var metricsStore: AppMetricsStore
     private let onEscape: () -> Void
     private let onTerminate: () -> Void
@@ -138,6 +139,7 @@ public struct MenuBarPopoverView: View {
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
+        simulateNotification: (() -> Void)? = nil,
         metricsStore: AppMetricsStore = AppMetricsStore(defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
         onEscape: @escaping () -> Void,
         onTerminate: @escaping () -> Void = { }
@@ -151,6 +153,7 @@ public struct MenuBarPopoverView: View {
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
+        self.simulateNotification = simulateNotification
         self.metricsStore = metricsStore
         self.onEscape = onEscape
         self.onTerminate = onTerminate
@@ -284,6 +287,24 @@ public struct MenuBarPopoverView: View {
             })
             settingsSubmenuRow("App Info", submenu: .appInfo)
             settingsSubmenuRow("Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))", submenu: .queuedEvents)
+            #if DEBUG
+            if let simulateNotification {
+                Button {
+                    simulateNotification()
+                } label: {
+                    HStack {
+                        Image(systemName: "bell.badge")
+                        Text("Simulate Insight")
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+            }
+            #endif
             Divider().padding(.vertical, 8)
             HStack {
                 Button("Quit Velvt", role: .destructive, action: onTerminate)

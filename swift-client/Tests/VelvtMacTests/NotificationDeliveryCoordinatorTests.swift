@@ -76,6 +76,20 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(scheduler.scheduledPayloads, [payload])
     }
 
+    func testDebugSimulationUsesNotificationHandler() async {
+        let scheduler = FakeNotificationScheduler()
+        let permissions = FakePermissionManager()
+        permissions.setStatus(.granted, for: .notifications)
+        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+
+        let now = ISO8601DateFormatter().date(from: "2026-06-15T12:00:00Z")!
+        await sut.simulateDebugInsightReceipt(now: now).value
+
+        XCTAssertEqual(scheduler.scheduledPayloads.count, 1)
+        XCTAssertEqual(scheduler.scheduledPayloads.first?.title, "Your Velvt insight is ready")
+        XCTAssertEqual(scheduler.scheduledPayloads.first?.insightDate, "2026-06-15")
+    }
+
     func testHandleDiscardsSilentlyWhenDenied() async {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()

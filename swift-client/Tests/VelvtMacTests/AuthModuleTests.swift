@@ -145,6 +145,23 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(keychain.loadCount, loadsAfterInit)
     }
 
+    func testInitializationRestoresAuthStateWithSingleKeychainReadPass() throws {
+        let keychain = FakeKeychain()
+        let expiresAt = Date(timeIntervalSinceNow: 3600)
+        try keychain.store(token: "u123", for: .userId)
+        try keychain.store(token: "device-1", for: .deviceId)
+        try keychain.store(token: "stored-access", for: .accessToken)
+        try keychain.store(token: "stored-refresh", for: .refreshToken)
+        try keychain.store(token: "\(expiresAt.timeIntervalSince1970)", for: .expiresAt)
+        try keychain.store(token: "ada@example.com", for: .email)
+
+        let sut = AccountStateManager(keychain: keychain)
+
+        XCTAssertEqual(sut.accountState, .loggedIn(userId: "u123"))
+        XCTAssertEqual(sut.accountEmail, "ada@example.com")
+        XCTAssertEqual(keychain.loadCount, 1)
+    }
+
     func testLoggingInToLoggedOutViaAuthFailure() async {
         let client = FakeIPCClient()
         let sut = makeManager(client: client)

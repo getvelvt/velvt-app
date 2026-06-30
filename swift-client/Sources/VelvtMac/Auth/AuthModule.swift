@@ -28,10 +28,21 @@ public enum KeychainKey: String, CaseIterable, Sendable {
 public protocol KeychainProtocol: AnyObject {
     func store(token: String, for key: KeychainKey) throws
     func load(for key: KeychainKey) throws -> String
+    func loadAll() throws -> [KeychainKey: String]
     func delete(for key: KeychainKey) throws
 }
 
 extension KeychainProtocol {
+    func loadAll() throws -> [KeychainKey: String] {
+        var values: [KeychainKey: String] = [:]
+        for key in KeychainKey.allCases {
+            if let value = try? load(for: key) {
+                values[key] = value
+            }
+        }
+        return values
+    }
+
     func deleteAll() {
         for key in KeychainKey.allCases {
             try? delete(for: key)
@@ -96,6 +107,38 @@ public final class KeychainService: KeychainProtocol {
         return token
     }
 
+    public func loadAll() throws -> [KeychainKey: String] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess else {
+            if status == errSecItemNotFound { return [:] }
+            throw AuthError.keychain(status: status)
+        }
+        guard let items = result as? [[String: Any]] else {
+            throw AuthError.keychain(status: errSecDecode)
+        }
+
+        var values: [KeychainKey: String] = [:]
+        for item in items {
+            guard let account = item[kSecAttrAccount as String] as? String,
+                  let key = KeychainKey(rawValue: account),
+                  let data = item[kSecValueData as String] as? Data,
+                  let token = String(data: data, encoding: .utf8) else {
+                continue
+            }
+            values[key] = token
+        }
+        return values
+    }
+
     public func delete(for key: KeychainKey) throws {
         let status = SecItemDelete(baseQuery(for: key) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -135,6 +178,12 @@ public final class FakeKeychain: KeychainProtocol {
         if let error = shouldThrowOnLoad { throw error }
         guard let token = storage[key] else { throw AuthError.keychainItemNotFound }
         return token
+    }
+
+    public func loadAll() throws -> [KeychainKey: String] {
+        loadCount += 1
+        if let error = shouldThrowOnLoad { throw error }
+        return storage
     }
 
     public func delete(for key: KeychainKey) throws {
@@ -189,8 +238,9 @@ public final class AccountStateManager: ObservableObject {
 
     public init(keychain: any KeychainProtocol) {
         self.keychain = keychain
-        let storedUserId = try? keychain.load(for: .userId)
-        let isPendingDeletion = (try? keychain.load(for: .pendingDeletion)) != nil
+        let storedValues = (try? keychain.loadAll()) ?? [:]
+        let storedUserId = storedValues[.userId]
+        let isPendingDeletion = storedValues[.pendingDeletion] != nil
         let initialState: AccountState
         if let uid = storedUserId {
             initialState = isPendingDeletion ? .pendingErasure : .loggedIn(userId: uid)
@@ -200,8 +250,8 @@ public final class AccountStateManager: ObservableObject {
         _accountState = Published(wrappedValue: initialState)
         _isDeviceRevoked = Published(wrappedValue: false)
         serverMessages = PassthroughSubject()
-        cachedSession = Self.loadSession(from: keychain)
-        accountEmailCache = .some(try? keychain.load(for: .email))
+        cachedSession = Self.loadSession(from: storedValues)
+        accountEmailCache = .some(storedValues[.email])
     }
 
     // MARK: - State machine
@@ -440,10 +490,14 @@ public final class AccountStateManager: ObservableObject {
     }
 
     private static func loadSession(from keychain: any KeychainProtocol) -> AuthSession? {
-        guard let deviceId = try? keychain.load(for: .deviceId),
-              let accessToken = try? keychain.load(for: .accessToken),
-              let refreshToken = try? keychain.load(for: .refreshToken),
-              let expiresRaw = try? keychain.load(for: .expiresAt),
+        loadSession(from: (try? keychain.loadAll()) ?? [:])
+    }
+
+    private static func loadSession(from values: [KeychainKey: String]) -> AuthSession? {
+        guard let deviceId = values[.deviceId],
+              let accessToken = values[.accessToken],
+              let refreshToken = values[.refreshToken],
+              let expiresRaw = values[.expiresAt],
               let expiresInterval = TimeInterval(expiresRaw) else {
             return nil
         }

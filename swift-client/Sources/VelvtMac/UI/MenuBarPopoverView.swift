@@ -372,7 +372,7 @@ public struct MenuBarPopoverView: View {
             VStack(spacing: 0) {
                 submenuTitle("Debug")
                 Button {
-                    simulateNotification?()
+                    runDebugInsightSimulation()
                 } label: {
                     HStack {
                         Image(systemName: "bell.badge")
@@ -433,7 +433,7 @@ public struct MenuBarPopoverView: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .onHover { if $0 { showSettingsSubmenu(submenu) } }
-        .overlay(alignment: .trailing) {
+        .background(
             SubmenuPopoverAnchor(
                 isPresented: submenuBinding(for: submenu)
             ) {
@@ -441,9 +441,9 @@ public struct MenuBarPopoverView: View {
                     .frame(width: 280)
                     .preferredColorScheme(.dark)
             }
-            .frame(width: 1, height: 1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(false)
-        }
+        )
     }
 
     private func showSettingsSubmenu(_ submenu: SettingsSubmenu) {
@@ -456,6 +456,12 @@ public struct MenuBarPopoverView: View {
         showsAppInfoSubmenu = false
         showsQueuedEventsSubmenu = false
         showsDebugSubmenu = false
+    }
+
+    private func runDebugInsightSimulation() {
+        simulateNotification?()
+        dismissSettingsSubmenus()
+        navigator.goBack()
     }
 
     private func submenuBinding(for submenu: SettingsSubmenu) -> Binding<Bool> {
@@ -568,7 +574,14 @@ private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
         popover.contentViewController = NSHostingController(rootView: content())
 
         if isPresented, !popover.isShown {
-            popover.show(relativeTo: nsView.bounds, of: nsView, preferredEdge: .maxX)
+            let targetView = nsView.bounds.isEmpty ? (nsView.superview ?? nsView) : nsView
+            let sourceRect = NSRect(
+                x: targetView.bounds.maxX - 1,
+                y: targetView.bounds.midY,
+                width: 1,
+                height: 1
+            )
+            popover.show(relativeTo: sourceRect, of: targetView, preferredEdge: .maxX)
         } else if !isPresented, popover.isShown {
             popover.performClose(nil)
         }

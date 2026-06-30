@@ -55,6 +55,11 @@ Swift does not make any HTTP request in this flow.
 
 Tokens must never be logged or stored outside Keychain.
 
+`AccountStateManager` restores these fields with a single startup read pass
+through `KeychainService.loadAll()`, then serves account state, session replay,
+and Settings/App Info email display from memory. Settings must not trigger its
+own Keychain read.
+
 ## Session Replay
 
 `AccountStateManager` loads a cached `AuthSession` from Keychain during initialization when all required fields exist.

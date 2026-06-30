@@ -126,6 +126,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
             simulateNotification: {
+                displayCoord.updateInsight(Self.debugInsightPayload())
                 _ = notificationCoordinator.simulateDebugInsightReceipt()
             },
             terminateApp: { NSApp.terminate(nil) }
@@ -193,6 +194,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             socketPath: config.socketPath,
             protocolVersion: config.protocolVersion,
             clientVersion: config.clientVersion
+        )
+    }
+
+    private static func debugInsightPayload(now: Date = Date()) -> InsightPayload {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return InsightPayload(
+            date: formatter.string(from: now),
+            text: "You switched away from your document 23 times in 40 minutes.",
+            confidenceLevel: .high,
+            lowConfidence: false,
+            generatedAt: now
         )
     }
 }

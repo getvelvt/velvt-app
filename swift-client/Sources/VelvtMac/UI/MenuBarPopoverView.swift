@@ -433,7 +433,7 @@ public struct MenuBarPopoverView: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .onHover { if $0 { showSettingsSubmenu(submenu) } }
-        .background(
+        .overlay(alignment: .trailing) {
             SubmenuPopoverAnchor(
                 isPresented: submenuBinding(for: submenu)
             ) {
@@ -441,7 +441,9 @@ public struct MenuBarPopoverView: View {
                     .frame(width: 280)
                     .preferredColorScheme(.dark)
             }
-        )
+            .frame(width: 1, height: 1)
+            .allowsHitTesting(false)
+        }
     }
 
     private func showSettingsSubmenu(_ submenu: SettingsSubmenu) {

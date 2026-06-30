@@ -201,6 +201,7 @@ public final class AccountStateManager: ObservableObject {
         _isDeviceRevoked = Published(wrappedValue: false)
         serverMessages = PassthroughSubject()
         cachedSession = Self.loadSession(from: keychain)
+        accountEmailCache = .some(try? keychain.load(for: .email))
     }
 
     // MARK: - State machine

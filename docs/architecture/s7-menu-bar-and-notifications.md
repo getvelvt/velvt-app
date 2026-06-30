@@ -142,10 +142,12 @@ restricted, or undetermined status discards the payload silently (no crash,
 no retry, no re-request).
 
 In debug builds, Settings includes a Debug submenu with a "Simulate Insight"
-action. It calls `NotificationDeliveryCoordinator.simulateDebugInsightReceipt()`,
-which creates a representative `NotificationPayload` and routes it through the
-same scheduler/permission path used by real Rust IPC pushes. This is a local
-test harness only; it does not contact velvt-core.
+action. The AppDelegate wiring updates the display coordinator with a
+representative `InsightPayload`, then calls
+`NotificationDeliveryCoordinator.simulateDebugInsightReceipt()` to route a
+matching `NotificationPayload` through the same scheduler/permission path used
+by real Rust IPC pushes. This is a local test harness only; it does not contact
+velvt-core.
 
 ### Burst de-duplication
 

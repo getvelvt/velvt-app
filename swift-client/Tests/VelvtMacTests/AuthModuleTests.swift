@@ -135,6 +135,16 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(keychain.loadCount, loadsAfterFirstRead)
     }
 
+    func testAccountEmailIsCachedDuringInitializationForSettingsDisplay() throws {
+        let keychain = FakeKeychain()
+        try keychain.store(token: "ada@example.com", for: .email)
+        let sut = AccountStateManager(keychain: keychain)
+        let loadsAfterInit = keychain.loadCount
+
+        XCTAssertEqual(sut.accountEmail, "ada@example.com")
+        XCTAssertEqual(keychain.loadCount, loadsAfterInit)
+    }
+
     func testLoggingInToLoggedOutViaAuthFailure() async {
         let client = FakeIPCClient()
         let sut = makeManager(client: client)

@@ -149,6 +149,14 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
         completionHandler()
     }
 
+    nonisolated public func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
+    }
+
     func handle(userInfo: [AnyHashable: Any]) {
         guard let date = userInfo["insight_date"] as? String else { return }
         openPopover()

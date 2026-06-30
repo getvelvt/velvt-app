@@ -6,7 +6,12 @@ final class UNNotificationSchedulerTests: XCTestCase {
 
     func testSchedulesImmediatelyWhenNoDoNotDisturb() async {
         let center = FakeUNUserNotificationCenter()
-        let sut = UNNotificationScheduler(center: center, now: { Date(timeIntervalSince1970: 1_700_000_000) })
+        let metrics = AppMetricsStore(defaults: UserDefaults(suiteName: "NotificationSchedulerTests.\(UUID().uuidString)")!)
+        let sut = UNNotificationScheduler(
+            center: center,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            metrics: metrics
+        )
         let payload = NotificationPayload(
             notificationID: UUID(),
             title: "Daily insight",
@@ -20,6 +25,7 @@ final class UNNotificationSchedulerTests: XCTestCase {
         XCTAssertEqual(center.addedRequests.count, 1)
         XCTAssertNil(center.addedRequests.first?.trigger)
         XCTAssertEqual(center.addedRequests.first?.identifier, payload.notificationID.uuidString)
+        XCTAssertEqual(metrics.interventions, 1)
     }
 
     func testSchedulesImmediatelyWhenDoNotDisturbAlreadyElapsed() async {

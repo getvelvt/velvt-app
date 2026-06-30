@@ -120,6 +120,7 @@ public struct MenuBarPopoverView: View {
     private let accountStateManager: AccountStateManager?
     private let ipcClient: (any IPCClientProtocol)?
     private let menuStatusViewModel: MenuStatusViewModel?
+    @ObservedObject private var metricsStore: AppMetricsStore
     private let onEscape: () -> Void
     private let onTerminate: () -> Void
     @State private var navigator = MenuBarPopoverNavigator()
@@ -137,6 +138,7 @@ public struct MenuBarPopoverView: View {
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
+        metricsStore: AppMetricsStore = AppMetricsStore(defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
         onEscape: @escaping () -> Void,
         onTerminate: @escaping () -> Void = { }
     ) {
@@ -149,6 +151,7 @@ public struct MenuBarPopoverView: View {
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
+        self.metricsStore = metricsStore
         self.onEscape = onEscape
         self.onTerminate = onTerminate
     }
@@ -200,6 +203,7 @@ public struct MenuBarPopoverView: View {
             } else {
                 VelvtPopoverContentView(coordinator: coordinator)
             }
+            metricsRow
             Divider().opacity(0.15)
             HStack {
                 if let accountStateManager, let ipcClient {
@@ -213,6 +217,28 @@ public struct MenuBarPopoverView: View {
         .task {
             _ = await permissionManager?.checkStatus(for: .accessibility)
         }
+    }
+
+    private var metricsRow: some View {
+        HStack(spacing: 10) {
+            metricCounter(title: "Actions Logged", value: metricsStore.actionsLogged)
+            metricCounter(title: "Interventions", value: metricsStore.interventions)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+    }
+
+    private func metricCounter(title: String, value: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(value)")
+                .font(.headline.monospacedDigit())
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var gatheringInfoStatus: some View {
@@ -259,9 +285,15 @@ public struct MenuBarPopoverView: View {
             settingsSubmenuRow("App Info", submenu: .appInfo)
             settingsSubmenuRow("Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))", submenu: .queuedEvents)
             Divider().padding(.vertical, 8)
-            Button("Quit velvt", role: .destructive, action: onTerminate)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16).padding(.vertical, 8)
+            HStack {
+                Button("Quit Velvt", role: .destructive, action: onTerminate)
+                    .buttonStyle(.bordered)
+                Spacer(minLength: 12)
+                Text("Velvt \(appVersion)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
         }
         .padding(.bottom, 12)
         .onAppear { dismissSettingsSubmenus() }
@@ -273,55 +305,56 @@ public struct MenuBarPopoverView: View {
         case .appInfo:
             VStack(spacing: 0) {
                 submenuTitle("App Info")
-            infoRow("Version", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development")
-            infoRow("Device ID", menuStatusViewModel?.status?.deviceID ?? "Not registered")
-            infoRow("Authentication", authenticationDescription)
-            statusRow(
-                "Local service",
-                presentation: connectionPresentation,
-                refresh: { menuStatusViewModel?.refresh() }
-            )
-            statusRow(
-                "Cloud server",
-                presentation: menuStatusViewModel?.status?.cloudReady == true
-                    ? PopoverConnectionPresentation(status: .connected)
-                    : PopoverConnectionPresentation(status: .disconnected),
-                refresh: { menuStatusViewModel?.refresh() }
-            )
+                infoRow("Version", appVersion)
+                infoRow("Device ID", menuStatusViewModel?.status?.deviceID ?? "Not registered")
+                authenticationInfoRow()
+                statusRow(
+                    "Local service",
+                    presentation: connectionPresentation,
+                    refresh: { menuStatusViewModel?.refresh() }
+                )
+                statusRow(
+                    "Cloud server",
+                    presentation: menuStatusViewModel?.status?.cloudReady == true
+                        ? PopoverConnectionPresentation(status: .connected)
+                        : PopoverConnectionPresentation(status: .disconnected),
+                    refresh: { menuStatusViewModel?.refresh() }
+                )
             }
             .onAppear { menuStatusViewModel?.refresh() }
 
         case .queuedEvents:
             VStack(spacing: 0) {
                 submenuTitle("Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))")
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array((menuStatusViewModel?.status?.queuedEvents ?? []).prefix(10))) { event in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(event.localLabel ?? event.label).font(.subheadline)
-                            Text(event.category.replacingOccurrences(of: "_", with: " ").capitalized)
-                                .font(.caption).foregroundStyle(.secondary)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        let queuedEvents = Array((menuStatusViewModel?.status?.queuedEvents ?? []).prefix(10))
+                        ForEach(queuedEvents) { event in
+                            queuedEventRow(event)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                    }
-                    if menuStatusViewModel?.status?.queuedEvents.isEmpty ?? true {
-                        Text("No queued events").foregroundStyle(.secondary).padding(16)
+                        if queuedEvents.isEmpty {
+                            Text("No queued events")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                        }
                     }
                 }
-            }.frame(height: 180)
-            if let sendError = menuStatusViewModel?.sendError {
-                Text(sendError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                .frame(height: 180)
+                if let sendError = menuStatusViewModel?.sendError {
+                    Text(sendError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                }
+                Divider().padding(.top, 8)
+                Button("Send All Now") { menuStatusViewModel?.sendAllNow() }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-            }
-            Divider().padding(.top, 8)
-            Button("Send All Now") { menuStatusViewModel?.sendAllNow() }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
+                    .padding(16)
             }
             .onAppear { menuStatusViewModel?.refresh() }
         }
@@ -338,12 +371,20 @@ public struct MenuBarPopoverView: View {
         PopoverConnectionPresentation(status: serviceConnectionStatus.status)
     }
 
-    private var authenticationDescription: String {
-        guard let accountStateManager else { return "Not signed in" }
-        if let email = accountStateManager.accountEmail {
-            return "Authenticated · \(email)"
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "VelvtClientVersion") as? String
+            ?? "Development"
+    }
+
+    private var authenticationPresentation: AuthenticationStatusPresentation {
+        guard let accountStateManager else {
+            return AuthenticationStatusPresentation(accountState: .loggedOut, email: nil)
         }
-        return "Not signed in"
+        return AuthenticationStatusPresentation(
+            accountState: accountStateManager.accountState,
+            email: accountStateManager.accountEmail
+        )
     }
 
     private func settingsRow(_ title: String, action: @escaping () -> Void) -> some View {
@@ -387,13 +428,47 @@ public struct MenuBarPopoverView: View {
         HStack { Text(title).foregroundStyle(.secondary); Spacer(); Text(value).lineLimit(1).truncationMode(.middle) }
             .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
     }
+    private func authenticationInfoRow() -> some View {
+        let presentation = authenticationPresentation
+        return HStack(spacing: 7) {
+            Text("Authentication").foregroundStyle(.secondary)
+            Spacer()
+            Text(presentation.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Circle()
+                .fill(presentation.indicatorColor == .green ? Color.green : Color.red)
+                .frame(width: 7, height: 7)
+        }
+        .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
+    }
+    private func queuedEventRow(_ event: QueuedEventSummary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(event.localLabel ?? event.label)
+                .font(.subheadline)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text(event.category.replacingOccurrences(of: "_", with: " ").capitalized)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+    }
     private func statusRow(_ title: String, presentation: PopoverConnectionPresentation, refresh: @escaping () -> Void) -> some View {
         HStack(spacing: 7) {
             Text(title).foregroundStyle(.secondary)
             Spacer()
-            Text(presentation.label).foregroundStyle(presentation.color)
+            Button(action: refresh) {
+                Text(presentation.label)
+                    .foregroundStyle(presentation.color)
+            }
+            .buttonStyle(.plain)
+            .help("Click to refresh status")
             Circle().fill(presentation.color).frame(width: 7, height: 7)
-            Button("Refresh", action: refresh).buttonStyle(.plain)
         }
         .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
     }

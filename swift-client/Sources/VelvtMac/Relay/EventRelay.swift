@@ -93,6 +93,7 @@ public actor EventRelay: EventRelayProtocol {
 
     private let ipcClient: any IPCClientProtocol
     private let capacity: Int
+    private let metrics: (any AppMetricsCounting)?
 
     // MARK: Actor-isolated state
 
@@ -113,16 +114,19 @@ public actor EventRelay: EventRelayProtocol {
 
     public init(
         ipcClient: any IPCClientProtocol,
-        capacity: Int = 500
+        capacity: Int = 500,
+        metrics: (any AppMetricsCounting)? = nil
     ) {
         self.ipcClient = ipcClient
         self.capacity = capacity
+        self.metrics = metrics
         ringBuffer = CircularBuffer(capacity: capacity)
     }
 
     // MARK: EventSink — nonisolated, O(1), never blocks
 
     public nonisolated func receive(_ event: RawEvent) {
+        metrics?.incrementActionsLogged()
         let didYield = continuationLock.withLock { () -> Bool in
             guard let continuation = _ingestContinuation else {
                 return false

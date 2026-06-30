@@ -45,6 +45,26 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(navigator.direction, .backward)
     }
 
+    func testAuthenticationPresentationShowsLoggedOutState() {
+        let presentation = AuthenticationStatusPresentation(
+            accountState: .loggedOut,
+            email: "user@example.com"
+        )
+
+        XCTAssertEqual(presentation.text, "Not Authenticated")
+        XCTAssertEqual(presentation.indicatorColor, .red)
+    }
+
+    func testAuthenticationPresentationShowsEmailForLoggedInState() {
+        let presentation = AuthenticationStatusPresentation(
+            accountState: .loggedIn(userId: "u1"),
+            email: "user@example.com"
+        )
+
+        XCTAssertEqual(presentation.text, "user@example.com")
+        XCTAssertEqual(presentation.indicatorColor, .green)
+    }
+
 }
 
 // MARK: - DeviceRevoked integration tests

@@ -97,6 +97,17 @@ final class EventRelayTests: XCTestCase {
         XCTAssertEqual(sent.first?.appName, "App1")
     }
 
+    func testReceivingEventIncrementsActionsLoggedMetric() async throws {
+        let client = FakeIPCClient()
+        let metrics = AppMetricsStore(defaults: UserDefaults(suiteName: "EventRelayTests.\(UUID().uuidString)")!)
+        let relay = EventRelay(ipcClient: client, capacity: 10, metrics: metrics)
+
+        relay.receive(makeEvent(index: 1))
+        relay.receive(makeEvent(index: 2))
+
+        XCTAssertEqual(metrics.actionsLogged, 2)
+    }
+
     func testPreStartBufferKeepsNewestEventsWhenFull() async throws {
         let client = FakeIPCClient()
         let relay = EventRelay(ipcClient: client, capacity: 2)

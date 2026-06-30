@@ -129,6 +129,7 @@ public final class MenuBarController: NSObject {
     private let serviceConnectionStatus: ServiceConnectionStatusModel
     private let collectionActivityStatus: CollectionActivityStatusModel
     private let currentActivity: CurrentActivityModel
+    private let metricsStore: AppMetricsStore
     private var statusItem: NSStatusItem?
     private var cancellables = Set<AnyCancellable>()
 
@@ -143,6 +144,7 @@ public final class MenuBarController: NSObject {
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
+        metricsStore: AppMetricsStore = AppMetricsStore(defaults: UserDefaults(suiteName: "MenuBarController.preview") ?? .standard),
         currentActivity: CurrentActivityModel = CurrentActivityModel(),
         collectionStatus: AnyPublisher<CollectionStatus, Never> = Just(.idle).eraseToAnyPublisher(),
         connectionStatus: AnyPublisher<ConnectionStatus, Never> = Just(.disconnected).eraseToAnyPublisher(),
@@ -157,6 +159,7 @@ public final class MenuBarController: NSObject {
         self.serviceConnectionStatus = serviceConnectionStatus
         self.collectionActivityStatus = collectionActivityStatus
         self.currentActivity = currentActivity
+        self.metricsStore = metricsStore
         popover = NSPopover()
         self.activateApp = activateApp
         self.terminateApp = terminateApp
@@ -177,6 +180,7 @@ public final class MenuBarController: NSObject {
                 accountStateManager: accountStateManager,
                 ipcClient: ipcClient,
                 menuStatusViewModel: menuStatusViewModel,
+                metricsStore: metricsStore,
                 onEscape: { [weak self] in self?.closePopover() },
                 onTerminate: { [weak self] in self?.terminateApp() }
             )

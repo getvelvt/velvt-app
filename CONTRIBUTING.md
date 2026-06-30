@@ -258,3 +258,9 @@ must confirm, in the PR description:
 - Unabstracted cloud personalization
 - Cross-platform Swift client
 - Advanced automations
+
+***
+
+## Documentation
+
+When contributing changes that affect architecture, APIs, authentication, or significant behavior, update the relevant files under `/docs/`. Consult `docs/DOC_INDEX.md` to find the right file quickly.

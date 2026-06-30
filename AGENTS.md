@@ -258,3 +258,5 @@ Cross-workspace changes (anything touching `proto/`) require updating both works
 4. **Implement** — follow all conventions above strictly.
 5. **Verify (Tests)** — run applicable tests for the affected workspace(s).
 6. **Verify (Standards)** — run lint/format checks. `cargo clippy` and `cargo fmt` for Rust; lint config for Swift.
+
+**Updating Documentation:** When you make changes to architecture, authentication, settings, APIs, or any system-level behavior, check `docs/DOC_INDEX.md` to locate the relevant documentation file(s) and update them as part of the same task. Do not leave documentation out of sync with the code.

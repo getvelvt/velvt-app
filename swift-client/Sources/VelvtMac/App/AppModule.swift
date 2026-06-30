@@ -34,6 +34,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notificationResponseRouter: NotificationResponseRouter?
     private var menuBarDataLoader: MenuBarDataLoader?
     private var menuStatusViewModel: MenuStatusViewModel?
+    private let metricsStore = AppMetricsStore()
     private let serviceProcessLauncher = ServiceProcessLauncher()
 
     public override convenience init() {
@@ -92,7 +93,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         statusViewModel.start()
         menuStatusViewModel = statusViewModel
 
-        let relay = EventRelay(ipcClient: client)
+        let relay = EventRelay(ipcClient: client, metrics: metricsStore)
         let currentActivity = CurrentActivityModel()
         let eventSinkFanout = EventSinkFanout([relay, currentActivity])
         let collectionAgent = AXCollectionAgent(eventSink: eventSinkFanout)
@@ -112,6 +113,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             accountStateManager: accountStateManager,
             ipcClient: client,
             menuStatusViewModel: statusViewModel,
+            metricsStore: metricsStore,
             currentActivity: currentActivity,
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
@@ -125,7 +127,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         menuBarController = menuBar
 
-        let scheduler = UNNotificationScheduler()
+        let scheduler = UNNotificationScheduler(metrics: metricsStore)
         let notificationCoordinator = NotificationDeliveryCoordinator(
             scheduler: scheduler,
             permissionManager: permissionManager

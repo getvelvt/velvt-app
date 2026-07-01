@@ -78,6 +78,21 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(frame.minX, sourceFrame.maxX, accuracy: 0.001)
     }
 
+    func testTallSettingsSubmenuDoesNotMoveAboveSourceMenuTop() {
+        let sourceMenuFrame = CGRect(x: 100, y: 300, width: 300, height: 220)
+        let sourceFrame = CGRect(x: 100, y: 390, width: 300, height: 44)
+        let submenuSize = CGSize(width: 280, height: 260)
+
+        let frame = SubmenuPopoverPlacement.frame(
+            sourceFrameInScreen: sourceFrame,
+            submenuContentSize: submenuSize,
+            sourceMenuFrameInScreen: sourceMenuFrame
+        )
+
+        XCTAssertEqual(frame.maxY, sourceMenuFrame.maxY, accuracy: 0.001)
+        XCTAssertLessThan(frame.midY, sourceFrame.midY)
+    }
+
 }
 
 // MARK: - DeviceRevoked integration tests

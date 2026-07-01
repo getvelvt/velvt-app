@@ -588,6 +588,7 @@ private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
                     SubmenuPopoverPlacement.frame(
                         sourceFrameInScreen: sourceFrame,
                         submenuContentSize: window.frame.size,
+                        sourceMenuFrameInScreen: targetView.window?.frame,
                         currentWindowFrame: window.frame
                     ),
                     display: true
@@ -623,12 +624,21 @@ struct SubmenuPopoverPlacement {
     static func frame(
         sourceFrameInScreen: CGRect,
         submenuContentSize: CGSize,
+        sourceMenuFrameInScreen: CGRect? = nil,
         currentWindowFrame: CGRect? = nil
     ) -> CGRect {
         let x = currentWindowFrame?.minX ?? sourceFrameInScreen.maxX
+        let centeredY = sourceFrameInScreen.midY - submenuContentSize.height / 2
+        let y: CGFloat
+        if let sourceMenuFrameInScreen,
+           centeredY + submenuContentSize.height > sourceMenuFrameInScreen.maxY {
+            y = sourceMenuFrameInScreen.maxY - submenuContentSize.height
+        } else {
+            y = centeredY
+        }
         return CGRect(
             x: x,
-            y: sourceFrameInScreen.midY - submenuContentSize.height / 2,
+            y: y,
             width: submenuContentSize.width,
             height: submenuContentSize.height
         )

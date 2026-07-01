@@ -21,9 +21,10 @@ The settings route currently exposes:
 - App version display.
 
 Submenus are hosted in AppKit popovers through `SubmenuPopoverAnchor`.
-Short submenus, such as Debug, are explicitly recentered on the source row
-after AppKit shows the popover so the left-side arrow tracks the row rather
-than aligning the submenu to the top of the settings popover.
+Submenus are explicitly positioned after AppKit shows the popover: short
+submenus, such as Debug, are centered on the source row; taller submenus are
+clamped to the top of the settings popover so they do not cover the title bar
+or move off screen.
 
 ## App Info
 

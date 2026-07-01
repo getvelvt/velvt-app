@@ -582,6 +582,17 @@ private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
                 height: 1
             )
             popover.show(relativeTo: sourceRect, of: targetView, preferredEdge: .maxX)
+            if let window = popover.contentViewController?.view.window,
+               let sourceFrame = targetView.window?.convertToScreen(targetView.convert(targetView.bounds, to: nil)) {
+                window.setFrame(
+                    SubmenuPopoverPlacement.frame(
+                        sourceFrameInScreen: sourceFrame,
+                        submenuContentSize: window.frame.size,
+                        currentWindowFrame: window.frame
+                    ),
+                    display: true
+                )
+            }
         } else if !isPresented, popover.isShown {
             popover.performClose(nil)
         }
@@ -605,6 +616,22 @@ private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
         func popoverDidClose(_ notification: Notification) {
             setPresented(false)
         }
+    }
+}
+
+struct SubmenuPopoverPlacement {
+    static func frame(
+        sourceFrameInScreen: CGRect,
+        submenuContentSize: CGSize,
+        currentWindowFrame: CGRect? = nil
+    ) -> CGRect {
+        let x = currentWindowFrame?.minX ?? sourceFrameInScreen.maxX
+        return CGRect(
+            x: x,
+            y: sourceFrameInScreen.midY - submenuContentSize.height / 2,
+            width: submenuContentSize.width,
+            height: submenuContentSize.height
+        )
     }
 }
 

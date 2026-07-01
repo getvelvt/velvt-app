@@ -65,6 +65,19 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(presentation.indicatorColor, .green)
     }
 
+    func testShortSettingsSubmenuIsCenteredOnSourceRow() {
+        let sourceFrame = CGRect(x: 100, y: 400, width: 300, height: 44)
+        let submenuSize = CGSize(width: 280, height: 88)
+
+        let frame = SubmenuPopoverPlacement.frame(
+            sourceFrameInScreen: sourceFrame,
+            submenuContentSize: submenuSize
+        )
+
+        XCTAssertEqual(frame.midY, sourceFrame.midY, accuracy: 0.001)
+        XCTAssertEqual(frame.minX, sourceFrame.maxX, accuracy: 0.001)
+    }
+
 }
 
 // MARK: - DeviceRevoked integration tests

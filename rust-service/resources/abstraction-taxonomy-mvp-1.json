@@ -33,8 +33,8 @@
     { "app_name_pattern": "Pages", "label": "document:pages", "category": "FOCUS_WORK" },
     { "app_name_pattern": "Numbers", "label": "document:numbers", "category": "FOCUS_WORK" },
     { "app_name_pattern": "Keynote", "label": "document:keynote", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Linear", "label": "document:edit", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Jira", "label": "document:edit", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "Linear", "label": "task:manage", "category": "TASK_MANAGEMENT" },
+    { "app_name_pattern": "Jira", "label": "task:manage", "category": "TASK_MANAGEMENT" },
 
     { "app_name_pattern": "YouTube", "label": "video:youtube", "category": "PASSIVE_CONSUMPTION" },
     { "app_name_pattern": "Netflix", "label": "video:netflix", "category": "PASSIVE_CONSUMPTION" },
@@ -99,8 +99,8 @@
 
     { "app_name_pattern": "Finder", "label": "system:manage", "category": "SYSTEM" },
     { "app_name_pattern": "System Settings", "label": "system:manage", "category": "SYSTEM" },
-    { "app_name_pattern": "Terminal", "label": "system:manage", "category": "SYSTEM" },
-    { "app_name_pattern": "iTerm2", "label": "system:manage", "category": "SYSTEM" },
+    { "app_name_pattern": "Terminal", "label": "document:code", "category": "FOCUS_WORK" },
+    { "app_name_pattern": "iTerm2", "label": "document:code", "category": "FOCUS_WORK" },
     { "app_name_pattern": "Activity Monitor", "label": "system:manage", "category": "SYSTEM" },
     { "app_name_pattern": "unclassifiable", "label": "system:unknown", "category": "SYSTEM" }
   ]

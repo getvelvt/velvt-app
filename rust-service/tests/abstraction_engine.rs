@@ -178,6 +178,99 @@ fn local_purpose_heuristic_classifies_unknown_cad_app_family() {
     );
 }
 
+#[test]
+fn local_purpose_heuristic_routes_common_unknown_families_before_unlogged() {
+    let cases = [
+        ("PrusaSlicer", "private title", "design:3d", "FOCUS_WORK"),
+        (
+            "Unknown App",
+            "Invoice reconciliation - Stripe",
+            "task:finance",
+            "TASK_MANAGEMENT",
+        ),
+        (
+            "Unknown App",
+            "Pull request review",
+            "document:code",
+            "FOCUS_WORK",
+        ),
+    ];
+
+    for (app_name, window_title, expected_label, expected_category) in cases {
+        let result = engine().process(raw_event(app_name, window_title)).unwrap();
+
+        assert_eq!(result.label(), expected_label);
+        assert_eq!(result.category(), expected_category);
+        assert_eq!(
+            result.classification_tier(),
+            ClassificationTier::LocalPurposeHeuristic
+        );
+    }
+}
+
+#[test]
+fn browser_context_routes_specific_tabs_before_generic_browser_seed() {
+    let cases = [
+        (
+            "Google Chrome",
+            "docs.google.com/document/d/private",
+            "document:docs",
+            "FOCUS_WORK",
+        ),
+        (
+            "Safari",
+            "sheets.google.com/spreadsheets/d/private",
+            "document:sheets",
+            "FOCUS_WORK",
+        ),
+        (
+            "Arc",
+            "mail.google.com/mail/u/0/#inbox",
+            "communication:gmail",
+            "COMMUNICATION",
+        ),
+        (
+            "Firefox",
+            "youtube.com/watch?v=private",
+            "video:youtube",
+            "PASSIVE_CONSUMPTION",
+        ),
+    ];
+
+    for (app_name, window_title, expected_label, expected_category) in cases {
+        let result = engine().process(raw_event(app_name, window_title)).unwrap();
+
+        assert_eq!(result.label(), expected_label);
+        assert_eq!(result.category(), expected_category);
+        assert_eq!(
+            result.classification_tier(),
+            ClassificationTier::LocalPurposeHeuristic
+        );
+    }
+}
+
+#[test]
+fn generic_browser_without_specific_tab_context_still_uses_browser_seed() {
+    let result = engine()
+        .process(raw_event("Google Chrome", "private title"))
+        .unwrap();
+
+    assert_eq!(result.label(), "reference:browser");
+    assert_eq!(result.category(), "REFERENCE");
+    assert_eq!(result.classification_tier(), ClassificationTier::ExactMatch);
+}
+
+#[test]
+fn developer_terminal_sessions_are_focus_work_not_system_noise() {
+    let result = engine()
+        .process(raw_event("Terminal", "cargo test"))
+        .unwrap();
+
+    assert_eq!(result.label(), "document:code");
+    assert_eq!(result.category(), "FOCUS_WORK");
+    assert_eq!(result.classification_tier(), ClassificationTier::ExactMatch);
+}
+
 struct TestPlugin;
 
 impl ClassificationPlugin for TestPlugin {

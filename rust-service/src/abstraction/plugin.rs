@@ -160,6 +160,55 @@ impl ClassificationPlugin for LocalPurposeHeuristicPlugin {
     }
 }
 
+pub(crate) struct BrowserContextPlugin {
+    taxonomy_version: String,
+}
+
+impl BrowserContextPlugin {
+    pub(crate) fn new(taxonomy_version: String) -> Self {
+        Self { taxonomy_version }
+    }
+}
+
+impl ClassificationPlugin for BrowserContextPlugin {
+    fn classify(&self, app_name: &str, window_title: &str) -> Option<ClassificationResult> {
+        if !is_browser_app(app_name) {
+            return None;
+        }
+        let haystack = normalized_purpose_input(app_name, window_title);
+        BROWSER_CONTEXT_RULES
+            .iter()
+            .find(|rule| rule.matches(&haystack))
+            .map(|rule| {
+                ClassificationResult::new(
+                    rule.label,
+                    rule.category,
+                    &self.taxonomy_version,
+                    ClassificationTier::LocalPurposeHeuristic,
+                )
+            })
+    }
+}
+
+fn is_browser_app(app_name: &str) -> bool {
+    let app_name = normalized_purpose_input(app_name, "");
+    [
+        "safari",
+        "google chrome",
+        "chrome",
+        "arc",
+        "firefox",
+        "brave browser",
+        "brave",
+        "microsoft edge",
+        "edge",
+        "opera",
+        "vivaldi",
+    ]
+    .iter()
+    .any(|browser| app_name == *browser || app_name.contains(browser))
+}
+
 struct PurposeRule {
     keywords: &'static [&'static str],
     label: &'static str,
@@ -173,6 +222,94 @@ impl PurposeRule {
             .any(|keyword| haystack.contains(keyword))
     }
 }
+
+const BROWSER_CONTEXT_RULES: &[PurposeRule] = &[
+    PurposeRule {
+        keywords: &["docs google com", "google docs", "docs"],
+        label: "document:docs",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &["sheets google com", "google sheets", "sheets"],
+        label: "document:sheets",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &["slides google com", "google slides", "slides"],
+        label: "document:slides",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &["drive google com", "google drive"],
+        label: "document:drive",
+        category: "REFERENCE",
+    },
+    PurposeRule {
+        keywords: &["mail google com", "gmail", "inbox"],
+        label: "communication:gmail",
+        category: "COMMUNICATION",
+    },
+    PurposeRule {
+        keywords: &["calendar google com", "google calendar"],
+        label: "communication:calendar",
+        category: "COMMUNICATION",
+    },
+    PurposeRule {
+        keywords: &["meet google com", "google meet"],
+        label: "meeting:meet",
+        category: "COMMUNICATION",
+    },
+    PurposeRule {
+        keywords: &["youtube com", "youtu be", "youtube"],
+        label: "video:youtube",
+        category: "PASSIVE_CONSUMPTION",
+    },
+    PurposeRule {
+        keywords: &["github com", "github"],
+        label: "reference:github",
+        category: "REFERENCE",
+    },
+    PurposeRule {
+        keywords: &["gitlab com", "gitlab"],
+        label: "reference:gitlab",
+        category: "REFERENCE",
+    },
+    PurposeRule {
+        keywords: &["stackoverflow com", "stack overflow"],
+        label: "reference:stack_overflow",
+        category: "REFERENCE",
+    },
+    PurposeRule {
+        keywords: &[
+            "chatgpt com",
+            "chat openai com",
+            "claude ai",
+            "perplexity ai",
+        ],
+        label: "reference:ai_assistant",
+        category: "REFERENCE",
+    },
+    PurposeRule {
+        keywords: &["reddit com", "reddit"],
+        label: "social:reddit",
+        category: "SOCIAL_FEED",
+    },
+    PurposeRule {
+        keywords: &["x com", "twitter com", "twitter"],
+        label: "social:x",
+        category: "SOCIAL_FEED",
+    },
+    PurposeRule {
+        keywords: &["instagram com", "instagram"],
+        label: "social:instagram",
+        category: "SOCIAL_FEED",
+    },
+    PurposeRule {
+        keywords: &["linkedin com feed", "linkedin feed"],
+        label: "social:linkedin",
+        category: "SOCIAL_FEED",
+    },
+];
 
 const PURPOSE_RULES: &[PurposeRule] = &[
     PurposeRule {
@@ -188,6 +325,14 @@ const PURPOSE_RULES: &[PurposeRule] = &[
             "freecad",
             "openscad",
             "cad",
+            "revit",
+            "archicad",
+            "vectorworks",
+            "creo",
+            "catia",
+            "inventor",
+            "shapr3d",
+            "plasticity",
         ],
         label: "design:cad",
         category: "FOCUS_WORK",
@@ -202,6 +347,12 @@ const PURPOSE_RULES: &[PurposeRule] = &[
             "substance",
             "unity",
             "unreal",
+            "prusa",
+            "prusaslicer",
+            "bambu",
+            "orca slicer",
+            "cura",
+            "meshmixer",
         ],
         label: "design:3d",
         category: "FOCUS_WORK",
@@ -216,8 +367,31 @@ const PURPOSE_RULES: &[PurposeRule] = &[
             "indesign",
             "canva",
             "affinity",
+            "framer",
+            "principle",
+            "procreate",
         ],
         label: "design:visual",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &[
+            "premiere",
+            "after effects",
+            "davinci",
+            "resolve",
+            "final cut",
+            "capcut",
+            "screenflow",
+            "audition",
+            "logic pro",
+            "garageband",
+            "ableton",
+            "fl studio",
+            "reaper",
+            "descript",
+        ],
+        label: "creative:edit",
         category: "FOCUS_WORK",
     },
     PurposeRule {
@@ -235,17 +409,93 @@ const PURPOSE_RULES: &[PurposeRule] = &[
             "android studio",
             "terminal",
             "iterm",
+            "github desktop",
+            "gitkraken",
+            "fork",
+            "docker",
+            "postman",
+            "insomnia",
+            "tableplus",
+            "datagrip",
+            "sequel ace",
+            "localhost",
+            "pull request",
+            "merge request",
+            "stack trace",
+            "api docs",
+            "swagger",
         ],
         label: "document:code",
         category: "FOCUS_WORK",
     },
     PurposeRule {
-        keywords: &["mail", "gmail", "outlook", "superhuman", "spark"],
+        keywords: &[
+            "word",
+            "pages",
+            "ulysses",
+            "bear",
+            "typora",
+            "ia writer",
+            "scrivener",
+            "latex",
+            "overleaf",
+            "google docs",
+            "docs google com",
+        ],
+        label: "document:write",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &[
+            "excel",
+            "numbers",
+            "google sheets",
+            "sheets google com",
+            "spreadsheet",
+            "airtable",
+        ],
+        label: "document:spreadsheet",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &[
+            "powerpoint",
+            "keynote",
+            "google slides",
+            "slides google com",
+            "presentation",
+            "pitch deck",
+        ],
+        label: "document:presentation",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &[
+            "mail",
+            "gmail",
+            "outlook",
+            "superhuman",
+            "spark",
+            "hey",
+            "proton mail",
+            "fastmail",
+        ],
         label: "communication:email",
         category: "COMMUNICATION",
     },
     PurposeRule {
-        keywords: &["zoom", "meet", "teams", "webex", "around"],
+        keywords: &[
+            "zoom",
+            "meet",
+            "teams",
+            "webex",
+            "around",
+            "facetime",
+            "whereby",
+            "tuple",
+            "screen share",
+            "video call",
+        ],
         label: "meeting:video",
         category: "COMMUNICATION",
     },
@@ -257,29 +507,104 @@ const PURPOSE_RULES: &[PurposeRule] = &[
             "whatsapp",
             "messages",
             "messenger",
+            "signal",
+            "mattermost",
+            "zulip",
+            "wechat",
         ],
         label: "communication:chat",
         category: "COMMUNICATION",
     },
     PurposeRule {
         keywords: &[
-            "todo", "task", "asana", "linear", "jira", "trello", "clickup",
+            "todo",
+            "task",
+            "asana",
+            "linear",
+            "jira",
+            "trello",
+            "clickup",
+            "monday",
+            "height",
+            "notion task",
+            "things",
+            "omnifocus",
+            "todoist",
         ],
         label: "task:manage",
         category: "TASK_MANAGEMENT",
     },
     PurposeRule {
-        keywords: &["youtube", "netflix", "tiktok", "twitch", "hulu"],
+        keywords: &[
+            "quickbooks",
+            "xero",
+            "stripe",
+            "bank",
+            "invoice",
+            "payroll",
+            "expense",
+            "budget",
+        ],
+        label: "task:finance",
+        category: "TASK_MANAGEMENT",
+    },
+    PurposeRule {
+        keywords: &[
+            "youtube",
+            "youtu be",
+            "netflix",
+            "tiktok",
+            "twitch",
+            "hulu",
+            "disney",
+            "prime video",
+            "max",
+            "peacock",
+            "paramount",
+        ],
         label: "video:streaming",
         category: "PASSIVE_CONSUMPTION",
     },
     PurposeRule {
-        keywords: &["spotify", "music", "podcast"],
+        keywords: &[
+            "spotify",
+            "music",
+            "podcast",
+            "apple music",
+            "soundcloud",
+            "overcast",
+            "pocket casts",
+        ],
         label: "audio:listen",
         category: "PASSIVE_CONSUMPTION",
     },
     PurposeRule {
-        keywords: &["chatgpt", "claude", "perplexity", "copilot", "gemini"],
+        keywords: &[
+            "reddit",
+            "twitter",
+            "x com",
+            "instagram",
+            "facebook",
+            "threads",
+            "linkedin feed",
+            "bsky",
+            "bluesky",
+            "mastodon",
+        ],
+        label: "social:feed",
+        category: "SOCIAL_FEED",
+    },
+    PurposeRule {
+        keywords: &[
+            "chatgpt",
+            "claude",
+            "perplexity",
+            "copilot",
+            "gemini",
+            "cursor chat",
+            "poe",
+            "mistral",
+        ],
         label: "reference:ai_assistant",
         category: "REFERENCE",
     },
@@ -290,9 +615,37 @@ const PURPOSE_RULES: &[PurposeRule] = &[
             "developer",
             "stackoverflow",
             "stack overflow",
+            "mdn",
+            "readme",
+            "manual",
+            "reference",
+            "documentation",
+            "pdf",
+            "preview",
+            "acrobat",
+            "coursera",
+            "udemy",
+            "edx",
+            "khan academy",
+            "blackboard",
+            "canvas lms",
         ],
         label: "reference:read",
         category: "REFERENCE",
+    },
+    PurposeRule {
+        keywords: &[
+            "settings",
+            "preferences",
+            "activity monitor",
+            "disk utility",
+            "keychain",
+            "finder",
+            "installer",
+            "software update",
+        ],
+        label: "system:manage",
+        category: "SYSTEM",
     },
 ];
 
@@ -540,5 +893,99 @@ mod tests {
             result.tier(),
             super::ClassificationTier::LocalPurposeHeuristic
         );
+    }
+
+    #[test]
+    fn local_purpose_heuristic_classifies_unknown_app_families() {
+        let plugin = super::LocalPurposeHeuristicPlugin::new("mvp-1".to_owned());
+        let cases = [
+            ("PrusaSlicer", "plate setup", "design:3d", "FOCUS_WORK"),
+            (
+                "Unknown",
+                "Pitch deck - Google Slides",
+                "document:presentation",
+                "FOCUS_WORK",
+            ),
+            (
+                "Unknown",
+                "Invoice export - Stripe",
+                "task:finance",
+                "TASK_MANAGEMENT",
+            ),
+            (
+                "Unknown",
+                "Pull request review",
+                "document:code",
+                "FOCUS_WORK",
+            ),
+            (
+                "Unknown",
+                "Reddit - front page",
+                "social:feed",
+                "SOCIAL_FEED",
+            ),
+        ];
+
+        for (app_name, window_title, expected_label, expected_category) in cases {
+            let result = plugin
+                .classify(app_name, window_title)
+                .unwrap_or_else(|| panic!("{app_name} / {window_title} should classify locally"));
+            assert_eq!(result.label(), expected_label);
+            assert_eq!(result.category(), expected_category);
+        }
+    }
+
+    #[test]
+    fn browser_context_classifies_domain_like_tab_hints() {
+        let plugin = super::BrowserContextPlugin::new("mvp-1".to_owned());
+        let cases = [
+            (
+                "Google Chrome",
+                "docs.google.com/document/d/abc",
+                "document:docs",
+                "FOCUS_WORK",
+            ),
+            (
+                "Safari",
+                "sheets.google.com/spreadsheets/d/abc",
+                "document:sheets",
+                "FOCUS_WORK",
+            ),
+            (
+                "Arc",
+                "slides.google.com/presentation/d/abc",
+                "document:slides",
+                "FOCUS_WORK",
+            ),
+            (
+                "Brave Browser",
+                "mail.google.com/mail/u/0/#inbox",
+                "communication:gmail",
+                "COMMUNICATION",
+            ),
+            (
+                "Firefox",
+                "youtube.com/watch?v=private",
+                "video:youtube",
+                "PASSIVE_CONSUMPTION",
+            ),
+        ];
+
+        for (app_name, window_title, expected_label, expected_category) in cases {
+            let result = plugin
+                .classify(app_name, window_title)
+                .unwrap_or_else(|| panic!("{app_name} / {window_title} should classify locally"));
+            assert_eq!(result.label(), expected_label);
+            assert_eq!(result.category(), expected_category);
+        }
+    }
+
+    #[test]
+    fn browser_context_does_not_classify_non_browser_apps() {
+        let plugin = super::BrowserContextPlugin::new("mvp-1".to_owned());
+
+        assert!(plugin
+            .classify("Slack", "docs.google.com/document/d/abc")
+            .is_none());
     }
 }

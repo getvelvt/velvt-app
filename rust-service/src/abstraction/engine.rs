@@ -5,7 +5,10 @@ use uuid::Uuid;
 use velvt_shared_types::RawEvent;
 
 use super::{
-    plugin::{LocalPurposeHeuristicPlugin, SeedDictionaryPlugin, UnloggedFallbackPlugin},
+    plugin::{
+        BrowserContextPlugin, LocalPurposeHeuristicPlugin, SeedDictionaryPlugin,
+        UnloggedFallbackPlugin,
+    },
     taxonomy::is_valid_label,
     AbstractionMappingStore, ClassificationPlugin, ClassificationTier, RawKey, StoreError,
     Taxonomy, TaxonomyError, TitleAbstractor,
@@ -147,7 +150,8 @@ impl AbstractionEngineBuilder {
     ) -> Self {
         let version = self.taxonomy.version().to_owned();
         let entries = self.taxonomy.seed_applications();
-        let builder = self.register_plugin(SeedDictionaryPlugin::new(entries, version.clone()));
+        let builder = self.register_plugin(BrowserContextPlugin::new(version.clone()));
+        let builder = builder.register_plugin(SeedDictionaryPlugin::new(entries, version.clone()));
         let builder = builder.register_plugin(LocalPurposeHeuristicPlugin::new(version.clone()));
         let builder = match embedding {
             Some(plugin) => builder.register_plugin(plugin),

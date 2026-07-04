@@ -65,10 +65,13 @@ build-app: check-swift-toolchain
 		build
 	cp -R dist/.derivedData/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
 	rm -rf dist/.derivedData
-	# Sign with a real local development identity so macOS TCC can remember
-	# Accessibility permission across relaunches and rebuilds. Override with
-	# VELVT_CODESIGN_IDENTITY="..." if another certificate should be used.
-	codesign --force --deep --sign "$(VELVT_CODESIGN_IDENTITY)" dist/velvt-mac.app
+	# Prefer a stable local development identity so macOS TCC can remember
+	# Accessibility permission across relaunches and rebuilds. Fall back to
+	# ad-hoc signing when the configured identity is not installed locally.
+	if ! codesign --force --deep --sign "$(VELVT_CODESIGN_IDENTITY)" dist/velvt-mac.app; then \
+		echo "Configured signing identity unavailable; falling back to ad-hoc signing."; \
+		codesign --force --deep --sign - dist/velvt-mac.app; \
+	fi
 	@echo "Built dist/velvt-mac.app"
 
 clean:

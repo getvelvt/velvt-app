@@ -119,6 +119,43 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         }
     }
 
+    func testLatestClosedUTCDateStringUsesPreviousUTCDate() throws {
+        let formatter = ISO8601DateFormatter()
+        let now = try XCTUnwrap(formatter.date(from: "2026-06-27T02:00:00Z"))
+
+        XCTAssertEqual(MenuBarDataLoader.latestClosedUTCDateString(now: now), "2026-06-26")
+    }
+
+    func testDataLoaderRequestsLatestClosedInsightDateWhenConnectedAndLoggedIn() async {
+        let client = FakeIPCClient()
+        client.setConnectionStatus(.connected)
+        let account = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "user-1"))
+        let sut = MenuBarDataLoader(
+            ipcClient: client,
+            latestClosedInsightDate: { "2026-06-26" }
+        )
+
+        sut.start(accountState: account.eraseToAnyPublisher())
+
+        let messagesSent = expectation(description: "loader sent startup delivery requests")
+        Task {
+            for _ in 0 ..< 100 {
+                if client.sentMessages.count >= 2 {
+                    messagesSent.fulfill()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        await fulfillment(of: [messagesSent], timeout: 2)
+
+        guard case .requestLatestInsight(let request)? = client.sentMessages.first else {
+            return XCTFail("Expected first startup delivery request to fetch latest insight")
+        }
+        XCTAssertEqual(request.date, "2026-06-26")
+        XCTAssertTrue(client.sentMessages.contains(.requestLatestHistory(RequestLatestHistory(days: 7))))
+    }
+
     func testPopulatedStateHoldsNoDataDayCorrectly() {
         let sut = ConcreteDisplayDataCoordinator()
         let payload = HistoryPayload(days: 1, summaries: [

@@ -164,6 +164,20 @@ fn unknown_app_uses_unlogged_fallback() {
     assert!(started.elapsed() < Duration::from_millis(5));
 }
 
+#[test]
+fn local_purpose_heuristic_classifies_unknown_cad_app_family() {
+    let result = engine()
+        .process(raw_event("Autodesk Fusion", "private title"))
+        .unwrap();
+
+    assert_eq!(result.label(), "design:cad");
+    assert_eq!(result.category(), "FOCUS_WORK");
+    assert_eq!(
+        result.classification_tier(),
+        ClassificationTier::LocalPurposeHeuristic
+    );
+}
+
 struct TestPlugin;
 
 impl ClassificationPlugin for TestPlugin {

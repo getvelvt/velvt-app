@@ -85,11 +85,17 @@ impl BatchAssembler {
             .first()
             .map(|event| event.taxonomy_version.clone())
             .unwrap_or_default();
+        let mut supported_abstraction_types = Vec::new();
+        for event in &events {
+            if !supported_abstraction_types.contains(&event.label) {
+                supported_abstraction_types.push(event.label.clone());
+            }
+        }
         Some(BatchPayload::new(
             batch_id,
             "1",
             env!("CARGO_PKG_VERSION"),
-            vec!["document:edit".into()],
+            supported_abstraction_types,
             taxonomy,
             events,
         ))
@@ -106,4 +112,44 @@ fn deterministic_batch_id(device_id: &str, events: &[BatchEventPayload]) -> Stri
         hasher.update(event.event_id.as_bytes());
     }
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BatchAssembler, BatchEventPayload};
+    use chrono::{TimeZone, Utc};
+    use std::time::Duration;
+
+    fn event(event_id: &str, label: &str) -> BatchEventPayload {
+        BatchEventPayload {
+            event_id: event_id.into(),
+            stable_id: format!("stable-{event_id}"),
+            label: label.into(),
+            category: "FOCUS_WORK".into(),
+            taxonomy_version: "mvp-1".into(),
+            occurred_at: Utc.timestamp_opt(1_800_000_000, 0).unwrap(),
+            duration_seconds: 60,
+        }
+    }
+
+    #[test]
+    fn batch_supported_abstraction_types_are_unique_event_labels() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let mut assembler = BatchAssembler::new("device-1", 3, Duration::from_secs(60));
+
+        assert!(assembler
+            .push(event("event-1", "document:docs"), now)
+            .is_none());
+        assert!(assembler
+            .push(event("event-2", "video:youtube"), now)
+            .is_none());
+        let batch = assembler
+            .push(event("event-3", "document:docs"), now)
+            .expect("third event should flush the batch");
+
+        assert_eq!(
+            batch.supported_abstraction_types,
+            vec!["document:docs".to_owned(), "video:youtube".to_owned()]
+        );
+    }
 }

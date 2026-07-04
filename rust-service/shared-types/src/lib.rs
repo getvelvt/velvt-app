@@ -228,12 +228,32 @@ pub struct DailySummary {
     pub confidence_level: ConfidenceLevel,
     /// Total active seconds.
     pub active_seconds: u64,
+    /// Personalized baseline state from the backend, e.g. `early_stage`,
+    /// `mature`, or `no_data`.
+    pub baseline_status: String,
+    /// Comparison against the user's rolling baseline. Mature summaries include
+    /// score deltas; early/no-data summaries include an explanatory status.
+    pub baseline_comparison: serde_json::Value,
+    /// Privacy-safe activity mix for the day. Categories are abstracted types,
+    /// not raw app names.
+    pub type_proportions: Vec<ActivityProportion>,
+}
+
+/// One privacy-safe category segment in a daily summary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityProportion {
+    pub category: String,
+    pub seconds: u64,
+    pub proportion: f64,
 }
 
 /// Insight confidence classification.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfidenceLevel {
+    /// No confidence value because no summary exists.
+    None,
     /// Low confidence.
     Low,
     /// Medium confidence.

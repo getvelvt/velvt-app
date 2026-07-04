@@ -13,20 +13,245 @@ public struct HistoryListView: View {
     public var body: some View {
         if viewModel.isLoading {
             HistorySkeletonView()
+        } else if viewModel.days.isEmpty {
+            EmptyDeliveryState(text: "No daily history generated yet", systemImage: "calendar")
         } else {
-            VStack(spacing: 0) {
-                ForEach(viewModel.days) { day in
-                    HistoryDayRowView(day: day)
-                        .id(day.id)
-                    if day.id != viewModel.days.last?.id {
-                        Divider()
-                            .opacity(0.12)
-                            .padding(.horizontal, 14)
-                    }
+            HistoryDashboardView(days: viewModel.days)
+        }
+    }
+}
+
+// MARK: - HistoryDashboardView
+
+private struct HistoryDashboardView: View {
+    let days: [DaySummaryViewModel]
+
+    private var readyDays: [DaySummaryViewModel] {
+        days.filter { !$0.isNoData }
+    }
+
+    private var latestDay: DaySummaryViewModel? {
+        readyDays.last
+    }
+
+    private var confidenceText: String {
+        latestDay?.confidenceLabel ?? "none"
+    }
+
+    private var movingAverageText: String {
+        guard let latestDay else { return "No rolling baseline yet" }
+        guard latestDay.baselineStatus == "mature" || latestDay.baselineComparison?.status == "compared" else {
+            return "Building 14-day average"
+        }
+        if let delta = latestDay.baselineComparison?.fragmentationDelta {
+            if delta > 0 {
+                return "+\(formatDelta(delta)) vs 14-day avg"
+            }
+            return "\(formatDelta(delta)) vs 14-day avg"
+        }
+        return "Compared to 14-day avg"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sessionAnalysis
+            dailyActivity
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 10)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Daily insight history")
+    }
+
+    private var sessionAnalysis: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Session Analysis")
+                .font(.headline)
+                .foregroundStyle(Color.velvtText)
+
+            HStack(spacing: 10) {
+                SummaryMetric(title: "Fragmentation", value: latestDay?.fragmentationScore.map(String.init) ?? "--")
+                SummaryMetric(title: "Focus", value: latestDay?.focusScore.map(String.init) ?? "--")
+                SummaryMetric(title: "Active", value: latestDay?.activeTime ?? "--")
+                SummaryMetric(title: "Events", value: "\(latestDay?.eventCount ?? 0)")
+            }
+
+            Text(movingAverageText)
+                .font(.caption)
+                .foregroundStyle(Color.velvtMuted)
+                .lineLimit(2)
+        }
+        .padding(14)
+        .background(Color.velvtPanelHighlight)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var dailyActivity: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Daily Activity")
+                        .font(.headline)
+                        .foregroundStyle(Color.velvtText)
+                    Text("Pattern Confidence: \(confidenceText.capitalized) - \(movingAverageText)")
+                        .font(.caption2)
+                        .foregroundStyle(Color.velvtMuted)
+                }
+                Spacer()
+                Text("7 days")
+                    .font(.caption2)
+                    .foregroundStyle(Color.velvtMuted)
+            }
+
+            VStack(spacing: 8) {
+                ForEach(days) { day in
+                    DailyActivityRow(day: day)
                 }
             }
         }
+        .padding(14)
+        .background(Color.velvtPanel)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
+
+    private func formatDelta(_ value: Double) -> String {
+        String(format: "%.1f", value)
+    }
+}
+
+private struct SummaryMetric: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(Color.velvtMuted)
+            Text(value)
+                .font(.system(.title3, design: .rounded).weight(.bold))
+                .foregroundStyle(Color.velvtText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+        .padding(.horizontal, 10)
+        .background(Color.white.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct DailyActivityRow: View {
+    let day: DaySummaryViewModel
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(day.date)
+                    .font(.caption.bold())
+                    .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.5) : Color.velvtText)
+                Text(day.isNoData ? "No data" : day.activeTime)
+                    .font(.caption2)
+                    .foregroundStyle(Color.velvtMuted)
+            }
+            .frame(width: 62, alignment: .leading)
+
+            SplitActivityBar(day: day)
+
+            Text(day.eventCount == 0 ? "--" : "\(day.eventCount)")
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(Color.velvtMuted)
+                .frame(width: 34, alignment: .trailing)
+        }
+    }
+}
+
+private struct SplitActivityBar: View {
+    let day: DaySummaryViewModel
+    @State private var hoveredSegmentHelp: String?
+
+    private var segments: [ActivityProportion] {
+        day.typeProportions.filter { $0.proportion > 0 }.prefix(5).map { $0 }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ZStack(alignment: .leading) {
+                if let hoveredSegmentHelp {
+                    Text(hoveredSegmentHelp)
+                        .font(.caption2)
+                        .foregroundStyle(Color.velvtText)
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.black.opacity(0.78))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .transition(.opacity)
+                }
+            }
+            .frame(height: 18)
+
+            GeometryReader { proxy in
+                HStack(spacing: 2) {
+                    if segments.isEmpty {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.white.opacity(day.isNoData ? 0.06 : 0.12))
+                            .help(emptyHelpText)
+                    } else {
+                        ForEach(Array(segments.enumerated()), id: \.element.category) { index, segment in
+                            let text = helpText(for: segment)
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(color(for: segment.category, index: index))
+                                .frame(width: max(6, proxy.size.width * CGFloat(segment.proportion)))
+                                .help(text)
+                                .onHover { hovering in
+                                    hoveredSegmentHelp = hovering ? text : nil
+                                }
+                        }
+                    }
+                }
+            }
+            .frame(height: 14)
+        }
+        .animation(.easeInOut(duration: 0.12), value: hoveredSegmentHelp)
+        .onHover { hovering in
+            if !hovering {
+                hoveredSegmentHelp = nil
+            }
+        }
+        .frame(height: 36)
+    }
+
+    private var emptyHelpText: String {
+        day.isNoData ? "No daily summary for this day." : "No activity mix available for this summary yet."
+    }
+
+    private func helpText(for segment: ActivityProportion) -> String {
+        "\(categoryLabel(segment.category)): \(formatSeconds(segment.seconds)), \(Int((segment.proportion * 100).rounded()))% of active time."
+    }
+
+    private func color(for category: String, index: Int) -> Color {
+        let palette: [Color] = [.velvtPink, .velvtGreen, .velvtBlue, .purple.opacity(0.85), .orange.opacity(0.85)]
+        return palette[index % palette.count]
+    }
+}
+
+private func categoryLabel(_ category: String) -> String {
+    category
+        .replacingOccurrences(of: "_", with: " ")
+        .split(separator: " ")
+        .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+        .joined(separator: " ")
+}
+
+private func formatSeconds(_ seconds: Int) -> String {
+    let hours = seconds / 3600
+    let minutes = (seconds % 3600) / 60
+    if hours > 0 {
+        return "\(hours)h \(minutes)m"
+    }
+    return "\(minutes)m"
 }
 
 // MARK: - HistoryDayRowView
@@ -146,7 +371,18 @@ struct HistoryListView_Previews: PreviewProvider {
                                 focusScore: 55.0 + Double(i * 5),
                                 fragmentationScore: 30.0 - Double(i * 3),
                                 confidenceLevel: .medium,
-                                activeSeconds: 3600 + i * 900)
+                                activeSeconds: 3600 + i * 900,
+                                baselineStatus: i > 4 ? "mature" : "early_stage",
+                                baselineComparison: BaselineComparison(
+                                    status: i > 4 ? "compared" : "early_stage",
+                                    fragmentationDelta: i > 4 ? -4.5 : nil,
+                                    focusDelta: i > 4 ? 3.2 : nil
+                                ),
+                                typeProportions: [
+                                    ActivityProportion(category: "document", seconds: 1600 + i * 120, proportion: 0.48),
+                                    ActivityProportion(category: "messaging", seconds: 900, proportion: 0.27),
+                                    ActivityProportion(category: "browser", seconds: 820, proportion: 0.25),
+                                ])
         }
     }()
 }

@@ -46,6 +46,7 @@ public final class InsightViewModel: ObservableObject {
     static func confidenceLabel(for level: ConfidenceLevel, isLow: Bool) -> String {
         if isLow { return "early data" }
         switch level {
+        case .none:   return "not available"
         case .low:    return "early data"
         case .medium: return "moderate"
         case .high:   return "high"

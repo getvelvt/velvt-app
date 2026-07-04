@@ -15,6 +15,7 @@ use super::SeedApplication;
 #[serde(rename_all = "snake_case")]
 pub enum ClassificationTier {
     ExactMatch,
+    LocalPurposeHeuristic,
     EmbeddingSimilarity,
     Fallback,
 }
@@ -80,10 +81,13 @@ impl SeedDictionaryPlugin {
 }
 
 impl ClassificationPlugin for SeedDictionaryPlugin {
-    fn classify(&self, app_name: &str, _window_title: &str) -> Option<ClassificationResult> {
+    fn classify(&self, app_name: &str, window_title: &str) -> Option<ClassificationResult> {
         self.entries
             .iter()
-            .find(|entry| pattern_matches(entry.app_name_pattern(), app_name))
+            .find(|entry| {
+                pattern_matches(entry.app_name_pattern(), app_name)
+                    || title_pattern_matches(entry.app_name_pattern(), window_title)
+            })
             .map(|entry| {
                 ClassificationResult::new(
                     entry.label(),
@@ -117,6 +121,200 @@ fn pattern_matches(pattern: &str, value: &str) -> bool {
         remainder = &remainder[position + part.len()..];
     }
     pattern.ends_with('*') || remainder.is_empty()
+}
+
+fn title_pattern_matches(pattern: &str, value: &str) -> bool {
+    if pattern.contains('*') {
+        return pattern_matches(pattern, value);
+    }
+
+    let pattern = pattern.to_ascii_lowercase();
+    let value = value.to_ascii_lowercase();
+    pattern.len() > 2 && value.contains(&pattern)
+}
+
+pub(crate) struct LocalPurposeHeuristicPlugin {
+    taxonomy_version: String,
+}
+
+impl LocalPurposeHeuristicPlugin {
+    pub(crate) fn new(taxonomy_version: String) -> Self {
+        Self { taxonomy_version }
+    }
+}
+
+impl ClassificationPlugin for LocalPurposeHeuristicPlugin {
+    fn classify(&self, app_name: &str, window_title: &str) -> Option<ClassificationResult> {
+        let haystack = normalized_purpose_input(app_name, window_title);
+        PURPOSE_RULES
+            .iter()
+            .find(|rule| rule.matches(&haystack))
+            .map(|rule| {
+                ClassificationResult::new(
+                    rule.label,
+                    rule.category,
+                    &self.taxonomy_version,
+                    ClassificationTier::LocalPurposeHeuristic,
+                )
+            })
+    }
+}
+
+struct PurposeRule {
+    keywords: &'static [&'static str],
+    label: &'static str,
+    category: &'static str,
+}
+
+impl PurposeRule {
+    fn matches(&self, haystack: &str) -> bool {
+        self.keywords
+            .iter()
+            .any(|keyword| haystack.contains(keyword))
+    }
+}
+
+const PURPOSE_RULES: &[PurposeRule] = &[
+    PurposeRule {
+        keywords: &[
+            "autodesk",
+            "fusion",
+            "fusion360",
+            "solidworks",
+            "onshape",
+            "rhino",
+            "rhinoceros",
+            "sketchup",
+            "freecad",
+            "openscad",
+            "cad",
+        ],
+        label: "design:cad",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &[
+            "blender",
+            "maya",
+            "cinema4d",
+            "houdini",
+            "zbrush",
+            "substance",
+            "unity",
+            "unreal",
+        ],
+        label: "design:3d",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &[
+            "figma",
+            "sketch",
+            "adobe xd",
+            "illustrator",
+            "photoshop",
+            "indesign",
+            "canva",
+            "affinity",
+        ],
+        label: "design:visual",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &[
+            "vscode",
+            "visual studio",
+            "xcode",
+            "cursor",
+            "zed",
+            "sublime",
+            "intellij",
+            "pycharm",
+            "webstorm",
+            "clion",
+            "android studio",
+            "terminal",
+            "iterm",
+        ],
+        label: "document:code",
+        category: "FOCUS_WORK",
+    },
+    PurposeRule {
+        keywords: &["mail", "gmail", "outlook", "superhuman", "spark"],
+        label: "communication:email",
+        category: "COMMUNICATION",
+    },
+    PurposeRule {
+        keywords: &["zoom", "meet", "teams", "webex", "around"],
+        label: "meeting:video",
+        category: "COMMUNICATION",
+    },
+    PurposeRule {
+        keywords: &[
+            "slack",
+            "discord",
+            "telegram",
+            "whatsapp",
+            "messages",
+            "messenger",
+        ],
+        label: "communication:chat",
+        category: "COMMUNICATION",
+    },
+    PurposeRule {
+        keywords: &[
+            "todo", "task", "asana", "linear", "jira", "trello", "clickup",
+        ],
+        label: "task:manage",
+        category: "TASK_MANAGEMENT",
+    },
+    PurposeRule {
+        keywords: &["youtube", "netflix", "tiktok", "twitch", "hulu"],
+        label: "video:streaming",
+        category: "PASSIVE_CONSUMPTION",
+    },
+    PurposeRule {
+        keywords: &["spotify", "music", "podcast"],
+        label: "audio:listen",
+        category: "PASSIVE_CONSUMPTION",
+    },
+    PurposeRule {
+        keywords: &["chatgpt", "claude", "perplexity", "copilot", "gemini"],
+        label: "reference:ai_assistant",
+        category: "REFERENCE",
+    },
+    PurposeRule {
+        keywords: &[
+            "wikipedia",
+            "docs",
+            "developer",
+            "stackoverflow",
+            "stack overflow",
+        ],
+        label: "reference:read",
+        category: "REFERENCE",
+    },
+];
+
+fn normalized_purpose_input(app_name: &str, window_title: &str) -> String {
+    let mut input = String::with_capacity(app_name.len() + window_title.len() + 1);
+    input.push_str(app_name);
+    input.push(' ');
+    input.push_str(window_title);
+    input
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character.is_whitespace() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(crate) struct UnloggedFallbackPlugin {
@@ -298,6 +496,8 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
+    use crate::abstraction::plugin::ClassificationPlugin;
+
     use super::pattern_matches;
 
     #[test]
@@ -305,5 +505,40 @@ mod tests {
         assert!(pattern_matches("Twitter*", "Twitter/X"));
         assert!(pattern_matches("*Docs", "Google Docs"));
         assert!(!pattern_matches("Docs", "Google Docs"));
+    }
+
+    #[test]
+    fn seed_dictionary_matches_window_title_for_browser_contexts() {
+        let plugin = super::SeedDictionaryPlugin::new(
+            vec![super::SeedApplication::new_for_test(
+                "YouTube",
+                "video:passive",
+                "PASSIVE_CONSUMPTION",
+            )],
+            "mvp-1".to_owned(),
+        );
+
+        let result = plugin.classify("Google Chrome", "YouTube - Creator Studio");
+
+        assert_eq!(
+            result.map(|classification| classification.category().to_owned()),
+            Some("PASSIVE_CONSUMPTION".to_owned())
+        );
+    }
+
+    #[test]
+    fn local_purpose_heuristic_classifies_cad_apps_without_seed_entry() {
+        let plugin = super::LocalPurposeHeuristicPlugin::new("mvp-1".to_owned());
+
+        let result = plugin
+            .classify("Autodesk Fusion", "Untitled")
+            .expect("cad app should classify locally");
+
+        assert_eq!(result.label(), "design:cad");
+        assert_eq!(result.category(), "FOCUS_WORK");
+        assert_eq!(
+            result.tier(),
+            super::ClassificationTier::LocalPurposeHeuristic
+        );
     }
 }

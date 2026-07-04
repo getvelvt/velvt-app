@@ -9,6 +9,7 @@ endif
 CARGO_VERSION := $(shell cd rust-service && cargo --version 2>$(NULL_DEVICE))
 SWIFT_VERSION := $(shell swift --version 2>$(NULL_DEVICE))
 VELVT_CODESIGN_IDENTITY ?= E24074F5011AE8FF85C0AD97A583E1CCA6688E81
+VELVT_API_BASE_URL ?= https://dev-api.getvelvt.com
 
 check-rust-toolchain:
 ifeq ($(strip $(CARGO_VERSION)),)
@@ -35,7 +36,7 @@ lint-rust: check-rust-toolchain
 	cd rust-service && cargo fmt --check
 
 build-swift: check-swift-toolchain
-	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' -derivedDataPath $(PWD)/swift-client/DerivedData CONFIGURATION_BUILD_DIR=$(PWD)/swift-client/.build build
+	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' -derivedDataPath $(PWD)/swift-client/DerivedData CONFIGURATION_BUILD_DIR=$(PWD)/swift-client/.build VELVT_API_BASE_URL="$(VELVT_API_BASE_URL)" build
 
 test-swift: check-swift-toolchain
 	CLANG_MODULE_CACHE_PATH=$(PWD)/swift-client/.build/clang-module-cache swift test --package-path swift-client --scratch-path $(PWD)/swift-client/.build --disable-sandbox
@@ -60,6 +61,7 @@ build-app: check-swift-toolchain
 		-scheme velvt-mac \
 		-destination 'platform=macOS' \
 		-derivedDataPath dist/.derivedData \
+		VELVT_API_BASE_URL="$(VELVT_API_BASE_URL)" \
 		build
 	cp -R dist/.derivedData/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
 	rm -rf dist/.derivedData

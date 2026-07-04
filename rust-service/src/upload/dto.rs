@@ -22,25 +22,27 @@ impl Serialize for BatchEventPayload {
         struct ApiEventPayload<'a> {
             duration_seconds: u64,
             category: &'a str,
+            label: &'a str,
         }
 
         #[derive(Serialize)]
         struct ApiBatchEvent<'a> {
             event_id: &'a str,
             occurred_at: DateTime<Utc>,
-            abstraction_type: &'static str,
-            abstraction_type_version: &'static str,
+            abstraction_type: &'a str,
+            abstraction_type_version: &'a str,
             payload: ApiEventPayload<'a>,
         }
 
         ApiBatchEvent {
             event_id: &self.event_id,
             occurred_at: self.occurred_at,
-            abstraction_type: "document:edit",
-            abstraction_type_version: "1",
+            abstraction_type: &self.label,
+            abstraction_type_version: &self.taxonomy_version,
             payload: ApiEventPayload {
                 duration_seconds: self.duration_seconds,
                 category: &self.category,
+                label: &self.label,
             },
         }
         .serialize(serializer)
@@ -93,5 +95,42 @@ impl BatchPayload {
             category_taxonomy_version: category_taxonomy_version.into(),
             events,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BatchEventPayload;
+    use chrono::{TimeZone, Utc};
+    use serde_json::json;
+
+    #[test]
+    fn batch_event_serializes_safe_label_as_abstraction_type() {
+        let event = BatchEventPayload {
+            event_id: "event-1".into(),
+            stable_id: "stable-1".into(),
+            label: "video:youtube".into(),
+            category: "PASSIVE_CONSUMPTION".into(),
+            taxonomy_version: "mvp-1".into(),
+            occurred_at: Utc.timestamp_opt(1_800_000_000, 0).unwrap(),
+            duration_seconds: 120,
+        };
+
+        let value = serde_json::to_value(event).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "event_id": "event-1",
+                "occurred_at": "2027-01-15T08:00:00Z",
+                "abstraction_type": "video:youtube",
+                "abstraction_type_version": "mvp-1",
+                "payload": {
+                    "duration_seconds": 120,
+                    "category": "PASSIVE_CONSUMPTION",
+                    "label": "video:youtube"
+                }
+            })
+        );
     }
 }

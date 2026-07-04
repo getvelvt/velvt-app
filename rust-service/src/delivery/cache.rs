@@ -248,6 +248,9 @@ mod tests {
                 confidence_level: ConfidenceLevel::Medium,
                 focus_score: None,
                 fragmentation_score: None,
+                baseline_status: "early_stage".into(),
+                baseline_comparison: serde_json::json!({ "status": "early_stage" }),
+                type_proportions: vec![],
             }],
         }
     }

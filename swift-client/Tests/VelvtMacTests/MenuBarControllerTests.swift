@@ -190,4 +190,18 @@ final class MenuBarControllerTests: XCTestCase {
         }
         wait(for: [update], timeout: 1)
     }
+
+    func testCurrentActivityModelCountsCollectedEvents() {
+        let sut = CurrentActivityModel()
+
+        sut.receive(RawEvent(appName: "Browser", windowTitle: "Velvt", occurredAt: Date(timeIntervalSince1970: 1)))
+        sut.receive(RawEvent(appName: "Editor", windowTitle: "Code", occurredAt: Date(timeIntervalSince1970: 2)))
+
+        let update = expectation(description: "Collected count updates")
+        DispatchQueue.main.async {
+            XCTAssertEqual(sut.collectedEventCount, 2)
+            update.fulfill()
+        }
+        wait(for: [update], timeout: 1)
+    }
 }

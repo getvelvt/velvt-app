@@ -6,7 +6,9 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
-use velvt_shared_types::{ConfidenceLevel, DailySummary, HistoryStatus, InsightPayload};
+use velvt_shared_types::{
+    ActivityProportion, ConfidenceLevel, DailySummary, HistoryStatus, InsightPayload,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -36,9 +38,19 @@ struct RawDailySummary {
     event_count: Option<u64>,
     active_seconds: Option<u64>,
     confidence_level: Option<ConfidenceLevel>,
+    baseline_status: Option<String>,
+    baseline_comparison: Option<serde_json::Value>,
+    type_proportions: Option<Vec<RawActivityProportion>>,
     // Optional score fields are genuinely nullable.
     focus_score: Option<f64>,
     fragmentation_score: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct RawActivityProportion {
+    category: Option<String>,
+    seconds: Option<u64>,
+    proportion: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +86,20 @@ pub fn parse_history(value: serde_json::Value) -> Result<HistoryApiResponse, Par
             confidence_level: s.confidence_level.ok_or(ParseError::MissingField {
                 field: "summaries[].confidence_level",
             })?,
+            baseline_status: s.baseline_status.unwrap_or_else(|| "unknown".into()),
+            baseline_comparison: s
+                .baseline_comparison
+                .unwrap_or_else(|| serde_json::json!({ "status": "unknown" })),
+            type_proportions: s
+                .type_proportions
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| ActivityProportion {
+                    category: item.category.unwrap_or_else(|| "unclassified".into()),
+                    seconds: item.seconds.unwrap_or(0),
+                    proportion: item.proportion.unwrap_or(0.0),
+                })
+                .collect(),
             focus_score: s.focus_score,
             fragmentation_score: s.fragmentation_score,
         });

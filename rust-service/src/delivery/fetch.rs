@@ -504,6 +504,9 @@ mod tests {
             confidence_level: ConfidenceLevel::High,
             focus_score: Some(0.8),
             fragmentation_score: None,
+            baseline_status: "early_stage".into(),
+            baseline_comparison: serde_json::json!({ "status": "early_stage" }),
+            type_proportions: vec![],
         }
     }
 

@@ -12,6 +12,11 @@ public struct DaySummaryViewModel: Identifiable, Equatable {
     public let activeTime: String      // "3h 12m" | "45m" | "—"
     public let focusScore: Int?        // nil when isNoData
     public let fragmentationScore: Int?
+    public let eventCount: Int
+    public let confidenceLabel: String
+    public let baselineStatus: String
+    public let baselineComparison: BaselineComparison?
+    public let typeProportions: [ActivityProportion]
     public let isNoData: Bool
 
     public init(_ summary: DailySummary) {
@@ -22,6 +27,16 @@ public struct DaySummaryViewModel: Identifiable, Equatable {
         activeTime = isNoData ? "—" : DaySummaryViewModel.formatActiveTime(summary.activeSeconds)
         focusScore = isNoData ? nil : summary.focusScore.map { Int($0.rounded()) }
         fragmentationScore = isNoData ? nil : summary.fragmentationScore.map { Int($0.rounded()) }
+        eventCount = summary.eventCount
+        confidenceLabel = switch summary.confidenceLevel {
+        case .high: "high"
+        case .medium: "medium"
+        case .low: "early"
+        case .none: "none"
+        }
+        baselineStatus = summary.baselineStatus
+        baselineComparison = summary.baselineComparison
+        typeProportions = summary.typeProportions
     }
 
     // MARK: - Formatting (internal for testability)

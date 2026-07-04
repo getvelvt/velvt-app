@@ -49,6 +49,7 @@ public struct CurrentActivity: Equatable, Sendable {
 
 public final class CurrentActivityModel: ObservableObject, EventSink {
     @Published public private(set) var activity: CurrentActivity?
+    @Published public private(set) var collectedEventCount = 0
 
     public init() {}
 
@@ -56,6 +57,7 @@ public final class CurrentActivityModel: ObservableObject, EventSink {
         let activity = CurrentActivity(appName: event.appName, windowTitle: event.windowTitle)
         DispatchQueue.main.async { [weak self] in
             self?.activity = activity
+            self?.collectedEventCount += 1
         }
     }
 }
@@ -160,7 +162,7 @@ public struct MenuBarPopoverView: View {
                 .transition(transition)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: navigator.route)
-        .frame(width: 300)
+        .frame(width: 680)
         .preferredColorScheme(.dark)
         .onExitCommand(perform: onEscape)
     }
@@ -195,7 +197,12 @@ public struct MenuBarPopoverView: View {
                 }
                 Divider().opacity(0.15)
             }
-            if presentation.showsAccessibilityRecovery {
+            if presentation.showsOnboarding {
+                GoalOnboardingView { intensity, purpose in
+                    presentation.saveGoal(intensity: intensity, purpose: purpose)
+                }
+                .padding(16)
+            } else if presentation.showsAccessibilityRecovery {
                 PermissionRecoveryView().padding(16)
             } else {
                 VelvtPopoverContentView(coordinator: coordinator)
@@ -224,6 +231,9 @@ public struct MenuBarPopoverView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
+            Text("\(currentActivity.collectedEventCount) events")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
@@ -288,6 +298,7 @@ public struct MenuBarPopoverView: View {
                     : PopoverConnectionPresentation(status: .disconnected),
                 refresh: { menuStatusViewModel?.refresh() }
             )
+            infoRow("Events collected", "\(currentActivity.collectedEventCount)")
             }
             .onAppear { menuStatusViewModel?.refresh() }
 

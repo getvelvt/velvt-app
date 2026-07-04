@@ -37,6 +37,32 @@ make lint-rust
 make lint-swift
 ```
 
+## Run the Local MVP
+
+From the parent workspace root:
+
+```sh
+cd /Users/kevinzhou/Desktop/businesses.ai/velvt.ai
+./run_velvt_local.sh --reset-local-cache
+```
+
+Use this when you want the local backend and packaged Mac app to come up
+together. It opens Docker Desktop if needed, starts the FastAPI backend, waits
+for readiness, clears stale display caches, and launches
+`velvt-app/dist/velvt-mac.app`.
+
+After changing Swift or Rust helper code, rebuild as part of startup:
+
+```sh
+./run_velvt_local.sh --rebuild --reset-local-cache
+```
+
+To smoke-test without opening the app:
+
+```sh
+./run_velvt_local.sh --no-open --smoke
+```
+
 Workspace-specific commands are also available:
 
 ```sh

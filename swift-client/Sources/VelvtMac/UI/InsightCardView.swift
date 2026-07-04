@@ -9,6 +9,11 @@ extension Color {
     static let velvtText = Color(red: 0.949, green: 0.929, blue: 0.906)
     /// Muted secondary / metadata text.
     static let velvtMuted = Color(red: 0.949, green: 0.929, blue: 0.906).opacity(0.45)
+    static let velvtPanel = Color(red: 0.16, green: 0.11, blue: 0.13)
+    static let velvtPanelHighlight = Color(red: 0.21, green: 0.15, blue: 0.18)
+    static let velvtPink = Color(red: 0.84, green: 0.38, blue: 0.78)
+    static let velvtGreen = Color(red: 0.45, green: 0.86, blue: 0.52)
+    static let velvtBlue = Color(red: 0.43, green: 0.78, blue: 0.91)
 }
 
 // MARK: - Shimmer modifier

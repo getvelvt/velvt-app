@@ -325,6 +325,20 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertFalse(secondLaunch.showsOnboarding)
     }
 
+    func testPresentationSavesGoalChoicesWhenCompletingOnboarding() {
+        let store = InMemoryOnboardingStateStore()
+        let presentation = PermissionPresentationModel(
+            permissionManager: FakePermissionManager(),
+            onboardingStateStore: store
+        )
+
+        presentation.saveGoal(intensity: .intense, purpose: .healthyTechUse)
+
+        XCTAssertFalse(presentation.showsOnboarding)
+        XCTAssertEqual(store.attentionIntensity, .intense)
+        XCTAssertEqual(store.attentionPurpose, .healthyTechUse)
+    }
+
     func testPresentationShowsAccessibilityRecoveryAfterDenial() {
         let permissions = FakePermissionManager()
         let presentation = PermissionPresentationModel(

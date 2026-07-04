@@ -453,6 +453,7 @@ public struct RawEventAcknowledgement: Codable, Equatable, Sendable {
 
 /// Confidence classification supplied by the Rust service.
 public enum ConfidenceLevel: String, Codable, Equatable, Sendable {
+    case none
     case low
     case medium
     case high
@@ -516,6 +517,9 @@ public struct DailySummary: Codable, Equatable, Sendable {
     public let fragmentationScore: Double?
     public let confidenceLevel: ConfidenceLevel
     public let activeSeconds: Int
+    public let baselineStatus: String
+    public let baselineComparison: BaselineComparison?
+    public let typeProportions: [ActivityProportion]
 
     private enum CodingKeys: String, CodingKey {
         case date
@@ -525,6 +529,9 @@ public struct DailySummary: Codable, Equatable, Sendable {
         case fragmentationScore = "fragmentation_score"
         case confidenceLevel = "confidence_level"
         case activeSeconds = "active_seconds"
+        case baselineStatus = "baseline_status"
+        case baselineComparison = "baseline_comparison"
+        case typeProportions = "type_proportions"
     }
 
     public init(
@@ -534,7 +541,10 @@ public struct DailySummary: Codable, Equatable, Sendable {
         focusScore: Double?,
         fragmentationScore: Double?,
         confidenceLevel: ConfidenceLevel,
-        activeSeconds: Int
+        activeSeconds: Int,
+        baselineStatus: String = "unknown",
+        baselineComparison: BaselineComparison? = nil,
+        typeProportions: [ActivityProportion] = []
     ) {
         self.date = date
         self.status = status
@@ -543,6 +553,81 @@ public struct DailySummary: Codable, Equatable, Sendable {
         self.fragmentationScore = fragmentationScore
         self.confidenceLevel = confidenceLevel
         self.activeSeconds = activeSeconds
+        self.baselineStatus = baselineStatus
+        self.baselineComparison = baselineComparison
+        self.typeProportions = typeProportions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        date = try container.decode(String.self, forKey: .date)
+        status = try container.decode(HistoryStatus.self, forKey: .status)
+        eventCount = try container.decode(Int.self, forKey: .eventCount)
+        focusScore = try container.decodeIfPresent(Double.self, forKey: .focusScore)
+        fragmentationScore = try container.decodeIfPresent(Double.self, forKey: .fragmentationScore)
+        confidenceLevel = try container.decode(ConfidenceLevel.self, forKey: .confidenceLevel)
+        activeSeconds = try container.decode(Int.self, forKey: .activeSeconds)
+        baselineStatus = try container.decodeIfPresent(String.self, forKey: .baselineStatus) ?? "unknown"
+        baselineComparison = try container.decodeIfPresent(BaselineComparison.self, forKey: .baselineComparison)
+        typeProportions = try container.decodeIfPresent([ActivityProportion].self, forKey: .typeProportions) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(date, forKey: .date)
+        try container.encode(status, forKey: .status)
+        try container.encode(eventCount, forKey: .eventCount)
+        try container.encodeIfPresent(focusScore, forKey: .focusScore)
+        try container.encodeIfPresent(fragmentationScore, forKey: .fragmentationScore)
+        try container.encode(confidenceLevel, forKey: .confidenceLevel)
+        try container.encode(activeSeconds, forKey: .activeSeconds)
+        try container.encode(baselineStatus, forKey: .baselineStatus)
+        try container.encodeIfPresent(baselineComparison, forKey: .baselineComparison)
+        try container.encode(typeProportions, forKey: .typeProportions)
+    }
+}
+
+public struct ActivityProportion: Codable, Equatable, Sendable, Identifiable {
+    public let category: String
+    public let seconds: Int
+    public let proportion: Double
+
+    public var id: String { category }
+
+    public init(category: String, seconds: Int, proportion: Double) {
+        self.category = category
+        self.seconds = seconds
+        self.proportion = proportion
+    }
+}
+
+public struct BaselineComparison: Codable, Equatable, Sendable {
+    public let status: String?
+    public let message: String?
+    public let fragmentationDelta: Double?
+    public let focusDelta: Double?
+    public let activeSecondsDelta: Int?
+
+    public init(
+        status: String? = nil,
+        message: String? = nil,
+        fragmentationDelta: Double? = nil,
+        focusDelta: Double? = nil,
+        activeSecondsDelta: Int? = nil
+    ) {
+        self.status = status
+        self.message = message
+        self.fragmentationDelta = fragmentationDelta
+        self.focusDelta = focusDelta
+        self.activeSecondsDelta = activeSecondsDelta
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case message
+        case fragmentationDelta = "fragmentation_delta"
+        case focusDelta = "focus_delta"
+        case activeSecondsDelta = "active_seconds_delta"
     }
 }
 

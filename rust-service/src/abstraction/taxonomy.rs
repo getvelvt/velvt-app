@@ -24,6 +24,19 @@ impl SeedApplication {
     pub fn category(&self) -> &str {
         &self.category
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        app_name_pattern: impl Into<String>,
+        label: impl Into<String>,
+        category: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_name_pattern: app_name_pattern.into(),
+            label: label.into(),
+            category: category.into(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

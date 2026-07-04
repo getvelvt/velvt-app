@@ -34,6 +34,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notificationResponseRouter: NotificationResponseRouter?
     private var menuBarDataLoader: MenuBarDataLoader?
     private var menuStatusViewModel: MenuStatusViewModel?
+    private var collectionAuthCancellable: AnyCancellable?
+    private var authGatedCollectionController: AuthGatedCollectionController?
     private let serviceProcessLauncher = ServiceProcessLauncher()
 
     public override convenience init() {
@@ -140,10 +142,25 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().delegate = responseRouter
         notificationResponseRouter = responseRouter
 
-        Task { @MainActor in
-            await relay.start()
-            coordinator.start()
-        }
+        let collectionController = AuthGatedCollectionController(
+            startCollection: {
+                Task { @MainActor in
+                    await relay.start()
+                    coordinator.start()
+                }
+            },
+            stopCollection: {
+                coordinator.stop()
+                Task { await relay.stop() }
+            }
+        )
+        authGatedCollectionController = collectionController
+        collectionController.apply(accountState: accountStateManager.accountState)
+        collectionAuthCancellable = accountStateManager.$accountState
+            .dropFirst()
+            .sink { [weak collectionController] state in
+                collectionController?.apply(accountState: state)
+            }
 
         Task.detached {
             do {
@@ -164,7 +181,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationWillTerminate(_ notification: Notification) {
         permissionManager.stopMonitoring()
-        permissionCoordinator?.stop()
+        authGatedCollectionController?.stop()
+        collectionAuthCancellable?.cancel()
         accountStateManager.stopListening()
         menuBarController?.remove()
         let relay = eventRelay

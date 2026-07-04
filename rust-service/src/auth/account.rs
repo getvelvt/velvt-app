@@ -90,9 +90,7 @@ impl AccountAuthService {
         };
         match self.token_store.load_device_id() {
             Ok(Some(device_id)) => {
-                return self
-                    .reissue_device_tokens(success.user_id, &success.access_token, device_id)
-                    .await;
+                return self.reissue_device_tokens(success, device_id).await;
             }
             Err(error) => {
                 tracing::error!(
@@ -105,6 +103,10 @@ impl AccountAuthService {
             Ok(None) => {}
         }
 
+        self.register_device(success).await
+    }
+
+    async fn register_device(&self, success: AuthSuccess) -> ServerMessage {
         let mut request = HttpRequest::post("/v1/devices");
         request.authorization = Some(RedactedString::new(success.access_token.clone()));
         request.json_body =
@@ -165,15 +167,28 @@ impl AccountAuthService {
 
     async fn reissue_device_tokens(
         &self,
-        user_id: String,
-        user_access_token: &str,
+        success: AuthSuccess,
         device_id: String,
     ) -> ServerMessage {
         let mut request = HttpRequest::post("/v1/auth/devices/reissue");
-        request.authorization = Some(RedactedString::new(user_access_token));
+        request.authorization = Some(RedactedString::new(success.access_token.clone()));
         request.json_body = Some(serde_json::json!({ "device_id": device_id }));
         let response = match self.raw_http.send(request).await {
             Ok(response) if response.status == 200 => response,
+            Ok(response) if response.status == 404 => {
+                tracing::warn!(
+                    error_code = "stored_device_id_not_found",
+                    "stored device id was not found by the server; registering a new device"
+                );
+                if let Err(error) = self.token_store.clear_device_id() {
+                    tracing::error!(
+                        error_code = "device_id_clear_failed",
+                        error = %error,
+                        "failed to clear stale device id before registration retry"
+                    );
+                }
+                return self.register_device(success).await;
+            }
             Ok(response) => {
                 tracing::error!(
                     error_code = "device_token_reissue_rejected",
@@ -228,7 +243,7 @@ impl AccountAuthService {
                 "device tokens were reissued but auth state transition was rejected"
             );
         }
-        auth_success_from_device_tokens(user_id, device_id, tokens)
+        auth_success_from_device_tokens(success.user_id, device_id, tokens)
     }
 
     /// Fire-and-forget per the IPC contract: best-effort server-side
@@ -496,6 +511,41 @@ mod tests {
         let stored = token_store.load_tokens().unwrap().unwrap();
         assert_eq!(stored.access_token().expose(), "reissued-device-access");
         assert_eq!(stored.refresh_token().expose(), "reissued-device-refresh");
+    }
+
+    #[tokio::test]
+    async fn login_registers_new_device_when_stored_device_id_is_stale() {
+        let raw_http = Arc::new(FakeHttpClient::with_responses(vec![
+            HttpResponse {
+                status: 200,
+                ..signup_response()
+            },
+            HttpResponse {
+                status: 404,
+                tokens: None,
+                device_id: None,
+                ..device_response()
+            },
+            device_response(),
+        ]));
+        let (service, token_store) = service(Arc::clone(&raw_http));
+        token_store.store_device_id("missing-device").unwrap();
+
+        let outcome = service
+            .log_in("a@example.test".into(), "password".into())
+            .await;
+
+        assert!(matches!(outcome, ServerMessage::AuthSuccess(_)));
+        let requests = raw_http.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[1].path, "/v1/auth/devices/reissue");
+        assert_eq!(requests[2].path, "/v1/devices");
+        assert_eq!(
+            token_store.load_device_id().unwrap(),
+            Some("device-1".into())
+        );
+        let stored = token_store.load_tokens().unwrap().unwrap();
+        assert_eq!(stored.access_token().expose(), "device-access");
     }
 
     #[tokio::test]

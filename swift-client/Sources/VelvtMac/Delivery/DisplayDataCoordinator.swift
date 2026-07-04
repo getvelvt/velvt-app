@@ -45,15 +45,28 @@ public final class MenuStatusViewModel: ObservableObject {
 @MainActor
 final class MenuBarDataLoader {
     private let ipcClient: any IPCClientProtocol
-    private let today: () -> String
+    private let latestClosedInsightDate: () -> String
     private var cancellable: AnyCancellable?
     private var requestedForConnection = false
 
-    init(ipcClient: any IPCClientProtocol, today: @escaping () -> String = {
-        ISO8601DateFormatter().string(from: Date()).prefix(10).description
+    init(ipcClient: any IPCClientProtocol, latestClosedInsightDate: @escaping () -> String = {
+        MenuBarDataLoader.latestClosedUTCDateString()
     }) {
         self.ipcClient = ipcClient
-        self.today = today
+        self.latestClosedInsightDate = latestClosedInsightDate
+    }
+
+    nonisolated static func latestClosedUTCDateString(now: Date = Date()) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let closedDay = calendar.date(byAdding: .day, value: -1, to: now) ?? now
+        let components = calendar.dateComponents([.year, .month, .day], from: closedDay)
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
     }
 
     func start(accountState: AnyPublisher<AccountState, Never>) {
@@ -67,8 +80,8 @@ final class MenuBarDataLoader {
                 }
                 guard !self.requestedForConnection else { return }
                 self.requestedForConnection = true
-                Task { [ipcClient, today] in
-                    try? await ipcClient.send(.requestLatestInsight(.init(date: today())))
+                Task { [ipcClient, latestClosedInsightDate] in
+                    try? await ipcClient.send(.requestLatestInsight(.init(date: latestClosedInsightDate())))
                     try? await ipcClient.send(.requestLatestHistory(.init(days: 7)))
                 }
             }

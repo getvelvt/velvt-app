@@ -1,8 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tokio::sync::watch;
-use velvt_shared_types::InsightPayload;
+use velvt_shared_types::{ConfidenceLevel, InsightPayload};
 
 use crate::auth::{AuthError, AuthState, HttpClient, HttpRequest};
 
@@ -35,6 +36,8 @@ pub enum PollError {
     Http(#[from] AuthError),
     #[error("long-poll API returned unexpected status {status}")]
     ApiStatus { status: u16 },
+    #[error("long-poll API rejected concurrent polling")]
+    RateLimited { retry_after: Option<Duration> },
     #[error("long-poll response could not be parsed: {0}")]
     InvalidResponse(#[from] parser::ParseError),
     #[error("long-poll request timed out")]
@@ -68,6 +71,9 @@ impl<H: HttpClient> PollClient<H> {
                 Ok(PollOutcome::Insight(parse_polled_insight(body)?))
             }
             204 => Ok(PollOutcome::NoContent),
+            429 => Err(PollError::RateLimited {
+                retry_after: parse_retry_after(response.retry_after.as_deref()),
+            }),
             status => Err(PollError::ApiStatus { status }),
         }
     }
@@ -138,6 +144,19 @@ impl<H: HttpClient> PollScheduler<H> {
                         return;
                     }
                 }
+                Err(PollError::RateLimited { retry_after }) => {
+                    let delay = retry_after.unwrap_or(
+                        self.client.config.poll_timeout + self.client.config.idle_interval,
+                    );
+                    tracing::warn!(
+                        delay_ms = delay.as_millis() as u64,
+                        error_code = "insight_poll_rate_limited",
+                        "long-poll endpoint rejected a concurrent poll"
+                    );
+                    if self.sleep_or_shutdown(delay).await {
+                        return;
+                    }
+                }
                 Err(error) => {
                     let delay = self.backoff.next_delay();
                     tracing::warn!(
@@ -183,17 +202,53 @@ impl<H: HttpClient> PollScheduler<H> {
     }
 }
 
+fn parse_retry_after(value: Option<&str>) -> Option<Duration> {
+    let seconds = value?.trim().parse::<u64>().ok()?;
+    (seconds > 0).then_some(Duration::from_secs(seconds))
+}
+
 #[derive(Deserialize)]
 struct RawPolledInsight {
     id: Option<String>,
+    date: Option<chrono::NaiveDate>,
+    text: Option<String>,
+    generated_at: Option<DateTime<Utc>>,
+    meta: Option<RawPolledInsightMeta>,
+}
+
+#[derive(Deserialize)]
+struct RawPolledInsightMeta {
+    confidence_level: Option<ConfidenceLevel>,
+    low_confidence: Option<bool>,
 }
 
 fn parse_polled_insight(value: serde_json::Value) -> Result<PolledInsight, parser::ParseError> {
-    let raw: RawPolledInsight = serde_json::from_value(value.clone())?;
+    let raw: RawPolledInsight = serde_json::from_value(value)?;
     let id = raw
         .id
         .ok_or(parser::ParseError::MissingField { field: "id" })?;
-    let payload = parser::parse_insight(value)?;
+    let meta = raw
+        .meta
+        .ok_or(parser::ParseError::MissingField { field: "meta" })?;
+    let payload = InsightPayload {
+        date: raw
+            .date
+            .ok_or(parser::ParseError::MissingField { field: "date" })?,
+        text: raw
+            .text
+            .ok_or(parser::ParseError::MissingField { field: "text" })?,
+        confidence_level: meta
+            .confidence_level
+            .ok_or(parser::ParseError::MissingField {
+                field: "meta.confidence_level",
+            })?,
+        low_confidence: meta
+            .low_confidence
+            .ok_or(parser::ParseError::MissingField {
+                field: "meta.low_confidence",
+            })?,
+        generated_at: raw.generated_at.unwrap_or_else(Utc::now),
+    };
     Ok(PolledInsight { id, payload })
 }
 
@@ -321,6 +376,18 @@ mod tests {
             "id": id,
             "date": "2026-06-14",
             "text": "You switched away from your document 23 times in 40 minutes.",
+            "generated_at": "2026-06-14T10:00:00Z",
+            "meta": {
+                "confidence_level": "high",
+                "low_confidence": false
+            }
+        })
+    }
+
+    fn daily_insight_body() -> serde_json::Value {
+        json!({
+            "date": "2026-06-14",
+            "text": "You switched away from your document 23 times in 40 minutes.",
             "confidence_level": "high",
             "low_confidence": false,
             "generated_at": "2026-06-14T10:00:00Z"
@@ -358,6 +425,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn poll_once_accepts_core_poll_body_without_generated_at() {
+        let body = json!({
+            "id": "insight-1",
+            "date": "2026-06-14",
+            "text": "You switched away from your document 23 times in 40 minutes.",
+            "meta": {
+                "confidence_level": "high",
+                "low_confidence": false,
+                "quality_metadata": {"novelty": 0.8}
+            }
+        });
+        let http = FakeHttpClient::new(vec![Ok(response(200, Some(body)))]);
+        let client = PollClient::new(Arc::new(http), config());
+
+        let result = client.poll_once().await.unwrap();
+
+        match result {
+            PollOutcome::Insight(insight) => {
+                assert_eq!(insight.id, "insight-1");
+                assert_eq!(insight.payload.confidence_level, ConfidenceLevel::High);
+                assert!(!insight.payload.low_confidence);
+            }
+            other => panic!("expected insight, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn poll_once_maps_204_to_empty() {
         let http = FakeHttpClient::new(vec![Ok(response(204, None))]);
         let client = PollClient::new(Arc::new(http), config());
@@ -375,6 +469,19 @@ mod tests {
         let result = client.poll_once().await;
 
         assert!(matches!(result, Err(PollError::ApiStatus { status: 503 })));
+    }
+
+    #[tokio::test]
+    async fn poll_once_maps_429_to_rate_limited() {
+        let mut response = response(429, None);
+        response.retry_after = Some("45".into());
+        let http = FakeHttpClient::new(vec![Ok(response)]);
+        let client = PollClient::new(Arc::new(http), config());
+
+        let result = client.poll_once().await;
+
+        assert!(matches!(result, Err(PollError::RateLimited { retry_after })
+            if retry_after == Some(Duration::from_secs(45))));
     }
 
     #[test]
@@ -406,7 +513,7 @@ mod tests {
         let mut dedupe = InsightDedupeGuard::default();
         let insight = PolledInsight {
             id: "insight-1".into(),
-            payload: crate::delivery::parser::parse_insight(insight_body("insight-1")).unwrap(),
+            payload: crate::delivery::parser::parse_insight(daily_insight_body()).unwrap(),
         };
 
         deliver_polled_insight(&push, &mut dedupe, insight.clone()).await;

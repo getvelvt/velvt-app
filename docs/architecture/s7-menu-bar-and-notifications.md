@@ -90,7 +90,9 @@ public final class MenuBarController: NSObject {
 - `install()` sets `NSApp.activationPolicy = .accessory` (no Dock icon) and
   creates the status item with an initial `.normal` icon. This does not
   prevent the app from showing windows (e.g. onboarding) or from terminating
-  normally.
+  normally. The bundle intentionally does not set `LSUIElement`; that keeps the
+  installed app visible to LaunchServices/Launchpad while preserving menu-bar
+  behavior at runtime.
 - The popover's `NSHostingController` wraps `MenuBarPopoverView`, which embeds
   the unmodified S6 `VelvtPopoverContentView` (`InsightCardView` +
   `HistoryListView`). Pushing a new `InsightPayload`/`HistoryPayload` through

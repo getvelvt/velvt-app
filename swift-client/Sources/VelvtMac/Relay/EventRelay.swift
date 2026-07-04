@@ -48,6 +48,15 @@ struct CircularBuffer<Element> {
         head = (head + 1) % capacity
         count -= 1
     }
+
+    /// Places an element back at the head after a failed dequeue/send attempt.
+    /// Caller must ensure the buffer has spare capacity.
+    mutating func requeueFront(_ element: Element) {
+        precondition(!isFull, "CircularBuffer must have capacity before requeueFront")
+        head = (head - 1 + capacity) % capacity
+        storage[head] = element
+        count += 1
+    }
 }
 
 // MARK: - EventRelay
@@ -242,7 +251,12 @@ public actor EventRelay: EventRelayProtocol {
     private func runSendLoop(stream: AsyncStream<RawEvent>) async {
         for await event in stream {
             if isConnected && !isFlushing {
-                try? await ipcClient.send(.rawEvent(toMessage(event)))
+                do {
+                    try await ipcClient.send(.rawEvent(toMessage(event)))
+                } catch {
+                    isConnected = false
+                    bufferEvent(event)
+                }
             } else {
                 bufferEvent(event)
             }
@@ -278,7 +292,13 @@ public actor EventRelay: EventRelayProtocol {
     /// so they are dequeued after the pre-existing backlog — preserving order.
     private func flushBuffer() async {
         while isConnected && !Task.isCancelled, let event = ringBuffer.dequeue() {
-            try? await ipcClient.send(.rawEvent(toMessage(event)))
+            do {
+                try await ipcClient.send(.rawEvent(toMessage(event)))
+            } catch {
+                isConnected = false
+                ringBuffer.requeueFront(event)
+                return
+            }
         }
     }
 

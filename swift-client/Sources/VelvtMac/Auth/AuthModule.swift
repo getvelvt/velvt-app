@@ -12,8 +12,15 @@ import Security
 // MARK: - KeychainKey
 
 public enum KeychainKey: String, CaseIterable, Sendable {
+    /// Single persisted auth payload used on app relaunch. Keeping the session in
+    /// one Keychain item avoids repeated access prompts and all-or-nothing
+    /// restore failures from scanning separate token entries.
+    case authSnapshot = "velvt.auth_snapshot"
     case accessToken = "velvt.access_token"
     case refreshToken = "velvt.refresh_token"
+    case userAccessToken = "velvt.user_access_token"
+    case userRefreshToken = "velvt.user_refresh_token"
+    case userExpiresAt = "velvt.user_expires_at"
     case userId = "velvt.user_id"
     case deviceId = "velvt.device_id"
     case expiresAt = "velvt.expires_at"
@@ -21,6 +28,13 @@ public enum KeychainKey: String, CaseIterable, Sendable {
     /// Sentinel written when the state machine enters `.pendingErasure` so that
     /// a relaunch mid-deletion can restore the correct state and block normal use.
     case pendingDeletion = "velvt.pending_deletion"
+}
+
+private struct StoredAuthSnapshot: Codable, Equatable {
+    var userId: String
+    var email: String?
+    var pendingDeletion: Bool
+    var session: AuthSession
 }
 
 // MARK: - KeychainProtocol
@@ -238,9 +252,9 @@ public final class AccountStateManager: ObservableObject {
 
     public init(keychain: any KeychainProtocol) {
         self.keychain = keychain
-        let storedValues = (try? keychain.loadAll()) ?? [:]
-        let storedUserId = storedValues[.userId]
-        let isPendingDeletion = storedValues[.pendingDeletion] != nil
+        let storedSnapshot = Self.loadStoredSnapshot(from: keychain)
+        let storedUserId = storedSnapshot?.userId
+        let isPendingDeletion = storedSnapshot?.pendingDeletion == true
         let initialState: AccountState
         if let uid = storedUserId {
             initialState = isPendingDeletion ? .pendingErasure : .loggedIn(userId: uid)
@@ -250,8 +264,8 @@ public final class AccountStateManager: ObservableObject {
         _accountState = Published(wrappedValue: initialState)
         _isDeviceRevoked = Published(wrappedValue: false)
         serverMessages = PassthroughSubject()
-        cachedSession = Self.loadSession(from: storedValues)
-        accountEmailCache = .some(storedValues[.email])
+        cachedSession = storedSnapshot?.session
+        accountEmailCache = .some(storedSnapshot?.email)
     }
 
     // MARK: - State machine
@@ -271,7 +285,7 @@ public final class AccountStateManager: ObservableObject {
         // Persist the pendingDeletion sentinel so a relaunch mid-erasure can
         // restore the correct blocking state.
         if case .pendingErasure = newState {
-            try? keychain.store(token: "1", for: .pendingDeletion)
+            updatePendingDeletionFlag(true)
         }
         accountState = newState
     }
@@ -299,7 +313,7 @@ public final class AccountStateManager: ObservableObject {
         if let accountEmailCache {
             return accountEmailCache
         }
-        let email = try? keychain.load(for: .email)
+        let email = Self.loadStoredSnapshot(from: keychain)?.email
         accountEmailCache = email
         return email
     }
@@ -328,9 +342,10 @@ public final class AccountStateManager: ObservableObject {
     /// failed and the session is still valid. Requires knowing the current userId.
     public func cancelPendingErasure() {
         guard case .pendingErasure = accountState,
-              let userId = try? keychain.load(for: .userId) else { return }
-        try? keychain.delete(for: .pendingDeletion)
-        accountState = .loggedIn(userId: userId)
+              var snapshot = Self.loadStoredSnapshot(from: keychain) else { return }
+        snapshot.pendingDeletion = false
+        try? store(snapshot: snapshot)
+        accountState = .loggedIn(userId: snapshot.userId)
     }
 
     /// Resets the device-revoked flag after the recovery UI has been dismissed.
@@ -437,25 +452,28 @@ public final class AccountStateManager: ObservableObject {
             )
             return
         }
-        authLogger.debug("auth.handleAuthSuccess: writing tokens to Keychain")
+        authLogger.debug("auth.handleAuthSuccess: writing auth snapshot to Keychain")
         do {
-            try keychain.store(token: success.accessToken, for: .accessToken)
-            try keychain.store(token: success.refreshToken, for: .refreshToken)
-            try keychain.store(token: success.userId, for: .userId)
-            try keychain.store(token: success.deviceId, for: .deviceId)
-            try keychain.store(token: "\(success.expiresAt.timeIntervalSince1970)", for: .expiresAt)
-            cachedSession = AuthSession(
+            let session = AuthSession(
                 deviceId: success.deviceId,
                 accessToken: success.accessToken,
                 refreshToken: success.refreshToken,
-                expiresAt: success.expiresAt
+                expiresAt: success.expiresAt,
+                userAccessToken: success.userAccessToken,
+                userRefreshToken: success.userRefreshToken,
+                userExpiresAt: success.userExpiresAt
             )
-            if let pendingEmail {
-                try keychain.store(token: pendingEmail, for: .email)
-                accountEmailCache = .some(pendingEmail)
-            }
+            let snapshot = StoredAuthSnapshot(
+                userId: success.userId,
+                email: pendingEmail,
+                pendingDeletion: false,
+                session: session
+            )
+            try store(snapshot: snapshot)
+            cachedSession = session
+            accountEmailCache = .some(pendingEmail)
             authLogger.debug(
-                "auth.handleAuthSuccess: Keychain writes succeeded, transitioning to loggedIn"
+                "auth.handleAuthSuccess: Keychain snapshot write succeeded, transitioning to loggedIn"
             )
             transition(to: .loggedIn(userId: success.userId))
             pendingEmail = nil
@@ -472,10 +490,18 @@ public final class AccountStateManager: ObservableObject {
 
     private func store(session: AuthSession) {
         do {
-            try keychain.store(token: session.accessToken, for: .accessToken)
-            try keychain.store(token: session.refreshToken, for: .refreshToken)
-            try keychain.store(token: session.deviceId, for: .deviceId)
-            try keychain.store(token: "\(session.expiresAt.timeIntervalSince1970)", for: .expiresAt)
+            guard let userId = currentUserId ?? Self.loadStoredSnapshot(from: keychain)?.userId else {
+                authLogger.warning("auth.storeSession: received session update without a known userId")
+                return
+            }
+            let existing = Self.loadStoredSnapshot(from: keychain)
+            let snapshot = StoredAuthSnapshot(
+                userId: userId,
+                email: accountEmailCache ?? existing?.email,
+                pendingDeletion: existing?.pendingDeletion ?? false,
+                session: session
+            )
+            try store(snapshot: snapshot)
             cachedSession = session
         } catch {
             authLogger.error("auth.storeSession: Keychain write failed — \(error.localizedDescription)")
@@ -489,24 +515,55 @@ public final class AccountStateManager: ObservableObject {
         }
     }
 
-    private static func loadSession(from keychain: any KeychainProtocol) -> AuthSession? {
-        loadSession(from: (try? keychain.loadAll()) ?? [:])
+    private var currentUserId: String? {
+        if case .loggedIn(let userId) = accountState {
+            return userId
+        }
+        return nil
     }
 
-    private static func loadSession(from values: [KeychainKey: String]) -> AuthSession? {
-        guard let deviceId = values[.deviceId],
-              let accessToken = values[.accessToken],
-              let refreshToken = values[.refreshToken],
-              let expiresRaw = values[.expiresAt],
-              let expiresInterval = TimeInterval(expiresRaw) else {
+    private func updatePendingDeletionFlag(_ isPendingDeletion: Bool) {
+        guard var snapshot = Self.loadStoredSnapshot(from: keychain) else { return }
+        snapshot.pendingDeletion = isPendingDeletion
+        try? store(snapshot: snapshot)
+    }
+
+    private func store(snapshot: StoredAuthSnapshot) throws {
+        try keychain.store(token: Self.encode(snapshot: snapshot), for: .authSnapshot)
+    }
+
+    private static func loadStoredSnapshot(from keychain: any KeychainProtocol) -> StoredAuthSnapshot? {
+        do {
+            let rawSnapshot = try keychain.load(for: .authSnapshot)
+            return decodeSnapshot(rawSnapshot)
+        } catch AuthError.keychainItemNotFound {
+            return nil
+        } catch {
+            authLogger.warning(
+                "auth.restore: Keychain auth snapshot read failed; treating stored session as unavailable — \(error.localizedDescription)"
+            )
             return nil
         }
-        return AuthSession(
-            deviceId: deviceId,
-            accessToken: accessToken,
-            refreshToken: refreshToken,
-            expiresAt: Date(timeIntervalSince1970: expiresInterval)
-        )
+    }
+
+    private static func encode(snapshot: StoredAuthSnapshot) throws -> String {
+        let data = try JSONEncoder().encode(snapshot)
+        guard let encoded = String(data: data, encoding: .utf8) else {
+            throw AuthError.keychain(status: errSecParam)
+        }
+        return encoded
+    }
+
+    private static func decodeSnapshot(_ rawSnapshot: String) -> StoredAuthSnapshot? {
+        guard let data = rawSnapshot.data(using: .utf8) else {
+            return nil
+        }
+        do {
+            return try JSONDecoder().decode(StoredAuthSnapshot.self, from: data)
+        } catch {
+            authLogger.warning("auth.restore: stored auth snapshot could not be decoded")
+            return nil
+        }
     }
 
     private func isValidTransition(from current: AccountState, to next: AccountState) -> Bool {

@@ -31,6 +31,7 @@ AccountAuthService credential request
 cloud returns user tokens
 Rust registers or reissues device tokens
 Rust stores device tokens in TokenStore
+Rust stores user tokens in TokenStore for device reissue recovery
 Rust transitions to Authenticated { device_id }
 Rust sends auth_success to Swift
 Swift stores host session in Keychain
@@ -58,9 +59,11 @@ invalid/expired token that cannot refresh -> NeedsReauth -> push needs_reauth to
 
 ## Token Storage
 
-The Rust service must not store auth tokens in SQLite. The current implementation uses `VolatileTokenStore`, which keeps access/refresh tokens in memory and emits `auth_session_updated` IPC messages when tokens change.
+The Rust service must not store auth tokens in SQLite. The current implementation uses `VolatileTokenStore`, which keeps device access/refresh tokens and optional user access/refresh tokens in memory and emits `auth_session_updated` IPC messages when tokens change.
 
 Swift receives those messages and persists the session in Keychain. On reconnect or relaunch, Swift sends `auth_session` back to Rust so the service can resume authenticated cloud work.
+
+Authenticated API calls use the device token pair. User tokens are retained only so Rust can refresh user auth and call `/v1/auth/devices/reissue` if the device token pair is revoked after relaunch. If neither device refresh nor user-backed device reissue succeeds, Rust enters `NeedsReauth` and Swift clears Keychain.
 
 This arrangement keeps the local helper stateless enough to restart and avoids placing secrets in the service database.
 
@@ -84,7 +87,7 @@ Credentials enter Rust only through local IPC:
 
 Device registration cannot happen at service startup because `/v1/devices` requires a logged-in user's access token. `AccountAuthService` therefore registers the device after the first successful sign-up or login if no device ID is already stored.
 
-If a device ID already exists, the service reissues device-bound tokens for that device. This keeps the cloud upload/fetch path using device-scoped credentials rather than long-lived user credentials.
+If a device ID already exists, the service reissues device-bound tokens for that device using a valid user-bound access token, refreshing the user token first when needed. This keeps the cloud upload/fetch path using device-scoped credentials rather than long-lived user credentials.
 
 ## Auth-Related IPC Messages
 

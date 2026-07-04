@@ -400,6 +400,12 @@ pub struct AuthSession {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_access_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_refresh_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_expires_at: Option<DateTime<Utc>>,
 }
 
 impl std::fmt::Debug for AuthSession {
@@ -410,6 +416,15 @@ impl std::fmt::Debug for AuthSession {
             .field("access_token", &"[redacted]")
             .field("refresh_token", &"[redacted]")
             .field("expires_at", &self.expires_at)
+            .field(
+                "user_access_token",
+                &self.user_access_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "user_refresh_token",
+                &self.user_refresh_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("user_expires_at", &self.user_expires_at)
             .finish()
     }
 }
@@ -438,6 +453,12 @@ pub struct AuthSuccess {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_access_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_refresh_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_expires_at: Option<DateTime<Utc>>,
 }
 
 impl std::fmt::Debug for AuthSuccess {
@@ -449,6 +470,15 @@ impl std::fmt::Debug for AuthSuccess {
             .field("access_token", &"[redacted]")
             .field("refresh_token", &"[redacted]")
             .field("expires_at", &self.expires_at)
+            .field(
+                "user_access_token",
+                &self.user_access_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "user_refresh_token",
+                &self.user_refresh_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("user_expires_at", &self.user_expires_at)
             .finish()
     }
 }
@@ -600,11 +630,16 @@ mod v6_auth_contract {
             access_token: "secret-access".into(),
             refresh_token: "secret-refresh".into(),
             expires_at: Utc::now(),
+            user_access_token: Some("secret-user-access".into()),
+            user_refresh_token: Some("secret-user-refresh".into()),
+            user_expires_at: Some(Utc::now()),
         };
         let output = format!("{success:?}");
         assert!(output.contains("user-123"));
         assert!(!output.contains("secret-access"));
         assert!(!output.contains("secret-refresh"));
+        assert!(!output.contains("secret-user-access"));
+        assert!(!output.contains("secret-user-refresh"));
     }
 
     #[test]

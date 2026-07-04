@@ -37,6 +37,91 @@ public final class CollectionActivityStatusModel: ObservableObject {
     }
 }
 
+public final class CollectionSettingsModel: ObservableObject {
+    @Published public var offlineEventCollectionEnabled: Bool {
+        didSet {
+            defaults.set(offlineEventCollectionEnabled, forKey: Self.offlineEventCollectionKey)
+        }
+    }
+
+    private static let offlineEventCollectionKey = "velvt.collection.offline_events_enabled"
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if defaults.object(forKey: Self.offlineEventCollectionKey) == nil {
+            offlineEventCollectionEnabled = true
+        } else {
+            offlineEventCollectionEnabled = defaults.bool(forKey: Self.offlineEventCollectionKey)
+        }
+    }
+}
+
+public struct ServiceAlert: Equatable, Sendable {
+    public enum Severity: Equatable, Sendable {
+        case warning
+        case error
+    }
+
+    public let severity: Severity
+    public let title: String
+    public let message: String
+
+    public init(severity: Severity, title: String, message: String) {
+        self.severity = severity
+        self.title = title
+        self.message = message
+    }
+}
+
+@MainActor
+public final class ServiceAlertModel: ObservableObject {
+    @Published public private(set) var alert: ServiceAlert?
+    private var cancellable: AnyCancellable?
+
+    public init(messages: some Publisher<ServerMessage, Never>) {
+        cancellable = messages
+            .receive(on: RunLoop.main)
+            .compactMap(Self.alert(for:))
+            .sink { [weak self] in self?.alert = $0 }
+    }
+
+    public func dismiss() {
+        alert = nil
+    }
+
+    private static func alert(for message: ServerMessage) -> ServiceAlert? {
+        switch message {
+        case .malformedMessage:
+            return ServiceAlert(
+                severity: .warning,
+                title: "Message rejected",
+                message: "The local service rejected an invalid message."
+            )
+        case .privacyViolationAlert(let alert):
+            return ServiceAlert(
+                severity: .error,
+                title: "Privacy guard blocked data",
+                message: alert.message
+            )
+        case .shuttingDown:
+            return ServiceAlert(
+                severity: .warning,
+                title: "Service restarting",
+                message: "Velvt is reconnecting to the local service."
+            )
+        case .errorResponse(let error):
+            return ServiceAlert(
+                severity: .error,
+                title: "Service error",
+                message: error.message
+            )
+        default:
+            return nil
+        }
+    }
+}
+
 public struct CurrentActivity: Equatable, Sendable {
     public let appName: String
     public let windowTitle: String
@@ -87,6 +172,7 @@ public enum MenuBarPopoverRoute: Equatable {
 private enum SettingsSubmenu: Equatable {
     case appInfo
     case queuedEvents
+    case collectionSettings
     case debug
 }
 
@@ -118,6 +204,8 @@ public struct MenuBarPopoverView: View {
     @ObservedObject private var serviceConnectionStatus: ServiceConnectionStatusModel
     @ObservedObject private var collectionActivityStatus: CollectionActivityStatusModel
     @ObservedObject private var currentActivity: CurrentActivityModel
+    @ObservedObject private var serviceAlertModel: ServiceAlertModel
+    @ObservedObject private var collectionSettings: CollectionSettingsModel
     private let accountStateManager: AccountStateManager?
     private let ipcClient: (any IPCClientProtocol)?
     private let menuStatusViewModel: MenuStatusViewModel?
@@ -128,6 +216,7 @@ public struct MenuBarPopoverView: View {
     @State private var navigator = MenuBarPopoverNavigator()
     @State private var showsAppInfoSubmenu = false
     @State private var showsQueuedEventsSubmenu = false
+    @State private var showsCollectionSettingsSubmenu = false
     @State private var showsDebugSubmenu = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -138,6 +227,8 @@ public struct MenuBarPopoverView: View {
         serviceConnectionStatus: ServiceConnectionStatusModel,
         collectionActivityStatus: CollectionActivityStatusModel,
         currentActivity: CurrentActivityModel,
+        serviceAlertModel: ServiceAlertModel,
+        collectionSettings: CollectionSettingsModel = CollectionSettingsModel(),
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
@@ -152,6 +243,8 @@ public struct MenuBarPopoverView: View {
         self.serviceConnectionStatus = serviceConnectionStatus
         self.collectionActivityStatus = collectionActivityStatus
         self.currentActivity = currentActivity
+        self.serviceAlertModel = serviceAlertModel
+        self.collectionSettings = collectionSettings
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
@@ -196,6 +289,10 @@ public struct MenuBarPopoverView: View {
         VStack(spacing: 0) {
             mainHeader
             Divider().opacity(0.2)
+            if let alert = serviceAlertModel.alert {
+                serviceAlertRow(alert)
+                Divider().opacity(0.15)
+            }
             if collectionActivityStatus.status == .running {
                 gatheringInfoStatus
                 if let activity = currentActivity.activity {
@@ -260,6 +357,31 @@ public struct MenuBarPopoverView: View {
         .padding(.vertical, 9)
     }
 
+    private func serviceAlertRow(_ alert: ServiceAlert) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(alert.severity == .error ? Color.red : Color.yellow)
+                .frame(width: 7, height: 7)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(alert.title)
+                    .font(.caption.bold())
+                Text(alert.message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            Button("Dismiss") {
+                serviceAlertModel.dismiss()
+            }
+            .buttonStyle(.plain)
+            .font(.caption2)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+    }
+
     private func currentActivityStatus(_ activity: CurrentActivity) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text("Currently on")
@@ -289,6 +411,7 @@ public struct MenuBarPopoverView: View {
             })
             settingsSubmenuRow("App Info", submenu: .appInfo)
             settingsSubmenuRow("Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))", submenu: .queuedEvents)
+            settingsSubmenuRow("Collection Settings", submenu: .collectionSettings)
             #if DEBUG
             if simulateNotification != nil {
                 settingsSubmenuRow("Debug", submenu: .debug)
@@ -368,6 +491,16 @@ public struct MenuBarPopoverView: View {
             }
             .onAppear { menuStatusViewModel?.refresh() }
 
+        case .collectionSettings:
+            VStack(spacing: 0) {
+                submenuTitle("Collection Settings")
+                Toggle("Offline Event Collection", isOn: $collectionSettings.offlineEventCollectionEnabled)
+                    .toggleStyle(.switch)
+                    .font(.caption)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+            }
+
         case .debug:
             VStack(spacing: 0) {
                 submenuTitle("Debug")
@@ -433,7 +566,7 @@ public struct MenuBarPopoverView: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .onHover { if $0 { showSettingsSubmenu(submenu) } }
-        .background(
+        .overlay(alignment: .trailing) {
             SubmenuPopoverAnchor(
                 isPresented: submenuBinding(for: submenu)
             ) {
@@ -441,20 +574,22 @@ public struct MenuBarPopoverView: View {
                     .frame(width: 280)
                     .preferredColorScheme(.dark)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: 1, height: 1)
             .allowsHitTesting(false)
-        )
+        }
     }
 
     private func showSettingsSubmenu(_ submenu: SettingsSubmenu) {
         showsAppInfoSubmenu = submenu == .appInfo
         showsQueuedEventsSubmenu = submenu == .queuedEvents
+        showsCollectionSettingsSubmenu = submenu == .collectionSettings
         showsDebugSubmenu = submenu == .debug
     }
 
     private func dismissSettingsSubmenus() {
         showsAppInfoSubmenu = false
         showsQueuedEventsSubmenu = false
+        showsCollectionSettingsSubmenu = false
         showsDebugSubmenu = false
     }
 
@@ -470,6 +605,8 @@ public struct MenuBarPopoverView: View {
             return $showsAppInfoSubmenu
         case .queuedEvents:
             return $showsQueuedEventsSubmenu
+        case .collectionSettings:
+            return $showsCollectionSettingsSubmenu
         case .debug:
             return $showsDebugSubmenu
         }
@@ -571,9 +708,10 @@ private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.updateBinding($isPresented)
         let popover = context.coordinator.popover
-        popover.contentViewController = NSHostingController(rootView: content())
+        let contentViewController = NSHostingController(rootView: content())
+        popover.contentViewController = contentViewController
 
-        if isPresented, !popover.isShown {
+        if isPresented {
             let targetView = nsView.bounds.isEmpty ? (nsView.superview ?? nsView) : nsView
             let sourceRect = NSRect(
                 x: targetView.bounds.maxX - 1,
@@ -581,13 +719,19 @@ private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
                 width: 1,
                 height: 1
             )
-            popover.show(relativeTo: sourceRect, of: targetView, preferredEdge: .maxX)
+            contentViewController.view.layoutSubtreeIfNeeded()
+            let contentSize = contentViewController.view.fittingSize
+            popover.contentSize = contentSize
+
+            if !popover.isShown {
+                popover.show(relativeTo: sourceRect, of: targetView, preferredEdge: .maxX)
+            }
             if let window = popover.contentViewController?.view.window,
                let sourceFrame = targetView.window?.convertToScreen(targetView.convert(targetView.bounds, to: nil)) {
                 window.setFrame(
                     SubmenuPopoverPlacement.frame(
                         sourceFrameInScreen: sourceFrame,
-                        submenuContentSize: window.frame.size,
+                        submenuContentSize: contentSize,
                         sourceMenuFrameInScreen: targetView.window?.frame,
                         currentWindowFrame: window.frame
                     ),

@@ -34,7 +34,7 @@ Only valid transitions are accepted through `transition(to:)`. Invalid transitio
 5. Rust performs cloud auth and device registration.
 6. Rust returns `auth_success` or `auth_failure`.
 7. `AccountStateManager` handles the message from its single IPC listener.
-8. On success, Swift stores tokens, user ID, device ID, expiry, and email in Keychain, then moves to `.loggedIn`.
+8. On success, Swift stores device tokens, user tokens when provided, user ID, device ID, expiries, and email in Keychain, then moves to `.loggedIn`.
 9. On failure, Swift returns to `.loggedOut` and `AuthViewModel` surfaces the error message.
 
 Swift does not make any HTTP request in this flow.
@@ -47,6 +47,9 @@ Swift does not make any HTTP request in this flow.
 |---|---|
 | `velvt.access_token` | Access token from Rust/cloud |
 | `velvt.refresh_token` | Refresh token from Rust/cloud |
+| `velvt.user_access_token` | User-bound access token used by Rust only to refresh user auth and reissue device credentials |
+| `velvt.user_refresh_token` | User-bound refresh token used by Rust only to refresh user auth |
+| `velvt.user_expires_at` | User token expiry as Unix timestamp string |
 | `velvt.user_id` | Current user ID |
 | `velvt.device_id` | Device ID registered by Rust |
 | `velvt.expires_at` | Token expiry as Unix timestamp string |
@@ -62,7 +65,7 @@ own Keychain read.
 
 ## Session Replay
 
-`AccountStateManager` loads a cached `AuthSession` from Keychain during initialization when all required fields exist.
+`AccountStateManager` loads a cached `AuthSession` from Keychain during initialization when all required device-session fields exist. User-token fields are replayed only when the user access token, refresh token, and expiry are all present.
 
 When `IPCClientProtocol.connectionStatus` becomes `.connected`, it sends:
 
@@ -70,7 +73,7 @@ When `IPCClientProtocol.connectionStatus` becomes `.connected`, it sends:
 try await client.send(.authSession(session))
 ```
 
-This lets a restarted Rust service resume authenticated upload/fetch work using the session Swift persisted.
+This lets a restarted Rust service resume authenticated upload/fetch work using the persisted device session. If the device token is expired, Rust refreshes it with the device refresh token. If the device token has been revoked, Rust uses the persisted user session to refresh user auth if needed and then reissue device-bound credentials. Swift clears Keychain and returns to login only after Rust reports that both recovery paths failed.
 
 ## Auth Message Handling
 

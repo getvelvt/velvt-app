@@ -45,6 +45,13 @@ To build the single local runnable app:
 make build-app
 ```
 
+To build the same packaged app for debugging against a local `velvt-core-api`
+on its default `http://localhost:8000` address:
+
+```sh
+make build-app-local-core
+```
+
 This produces:
 
 ```text
@@ -70,6 +77,10 @@ make build-app
 ```
 
 Then open `dist/velvt-mac.app` from Finder or with an approved local GUI launch flow. On first use, macOS may require Accessibility and Notifications permissions.
+
+When running against a local `velvt-core-api`, use `make build-app-local-core`
+instead so the bundled Rust service is built with
+`VELVT_API_BASE_URL=http://localhost:8000`.
 
 ### Development Path With Separate Processes
 

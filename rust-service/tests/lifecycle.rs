@@ -2,7 +2,7 @@
 //!
 //! Covers:
 //! - Graceful shutdown: `ShuttingDown` is delivered to the client before socket close.
-//! - Reconnect window: reconnect within window → same push queue; after window → fresh queue.
+//! - Reconnect handling keeps the producer and transport on one stable push queue.
 
 use std::{sync::Arc, time::Duration};
 
@@ -131,13 +131,15 @@ async fn reconnect_within_window_reuses_push_queue() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3 — Reconnect after window expiry gets a fresh push queue
+// Test 3 — Reconnect after window expiry keeps the stable push queue
 // ---------------------------------------------------------------------------
 
 /// After the reconnect window elapses without a reconnect, `acquire()` must
-/// return a new `Arc<PushQueue>` — distinct from the one held before.
+/// still return the same `Arc<PushQueue>`. `PushAdapter` holds the producer-side
+/// handle for the process lifetime, so the transport must not switch to a
+/// different queue that the producer cannot reach.
 #[tokio::test]
-async fn reconnect_after_window_gets_fresh_push_queue() {
+async fn reconnect_after_window_keeps_stable_push_queue() {
     // Very short window so the test stays fast.
     let tracker = ReconnectTracker::new(Duration::from_millis(50), 16);
 
@@ -149,10 +151,9 @@ async fn reconnect_after_window_gets_fresh_push_queue() {
     let q2 = tracker.acquire();
 
     assert!(
-        !Arc::ptr_eq(&q1, &q2),
-        "a fresh Arc<PushQueue> must be returned after the reconnect window expires"
+        Arc::ptr_eq(&q1, &q2),
+        "same Arc<PushQueue> must be returned after reconnect-window expiry"
     );
-    assert!(q2.is_empty().await, "fresh queue must start empty");
 }
 
 // ---------------------------------------------------------------------------

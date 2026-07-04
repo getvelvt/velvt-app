@@ -25,6 +25,80 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(model.status, .reconnecting(attempt: 2, nextRetryIn: 1))
     }
 
+    func testCollectionSettingsDefaultOfflineCollectionEnabled() {
+        let defaults = UserDefaults(suiteName: "CollectionSettingsModel.default.\(UUID().uuidString)")!
+
+        let model = CollectionSettingsModel(defaults: defaults)
+
+        XCTAssertTrue(model.offlineEventCollectionEnabled)
+    }
+
+    func testCollectionSettingsPersistsOfflineCollectionPreference() {
+        let defaults = UserDefaults(suiteName: "CollectionSettingsModel.persist.\(UUID().uuidString)")!
+        let first = CollectionSettingsModel(defaults: defaults)
+
+        first.offlineEventCollectionEnabled = false
+        let second = CollectionSettingsModel(defaults: defaults)
+
+        XCTAssertFalse(second.offlineEventCollectionEnabled)
+    }
+
+    func testServiceAlertModelSurfacesMalformedMessage() async {
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let model = ServiceAlertModel(messages: messages)
+
+        messages.send(.malformedMessage(MalformedMessage(code: .invalidMessage)))
+        await Task.yield()
+
+        XCTAssertEqual(model.alert?.severity, .warning)
+        XCTAssertEqual(model.alert?.title, "Message rejected")
+    }
+
+    func testServiceAlertModelSurfacesPrivacyViolationAlert() async {
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let model = ServiceAlertModel(messages: messages)
+
+        messages.send(.privacyViolationAlert(PrivacyViolationAlert(
+            code: "raw_content_detected",
+            message: "Sensitive content was blocked."
+        )))
+        await Task.yield()
+
+        XCTAssertEqual(model.alert?.severity, .error)
+        XCTAssertEqual(model.alert?.title, "Privacy guard blocked data")
+        XCTAssertEqual(model.alert?.message, "Sensitive content was blocked.")
+    }
+
+    func testServiceAlertModelSurfacesShuttingDown() async {
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let model = ServiceAlertModel(messages: messages)
+
+        messages.send(.shuttingDown(ShuttingDown(reason: "sigterm")))
+        await Task.yield()
+
+        XCTAssertEqual(model.alert?.severity, .warning)
+        XCTAssertEqual(model.alert?.title, "Service restarting")
+    }
+
+    func testServiceAlertModelSurfacesGenericErrorResponseAndDismisses() async {
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let model = ServiceAlertModel(messages: messages)
+
+        messages.send(.errorResponse(ErrorResponse(
+            code: "unexpected",
+            message: "Something went wrong.",
+            relatedEventID: nil
+        )))
+        await Task.yield()
+
+        XCTAssertEqual(model.alert?.severity, .error)
+        XCTAssertEqual(model.alert?.message, "Something went wrong.")
+
+        model.dismiss()
+
+        XCTAssertNil(model.alert)
+    }
+
     func testSettingsNavigationMovesForwardAndBack() {
         var navigator = MenuBarPopoverNavigator()
 
@@ -91,6 +165,23 @@ final class MenuBarNavigationTests: XCTestCase {
 
         XCTAssertEqual(frame.maxY, sourceMenuFrame.maxY, accuracy: 0.001)
         XCTAssertLessThan(frame.midY, sourceFrame.midY)
+    }
+
+    func testShortSettingsSubmenuIgnoresStaleTallWindowHeight() {
+        let sourceMenuFrame = CGRect(x: 100, y: 300, width: 300, height: 220)
+        let sourceFrame = CGRect(x: 100, y: 390, width: 300, height: 44)
+        let staleTallWindowFrame = CGRect(x: 410, y: 260, width: 280, height: 260)
+        let debugSubmenuSize = CGSize(width: 280, height: 88)
+
+        let frame = SubmenuPopoverPlacement.frame(
+            sourceFrameInScreen: sourceFrame,
+            submenuContentSize: debugSubmenuSize,
+            sourceMenuFrameInScreen: sourceMenuFrame,
+            currentWindowFrame: staleTallWindowFrame
+        )
+
+        XCTAssertEqual(frame.midY, sourceFrame.midY, accuracy: 0.001)
+        XCTAssertEqual(frame.height, debugSubmenuSize.height, accuracy: 0.001)
     }
 
 }

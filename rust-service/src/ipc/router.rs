@@ -12,7 +12,9 @@ use velvt_shared_types::{
 };
 
 use crate::abstraction::AbstractionEngine;
-use crate::auth::{AccountAuthService, HttpClient, HttpRequest};
+use crate::auth::{
+    AccountAuthService, AuthError, HttpClient, HttpRequest, SessionValidator, TokenStore,
+};
 use crate::delivery::{shaper, CacheManager};
 use crate::persistence::{RawEventEntry, RawEventRepo, UploadBatchRepo};
 use crate::upload::EventIngestor;
@@ -40,7 +42,7 @@ pub trait MenuStatusProviding: Send + Sync {
 
 pub struct MenuStatusProvider {
     http: Arc<dyn HttpClient>,
-    device_id: Option<String>,
+    token_store: Arc<dyn TokenStore>,
     batches: Arc<dyn UploadBatchRepo>,
     raw_events: Arc<dyn RawEventRepo>,
     readiness: Mutex<Option<(Instant, bool)>>,
@@ -49,13 +51,13 @@ pub struct MenuStatusProvider {
 impl MenuStatusProvider {
     pub fn new(
         http: Arc<dyn HttpClient>,
-        device_id: Option<String>,
+        token_store: Arc<dyn TokenStore>,
         batches: Arc<dyn UploadBatchRepo>,
         raw_events: Arc<dyn RawEventRepo>,
     ) -> Self {
         Self {
             http,
-            device_id,
+            token_store,
             batches,
             raw_events,
             readiness: Mutex::new(None),
@@ -121,7 +123,7 @@ impl MenuStatusProviding for MenuStatusProvider {
                 .take(10)
                 .collect();
             MenuStatus {
-                device_id: self.device_id.clone(),
+                device_id: self.token_store.load_device_id().unwrap_or_default(),
                 cloud_ready,
                 queued_event_count,
                 queued_events,
@@ -141,6 +143,54 @@ impl MenuStatusProviding for EmptyMenuStatusProvider {
                 queued_events: vec![],
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::{FakeTokenStore, HttpResponse, TokenStore};
+    use crate::persistence::SqlitePersistence;
+    use std::future::Future;
+
+    struct ReadyHttp;
+
+    impl HttpClient for ReadyHttp {
+        fn send<'a>(
+            &'a self,
+            _request: HttpRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, AuthError>> + Send + 'a>> {
+            Box::pin(async {
+                Ok(HttpResponse {
+                    status: 200,
+                    error_code: None,
+                    tokens: None,
+                    retry_after: None,
+                    message: None,
+                    raw_body: Some(serde_json::json!({ "status": "ready" })),
+                    user_id: None,
+                    device_id: None,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn menu_status_reads_device_id_stored_after_provider_construction() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let token_store = Arc::new(FakeTokenStore::default());
+        let provider = MenuStatusProvider::new(
+            Arc::new(ReadyHttp) as Arc<dyn HttpClient>,
+            Arc::clone(&token_store) as Arc<dyn TokenStore>,
+            persistence.upload_batch_repo(),
+            persistence.raw_event_repo(),
+        );
+
+        token_store.store_device_id("device-1").unwrap();
+
+        let status = provider.snapshot().await;
+
+        assert_eq!(status.device_id.as_deref(), Some("device-1"));
     }
 }
 
@@ -171,6 +221,7 @@ pub struct R7Router {
     ingestor: Arc<dyn EventIngestor>,
     account: Arc<AccountAuthService>,
     menu_status: Arc<dyn MenuStatusProviding>,
+    session_validator: Option<Arc<dyn SessionValidator>>,
 }
 
 impl R7Router {
@@ -188,11 +239,17 @@ impl R7Router {
             ingestor,
             account,
             menu_status: Arc::new(EmptyMenuStatusProvider),
+            session_validator: None,
         }
     }
 
     pub fn with_menu_status(mut self, menu_status: Arc<dyn MenuStatusProviding>) -> Self {
         self.menu_status = menu_status;
+        self
+    }
+
+    pub fn with_session_validator(mut self, session_validator: Arc<dyn SessionValidator>) -> Self {
+        self.session_validator = Some(session_validator);
         self
     }
 }
@@ -222,6 +279,29 @@ impl MessageRouter for R7Router {
 
             ClientMessage::AuthSession(session) => {
                 self.account.apply_session(session);
+                if let Some(session_validator) = &self.session_validator {
+                    match session_validator.validate_restored_session().await {
+                        Ok(()) => {
+                            tracing::info!(
+                                message_type = "auth_session",
+                                "restored auth session validated"
+                            );
+                        }
+                        Err(AuthError::Transport | AuthError::RateLimited) => {
+                            tracing::warn!(
+                                message_type = "auth_session",
+                                "restored auth session validation was deferred"
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                message_type = "auth_session",
+                                error = %error,
+                                "restored auth session validation failed"
+                            );
+                        }
+                    }
+                }
                 Ok(None)
             }
 

@@ -54,6 +54,7 @@ public final class UNNotificationScheduler: NotificationSchedulerProtocol {
         content.title = payload.title
         content.body = payload.body
         content.userInfo = ["insight_date": payload.insightDate]
+        content.sound = .default
 
         let trigger: UNNotificationTrigger? = {
             guard let until = payload.doNotDisturbUntil else { return nil }

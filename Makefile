@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app clean
+.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app build-app-local-core clean
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -8,7 +8,8 @@ endif
 
 CARGO_VERSION := $(shell cd rust-service && cargo --version 2>$(NULL_DEVICE))
 SWIFT_VERSION := $(shell swift --version 2>$(NULL_DEVICE))
-VELVT_CODESIGN_IDENTITY ?= E24074F5011AE8FF85C0AD97A583E1CCA6688E81
+VELVT_CODESIGN_IDENTITY ?= -
+VELVT_LOCAL_API_BASE_URL ?= http://localhost:8000
 
 check-rust-toolchain:
 ifeq ($(strip $(CARGO_VERSION)),)
@@ -63,11 +64,26 @@ build-app: check-swift-toolchain
 		build
 	cp -R dist/.derivedData/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
 	rm -rf dist/.derivedData
-	# Sign with a real local development identity so macOS TCC can remember
-	# Accessibility permission across relaunches and rebuilds. Override with
-	# VELVT_CODESIGN_IDENTITY="..." if another certificate should be used.
+	# Sign the bundle so macOS can register it consistently for LaunchServices,
+	# notifications, and Keychain/TCC. Defaults to ad-hoc signing; override with
+	# VELVT_CODESIGN_IDENTITY="..." when a development certificate is available.
 	codesign --force --deep --sign "$(VELVT_CODESIGN_IDENTITY)" dist/velvt-mac.app
 	@echo "Built dist/velvt-mac.app"
+
+build-app-local-core: check-swift-toolchain
+	rm -rf dist
+	mkdir -p dist
+	xcodebuild \
+		-project swift-client/VelvtMac.xcodeproj \
+		-scheme velvt-mac \
+		-destination 'platform=macOS' \
+		-derivedDataPath dist/.derivedData \
+		VELVT_API_BASE_URL="$(VELVT_LOCAL_API_BASE_URL)" \
+		build
+	cp -R dist/.derivedData/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
+	rm -rf dist/.derivedData
+	codesign --force --deep --sign "$(VELVT_CODESIGN_IDENTITY)" dist/velvt-mac.app
+	@echo "Built dist/velvt-mac.app with VELVT_API_BASE_URL=$(VELVT_LOCAL_API_BASE_URL)"
 
 clean:
 	cd rust-service && cargo clean

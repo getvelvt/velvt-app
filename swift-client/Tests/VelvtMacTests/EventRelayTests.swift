@@ -50,6 +50,18 @@ final class CircularBufferTests: XCTestCase {
         buf.dropOldest() // must not crash
         XCTAssertEqual(buf.count, 0)
     }
+
+    func testRequeueFrontRestoresDequeuedElementOrder() {
+        var buf = CircularBuffer<Int>(capacity: 3)
+        buf.enqueue(1); buf.enqueue(2)
+
+        let first = buf.dequeue()
+        XCTAssertEqual(first, 1)
+        buf.requeueFront(1)
+
+        XCTAssertEqual(buf.dequeue(), 1)
+        XCTAssertEqual(buf.dequeue(), 2)
+    }
 }
 
 // MARK: - EventRelay integration tests
@@ -243,6 +255,56 @@ final class EventRelayTests: XCTestCase {
                 "App\(i) should appear after buffered events"
             )
         }
+    }
+
+    func testLiveSendFailureBuffersEventForNextReconnect() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+
+        client.shouldThrowOnSend = IPCError.connectionClosed
+        relay.receive(makeEvent(index: 1))
+        await drain()
+
+        let bufferedAfterFailure = await relay.bufferedEventCount
+        XCTAssertEqual(bufferedAfterFailure, 1)
+        XCTAssertTrue(sentRawEvents(client).isEmpty)
+
+        client.shouldThrowOnSend = nil
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+
+        XCTAssertEqual(sentRawEvents(client).map(\.appName), ["App1"])
+        let bufferedAfterReconnect = await relay.bufferedEventCount
+        XCTAssertEqual(bufferedAfterReconnect, 0)
+    }
+
+    func testFlushSendFailureRequeuesCurrentEventAtFront() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+
+        relay.receive(makeEvent(index: 1))
+        relay.receive(makeEvent(index: 2))
+        await drain()
+
+        client.shouldThrowOnSend = IPCError.connectionClosed
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+
+        let bufferedAfterFailure = await relay.bufferedEventCount
+        XCTAssertEqual(bufferedAfterFailure, 2)
+        XCTAssertTrue(sentRawEvents(client).isEmpty)
+
+        client.shouldThrowOnSend = nil
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+
+        XCTAssertEqual(sentRawEvents(client).map(\.appName), ["App1", "App2"])
+        let bufferedAfterReconnect = await relay.bufferedEventCount
+        XCTAssertEqual(bufferedAfterReconnect, 0)
     }
 
     func testDisconnectAfterReconnectBuffersSubsequentEvents() async throws {

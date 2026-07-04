@@ -16,7 +16,10 @@
         "device_id": { "type": "string", "minLength": 1 },
         "access_token": { "type": "string", "minLength": 1 },
         "refresh_token": { "type": "string", "minLength": 1 },
-        "expires_at": { "type": "string", "format": "date-time" }
+        "expires_at": { "type": "string", "format": "date-time" },
+        "user_access_token": { "type": "string", "minLength": 1 },
+        "user_refresh_token": { "type": "string", "minLength": 1 },
+        "user_expires_at": { "type": "string", "format": "date-time" }
       }
     }
   }

@@ -85,6 +85,20 @@ The new URL is picked up by the Xcode Run Script phase which passes it to
 `cargo build --release` as `VELVT_API_BASE_URL`, embedding it in the Rust
 binary. No code changes required in either workspace.
 
+For local debugging against the default `velvt-core-api` address, use the
+packaging target instead of editing xcconfig files:
+
+```sh
+make build-app-local-core
+```
+
+It builds `dist/velvt-mac.app` with
+`VELVT_API_BASE_URL=http://localhost:8000`. Override
+`VELVT_LOCAL_API_BASE_URL` only when your local API is listening elsewhere.
+The target signs the app ad-hoc by default. Set
+`VELVT_CODESIGN_IDENTITY="<identity>"` only when you need to test with a real
+local development certificate.
+
 ### CI
 
 Set `VELVT_API_BASE_URL` and `VELVT_APNS_ENV` as CI environment variables
@@ -157,10 +171,11 @@ rm ~/Library/Application\ Support/Velvt/velvt-service.version
 
 ## `CODE_SIGNING_ALLOWED = NO` and distribution
 
-Both build configurations currently set `CODE_SIGNING_ALLOWED = NO` in
-`project.pbxproj`. This is intentional for local development — it avoids
-requiring a provisioning profile or Developer ID certificate on every
-developer's machine.
+The Xcode build itself does not require a provisioning profile or Developer ID
+certificate for local development. The packaging targets in `Makefile` sign
+`dist/velvt-mac.app` after copying it out of DerivedData. They default to
+ad-hoc signing (`VELVT_CODESIGN_IDENTITY=-`) so the bundle still has a stable
+LaunchServices/notification/Keychain identity for local testing.
 
 **Before distributing outside of direct Xcode installs**, signing must be
 enabled:

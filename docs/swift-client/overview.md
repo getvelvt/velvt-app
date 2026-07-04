@@ -57,7 +57,9 @@ The UI is menu-bar first:
 - `PermissionViews` render onboarding and recovery states.
 - Auth UI is shown as a sheet from the menu bar popover.
 
-There is no normal `WindowGroup`; the app runs with accessory activation policy.
+There is no normal `WindowGroup`; the app runs with accessory activation policy
+at runtime. The bundle does not declare `LSUIElement`, so macOS can index it as
+a normal app when it is copied into `/Applications`.
 
 ## Local State
 

@@ -5,11 +5,14 @@ persistence, abstraction, cloud requests, and IPC delivery to the macOS client.
 
 ## Authentication Privacy
 
-Access and refresh tokens are supplied by the host client over IPC and kept
-only in the service's in-memory `VolatileTokenStore`. Platform-specific secure
-storage belongs to the host client (Keychain on macOS, an equivalent credential
-store elsewhere). Tokens must never be stored in SQLite, plaintext files,
-environment variables, logs, tracing fields, or error messages.
+Device and user access/refresh tokens are supplied by the host client over IPC
+and kept only in the service's in-memory `VolatileTokenStore`. Authenticated
+cloud requests use device tokens; user tokens are retained only to refresh user
+auth and reissue device credentials when a device token pair is revoked.
+Platform-specific secure storage belongs to the host client (Keychain on macOS,
+an equivalent credential store elsewhere). Tokens must never be stored in
+SQLite, plaintext files, environment variables, logs, tracing fields, or error
+messages.
 
 All token-carrying fields use `RedactedString`. Its `Debug` and `Display`
 implementations emit only `[redacted]`. The underlying value is exposed only
@@ -76,10 +79,11 @@ wait for the active refresh and reuse its atomically replaced token pair.
 Transient transport failures preserve the existing in-memory token record and retry
 on the next request cycle. Invalid credentials transition to `NeedsReauth`.
 
-`device_token_revoked` attempts `/v1/auth/devices/reissue` once before
-transitioning to `DeviceRevoked`. `device_revoked`, `device_not_found`, failed
-reissue, or repeated revocation transitions to `DeviceRevoked`; subsequent
-authenticated upload attempts are rejected before reaching HTTP.
+`device_token_revoked` attempts `/v1/auth/devices/reissue` once with a valid
+user access token, refreshing the user token first when needed.
+`device_revoked` or `device_not_found` transitions to `DeviceRevoked`; failed
+refresh/reissue transitions to `NeedsReauth`; subsequent authenticated upload
+attempts are rejected before reaching HTTP.
 
 ## History & Insight Delivery (R6)
 

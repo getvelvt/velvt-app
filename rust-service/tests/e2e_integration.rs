@@ -569,6 +569,13 @@ async fn path4_device_token_revoked_reissues_then_recovers() {
     store
         .store_pair(token_pair(ChronoDuration::hours(1), "access", "refresh"))
         .unwrap();
+    store
+        .store_user_pair(token_pair(
+            ChronoDuration::hours(1),
+            "user-access",
+            "user-refresh",
+        ))
+        .unwrap();
     let fresh = token_pair(
         ChronoDuration::hours(2),
         "reissued-access",
@@ -606,6 +613,13 @@ async fn path4_device_token_revoked_reissues_then_recovers() {
     let store2 = Arc::new(FakeTokenStore::default());
     store2
         .store_pair(token_pair(ChronoDuration::hours(1), "access", "refresh"))
+        .unwrap();
+    store2
+        .store_user_pair(token_pair(
+            ChronoDuration::hours(1),
+            "user-access",
+            "user-refresh",
+        ))
         .unwrap();
     let http2 = Arc::new(FakeHttp::with_responses(vec![
         empty_response(403, Some("device_token_revoked")),

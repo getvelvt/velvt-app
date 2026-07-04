@@ -83,7 +83,7 @@ public final class NotificationDeliveryCoordinator {
     @discardableResult
     public func simulateDebugInsightReceipt(now: Date = Date()) -> Task<Void, Never> {
         let payload = Self.debugNotificationPayload(now: now)
-        pendingTasksByDate[payload.insightDate]?.cancel()
+        let pendingKey = payload.notificationID.uuidString
         let task = Task { @MainActor [weak self, scheduler, permissionManager, debounceInterval] in
             try? await Task.sleep(for: debounceInterval)
             guard !Task.isCancelled else { return }
@@ -93,9 +93,9 @@ public final class NotificationDeliveryCoordinator {
                 : currentStatus
             guard status == .granted, !Task.isCancelled else { return }
             await scheduler.schedule(payload)
-            self?.pendingTasksByDate.removeValue(forKey: payload.insightDate)
+            self?.pendingTasksByDate.removeValue(forKey: pendingKey)
         }
-        pendingTasksByDate[payload.insightDate] = task
+        pendingTasksByDate[pendingKey] = task
         inFlightTask = task
         return task
     }
@@ -111,7 +111,7 @@ public final class NotificationDeliveryCoordinator {
             title: "Your Velvt insight is ready",
             body: "You switched away from your document 23 times in 40 minutes.",
             insightDate: formatter.string(from: now),
-            doNotDisturbUntil: nil
+            doNotDisturbUntil: now.addingTimeInterval(1)
         )
     }
 }

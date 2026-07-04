@@ -72,13 +72,17 @@ public final class ServiceProcessLauncher {
     private func stream(pipe: Pipe, label: String) {
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else {
+            guard !data.isEmpty else {
                 return
             }
             ServiceProcessLauncherLog.shared.error(
-                "velvt-service \(label, privacy: .public): \(line, privacy: .public)"
+                "\(Self.redactedPipeDiagnostic(label: label, byteCount: data.count), privacy: .public)"
             )
         }
+    }
+
+    static func redactedPipeDiagnostic(label: String, byteCount: Int) -> String {
+        "velvt-service \(label) emitted \(byteCount) bytes; content redacted"
     }
 
     /// Sends SIGTERM and gives the helper a moment to flush before the app

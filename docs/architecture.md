@@ -104,7 +104,7 @@ Swift does not generate insight text. It renders payloads and schedules notifica
 
 ## Authentication Boundary
 
-Swift owns user-facing auth UI and persists a local session copy in Keychain. Rust owns cloud calls, device registration, token refresh, logout, deletion, and device revocation handling.
+Swift owns user-facing auth UI and persists a local session copy in Keychain. Rust owns cloud calls, device registration, token refresh, logout, deletion, and device revocation handling. Device-scoped tokens are used for normal API calls; user-scoped tokens are persisted only as recovery material for user refresh and device-token reissue after relaunch.
 
 Credentials flow from Swift to Rust only over local IPC messages such as `sign_up` and `log_in`. Rust relays credentials to cloud auth endpoints and returns `auth_success` or `auth_failure`. Tokens are redacted in Rust logging and are not stored in SQLite.
 

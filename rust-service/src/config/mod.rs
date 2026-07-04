@@ -328,6 +328,18 @@ mod tests {
     }
 
     #[test]
+    fn service_config_uses_expected_compiled_api_base_url_when_requested() {
+        let Ok(expected_url) = std::env::var("VELVT_EXPECT_COMPILED_API_BASE_URL") else {
+            return;
+        };
+
+        std::env::remove_var("VELVT_API_BASE_URL");
+        let config = ServiceConfig::load().unwrap();
+
+        assert_eq!(config.upload_api_base_url, expected_url);
+    }
+
+    #[test]
     fn service_config_uses_runtime_api_base_url_override() {
         std::env::set_var("VELVT_API_BASE_URL", "http://localhost:8000");
         let config = ServiceConfig::load().unwrap();

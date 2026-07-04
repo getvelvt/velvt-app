@@ -85,6 +85,7 @@ final class UNNotificationSchedulerTests: XCTestCase {
         XCTAssertEqual(content?.title, "Daily insight")
         XCTAssertEqual(content?.body, "Your focus held steady today.")
         XCTAssertEqual(content?.userInfo["insight_date"] as? String, "2026-06-15")
+        XCTAssertNotNil(content?.sound)
     }
 
     func testCancelAllDelegatesToCenter() {

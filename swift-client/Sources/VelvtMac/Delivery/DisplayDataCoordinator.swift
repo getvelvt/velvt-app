@@ -48,6 +48,7 @@ final class MenuBarDataLoader {
     private let today: () -> String
     private var cancellable: AnyCancellable?
     private var requestedForConnection = false
+    private var requestInFlight = false
 
     init(ipcClient: any IPCClientProtocol, today: @escaping () -> String = {
         ISO8601DateFormatter().string(from: Date()).prefix(10).description
@@ -65,11 +66,22 @@ final class MenuBarDataLoader {
                     if connection != .connected { self.requestedForConnection = false }
                     return
                 }
-                guard !self.requestedForConnection else { return }
-                self.requestedForConnection = true
-                Task { [ipcClient, today] in
-                    try? await ipcClient.send(.requestLatestInsight(.init(date: today())))
-                    try? await ipcClient.send(.requestLatestHistory(.init(days: 7)))
+                guard !self.requestedForConnection, !self.requestInFlight else { return }
+                self.requestInFlight = true
+                Task { [weak self, ipcClient, today] in
+                    do {
+                        try await ipcClient.send(.requestLatestInsight(.init(date: today())))
+                        try await ipcClient.send(.requestLatestHistory(.init(days: 7)))
+                        await MainActor.run {
+                            self?.requestedForConnection = true
+                            self?.requestInFlight = false
+                        }
+                    } catch {
+                        await MainActor.run {
+                            self?.requestedForConnection = false
+                            self?.requestInFlight = false
+                        }
+                    }
                 }
             }
     }

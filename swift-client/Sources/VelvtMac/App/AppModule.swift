@@ -92,14 +92,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusViewModel = MenuStatusViewModel(ipcClient: client, messages: accountStateManager.serverMessages)
         statusViewModel.start()
         menuStatusViewModel = statusViewModel
+        let serviceAlertModel = ServiceAlertModel(messages: accountStateManager.serverMessages)
 
         let relay = EventRelay(ipcClient: client, metrics: metricsStore)
         let currentActivity = CurrentActivityModel()
+        let collectionSettings = CollectionSettingsModel()
         let eventSinkFanout = EventSinkFanout([relay, currentActivity])
         let collectionAgent = AXCollectionAgent(eventSink: eventSinkFanout)
         let coordinator = PermissionCollectionCoordinator(
             permissionManager: permissionManager,
-            collectionAgent: collectionAgent
+            collectionAgent: collectionAgent,
+            connectionStatus: client.connectionStatus,
+            collectionSettings: collectionSettings
         )
         self.eventRelay = relay
         self.eventSinkFanout = eventSinkFanout
@@ -123,6 +127,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             menuStatusViewModel: statusViewModel,
             metricsStore: metricsStore,
             currentActivity: currentActivity,
+            serviceAlertModel: serviceAlertModel,
+            collectionSettings: collectionSettings,
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
             simulateNotification: {

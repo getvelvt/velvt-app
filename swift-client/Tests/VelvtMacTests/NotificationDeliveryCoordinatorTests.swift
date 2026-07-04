@@ -88,6 +88,12 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(scheduler.scheduledPayloads.count, 1)
         XCTAssertEqual(scheduler.scheduledPayloads.first?.title, "Your Velvt insight is ready")
         XCTAssertEqual(scheduler.scheduledPayloads.first?.insightDate, "2026-06-15")
+        let scheduledAt = try! XCTUnwrap(scheduler.scheduledPayloads.first?.doNotDisturbUntil)
+        XCTAssertEqual(
+            scheduledAt.timeIntervalSince(now),
+            1,
+            accuracy: 0.01
+        )
     }
 
     func testDebugSimulationRequestsNotificationPermissionWhenUnknown() async {
@@ -101,6 +107,32 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(permissions.requestedPermissions, [.notifications])
         XCTAssertEqual(scheduler.scheduledPayloads.count, 1)
         XCTAssertEqual(scheduler.scheduledPayloads.first?.insightDate, "2026-06-15")
+        let scheduledAt = try! XCTUnwrap(scheduler.scheduledPayloads.first?.doNotDisturbUntil)
+        XCTAssertEqual(
+            scheduledAt.timeIntervalSince(now),
+            1,
+            accuracy: 0.01
+        )
+    }
+
+    func testRepeatedDebugSimulationsScheduleSeparateNativeNotifications() async {
+        let scheduler = FakeNotificationScheduler()
+        let permissions = FakePermissionManager()
+        permissions.setStatus(.granted, for: .notifications)
+        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(20))
+
+        let now = ISO8601DateFormatter().date(from: "2026-06-15T12:00:00Z")!
+        let first = sut.simulateDebugInsightReceipt(now: now)
+        let second = sut.simulateDebugInsightReceipt(now: now.addingTimeInterval(1))
+        await first.value
+        await second.value
+
+        XCTAssertEqual(scheduler.scheduledPayloads.count, 2)
+        guard scheduler.scheduledPayloads.count == 2 else { return }
+        XCTAssertNotEqual(
+            scheduler.scheduledPayloads[0].notificationID,
+            scheduler.scheduledPayloads[1].notificationID
+        )
     }
 
     func testHandleDiscardsSilentlyWhenDenied() async {

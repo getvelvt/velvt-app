@@ -80,7 +80,7 @@ async fn main() {
         use std::sync::Arc;
         use velvt_service::auth::{
             AccountAuthService, AuthManager, AuthState, AuthStateMachine, HttpClient,
-            ReqwestHttpClient, TokenStore, VolatileTokenStore,
+            ReqwestHttpClient, SessionValidator, TokenStore, VolatileTokenStore,
         };
         use velvt_service::delivery::{
             CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable, PollClient,
@@ -381,9 +381,10 @@ async fn main() {
                 Arc::clone(&shared_batcher),
                 account_service,
             )
+            .with_session_validator(Arc::clone(&authenticated_http) as Arc<dyn SessionValidator>)
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,
-                device_id.clone(),
+                Arc::clone(&token_store) as Arc<dyn TokenStore>,
                 Arc::clone(&upload_batch_repo),
                 Arc::clone(&raw_event_repo),
             ))),

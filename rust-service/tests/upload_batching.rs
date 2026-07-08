@@ -11,7 +11,7 @@ use velvt_service::abstraction::{AbstractionEngine, InMemoryMappingStore};
 use velvt_service::auth::{AuthError, HttpClient, HttpRequest, HttpResponse};
 use velvt_service::persistence::{
     BatchEvent, NewUploadBatch, PersistenceError, SqlitePersistence, UploadBatch, UploadBatchRepo,
-    UploadBatchStatus,
+    UploadBatchStatus, UploadQueueDiagnostics,
 };
 use velvt_service::upload::{
     BatchAssembler, BatchEventPayload, BatchPayload, BatchRetentionPolicy, BatchUploader,
@@ -132,6 +132,10 @@ impl UploadBatchRepo for FailFirstInsertRepo {
 
     fn resumable_batches(&self, now: DateTime<Utc>) -> Result<Vec<UploadBatch>, PersistenceError> {
         self.inner.resumable_batches(now)
+    }
+
+    fn queue_diagnostics(&self) -> Result<UploadQueueDiagnostics, PersistenceError> {
+        self.inner.queue_diagnostics()
     }
 
     fn mark_failed(

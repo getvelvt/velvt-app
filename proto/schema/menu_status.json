@@ -1,1 +1,67 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["type","payload"],"properties":{"type":{"const":"menu_status"},"payload":{"type":"object","required":["device_id","cloud_ready","queued_event_count","queued_events"],"properties":{"device_id":{"type":["string","null"]},"cloud_ready":{"type":"boolean"},"queued_event_count":{"type":"integer","minimum":0},"queued_events":{"type":"array","maxItems":10,"items":{"type":"object","required":["label","category","occurred_at"],"properties":{"label":{"type":"string"},"local_label":{"type":"string","description":"Local-only display label; must never be forwarded outside the device."},"category":{"type":"string"},"occurred_at":{"type":"string","format":"date-time"}},"additionalProperties":false}}},"additionalProperties":false}},"additionalProperties":false}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "menu_status" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "device_id",
+        "cloud_ready",
+        "upload_status",
+        "last_upload_error_code",
+        "next_upload_attempt_at",
+        "pending_upload_batch_count",
+        "failed_upload_batch_count",
+        "rejected_upload_batch_count",
+        "queued_event_count",
+        "queued_events"
+      ],
+      "properties": {
+        "device_id": { "type": ["string", "null"] },
+        "cloud_ready": { "type": "boolean" },
+        "upload_status": {
+          "enum": [
+            "ready",
+            "pending",
+            "retrying",
+            "auth_required",
+            "network_unavailable",
+            "rate_limited",
+            "privacy_rejected"
+          ]
+        },
+        "last_upload_error_code": { "type": ["string", "null"] },
+        "next_upload_attempt_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "pending_upload_batch_count": { "type": "integer", "minimum": 0 },
+        "failed_upload_batch_count": { "type": "integer", "minimum": 0 },
+        "rejected_upload_batch_count": { "type": "integer", "minimum": 0 },
+        "queued_event_count": { "type": "integer", "minimum": 0 },
+        "queued_events": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "required": ["label", "category", "occurred_at"],
+            "properties": {
+              "label": { "type": "string" },
+              "local_label": {
+                "type": "string",
+                "description": "Local-only display label; must never be forwarded outside the device."
+              },
+              "category": { "type": "string" },
+              "occurred_at": { "type": "string", "format": "date-time" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

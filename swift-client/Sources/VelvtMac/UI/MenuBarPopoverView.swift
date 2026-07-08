@@ -298,6 +298,7 @@ public struct MenuBarPopoverView: View {
                     : PopoverConnectionPresentation(status: .disconnected),
                 refresh: { menuStatusViewModel?.refresh() }
             )
+            infoRow("Uploads", uploadStatusDescription)
             infoRow("Events collected", "\(currentActivity.collectedEventCount)")
             }
             .onAppear { menuStatusViewModel?.refresh() }
@@ -355,6 +356,43 @@ public struct MenuBarPopoverView: View {
             return "Authenticated · \(email)"
         }
         return "Not signed in"
+    }
+
+    private var uploadStatusDescription: String {
+        guard let status = menuStatusViewModel?.status else { return "Unknown" }
+        switch status.uploadStatus {
+        case "ready":
+            return "Ready"
+        case "pending":
+            return withNextUploadAttempt("\(status.pendingUploadBatchCount) pending", status)
+        case "retrying":
+            return retryDescription(status)
+        case "auth_required":
+            return withNextUploadAttempt("Sign in required", status)
+        case "network_unavailable":
+            return withNextUploadAttempt("Network unavailable", status)
+        case "rate_limited":
+            return retryDescription(status)
+        case "privacy_rejected":
+            return withNextUploadAttempt("Privacy check failed", status)
+        default:
+            return withNextUploadAttempt(status.lastUploadErrorCode ?? status.uploadStatus, status)
+        }
+    }
+
+    private func retryDescription(_ status: MenuStatus) -> String {
+        let prefix: String
+        if let error = status.lastUploadErrorCode, !error.isEmpty {
+            prefix = "\(status.failedUploadBatchCount) retrying · \(error)"
+        } else {
+            prefix = "\(status.failedUploadBatchCount) retrying"
+        }
+        return withNextUploadAttempt(prefix, status)
+    }
+
+    private func withNextUploadAttempt(_ description: String, _ status: MenuStatus) -> String {
+        guard let retryAt = status.nextUploadAttemptAt else { return description }
+        return "\(description) · next retry \(retryAt.formatted(date: .omitted, time: .shortened))"
     }
 
     private func settingsRow(_ title: String, action: @escaping () -> Void) -> some View {

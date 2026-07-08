@@ -28,6 +28,14 @@ public final class InsightViewModel: ObservableObject {
         isLoading = false
     }
 
+    public func reset() {
+        text = ""
+        date = ""
+        confidenceLabel = ""
+        generatedAt = ""
+        isLoading = true
+    }
+
     // MARK: - Formatting (internal for testability)
 
     static func formatDate(_ dateString: String) -> String {

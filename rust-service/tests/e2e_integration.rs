@@ -22,6 +22,7 @@ use std::sync::{
 use std::time::Duration as StdDuration;
 use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use serde_json::json;
 use velvt_service::abstraction::AbstractionEngine;
 use velvt_service::auth::{
     AccountAuthService, AuthError, AuthManager, AuthState, AuthStateMachine, FakeTokenStore,
@@ -29,17 +30,17 @@ use velvt_service::auth::{
 };
 use velvt_service::delivery::{FakeCacheManager, PushAdapter, PushQueue};
 use velvt_service::ipc::{
-    serve_connection_with_push_queue, serve_connection_with_push_queue_and_shutdown, MessageRouter,
-    R7Router,
+    serve_connection_with_push_queue, serve_connection_with_push_queue_and_shutdown,
+    MenuStatusProvider, MessageRouter, R7Router,
 };
-use velvt_service::persistence::{PersistenceError, SqlitePersistence};
+use velvt_service::persistence::{BatchEvent, NewUploadBatch, PersistenceError, SqlitePersistence};
 use velvt_service::upload::{
     BatchAssembler, CoordinatorError, EventIngestor, FakeBatchUploader, FakePrivacyAlertSink,
     IpcPrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator, UploadOutcome,
 };
 use velvt_shared_types::{
     Acknowledged, ClientHello, ClientMessage, FlushUploadQueue, PrivacyViolationAlert, RawEvent,
-    RawEventAck, RawEventStatus, ServerMessage, ShuttingDown, PROTOCOL_VERSION,
+    RawEventAck, RawEventStatus, RequestMenuStatus, ServerMessage, ShuttingDown, PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -248,6 +249,13 @@ fn empty_response(status: u16, code: Option<&str>) -> HttpResponse {
     }
 }
 
+fn ready_response() -> HttpResponse {
+    HttpResponse {
+        raw_body: Some(json!({ "status": "ready" })),
+        ..empty_response(200, None)
+    }
+}
+
 fn token_pair(expires_in: ChronoDuration, access: &str, refresh: &str) -> TokenPair {
     TokenPair::new(
         RedactedString::new(access),
@@ -295,6 +303,68 @@ async fn flush_upload_queue_returns_a_safe_error_when_uploading_fails() {
 
     assert!(matches!(response, Some(ServerMessage::ErrorResponse(error))
         if error.code == "upload_flush_failed"));
+}
+
+#[tokio::test]
+async fn request_menu_status_reports_upload_auth_and_retry_state() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let repo = persistence.upload_batch_repo();
+    let batch = NewUploadBatch {
+        batch_id: "auth-paused-batch".into(),
+    };
+    let occurred_at = Utc.timestamp_opt(1_800, 0).unwrap();
+    repo.insert_batch_with_events(
+        &batch,
+        &[BatchEvent {
+            event_id: "queued-event".into(),
+            stable_id: "stable-event".into(),
+            label: "document:code".into(),
+            category: "FOCUS_WORK".into(),
+            taxonomy_version: "mvp-1".into(),
+            occurred_at,
+            duration_seconds: 60,
+        }],
+    )
+    .unwrap();
+    let next_attempt_at = Utc::now() + ChronoDuration::minutes(15);
+    repo.mark_failed(
+        "auth-paused-batch",
+        next_attempt_at,
+        "authentication_required",
+    )
+    .unwrap();
+    let raw_http = Arc::new(FakeHttp::with_responses(vec![ready_response()]));
+    let router = build_router(
+        Arc::new(FakeCacheManager::new()),
+        &persistence,
+        Arc::new(RecordingIngestor::default()) as Arc<dyn EventIngestor>,
+        Arc::clone(&raw_http) as Arc<dyn HttpClient>,
+        Arc::new(FakeHttp::default()),
+    )
+    .with_menu_status(Arc::new(MenuStatusProvider::new(
+        raw_http as Arc<dyn HttpClient>,
+        Some("device-1".into()),
+        persistence.upload_batch_repo(),
+        persistence.raw_event_repo(),
+    )));
+
+    let response = router
+        .route(ClientMessage::RequestMenuStatus(RequestMenuStatus {}))
+        .await
+        .unwrap();
+
+    let Some(ServerMessage::MenuStatus(status)) = response else {
+        panic!("expected menu_status");
+    };
+    assert!(status.cloud_ready);
+    assert_eq!(status.upload_status, "auth_required");
+    assert_eq!(
+        status.last_upload_error_code.as_deref(),
+        Some("authentication_required")
+    );
+    assert_eq!(status.failed_upload_batch_count, 1);
+    assert_eq!(status.queued_event_count, 1);
+    assert!(status.next_upload_attempt_at.is_some());
 }
 
 // ---------------------------------------------------------------------------

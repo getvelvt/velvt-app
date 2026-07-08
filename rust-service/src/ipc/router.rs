@@ -14,7 +14,7 @@ use velvt_shared_types::{
 use crate::abstraction::AbstractionEngine;
 use crate::auth::{AccountAuthService, HttpClient, HttpRequest};
 use crate::delivery::{shaper, CacheManager};
-use crate::persistence::{RawEventEntry, RawEventRepo, UploadBatchRepo};
+use crate::persistence::{RawEventEntry, RawEventRepo, UploadBatchRepo, UploadQueueDiagnostics};
 use crate::upload::EventIngestor;
 
 use super::IpcError;
@@ -120,9 +120,30 @@ impl MenuStatusProviding for MenuStatusProvider {
                 }))
                 .take(10)
                 .collect();
+            let diagnostics = self.batches.queue_diagnostics().unwrap_or_else(|error| {
+                tracing::warn!(
+                    error_code = "upload_queue_diagnostics_failed",
+                    error = %error,
+                    "failed to read upload queue diagnostics"
+                );
+                UploadQueueDiagnostics {
+                    pending_batch_count: 0,
+                    failed_batch_count: 0,
+                    rejected_batch_count: 0,
+                    next_attempt_at: None,
+                    last_error_code: None,
+                }
+            });
+            let upload_status = upload_status_for(cloud_ready, &diagnostics).to_owned();
             MenuStatus {
                 device_id: self.device_id.clone(),
                 cloud_ready,
+                upload_status,
+                last_upload_error_code: diagnostics.last_error_code,
+                next_upload_attempt_at: diagnostics.next_attempt_at,
+                pending_upload_batch_count: diagnostics.pending_batch_count,
+                failed_upload_batch_count: diagnostics.failed_batch_count,
+                rejected_upload_batch_count: diagnostics.rejected_batch_count,
                 queued_event_count,
                 queued_events,
             }
@@ -137,10 +158,29 @@ impl MenuStatusProviding for EmptyMenuStatusProvider {
             MenuStatus {
                 device_id: None,
                 cloud_ready: false,
+                upload_status: "network_unavailable".into(),
+                last_upload_error_code: None,
+                next_upload_attempt_at: None,
+                pending_upload_batch_count: 0,
+                failed_upload_batch_count: 0,
+                rejected_upload_batch_count: 0,
                 queued_event_count: 0,
                 queued_events: vec![],
             }
         })
+    }
+}
+
+fn upload_status_for(cloud_ready: bool, diagnostics: &UploadQueueDiagnostics) -> &'static str {
+    match diagnostics.last_error_code.as_deref() {
+        Some("authentication_required") => "auth_required",
+        Some("raw_field_rejected") => "privacy_rejected",
+        Some("rate_limited") => "rate_limited",
+        _ if !cloud_ready => "network_unavailable",
+        _ if diagnostics.failed_batch_count > 0 => "retrying",
+        _ if diagnostics.pending_batch_count > 0 => "pending",
+        _ if diagnostics.rejected_batch_count > 0 => "privacy_rejected",
+        _ => "ready",
     }
 }
 

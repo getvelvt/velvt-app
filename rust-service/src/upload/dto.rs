@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Serializer};
 
+pub const API_ABSTRACTION_TYPE_VERSION: &str = "1";
+
 /// Auditable outbound event DTO. It deliberately has no raw-content fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchEventPayload {
@@ -22,7 +24,6 @@ impl Serialize for BatchEventPayload {
         struct ApiEventPayload<'a> {
             duration_seconds: u64,
             category: &'a str,
-            label: &'a str,
         }
 
         #[derive(Serialize)]
@@ -38,11 +39,10 @@ impl Serialize for BatchEventPayload {
             event_id: &self.event_id,
             occurred_at: self.occurred_at,
             abstraction_type: &self.label,
-            abstraction_type_version: &self.taxonomy_version,
+            abstraction_type_version: API_ABSTRACTION_TYPE_VERSION,
             payload: ApiEventPayload {
                 duration_seconds: self.duration_seconds,
                 category: &self.category,
-                label: &self.label,
             },
         }
         .serialize(serializer)
@@ -124,11 +124,10 @@ mod tests {
                 "event_id": "event-1",
                 "occurred_at": "2027-01-15T08:00:00Z",
                 "abstraction_type": "video:youtube",
-                "abstraction_type_version": "mvp-1",
+                "abstraction_type_version": "1",
                 "payload": {
                     "duration_seconds": 120,
-                    "category": "PASSIVE_CONSUMPTION",
-                    "label": "video:youtube"
+                    "category": "PASSIVE_CONSUMPTION"
                 }
             })
         );

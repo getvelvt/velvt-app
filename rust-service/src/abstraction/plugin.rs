@@ -204,6 +204,8 @@ fn is_browser_app(app_name: &str) -> bool {
         "edge",
         "opera",
         "vivaldi",
+        "orion",
+        "dia",
     ]
     .iter()
     .any(|browser| app_name == *browser || app_name.contains(browser))
@@ -278,6 +280,36 @@ const BROWSER_CONTEXT_RULES: &[PurposeRule] = &[
         keywords: &["stackoverflow com", "stack overflow"],
         label: "reference:stack_overflow",
         category: "REFERENCE",
+    },
+    PurposeRule {
+        keywords: &[
+            "developer apple com",
+            "docs rs",
+            "rust docs",
+            "python docs",
+            "developer mozilla org",
+            "react docs",
+            "nextjs docs",
+            "tailwind docs",
+            "api reference",
+        ],
+        label: "reference:read",
+        category: "REFERENCE",
+    },
+    PurposeRule {
+        keywords: &["linear app", "linear issue", "linear"],
+        label: "task:manage",
+        category: "TASK_MANAGEMENT",
+    },
+    PurposeRule {
+        keywords: &["atlassian net", "jira"],
+        label: "task:manage",
+        category: "TASK_MANAGEMENT",
+    },
+    PurposeRule {
+        keywords: &["notion so", "notion"],
+        label: "document:write",
+        category: "FOCUS_WORK",
     },
     PurposeRule {
         keywords: &[
@@ -397,18 +429,30 @@ const PURPOSE_RULES: &[PurposeRule] = &[
     PurposeRule {
         keywords: &[
             "vscode",
+            "visual studio code",
+            "code oss",
+            "vscodium",
             "visual studio",
             "xcode",
             "cursor",
+            "windsurf",
+            "trae",
             "zed",
+            "nova",
             "sublime",
             "intellij",
+            "idea",
             "pycharm",
             "webstorm",
             "clion",
             "android studio",
             "terminal",
             "iterm",
+            "warp",
+            "ghostty",
+            "alacritty",
+            "wezterm",
+            "kitty",
             "github desktop",
             "gitkraken",
             "fork",

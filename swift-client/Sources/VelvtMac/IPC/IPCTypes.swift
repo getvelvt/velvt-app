@@ -709,14 +709,64 @@ public struct QueuedEventSummary: Codable, Equatable, Sendable, Identifiable {
 public struct MenuStatus: Codable, Equatable, Sendable {
     public let deviceID: String?
     public let cloudReady: Bool
+    public let uploadStatus: String
+    public let lastUploadErrorCode: String?
+    public let nextUploadAttemptAt: Date?
+    public let pendingUploadBatchCount: Int
+    public let failedUploadBatchCount: Int
+    public let rejectedUploadBatchCount: Int
     public let queuedEventCount: Int
     public let queuedEvents: [QueuedEventSummary]
 
     private enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
         case cloudReady = "cloud_ready"
+        case uploadStatus = "upload_status"
+        case lastUploadErrorCode = "last_upload_error_code"
+        case nextUploadAttemptAt = "next_upload_attempt_at"
+        case pendingUploadBatchCount = "pending_upload_batch_count"
+        case failedUploadBatchCount = "failed_upload_batch_count"
+        case rejectedUploadBatchCount = "rejected_upload_batch_count"
         case queuedEventCount = "queued_event_count"
         case queuedEvents = "queued_events"
+    }
+
+    public init(
+        deviceID: String?,
+        cloudReady: Bool,
+        uploadStatus: String,
+        lastUploadErrorCode: String?,
+        nextUploadAttemptAt: Date?,
+        pendingUploadBatchCount: Int,
+        failedUploadBatchCount: Int,
+        rejectedUploadBatchCount: Int,
+        queuedEventCount: Int,
+        queuedEvents: [QueuedEventSummary]
+    ) {
+        self.deviceID = deviceID
+        self.cloudReady = cloudReady
+        self.uploadStatus = uploadStatus
+        self.lastUploadErrorCode = lastUploadErrorCode
+        self.nextUploadAttemptAt = nextUploadAttemptAt
+        self.pendingUploadBatchCount = pendingUploadBatchCount
+        self.failedUploadBatchCount = failedUploadBatchCount
+        self.rejectedUploadBatchCount = rejectedUploadBatchCount
+        self.queuedEventCount = queuedEventCount
+        self.queuedEvents = queuedEvents
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
+        cloudReady = try container.decode(Bool.self, forKey: .cloudReady)
+        uploadStatus = try container.decodeIfPresent(String.self, forKey: .uploadStatus) ?? (cloudReady ? "ready" : "network_unavailable")
+        lastUploadErrorCode = try container.decodeIfPresent(String.self, forKey: .lastUploadErrorCode)
+        nextUploadAttemptAt = try container.decodeIfPresent(Date.self, forKey: .nextUploadAttemptAt)
+        pendingUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .pendingUploadBatchCount) ?? 0
+        failedUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .failedUploadBatchCount) ?? 0
+        rejectedUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .rejectedUploadBatchCount) ?? 0
+        queuedEventCount = try container.decode(Int.self, forKey: .queuedEventCount)
+        queuedEvents = try container.decode([QueuedEventSummary].self, forKey: .queuedEvents)
     }
 }
 

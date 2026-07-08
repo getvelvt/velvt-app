@@ -271,6 +271,64 @@ fn developer_terminal_sessions_are_focus_work_not_system_noise() {
     assert_eq!(result.classification_tier(), ClassificationTier::ExactMatch);
 }
 
+#[test]
+fn common_developer_apps_are_not_unlogged() {
+    let cases = [
+        ("Windsurf", "private title"),
+        ("Warp", "cargo test"),
+        ("Ghostty", "npm run dev"),
+        ("Docker Desktop", "containers"),
+        ("Postman", "request builder"),
+    ];
+
+    for (app_name, window_title) in cases {
+        let result = engine().process(raw_event(app_name, window_title)).unwrap();
+
+        assert_eq!(result.label(), "document:code", "{app_name}");
+        assert_eq!(result.category(), "FOCUS_WORK", "{app_name}");
+        assert_ne!(
+            result.classification_tier(),
+            ClassificationTier::Fallback,
+            "{app_name}"
+        );
+    }
+}
+
+#[test]
+fn browser_work_contexts_route_to_specific_safe_labels() {
+    let cases = [
+        (
+            "Orion",
+            "developer.apple.com/documentation/private",
+            "reference:read",
+            "REFERENCE",
+        ),
+        (
+            "Google Chrome",
+            "linear.app/acme/issue/private",
+            "task:manage",
+            "TASK_MANAGEMENT",
+        ),
+        (
+            "Safari",
+            "notion.so/private-page",
+            "document:write",
+            "FOCUS_WORK",
+        ),
+    ];
+
+    for (app_name, window_title, expected_label, expected_category) in cases {
+        let result = engine().process(raw_event(app_name, window_title)).unwrap();
+
+        assert_eq!(result.label(), expected_label);
+        assert_eq!(result.category(), expected_category);
+        assert_eq!(
+            result.classification_tier(),
+            ClassificationTier::LocalPurposeHeuristic
+        );
+    }
+}
+
 struct TestPlugin;
 
 impl ClassificationPlugin for TestPlugin {

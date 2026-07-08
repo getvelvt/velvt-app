@@ -66,6 +66,15 @@ pub struct UploadBatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadQueueDiagnostics {
+    pub pending_batch_count: u64,
+    pub failed_batch_count: u64,
+    pub rejected_batch_count: u64,
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    pub last_error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryCacheEntry {
     pub date: String,
     pub payload: String,

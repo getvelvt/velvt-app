@@ -141,6 +141,34 @@ fn upload_batch_repo_contract() {
 }
 
 #[test]
+fn sent_upload_batches_do_not_report_stale_retry_errors() {
+    let database = database();
+    let repository = database.upload_batch_repo();
+    let batch = NewUploadBatch {
+        batch_id: "batch-with-recovered-error".into(),
+    };
+
+    repository.insert_batch(&batch).unwrap();
+    repository
+        .mark_failed(&batch.batch_id, timestamp(2_000), "authentication_required")
+        .unwrap();
+    assert_eq!(
+        repository
+            .queue_diagnostics()
+            .unwrap()
+            .last_error_code
+            .as_deref(),
+        Some("authentication_required")
+    );
+
+    repository.mark_sent(&batch.batch_id).unwrap();
+
+    let diagnostics = repository.queue_diagnostics().unwrap();
+    assert_eq!(diagnostics.failed_batch_count, 0);
+    assert_eq!(diagnostics.last_error_code, None);
+}
+
+#[test]
 fn history_cache_repo_contract() {
     let database = database();
     let repository = database.history_cache_repo();

@@ -488,6 +488,42 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         XCTAssertTrue(sut.historyViewModel === historyBefore)
     }
 
+    func testLoggedOutAccountStateClearsVisibleDisplayData() async {
+        let client = FakeIPCClient()
+        let account = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "user-1"))
+        let sut = ConcreteDisplayDataCoordinator()
+        sut.start(
+            serverMessages: Empty<ServerMessage, Never>().eraseToAnyPublisher(),
+            connectionStatus: client.connectionStatus,
+            accountState: account.eraseToAnyPublisher()
+        )
+        sut.updateInsight(makeInsightPayload(text: "Private insight."))
+        sut.updateHistory(makeHistoryPayload(dayCount: 2))
+
+        account.send(.loggedOut)
+
+        let reset = expectation(description: "display data reset")
+        Task {
+            for _ in 0 ..< 100 {
+                if sut.insightViewModel.isLoading,
+                   sut.historyViewModel.isLoading,
+                   sut.insightViewModel.text.isEmpty,
+                   sut.historyViewModel.days.isEmpty {
+                    reset.fulfill()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        await fulfillment(of: [reset], timeout: 2)
+
+        XCTAssertEqual(sut.insightAvailability, .loading)
+        XCTAssertEqual(sut.historyAvailability, .loading)
+        if case .loading = sut.state {} else {
+            XCTFail("Expected display state to reset to .loading; got \(describeState(sut.state))")
+        }
+    }
+
     // MARK: - Helpers
 
     private func makeWiredCoordinator() -> (

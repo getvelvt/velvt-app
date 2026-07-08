@@ -82,7 +82,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let displayCoord = ConcreteDisplayDataCoordinator()
         displayCoord.start(
             serverMessages: accountStateManager.serverMessages,
-            connectionStatus: client.connectionStatus
+            connectionStatus: client.connectionStatus,
+            accountState: accountStateManager.$accountState.eraseToAnyPublisher()
         )
         displayCoordinator = displayCoord
 

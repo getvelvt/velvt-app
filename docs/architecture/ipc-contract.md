@@ -247,12 +247,25 @@ Direction: Rust to Swift. Purpose: report service status for the menu popover.
 
 - `device_id`: optional device identifier
 - `cloud_ready`: whether the Rust service's cloud readiness probe succeeded
+- `upload_status`: privacy-safe upload state. Values are `ready`, `pending`,
+  `retrying`, `auth_required`, `network_unavailable`, `rate_limited`, and
+  `privacy_rejected`.
+- `last_upload_error_code`: optional safe error code from an active pending,
+  failed, or rejected upload batch. Sent batches must not keep stale retry or
+  authentication errors visible.
+- `next_upload_attempt_at`: optional timestamp for the next pending/failed
+  retry attempt when upload backoff is active
+- `pending_upload_batch_count`: count of pending upload batches
+- `failed_upload_batch_count`: count of failed upload batches awaiting retry
+- `rejected_upload_batch_count`: count of terminal privacy-rejected batches
 - `queued_event_count`: aggregate count of queued events
 - `queued_events`: newest privacy-safe queue summaries, each containing
   `label`, `category`, optional local-only `local_label`, and `occurred_at`
 
-`local_label` is display-only and must never be copied into upload DTOs or
-logs.
+Upload diagnostics are derived from durable batch metadata only. They must not
+include raw event content, upload payloads, URLs, file paths, app names, window
+titles, or account secrets. `local_label` is display-only and must never be
+copied into upload DTOs or logs.
 
 ## 4. Version Negotiation
 
@@ -278,7 +291,8 @@ Backward-compatible documentation clarifications do not require a bump.
 Changes that remove, rename, reinterpret, or newly require fields require a
 version bump. New message types also require a version bump. Because schemas
 are closed, additive optional fields still require coordinated schema and DTO
-updates in both workspaces.
+updates in both workspaces. The v12 upload diagnostics addition bumps the
+protocol because it adds required `menu_status` fields.
 
 ## 5. Privacy Boundary
 

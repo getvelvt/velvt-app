@@ -1,6 +1,6 @@
 use super::{
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, NewUploadBatch,
-    PersistenceError, RawEventEntry, UploadBatch,
+    PersistenceError, RawEventEntry, UploadBatch, UploadQueueDiagnostics,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -21,6 +21,7 @@ pub trait UploadBatchRepo: Send + Sync {
     fn mark_sent(&self, batch_id: &str) -> Result<(), PersistenceError>;
     fn pending_batches(&self) -> Result<Vec<UploadBatch>, PersistenceError>;
     fn resumable_batches(&self, now: DateTime<Utc>) -> Result<Vec<UploadBatch>, PersistenceError>;
+    fn queue_diagnostics(&self) -> Result<UploadQueueDiagnostics, PersistenceError>;
     fn mark_failed(
         &self,
         batch_id: &str,

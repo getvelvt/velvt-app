@@ -104,6 +104,12 @@ public final class HistoryViewModel: ObservableObject {
         isLoading = false
     }
 
+    public func reset() {
+        days = []
+        isLoading = true
+        scrollTarget = nil
+    }
+
     public func scrollToDate(_ date: String) {
         scrollTarget = date
     }

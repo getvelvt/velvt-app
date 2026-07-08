@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -349,6 +349,12 @@ pub struct QueuedEventSummary {
 pub struct MenuStatus {
     pub device_id: Option<String>,
     pub cloud_ready: bool,
+    pub upload_status: String,
+    pub last_upload_error_code: Option<String>,
+    pub next_upload_attempt_at: Option<DateTime<Utc>>,
+    pub pending_upload_batch_count: u64,
+    pub failed_upload_batch_count: u64,
+    pub rejected_upload_batch_count: u64,
     pub queued_event_count: u64,
     pub queued_events: Vec<QueuedEventSummary>,
 }

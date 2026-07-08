@@ -1,5 +1,14 @@
 # IPC Protocol Changelog
 
+## Version 12 - 2026-07-08
+
+- Added required upload diagnostics to `menu_status`: `upload_status`,
+  `last_upload_error_code`, `next_upload_attempt_at`,
+  `pending_upload_batch_count`, `failed_upload_batch_count`, and
+  `rejected_upload_batch_count`.
+- This is a coordinated protocol bump because `menu_status` uses a closed
+  schema and the new diagnostics fields are required by Rust and Swift DTOs.
+
 ## Version 11 - 2026-06-25
 
 - Added `auth_session` client message: the host client supplies a locally

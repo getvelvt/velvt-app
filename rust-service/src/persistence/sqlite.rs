@@ -1,7 +1,7 @@
 use super::{
     AbstractionMapRepo, AbstractionMapping, BatchEvent, HistoryCacheEntry, HistoryCacheRepo,
     InsightCacheEntry, InsightCacheRepo, NewUploadBatch, RawEventEntry, RawEventRepo, UploadBatch,
-    UploadBatchRepo, UploadBatchStatus,
+    UploadBatchRepo, UploadBatchStatus, UploadQueueDiagnostics,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -432,7 +432,9 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
     fn mark_sent(&self, batch_id: &str) -> Result<(), PersistenceError> {
         let connection = self.0.connection()?;
         let updated = connection.execute(
-            "UPDATE upload_batch SET status = 'sent', sent_at = unixepoch() WHERE batch_id = ?1",
+            "UPDATE upload_batch
+             SET status = 'sent', sent_at = unixepoch(), last_error_code = NULL
+             WHERE batch_id = ?1",
             [batch_id],
         )?;
         if updated == 0 {
@@ -484,6 +486,52 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
             });
         }
         Ok(batches)
+    }
+
+    fn queue_diagnostics(&self) -> Result<UploadQueueDiagnostics, PersistenceError> {
+        let connection = self.0.connection()?;
+        let (pending_batch_count, failed_batch_count, rejected_batch_count, next_attempt_at) =
+            connection.query_row(
+                "SELECT
+                    COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0),
+                    MIN(CASE
+                        WHEN status IN ('pending', 'failed') AND next_attempt_at > unixepoch()
+                        THEN next_attempt_at
+                    END)
+                 FROM upload_batch",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, u64>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                    ))
+                },
+            )?;
+        let last_error_code = connection
+            .query_row(
+                "SELECT last_error_code
+                 FROM upload_batch
+                 WHERE status IN ('pending', 'failed', 'rejected')
+                   AND last_error_code IS NOT NULL
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(UploadQueueDiagnostics {
+            pending_batch_count,
+            failed_batch_count,
+            rejected_batch_count,
+            next_attempt_at: next_attempt_at
+                .map(|timestamp| timestamp_to_datetime(timestamp, 3))
+                .transpose()?,
+            last_error_code,
+        })
     }
 
     fn mark_failed(
@@ -810,6 +858,10 @@ fn batch_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BatchEvent>
 
 fn timestamp_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<DateTime<Utc>> {
     let timestamp = row.get(index)?;
+    timestamp_to_datetime(timestamp, index)
+}
+
+fn timestamp_to_datetime(timestamp: i64, index: usize) -> rusqlite::Result<DateTime<Utc>> {
     DateTime::from_timestamp(timestamp, 0).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
             index,

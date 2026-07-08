@@ -177,7 +177,8 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     ///   - connectionStatus: Socket-level status from `IPCClientProtocol.connectionStatus`.
     public func start(
         serverMessages: some Publisher<ServerMessage, Never>,
-        connectionStatus: some Publisher<ConnectionStatus, Never>
+        connectionStatus: some Publisher<ConnectionStatus, Never>,
+        accountState: AnyPublisher<AccountState, Never>? = nil
     ) {
         serverMessages
             .receive(on: RunLoop.main)
@@ -196,6 +197,13 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
             .receive(on: RunLoop.main)
             .sink { [weak self] status in
                 self?.handleConnectionStatus(status)
+            }
+            .store(in: &cancellables)
+
+        accountState?
+            .receive(on: RunLoop.main)
+            .sink { [weak self] state in
+                self?.handleAccountState(state)
             }
             .store(in: &cancellables)
     }
@@ -231,6 +239,21 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     private func transitionToPopulatedIfNeeded() {
         guard case .loading = state else { return }
         state = .populated(insight: insightViewModel, history: historyViewModel)
+    }
+
+    private func resetDisplayData() {
+        insightViewModel.reset()
+        historyViewModel.reset()
+        insightAvailability = .loading
+        historyAvailability = .loading
+        state = .loading
+    }
+
+    private func handleAccountState(_ accountState: AccountState) {
+        guard case .loggedIn = accountState else {
+            resetDisplayData()
+            return
+        }
     }
 
     private func handleConnectionStatus(_ status: ConnectionStatus) {

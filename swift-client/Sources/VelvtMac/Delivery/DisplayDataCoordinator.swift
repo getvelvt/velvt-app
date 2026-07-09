@@ -46,14 +46,18 @@ public final class MenuStatusViewModel: ObservableObject {
 final class MenuBarDataLoader {
     private let ipcClient: any IPCClientProtocol
     private let latestClosedInsightDate: () -> String
+    private let retryDelayNanoseconds: UInt64
     private var cancellable: AnyCancellable?
     private var requestedForConnection = false
+    private var requestInFlight = false
+    private var canRequest = false
 
     init(ipcClient: any IPCClientProtocol, latestClosedInsightDate: @escaping () -> String = {
         MenuBarDataLoader.latestClosedUTCDateString()
-    }) {
+    }, retryDelayNanoseconds: UInt64 = 2_000_000_000) {
         self.ipcClient = ipcClient
         self.latestClosedInsightDate = latestClosedInsightDate
+        self.retryDelayNanoseconds = retryDelayNanoseconds
     }
 
     nonisolated static func latestClosedUTCDateString(now: Date = Date()) -> String {
@@ -75,16 +79,45 @@ final class MenuBarDataLoader {
             .sink { [weak self] account, connection in
                 guard let self else { return }
                 guard case .loggedIn = account, connection == .connected else {
-                    if connection != .connected { self.requestedForConnection = false }
+                    self.canRequest = false
+                    self.requestedForConnection = false
+                    self.requestInFlight = false
                     return
                 }
-                guard !self.requestedForConnection else { return }
-                self.requestedForConnection = true
-                Task { [ipcClient, latestClosedInsightDate] in
-                    try? await ipcClient.send(.requestLatestInsight(.init(date: latestClosedInsightDate())))
-                    try? await ipcClient.send(.requestLatestHistory(.init(days: 7)))
+                self.canRequest = true
+                self.requestDisplayDataIfNeeded()
+            }
+    }
+
+    private func requestDisplayDataIfNeeded() {
+        guard canRequest, !requestedForConnection, !requestInFlight else { return }
+        requestInFlight = true
+        Task { [weak self, ipcClient, latestClosedInsightDate] in
+            do {
+                try await ipcClient.send(.requestLatestInsight(.init(date: latestClosedInsightDate())))
+                try await ipcClient.send(.requestLatestHistory(.init(days: 7)))
+                await MainActor.run {
+                    guard let self else { return }
+                    self.requestedForConnection = self.canRequest
+                    self.requestInFlight = false
+                }
+            } catch {
+                await MainActor.run {
+                    self?.requestedForConnection = false
+                    self?.requestInFlight = false
+                    self?.scheduleRetry()
                 }
             }
+        }
+    }
+
+    private func scheduleRetry() {
+        Task { [weak self, retryDelayNanoseconds] in
+            try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
+            await MainActor.run {
+                self?.requestDisplayDataIfNeeded()
+            }
+        }
     }
 }
 

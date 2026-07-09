@@ -156,6 +156,43 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         XCTAssertTrue(client.sentMessages.contains(.requestLatestHistory(RequestLatestHistory(days: 7))))
     }
 
+    func testDataLoaderRetriesStartupDeliveryRequestsAfterSendFailure() async {
+        let client = FakeIPCClient()
+        client.shouldThrowOnSend = IPCError.notConnected
+        client.setConnectionStatus(.connected)
+        let account = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "user-1"))
+        let sut = MenuBarDataLoader(
+            ipcClient: client,
+            latestClosedInsightDate: { "2026-06-26" },
+            retryDelayNanoseconds: 10_000_000
+        )
+
+        sut.start(accountState: account.eraseToAnyPublisher())
+
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertTrue(client.sentMessages.isEmpty)
+
+        client.shouldThrowOnSend = nil
+
+        let retried = expectation(description: "loader retried startup delivery requests")
+        Task {
+            for _ in 0 ..< 100 {
+                if client.sentMessages.count >= 2 {
+                    retried.fulfill()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        await fulfillment(of: [retried], timeout: 2)
+
+        guard case .requestLatestInsight(let request)? = client.sentMessages.first else {
+            return XCTFail("Expected first retried startup delivery request to fetch latest insight")
+        }
+        XCTAssertEqual(request.date, "2026-06-26")
+        XCTAssertTrue(client.sentMessages.contains(.requestLatestHistory(RequestLatestHistory(days: 7))))
+    }
+
     func testPopulatedStateHoldsNoDataDayCorrectly() {
         let sut = ConcreteDisplayDataCoordinator()
         let payload = HistoryPayload(days: 1, summaries: [

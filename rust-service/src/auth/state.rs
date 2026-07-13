@@ -70,6 +70,9 @@ fn valid_transition(from: &AuthState, to: &AuthState) -> bool {
         || matches!(
             (from, to),
             (AuthState::Unauthenticated, AuthState::Authenticated { .. })
+                // Re-authentication can replace a stale server-side device id
+                // with a freshly registered device without restarting the service.
+                | (AuthState::Authenticated { .. }, AuthState::Authenticated { .. })
                 | (AuthState::Authenticated { .. }, AuthState::RefreshInFlight)
                 | (AuthState::Authenticated { .. }, AuthState::NeedsReauth)
                 | (AuthState::Authenticated { .. }, AuthState::DeviceRevoked)

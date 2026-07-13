@@ -2,7 +2,11 @@
 VELVT_API_BASE_URL = https:/$()/dev-api.getvelvt.com
 VELVT_APNS_ENV = production
 VELVT_SOCKET_PATH = ~/.velvt/velvt-service.sock
+VELVT_DATABASE_PATH = ~/.velvt/velvt-service.sqlite3
 VELVT_PROTOCOL_VERSION = 12
+VELVT_BUNDLE_IDENTIFIER = com.velvt.mac
+VELVT_PRODUCT_NAME = Velvt
+VELVT_DISPLAY_NAME = Velvt
 
 // Auto-generate Info.plist from build settings instead of a literal file —
 // INFOPLIST_KEY_* below is silently ignored otherwise.
@@ -18,7 +22,7 @@ INFOPLIST_KEY_VelvtProtocolVersion = $(VELVT_PROTOCOL_VERSION)
 INFOPLIST_KEY_VelvtClientVersion = $(MARKETING_VERSION)
 
 // Migrated from the former literal Resources/Info.plist (see CONFIGURATION.md).
-INFOPLIST_KEY_CFBundleDisplayName = Velvt
+INFOPLIST_KEY_CFBundleDisplayName = $(VELVT_DISPLAY_NAME)
 INFOPLIST_KEY_CFBundleIconName = AppIcon
 INFOPLIST_KEY_LSMinimumSystemVersion = $(MACOSX_DEPLOYMENT_TARGET)
 INFOPLIST_KEY_LSUIElement = YES

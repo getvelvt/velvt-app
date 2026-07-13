@@ -56,8 +56,8 @@ public enum AuthError: Error, Equatable {
 public final class KeychainService: KeychainProtocol {
     private let service: String
 
-    public init(service: String = "com.velvt.mac") {
-        self.service = service
+    public init(service: String? = nil) {
+        self.service = service ?? Bundle.main.bundleIdentifier ?? "com.velvt.mac"
     }
 
     public func store(token: String, for key: KeychainKey) throws {

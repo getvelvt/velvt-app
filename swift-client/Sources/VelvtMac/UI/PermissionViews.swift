@@ -190,9 +190,14 @@ public final class PermissionOnboardingModel: ObservableObject {
 
 public struct PermissionRecoveryView: View {
     private let openSettings: () -> Void
+    private let requestAccess: (() -> Void)?
 
-    public init(openSettings: @escaping () -> Void = Self.openAccessibilitySettings) {
+    public init(
+        openSettings: @escaping () -> Void = Self.openAccessibilitySettings,
+        requestAccess: (() -> Void)? = nil
+    ) {
         self.openSettings = openSettings
+        self.requestAccess = requestAccess
     }
 
     public var body: some View {
@@ -202,6 +207,9 @@ public struct PermissionRecoveryView: View {
             Text("Collection is paused. Re-grant Accessibility access in System Settings.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let requestAccess {
+                Button("Request Accessibility Access", action: requestAccess)
+            }
             Button("Open Accessibility Settings", action: openSettings)
         }
     }

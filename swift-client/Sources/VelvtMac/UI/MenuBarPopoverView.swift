@@ -197,13 +197,20 @@ public struct MenuBarPopoverView: View {
                 }
                 Divider().opacity(0.15)
             }
-            if presentation.showsOnboarding {
+            if presentation.showsAccessibilityRecovery {
+                PermissionRecoveryView(
+                    requestAccess: {
+                        Task {
+                            _ = await permissionManager?.requestPermission(for: .accessibility)
+                        }
+                    }
+                )
+                .padding(16)
+            } else if presentation.showsOnboarding {
                 GoalOnboardingView { intensity, purpose in
                     presentation.saveGoal(intensity: intensity, purpose: purpose)
                 }
                 .padding(16)
-            } else if presentation.showsAccessibilityRecovery {
-                PermissionRecoveryView().padding(16)
             } else {
                 VelvtPopoverContentView(coordinator: coordinator)
             }

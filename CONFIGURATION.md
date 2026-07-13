@@ -7,6 +7,21 @@ change them for new environments, and the status of code signing.
 
 ## How build-time constants are set
 
+## Two isolated app artifacts
+
+Use the explicit build targets below; do not override `VELVT_API_BASE_URL` on a
+generic build. The artifacts can be installed together because they have
+separate bundle identifiers, Keychain services, Unix sockets, and SQLite files.
+
+| Target | Artifact | API | Bundle ID | Local state |
+|---|---|---|---|---|
+| `make build-local-app` | `dist/local/Velvt Local.app` | `http://localhost:8000` | `com.velvt.mac.local` | `~/.velvt/velvt-local.sqlite3` |
+| `make build-mvp-app` | `dist/mvp/Velvt.app` | `https://dev-api.getvelvt.com` | `com.velvt.mac` | `~/.velvt/velvt-service.sqlite3` |
+
+`make build-app` remains an alias for `make build-mvp-app` for compatibility.
+Install the local artifact at `/Applications/Velvt Local.app` and the MVP
+artifact at `/Applications/Velvt.app`. Run only one collector at a time.
+
 ### Swift client
 
 Constants are defined in xcconfig files and injected into `Info.plist` at
@@ -77,9 +92,9 @@ binary is always compiled with the same constants as the Swift binary.
 
 ### Swift
 
-1. Open `swift-client/Configs/Debug.xcconfig` or `Release.xcconfig`.
-2. Change `VELVT_API_BASE_URL = <new-url>`.
-3. Clean build (`⇧⌘K` in Xcode or `make clean && make build-swift`).
+Use `make build-local-app` or `make build-mvp-app` instead of editing an
+xcconfig for ordinary founder/local or MVP/dev builds. Add a new explicit build
+target only when introducing a new environment.
 
 The new URL is picked up by the Xcode Run Script phase which passes it to
 `cargo build --release` as `VELVT_API_BASE_URL`, embedding it in the Rust
@@ -107,7 +122,7 @@ invalidates the cached binary when these values change between builds.
 ## ServiceManager version-check and update loop
 
 This section describes the future `SMAppService` update path for signed
-distribution builds. The default local Debug app launched by `make build-app`
+distribution builds. The deployed-MVP Debug app launched by `make build-mvp-app`
 uses `ServiceProcessLauncher` to start the bundled helper directly from
 `Contents/Resources/velvt-service`.
 
@@ -141,7 +156,7 @@ Common failure modes:
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `binaryNotFoundInBundle` | Run Script build phase did not run or `cargo build` failed | Rebuild with `make build-app`; check Xcode build log |
+| `binaryNotFoundInBundle` | Run Script build phase did not run or `cargo build` failed | Rebuild with the relevant explicit target (`make build-local-app` or `make build-mvp-app`); check Xcode build log |
 | `versionSidecarNotFoundInBundle` | Run Script phase did not write the version file | Rebuild; check the `cargo metadata` step in the Run Script |
 | `templateNotFoundInBundle` | `com.velvt.service.plist.template` not in Resources build phase | Verify the file is in the Xcode Resources build phase |
 | SMAppService error | LaunchAgent plist missing or malformed; sandbox restrictions | Check `~/Library/LaunchAgents/com.velvt.service.plist`; verify app is not sandboxed |

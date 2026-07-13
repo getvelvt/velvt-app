@@ -16,6 +16,10 @@ fn transition_is_valid(from: &AuthState, to: &AuthState) -> bool {
     matches!(
         (from, to),
         (AuthState::Unauthenticated, AuthState::Authenticated { .. })
+            | (
+                AuthState::Authenticated { .. },
+                AuthState::Authenticated { .. }
+            )
             | (AuthState::Authenticated { .. }, AuthState::RefreshInFlight)
             | (AuthState::Authenticated { .. }, AuthState::NeedsReauth)
             | (AuthState::Authenticated { .. }, AuthState::DeviceRevoked)
@@ -25,6 +29,26 @@ fn transition_is_valid(from: &AuthState, to: &AuthState) -> bool {
             | (AuthState::NeedsReauth, AuthState::Authenticated { .. })
             | (AuthState::NeedsReauth, AuthState::Unauthenticated)
     ) || from == to
+}
+
+#[test]
+fn authenticated_device_id_can_be_replaced_after_reregistration() {
+    let machine = AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "stale-device".into(),
+    });
+
+    machine
+        .transition(AuthState::Authenticated {
+            device_id: "new-device".into(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        machine.current(),
+        AuthState::Authenticated {
+            device_id: "new-device".into(),
+        }
+    );
 }
 
 #[test]

@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app clean
+.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app build-local-app build-mvp-app clean
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -8,8 +8,19 @@ endif
 
 CARGO_VERSION := $(shell cd rust-service && cargo --version 2>$(NULL_DEVICE))
 SWIFT_VERSION := $(shell swift --version 2>$(NULL_DEVICE))
-VELVT_CODESIGN_IDENTITY ?= E24074F5011AE8FF85C0AD97A583E1CCA6688E81
-VELVT_API_BASE_URL ?= https://dev-api.getvelvt.com
+# Ad-hoc signing is the safe local default.  Set this to a valid Apple
+# Development or Developer ID identity only when that identity is installed.
+VELVT_CODESIGN_IDENTITY ?= -
+LOCAL_API_BASE_URL := http://localhost:8000
+MVP_API_BASE_URL := https://dev-api.getvelvt.com
+LOCAL_PRODUCT_NAME := Velvt Local
+MVP_PRODUCT_NAME := Velvt
+LOCAL_BUNDLE_IDENTIFIER := com.velvt.mac.local
+MVP_BUNDLE_IDENTIFIER := com.velvt.mac
+LOCAL_SOCKET_PATH := ~/.velvt/velvt-local.sock
+MVP_SOCKET_PATH := ~/.velvt/velvt-service.sock
+LOCAL_DATABASE_PATH := ~/.velvt/velvt-local.sqlite3
+MVP_DATABASE_PATH := ~/.velvt/velvt-service.sqlite3
 
 check-rust-toolchain:
 ifeq ($(strip $(CARGO_VERSION)),)
@@ -36,7 +47,7 @@ lint-rust: check-rust-toolchain
 	cd rust-service && cargo fmt --check
 
 build-swift: check-swift-toolchain
-	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' -derivedDataPath $(PWD)/swift-client/DerivedData CONFIGURATION_BUILD_DIR=$(PWD)/swift-client/.build VELVT_API_BASE_URL="$(VELVT_API_BASE_URL)" build
+	xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' -derivedDataPath $(PWD)/swift-client/DerivedData CONFIGURATION_BUILD_DIR=$(PWD)/swift-client/.build VELVT_API_BASE_URL="$(MVP_API_BASE_URL)" build
 
 test-swift: check-swift-toolchain
 	CLANG_MODULE_CACHE_PATH=$(PWD)/swift-client/.build/clang-module-cache swift test --package-path swift-client --scratch-path $(PWD)/swift-client/.build --disable-sandbox
@@ -48,31 +59,50 @@ build-all: build-rust build-swift
 
 test-all: test-rust test-swift
 
-# Produces a single runnable artifact: dist/velvt-mac.app. The Xcode
-# "Bundle Rust Service" Run Script phase builds cargo --release and embeds
-# the Rust binary at Contents/Resources/velvt-service automatically.
-# ServiceManager (not ServiceProcessLauncher) manages the installed helper
-# via SMAppService — no manual binary copy needed here.
-build-app: check-swift-toolchain
-	rm -rf dist
-	mkdir -p dist
+## Separate, simultaneously installable artifacts. Each has its own bundle ID,
+## Keychain namespace, IPC socket, and local SQLite store.
+build-local-app: check-swift-toolchain
+	rm -rf "dist/local" "dist/.local-derivedData"
+	mkdir -p "dist/local"
 	xcodebuild \
 		-project swift-client/VelvtMac.xcodeproj \
 		-scheme velvt-mac \
 		-destination 'platform=macOS' \
-		-derivedDataPath dist/.derivedData \
-		VELVT_API_BASE_URL="$(VELVT_API_BASE_URL)" \
+		-derivedDataPath "dist/.local-derivedData" \
+		VELVT_API_BASE_URL="$(LOCAL_API_BASE_URL)" \
+		VELVT_BUNDLE_IDENTIFIER="$(LOCAL_BUNDLE_IDENTIFIER)" \
+		VELVT_PRODUCT_NAME="$(LOCAL_PRODUCT_NAME)" \
+		VELVT_DISPLAY_NAME="$(LOCAL_PRODUCT_NAME)" \
+		VELVT_SOCKET_PATH="$(LOCAL_SOCKET_PATH)" \
+		VELVT_DATABASE_PATH="$(LOCAL_DATABASE_PATH)" \
 		build
-	cp -R dist/.derivedData/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
-	rm -rf dist/.derivedData
-	# Prefer a stable local development identity so macOS TCC can remember
-	# Accessibility permission across relaunches and rebuilds. Fall back to
-	# ad-hoc signing when the configured identity is not installed locally.
-	if ! codesign --force --deep --sign "$(VELVT_CODESIGN_IDENTITY)" dist/velvt-mac.app; then \
-		echo "Configured signing identity unavailable; falling back to ad-hoc signing."; \
-		codesign --force --deep --sign - dist/velvt-mac.app; \
-	fi
-	@echo "Built dist/velvt-mac.app"
+	cp -R "dist/.local-derivedData/Build/Products/Debug/$(LOCAL_PRODUCT_NAME).app" "dist/local/$(LOCAL_PRODUCT_NAME).app"
+	rm -rf "dist/.local-derivedData"
+	codesign --force --deep --sign "$(VELVT_CODESIGN_IDENTITY)" "dist/local/$(LOCAL_PRODUCT_NAME).app"
+	@echo "Built dist/local/$(LOCAL_PRODUCT_NAME).app ($(LOCAL_API_BASE_URL))"
+
+build-mvp-app: check-swift-toolchain
+	rm -rf "dist/mvp" "dist/.mvp-derivedData"
+	mkdir -p "dist/mvp"
+	xcodebuild \
+		-project swift-client/VelvtMac.xcodeproj \
+		-scheme velvt-mac \
+		-destination 'platform=macOS' \
+		-derivedDataPath "dist/.mvp-derivedData" \
+		VELVT_API_BASE_URL="$(MVP_API_BASE_URL)" \
+		VELVT_BUNDLE_IDENTIFIER="$(MVP_BUNDLE_IDENTIFIER)" \
+		VELVT_PRODUCT_NAME="$(MVP_PRODUCT_NAME)" \
+		VELVT_DISPLAY_NAME="$(MVP_PRODUCT_NAME)" \
+		VELVT_SOCKET_PATH="$(MVP_SOCKET_PATH)" \
+		VELVT_DATABASE_PATH="$(MVP_DATABASE_PATH)" \
+		build
+	cp -R "dist/.mvp-derivedData/Build/Products/Debug/$(MVP_PRODUCT_NAME).app" "dist/mvp/$(MVP_PRODUCT_NAME).app"
+	rm -rf "dist/.mvp-derivedData"
+	codesign --force --deep --sign "$(VELVT_CODESIGN_IDENTITY)" "dist/mvp/$(MVP_PRODUCT_NAME).app"
+	@echo "Built dist/mvp/$(MVP_PRODUCT_NAME).app ($(MVP_API_BASE_URL))"
+
+# Backward-compatible name for the deployable dev-API artifact.
+build-app: build-mvp-app
 
 clean:
 	cd rust-service && cargo clean

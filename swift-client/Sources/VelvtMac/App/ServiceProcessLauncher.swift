@@ -37,7 +37,16 @@ public final class ServiceProcessLauncher {
 
         let task = Process()
         task.executableURL = serviceURL
-        task.environment = environment
+        var serviceEnvironment = environment
+        if let socketPath = Bundle.main.object(forInfoDictionaryKey: "VelvtSocketPath") as? String,
+           !socketPath.isEmpty {
+            serviceEnvironment["VELVT_IPC_SOCKET_PATH"] = socketPath
+        }
+        if let databasePath = Bundle.main.object(forInfoDictionaryKey: "VelvtDatabasePath") as? String,
+           !databasePath.isEmpty {
+            serviceEnvironment["VELVT_DATABASE_PATH"] = databasePath
+        }
+        task.environment = serviceEnvironment
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         task.standardOutput = outputPipe

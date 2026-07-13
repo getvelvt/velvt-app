@@ -54,36 +54,12 @@ private struct HistoryDashboardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sessionAnalysis
             dailyActivity
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Daily insight history")
-    }
-
-    private var sessionAnalysis: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Session Analysis")
-                .font(.headline)
-                .foregroundStyle(Color.velvtText)
-
-            HStack(spacing: 10) {
-                SummaryMetric(title: "Fragmentation", value: latestDay?.fragmentationScore.map(String.init) ?? "--")
-                SummaryMetric(title: "Focus", value: latestDay?.focusScore.map(String.init) ?? "--")
-                SummaryMetric(title: "Active", value: latestDay?.activeTime ?? "--")
-                SummaryMetric(title: "Events", value: "\(latestDay?.eventCount ?? 0)")
-            }
-
-            Text(movingAverageText)
-                .font(.caption)
-                .foregroundStyle(Color.velvtMuted)
-                .lineLimit(2)
-        }
-        .padding(14)
-        .background(Color.velvtPanelHighlight)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private var dailyActivity: some View {
@@ -116,29 +92,6 @@ private struct HistoryDashboardView: View {
 
     private func formatDelta(_ value: Double) -> String {
         String(format: "%.1f", value)
-    }
-}
-
-private struct SummaryMetric: View {
-    let title: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(Color.velvtMuted)
-            Text(value)
-                .font(.system(.title3, design: .rounded).weight(.bold))
-                .foregroundStyle(Color.velvtText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .monospacedDigit()
-        }
-        .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-        .padding(.horizontal, 10)
-        .background(Color.white.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

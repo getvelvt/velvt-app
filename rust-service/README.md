@@ -5,11 +5,14 @@ persistence, abstraction, cloud requests, and IPC delivery to the macOS client.
 
 ## Authentication Privacy
 
-Access and refresh tokens are supplied by the host client over IPC and kept
-only in the service's in-memory `VolatileTokenStore`. Platform-specific secure
-storage belongs to the host client (Keychain on macOS, an equivalent credential
-store elsewhere). Tokens must never be stored in SQLite, plaintext files,
-environment variables, logs, tracing fields, or error messages.
+Device and user access/refresh tokens are supplied by the host client over IPC
+and kept only in the service's in-memory `VolatileTokenStore`. Authenticated
+cloud requests use device tokens; user tokens are retained only to refresh user
+auth and reissue device credentials when a device token pair is revoked.
+Platform-specific secure storage belongs to the host client (Keychain on macOS,
+an equivalent credential store elsewhere). Tokens must never be stored in
+SQLite, plaintext files, environment variables, logs, tracing fields, or error
+messages.
 
 All token-carrying fields use `RedactedString`. Its `Debug` and `Display`
 implementations emit only `[redacted]`. The underlying value is exposed only
@@ -76,10 +79,11 @@ wait for the active refresh and reuse its atomically replaced token pair.
 Transient transport failures preserve the existing in-memory token record and retry
 on the next request cycle. Invalid credentials transition to `NeedsReauth`.
 
-`device_token_revoked` attempts `/v1/auth/devices/reissue` once before
-transitioning to `DeviceRevoked`. `device_revoked`, `device_not_found`, failed
-reissue, or repeated revocation transitions to `DeviceRevoked`; subsequent
-authenticated upload attempts are rejected before reaching HTTP.
+`device_token_revoked` attempts `/v1/auth/devices/reissue` once with a valid
+user access token, refreshing the user token first when needed.
+`device_revoked` or `device_not_found` transitions to `DeviceRevoked`; failed
+refresh/reissue transitions to `NeedsReauth`; subsequent authenticated upload
+attempts are rejected before reaching HTTP.
 
 ## History & Insight Delivery (R6)
 
@@ -133,6 +137,27 @@ result.
 
 Insight `text` is never written to any log or tracing field.  Only `date` and
 `confidence_level` are recorded at `DEBUG` level when an insight is stored.
+
+## Long-Poll Insight Delivery
+
+The service also runs a live long-poll loop while authenticated.  It calls
+`GET /v1/insights/poll` by default, where velvt-core either returns `200` with
+a JSON insight and `id`, or `204 No Content` when no insight is ready.
+
+`PollScheduler` parses `200` responses into a typed insight, suppresses an
+immediate duplicate by remembering the last delivered insight ID, and forwards
+the result to Swift through the existing IPC push queue as both
+`insight_payload` and `notification_payload`.  Swift never calls velvt-core.
+
+Configuration:
+
+| Env var | Default | Description |
+|---|---|---|
+| `VELVT_INSIGHT_POLL_PATH` | `/v1/insights/poll` | Path appended to the configured velvt-core base URL |
+| `VELVT_INSIGHT_POLL_TIMEOUT_SECONDS` | `30` | Client-side timeout for one held request |
+| `VELVT_INSIGHT_POLL_IDLE_SECONDS` | `1` | Delay after `204 No Content` |
+| `VELVT_INSIGHT_POLL_INITIAL_BACKOFF_SECONDS` | `1` | Initial retry delay after transport, timeout, or non-2xx failure |
+| `VELVT_INSIGHT_POLL_MAX_BACKOFF_SECONDS` | `60` | Maximum retry delay |
 
 ## Push Delivery to Swift (R7)
 

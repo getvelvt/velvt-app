@@ -89,6 +89,19 @@ running the Rust service. `Info.plist` ships built-in `VELVT_SOCKET_PATH`/
 reason; keep them in sync with `proto/` per the version-bump checklist in
 `CONTRIBUTING.md`.
 
+To build the same packaged app for debugging against a local `velvt-core-api`
+on its default port, use:
+
+```sh
+make build-app-local-core
+```
+
+This bakes `VELVT_API_BASE_URL=http://localhost:8000` into the bundled Rust
+service and the app's processed `Info.plist`. The packaged app is signed
+ad-hoc by default so macOS can register it consistently for notifications,
+Keychain, TCC, and LaunchServices. Copy `dist/velvt-mac.app` to `/Applications`
+when you want it to appear in Launchpad.
+
 ### Build Both Local Targets (development)
 
 From the repository root, build the Rust service and macOS-only Swift app
@@ -261,9 +274,9 @@ make test-swift         # swift test --package-path swift-client
 
 ## Smoke-Testing Against a Local velvt-core Instance
 
-1. Point the Rust service at your local `velvt-core` instance:
-   `VELVT_API_BASE_URL=http://localhost:8000`.
-2. Run `make build-app`, then open `dist/velvt-mac.app`.
+1. Run `make build-app-local-core`, then open `dist/velvt-mac.app`.
+   This points the bundled Rust service at `http://localhost:8000`.
+2. Start your local `velvt-core-api` if it is not already running.
 3. Grant Accessibility and Notifications when prompted.
 4. Switch applications a few times, then check
    `~/.velvt/velvt-service.sqlite3`'s `upload_batch` table for a `sent` row,

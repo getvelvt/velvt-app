@@ -77,6 +77,43 @@ public final class NotificationDeliveryCoordinator {
         inFlightTask = task
         return task
     }
+
+    /// Debug harness used by the menu bar app to exercise the same
+    /// notification path as a Rust `notification_payload` IPC push.
+    @discardableResult
+    public func simulateDebugInsightReceipt(now: Date = Date()) -> Task<Void, Never> {
+        let payload = Self.debugNotificationPayload(now: now)
+        let pendingKey = payload.notificationID.uuidString
+        let task = Task { @MainActor [weak self, scheduler, permissionManager, debounceInterval] in
+            try? await Task.sleep(for: debounceInterval)
+            guard !Task.isCancelled else { return }
+            let currentStatus = await permissionManager.checkStatus(for: .notifications)
+            let status = currentStatus == .unknown
+                ? await permissionManager.requestPermission(for: .notifications)
+                : currentStatus
+            guard status == .granted, !Task.isCancelled else { return }
+            await scheduler.schedule(payload)
+            self?.pendingTasksByDate.removeValue(forKey: pendingKey)
+        }
+        pendingTasksByDate[pendingKey] = task
+        inFlightTask = task
+        return task
+    }
+
+    private static func debugNotificationPayload(now: Date) -> NotificationPayload {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return NotificationPayload(
+            notificationID: UUID(),
+            title: "Your Velvt insight is ready",
+            body: "You switched away from your document 23 times in 40 minutes.",
+            insightDate: formatter.string(from: now),
+            doNotDisturbUntil: now.addingTimeInterval(1)
+        )
+    }
 }
 
 // MARK: - NotificationResponseRouter
@@ -110,6 +147,14 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
             self.handle(userInfo: userInfo)
         }
         completionHandler()
+    }
+
+    nonisolated public func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
     }
 
     func handle(userInfo: [AnyHashable: Any]) {

@@ -18,6 +18,11 @@
   persist refreshed or reissued auth credentials in platform credential storage.
 - Added `device_id` to `auth_success`; signup/login now returns a device-bound
   session for host-side persistence.
+- Added optional `user_access_token`, `user_refresh_token`, and
+  `user_expires_at` to `auth_success`, `auth_session`, and
+  `auth_session_updated`. Device tokens remain the default credentials for API
+  calls; user tokens are replayed only so Rust can refresh user auth and reissue
+  device-bound credentials after relaunch.
 
 ## Version 10 - 2026-06-21
 

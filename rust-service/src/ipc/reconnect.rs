@@ -1,10 +1,9 @@
 //! Reconnect-window queue management for IPC clients.
 //!
-//! `ReconnectTracker` keeps a `PushQueue` alive for a configurable window
-//! after a client disconnects.  If the client reconnects before the window
-//! expires it receives the same queue (preserving any buffered messages).
-//! After the window elapses, the queue is released and the next connect
-//! receives a fresh, empty queue.
+//! `ReconnectTracker` owns the single `PushQueue` shared by the producer side
+//! (`PushAdapter`) and the transport side.  The queue handle must remain stable:
+//! if the transport swaps in a fresh queue while the adapter still writes to the
+//! old one, proactive messages can be stranded after a disconnect.
 
 use std::{
     sync::{Arc, Mutex},
@@ -40,15 +39,16 @@ impl ReconnectTracker {
         })
     }
 
-    /// Returns the existing queue (if within the reconnect window) or a fresh
-    /// one.  Cancels any pending release scheduled by a prior `release()`.
+    /// Returns the existing queue or creates the one stable queue used by this
+    /// service process.  Bumping the version cancels any pending expiry marker
+    /// scheduled by a prior `release()`.
     pub fn acquire(self: &Arc<Self>) -> Arc<PushQueue> {
         let mut state = self.state.lock().unwrap();
         // Bumping the version invalidates any in-flight release task.
         state.version = state.version.wrapping_add(1);
         match &state.queue {
             Some(q) => {
-                tracing::debug!("push queue reused within reconnect window");
+                tracing::debug!("push queue reused across reconnect");
                 Arc::clone(q)
             }
             None => {
@@ -59,21 +59,20 @@ impl ReconnectTracker {
         }
     }
 
-    /// Schedules the queue for release after `window`.  If `acquire` is called
-    /// before the window elapses, the release is cancelled and the queue is
-    /// reused.
+    /// Schedules an expiry marker after `window`.  If `acquire` is called before
+    /// the window elapses, the marker is cancelled.  The queue itself is not
+    /// replaced because `PushAdapter` holds the producer-side handle.
     pub fn release(self: &Arc<Self>) {
         let captured_version = self.state.lock().unwrap().version;
         let tracker = Arc::clone(self);
         tokio::spawn(async move {
             tokio::time::sleep(tracker.window).await;
-            let mut state = tracker.state.lock().unwrap();
+            let state = tracker.state.lock().unwrap();
             if state.version == captured_version {
                 tracing::debug!(
                     error_code = "reconnect_window_expired",
-                    "reconnect window elapsed; push queue released"
+                    "reconnect window elapsed; retaining stable push queue handle"
                 );
-                state.queue = None;
             }
         });
     }
@@ -102,7 +101,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconnect_after_window_gets_fresh_queue() {
+    async fn reconnect_after_window_keeps_stable_queue() {
         let tracker = ReconnectTracker::new(Duration::from_millis(50), 10);
 
         let q1 = tracker.acquire();
@@ -113,8 +112,8 @@ mod tests {
         let q2 = tracker.acquire();
 
         assert!(
-            !Arc::ptr_eq(&q1, &q2),
-            "a fresh queue must be returned after the reconnect window expires"
+            Arc::ptr_eq(&q1, &q2),
+            "the queue handle must stay stable so PushAdapter and transport do not diverge"
         );
     }
 

@@ -26,15 +26,23 @@ public final class AuthViewModel: ObservableObject {
 
     private let accountStateManager: AccountStateManager
     private let ipcClient: any IPCClientProtocol
+    private let authResponseTimeout: TimeInterval
     private var cancellables = Set<AnyCancellable>()
+    private var authTimeoutTask: Task<Void, Never>?
 
     public init(
         accountStateManager: AccountStateManager,
-        ipcClient: any IPCClientProtocol
+        ipcClient: any IPCClientProtocol,
+        authResponseTimeout: TimeInterval = 30
     ) {
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
+        self.authResponseTimeout = authResponseTimeout
         bindStateObservation()
+    }
+
+    deinit {
+        authTimeoutTask?.cancel()
     }
 
     // MARK: - Auth actions
@@ -52,6 +60,7 @@ public final class AuthViewModel: ObservableObject {
         startLoading()
         do {
             try await ipcClient.send(.signUp(SignUpRequest(email: email, password: password)))
+            startAuthResponseTimeout()
         } catch IPCError.notConnected {
             accountStateManager.transition(to: .loggedOut)
             finishLoading(withError: "Service not ready. Please wait a moment and try again.")
@@ -74,6 +83,7 @@ public final class AuthViewModel: ObservableObject {
         startLoading()
         do {
             try await ipcClient.send(.logIn(LogInRequest(email: email, password: password)))
+            startAuthResponseTimeout()
         } catch IPCError.notConnected {
             accountStateManager.transition(to: .loggedOut)
             finishLoading(withError: "Service not ready. Please wait a moment and try again.")
@@ -134,8 +144,10 @@ public final class AuthViewModel: ObservableObject {
                 guard loading else { return }
                 switch state {
                 case .loggedIn:
+                    self.cancelAuthResponseTimeout()
                     self.isLoading = false
                 case .loggedOut:
+                    self.cancelAuthResponseTimeout()
                     self.isLoading = false
                     if self.errorMessage == nil {
                         self.errorMessage = "Connection lost. Please try again."
@@ -154,6 +166,7 @@ public final class AuthViewModel: ObservableObject {
             }
             .receive(on: RunLoop.main)
             .sink { [weak self] msg in
+                self?.cancelAuthResponseTimeout()
                 self?.errorMessage = msg
             }
             .store(in: &cancellables)
@@ -161,7 +174,13 @@ public final class AuthViewModel: ObservableObject {
         ipcClient.connectionStatus
             .receive(on: RunLoop.main)
             .sink { [weak self] status in
-                self?.connectionStatus = status
+                guard let self else { return }
+                let previousStatus = self.connectionStatus
+                self.connectionStatus = status
+                guard self.isLoading, previousStatus == .connected, status != .connected else { return }
+                self.cancelAuthResponseTimeout()
+                self.accountStateManager.cancelAuthentication()
+                self.finishLoading(withError: "Connection lost. Please try again.")
             }
             .store(in: &cancellables)
     }
@@ -172,7 +191,31 @@ public final class AuthViewModel: ObservableObject {
     }
 
     private func finishLoading(withError message: String? = nil) {
+        cancelAuthResponseTimeout()
         isLoading = false
         errorMessage = message
+    }
+
+    private func startAuthResponseTimeout() {
+        guard isLoading else { return }
+        cancelAuthResponseTimeout()
+        let timeout = authResponseTimeout
+        authTimeoutTask = Task { [weak self] in
+            let nanoseconds = UInt64(max(timeout, 0) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.isLoading else { return }
+                self.authTimeoutTask = nil
+                self.accountStateManager.cancelAuthentication()
+                self.isLoading = false
+                self.errorMessage = "Authentication timed out. Please try again."
+            }
+        }
+    }
+
+    private func cancelAuthResponseTimeout() {
+        authTimeoutTask?.cancel()
+        authTimeoutTask = nil
     }
 }

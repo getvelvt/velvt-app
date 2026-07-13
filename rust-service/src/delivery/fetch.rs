@@ -270,8 +270,8 @@ impl<H: HttpClient> FetchService<H> {
         }
     }
 
-    /// Proactive refresh used by the scheduler: fetches history and all N days
-    /// of insights, logging any individual failures without propagating them.
+    /// Proactive refresh used by the scheduler: fetches history and today's
+    /// insight, logging failures without propagating them.
     pub async fn refresh_all(&self, days: u8) -> Result<(), FetchError> {
         if let Err(error) = self.daily_history(days).await {
             tracing::warn!(
@@ -281,17 +281,13 @@ impl<H: HttpClient> FetchService<H> {
             );
         }
         let today = Utc::now().date_naive();
-        for i in 0..days as i64 {
-            if let Some(date) = today.checked_sub_signed(ChronoDuration::days(i)) {
-                if let Err(error) = self.daily_insight(date).await {
-                    tracing::warn!(
-                        error_code = "insight_refresh_failed",
-                        date = %date,
-                        error = %error,
-                        "proactive insight refresh failed"
-                    );
-                }
-            }
+        if let Err(error) = self.daily_insight(today).await {
+            tracing::warn!(
+                error_code = "insight_refresh_failed",
+                date = %today,
+                error = %error,
+                "proactive insight refresh failed"
+            );
         }
         Ok(())
     }
@@ -907,6 +903,38 @@ mod tests {
             paths[0].contains("2026-01-15"),
             "path must contain the date, got: {:?}",
             paths
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_all_fetches_history_and_only_todays_insight() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let today = Utc::now().date_naive();
+        let http = Arc::new(
+            FakeHttpClient::new()
+                .with_route("/v1/history/daily", 200, history_api_body(today))
+                .with_route("/v1/insights/daily", 404, json!({})),
+        );
+        let service = FetchService::new(
+            Arc::clone(&http),
+            db.history_cache_repo(),
+            db.insight_cache_repo(),
+            test_config(),
+        );
+
+        service.refresh_all(7).await.unwrap();
+
+        let paths = http.called_paths();
+        let insight_paths = paths
+            .iter()
+            .filter(|path| path.starts_with("/v1/insights/daily"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            insight_paths,
+            vec![&format!(
+                "/v1/insights/daily?date={}",
+                today.format("%Y-%m-%d")
+            )]
         );
     }
 

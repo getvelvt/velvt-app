@@ -276,6 +276,51 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(statuses.last, .collecting)
     }
 
+    func testCollectionContinuesWhenServiceDisconnectedAndOfflineCollectionEnabled() {
+        let permissions = FakePermissionManager()
+        let collection = RecordingCollectionAgent()
+        let connection = CurrentValueSubject<ConnectionStatus, Never>(.connected)
+        let settings = CollectionSettingsModel(
+            defaults: UserDefaults(suiteName: "offline.enabled.\(UUID().uuidString)")!
+        )
+        let coordinator = PermissionCollectionCoordinator(
+            permissionManager: permissions,
+            collectionAgent: collection,
+            connectionStatus: connection.eraseToAnyPublisher(),
+            collectionSettings: settings
+        )
+
+        coordinator.start()
+        permissions.setStatus(.granted, for: .accessibility)
+        connection.send(.disconnected)
+
+        XCTAssertEqual(collection.startCallCount, 1)
+        XCTAssertEqual(collection.stopCallCount, 0)
+    }
+
+    func testCollectionPausesWhenServiceDisconnectedAndOfflineCollectionDisabled() {
+        let permissions = FakePermissionManager()
+        let collection = RecordingCollectionAgent()
+        let connection = CurrentValueSubject<ConnectionStatus, Never>(.connected)
+        let settings = CollectionSettingsModel(
+            defaults: UserDefaults(suiteName: "offline.disabled.\(UUID().uuidString)")!
+        )
+        settings.offlineEventCollectionEnabled = false
+        let coordinator = PermissionCollectionCoordinator(
+            permissionManager: permissions,
+            collectionAgent: collection,
+            connectionStatus: connection.eraseToAnyPublisher(),
+            collectionSettings: settings
+        )
+
+        coordinator.start()
+        permissions.setStatus(.granted, for: .accessibility)
+        connection.send(.disconnected)
+
+        XCTAssertEqual(collection.startCallCount, 1)
+        XCTAssertEqual(collection.stopCallCount, 1)
+    }
+
     func testCollectionCoordinatorStopsOnRestrictedAccessibility() {
         let permissions = FakePermissionManager()
         let collection = RecordingCollectionAgent()

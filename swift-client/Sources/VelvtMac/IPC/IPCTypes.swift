@@ -859,12 +859,26 @@ public struct AuthSession: Codable, Equatable, Sendable {
     public let accessToken: String
     public let refreshToken: String
     public let expiresAt: Date
+    public let userAccessToken: String?
+    public let userRefreshToken: String?
+    public let userExpiresAt: Date?
 
-    public init(deviceId: String, accessToken: String, refreshToken: String, expiresAt: Date) {
+    public init(
+        deviceId: String,
+        accessToken: String,
+        refreshToken: String,
+        expiresAt: Date,
+        userAccessToken: String? = nil,
+        userRefreshToken: String? = nil,
+        userExpiresAt: Date? = nil
+    ) {
         self.deviceId = deviceId
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.expiresAt = expiresAt
+        self.userAccessToken = userAccessToken
+        self.userRefreshToken = userRefreshToken
+        self.userExpiresAt = userExpiresAt
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -872,6 +886,9 @@ public struct AuthSession: Codable, Equatable, Sendable {
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
         case expiresAt = "expires_at"
+        case userAccessToken = "user_access_token"
+        case userRefreshToken = "user_refresh_token"
+        case userExpiresAt = "user_expires_at"
     }
 }
 
@@ -883,13 +900,28 @@ public struct AuthSuccess: Codable, Equatable, Sendable {
     public let accessToken: String
     public let refreshToken: String
     public let expiresAt: Date
+    public let userAccessToken: String?
+    public let userRefreshToken: String?
+    public let userExpiresAt: Date?
 
-    public init(userId: String, deviceId: String, accessToken: String, refreshToken: String, expiresAt: Date) {
+    public init(
+        userId: String,
+        deviceId: String,
+        accessToken: String,
+        refreshToken: String,
+        expiresAt: Date,
+        userAccessToken: String? = nil,
+        userRefreshToken: String? = nil,
+        userExpiresAt: Date? = nil
+    ) {
         self.userId = userId
         self.deviceId = deviceId
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.expiresAt = expiresAt
+        self.userAccessToken = userAccessToken
+        self.userRefreshToken = userRefreshToken
+        self.userExpiresAt = userExpiresAt
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -898,6 +930,9 @@ public struct AuthSuccess: Codable, Equatable, Sendable {
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
         case expiresAt = "expires_at"
+        case userAccessToken = "user_access_token"
+        case userRefreshToken = "user_refresh_token"
+        case userExpiresAt = "user_expires_at"
     }
 
     public init(from decoder: Decoder) throws {
@@ -907,6 +942,9 @@ public struct AuthSuccess: Codable, Equatable, Sendable {
         accessToken = try c.decode(String.self, forKey: .accessToken)
         refreshToken = try c.decode(String.self, forKey: .refreshToken)
         expiresAt = try c.decode(Date.self, forKey: .expiresAt)
+        userAccessToken = try c.decodeIfPresent(String.self, forKey: .userAccessToken)
+        userRefreshToken = try c.decodeIfPresent(String.self, forKey: .userRefreshToken)
+        userExpiresAt = try c.decodeIfPresent(Date.self, forKey: .userExpiresAt)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -916,6 +954,9 @@ public struct AuthSuccess: Codable, Equatable, Sendable {
         try c.encode(accessToken, forKey: .accessToken)
         try c.encode(refreshToken, forKey: .refreshToken)
         try c.encode(expiresAt, forKey: .expiresAt)
+        try c.encodeIfPresent(userAccessToken, forKey: .userAccessToken)
+        try c.encodeIfPresent(userRefreshToken, forKey: .userRefreshToken)
+        try c.encodeIfPresent(userExpiresAt, forKey: .userExpiresAt)
     }
 }
 

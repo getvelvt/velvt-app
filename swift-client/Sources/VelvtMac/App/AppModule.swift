@@ -36,6 +36,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuStatusViewModel: MenuStatusViewModel?
     private var collectionAuthCancellable: AnyCancellable?
     private var authGatedCollectionController: AuthGatedCollectionController?
+    private let metricsStore = AppMetricsStore()
     private let serviceProcessLauncher = ServiceProcessLauncher()
 
     public override convenience init() {
@@ -94,19 +95,31 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusViewModel = MenuStatusViewModel(ipcClient: client, messages: accountStateManager.serverMessages)
         statusViewModel.start()
         menuStatusViewModel = statusViewModel
+        let serviceAlertModel = ServiceAlertModel(messages: accountStateManager.serverMessages)
 
-        let relay = EventRelay(ipcClient: client)
+        let relay = EventRelay(ipcClient: client, metrics: metricsStore)
         let currentActivity = CurrentActivityModel()
+        let collectionSettings = CollectionSettingsModel()
         let eventSinkFanout = EventSinkFanout([relay, currentActivity])
         let collectionAgent = AXCollectionAgent(eventSink: eventSinkFanout)
         let coordinator = PermissionCollectionCoordinator(
             permissionManager: permissionManager,
-            collectionAgent: collectionAgent
+            collectionAgent: collectionAgent,
+            connectionStatus: client.connectionStatus,
+            collectionSettings: collectionSettings
         )
         self.eventRelay = relay
         self.eventSinkFanout = eventSinkFanout
         self.collectionAgent = collectionAgent
         permissionCoordinator = coordinator
+
+        let scheduler = UNNotificationScheduler(metrics: metricsStore)
+        let notificationCoordinator = NotificationDeliveryCoordinator(
+            scheduler: scheduler,
+            permissionManager: permissionManager
+        )
+        notificationCoordinator.start(serverMessages: accountStateManager.serverMessages)
+        notificationDeliveryCoordinator = notificationCoordinator
 
         let menuBar = MenuBarController(
             presentation: permissionPresentation,
@@ -115,9 +128,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             accountStateManager: accountStateManager,
             ipcClient: client,
             menuStatusViewModel: statusViewModel,
+            metricsStore: metricsStore,
             currentActivity: currentActivity,
+            serviceAlertModel: serviceAlertModel,
+            collectionSettings: collectionSettings,
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
+            simulateNotification: {
+                displayCoord.updateInsight(Self.debugInsightPayload())
+                _ = notificationCoordinator.simulateDebugInsightReceipt()
+            },
             terminateApp: { NSApp.terminate(nil) }
         )
         menuBar.install()
@@ -127,14 +147,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             accountStateManager: accountStateManager
         )
         menuBarController = menuBar
-
-        let scheduler = UNNotificationScheduler()
-        let notificationCoordinator = NotificationDeliveryCoordinator(
-            scheduler: scheduler,
-            permissionManager: permissionManager
-        )
-        notificationCoordinator.start(serverMessages: accountStateManager.serverMessages)
-        notificationDeliveryCoordinator = notificationCoordinator
 
         let responseRouter = NotificationResponseRouter(
             openPopover: { [weak menuBar] in menuBar?.showPopover() },
@@ -207,6 +219,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             socketPath: config.socketPath,
             protocolVersion: config.protocolVersion,
             clientVersion: config.clientVersion
+        )
+    }
+
+    private static func debugInsightPayload(now: Date = Date()) -> InsightPayload {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return InsightPayload(
+            date: formatter.string(from: now),
+            text: "You switched away from your document 23 times in 40 minutes.",
+            confidenceLevel: .high,
+            lowConfidence: false,
+            generatedAt: now
         )
     }
 }

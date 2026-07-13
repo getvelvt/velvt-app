@@ -10,10 +10,11 @@ mod tokens;
 
 pub use account::AccountAuthService;
 pub use device::{
-    DeviceRegistrar, DeviceRegistrationError, HttpDeviceRegistrar, NoOpDeviceRegistrar,
+    DeviceRegistrar, DeviceRegistrationError, DeviceRegistrationPayload, HttpDeviceRegistrar,
+    NoOpDeviceRegistrar,
 };
 pub use http::{HttpClient, HttpMethod, HttpRequest, HttpResponse, ReqwestHttpClient};
-pub use manager::{AuthError, AuthManager};
+pub use manager::{AuthError, AuthManager, SessionValidator};
 pub use state::{AuthState, AuthStateMachine, AuthTransitionError};
 pub use store::{FakeTokenStore, TokenStore, TokenStoreError, VolatileTokenStore};
 pub use tokens::{RedactedString, TokenPair};

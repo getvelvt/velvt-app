@@ -21,7 +21,6 @@ INFOPLIST_KEY_VelvtClientVersion = $(MARKETING_VERSION)
 INFOPLIST_KEY_CFBundleDisplayName = Velvt
 INFOPLIST_KEY_CFBundleIconName = AppIcon
 INFOPLIST_KEY_LSMinimumSystemVersion = $(MACOSX_DEPLOYMENT_TARGET)
-INFOPLIST_KEY_LSUIElement = YES
 
 // TODO: the former literal plist's LSEnvironment dict (VELVT_SOCKET_PATH,
 // VELVT_PROTOCOL_VERSION, VELVT_CLIENT_VERSION defaults for a Debug build

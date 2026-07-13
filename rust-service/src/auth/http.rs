@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpMethod {
@@ -19,6 +20,7 @@ pub struct HttpRequest {
     pub authorization: Option<RedactedString>,
     pub refresh_token: Option<RedactedString>,
     pub json_body: Option<Value>,
+    pub timeout: Option<Duration>,
 }
 
 impl HttpRequest {
@@ -29,6 +31,7 @@ impl HttpRequest {
             authorization: None,
             refresh_token: None,
             json_body: None,
+            timeout: None,
         }
     }
 
@@ -39,6 +42,7 @@ impl HttpRequest {
             authorization: None,
             refresh_token: None,
             json_body: None,
+            timeout: None,
         }
     }
 
@@ -49,7 +53,13 @@ impl HttpRequest {
             authorization: None,
             refresh_token: None,
             json_body: None,
+            timeout: None,
         }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
     }
 }
 
@@ -107,6 +117,9 @@ impl HttpClient for ReqwestHttpClient {
                 HttpMethod::Post => self.client.post(url),
                 HttpMethod::Delete => self.client.delete(url),
             };
+            if let Some(timeout) = request.timeout {
+                builder = builder.timeout(timeout);
+            }
             if let Some(token) = request.authorization {
                 builder = builder.bearer_auth(token.expose());
             }

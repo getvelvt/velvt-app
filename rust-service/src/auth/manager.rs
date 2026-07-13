@@ -3,8 +3,16 @@ use super::{
     TokenStore, TokenStoreError,
 };
 use chrono::{Duration, Utc};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+pub trait SessionValidator: Send + Sync {
+    fn validate_restored_session<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>>;
+}
 
 pub struct AuthManager<S, H> {
     store: Arc<S>,
@@ -57,6 +65,17 @@ where
             return self.handle_response(retried, request).await;
         }
         self.handle_response(response, request).await
+    }
+
+    pub async fn validate_session(&self) -> Result<(), AuthError> {
+        let response = self
+            .send_authenticated(HttpRequest::get("/v1/auth/session"))
+            .await?;
+        match response.status {
+            200..=299 => Ok(()),
+            429 => Err(AuthError::RateLimited),
+            _ => Err(AuthError::InvalidResponse),
+        }
     }
 
     async fn tokens_for_request(&self) -> Result<super::TokenPair, AuthError> {
@@ -112,12 +131,11 @@ where
             self.state.transition(AuthState::DeviceRevoked)?;
             return Err(AuthError::DeviceRevoked);
         }
-        if matches!(
-            (response.status, response.error_code.as_deref()),
-            (403, Some("device_token_revoked"))
-        ) {
-            self.state.transition(AuthState::NeedsReauth)?;
-            return Err(AuthError::NeedsReauth);
+        if device_token_revoked(response.status, response.error_code.as_deref()) {
+            self.state
+                .transition(AuthState::Authenticated { device_id })?;
+            drop(_guard);
+            return self.reissue_device_tokens().await;
         }
         self.state.transition(AuthState::NeedsReauth)?;
         match response.status {
@@ -137,7 +155,7 @@ where
                 self.state.transition(AuthState::DeviceRevoked)?;
                 Err(AuthError::DeviceRevoked)
             }
-            (403, Some("device_token_revoked")) => {
+            (status, Some("device_token_revoked")) if status == 401 || status == 403 => {
                 let fresh = self.reissue_device_tokens().await?;
                 request.authorization = Some(fresh.access_token().clone());
                 let retried = self.http.send(request).await?;
@@ -146,7 +164,7 @@ where
                         self.state.transition(AuthState::DeviceRevoked)?;
                         Err(AuthError::DeviceRevoked)
                     }
-                    (403, Some("device_token_revoked")) => {
+                    (status, Some("device_token_revoked")) if status == 401 || status == 403 => {
                         self.state.transition(AuthState::NeedsReauth)?;
                         Err(AuthError::NeedsReauth)
                     }
@@ -177,7 +195,13 @@ where
 
     async fn reissue_device_tokens(&self) -> Result<super::TokenPair, AuthError> {
         let _guard = self.refresh_lock.lock().await;
-        let tokens = self.store.load_tokens()?.ok_or(AuthError::NeedsReauth)?;
+        let user_tokens = match self.user_tokens_for_reissue().await {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                self.state.transition(AuthState::NeedsReauth)?;
+                return Err(error);
+            }
+        };
         let device_id = match self.state.current() {
             AuthState::Authenticated { device_id } => device_id,
             AuthState::DeviceRevoked => return Err(AuthError::DeviceRevoked),
@@ -187,7 +211,7 @@ where
         };
         self.state.transition(AuthState::RefreshInFlight)?;
         let mut request = HttpRequest::post("/v1/auth/devices/reissue");
-        request.authorization = Some(tokens.access_token().clone());
+        request.authorization = Some(user_tokens.access_token().clone());
         request.json_body = Some(serde_json::json!({ "device_id": device_id }));
         let response = match self.http.send(request).await {
             Ok(response) => response,
@@ -224,6 +248,56 @@ where
             _ => Err(AuthError::NeedsReauth),
         }
     }
+
+    async fn user_tokens_for_reissue(&self) -> Result<super::TokenPair, AuthError> {
+        let tokens = self
+            .store
+            .load_user_tokens()?
+            .ok_or(AuthError::NeedsReauth)?;
+        if tokens.expires_at() > Utc::now() + self.refresh_buffer {
+            return Ok(tokens);
+        }
+        self.refresh_user_tokens().await
+    }
+
+    async fn refresh_user_tokens(&self) -> Result<super::TokenPair, AuthError> {
+        let tokens = self
+            .store
+            .load_user_tokens()?
+            .ok_or(AuthError::NeedsReauth)?;
+        let mut refresh_request = HttpRequest::post("/v1/auth/refresh");
+        refresh_request.refresh_token = Some(tokens.refresh_token().clone());
+        let response = self.http.send(refresh_request).await?;
+        if response.status == 200 {
+            let Some(fresh) = response.tokens else {
+                self.state.transition(AuthState::NeedsReauth)?;
+                return Err(AuthError::InvalidResponse);
+            };
+            if let Err(error) = self.store.store_user_pair(fresh.clone()) {
+                self.state.transition(AuthState::NeedsReauth)?;
+                return Err(error.into());
+            }
+            return Ok(fresh);
+        }
+        self.state.transition(AuthState::NeedsReauth)?;
+        match response.status {
+            403 => Err(AuthError::Forbidden),
+            429 => Err(AuthError::RateLimited),
+            _ => Err(AuthError::NeedsReauth),
+        }
+    }
+}
+
+impl<S, H> SessionValidator for AuthManager<S, H>
+where
+    S: TokenStore,
+    H: HttpClient,
+{
+    fn validate_restored_session<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
+        Box::pin(self.validate_session())
+    }
 }
 
 impl<S, H> HttpClient for AuthManager<S, H>
@@ -259,4 +333,8 @@ pub enum AuthError {
     TokenStore(#[from] TokenStoreError),
     #[error(transparent)]
     Transition(#[from] AuthTransitionError),
+}
+
+fn device_token_revoked(status: u16, code: Option<&str>) -> bool {
+    matches!((status, code), (401 | 403, Some("device_token_revoked")))
 }

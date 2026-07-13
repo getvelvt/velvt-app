@@ -2,6 +2,40 @@ import Combine
 import XCTest
 @testable import VelvtMac
 
+private struct TestStoredAuthSnapshot: Codable {
+    var userId: String
+    var email: String?
+    var pendingDeletion: Bool
+    var session: AuthSession
+}
+
+final class SnapshotCountingKeychain: KeychainProtocol {
+    private var values: [KeychainKey: String]
+    private(set) var loadKeys: [KeychainKey] = []
+
+    init(values: [KeychainKey: String]) {
+        self.values = values
+    }
+
+    func store(token: String, for key: KeychainKey) throws {
+        values[key] = token
+    }
+
+    func load(for key: KeychainKey) throws -> String {
+        loadKeys.append(key)
+        guard let value = values[key] else { throw AuthError.keychainItemNotFound }
+        return value
+    }
+
+    func loadAll() throws -> [KeychainKey: String] {
+        throw AuthError.keychain(status: errSecAuthFailed)
+    }
+
+    func delete(for key: KeychainKey) throws {
+        values.removeValue(forKey: key)
+    }
+}
+
 // MARK: - AccountState transition tests
 
 @MainActor
@@ -15,7 +49,7 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(sut.accountState, .loggingIn)
     }
 
-    func testLoggingInToLoggedInViaAuthSuccess() async {
+    func testLoggingInToLoggedInViaAuthSuccess() async throws {
         let client = FakeIPCClient()
         let keychain = FakeKeychain()
         let sut = AccountStateManager(keychain: keychain)
@@ -41,21 +75,58 @@ final class AccountStateManagerTests: XCTestCase {
 
         await fulfillment(of: [settled], timeout: 1)
         XCTAssertEqual(sut.accountState, .loggedIn(userId: "u123"))
-        XCTAssertEqual(keychain.storedValue(for: .accessToken), "tok-access")
-        XCTAssertEqual(keychain.storedValue(for: .refreshToken), "tok-refresh")
-        XCTAssertEqual(keychain.storedValue(for: .userId), "u123")
-        XCTAssertEqual(keychain.storedValue(for: .deviceId), "device-1")
+        let snapshot = try XCTUnwrap(decodeSnapshot(from: keychain))
+        XCTAssertEqual(snapshot.userId, "u123")
+        XCTAssertEqual(snapshot.session.accessToken, "tok-access")
+        XCTAssertEqual(snapshot.session.refreshToken, "tok-refresh")
+        XCTAssertEqual(snapshot.session.deviceId, "device-1")
+        XCTAssertNil(keychain.storedValue(for: .accessToken))
+        XCTAssertNil(keychain.storedValue(for: .userId))
+    }
+
+    func testAuthSuccessStoresSeparateUserAndDeviceSessions() async throws {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+        sut.transition(to: .loggingIn)
+        let deviceExpiresAt = Date(timeIntervalSinceNow: 3600)
+        let userExpiresAt = Date(timeIntervalSinceNow: 1800)
+
+        client.inject(.authSuccess(AuthSuccess(
+            userId: "u123",
+            deviceId: "device-1",
+            accessToken: "device-access",
+            refreshToken: "device-refresh",
+            expiresAt: deviceExpiresAt,
+            userAccessToken: "user-access",
+            userRefreshToken: "user-refresh",
+            userExpiresAt: userExpiresAt
+        )))
+
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        let snapshot = try XCTUnwrap(decodeSnapshot(from: keychain))
+        XCTAssertEqual(snapshot.session.accessToken, "device-access")
+        XCTAssertEqual(snapshot.session.refreshToken, "device-refresh")
+        XCTAssertEqual(snapshot.session.userAccessToken, "user-access")
+        XCTAssertEqual(snapshot.session.userRefreshToken, "user-refresh")
+        XCTAssertEqual(snapshot.session.userExpiresAt?.timeIntervalSince1970 ?? 0, userExpiresAt.timeIntervalSince1970, accuracy: 0.001)
     }
 
     func testStartListeningSendsStoredAuthSessionToRust() async throws {
         let client = FakeIPCClient()
         let keychain = FakeKeychain()
         let expiresAt = Date(timeIntervalSinceNow: 3600)
-        try keychain.store(token: "u123", for: .userId)
-        try keychain.store(token: "device-1", for: .deviceId)
-        try keychain.store(token: "stored-access", for: .accessToken)
-        try keychain.store(token: "stored-refresh", for: .refreshToken)
-        try keychain.store(token: "\(expiresAt.timeIntervalSince1970)", for: .expiresAt)
+        try seedSnapshot(
+            in: keychain,
+            userId: "u123",
+            session: AuthSession(
+                deviceId: "device-1",
+                accessToken: "stored-access",
+                refreshToken: "stored-refresh",
+                expiresAt: expiresAt
+            )
+        )
 
         let sut = AccountStateManager(keychain: keychain)
         sut.startListening(to: client)
@@ -75,11 +146,16 @@ final class AccountStateManagerTests: XCTestCase {
         let client = FakeIPCClient()
         let keychain = FakeKeychain()
         let expiresAt = Date(timeIntervalSinceNow: 3600)
-        try keychain.store(token: "u123", for: .userId)
-        try keychain.store(token: "device-1", for: .deviceId)
-        try keychain.store(token: "stored-access", for: .accessToken)
-        try keychain.store(token: "stored-refresh", for: .refreshToken)
-        try keychain.store(token: "\(expiresAt.timeIntervalSince1970)", for: .expiresAt)
+        try seedSnapshot(
+            in: keychain,
+            userId: "u123",
+            session: AuthSession(
+                deviceId: "device-1",
+                accessToken: "stored-access",
+                refreshToken: "stored-refresh",
+                expiresAt: expiresAt
+            )
+        )
 
         let sut = AccountStateManager(keychain: keychain)
         sut.startListening(to: client)
@@ -96,6 +172,34 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(session.deviceId, "device-1")
     }
 
+    func testInitializationReadsOnlySingleAuthSnapshotKey() async throws {
+        let client = FakeIPCClient()
+        let expiresAt = Date(timeIntervalSinceNow: 3600)
+        let rawSnapshot = try encodeSnapshot(TestStoredAuthSnapshot(
+            userId: "u123",
+            email: nil,
+            pendingDeletion: false,
+            session: AuthSession(
+                deviceId: "device-1",
+                accessToken: "stored-access",
+                refreshToken: "stored-refresh",
+                expiresAt: expiresAt
+            )
+        ))
+        let keychain = SnapshotCountingKeychain(values: [.authSnapshot: rawSnapshot])
+
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+        client.setConnectionStatus(.connected)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(sut.accountState, .loggedIn(userId: "u123"))
+        XCTAssertEqual(keychain.loadKeys, [.authSnapshot])
+        guard case .authSession? = client.sentMessages.first else {
+            return XCTFail("Expected stored auth session to be sent to Rust")
+        }
+    }
+
     func testSuccessfulAuthenticationStoresEmailInKeychain() async {
         let client = FakeIPCClient()
         let keychain = FakeKeychain()
@@ -109,30 +213,50 @@ final class AccountStateManagerTests: XCTestCase {
         )))
 
         try? await Task.sleep(nanoseconds: 10_000_000)
-        XCTAssertEqual(keychain.storedValue(for: .email), "ada@example.com")
+        XCTAssertEqual(decodeSnapshot(from: keychain)?.email, "ada@example.com")
         XCTAssertEqual(sut.accountEmail, "ada@example.com")
     }
 
     func testLogoutDeletesStoredEmail() throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u123", for: .userId)
-        try keychain.store(token: "ada@example.com", for: .email)
+        try seedSnapshot(in: keychain, userId: "u123", email: "ada@example.com")
         let sut = AccountStateManager(keychain: keychain)
 
         sut.logOut()
 
-        XCTAssertNil(keychain.storedValue(for: .email))
+        XCTAssertNil(keychain.storedValue(for: .authSnapshot))
     }
 
     func testAccountEmailIsReadOnceThenServedFromMemory() throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "ada@example.com", for: .email)
+        try seedSnapshot(in: keychain, email: "ada@example.com")
         let sut = AccountStateManager(keychain: keychain)
 
         XCTAssertEqual(sut.accountEmail, "ada@example.com")
         let loadsAfterFirstRead = keychain.loadCount
         XCTAssertEqual(sut.accountEmail, "ada@example.com")
         XCTAssertEqual(keychain.loadCount, loadsAfterFirstRead)
+    }
+
+    func testAccountEmailIsCachedDuringInitializationForSettingsDisplay() throws {
+        let keychain = FakeKeychain()
+        try seedSnapshot(in: keychain, email: "ada@example.com")
+        let sut = AccountStateManager(keychain: keychain)
+        let loadsAfterInit = keychain.loadCount
+
+        XCTAssertEqual(sut.accountEmail, "ada@example.com")
+        XCTAssertEqual(keychain.loadCount, loadsAfterInit)
+    }
+
+    func testInitializationRestoresAuthStateWithSingleKeychainReadPass() throws {
+        let keychain = FakeKeychain()
+        try seedSnapshot(in: keychain, userId: "u123", email: "ada@example.com")
+
+        let sut = AccountStateManager(keychain: keychain)
+
+        XCTAssertEqual(sut.accountState, .loggedIn(userId: "u123"))
+        XCTAssertEqual(sut.accountEmail, "ada@example.com")
+        XCTAssertEqual(keychain.loadCount, 1)
     }
 
     func testLoggingInToLoggedOutViaAuthFailure() async {
@@ -288,7 +412,7 @@ final class AccountStateManagerTests: XCTestCase {
 
     func testInitRestoresLoggedInStateFromKeychain() throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u42", for: .userId)
+        try seedSnapshot(in: keychain, userId: "u42")
         let sut = AccountStateManager(keychain: keychain)
         XCTAssertEqual(sut.accountState, .loggedIn(userId: "u42"))
     }
@@ -301,7 +425,7 @@ final class AccountStateManagerTests: XCTestCase {
 
     func testCancelPendingErasureRevertsToLoggedIn() throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u99", for: .userId)
+        try seedSnapshot(in: keychain, userId: "u99")
         let sut = AccountStateManager(keychain: keychain)
         sut.transition(to: .pendingErasure)
         sut.cancelPendingErasure()
@@ -363,8 +487,7 @@ final class AccountStateManagerTests: XCTestCase {
 
     func testInitRestoresPendingErasureWhenFlagAndUserIdBothPresent() throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u5", for: .userId)
-        try keychain.store(token: "1", for: .pendingDeletion)
+        try seedSnapshot(in: keychain, userId: "u5", pendingDeletion: true)
 
         let sut = AccountStateManager(keychain: keychain)
 
@@ -373,41 +496,39 @@ final class AccountStateManagerTests: XCTestCase {
 
     func testInitIsLoggedInWhenUserIdPresentButNoDeletionFlag() throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u5", for: .userId)
+        try seedSnapshot(in: keychain, userId: "u5")
 
         XCTAssertEqual(AccountStateManager(keychain: keychain).accountState, .loggedIn(userId: "u5"))
     }
 
     func testTransitionToPendingErasureWritesDeletionFlag() throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u1", for: .userId)
+        try seedSnapshot(in: keychain, userId: "u1")
         let sut = AccountStateManager(keychain: keychain)
 
         sut.transition(to: .pendingErasure)
 
-        XCTAssertNotNil(keychain.storedValue(for: .pendingDeletion), "sentinel must be written")
+        XCTAssertEqual(decodeSnapshot(from: keychain)?.pendingDeletion, true, "sentinel must be written")
     }
 
     func testCancelPendingErasureClearsDeletionFlag() throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u1", for: .userId)
-        try keychain.store(token: "1", for: .pendingDeletion)
+        try seedSnapshot(in: keychain, userId: "u1", pendingDeletion: true)
         let sut = AccountStateManager(keychain: keychain)
 
         XCTAssertEqual(sut.accountState, .pendingErasure)
         sut.cancelPendingErasure()
 
-        XCTAssertNil(keychain.storedValue(for: .pendingDeletion), "sentinel must be cleared on cancel")
+        XCTAssertEqual(decodeSnapshot(from: keychain)?.pendingDeletion, false, "sentinel must be cleared on cancel")
         XCTAssertEqual(sut.accountState, .loggedIn(userId: "u1"))
     }
 
     func testAccountDeletionAcceptedClearsDeletionFlagViaDeleteAll() async throws {
         let client = FakeIPCClient()
         let keychain = FakeKeychain()
-        try keychain.store(token: "u1", for: .userId)
         let sut = makeLoggedInManager(keychain: keychain, client: client)
         sut.transition(to: .pendingErasure)
-        XCTAssertNotNil(keychain.storedValue(for: .pendingDeletion))
+        XCTAssertEqual(decodeSnapshot(from: keychain)?.pendingDeletion, true)
 
         let settled = expectation(description: "loggedOut")
         var cancellable: AnyCancellable?
@@ -422,8 +543,7 @@ final class AccountStateManagerTests: XCTestCase {
 
     func testRelaunchInPendingErasureBlocksNormalTransitionsToLoggedIn() throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u1", for: .userId)
-        try keychain.store(token: "1", for: .pendingDeletion)
+        try seedSnapshot(in: keychain, userId: "u1", pendingDeletion: true)
         let sut = AccountStateManager(keychain: keychain)
 
         // A transition to loggedIn is not a valid move from pendingErasure.
@@ -433,6 +553,40 @@ final class AccountStateManagerTests: XCTestCase {
     }
 
     // MARK: Helpers
+
+    private func seedSnapshot(
+        in keychain: FakeKeychain,
+        userId: String = "u1",
+        email: String? = nil,
+        pendingDeletion: Bool = false,
+        session: AuthSession = AuthSession(
+            deviceId: "device-1",
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            expiresAt: Date(timeIntervalSinceNow: 3600)
+        )
+    ) throws {
+        let snapshot = TestStoredAuthSnapshot(
+            userId: userId,
+            email: email,
+            pendingDeletion: pendingDeletion,
+            session: session
+        )
+        try keychain.store(token: encodeSnapshot(snapshot), for: .authSnapshot)
+    }
+
+    private func decodeSnapshot(from keychain: FakeKeychain) -> TestStoredAuthSnapshot? {
+        guard let rawSnapshot = keychain.storedValue(for: .authSnapshot),
+              let data = rawSnapshot.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(TestStoredAuthSnapshot.self, from: data)
+    }
+
+    private func encodeSnapshot(_ snapshot: TestStoredAuthSnapshot) throws -> String {
+        let data = try JSONEncoder().encode(snapshot)
+        return String(data: data, encoding: .utf8)!
+    }
 
     private func makeManager(
         keychain: FakeKeychain = FakeKeychain(),
@@ -448,7 +602,7 @@ final class AccountStateManagerTests: XCTestCase {
         client: FakeIPCClient = FakeIPCClient()
     ) -> AccountStateManager {
         // Seed the keychain before constructing so init() restores loggedIn.
-        try? keychain.store(token: "u1", for: .userId)
+        try? seedSnapshot(in: keychain, userId: "u1")
         let mgr = AccountStateManager(keychain: keychain)
         mgr.startListening(to: client)
         return mgr
@@ -536,8 +690,9 @@ final class AuthViewModelTests: XCTestCase {
         await fulfillment(of: [loggedIn], timeout: 2)
 
         XCTAssertEqual(manager.accountState, .loggedIn(userId: "u-001"))
-        XCTAssertEqual(keychain.storedValue(for: .userId), "u-001")
-        XCTAssertEqual(keychain.storedValue(for: .accessToken), "at-x")
+        let snapshot = decodeSnapshot(from: keychain)
+        XCTAssertEqual(snapshot?.userId, "u-001")
+        XCTAssertEqual(snapshot?.session.accessToken, "at-x")
         XCTAssertFalse(sut.isLoading)
         XCTAssertNil(sut.errorMessage)
     }
@@ -573,9 +728,7 @@ final class AuthViewModelTests: XCTestCase {
 
     func testLogOutClearsKeychainAndTransitionsToLoggedOut() throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u1", for: .userId)
-        try keychain.store(token: "at", for: .accessToken)
-        try keychain.store(token: "rt", for: .refreshToken)
+        try seedSnapshot(in: keychain, userId: "u1")
         let manager = AccountStateManager(keychain: keychain)
         let client = FakeIPCClient()
         let sut = AuthViewModel(accountStateManager: manager, ipcClient: client)
@@ -588,7 +741,7 @@ final class AuthViewModelTests: XCTestCase {
 
     func testLogOutSendsLogOutIPCMessage() async throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u1", for: .userId)
+        try seedSnapshot(in: keychain, userId: "u1")
         let manager = AccountStateManager(keychain: keychain)
         let client = FakeIPCClient()
         let sut = AuthViewModel(accountStateManager: manager, ipcClient: client)
@@ -726,11 +879,68 @@ final class AuthViewModelTests: XCTestCase {
         XCTAssertEqual(sut.errorMessage, "Connection lost. Please try again.")
     }
 
+    func testSignUpTimesOutWhenServiceNeverResponds() async {
+        let (sut, manager, client) = makeViewModelWithDependencies(timeout: 0.05)
+        sut.email = "user@example.com"
+        sut.password = "secret"
+        client.setConnectionStatus(.connected)
+
+        let errorSet = expectation(description: "timeout error")
+        var cancellable: AnyCancellable?
+        cancellable = sut.$errorMessage.compactMap { $0 }.sink { message in
+            if message == "Authentication timed out. Please try again." {
+                errorSet.fulfill()
+                cancellable?.cancel()
+            }
+        }
+
+        await sut.signUp()
+
+        await fulfillment(of: [errorSet], timeout: 1)
+        XCTAssertEqual(manager.accountState, .loggedOut)
+        XCTAssertFalse(sut.isLoading)
+    }
+
+    func testAuthSuccessCancelsTimeout() async {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let manager = AccountStateManager(keychain: keychain)
+        manager.startListening(to: client)
+        let sut = AuthViewModel(accountStateManager: manager, ipcClient: client, authResponseTimeout: 0.05)
+        sut.email = "user@example.com"
+        sut.password = "secret"
+        client.setConnectionStatus(.connected)
+
+        let loggedIn = expectation(description: "logged in before timeout")
+        var cancellable: AnyCancellable?
+        cancellable = manager.$accountState.dropFirst().sink { state in
+            if case .loggedIn = state {
+                loggedIn.fulfill()
+                cancellable?.cancel()
+            }
+        }
+
+        await sut.logIn()
+        client.inject(.authSuccess(AuthSuccess(
+            userId: "u-001",
+            deviceId: "device-1",
+            accessToken: "at-x",
+            refreshToken: "rt-x",
+            expiresAt: Date(timeIntervalSinceNow: 3600)
+        )))
+
+        await fulfillment(of: [loggedIn], timeout: 1)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNil(sut.errorMessage)
+        XCTAssertFalse(sut.isLoading)
+        XCTAssertEqual(manager.accountState, .loggedIn(userId: "u-001"))
+    }
+
     // MARK: deleteAccount IPC send failure
 
     func testDeleteAccountIPCSendFailureRevertsToLoggedInAndShowsRetryMessage() async throws {
         let keychain = FakeKeychain()
-        try keychain.store(token: "u1", for: .userId)
+        try seedSnapshot(in: keychain, userId: "u1")
         let client = FakeIPCClient()
         let manager = AccountStateManager(keychain: keychain)
         manager.startListening(to: client)
@@ -749,20 +959,51 @@ final class AuthViewModelTests: XCTestCase {
         XCTAssertNotNil(sut.errorMessage, "retry message must be shown")
         XCTAssertFalse(sut.showDeleteConfirmation)
         // Keychain must be intact — no data lost due to a failed request.
-        XCTAssertNotNil(keychain.storedValue(for: .userId))
+        XCTAssertNotNil(keychain.storedValue(for: .authSnapshot))
         // Deletion sentinel must be cleared since erasure did not proceed.
-        XCTAssertNil(keychain.storedValue(for: .pendingDeletion))
+        XCTAssertEqual(decodeSnapshot(from: keychain)?.pendingDeletion, false)
     }
 
     // MARK: Helpers
 
+    private func seedSnapshot(
+        in keychain: FakeKeychain,
+        userId: String = "u1",
+        email: String? = nil,
+        pendingDeletion: Bool = false,
+        session: AuthSession = AuthSession(
+            deviceId: "device-1",
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            expiresAt: Date(timeIntervalSinceNow: 3600)
+        )
+    ) throws {
+        let snapshot = TestStoredAuthSnapshot(
+            userId: userId,
+            email: email,
+            pendingDeletion: pendingDeletion,
+            session: session
+        )
+        let data = try JSONEncoder().encode(snapshot)
+        try keychain.store(token: String(data: data, encoding: .utf8)!, for: .authSnapshot)
+    }
+
+    private func decodeSnapshot(from keychain: FakeKeychain) -> TestStoredAuthSnapshot? {
+        guard let rawSnapshot = keychain.storedValue(for: .authSnapshot),
+              let data = rawSnapshot.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(TestStoredAuthSnapshot.self, from: data)
+    }
+
     private func makeViewModelWithDependencies(
         keychain: FakeKeychain = FakeKeychain(),
-        client: FakeIPCClient = FakeIPCClient()
+        client: FakeIPCClient = FakeIPCClient(),
+        timeout: TimeInterval = 30
     ) -> (AuthViewModel, AccountStateManager, FakeIPCClient) {
         let manager = AccountStateManager(keychain: keychain)
         manager.startListening(to: client)
-        let vm = AuthViewModel(accountStateManager: manager, ipcClient: client)
+        let vm = AuthViewModel(accountStateManager: manager, ipcClient: client, authResponseTimeout: timeout)
         return (vm, manager, client)
     }
 

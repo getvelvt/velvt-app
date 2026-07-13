@@ -62,6 +62,22 @@ impl AccountAuthService {
     }
 
     pub fn apply_session(&self, session: velvt_shared_types::AuthSession) {
+        let user_tokens_stored = match (
+            session.user_access_token,
+            session.user_refresh_token,
+            session.user_expires_at,
+        ) {
+            (Some(access), Some(refresh), Some(expires_at)) => self
+                .token_store
+                .store_user_tokens(
+                    RedactedString::new(access),
+                    RedactedString::new(refresh),
+                    expires_at,
+                )
+                .is_ok(),
+            (None, None, None) => true,
+            _ => false,
+        };
         if self
             .token_store
             .store_tokens(
@@ -71,6 +87,7 @@ impl AccountAuthService {
             )
             .is_ok()
             && self.token_store.store_device_id(&session.device_id).is_ok()
+            && user_tokens_stored
         {
             let _ = self.auth_state.transition(AuthState::Authenticated {
                 device_id: session.device_id,
@@ -90,7 +107,15 @@ impl AccountAuthService {
         };
         match self.token_store.load_device_id() {
             Ok(Some(device_id)) => {
-                return self.reissue_device_tokens(success, device_id).await;
+                let user_tokens = TokenPair::new(
+                    RedactedString::new(success.access_token.clone()),
+                    RedactedString::new(success.refresh_token.clone()),
+                    success.expires_at,
+                );
+                let _ = self.token_store.store_user_pair(user_tokens.clone());
+                return self
+                    .reissue_device_tokens(success.user_id, user_tokens, device_id)
+                    .await;
             }
             Err(error) => {
                 tracing::error!(
@@ -162,16 +187,23 @@ impl AccountAuthService {
                 "device registered but auth state transition was rejected"
             );
         }
-        auth_success_from_device_tokens(success.user_id, device_id, tokens)
+        let user_tokens = TokenPair::new(
+            RedactedString::new(success.access_token),
+            RedactedString::new(success.refresh_token),
+            success.expires_at,
+        );
+        let _ = self.token_store.store_user_pair(user_tokens.clone());
+        auth_success_from_device_tokens(success.user_id, device_id, tokens, Some(user_tokens))
     }
 
     async fn reissue_device_tokens(
         &self,
-        success: AuthSuccess,
+        user_id: String,
+        user_tokens: TokenPair,
         device_id: String,
     ) -> ServerMessage {
         let mut request = HttpRequest::post("/v1/auth/devices/reissue");
-        request.authorization = Some(RedactedString::new(success.access_token.clone()));
+        request.authorization = Some(user_tokens.access_token().clone());
         request.json_body = Some(serde_json::json!({ "device_id": device_id }));
         let response = match self.raw_http.send(request).await {
             Ok(response) if response.status == 200 => response,
@@ -187,7 +219,18 @@ impl AccountAuthService {
                         "failed to clear stale device id before registration retry"
                     );
                 }
-                return self.register_device(success).await;
+                return self
+                    .register_device(AuthSuccess {
+                        user_id,
+                        device_id: String::new(),
+                        access_token: user_tokens.access_token().expose().to_owned(),
+                        refresh_token: user_tokens.refresh_token().expose().to_owned(),
+                        expires_at: user_tokens.expires_at(),
+                        user_access_token: None,
+                        user_refresh_token: None,
+                        user_expires_at: None,
+                    })
+                    .await;
             }
             Ok(response) => {
                 tracing::error!(
@@ -243,7 +286,7 @@ impl AccountAuthService {
                 "device tokens were reissued but auth state transition was rejected"
             );
         }
-        auth_success_from_device_tokens(success.user_id, device_id, tokens)
+        auth_success_from_device_tokens(user_id, device_id, tokens, Some(user_tokens))
     }
 
     /// Fire-and-forget per the IPC contract: best-effort server-side
@@ -291,6 +334,9 @@ impl AccountAuthService {
                         access_token: tokens.access_token().expose().to_owned(),
                         refresh_token: tokens.refresh_token().expose().to_owned(),
                         expires_at: tokens.expires_at(),
+                        user_access_token: None,
+                        user_refresh_token: None,
+                        user_expires_at: None,
                     }),
                     _ => ServerMessage::AuthFailure(AuthFailure {
                         code: AuthFailureCode::ServerError,
@@ -336,6 +382,7 @@ fn auth_success_from_device_tokens(
     user_id: String,
     device_id: String,
     tokens: TokenPair,
+    user_tokens: Option<TokenPair>,
 ) -> ServerMessage {
     ServerMessage::AuthSuccess(AuthSuccess {
         user_id,
@@ -343,6 +390,13 @@ fn auth_success_from_device_tokens(
         access_token: tokens.access_token().expose().to_owned(),
         refresh_token: tokens.refresh_token().expose().to_owned(),
         expires_at: tokens.expires_at(),
+        user_access_token: user_tokens
+            .as_ref()
+            .map(|tokens| tokens.access_token().expose().to_owned()),
+        user_refresh_token: user_tokens
+            .as_ref()
+            .map(|tokens| tokens.refresh_token().expose().to_owned()),
+        user_expires_at: user_tokens.as_ref().map(TokenPair::expires_at),
     })
 }
 

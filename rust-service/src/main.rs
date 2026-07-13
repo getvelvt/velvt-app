@@ -80,11 +80,11 @@ async fn main() {
         use std::sync::Arc;
         use velvt_service::auth::{
             AccountAuthService, AuthManager, AuthState, AuthStateMachine, HttpClient,
-            ReqwestHttpClient, TokenStore, VolatileTokenStore,
+            ReqwestHttpClient, SessionValidator, TokenStore, VolatileTokenStore,
         };
         use velvt_service::delivery::{
-            CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable, PushAdapter,
-            PushAdapterAlertSink,
+            CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable, PollClient,
+            PollConfig, PollScheduler, PushAdapter, PushAdapterAlertSink,
         };
         use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
         use velvt_service::ipc::{MenuStatusProvider, R7Router, ReconnectTracker};
@@ -241,6 +241,23 @@ async fn main() {
             token.subscribe(),
         );
         let fetch_task = tokio::spawn(async move { fetch_scheduler.run().await });
+        let poll_client = PollClient::new(
+            Arc::clone(&authenticated_http),
+            PollConfig {
+                path: config.insight_poll_path.clone(),
+                poll_timeout: config.insight_poll_timeout,
+                idle_interval: config.insight_poll_idle_interval,
+                initial_backoff: config.insight_poll_initial_backoff,
+                max_backoff: config.insight_poll_max_backoff,
+            },
+        );
+        let poll_scheduler = PollScheduler::new(
+            poll_client,
+            Arc::clone(&push_adapter),
+            auth_state.subscribe(),
+            token.subscribe(),
+        );
+        let poll_task = tokio::spawn(async move { poll_scheduler.run().await });
 
         let uploader = HttpBatchUploader::new(Arc::clone(&authenticated_http));
         let upload_coordinator = UploadCoordinator::new(
@@ -364,9 +381,10 @@ async fn main() {
                 Arc::clone(&shared_batcher),
                 account_service,
             )
+            .with_session_validator(Arc::clone(&authenticated_http) as Arc<dyn SessionValidator>)
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,
-                device_id.clone(),
+                Arc::clone(&token_store) as Arc<dyn TokenStore>,
                 Arc::clone(&upload_batch_repo),
                 Arc::clone(&raw_event_repo),
             ))),
@@ -412,6 +430,7 @@ async fn main() {
         let shutdown_deadline = config.shutdown_deadline;
         let _ = tokio::time::timeout(shutdown_deadline, async {
             let _ = fetch_task.await;
+            let _ = poll_task.await;
             let _ = recovery_task.await;
             let _ = server_task.await;
             let _ = retention_task.await;

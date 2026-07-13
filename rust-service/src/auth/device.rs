@@ -1,4 +1,6 @@
 use super::{HttpClient, HttpRequest, TokenStore};
+use serde::Serialize;
+use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -30,11 +32,43 @@ impl DeviceRegistrar for NoOpDeviceRegistrar {
 pub struct HttpDeviceRegistrar<H, S> {
     http: Arc<H>,
     store: Arc<S>,
+    payload: DeviceRegistrationPayload,
 }
 
 impl<H, S> HttpDeviceRegistrar<H, S> {
-    pub fn new(http: Arc<H>, store: Arc<S>) -> Self {
-        Self { http, store }
+    pub fn new(http: Arc<H>, store: Arc<S>, payload: DeviceRegistrationPayload) -> Self {
+        Self {
+            http,
+            store,
+            payload,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DeviceRegistrationPayload {
+    pub client_version: String,
+    pub supported_abstraction_types: Vec<String>,
+    pub capabilities: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apns_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apns_environment: Option<String>,
+}
+
+impl DeviceRegistrationPayload {
+    pub fn new(
+        client_version: impl Into<String>,
+        supported_abstraction_types: Vec<String>,
+        capabilities: Value,
+    ) -> Self {
+        Self {
+            client_version: client_version.into(),
+            supported_abstraction_types,
+            capabilities,
+            apns_token: None,
+            apns_environment: None,
+        }
     }
 }
 
@@ -47,9 +81,14 @@ where
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<(), DeviceRegistrationError>> + Send + '_>> {
         Box::pin(async move {
+            let mut request = HttpRequest::post("/v1/devices");
+            request.json_body = Some(
+                serde_json::to_value(&self.payload)
+                    .map_err(|_| DeviceRegistrationError::InvalidRequest)?,
+            );
             let response = self
                 .http
-                .send(HttpRequest::post("/v1/devices"))
+                .send(request)
                 .await
                 .map_err(|_| DeviceRegistrationError::Unavailable)?;
             if !(200..300).contains(&response.status) {
@@ -80,4 +119,6 @@ pub enum DeviceRegistrationError {
     Rejected,
     #[error("device registration response was invalid")]
     InvalidResponse,
+    #[error("device registration request was invalid")]
+    InvalidRequest,
 }

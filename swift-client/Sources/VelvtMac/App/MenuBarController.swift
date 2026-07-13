@@ -129,6 +129,9 @@ public final class MenuBarController: NSObject {
     private let serviceConnectionStatus: ServiceConnectionStatusModel
     private let collectionActivityStatus: CollectionActivityStatusModel
     private let currentActivity: CurrentActivityModel
+    private let serviceAlertModel: ServiceAlertModel
+    private let collectionSettings: CollectionSettingsModel
+    private let metricsStore: AppMetricsStore
     private var statusItem: NSStatusItem?
     private var cancellables = Set<AnyCancellable>()
 
@@ -143,9 +146,13 @@ public final class MenuBarController: NSObject {
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
+        metricsStore: AppMetricsStore = AppMetricsStore(defaults: UserDefaults(suiteName: "MenuBarController.preview") ?? .standard),
         currentActivity: CurrentActivityModel = CurrentActivityModel(),
+        serviceAlertModel: ServiceAlertModel? = nil,
+        collectionSettings: CollectionSettingsModel = CollectionSettingsModel(),
         collectionStatus: AnyPublisher<CollectionStatus, Never> = Just(.idle).eraseToAnyPublisher(),
         connectionStatus: AnyPublisher<ConnectionStatus, Never> = Just(.disconnected).eraseToAnyPublisher(),
+        simulateNotification: (() -> Void)? = nil,
         activateApp: @escaping @MainActor () -> Void = {
             NSApp.unhide(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -154,9 +161,13 @@ public final class MenuBarController: NSObject {
     ) {
         let serviceConnectionStatus = ServiceConnectionStatusModel(connectionStatus: connectionStatus)
         let collectionActivityStatus = CollectionActivityStatusModel(collectionStatus: collectionStatus)
+        let serviceAlertModel = serviceAlertModel ?? ServiceAlertModel(messages: Empty<ServerMessage, Never>())
         self.serviceConnectionStatus = serviceConnectionStatus
         self.collectionActivityStatus = collectionActivityStatus
         self.currentActivity = currentActivity
+        self.serviceAlertModel = serviceAlertModel
+        self.collectionSettings = collectionSettings
+        self.metricsStore = metricsStore
         popover = NSPopover()
         self.activateApp = activateApp
         self.terminateApp = terminateApp
@@ -174,9 +185,13 @@ public final class MenuBarController: NSObject {
                 serviceConnectionStatus: serviceConnectionStatus,
                 collectionActivityStatus: collectionActivityStatus,
                 currentActivity: currentActivity,
+                serviceAlertModel: serviceAlertModel,
+                collectionSettings: collectionSettings,
                 accountStateManager: accountStateManager,
                 ipcClient: ipcClient,
                 menuStatusViewModel: menuStatusViewModel,
+                simulateNotification: simulateNotification,
+                metricsStore: metricsStore,
                 onEscape: { [weak self] in self?.closePopover() },
                 onTerminate: { [weak self] in self?.terminateApp() }
             )

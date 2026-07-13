@@ -90,7 +90,9 @@ public final class MenuBarController: NSObject {
 - `install()` sets `NSApp.activationPolicy = .accessory` (no Dock icon) and
   creates the status item with an initial `.normal` icon. This does not
   prevent the app from showing windows (e.g. onboarding) or from terminating
-  normally.
+  normally. The bundle intentionally does not set `LSUIElement`; that keeps the
+  installed app visible to LaunchServices/Launchpad while preserving menu-bar
+  behavior at runtime.
 - The popover's `NSHostingController` wraps `MenuBarPopoverView`, which embeds
   the unmodified S6 `VelvtPopoverContentView` (`InsightCardView` +
   `HistoryListView`). Pushing a new `InsightPayload`/`HistoryPayload` through
@@ -140,6 +142,14 @@ layer never generates or edits insight text. `NotificationDeliveryCoordinator`
 is the **only** place that checks notifications `PermissionStatus`; denied,
 restricted, or undetermined status discards the payload silently (no crash,
 no retry, no re-request).
+
+In debug builds, Settings includes a Debug submenu with a "Simulate Insight"
+action. The AppDelegate wiring updates the display coordinator with a
+representative `InsightPayload`, then calls
+`NotificationDeliveryCoordinator.simulateDebugInsightReceipt()` to route a
+matching `NotificationPayload` through the same scheduler/permission path used
+by real Rust IPC pushes. This is a local test harness only; it does not contact
+velvt-core.
 
 ### Burst de-duplication
 

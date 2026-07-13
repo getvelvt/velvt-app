@@ -561,6 +561,54 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         }
     }
 
+    // MARK: - Initial data request loader
+
+    func testMenuBarDataLoaderRetriesInitialRequestsAfterSendFailureOnReconnect() async throws {
+        let client = InitialDataRequestIPCClient()
+        client.sendFailuresRemaining = 1
+        let accountState = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "u1"))
+        let sut = MenuBarDataLoader(
+            ipcClient: client,
+            latestClosedInsightDate: { "2026-07-03" }
+        )
+        sut.start(accountState: accountState.eraseToAnyPublisher())
+
+        client.setConnectionStatus(.connected)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(client.sendAttempts, 1)
+        XCTAssertTrue(client.sentMessages.isEmpty)
+
+        client.setConnectionStatus(.disconnected)
+        client.setConnectionStatus(.connected)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(client.sentMessages, [
+            .requestLatestInsight(RequestLatestInsight(date: "2026-07-03")),
+            .requestLatestHistory(RequestLatestHistory(days: 7)),
+        ])
+    }
+
+    func testMenuBarDataLoaderDoesNotRepeatInitialRequestsAfterSuccessfulSend() async throws {
+        let client = InitialDataRequestIPCClient()
+        let accountState = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "u1"))
+        let sut = MenuBarDataLoader(
+            ipcClient: client,
+            latestClosedInsightDate: { "2026-07-03" }
+        )
+        sut.start(accountState: accountState.eraseToAnyPublisher())
+
+        client.setConnectionStatus(.connected)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        client.setConnectionStatus(.connected)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(client.sentMessages, [
+            .requestLatestInsight(RequestLatestInsight(date: "2026-07-03")),
+            .requestLatestHistory(RequestLatestHistory(days: 7)),
+        ])
+    }
+
     // MARK: - Helpers
 
     private func makeWiredCoordinator() -> (
@@ -605,5 +653,49 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         case .populated:      return ".populated"
         case .error(let msg): return ".error(\(msg))"
         }
+    }
+}
+
+private final class InitialDataRequestIPCClient: IPCClientProtocol, @unchecked Sendable {
+    let incomingMessages: AsyncStream<ServerMessage> = AsyncStream { continuation in
+        continuation.finish()
+    }
+    var connectionStatus: AnyPublisher<ConnectionStatus, Never> {
+        statusSubject.eraseToAnyPublisher()
+    }
+    var sentMessages: [ClientMessage] {
+        lock.withLock { messages }
+    }
+    var sendAttempts: Int {
+        lock.withLock { attempts }
+    }
+    var sendFailuresRemaining = 0
+
+    private let lock = NSLock()
+    private let statusSubject = CurrentValueSubject<ConnectionStatus, Never>(.disconnected)
+    private var messages: [ClientMessage] = []
+    private var attempts = 0
+
+    func connect() async throws {
+        statusSubject.send(.connected)
+    }
+
+    func disconnect() {
+        statusSubject.send(.disconnected)
+    }
+
+    func send(_ message: ClientMessage) async throws {
+        try lock.withLock {
+            attempts += 1
+            if sendFailuresRemaining > 0 {
+                sendFailuresRemaining -= 1
+                throw IPCError.notConnected
+            }
+            messages.append(message)
+        }
+    }
+
+    func setConnectionStatus(_ status: ConnectionStatus) {
+        statusSubject.send(status)
     }
 }

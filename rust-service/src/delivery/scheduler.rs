@@ -53,9 +53,10 @@ impl FetchScheduler {
     pub async fn run(mut self) {
         let mut ticker = tokio::time::interval(self.tick_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // None means "never fetched"; treat as overdue so the first eligible
-        // tick immediately runs a fetch.
-        let mut last_fetch: Option<Instant> = None;
+        // On-demand Swift requests fetch initial history/insight after connect.
+        // Proactive background refresh waits one interval to avoid duplicating
+        // that startup traffic.
+        let mut last_fetch: Option<Instant> = Some(Instant::now());
 
         loop {
             tokio::select! {
@@ -181,6 +182,29 @@ mod tests {
         assert!(
             counter.load(Ordering::SeqCst) >= 1,
             "scheduler should have called fetch at least once when authenticated"
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_waits_for_interval_before_first_proactive_fetch() {
+        let (service, counter) = FakeFetchable::new();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let scheduler = FetchScheduler::new(
+            service,
+            7,
+            Duration::from_millis(200),
+            authenticated_state(),
+            shutdown_rx,
+        );
+
+        tokio::spawn(async move { scheduler.run().await });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let _ = shutdown_tx.send(true);
+
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            0,
+            "scheduler should not duplicate startup on-demand history/insight requests"
         );
     }
 

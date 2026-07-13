@@ -37,13 +37,16 @@ extension UNUserNotificationCenter: UNUserNotificationCenterProtocol {}
 public final class UNNotificationScheduler: NotificationSchedulerProtocol {
     private let center: any UNUserNotificationCenterProtocol
     private let now: () -> Date
+    private let metrics: (any AppMetricsCounting)?
 
     public init(
         center: any UNUserNotificationCenterProtocol = UNUserNotificationCenter.current(),
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        metrics: (any AppMetricsCounting)? = nil
     ) {
         self.center = center
         self.now = now
+        self.metrics = metrics
     }
 
     public func schedule(_ payload: NotificationPayload) async {
@@ -51,6 +54,7 @@ public final class UNNotificationScheduler: NotificationSchedulerProtocol {
         content.title = payload.title
         content.body = payload.body
         content.userInfo = ["insight_date": payload.insightDate]
+        content.sound = .default
 
         let trigger: UNNotificationTrigger? = {
             guard let until = payload.doNotDisturbUntil else { return nil }
@@ -64,7 +68,12 @@ public final class UNNotificationScheduler: NotificationSchedulerProtocol {
             content: content,
             trigger: trigger
         )
-        try? await center.add(request)
+        do {
+            try await center.add(request)
+            metrics?.incrementInterventions()
+        } catch {
+            return
+        }
     }
 
     public func cancelAll() {

@@ -36,8 +36,9 @@ fn main() {
     // Compile-time API config. Set these in the environment when building via
     // the Xcode Run Script phase; bare `cargo build` uses staging defaults so
     // local development needs no env setup.
-    let api_base_url = option_env!("VELVT_API_BASE_URL").unwrap_or("https://api.getvelvt.com");
-    let apns_env = option_env!("VELVT_APNS_ENV").unwrap_or("development");
+    let api_base_url =
+        env::var("VELVT_API_BASE_URL").unwrap_or_else(|_| "https://api.getvelvt.com".into());
+    let apns_env = env::var("VELVT_APNS_ENV").unwrap_or_else(|_| "development".into());
     println!("cargo:rustc-env=VELVT_API_BASE_URL_COMPILED={api_base_url}");
     println!("cargo:rustc-env=VELVT_APNS_ENV_COMPILED={apns_env}");
     println!("cargo:rerun-if-env-changed=VELVT_API_BASE_URL");

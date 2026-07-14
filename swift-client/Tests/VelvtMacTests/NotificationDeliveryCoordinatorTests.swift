@@ -76,7 +76,7 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(scheduler.scheduledPayloads, [payload])
     }
 
-    func testDebugSimulationUsesNotificationHandler() async {
+    func testDebugSimulationSchedulesImmediateNativeNotification() async {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.granted, for: .notifications)
@@ -88,12 +88,7 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(scheduler.scheduledPayloads.count, 1)
         XCTAssertEqual(scheduler.scheduledPayloads.first?.title, "Your Velvt insight is ready")
         XCTAssertEqual(scheduler.scheduledPayloads.first?.insightDate, "2026-06-15")
-        let scheduledAt = try! XCTUnwrap(scheduler.scheduledPayloads.first?.doNotDisturbUntil)
-        XCTAssertEqual(
-            scheduledAt.timeIntervalSince(now),
-            1,
-            accuracy: 0.01
-        )
+        XCTAssertNil(scheduler.scheduledPayloads.first?.doNotDisturbUntil)
     }
 
     func testDebugSimulationRequestsNotificationPermissionWhenUnknown() async {
@@ -107,12 +102,7 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(permissions.requestedPermissions, [.notifications])
         XCTAssertEqual(scheduler.scheduledPayloads.count, 1)
         XCTAssertEqual(scheduler.scheduledPayloads.first?.insightDate, "2026-06-15")
-        let scheduledAt = try! XCTUnwrap(scheduler.scheduledPayloads.first?.doNotDisturbUntil)
-        XCTAssertEqual(
-            scheduledAt.timeIntervalSince(now),
-            1,
-            accuracy: 0.01
-        )
+        XCTAssertNil(scheduler.scheduledPayloads.first?.doNotDisturbUntil)
     }
 
     func testRepeatedDebugSimulationsScheduleSeparateNativeNotifications() async {

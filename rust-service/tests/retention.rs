@@ -4,7 +4,10 @@
 //! The retention targets call real DAL methods so the SQL and the trait
 //! implementations are both exercised.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Condvar, Mutex},
+    time::Duration,
+};
 
 use chrono::Utc;
 use velvt_service::persistence::{NewUploadBatch, RawEventEntry, SqlitePersistence};
@@ -275,31 +278,56 @@ fn upload_batch_retention_never_deletes_pending_batches() {
 /// path is not starved by a slow retention target.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn db_slow_during_retention_does_not_block_async_tasks() {
-    struct SlowTarget;
-    impl RetentionTarget for SlowTarget {
+    struct BlockingTarget {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl RetentionTarget for BlockingTarget {
         fn name(&self) -> &'static str {
-            "slow"
+            "blocking"
         }
         fn run_cleanup(&self) -> Result<CleanupReport, RetentionError> {
-            std::thread::sleep(Duration::from_millis(80));
+            self.started.notify_one();
+
+            let (lock, signal) = &*self.release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = signal.wait(released).unwrap();
+            }
+
             Ok(CleanupReport { deleted: 0 })
         }
     }
 
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let scheduler =
-        RetentionScheduler::new(Duration::from_millis(1), shutdown_rx).add_target(SlowTarget);
-    tokio::spawn(async move { scheduler.run().await });
+        RetentionScheduler::new(Duration::from_secs(60), shutdown_rx).add_target(BlockingTarget {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        });
+    let scheduler_task = tokio::spawn(async move { scheduler.run().await });
 
-    // While retention blocks a worker thread, this async task must still be
-    // scheduled and complete within a generous bound.
-    let fast_task = tokio::spawn(async {
-        tokio::time::sleep(Duration::from_millis(40)).await;
-    });
-    tokio::time::timeout(Duration::from_millis(200), fast_task)
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
         .await
-        .expect("async task must not be starved by blocking retention")
-        .expect("task must not panic");
+        .expect("retention cleanup did not start");
+
+    let fast_task = tokio::spawn(async { tokio::task::yield_now().await });
+    let fast_task_result = tokio::time::timeout(Duration::from_secs(5), fast_task).await;
 
     let _ = shutdown_tx.send(true);
+
+    let (lock, signal) = &*release;
+    *lock.lock().unwrap() = true;
+    signal.notify_all();
+
+    tokio::time::timeout(Duration::from_secs(5), scheduler_task)
+        .await
+        .expect("retention scheduler did not stop")
+        .expect("retention scheduler task must not panic");
+    fast_task_result
+        .expect("async task was deadlocked by blocking retention")
+        .expect("async task must not panic");
 }

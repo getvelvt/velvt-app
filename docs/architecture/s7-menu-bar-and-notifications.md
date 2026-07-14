@@ -144,12 +144,13 @@ restricted, or undetermined status discards the payload silently (no crash,
 no retry, no re-request).
 
 In debug builds, Settings includes a Debug submenu with a "Simulate Insight"
-action. The AppDelegate wiring updates the display coordinator with a
-representative `InsightPayload`, then calls
-`NotificationDeliveryCoordinator.simulateDebugInsightReceipt()` to route a
-matching `NotificationPayload` through the same scheduler/permission path used
-by real Rust IPC pushes. This is a local test harness only; it does not contact
-velvt-core.
+action. It calls
+`NotificationDeliveryCoordinator.simulateDebugInsightReceipt()` to route an
+immediate `NotificationPayload` through the same native macOS
+scheduler/permission path used by real Rust IPC pushes. It does not inject an
+insight directly into the in-app display and does not contact velvt-core. The
+popover closes immediately after the action so it cannot obscure the native
+macOS banner.
 
 ### Burst de-duplication
 

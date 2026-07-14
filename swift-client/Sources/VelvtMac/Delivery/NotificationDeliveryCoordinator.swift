@@ -111,7 +111,7 @@ public final class NotificationDeliveryCoordinator {
             title: "Your Velvt insight is ready",
             body: "You switched away from your document 23 times in 40 minutes.",
             insightDate: formatter.string(from: now),
-            doNotDisturbUntil: now.addingTimeInterval(1)
+            doNotDisturbUntil: nil
         )
     }
 }

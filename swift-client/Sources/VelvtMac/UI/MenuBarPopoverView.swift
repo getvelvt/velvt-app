@@ -646,6 +646,7 @@ public struct MenuBarPopoverView: View {
         simulateNotification?()
         dismissSettingsSubmenus()
         navigator.goBack()
+        onEscape()
     }
 
     private func submenuBinding(for submenu: SettingsSubmenu) -> Binding<Bool> {

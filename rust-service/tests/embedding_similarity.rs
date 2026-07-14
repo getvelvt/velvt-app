@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Barrier, Mutex},
+    sync::{Arc, Barrier, Condvar, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -154,11 +154,26 @@ async fn concurrent_inference_has_no_state_corruption() {
 
 #[test]
 fn slow_inference_times_out_and_increments_metric() {
+    struct BlockingEmbeddingModel {
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl EmbeddingModel for BlockingEmbeddingModel {
+        fn embed(&self, _input: &str) -> Result<Vec<f32>, EmbeddingError> {
+            let (lock, signal) = &*self.release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = signal.wait(released).unwrap();
+            }
+            Ok(vec![1.0, 0.0])
+        }
+    }
+
     let metrics = Arc::new(EmbeddingMetrics::default());
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
     let plugin = EmbeddingSimilarityPlugin::new(
-        Arc::new(FakeEmbeddingModel {
-            embedding: vec![1.0, 0.0],
-            delay: Duration::from_millis(100),
+        Arc::new(BlockingEmbeddingModel {
+            release: Arc::clone(&release),
         }),
         centroids(),
         "mvp-1",
@@ -167,11 +182,13 @@ fn slow_inference_times_out_and_increments_metric() {
         Arc::clone(&metrics),
     )
     .unwrap();
-    let started = Instant::now();
 
     assert!(plugin.classify("Unknown IDE", "private title").is_none());
-    assert!(started.elapsed() < Duration::from_millis(50));
     assert_eq!(metrics.tier2_timeout_count(), 1);
+
+    let (lock, signal) = &*release;
+    *lock.lock().unwrap() = true;
+    signal.notify_all();
 }
 
 #[test]

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install pinned Rust toolchain
+        working-directory: rust-service
+        run: rustup show active-toolchain
+
+      - name: Lint Rust
+        run: make lint-rust
+
+      - name: Test Rust
+        run: make test-rust
+
+      - name: Lint Swift
+        run: make lint-swift
+
+      - name: Test Swift
+        run: make test-swift
+
+      - name: Build and verify packaged local-core app
+        run: |
+          make build-app-local-core VELVT_CODESIGN_IDENTITY=-
+          codesign --verify --deep --strict dist/velvt-mac.app

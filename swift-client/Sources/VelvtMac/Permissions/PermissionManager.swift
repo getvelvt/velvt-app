@@ -162,6 +162,10 @@ public final class PermissionManager: PermissionManagerProtocol {
         return status
     }
 
+    public func refreshAccessibilityPermissionOnLaunch() async -> PermissionStatus {
+        await requestPermission(for: .accessibility)
+    }
+
     public func startMonitoring() {
         let shouldStart = lock.withLock { () -> Bool in
             guard !isMonitoring else {

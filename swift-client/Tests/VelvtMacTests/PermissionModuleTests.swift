@@ -124,6 +124,32 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(accessibility.promptValues, [false, true])
     }
 
+    func testLaunchRefreshPromptsWhenAccessibilityGrantIsMissing() async {
+        let accessibility = FakeAccessibilityPermissionClient(isTrusted: false)
+        let manager = PermissionManager(
+            accessibilityClient: accessibility,
+            notificationClient: FakeNotificationPermissionClient()
+        )
+
+        let status = await manager.refreshAccessibilityPermissionOnLaunch()
+
+        XCTAssertEqual(status, .denied)
+        XCTAssertEqual(accessibility.promptValues, [false, true])
+    }
+
+    func testLaunchRefreshPreservesAnExistingAccessibilityGrant() async {
+        let accessibility = FakeAccessibilityPermissionClient(isTrusted: true)
+        let manager = PermissionManager(
+            accessibilityClient: accessibility,
+            notificationClient: FakeNotificationPermissionClient()
+        )
+
+        let status = await manager.refreshAccessibilityPermissionOnLaunch()
+
+        XCTAssertEqual(status, .granted)
+        XCTAssertEqual(accessibility.promptValues, [false])
+    }
+
     func testAccessibilityRequestPollsForGrantAfterSystemSettingsToggleWhileInactive() async {
         let accessibility = FakeAccessibilityPermissionClient(isTrusted: false)
         let promptPollScheduler = FakePermissionMonitorScheduler()

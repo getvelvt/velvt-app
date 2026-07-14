@@ -18,6 +18,7 @@ final class MenuBarStateStreamTests: XCTestCase {
         let connectionSubject = PassthroughSubject<ConnectionStatus, Never>()
         let accountManager = AccountStateManager(keychain: FakeKeychain())
         var recorded: [MenuBarState] = []
+        let settled = expectation(description: "final normal state emitted")
 
         let cancellable = MenuBarStateStream.make(
             resolver: MenuBarStateResolver(),
@@ -25,7 +26,12 @@ final class MenuBarStateStreamTests: XCTestCase {
             connectionStatus: connectionSubject,
             accountStateManager: accountManager,
             debounceInterval: .milliseconds(20)
-        ).sink { recorded.append($0) }
+        ).sink { state in
+            recorded.append(state)
+            if state == .normal {
+                settled.fulfill()
+            }
+        }
 
         collectionSubject.send(.running)
         connectionSubject.send(.connected)
@@ -36,7 +42,7 @@ final class MenuBarStateStreamTests: XCTestCase {
         connectionSubject.send(.connected)
         collectionSubject.send(.running)
 
-        try await Task.sleep(nanoseconds: 150_000_000) // well past the 20ms debounce window
+        await fulfillment(of: [settled], timeout: 2)
 
         XCTAssertEqual(recorded, [.normal], "Only the settled final state should reach the icon — no transient flicker")
         cancellable.cancel()
@@ -56,6 +62,8 @@ final class MenuBarStateStreamTests: XCTestCase {
         let collectionSubject = CurrentValueSubject<CollectionStatus, Never>(.running)
         let connectionSubject = CurrentValueSubject<ConnectionStatus, Never>(.connected)
         var recorded: [MenuBarState] = []
+        let baselineSettled = expectation(description: "baseline normal state emitted")
+        let revocationSettled = expectation(description: "device revoked state emitted")
 
         let cancellable = MenuBarStateStream.make(
             resolver: MenuBarStateResolver(),
@@ -63,14 +71,21 @@ final class MenuBarStateStreamTests: XCTestCase {
             connectionStatus: connectionSubject,
             accountStateManager: accountManager,
             debounceInterval: .milliseconds(20)
-        ).sink { recorded.append($0) }
+        ).sink { state in
+            recorded.append(state)
+            if state == .normal {
+                baselineSettled.fulfill()
+            } else if state == .deviceRevoked {
+                revocationSettled.fulfill()
+            }
+        }
 
         // Baseline settles to .normal before the revoke push.
-        try await Task.sleep(nanoseconds: 60_000_000)
+        await fulfillment(of: [baselineSettled], timeout: 2)
         XCTAssertEqual(recorded, [.normal])
 
         client.inject(.deviceRevoked(DeviceRevoked(message: "revoked")))
-        try await Task.sleep(nanoseconds: 150_000_000)
+        await fulfillment(of: [revocationSettled], timeout: 2)
 
         XCTAssertEqual(recorded, [.normal, .deviceRevoked], "No intermediate non-revoked state must be delivered once the revoke push starts")
         cancellable.cancel()
@@ -84,6 +99,7 @@ final class MenuBarStateStreamTests: XCTestCase {
         let connectionSubject = PassthroughSubject<ConnectionStatus, Never>()
         let accountManager = AccountStateManager(keychain: FakeKeychain())
         var recorded: [MenuBarState] = []
+        let settled = expectation(description: "collection paused state emitted")
 
         let cancellable = MenuBarStateStream.make(
             resolver: MenuBarStateResolver(),
@@ -91,14 +107,19 @@ final class MenuBarStateStreamTests: XCTestCase {
             connectionStatus: connectionSubject,
             accountStateManager: accountManager,
             debounceInterval: .milliseconds(20)
-        ).sink { recorded.append($0) }
+        ).sink { state in
+            recorded.append(state)
+            if state == .collectionPaused {
+                settled.fulfill()
+            }
+        }
 
         connectionSubject.send(.disconnected)
         collectionSubject.send(.permissionRevoked)
         // Burst: connection recovers, but collection is still revoked.
         connectionSubject.send(.connected)
 
-        try await Task.sleep(nanoseconds: 150_000_000)
+        await fulfillment(of: [settled], timeout: 2)
 
         XCTAssertEqual(recorded, [.collectionPaused])
         cancellable.cancel()

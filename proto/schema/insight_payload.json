@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "PRIVACY: This message must never contain raw identifying user data.",
+  "title": "Insight Payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "insight_payload" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date", "text", "confidence_level", "low_confidence", "generated_at"],
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "text": { "type": "string" },
+        "confidence_level": { "enum": ["low", "medium", "high"] },
+        "low_confidence": { "type": "boolean" },
+        "generated_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

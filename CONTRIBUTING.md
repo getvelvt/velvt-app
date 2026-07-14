@@ -87,8 +87,8 @@ The Swift client declares its supported protocol version on every socket connect
 
 ### Build & test
 ```bash
-xcodebuild                              # build
-xcodebuild test -scheme velvt-mac       # run tests (verify scheme name)
+swift test --package-path swift-client
+xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' build
 ```
 
 ***
@@ -110,7 +110,7 @@ xcodebuild test -scheme velvt-mac       # run tests (verify scheme name)
 ### Key constraints
 - **Abstraction happens before any data hits the upload queue.** No raw fields in `abstracted_events` or `upload_batches`.
 - **Analytics is a deferred stub.** `src/analytics/` exists but is feature-flagged off in all MVP builds. Do not activate it.
-- **No full-table scans on hot paths.** Required indexes: `raw_events.retention_expiry` (and any fields used in batch assembly).
+- **No full-table scans on hot paths.** Retention and batch-assembly queries must use indexed paths, including `raw_event_buffer.occurred_at` / `created_at` and batch status/time columns.
 - **Graceful shutdown.** Flush the pending upload queue and close the socket cleanly on `SIGTERM`.
 
 ### Build & test
@@ -122,7 +122,7 @@ cargo fmt --check           # format check
 ```
 
 ### Database migrations
-Migrations are versioned files in `rust-service/migrations/`. They must be **safe and additive** — no destructive schema changes without an explicit migration path. Required tables: `raw_events`, `abstraction_mappings`, `abstracted_events`, `upload_batches`, `device_state`, `cached_daily_summaries`, `cached_daily_insights`.
+Migrations are versioned files in `rust-service/migrations/`. They must be **safe and additive** — no destructive schema changes without an explicit migration path. Current feature tables are `abstraction_map`, `raw_event_buffer`, `upload_batch`, `batch_event`, `history_cache`, `insight_cache`, and `upload_host_backoff`.
 
 ***
 
@@ -148,6 +148,102 @@ Debug builds may enable verbose safe diagnostics. Release builds must not be noi
 - **Pass lint before opening PR.** `cargo clippy -- -D warnings` for Rust; Swift lint config in CI.
 - PR titles follow: `[swift-client]`, `[rust-service]`, `[proto]`, or `[cloud]` prefix.
 
+## Adding A Classification Category
+
+Category changes remain data-only in the runtime classification pipeline:
+
+1. Add the category identifier to `categories` in the versioned taxonomy JSON.
+2. Add or update exact/glob seed entries with privacy-safe `<type>:<behavior>`
+   labels where deterministic Tier 1 mappings are appropriate.
+3. In the offline model-artifact pipeline, run the approved centroid
+   computation script against reviewed representative names. The script must
+   mean-pool and normalize embeddings using the exact shipped model/tokenizer.
+4. Package the resulting vector into `centroids.bin` using the `VELVTC01`
+   format documented in `README.md`.
+5. Keep the centroid category key, dimensions, and taxonomy version aligned
+   with the taxonomy file. Increment the taxonomy version for category-set
+   changes.
+6. Add exhaustive seed, centroid-loader, below-threshold, and extension tests.
+7. Run `cargo test --all-features`, `cargo clippy --all-targets --all-features
+   -- -D warnings`, and `cargo fmt --check`.
+
+Centroid computation is offline artifact production, not service behavior.
+Never add runtime centroid recomputation, training, fine-tuning, or online
+learning. New classification strategies implement `ClassificationPlugin` and
+are added only at the registry call site documented in `README.md`; the engine
+core and existing plugins must remain unchanged.
+
+***
+
+## Adding A New Abstraction Type
+
+MVP supports `document:edit` only; adding a new type (e.g. `tab:A`) is
+cross-cutting:
+
+1. Add the type identifier to the IPC contract: `proto/schema/raw_event.json`
+   if it changes what Swift sends, and confirm `BatchPayload.supported_abstraction_types`
+   in `rust-service/src/upload/dto.rs`/`assembly.rs` lists it.
+2. Implement or extend the `ClassificationPlugin` that produces it (see
+   "Adding A Classification Category" below for the category side).
+3. Add a privacy boundary test proving the new label is reachable from a
+   raw event without ever re-exposing the raw event's content.
+4. Update `ARCHITECTURE.md`'s classification pipeline section.
+
+## Adding A New IPC Message Type
+
+See "IPC Contract Changes" above for the five-step process. In addition:
+
+- Add the message to both `ClientMessage`/`ServerMessage` enums in
+  `rust-service/shared-types/src/lib.rs` **and** the corresponding Swift
+  enum case in `IPCTypes.swift` in the same commit — `proto/version` v6→v7
+  in this repository's history is a real example of what happens when this
+  is skipped (a message type existed in Swift for an entire release with no
+  Rust counterpart, no schema entry, and no version bump; see
+  `proto/CHANGELOG.md` "Version 7").
+- If the new message can carry a credential or token, give it a
+  hand-written `Debug` impl that redacts the sensitive field (see
+  `SignUp`/`LogIn`/`AuthSuccess` in `shared-types/src/lib.rs` for the
+  pattern) — the type's derived `Serialize`/`Deserialize` still needs the
+  real field for the wire format, so the type wrapper approach
+  (`RedactedString`) used internally doesn't apply at the DTO layer.
+- Add a round-trip test asserting the exact JSON shape (see
+  `v6_auth_contract`/`v7` tests in `shared-types/src/lib.rs`), not just that
+  serialization succeeds.
+
+## Adding A New Retention Target
+
+1. Implement `RetentionTarget` in `rust-service/src/retention/targets.rs`,
+   following the existing `RawEventRetentionTarget`/`UploadBatchRetentionTarget`/`CacheRetentionTarget`
+   pattern: a `run_cleanup` method that deletes at most `batch_size` rows
+   older than a cutoff and returns the count deleted.
+2. Register it via `RetentionScheduler::add_target` at the call site in
+   `main.rs` — do not modify `RetentionScheduler` itself.
+3. Add a test proving only expired rows are deleted and fresh rows survive
+   (mirror `tests/retention.rs`).
+
+## Privacy Review Checklist
+
+Any PR touching the abstraction engine (`rust-service/src/abstraction/`),
+the upload batcher (`rust-service/src/upload/`), or the IPC layer
+(`rust-service/src/ipc/`, `proto/`, or `swift-client/Sources/VelvtMac/IPC/`)
+must confirm, in the PR description:
+
+- [ ] No new struct field carrying raw app names, window titles, URLs,
+      paths, filenames, contacts, emails, or phone numbers crosses out of
+      `abstraction/` into a serializable or loggable type.
+- [ ] No new `tracing::`/`Logger(` call site interpolates a variable that
+      could carry raw event content or a token/credential without
+      redaction.
+- [ ] If the change adds or modifies a field on `BatchEventPayload` or
+      `BatchPayload`, it is checked against the forbidden-field list in
+      `tests/upload_batching.rs::payload_serialization_contains_only_audited_safe_fields`.
+- [ ] If the change adds a token- or credential-carrying type, it has
+      either a `RedactedString` field (Rust-internal types) or a
+      hand-written `Debug` impl that redacts it (wire DTOs — see
+      `shared-types/src/lib.rs`).
+- [ ] Re-run the relevant section of `PRIVACY_AUDIT.md` and update it if a
+      finding changed.
+
 ***
 
 ## MVP Scope
@@ -162,3 +258,9 @@ Debug builds may enable verbose safe diagnostics. Release builds must not be noi
 - Unabstracted cloud personalization
 - Cross-platform Swift client
 - Advanced automations
+
+***
+
+## Documentation
+
+When contributing changes that affect architecture, APIs, authentication, or significant behavior, update the relevant files under `/docs/`. Consult `docs/DOC_INDEX.md` to find the right file quickly.

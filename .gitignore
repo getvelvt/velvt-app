@@ -1,0 +1,36 @@
+# Rust
+rust-service/target/
+**/*.rs.bk
+
+# Swift / Xcode
+swift-client/.build/
+swift-client/.swiftpm/
+DerivedData/
+swift-client/VelvtMac.xcodeproj/project.xcworkspace
+swift-client/VelvtMac.xcodeproj/xcuserdata
+swift-client/VelvtMac.xcodeproj/project.pbxproj
+
+# Packaged app artifact (make build-app)
+/dist/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+.npm-cache/
+
+# Local runtime data
+*.sqlite
+*.sqlite3
+*.db
+*.log

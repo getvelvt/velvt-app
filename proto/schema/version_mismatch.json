@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Version Mismatch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "version_mismatch" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server_protocol_version", "client_protocol_version"],
+      "properties": {
+        "server_protocol_version": { "type": "integer", "minimum": 1 },
+        "client_protocol_version": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

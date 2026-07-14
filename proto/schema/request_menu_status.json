@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["type","payload"],"properties":{"type":{"const":"request_menu_status"},"payload":{"type":"object","additionalProperties":false}},"additionalProperties":false}

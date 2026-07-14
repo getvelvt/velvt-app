@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "Direction: host client to Rust. The host client owns durable platform credential storage; Rust keeps this session in memory only.",
+  "title": "Auth Session",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "auth_session" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_id", "access_token", "refresh_token", "expires_at"],
+      "properties": {
+        "device_id": { "type": "string", "minLength": 1 },
+        "access_token": { "type": "string", "minLength": 1 },
+        "refresh_token": { "type": "string", "minLength": 1 },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "user_access_token": { "type": "string", "minLength": 1 },
+        "user_refresh_token": { "type": "string", "minLength": 1 },
+        "user_expires_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

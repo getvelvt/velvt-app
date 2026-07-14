@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "Direction: Rust to Swift. Tokens are opaque auth-protocol values. They must never be logged, stored in SQLite, or included in upload payloads. The host client stores them in platform credential storage.",
+  "title": "Auth Success",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "auth_success" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["user_id", "device_id", "access_token", "refresh_token", "expires_at"],
+      "properties": {
+        "user_id": { "type": "string", "minLength": 1 },
+        "device_id": { "type": "string", "minLength": 1 },
+        "access_token": { "type": "string", "minLength": 1 },
+        "refresh_token": { "type": "string", "minLength": 1 },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "user_access_token": { "type": "string", "minLength": 1 },
+        "user_refresh_token": { "type": "string", "minLength": 1 },
+        "user_expires_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

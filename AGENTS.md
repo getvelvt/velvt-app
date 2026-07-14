@@ -62,7 +62,7 @@ NSWorkspace / AXObserver events  →   Raw event ingestion
 **IPC rules:**
 - The socket path is defined in `proto/ipc_socket_path` — never hardcode it in either workspace.
 - Message schema is defined in `proto/` as JSON Schema. Both workspaces must conform to the version declared in `proto/version`.
-- The Swift client declares its supported protocol version on every connection open: `{"protocol_version": N}`.
+- The Rust service sends `server_hello`, then the Swift client declares its supported protocol version in `client_hello` on every connection.
 - The Rust service must negotiate gracefully — reject unsupported versions with a clear error code, never silently drop messages.
 - The Swift client sends raw events and reads confirmations/payloads. It never reads abstraction maps, analytics state, or intermediate processing results — those are internal to the Rust service.
 - Do not add new message types to the IPC protocol without updating `proto/` and confirming the change spans both workspaces.
@@ -108,9 +108,9 @@ swift-client/
 ```
 
 ## Key Commands
-- Build: `xcodebuild` or open in Xcode
-- Tests: `xcodebuild test -scheme velvt-mac` (verify scheme name in project)
-- Lint: check `Makefile` or CI config
+- Build: `xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' build`
+- Tests: `swift test --package-path swift-client`
+- Lint: `cd swift-client && swift format lint --recursive Sources Tests`
 
 ## Development Guide
 
@@ -197,8 +197,8 @@ rust-service/
 
 ### Persistence
 - Migrations must be safe and additive. Use versioned migration files.
-- Required tables: `raw_events`, `abstraction_mappings`, `abstracted_events`, `upload_batches`, `device_state`, `cached_daily_summaries`, `cached_daily_insights`.
-- `raw_events.retention_expiry` must have an explicit index. Retention cleanup must use this index path.
+- Current feature tables: `abstraction_map`, `raw_event_buffer`, `upload_batch`, `batch_event`, `history_cache`, `insight_cache`, and `upload_host_backoff`.
+- `raw_event_buffer.occurred_at` and `raw_event_buffer.created_at` must have explicit indexes. Retention cleanup must use an indexed path.
 - Default retention: raw cache 7 days, uploaded abstracted events compacted after 7 days, cached insights 7 days.
 
 ### Upload
@@ -258,3 +258,5 @@ Cross-workspace changes (anything touching `proto/`) require updating both works
 4. **Implement** — follow all conventions above strictly.
 5. **Verify (Tests)** — run applicable tests for the affected workspace(s).
 6. **Verify (Standards)** — run lint/format checks. `cargo clippy` and `cargo fmt` for Rust; lint config for Swift.
+
+**Updating Documentation:** When you make changes to architecture, authentication, settings, APIs, or any system-level behavior, check `docs/DOC_INDEX.md` to locate the relevant documentation file(s) and update them as part of the same task. Do not leave documentation out of sync with the code.

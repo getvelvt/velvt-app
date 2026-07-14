@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "PRIVACY: This message must never contain raw identifying user data.",
+  "title": "Error Response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "error_response" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string", "minLength": 1 },
+        "related_event_id": { "type": "string", "format": "uuid" }
+      }
+    }
+  }
+}

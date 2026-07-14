@@ -1,0 +1,508 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 46;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		043E5190EF3742C6AC307569 /* EventRelayProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 523890083299444A9CF45601 /* EventRelayProtocol.swift */; };
+		06C9D8301CC9C73FD56ECEB7 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 08FF548B5CFC292896112B45 /* Cocoa.framework */; };
+		07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */; };
+		119E08E3913F45F0933336D7 /* InsightViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04D5396399374660825D54B5 /* InsightViewModel.swift */; };
+		143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */; };
+		1534D2B7C62A4F8FA882C19A /* AuthGatedCollectionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23D27C781D7B4200B0CA4AB7 /* AuthGatedCollectionController.swift */; };
+		1597C5865C34465AA105915D /* AppMetricsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E6FE1D6377F4F7ABF7EFD43 /* AppMetricsStore.swift */; };
+		16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */; };
+		18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30FB3399A5C45808376ACF1 /* EventRelay.swift */; };
+		1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945E765C974B4023B7362068 /* NotificationScheduler.swift */; };
+		38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93C055AD72C0443A8CD98C13 /* PermissionManager.swift */; };
+		4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81032E99C0684420AFA1791A /* AuthViewModel.swift */; };
+		443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */; };
+		45E74D92600605D1450A1281 /* IPCClientProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */; };
+		55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31C752D40A995E1401F41A8E /* AppModule.swift */; };
+		59171A93B002F17C0349992E /* DeviceModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */; };
+		5C4179B95803E953316EC37F /* UIModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9F1ADB76DD4328B7586E87C /* UIModule.swift */; };
+		69E8878A13154473938407D3 /* InsightCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */; };
+		88D5FC587687DD9AB0300E53 /* ConfigModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 928E12E20A85E864E9B7E683 /* ConfigModule.swift */; };
+		89AC090DEEE9F19A1A61543B /* UnixSocketIPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */; };
+		8AC53105D9E0437AB5B5E703 /* HistoryListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */; };
+		97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */; };
+		9A6928BC73B9B53A90E1B4E3 /* FakeIPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */; };
+		9CDDE6FAD40B420D9DC4F3F7 /* HistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75F5611EE8684F0C8736139F /* HistoryViewModel.swift */; };
+		9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist.template in Resources */ = {isa = PBXBuildFile; fileRef = 9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */; };
+		AF894F952FE76B6B0023DA87 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AF894F942FE76B6B0023DA87 /* Assets.xcassets */; };
+		A03B3DF738D28A838B7E16A5 /* ReconnectBackoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */; };
+		A1B2C3D4E5F601234567890A /* BundleConfigLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */; };
+		A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890D /* ServiceManager.swift */; };
+		A1B2C3D4E5F601234567890E /* ServiceUnavailableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */; };
+		AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */; };
+		C6FEFBE12367472398E2ECBC /* NotificationDeliveryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */; };
+		E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */; };
+		E7695F6AD86A41B6B9D74D9F /* VelvtPopoverContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */; };
+		FEF395332D1059B366BF6D9A /* IPCTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39C7506861C548B6BD42DE38 /* IPCTypes.swift */; };
+		FF20FC65F747233FBF419F69 /* DeliveryModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */; };
+		FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */; };
+		A19C7D204B9345F3A6E1C101 /* CredentialTextField.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19C7D204B9345F3A6E1C102 /* CredentialTextField.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ReconnectBackoff.swift; path = IPC/ReconnectBackoff.swift; sourceTree = "<group>"; };
+		04D5396399374660825D54B5 /* InsightViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightViewModel.swift; path = UI/InsightViewModel.swift; sourceTree = "<group>"; };
+		08FF548B5CFC292896112B45 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
+		22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UnixSocketIPCClient.swift; path = IPC/UnixSocketIPCClient.swift; sourceTree = "<group>"; };
+		23D27C781D7B4200B0CA4AB7 /* AuthGatedCollectionController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthGatedCollectionController.swift; path = App/AuthGatedCollectionController.swift; sourceTree = "<group>"; };
+		28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionCollectionCoordinator.swift; path = App/PermissionCollectionCoordinator.swift; sourceTree = "<group>"; };
+		2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarController.swift; path = App/MenuBarController.swift; sourceTree = "<group>"; };
+		31C752D40A995E1401F41A8E /* AppModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppModule.swift; path = App/AppModule.swift; sourceTree = "<group>"; };
+		3342626EEF1A344019727851 /* velvt-mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "velvt-mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		39C7506861C548B6BD42DE38 /* IPCTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCTypes.swift; path = IPC/IPCTypes.swift; sourceTree = "<group>"; };
+		46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionViews.swift; path = UI/PermissionViews.swift; sourceTree = "<group>"; };
+		523890083299444A9CF45601 /* EventRelayProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelayProtocol.swift; path = Relay/EventRelayProtocol.swift; sourceTree = "<group>"; };
+		5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationDeliveryCoordinator.swift; path = Delivery/NotificationDeliveryCoordinator.swift; sourceTree = "<group>"; };
+		6E6FE1D6377F4F7ABF7EFD43 /* AppMetricsStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppMetricsStore.swift; path = App/AppMetricsStore.swift; sourceTree = "<group>"; };
+		75F5611EE8684F0C8736139F /* HistoryViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HistoryViewModel.swift; path = UI/HistoryViewModel.swift; sourceTree = "<group>"; };
+		7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VelvtPopoverContentView.swift; path = UI/VelvtPopoverContentView.swift; sourceTree = "<group>"; };
+		81032E99C0684420AFA1791A /* AuthViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthViewModel.swift; path = Auth/AuthViewModel.swift; sourceTree = "<group>"; };
+		A19C7D204B9345F3A6E1C102 /* CredentialTextField.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CredentialTextField.swift; path = UI/CredentialTextField.swift; sourceTree = "<group>"; };
+		89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCClientProtocol.swift; path = IPC/IPCClientProtocol.swift; sourceTree = "<group>"; };
+		8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HistoryListView.swift; path = UI/HistoryListView.swift; sourceTree = "<group>"; };
+		8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CollectionModule.swift; path = Collection/CollectionModule.swift; sourceTree = "<group>"; };
+		928E12E20A85E864E9B7E683 /* ConfigModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfigModule.swift; path = Config/ConfigModule.swift; sourceTree = "<group>"; };
+		93C055AD72C0443A8CD98C13 /* PermissionManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionManager.swift; path = Permissions/PermissionManager.swift; sourceTree = "<group>"; };
+		945E765C974B4023B7362068 /* NotificationScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationScheduler.swift; path = Delivery/NotificationScheduler.swift; sourceTree = "<group>"; };
+		9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceModule.swift; path = Device/DeviceModule.swift; sourceTree = "<group>"; };
+		9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightCardView.swift; path = UI/InsightCardView.swift; sourceTree = "<group>"; };
+		9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = "../../Configs/Debug.xcconfig"; sourceTree = "<group>"; };
+		9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = "../../Configs/Release.xcconfig"; sourceTree = "<group>"; };
+		9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = "com.velvt.service.plist.template"; path = "../../Resources/com.velvt.service.plist.template"; sourceTree = "<group>"; };
+		AF894F942FE76B6B0023DA87 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BundleConfigLoader.swift; path = Config/BundleConfigLoader.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F601234567890D /* ServiceManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceManager.swift; path = Service/ServiceManager.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceUnavailableView.swift; path = UI/ServiceUnavailableView.swift; sourceTree = "<group>"; };
+		BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthModule.swift; path = Auth/AuthModule.swift; sourceTree = "<group>"; };
+		C9F1ADB76DD4328B7586E87C /* UIModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UIModule.swift; path = UI/UIModule.swift; sourceTree = "<group>"; };
+		D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceProcessLauncher.swift; path = App/ServiceProcessLauncher.swift; sourceTree = "<group>"; };
+		D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeliveryModule.swift; path = Delivery/DeliveryModule.swift; sourceTree = "<group>"; };
+		E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DisplayDataCoordinator.swift; path = Delivery/DisplayDataCoordinator.swift; sourceTree = "<group>"; };
+		ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarPopoverView.swift; path = UI/MenuBarPopoverView.swift; sourceTree = "<group>"; };
+		EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FakeIPCClient.swift; path = IPC/FakeIPCClient.swift; sourceTree = "<group>"; };
+		F30FB3399A5C45808376ACF1 /* EventRelay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelay.swift; path = Relay/EventRelay.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		7294A54385813BCC9BAC078F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				06C9D8301CC9C73FD56ECEB7 /* Cocoa.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		470112A6B92F8CD311E162EE = {
+			isa = PBXGroup;
+			children = (
+				EBE03290841BF7E9688A9514 /* Products */,
+				CF4946C49B4BE1474322DE94 /* Frameworks */,
+				F43051B39D83B4CA7E178F6C /* VelvtMac */,
+				AF894F942FE76B6B0023DA87 /* Assets.xcassets */,
+			);
+			sourceTree = "<group>";
+		};
+		CF4946C49B4BE1474322DE94 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				F862D27C059C981EEE0670BF /* OS X */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		EBE03290841BF7E9688A9514 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				3342626EEF1A344019727851 /* velvt-mac.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		F43051B39D83B4CA7E178F6C /* VelvtMac */ = {
+			isa = PBXGroup;
+			children = (
+				31C752D40A995E1401F41A8E /* AppModule.swift */,
+				23D27C781D7B4200B0CA4AB7 /* AuthGatedCollectionController.swift */,
+				6E6FE1D6377F4F7ABF7EFD43 /* AppMetricsStore.swift */,
+				28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */,
+				BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */,
+				8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */,
+				928E12E20A85E864E9B7E683 /* ConfigModule.swift */,
+				A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */,
+				D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */,
+				9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */,
+				EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */,
+				89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */,
+				39C7506861C548B6BD42DE38 /* IPCTypes.swift */,
+				010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */,
+				22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */,
+				C9F1ADB76DD4328B7586E87C /* UIModule.swift */,
+				46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */,
+				A19C7D204B9345F3A6E1C102 /* CredentialTextField.swift */,
+				93C055AD72C0443A8CD98C13 /* PermissionManager.swift */,
+				D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */,
+				A1B2C3D4E5F601234567890D /* ServiceManager.swift */,
+				2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */,
+				81032E99C0684420AFA1791A /* AuthViewModel.swift */,
+				E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */,
+				5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */,
+				945E765C974B4023B7362068 /* NotificationScheduler.swift */,
+				F30FB3399A5C45808376ACF1 /* EventRelay.swift */,
+				523890083299444A9CF45601 /* EventRelayProtocol.swift */,
+				8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */,
+				75F5611EE8684F0C8736139F /* HistoryViewModel.swift */,
+				9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */,
+				04D5396399374660825D54B5 /* InsightViewModel.swift */,
+				ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */,
+				7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */,
+				A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */,
+				9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */,
+				9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */,
+				9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */,
+			);
+			name = VelvtMac;
+			path = Sources/VelvtMac;
+			sourceTree = "<group>";
+		};
+		F862D27C059C981EEE0670BF /* OS X */ = {
+			isa = PBXGroup;
+			children = (
+				08FF548B5CFC292896112B45 /* Cocoa.framework */,
+			);
+			name = "OS X";
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		30B8CF68810D18DF9F11DB7B /* velvt-mac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8A7F96CAB8DEDE2A664DFD54 /* Build configuration list for PBXNativeTarget "velvt-mac" */;
+			buildPhases = (
+				5ED7FFF41BDCDD531CCEBA0A /* Sources */,
+				7294A54385813BCC9BAC078F /* Frameworks */,
+				A1B2C3D4E5F60123456789AE /* Bundle Rust Service */,
+				41C9B34E074030B53412BB04 /* Resources */,
+				C8D9E0F1A2B3C4D5E6F70819 /* Inject Custom Info.plist Keys */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "velvt-mac";
+			productName = "velvt-mac";
+			productReference = 3342626EEF1A344019727851 /* velvt-mac.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A59EA64B0E9A4F30889453D9 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+			};
+			buildConfigurationList = B46D952FB1A35A92FD7C21E6 /* Build configuration list for PBXProject "VelvtMac" */;
+			compatibilityVersion = "Xcode 3.2";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 470112A6B92F8CD311E162EE;
+			productRefGroup = EBE03290841BF7E9688A9514 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				30B8CF68810D18DF9F11DB7B /* velvt-mac */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		41C9B34E074030B53412BB04 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist.template in Resources */,
+				AF894F952FE76B6B0023DA87 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A1B2C3D4E5F60123456789AE /* Bundle Rust Service */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../rust-service/src",
+			);
+			name = "Bundle Rust Service";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/velvt-service",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\ncd \"$RUST_DIR\"\ncargo build --release 2>&1\ncp target/release/velvt-service \"$RESOURCES_DIR/velvt-service\"\n";
+		};
+		C8D9E0F1A2B3C4D5E6F70819 /* Inject Custom Info.plist Keys */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Inject Custom Info.plist Keys";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\n# GENERATE_INFOPLIST_FILE=YES only supports Xcode's fixed INFOPLIST_KEY_*\n# allowlist (~79 Apple-defined keys) -- custom keys like VelvtAPIBaseURL are\n# silently dropped by Xcode's plist generator no matter how they're set in\n# xcconfig. This phase injects them directly into the already-generated\n# Info.plist using the same resolved build settings the xcconfig defines.\nPLIST=\"${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}\"\nset_plist_string() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 string $2\" \"$PLIST\"\n}\nset_plist_string VelvtAPIBaseURL \"${VELVT_API_BASE_URL}\"\nset_plist_string VelvtAPNSEnv \"${VELVT_APNS_ENV}\"\nset_plist_string VelvtSocketPath \"${VELVT_SOCKET_PATH}\"\nset_plist_string VelvtProtocolVersion \"${VELVT_PROTOCOL_VERSION}\"\nset_plist_string VelvtClientVersion \"${MARKETING_VERSION}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5ED7FFF41BDCDD531CCEBA0A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */,
+				1534D2B7C62A4F8FA882C19A /* AuthGatedCollectionController.swift in Sources */,
+				1597C5865C34465AA105915D /* AppMetricsStore.swift in Sources */,
+				143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */,
+				AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */,
+				07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */,
+				88D5FC587687DD9AB0300E53 /* ConfigModule.swift in Sources */,
+				A1B2C3D4E5F601234567890A /* BundleConfigLoader.swift in Sources */,
+				A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */,
+				A1B2C3D4E5F601234567890E /* ServiceUnavailableView.swift in Sources */,
+				FF20FC65F747233FBF419F69 /* DeliveryModule.swift in Sources */,
+				59171A93B002F17C0349992E /* DeviceModule.swift in Sources */,
+				9A6928BC73B9B53A90E1B4E3 /* FakeIPCClient.swift in Sources */,
+				45E74D92600605D1450A1281 /* IPCClientProtocol.swift in Sources */,
+				FEF395332D1059B366BF6D9A /* IPCTypes.swift in Sources */,
+				A03B3DF738D28A838B7E16A5 /* ReconnectBackoff.swift in Sources */,
+				89AC090DEEE9F19A1A61543B /* UnixSocketIPCClient.swift in Sources */,
+				5C4179B95803E953316EC37F /* UIModule.swift in Sources */,
+				FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */,
+				A19C7D204B9345F3A6E1C101 /* CredentialTextField.swift in Sources */,
+				38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */,
+				97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */,
+				443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */,
+				4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */,
+				E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */,
+				C6FEFBE12367472398E2ECBC /* NotificationDeliveryCoordinator.swift in Sources */,
+				1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */,
+				18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */,
+				043E5190EF3742C6AC307569 /* EventRelayProtocol.swift in Sources */,
+				8AC53105D9E0437AB5B5E703 /* HistoryListView.swift in Sources */,
+				9CDDE6FAD40B420D9DC4F3F7 /* HistoryViewModel.swift in Sources */,
+				69E8878A13154473938407D3 /* InsightCardView.swift in Sources */,
+				119E08E3913F45F0933336D7 /* InsightViewModel.swift in Sources */,
+				16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */,
+				E7695F6AD86A41B6B9D74D9F /* VelvtPopoverContentView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		33D3D6C8E2021DADDE2DE54F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Owholemodule";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		79848A31ABC0FFCF22D2B51F /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGNING_ALLOWED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.velvt.mac;
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		86A7CC56EEF9A19A13A9B2CE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGNING_ALLOWED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.velvt.mac;
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		C421438A05045FC2A8BAC83F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		8A7F96CAB8DEDE2A664DFD54 /* Build configuration list for PBXNativeTarget "velvt-mac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				79848A31ABC0FFCF22D2B51F /* Release */,
+				86A7CC56EEF9A19A13A9B2CE /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B46D952FB1A35A92FD7C21E6 /* Build configuration list for PBXProject "VelvtMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C421438A05045FC2A8BAC83F /* Debug */,
+				33D3D6C8E2021DADDE2DE54F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A59EA64B0E9A4F30889453D9 /* Project object */;
+}

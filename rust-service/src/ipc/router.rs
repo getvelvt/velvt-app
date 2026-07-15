@@ -6,6 +6,7 @@ use std::{
 };
 
 use chrono::Utc;
+use uuid::Uuid;
 use velvt_shared_types::{
     CacheEmpty, ClientMessage, MenuStatus, QueuedEventSummary, RawEventAck, RawEventStatus,
     ServerMessage,
@@ -16,7 +17,9 @@ use crate::auth::{
     AccountAuthService, AuthError, HttpClient, HttpRequest, SessionValidator, TokenStore,
 };
 use crate::delivery::{shaper, CacheManager};
-use crate::persistence::{RawEventEntry, RawEventRepo, UploadBatchRepo, UploadQueueDiagnostics};
+use crate::persistence::{
+    AbstractionMapRepo, RawEventEntry, RawEventRepo, UploadBatchRepo, UploadQueueDiagnostics,
+};
 use crate::upload::EventIngestor;
 
 use super::IpcError;
@@ -103,22 +106,34 @@ impl MenuStatusProviding for MenuStatusProvider {
             let queued_events = events
                 .into_iter()
                 .take(10)
-                .map(|event| QueuedEventSummary {
-                    label: event.label,
-                    local_label: local_labels.get(&event.event_id).cloned(),
-                    category: event.category,
-                    occurred_at: event.occurred_at,
+                .filter_map(|event| {
+                    let event_id = Uuid::parse_str(&event.event_id).ok()?;
+                    Some(QueuedEventSummary {
+                        event_id,
+                        stable_id: event.stable_id,
+                        label: event.label,
+                        local_label: local_labels.get(&event.event_id).cloned(),
+                        category: event.category,
+                        classification_tier: event.classification_tier,
+                        occurred_at: event.occurred_at,
+                    })
                 })
                 .collect::<Vec<_>>();
             let unbatched = self.raw_events.unbatched_events(10).unwrap_or_default();
             let queued_event_count = queued_event_count + unbatched.len() as u64;
             let queued_events = queued_events
                 .into_iter()
-                .chain(unbatched.into_iter().map(|event| QueuedEventSummary {
-                    label: event.label,
-                    local_label: event.local_display_label,
-                    category: event.category,
-                    occurred_at: event.occurred_at,
+                .chain(unbatched.into_iter().filter_map(|event| {
+                    let event_id = Uuid::parse_str(&event.event_id).ok()?;
+                    Some(QueuedEventSummary {
+                        event_id,
+                        stable_id: event.stable_id,
+                        label: event.label,
+                        local_label: event.local_display_label,
+                        category: event.category,
+                        classification_tier: event.classification_tier,
+                        occurred_at: event.occurred_at,
+                    })
                 }))
                 .take(10)
                 .collect();
@@ -262,6 +277,9 @@ pub struct R7Router {
     account: Arc<AccountAuthService>,
     menu_status: Arc<dyn MenuStatusProviding>,
     session_validator: Option<Arc<dyn SessionValidator>>,
+    abstraction_map: Option<Arc<dyn AbstractionMapRepo>>,
+    correction_http: Option<Arc<dyn HttpClient>>,
+    upload_batches: Option<Arc<dyn UploadBatchRepo>>,
 }
 
 impl R7Router {
@@ -280,6 +298,9 @@ impl R7Router {
             account,
             menu_status: Arc::new(EmptyMenuStatusProvider),
             session_validator: None,
+            abstraction_map: None,
+            correction_http: None,
+            upload_batches: None,
         }
     }
 
@@ -290,6 +311,18 @@ impl R7Router {
 
     pub fn with_session_validator(mut self, session_validator: Arc<dyn SessionValidator>) -> Self {
         self.session_validator = Some(session_validator);
+        self
+    }
+
+    pub fn with_classification_corrections(
+        mut self,
+        abstraction_map: Arc<dyn AbstractionMapRepo>,
+        upload_batches: Arc<dyn UploadBatchRepo>,
+        correction_http: Arc<dyn HttpClient>,
+    ) -> Self {
+        self.abstraction_map = Some(abstraction_map);
+        self.upload_batches = Some(upload_batches);
+        self.correction_http = Some(correction_http);
         self
     }
 }
@@ -375,6 +408,70 @@ impl MessageRouter for R7Router {
                 )))
             }
 
+            ClientMessage::CorrectEventClassification(correction) => {
+                let Some(label) =
+                    crate::abstraction::override_label_for_category(&correction.category)
+                else {
+                    return Ok(Some(classification_correction_error(
+                        "invalid_classification_category",
+                    )));
+                };
+                let (Some(abstraction_map), Some(upload_batches), Some(correction_http)) = (
+                    &self.abstraction_map,
+                    &self.upload_batches,
+                    &self.correction_http,
+                ) else {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_unavailable",
+                    )));
+                };
+                if abstraction_map
+                    .save_personal_override(&correction.stable_id, &correction.category)
+                    .and_then(|_| {
+                        self.raw_event_repo.update_classification(
+                            &correction.event_id.to_string(),
+                            label,
+                            &correction.category,
+                        )
+                    })
+                    .and_then(|_| {
+                        upload_batches.update_event_classification(
+                            &correction.event_id.to_string(),
+                            label,
+                            &correction.category,
+                        )
+                    })
+                    .is_err()
+                {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_persistence_failed",
+                    )));
+                }
+
+                match correction_http
+                    .send(HttpRequest::patch(
+                        format!("/v1/events/{}/classification", correction.event_id),
+                        serde_json::json!({ "category": correction.category }),
+                    ))
+                    .await
+                {
+                    Ok(response) if response.status / 100 == 2 || response.status == 404 => {}
+                    Ok(response) => tracing::warn!(
+                        status = response.status,
+                        error_code = "classification_correction_sync_failed",
+                        "local classification correction saved but cloud sync failed"
+                    ),
+                    Err(error) => tracing::warn!(
+                        error = %error,
+                        error_code = "classification_correction_sync_failed",
+                        "local classification correction saved but cloud sync was deferred"
+                    ),
+                }
+                Ok(Some(ServerMessage::MenuStatus(
+                    self.menu_status.snapshot().await,
+                )))
+            }
+
             ClientMessage::RequestLatestInsight(req) => {
                 let result = self.cache.daily_insight(req.date).await;
                 let response = match result {
@@ -437,6 +534,14 @@ impl MessageRouter for R7Router {
     }
 }
 
+fn classification_correction_error(code: &str) -> ServerMessage {
+    ServerMessage::ErrorResponse(velvt_shared_types::ErrorResponse {
+        code: code.to_owned(),
+        message: "Unable to save this classification. Try again later.".into(),
+        related_event_id: None,
+    })
+}
+
 impl R7Router {
     /// Runs the privacy-enforcement boundary: classify, persist a privacy-safe
     /// audit row, feed the upload batcher, and acknowledge. Raw `app_name`/
@@ -455,6 +560,7 @@ impl R7Router {
                     local_display_label,
                     category: abstracted.category().to_owned(),
                     taxonomy_version: abstracted.taxonomy_version().to_owned(),
+                    classification_tier: abstracted.classification_tier().as_str().to_owned(),
                     occurred_at,
                     duration_seconds: 0,
                 };

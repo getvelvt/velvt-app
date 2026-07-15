@@ -15,6 +15,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case deleteAccount
     case requestMenuStatus
     case flushUploadQueue
+    case correctEventClassification(CorrectEventClassification)
 
     public init(from decoder: Decoder) throws {
         let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
@@ -45,6 +46,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .requestMenuStatus
         case "flush_upload_queue":
             self = .flushUploadQueue
+        case "correct_event_classification":
+            self = .correctEventClassification(try CorrectEventClassification(from: payload))
         default:
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
         }
@@ -89,6 +92,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .flushUploadQueue:
             try envelope.encode("flush_upload_queue", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case let .correctEventClassification(value):
+            try envelope.encode("correct_event_classification", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
 }
@@ -691,17 +697,41 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
 
 /// Privacy-safe queued event metadata for the menu-bar settings UI.
 public struct QueuedEventSummary: Codable, Equatable, Sendable, Identifiable {
+    public let eventID: UUID
+    public let stableID: String
     public let label: String
     public let localLabel: String?
     public let category: String
+    public let classificationTier: String
     public let occurredAt: Date
 
-    public var id: String { "\(label)-\(category)-\(occurredAt.timeIntervalSince1970)" }
+    public var id: UUID { eventID }
 
     private enum CodingKeys: String, CodingKey {
         case label, category
+        case eventID = "event_id"
+        case stableID = "stable_id"
         case localLabel = "local_label"
+        case classificationTier = "classification_tier"
         case occurredAt = "occurred_at"
+    }
+}
+
+public struct CorrectEventClassification: Codable, Equatable, Sendable {
+    public let eventID: UUID
+    public let stableID: String
+    public let category: String
+
+    private enum CodingKeys: String, CodingKey {
+        case eventID = "event_id"
+        case stableID = "stable_id"
+        case category
+    }
+
+    public init(eventID: UUID, stableID: String, category: String) {
+        self.eventID = eventID
+        self.stableID = stableID
+        self.category = category
     }
 }
 

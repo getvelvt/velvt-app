@@ -27,6 +27,7 @@ fn event(id: &str, seconds: i64) -> BatchEventPayload {
         label: "document:edit".into(),
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
+        classification_tier: "exact_match".into(),
         occurred_at: Utc.timestamp_opt(seconds, 0).unwrap(),
         duration_seconds: 0,
     }
@@ -198,6 +199,16 @@ impl UploadBatchRepo for FailFirstInsertRepo {
         event: &BatchEvent,
     ) -> Result<(), PersistenceError> {
         self.inner.add_event_to_batch(batch_id, event)
+    }
+
+    fn update_event_classification(
+        &self,
+        event_id: &str,
+        label: &str,
+        category: &str,
+    ) -> Result<(), PersistenceError> {
+        self.inner
+            .update_event_classification(event_id, label, category)
     }
 
     fn delete_sent_batch(
@@ -608,15 +619,16 @@ async fn pending_batch_is_resumed_after_restart() {
             &[BatchEvent {
                 event_id: "event-one".into(),
                 stable_id: "stable-one".into(),
-                label: "document:edit".into(),
-                category: "FOCUS_WORK".into(),
+                label: "video:youtube".into(),
+                category: "PASSIVE_CONSUMPTION".into(),
                 taxonomy_version: "mvp-1".into(),
+                classification_tier: "exact_match".into(),
                 occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
                 duration_seconds: 0,
             }],
         )
         .unwrap();
-    let uploader = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]);
+    let uploader = RecordingUploader::with_outcomes(vec![UploadOutcome::Accepted]);
     let inspection = uploader.clone();
     let coordinator = UploadCoordinator::new(
         repository.clone(),
@@ -624,14 +636,12 @@ async fn pending_batch_is_resumed_after_restart() {
         FakePrivacyAlertSink::default(),
     );
 
+    assert_eq!(coordinator.resume_pending("1", "0.1.0").await.unwrap(), 1);
+    assert_eq!(inspection.batches().len(), 1);
     assert_eq!(
-        coordinator
-            .resume_pending("1", "0.1.0", &["document:edit".into()])
-            .await
-            .unwrap(),
-        1
+        inspection.batches()[0].supported_abstraction_types,
+        vec!["video:youtube"]
     );
-    assert_eq!(inspection.upload_count(), 1);
     assert_eq!(
         repository.batch_status("batch-pending").unwrap(),
         UploadBatchStatus::Sent
@@ -737,7 +747,7 @@ async fn network_failure_is_retried_on_next_cycle() {
     let retry = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]);
     let inspection = retry.clone();
     UploadCoordinator::new(repository.clone(), retry, FakePrivacyAlertSink::default())
-        .resume_pending("1", "0.1.0", &["document:edit".into()])
+        .resume_pending("1", "0.1.0")
         .await
         .unwrap();
 
@@ -785,7 +795,7 @@ async fn shutdown_during_in_flight_upload_is_persisted_and_restart_submits_once(
     let retry = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]);
     let inspection = retry.clone();
     UploadCoordinator::new(repository.clone(), retry, FakePrivacyAlertSink::default())
-        .resume_pending("1", "0.1.0", &["document:edit".into()])
+        .resume_pending("1", "0.1.0")
         .await
         .unwrap();
 
@@ -811,6 +821,7 @@ async fn retention_policy_discards_old_batch_before_upload() {
                 label: "document:edit".into(),
                 category: "FOCUS_WORK".into(),
                 taxonomy_version: "mvp-1".into(),
+                classification_tier: "exact_match".into(),
                 occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
                 duration_seconds: 0,
             }],
@@ -825,7 +836,7 @@ async fn retention_policy_discards_old_batch_before_upload() {
         FakePrivacyAlertSink::default(),
     )
     .with_retention_policy(Arc::new(DiscardAll))
-    .resume_pending("1", "0.1.0", &["document:edit".into()])
+    .resume_pending("1", "0.1.0")
     .await
     .unwrap();
 
@@ -1036,6 +1047,7 @@ async fn upload_batcher_flush_now_drains_memory_and_resumes_ready_batches() {
                 label: "document:edit".into(),
                 category: "FOCUS_WORK".into(),
                 taxonomy_version: "mvp-1".into(),
+                classification_tier: "exact_match".into(),
                 occurred_at: Utc.timestamp_opt(9, 0).unwrap(),
                 duration_seconds: 0,
             }],
@@ -1098,6 +1110,7 @@ async fn manual_flush_uploads_a_batch_even_while_its_host_is_backed_off() {
                 label: "document:edit".into(),
                 category: "FOCUS_WORK".into(),
                 taxonomy_version: "mvp-1".into(),
+                classification_tier: "exact_match".into(),
                 occurred_at: Utc.timestamp_opt(9, 0).unwrap(),
                 duration_seconds: 0,
             }],
@@ -1308,6 +1321,7 @@ async fn shared_flush_now_does_not_block_ingestion_during_persisted_replay() {
                 label: "document:edit".into(),
                 category: "FOCUS_WORK".into(),
                 taxonomy_version: "mvp-1".into(),
+                classification_tier: "exact_match".into(),
                 occurred_at: Utc.timestamp_opt(9, 0).unwrap(),
                 duration_seconds: 0,
             }],

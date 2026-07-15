@@ -11,6 +11,7 @@ pub struct BatchEventPayload {
     pub label: String,
     pub category: String,
     pub taxonomy_version: String,
+    pub classification_tier: String,
     pub occurred_at: DateTime<Utc>,
     pub duration_seconds: u64,
 }
@@ -32,6 +33,7 @@ impl Serialize for BatchEventPayload {
             occurred_at: DateTime<Utc>,
             abstraction_type: &'a str,
             abstraction_type_version: &'a str,
+            classification_tier: &'a str,
             payload: ApiEventPayload<'a>,
         }
 
@@ -40,6 +42,7 @@ impl Serialize for BatchEventPayload {
             occurred_at: self.occurred_at,
             abstraction_type: &self.label,
             abstraction_type_version: API_ABSTRACTION_TYPE_VERSION,
+            classification_tier: &self.classification_tier,
             payload: ApiEventPayload {
                 duration_seconds: self.duration_seconds,
                 category: &self.category,
@@ -61,6 +64,7 @@ impl BatchEventPayload {
             label: event.label().to_owned(),
             category: event.category().to_owned(),
             taxonomy_version: event.taxonomy_version().to_owned(),
+            classification_tier: event.classification_tier().as_str().to_owned(),
             occurred_at: event.occurred_at(),
             duration_seconds,
         }
@@ -112,6 +116,7 @@ mod tests {
             label: "video:youtube".into(),
             category: "PASSIVE_CONSUMPTION".into(),
             taxonomy_version: "mvp-1".into(),
+            classification_tier: "exact_match".into(),
             occurred_at: Utc.timestamp_opt(1_800_000_000, 0).unwrap(),
             duration_seconds: 120,
         };
@@ -125,6 +130,7 @@ mod tests {
                 "occurred_at": "2027-01-15T08:00:00Z",
                 "abstraction_type": "video:youtube",
                 "abstraction_type_version": "1",
+                "classification_tier": "exact_match",
                 "payload": {
                     "duration_seconds": 120,
                     "category": "PASSIVE_CONSUMPTION"

@@ -8,7 +8,10 @@ use std::{
     time::Duration,
 };
 
-use super::SeedApplication;
+use super::{
+    normalize::{contains_token_phrase, normalize_classifier_input, normalize_classifier_text},
+    SeedApplication,
+};
 
 /// Internal telemetry describing which classification tier produced a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -18,6 +21,17 @@ pub enum ClassificationTier {
     LocalPurposeHeuristic,
     EmbeddingSimilarity,
     Fallback,
+}
+
+impl ClassificationTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactMatch => "exact_match",
+            Self::LocalPurposeHeuristic => "local_purpose_heuristic",
+            Self::EmbeddingSimilarity => "embedding_similarity",
+            Self::Fallback => "fallback",
+        }
+    }
 }
 
 /// Privacy-safe classification returned by a plugin.
@@ -100,8 +114,12 @@ impl ClassificationPlugin for SeedDictionaryPlugin {
 }
 
 fn pattern_matches(pattern: &str, value: &str) -> bool {
-    let pattern = pattern.to_ascii_lowercase();
-    let value = value.to_ascii_lowercase();
+    let pattern = pattern
+        .split('*')
+        .map(normalize_classifier_text)
+        .collect::<Vec<_>>()
+        .join("*");
+    let value = normalize_classifier_text(value);
     let parts: Vec<_> = pattern.split('*').collect();
     if parts.len() == 1 {
         return pattern == value;
@@ -128,9 +146,9 @@ fn title_pattern_matches(pattern: &str, value: &str) -> bool {
         return pattern_matches(pattern, value);
     }
 
-    let pattern = pattern.to_ascii_lowercase();
-    let value = value.to_ascii_lowercase();
-    pattern.len() > 2 && value.contains(&pattern)
+    let pattern = normalize_classifier_text(pattern);
+    let value = normalize_classifier_text(value);
+    pattern.len() > 2 && contains_token_phrase(&value, &pattern)
 }
 
 pub(crate) struct LocalPurposeHeuristicPlugin {
@@ -191,7 +209,7 @@ impl ClassificationPlugin for BrowserContextPlugin {
 }
 
 fn is_browser_app(app_name: &str) -> bool {
-    let app_name = normalized_purpose_input(app_name, "");
+    let app_name = normalize_classifier_text(app_name);
     [
         "safari",
         "google chrome",
@@ -208,7 +226,7 @@ fn is_browser_app(app_name: &str) -> bool {
         "dia",
     ]
     .iter()
-    .any(|browser| app_name == *browser || app_name.contains(browser))
+    .any(|browser| app_name == *browser || contains_token_phrase(&app_name, browser))
 }
 
 struct PurposeRule {
@@ -221,7 +239,7 @@ impl PurposeRule {
     fn matches(&self, haystack: &str) -> bool {
         self.keywords
             .iter()
-            .any(|keyword| haystack.contains(keyword))
+            .any(|keyword| contains_token_phrase(haystack, keyword))
     }
 }
 
@@ -694,33 +712,20 @@ const PURPOSE_RULES: &[PurposeRule] = &[
 ];
 
 fn normalized_purpose_input(app_name: &str, window_title: &str) -> String {
-    let mut input = String::with_capacity(app_name.len() + window_title.len() + 1);
-    input.push_str(app_name);
-    input.push(' ');
-    input.push_str(window_title);
-    input
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character.is_whitespace() {
-                character
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    normalize_classifier_input(app_name, window_title)
 }
 
 pub(crate) struct UnloggedFallbackPlugin {
     taxonomy_version: String,
+    default_category: String,
 }
 
 impl UnloggedFallbackPlugin {
-    pub(crate) fn new(taxonomy_version: String) -> Self {
-        Self { taxonomy_version }
+    pub(crate) fn new(taxonomy_version: String, default_category: String) -> Self {
+        Self {
+            taxonomy_version,
+            default_category,
+        }
     }
 }
 
@@ -728,7 +733,7 @@ impl ClassificationPlugin for UnloggedFallbackPlugin {
     fn classify(&self, _app_name: &str, _window_title: &str) -> Option<ClassificationResult> {
         Some(ClassificationResult::new(
             "unlogged",
-            "UNLOGGED",
+            &self.default_category,
             &self.taxonomy_version,
             ClassificationTier::Fallback,
         ))
@@ -836,8 +841,10 @@ impl EmbeddingSimilarityPlugin {
 
 impl ClassificationPlugin for EmbeddingSimilarityPlugin {
     fn classify(&self, app_name: &str, window_title: &str) -> Option<ClassificationResult> {
+        let app_name = normalize_classifier_text(app_name);
+        let window_title = normalize_classifier_text(window_title);
         let input = if window_title.is_empty() {
-            app_name.to_owned()
+            app_name
         } else {
             format!("{app_name} [SEP] {window_title}")
         };
@@ -866,18 +873,36 @@ impl ClassificationPlugin for EmbeddingSimilarityPlugin {
             .filter_map(|(category, centroid)| {
                 cosine_similarity(&embedding, centroid).map(|score| (category, score))
             })
-            .max_by(|(_, left), (_, right)| left.total_cmp(right))?;
+            .max_by(|(left_category, left), (right_category, right)| {
+                left.total_cmp(right)
+                    .then_with(|| right_category.cmp(left_category))
+            })?;
         // The threshold is inclusive so an offline-tuned boundary remains stable
         // after serialization. Tune it using labeled validation data, balancing
         // false-positive privacy risk against Tier 3 fallback frequency.
-        (similarity >= self.threshold).then(|| {
-            ClassificationResult::new(
-                "document:inferred",
-                category,
-                &self.taxonomy_version,
-                ClassificationTier::EmbeddingSimilarity,
-            )
-        })
+        if similarity < self.threshold {
+            return None;
+        }
+        Some(ClassificationResult::new(
+            inferred_label_for_category(category)?,
+            category,
+            &self.taxonomy_version,
+            ClassificationTier::EmbeddingSimilarity,
+        ))
+    }
+}
+
+fn inferred_label_for_category(category: &str) -> Option<&'static str> {
+    match category {
+        "FOCUS_WORK" => Some("document:inferred"),
+        "PASSIVE_CONSUMPTION" => Some("video:inferred"),
+        "SOCIAL_FEED" => Some("social:inferred"),
+        "COMMUNICATION" => Some("communication:inferred"),
+        "TASK_MANAGEMENT" => Some("task:inferred"),
+        "REFERENCE" => Some("reference:inferred"),
+        "SYSTEM" => Some("system:inferred"),
+        "UNLOGGED" => Some("unlogged"),
+        _ => None,
     }
 }
 
@@ -977,6 +1002,73 @@ mod tests {
             assert_eq!(result.label(), expected_label);
             assert_eq!(result.category(), expected_category);
         }
+    }
+
+    #[test]
+    fn collision_prone_keywords_require_complete_tokens() {
+        let plugin = super::LocalPurposeHeuristicPlugin::new("mvp-1".to_owned());
+        let unrelated = [
+            "email parser",
+            "meeting notes",
+            "doctors portal",
+            "password manager",
+            "multitasking guide",
+            "riverbank trail",
+            "musical theater",
+            "maximum effort",
+            "xylophone lesson",
+            "forklift operator",
+            "ideal outcome",
+            "pdfkit source",
+            "settingsmanager",
+            "preference pane",
+        ];
+
+        for title in unrelated {
+            assert!(
+                plugin.classify("Unknown App", title).is_none(),
+                "collision-prone title misclassified: {title}"
+            );
+        }
+    }
+
+    #[test]
+    fn seed_title_matching_requires_complete_tokens() {
+        let plugin = super::SeedDictionaryPlugin::new(
+            [
+                ("Docs", "document:docs"),
+                ("Word", "document:word"),
+                ("Max", "video:max"),
+                ("X", "social:x"),
+                ("IDEA", "document:code"),
+            ]
+            .into_iter()
+            .map(|(pattern, label)| {
+                super::SeedApplication::new_for_test(pattern, label, "FOCUS_WORK")
+            })
+            .collect(),
+            "mvp-1".to_owned(),
+        );
+
+        for title in [
+            "Doctors portal",
+            "Password reset",
+            "Maximum effort",
+            "Xylophone lesson",
+            "Ideal outcome",
+        ] {
+            assert!(plugin.classify("Unknown App", title).is_none(), "{title}");
+        }
+    }
+
+    #[test]
+    fn fallback_uses_the_taxonomy_default_category() {
+        let plugin = super::UnloggedFallbackPlugin::new("custom-1".to_owned(), "SYSTEM".to_owned());
+
+        let result = plugin.classify("Unknown", "Unknown").unwrap();
+
+        assert_eq!(result.category(), "SYSTEM");
+        assert_eq!(result.label(), "unlogged");
     }
 
     #[test]

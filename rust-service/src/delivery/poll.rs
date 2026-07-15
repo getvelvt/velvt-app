@@ -7,7 +7,7 @@ use velvt_shared_types::{ConfidenceLevel, InsightPayload};
 
 use crate::auth::{AuthError, AuthState, HttpClient, HttpRequest};
 
-use super::{parser, PushAdapter};
+use super::{parser, InsightLabelReference, LocalInsightRehydrator, PushAdapter};
 
 #[derive(Clone, Debug)]
 pub struct PollConfig {
@@ -48,11 +48,21 @@ pub enum PollError {
 pub struct PollClient<H> {
     http: Arc<H>,
     config: PollConfig,
+    insight_rehydrator: Option<Arc<LocalInsightRehydrator>>,
 }
 
 impl<H: HttpClient> PollClient<H> {
     pub fn new(http: Arc<H>, config: PollConfig) -> Self {
-        Self { http, config }
+        Self {
+            http,
+            config,
+            insight_rehydrator: None,
+        }
+    }
+
+    pub fn with_insight_rehydrator(mut self, rehydrator: Arc<LocalInsightRehydrator>) -> Self {
+        self.insight_rehydrator = Some(rehydrator);
+        self
     }
 
     pub async fn poll_once(&self) -> Result<PollOutcome, PollError> {
@@ -70,7 +80,10 @@ impl<H: HttpClient> PollClient<H> {
                 let body = response
                     .raw_body
                     .ok_or(parser::ParseError::MissingField { field: "body" })?;
-                Ok(PollOutcome::Insight(parse_polled_insight(body)?))
+                Ok(PollOutcome::Insight(parse_polled_insight(
+                    body,
+                    self.insight_rehydrator.as_deref(),
+                )?))
             }
             204 => Ok(PollOutcome::NoContent),
             429 => Err(PollError::RateLimited {
@@ -214,6 +227,8 @@ struct RawPolledInsight {
     id: Option<String>,
     date: Option<chrono::NaiveDate>,
     text: Option<String>,
+    template: Option<String>,
+    label_references: Option<Vec<InsightLabelReference>>,
     generated_at: Option<DateTime<Utc>>,
     meta: Option<RawPolledInsightMeta>,
 }
@@ -224,7 +239,10 @@ struct RawPolledInsightMeta {
     low_confidence: Option<bool>,
 }
 
-fn parse_polled_insight(value: serde_json::Value) -> Result<PolledInsight, parser::ParseError> {
+fn parse_polled_insight(
+    value: serde_json::Value,
+    rehydrator: Option<&LocalInsightRehydrator>,
+) -> Result<PolledInsight, parser::ParseError> {
     let raw: RawPolledInsight = serde_json::from_value(value)?;
     let id = raw
         .id
@@ -232,13 +250,20 @@ fn parse_polled_insight(value: serde_json::Value) -> Result<PolledInsight, parse
     let meta = raw
         .meta
         .ok_or(parser::ParseError::MissingField { field: "meta" })?;
+    let fallback_text = raw
+        .text
+        .ok_or(parser::ParseError::MissingField { field: "text" })?;
+    let text = match (raw.template, raw.label_references, rehydrator) {
+        (Some(template), Some(references), Some(rehydrator)) => {
+            rehydrator.rehydrate(&template, &references)
+        }
+        _ => fallback_text,
+    };
     let payload = InsightPayload {
         date: raw
             .date
             .ok_or(parser::ParseError::MissingField { field: "date" })?,
-        text: raw
-            .text
-            .ok_or(parser::ParseError::MissingField { field: "text" })?,
+        text,
         confidence_level: meta
             .confidence_level
             .ok_or(parser::ParseError::MissingField {

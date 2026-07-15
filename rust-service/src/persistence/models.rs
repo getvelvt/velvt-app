@@ -1,12 +1,33 @@
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AbstractionMapping {
     pub key_hash: String,
     pub stable_id: String,
     pub label: String,
     pub category: String,
     pub taxonomy_version: String,
+    pub classification_tier: String,
+    /// Local-only application display name. Never serialized into cloud DTOs.
+    pub display_name: Option<String>,
+}
+
+impl std::fmt::Debug for AbstractionMapping {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AbstractionMapping")
+            .field("key_hash", &self.key_hash)
+            .field("stable_id", &self.stable_id)
+            .field("label", &self.label)
+            .field("category", &self.category)
+            .field("taxonomy_version", &self.taxonomy_version)
+            .field("classification_tier", &self.classification_tier)
+            .field(
+                "display_name",
+                &self.display_name.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +38,7 @@ pub struct RawEventEntry {
     pub local_display_label: Option<String>,
     pub category: String,
     pub taxonomy_version: String,
+    pub classification_tier: String,
     pub occurred_at: DateTime<Utc>,
     pub duration_seconds: u64,
 }
@@ -33,6 +55,7 @@ pub struct BatchEvent {
     pub label: String,
     pub category: String,
     pub taxonomy_version: String,
+    pub classification_tier: String,
     pub occurred_at: DateTime<Utc>,
     pub duration_seconds: u64,
 }

@@ -10,6 +10,7 @@ use std::time::Duration;
 pub enum HttpMethod {
     Get,
     Post,
+    Patch,
     Delete,
 }
 
@@ -53,6 +54,17 @@ impl HttpRequest {
             authorization: None,
             refresh_token: None,
             json_body: None,
+            timeout: None,
+        }
+    }
+
+    pub fn patch(path: impl Into<String>, json_body: Value) -> Self {
+        Self {
+            method: HttpMethod::Patch,
+            path: path.into(),
+            authorization: None,
+            refresh_token: None,
+            json_body: Some(json_body),
             timeout: None,
         }
     }
@@ -115,6 +127,7 @@ impl HttpClient for ReqwestHttpClient {
             let mut builder = match request.method {
                 HttpMethod::Get => self.client.get(url),
                 HttpMethod::Post => self.client.post(url),
+                HttpMethod::Patch => self.client.patch(url),
                 HttpMethod::Delete => self.client.delete(url),
             };
             if let Some(timeout) = request.timeout {

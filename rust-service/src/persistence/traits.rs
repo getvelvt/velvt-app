@@ -9,6 +9,12 @@ pub trait AbstractionMapRepo: Send + Sync {
     fn upsert(&self, mapping: &AbstractionMapping) -> Result<(), PersistenceError>;
     fn get(&self, stable_id: &str) -> Result<AbstractionMapping, PersistenceError>;
     fn exists(&self, key_hash: &str) -> Result<bool, PersistenceError>;
+    fn save_personal_override(
+        &self,
+        stable_id: &str,
+        category: &str,
+    ) -> Result<(), PersistenceError>;
+    fn display_name_for_label(&self, label: &str) -> Result<Option<String>, PersistenceError>;
 }
 
 pub trait UploadBatchRepo: Send + Sync {
@@ -50,6 +56,12 @@ pub trait UploadBatchRepo: Send + Sync {
         &self,
         batch_id: &str,
         event: &BatchEvent,
+    ) -> Result<(), PersistenceError>;
+    fn update_event_classification(
+        &self,
+        event_id: &str,
+        label: &str,
+        category: &str,
     ) -> Result<(), PersistenceError>;
     /// Deletes at most `limit` sent batches whose `sent_at` is before `cutoff`.
     /// Cascade deletes the associated `batch_event` rows.
@@ -112,6 +124,12 @@ pub trait RawEventRepo: Send + Sync {
         &self,
         event_ids: &[String],
     ) -> Result<HashMap<String, String>, PersistenceError>;
+    fn update_classification(
+        &self,
+        event_id: &str,
+        label: &str,
+        category: &str,
+    ) -> Result<(), PersistenceError>;
     fn delete_before(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError>;
     /// Deletes at most `limit` rows whose `created_at` is before `cutoff`.
     /// Returns the number of rows actually deleted.

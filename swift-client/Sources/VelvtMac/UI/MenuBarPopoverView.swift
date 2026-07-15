@@ -689,12 +689,40 @@ public struct MenuBarPopoverView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            if event.category == "UNLOGGED" || ["embedding_similarity", "fallback"].contains(event.classificationTier) {
+                Picker(
+                    "Correct category",
+                    selection: Binding(
+                        get: { event.category },
+                        set: { menuStatusViewModel?.correct(event, category: $0) }
+                    )
+                ) {
+                    ForEach(Self.classificationCategories, id: \.self) { category in
+                        Text(category.replacingOccurrences(of: "_", with: " ").capitalized)
+                            .tag(category)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
     }
+
+    private static let classificationCategories = [
+        "FOCUS_WORK",
+        "PASSIVE_CONSUMPTION",
+        "SOCIAL_FEED",
+        "COMMUNICATION",
+        "TASK_MANAGEMENT",
+        "REFERENCE",
+        "SYSTEM",
+        "UNLOGGED",
+    ]
     private func statusRow(_ title: String, presentation: PopoverConnectionPresentation, refresh: @escaping () -> Void) -> some View {
         HStack(spacing: 7) {
             Text(title).foregroundStyle(.secondary)

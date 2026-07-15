@@ -27,6 +27,7 @@ use velvt_shared_types::{DailySummary, HistoryPayload, InsightPayload};
 
 use super::parser::{self, ParseError};
 use super::push::PushAdapter;
+use super::LocalInsightRehydrator;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -79,6 +80,7 @@ pub struct FetchService<H> {
     /// Per-date lock: deduplicates concurrent insight fetches for the same date.
     inflight_insight: std::sync::Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
     push_adapter: Option<Arc<PushAdapter>>,
+    insight_rehydrator: Option<Arc<LocalInsightRehydrator>>,
 }
 
 impl<H: HttpClient> FetchService<H> {
@@ -96,6 +98,7 @@ impl<H: HttpClient> FetchService<H> {
             inflight_history: std::sync::Mutex::new(HashMap::new()),
             inflight_insight: std::sync::Mutex::new(HashMap::new()),
             push_adapter: None,
+            insight_rehydrator: None,
         }
     }
 
@@ -103,6 +106,11 @@ impl<H: HttpClient> FetchService<H> {
     /// using `FetchService::new()` need no changes.
     pub fn with_push_adapter(mut self, adapter: Arc<PushAdapter>) -> Self {
         self.push_adapter = Some(adapter);
+        self
+    }
+
+    pub fn with_insight_rehydrator(mut self, rehydrator: Arc<LocalInsightRehydrator>) -> Self {
+        self.insight_rehydrator = Some(rehydrator);
         self
     }
 
@@ -372,7 +380,10 @@ impl<H: HttpClient> FetchService<H> {
                 let body = response
                     .raw_body
                     .ok_or(ParseError::MissingField { field: "body" })?;
-                let insight = parser::parse_insight(body)?;
+                let insight = parser::parse_insight_with_rehydrator(
+                    body,
+                    self.insight_rehydrator.as_deref(),
+                )?;
                 Ok(Some(insight))
             }
             404 => Ok(None),

@@ -28,6 +28,7 @@ fn make_event(n: u64) -> RawEventEntry {
         local_display_label: None,
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
+        classification_tier: "exact_match".into(),
         occurred_at: Utc::now(),
         duration_seconds: 30,
     }

@@ -1,5 +1,10 @@
 # IPC Protocol Changelog
 
+## Version 13 - 2026-07-15
+
+- Added `correct_event_classification` for device-local personal overrides and historical sync.
+- Queued-event summaries now carry event/stable identifiers and classification provenance.
+
 ## Version 12 - 2026-07-08
 
 - Added required upload diagnostics to `menu_status`: `upload_status`,

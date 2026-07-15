@@ -2,11 +2,13 @@ use chrono::{Duration, TimeZone, Utc};
 use std::fs;
 use std::sync::Arc;
 use uuid::Uuid;
-use velvt_service::abstraction::AbstractionEngine;
+use velvt_service::abstraction::{AbstractionEngine, Taxonomy};
+use velvt_service::delivery::{parse_insight_with_rehydrator, LocalInsightRehydrator};
 use velvt_service::persistence::{
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, NewUploadBatch,
     PersistenceError, RawEventEntry, SqlitePersistence, UploadBatchStatus,
 };
+use velvt_service::upload::BatchEventPayload;
 use velvt_shared_types::RawEvent;
 
 fn database() -> SqlitePersistence {
@@ -77,6 +79,8 @@ fn abstraction_map_repo_contract() {
         label: "document:edit".into(),
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
+        classification_tier: "exact_match".into(),
+        display_name: Some("Code Editor".into()),
     };
 
     repository.upsert(&mapping).unwrap();
@@ -95,6 +99,7 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
         local_display_label: Some("Draft proposal".into()),
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
+        classification_tier: "exact_match".into(),
         occurred_at: timestamp(10),
         duration_seconds: 0,
     };
@@ -125,6 +130,7 @@ fn upload_batch_repo_contract() {
         label: "document:edit".into(),
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
+        classification_tier: "exact_match".into(),
         occurred_at: timestamp(10),
         duration_seconds: 0,
     };
@@ -214,6 +220,7 @@ fn multi_table_batch_write_rolls_back_on_failure() {
         label: "document:edit".into(),
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
+        classification_tier: "exact_match".into(),
         occurred_at: timestamp(10),
         duration_seconds: 0,
     };
@@ -260,6 +267,93 @@ fn abstraction_engine_uses_sqlite_mapping_store_across_recreation() {
     assert!(!format!("{persisted:?}").contains("private title"));
 }
 
+#[test]
+fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
+    let database = database();
+    let repository = database.abstraction_map_repo();
+    let event = RawEvent {
+        event_id: Uuid::new_v4(),
+        occurred_at: timestamp(10),
+        app_name: "Unknown Local App".into(),
+        window_title: "private title".into(),
+        bundle_id: None,
+    };
+    let initial = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
+        .unwrap()
+        .process(event.clone())
+        .unwrap();
+    assert_eq!(initial.category(), "UNLOGGED");
+    repository
+        .save_personal_override(initial.stable_id(), "COMMUNICATION")
+        .unwrap();
+    let updated_taxonomy = Taxonomy::from_json(
+        br#"{
+            "category_taxonomy_version":"mvp-2",
+            "default_category":"UNLOGGED",
+            "categories":["COMMUNICATION","UNLOGGED"],
+            "seed_applications":[
+                {"app_name_pattern":"Known","label":"communication:chat","category":"COMMUNICATION"}
+            ]
+        }"#,
+    )
+    .unwrap();
+    let corrected =
+        AbstractionEngine::builder(database.abstraction_mapping_store(), updated_taxonomy)
+            .register_builtin_plugins()
+            .build()
+            .unwrap()
+            .process(event)
+            .unwrap();
+
+    assert_eq!(corrected.category(), "COMMUNICATION");
+    assert_eq!(corrected.label(), "communication:inferred");
+    assert_eq!(corrected.taxonomy_version(), "mvp-2");
+}
+
+#[test]
+fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_locally() {
+    let database = database();
+    let raw = RawEvent {
+        event_id: Uuid::new_v4(),
+        occurred_at: timestamp(10),
+        app_name: "Slack".into(),
+        window_title: "Private team conversation".into(),
+        bundle_id: None,
+    };
+    let abstracted = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
+        .unwrap()
+        .process(raw.clone())
+        .unwrap();
+    let outbound = serde_json::to_value(BatchEventPayload::from_abstracted(
+        raw.event_id.to_string(),
+        &abstracted,
+        60,
+    ))
+    .unwrap();
+    assert_eq!(outbound["abstraction_type"], "communication:slack");
+    assert!(!outbound.to_string().contains("Private team conversation"));
+
+    let rehydrator = LocalInsightRehydrator::new(database.abstraction_map_repo());
+    let delivered = parse_insight_with_rehydrator(
+        serde_json::json!({
+            "date": "2026-05-23",
+            "text": "You switched to a communication app 23 times.",
+            "template": "You switched to {label_0} 23 times.",
+            "label_references": [
+                {"token": "label_0", "label": "communication:slack"}
+            ],
+            "confidence_level": "high",
+            "low_confidence": false,
+            "generated_at": "2026-05-24T00:00:00Z"
+        }),
+        Some(&rehydrator),
+    )
+    .unwrap();
+
+    assert_eq!(delivered.text, "You switched to Slack 23 times.");
+    assert!(!delivered.text.contains("communication:slack"));
+}
+
 #[tokio::test]
 async fn concurrent_writes_are_serialized_without_busy_errors_or_panics() {
     let database = Arc::new(database());
@@ -275,6 +369,8 @@ async fn concurrent_writes_are_serialized_without_busy_errors_or_panics() {
                     label: "document:edit".into(),
                     category: "FOCUS_WORK".into(),
                     taxonomy_version: "mvp-1".into(),
+                    classification_tier: "exact_match".into(),
+                    display_name: None,
                 })?;
             }
             Ok::<(), PersistenceError>(())

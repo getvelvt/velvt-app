@@ -321,6 +321,7 @@ async fn request_menu_status_reports_upload_auth_and_retry_state() {
             label: "document:code".into(),
             category: "FOCUS_WORK".into(),
             taxonomy_version: "mvp-1".into(),
+            classification_tier: "exact_match".into(),
             occurred_at,
             duration_seconds: 60,
         }],

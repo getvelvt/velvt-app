@@ -18,6 +18,8 @@ public final class MenuStatusViewModel: ObservableObject {
                 self?.sendError = nil
             case .errorResponse(let error) where error.code == "upload_flush_failed":
                 self?.sendError = error.message
+            case .errorResponse(let error) where error.code.hasPrefix("classification_correction_"):
+                self?.sendError = error.message
             default:
                 break
             }
@@ -37,6 +39,24 @@ public final class MenuStatusViewModel: ObservableObject {
                 try await ipcClient.send(.flushUploadQueue)
             } catch {
                 sendError = "Unable to send queued events. Try again later."
+            }
+        }
+    }
+
+    public func correct(_ event: QueuedEventSummary, category: String) {
+        Task {
+            do {
+                try await ipcClient.send(
+                    .correctEventClassification(
+                        .init(
+                            eventID: event.eventID,
+                            stableID: event.stableID,
+                            category: category
+                        )
+                    )
+                )
+            } catch {
+                sendError = "Unable to save this classification. Try again later."
             }
         }
     }

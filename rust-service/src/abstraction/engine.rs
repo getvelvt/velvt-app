@@ -10,8 +10,8 @@ use super::{
         UnloggedFallbackPlugin,
     },
     taxonomy::is_valid_label,
-    AbstractionMappingStore, ClassificationPlugin, ClassificationTier, RawKey, StoreError,
-    Taxonomy, TaxonomyError, TitleAbstractor,
+    AbstractionMappingStore, ClassificationPlugin, ClassificationResult, ClassificationTier,
+    RawKey, StoreError, Taxonomy, TaxonomyError, TitleAbstractor,
 };
 
 /// Privacy-safe result. Raw fields cannot be constructed into or read from this type.
@@ -85,11 +85,21 @@ impl AbstractionEngine {
         } = raw_event;
         let raw_key = RawKey::new(app_name, window_title);
         let abstracted_title = self.title_abstractor.abstract_title(raw_key.window_title());
-        let classification = self
-            .plugins
-            .iter()
-            .find_map(|plugin| plugin.classify(raw_key.app_name(), abstracted_title.as_ref()))
-            .ok_or(AbstractionError::NoPluginMatch)?;
+        let stable_key = raw_key.stable_key();
+        let classification = match self.store.personal_override(&stable_key)? {
+            Some(category) => ClassificationResult::new(
+                override_label_for_category(&category)
+                    .ok_or(AbstractionError::InvalidPluginResult)?,
+                category,
+                self.taxonomy.version(),
+                ClassificationTier::ExactMatch,
+            ),
+            None => self
+                .plugins
+                .iter()
+                .find_map(|plugin| plugin.classify(raw_key.app_name(), abstracted_title.as_ref()))
+                .ok_or(AbstractionError::NoPluginMatch)?,
+        };
         if !is_valid_label(classification.label())
             || !self.taxonomy.contains_category(classification.category())
             || classification.taxonomy_version() != self.taxonomy.version()
@@ -97,7 +107,6 @@ impl AbstractionEngine {
         {
             return Err(AbstractionError::InvalidPluginResult);
         }
-        let stable_key = raw_key.stable_key();
         let fresh_id = format!("abs_{}", Uuid::new_v4().simple());
         let stable_id = self.store.resolve_id(
             &stable_key,
@@ -105,6 +114,12 @@ impl AbstractionEngine {
             classification.label(),
             classification.category(),
             classification.taxonomy_version(),
+            classification.tier().as_str(),
+            raw_key.app_name(),
+        )?;
+        self.store.increment_classification_count(
+            classification.taxonomy_version(),
+            classification.tier().as_str(),
         )?;
         Ok(AbstractedEvent {
             stable_id,
@@ -114,6 +129,20 @@ impl AbstractionEngine {
             occurred_at,
             classification_tier: classification.tier(),
         })
+    }
+}
+
+pub(crate) fn override_label_for_category(category: &str) -> Option<&'static str> {
+    match category {
+        "FOCUS_WORK" => Some("document:inferred"),
+        "PASSIVE_CONSUMPTION" => Some("video:inferred"),
+        "SOCIAL_FEED" => Some("social:inferred"),
+        "COMMUNICATION" => Some("communication:inferred"),
+        "TASK_MANAGEMENT" => Some("task:inferred"),
+        "REFERENCE" => Some("reference:inferred"),
+        "SYSTEM" => Some("system:inferred"),
+        "UNLOGGED" => Some("unlogged"),
+        _ => None,
     }
 }
 
@@ -149,6 +178,7 @@ impl AbstractionEngineBuilder {
         embedding: Option<super::EmbeddingSimilarityPlugin>,
     ) -> Self {
         let version = self.taxonomy.version().to_owned();
+        let default_category = self.taxonomy.default_category().to_owned();
         let entries = self.taxonomy.seed_applications();
         let builder = self.register_plugin(BrowserContextPlugin::new(version.clone()));
         let builder = builder.register_plugin(SeedDictionaryPlugin::new(entries, version.clone()));
@@ -157,7 +187,7 @@ impl AbstractionEngineBuilder {
             Some(plugin) => builder.register_plugin(plugin),
             None => builder,
         };
-        builder.register_plugin(UnloggedFallbackPlugin::new(version))
+        builder.register_plugin(UnloggedFallbackPlugin::new(version, default_category))
     }
 
     pub fn build(self) -> Result<AbstractionEngine, AbstractionError> {

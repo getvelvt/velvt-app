@@ -83,8 +83,9 @@ async fn main() {
             ReqwestHttpClient, SessionValidator, TokenStore, VolatileTokenStore,
         };
         use velvt_service::delivery::{
-            CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable, PollClient,
-            PollConfig, PollScheduler, PushAdapter, PushAdapterAlertSink,
+            CacheManager, FetchConfig, FetchScheduler, FetchService, Fetchable,
+            LocalInsightRehydrator, PollClient, PollConfig, PollScheduler, PushAdapter,
+            PushAdapterAlertSink,
         };
         use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
         use velvt_service::ipc::{MenuStatusProvider, R7Router, ReconnectTracker};
@@ -222,6 +223,9 @@ async fn main() {
             insight_negative_ttl: config.insight_negative_ttl,
             read_timeout: config.cache_read_timeout,
         };
+        let insight_rehydrator = Arc::new(LocalInsightRehydrator::new(
+            persistence.abstraction_map_repo(),
+        ));
         let fetch_service = Arc::new(
             FetchService::new(
                 Arc::clone(&authenticated_http),
@@ -229,6 +233,7 @@ async fn main() {
                 Arc::clone(&insight_cache_repo),
                 fetch_config,
             )
+            .with_insight_rehydrator(Arc::clone(&insight_rehydrator))
             .with_push_adapter(Arc::clone(&push_adapter)),
         );
         let cache_manager: Arc<dyn CacheManager> =
@@ -250,7 +255,8 @@ async fn main() {
                 initial_backoff: config.insight_poll_initial_backoff,
                 max_backoff: config.insight_poll_max_backoff,
             },
-        );
+        )
+        .with_insight_rehydrator(insight_rehydrator);
         let poll_scheduler = PollScheduler::new(
             poll_client,
             Arc::clone(&push_adapter),
@@ -275,7 +281,6 @@ async fn main() {
                     upload_shutdown,
                     "1",
                     env!("CARGO_PKG_VERSION"),
-                    &["document:edit".into()],
                 )
                 .await;
         });
@@ -382,6 +387,11 @@ async fn main() {
                 account_service,
             )
             .with_session_validator(Arc::clone(&authenticated_http) as Arc<dyn SessionValidator>)
+            .with_classification_corrections(
+                persistence.abstraction_map_repo(),
+                Arc::clone(&upload_batch_repo),
+                Arc::clone(&authenticated_http) as Arc<dyn HttpClient>,
+            )
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,
                 Arc::clone(&token_store) as Arc<dyn TokenStore>,

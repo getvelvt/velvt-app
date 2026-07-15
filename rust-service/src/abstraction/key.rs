@@ -27,9 +27,11 @@ impl RawKey {
     }
 
     pub(crate) fn stable_key(&self) -> String {
-        // SHA-256 hashes a versioned domain plus length-prefixed raw UTF-8 fields.
-        // Length prefixes prevent delimiter collisions; exact bytes and the fixed
-        // domain keep keys deterministic across service and binary restarts.
+        // Stable-key hashing intentionally preserves the exact raw bytes instead
+        // of classifier normalization. Existing installations already persist
+        // these hashes; changing them would orphan mappings and rotate stable IDs.
+        // Classifier tiers share canonical preprocessing, while this compatibility
+        // boundary remains versioned and deterministic across restarts.
         let mut hasher = Sha256::new();
         hasher.update(KEY_DOMAIN);
         update_length_prefixed(&mut hasher, self.app_name.as_bytes());

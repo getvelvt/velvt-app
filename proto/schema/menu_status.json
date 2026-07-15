@@ -46,14 +46,19 @@
           "maxItems": 10,
           "items": {
             "type": "object",
-            "required": ["label", "category", "occurred_at"],
+            "required": ["event_id", "stable_id", "label", "category", "classification_tier", "occurred_at"],
             "properties": {
+              "event_id": { "type": "string", "format": "uuid" },
+              "stable_id": { "type": "string" },
               "label": { "type": "string" },
               "local_label": {
                 "type": "string",
                 "description": "Local-only display label; must never be forwarded outside the device."
               },
               "category": { "type": "string" },
+              "classification_tier": {
+                "enum": ["exact_match", "local_purpose_heuristic", "embedding_similarity", "fallback"]
+              },
               "occurred_at": { "type": "string", "format": "date-time" }
             },
             "additionalProperties": false

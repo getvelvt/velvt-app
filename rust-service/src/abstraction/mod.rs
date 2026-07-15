@@ -3,11 +3,13 @@
 mod centroids;
 mod engine;
 mod key;
+mod normalize;
 mod onnx;
 mod plugin;
 mod store;
 mod taxonomy;
 
+pub(crate) use engine::override_label_for_category;
 pub use engine::{AbstractedEvent, AbstractionEngine, AbstractionEngineBuilder};
 pub use key::RawKey;
 #[cfg(feature = "onnx")]

@@ -34,4 +34,33 @@ final class DeliveryModuleTests: XCTestCase {
 
         XCTAssertEqual(sut.sendError, "Unable to send queued events.")
     }
+
+    @MainActor
+    func testCorrectionPickerSendsEventAndStableIdentifiers() async {
+        let client = FakeIPCClient()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let sut = MenuStatusViewModel(ipcClient: client, messages: messages)
+        let eventID = UUID()
+        let event = QueuedEventSummary(
+            eventID: eventID,
+            stableID: "abs_safe",
+            label: "unlogged",
+            localLabel: "Local App",
+            category: "UNLOGGED",
+            classificationTier: "fallback",
+            occurredAt: Date()
+        )
+
+        sut.correct(event, category: "COMMUNICATION")
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(
+            client.sentMessages,
+            [.correctEventClassification(.init(
+                eventID: eventID,
+                stableID: "abs_safe",
+                category: "COMMUNICATION"
+            ))]
+        )
+    }
 }

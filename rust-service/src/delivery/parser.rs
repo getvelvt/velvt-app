@@ -10,6 +10,8 @@ use velvt_shared_types::{
     ActivityProportion, ConfidenceLevel, DailySummary, HistoryStatus, InsightPayload,
 };
 
+use super::{InsightLabelReference, LocalInsightRehydrator};
+
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
     #[error("API response missing required field: {field}")]
@@ -57,6 +59,8 @@ struct RawActivityProportion {
 struct RawInsightResponse {
     date: Option<NaiveDate>,
     text: Option<String>,
+    template: Option<String>,
+    label_references: Option<Vec<InsightLabelReference>>,
     confidence_level: Option<ConfidenceLevel>,
     low_confidence: Option<bool>,
     generated_at: Option<DateTime<Utc>>,
@@ -108,10 +112,24 @@ pub fn parse_history(value: serde_json::Value) -> Result<HistoryApiResponse, Par
 }
 
 pub fn parse_insight(value: serde_json::Value) -> Result<InsightPayload, ParseError> {
+    parse_insight_with_rehydrator(value, None)
+}
+
+pub fn parse_insight_with_rehydrator(
+    value: serde_json::Value,
+    rehydrator: Option<&LocalInsightRehydrator>,
+) -> Result<InsightPayload, ParseError> {
     let raw: RawInsightResponse = serde_json::from_value(value)?;
+    let fallback_text = raw.text.ok_or(ParseError::MissingField { field: "text" })?;
+    let text = match (raw.template, raw.label_references, rehydrator) {
+        (Some(template), Some(references), Some(rehydrator)) => {
+            rehydrator.rehydrate(&template, &references)
+        }
+        _ => fallback_text,
+    };
     Ok(InsightPayload {
         date: raw.date.ok_or(ParseError::MissingField { field: "date" })?,
-        text: raw.text.ok_or(ParseError::MissingField { field: "text" })?,
+        text,
         confidence_level: raw.confidence_level.ok_or(ParseError::MissingField {
             field: "confidence_level",
         })?,

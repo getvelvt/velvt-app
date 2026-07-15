@@ -218,7 +218,6 @@ where
         &self,
         schema_version: &str,
         client_version: &str,
-        supported_abstraction_types: &[String],
     ) -> Result<usize, CoordinatorError> {
         let batches = self.repository.pending_batches()?;
         let count = batches.len();
@@ -228,7 +227,7 @@ where
                 .first()
                 .map(|event| event.taxonomy_version.clone())
                 .unwrap_or_default();
-            let events = batch
+            let events: Vec<_> = batch
                 .events
                 .into_iter()
                 .map(|event| BatchEventPayload {
@@ -237,16 +236,18 @@ where
                     label: event.label,
                     category: event.category,
                     taxonomy_version: event.taxonomy_version,
+                    classification_tier: event.classification_tier,
                     occurred_at: event.occurred_at,
                     duration_seconds: event.duration_seconds,
                 })
                 .collect();
+            let supported_abstraction_types = unique_abstraction_types(&events);
             self.upload_batch_with_backoff(
                 BatchPayload::new(
                     batch.batch_id,
                     schema_version,
                     client_version,
-                    supported_abstraction_types.to_vec(),
+                    supported_abstraction_types,
                     taxonomy,
                     events,
                 ),
@@ -272,6 +273,7 @@ where
                 label: event.label.clone(),
                 category: event.category.clone(),
                 taxonomy_version: event.taxonomy_version.clone(),
+                classification_tier: event.classification_tier.clone(),
                 occurred_at: event.occurred_at,
                 duration_seconds: event.duration_seconds,
             })
@@ -289,7 +291,6 @@ where
         &self,
         schema_version: &str,
         client_version: &str,
-        supported_abstraction_types: &[String],
     ) -> Result<usize, CoordinatorError> {
         let batches = self.repository.resumable_batches(Utc::now())?;
         let count = batches.len();
@@ -308,7 +309,7 @@ where
                 .first()
                 .map(|event| event.taxonomy_version.clone())
                 .unwrap_or_default();
-            let events = batch
+            let events: Vec<_> = batch
                 .events
                 .into_iter()
                 .map(|event| BatchEventPayload {
@@ -317,15 +318,17 @@ where
                     label: event.label,
                     category: event.category,
                     taxonomy_version: event.taxonomy_version,
+                    classification_tier: event.classification_tier,
                     occurred_at: event.occurred_at,
                     duration_seconds: event.duration_seconds,
                 })
                 .collect();
+            let supported_abstraction_types = unique_abstraction_types(&events);
             self.upload_batch(BatchPayload::new(
                 batch.batch_id,
                 schema_version,
                 client_version,
-                supported_abstraction_types.to_vec(),
+                supported_abstraction_types,
                 taxonomy,
                 events,
             ))
@@ -356,14 +359,13 @@ where
         mut shutdown: tokio::sync::watch::Receiver<bool>,
         schema_version: &str,
         client_version: &str,
-        supported_abstraction_types: &[String],
     ) {
         loop {
             if *shutdown.borrow() {
                 return;
             }
             if self
-                .resume_pending(schema_version, client_version, supported_abstraction_types)
+                .resume_pending(schema_version, client_version)
                 .await
                 .is_err()
             {
@@ -382,6 +384,16 @@ where
             }
         }
     }
+}
+
+fn unique_abstraction_types(events: &[BatchEventPayload]) -> Vec<String> {
+    let mut types = Vec::new();
+    for event in events {
+        if !types.contains(&event.label) {
+            types.push(event.label.clone());
+        }
+    }
+    types
 }
 
 #[derive(Debug, thiserror::Error)]

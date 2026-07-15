@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use std::{collections::HashSet, path::Path};
 
+use super::normalize::normalize_classifier_text;
+
 const BUILTIN_TAXONOMY: &[u8] = include_bytes!("../../resources/abstraction-taxonomy-mvp-1.json");
 pub const API_EXPECTED_TAXONOMY_VERSION: &str = "mvp-1";
 
@@ -84,7 +86,14 @@ impl Taxonomy {
             entry.app_name_pattern.trim().is_empty()
                 || !is_valid_label(&entry.label)
                 || !categories.contains(&entry.category)
-                || !patterns.insert(entry.app_name_pattern.to_ascii_lowercase())
+                || !patterns.insert(
+                    entry
+                        .app_name_pattern
+                        .split('*')
+                        .map(normalize_classifier_text)
+                        .collect::<Vec<_>>()
+                        .join("*"),
+                )
         }) {
             return Err(TaxonomyError::InvalidSeedApplication);
         }

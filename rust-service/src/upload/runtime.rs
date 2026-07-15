@@ -73,7 +73,7 @@ where
             }
             if let Err(error) = self
                 .coordinator
-                .flush_all_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
+                .flush_all_pending("1", env!("CARGO_PKG_VERSION"))
                 .await
             {
                 Self::log_submit_failure(&error);
@@ -82,7 +82,7 @@ where
             return Ok(true);
         }
         self.coordinator
-            .flush_all_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
+            .flush_all_pending("1", env!("CARGO_PKG_VERSION"))
             .await?;
         Ok(false)
     }
@@ -206,7 +206,7 @@ where
                     return Err(error);
                 }
                 if let Err(error) = coordinator
-                    .flush_all_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
+                    .flush_all_pending("1", env!("CARGO_PKG_VERSION"))
                     .await
                 {
                     UploadBatcher::<U, A>::log_submit_failure(&error);
@@ -215,7 +215,7 @@ where
                 return Ok(true);
             }
             coordinator
-                .flush_all_pending("1", env!("CARGO_PKG_VERSION"), &["document:edit".into()])
+                .flush_all_pending("1", env!("CARGO_PKG_VERSION"))
                 .await?;
             Ok(false)
         })

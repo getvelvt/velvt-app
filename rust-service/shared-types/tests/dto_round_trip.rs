@@ -59,6 +59,28 @@ fn flush_upload_queue_uses_empty_payload_and_round_trips() {
 }
 
 #[test]
+fn classification_correction_round_trips_without_raw_app_data() {
+    let message = ClientMessage::CorrectEventClassification(CorrectEventClassification {
+        event_id: event_id(),
+        stable_id: "abs_safe".into(),
+        category: "COMMUNICATION".into(),
+    });
+
+    assert_eq!(
+        serde_json::to_value(&message).unwrap(),
+        json!({
+            "type": "correct_event_classification",
+            "payload": {
+                "event_id": event_id(),
+                "stable_id": "abs_safe",
+                "category": "COMMUNICATION"
+            }
+        })
+    );
+    assert_round_trip(message);
+}
+
+#[test]
 fn server_message_variants_round_trip() {
     let messages = [
         ServerMessage::ServerHello(ServerHello {

@@ -113,7 +113,53 @@ fn empty_window_title_runs_inference_on_app_name_alone() {
     .unwrap();
 
     assert!(plugin.classify("Unknown IDE", "").is_some());
-    assert_eq!(inputs.lock().unwrap().as_slice(), ["Unknown IDE"]);
+    assert_eq!(inputs.lock().unwrap().as_slice(), ["unknown ide"]);
+}
+
+#[test]
+fn inferred_label_preserves_the_selected_category() {
+    let plugin = EmbeddingSimilarityPlugin::new(
+        Arc::new(FakeEmbeddingModel {
+            embedding: vec![0.0, 1.0],
+            delay: Duration::ZERO,
+        }),
+        centroids(),
+        "mvp-1",
+        0.72,
+        Duration::from_millis(20),
+        Arc::new(EmbeddingMetrics::default()),
+    )
+    .unwrap();
+
+    let result = plugin.classify("Unknown", "Video Player").unwrap();
+
+    assert_eq!(result.category(), "PASSIVE_CONSUMPTION");
+    assert_eq!(result.label(), "video:inferred");
+}
+
+#[test]
+fn equal_similarity_uses_category_key_as_deterministic_tiebreaker() {
+    let plugin = EmbeddingSimilarityPlugin::new(
+        Arc::new(FakeEmbeddingModel {
+            embedding: vec![1.0, 0.0],
+            delay: Duration::ZERO,
+        }),
+        HashMap::from([
+            ("REFERENCE".to_owned(), vec![1.0, 0.0]),
+            ("COMMUNICATION".to_owned(), vec![1.0, 0.0]),
+        ]),
+        "mvp-1",
+        0.72,
+        Duration::from_millis(20),
+        Arc::new(EmbeddingMetrics::default()),
+    )
+    .unwrap();
+
+    for _ in 0..20 {
+        let result = plugin.classify("Unknown", "Unknown").unwrap();
+        assert_eq!(result.category(), "COMMUNICATION");
+        assert_eq!(result.label(), "communication:inferred");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

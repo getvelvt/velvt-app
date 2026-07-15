@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,6 +36,8 @@ pub enum ClientMessage {
     RequestMenuStatus(RequestMenuStatus),
     /// Swift requests that the service flush its upload queue.
     FlushUploadQueue(FlushUploadQueue),
+    /// Saves a local personal override and syncs an uploaded historical event.
+    CorrectEventClassification(CorrectEventClassification),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -331,15 +333,27 @@ pub struct RequestMenuStatus {}
 #[serde(deny_unknown_fields)]
 pub struct FlushUploadQueue {}
 
+/// User-selected correction for one locally known event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorrectEventClassification {
+    pub event_id: Uuid,
+    pub stable_id: String,
+    pub category: String,
+}
+
 /// One event waiting in the upload queue. `local_label` is display-only data
 /// sent over the device-local Unix socket and never appears in cloud DTOs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueuedEventSummary {
+    pub event_id: Uuid,
+    pub stable_id: String,
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_label: Option<String>,
     pub category: String,
+    pub classification_tier: String,
     pub occurred_at: DateTime<Utc>,
 }
 

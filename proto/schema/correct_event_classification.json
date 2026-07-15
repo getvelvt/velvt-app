@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "correct_event_classification" },
+    "payload": {
+      "type": "object",
+      "required": ["event_id", "stable_id", "category"],
+      "properties": {
+        "event_id": { "type": "string", "format": "uuid" },
+        "stable_id": { "type": "string" },
+        "category": {
+          "enum": ["FOCUS_WORK", "PASSIVE_CONSUMPTION", "SOCIAL_FEED", "COMMUNICATION", "TASK_MANAGEMENT", "REFERENCE", "SYSTEM", "UNLOGGED"]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

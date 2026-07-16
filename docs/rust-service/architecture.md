@@ -62,11 +62,20 @@ The abstraction engine is the privacy boundary. It accepts `RawEvent` and return
 
 Classification is plugin-based:
 
-1. Seed dictionary exact/glob matching from `resources/abstraction-taxonomy-mvp-1.json`.
-2. Optional embedding similarity when the `onnx` feature and model/centroid paths are configured.
-3. Unlogged fallback to `unclassified`/`UNLOGGED`.
+1. Device-local user rule.
+2. Specific browser context heuristic.
+3. Seed dictionary exact/glob application match from `resources/abstraction-taxonomy-mvp-1.json`.
+4. Local-purpose heuristic.
+5. Optional embedding similarity when the `onnx` feature and model/centroid paths are configured.
+6. Generic browser prior.
+7. Captured-but-unclassified fallback using the legacy `unlogged`/`UNLOGGED` wire values.
 
-The first matching plugin wins. Optional Tier 2 failure is degraded, not fatal, unless initialization of required baseline pieces fails.
+Every result carries typed `classified`/`ambiguous`/`unclassified` status,
+`high`/`medium`/`low`/`none` confidence, and
+`seed`/`heuristic`/`embedding`/`user_rule`/`fallback` provenance. Conflicting
+heuristics and embeddings without a winning margin abstain. Optional Tier 2
+failure is degraded, not fatal, unless initialization of required baseline
+pieces fails.
 
 ## Persistence
 
@@ -79,7 +88,10 @@ Design decisions:
 - Raw event storage is limited to privacy-safe audit/display fields after abstraction.
 - Upload DTO construction reads from persisted abstracted events and upload batches, not from original raw IPC payloads.
 
-The `local_display_label` field exists for local menu display and is never used in cloud DTOs.
+The `local_display_label` field is selected from a small curated set such as
+`VS Code`, `Slack`, `GitHub`, `Docs`, `Browser`, and `AI Assistant`. It is used
+for local menu display and bounded five-label-plus-`Other` aggregation, and is
+never used in cloud DTOs or logs. Raw titles are never display labels.
 
 ## Upload Pipeline
 

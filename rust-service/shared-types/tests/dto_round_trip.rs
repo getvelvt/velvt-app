@@ -81,6 +81,50 @@ fn classification_correction_round_trips_without_raw_app_data() {
 }
 
 #[test]
+fn classification_override_management_is_local_and_typed() {
+    let remove = ClientMessage::RemoveClassificationOverride(RemoveClassificationOverride {
+        stable_id: "abs_safe".into(),
+    });
+    let reset = ClientMessage::ResetClassificationOverrides(ResetClassificationOverrides {});
+
+    assert_eq!(
+        serde_json::to_value(&remove).unwrap(),
+        json!({
+            "type": "remove_classification_override",
+            "payload": { "stable_id": "abs_safe" }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&reset).unwrap(),
+        json!({"type": "reset_classification_overrides", "payload": {}})
+    );
+    assert_round_trip(remove);
+    assert_round_trip(reset);
+}
+
+#[test]
+fn queued_event_quality_metadata_round_trips_without_raw_fields() {
+    let event = QueuedEventSummary {
+        event_id: event_id(),
+        stable_id: "abs_safe".into(),
+        label: "reference:browser".into(),
+        local_label: Some("Browser".into()),
+        category: "REFERENCE".into(),
+        classification_tier: "fallback".into(),
+        classification_status: ClassificationStatus::Ambiguous,
+        classification_confidence: ClassificationConfidence::Low,
+        classification_source: ClassificationSource::Fallback,
+        occurred_at: timestamp(),
+    };
+
+    let encoded = serde_json::to_value(&event).unwrap();
+    for forbidden in ["app_name", "window_title", "bundle_id", "url", "key_hash"] {
+        assert!(encoded.get(forbidden).is_none(), "{forbidden}");
+    }
+    assert_round_trip(event);
+}
+
+#[test]
 fn server_message_variants_round_trip() {
     let messages = [
         ServerMessage::ServerHello(ServerHello {

@@ -80,6 +80,9 @@ fn abstraction_map_repo_contract() {
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
         classification_tier: "exact_match".into(),
+        classification_status: "classified".into(),
+        classification_confidence: "high".into(),
+        classification_source: "seed".into(),
         display_name: Some("Code Editor".into()),
     };
 
@@ -96,10 +99,13 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
         event_id: "event-1".into(),
         stable_id: "abs_1".into(),
         label: "document:edit".into(),
-        local_display_label: Some("Draft proposal".into()),
+        local_display_label: Some("Docs".into()),
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
         classification_tier: "exact_match".into(),
+        classification_status: "classified".into(),
+        classification_confidence: "high".into(),
+        classification_source: "seed".into(),
         occurred_at: timestamp(10),
         duration_seconds: 0,
     };
@@ -115,6 +121,49 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
         .contains("idx_raw_event_buffer_occurred_at"));
     assert_eq!(repository.delete_before(timestamp(11)).unwrap(), 1);
     assert!(repository.events_before(timestamp(11)).unwrap().is_empty());
+}
+
+#[test]
+fn local_display_aggregation_is_bounded_to_five_labels_plus_other() {
+    let database = database();
+    let repository = database.raw_event_repo();
+    let labels = [
+        Some("VS Code"),
+        Some("Slack"),
+        Some("GitHub"),
+        Some("Docs"),
+        Some("Browser"),
+        Some("AI Assistant"),
+        None,
+    ];
+    for (index, label) in labels.into_iter().enumerate() {
+        repository
+            .insert(&RawEventEntry {
+                event_id: format!("event-{index}"),
+                stable_id: format!("abs-{index}"),
+                label: "document:edit".into(),
+                local_display_label: label.map(str::to_owned),
+                category: "FOCUS_WORK".into(),
+                taxonomy_version: "mvp-1".into(),
+                classification_tier: "exact_match".into(),
+                classification_status: "classified".into(),
+                classification_confidence: "high".into(),
+                classification_source: "seed".into(),
+                occurred_at: timestamp(10 + index as i64),
+                duration_seconds: 70 - (index as u64 * 10),
+            })
+            .unwrap();
+    }
+
+    let aggregates = repository
+        .local_display_aggregates(timestamp(0), timestamp(100), 5)
+        .unwrap();
+
+    assert_eq!(aggregates.len(), 6);
+    assert_eq!(aggregates[0].label, "VS Code");
+    assert_eq!(aggregates[4].label, "Browser");
+    assert_eq!(aggregates[5].label, "Other");
+    assert_eq!(aggregates[5].duration_seconds, 30);
 }
 
 #[test]
@@ -308,6 +357,42 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
     assert_eq!(corrected.category(), "COMMUNICATION");
     assert_eq!(corrected.label(), "communication:inferred");
     assert_eq!(corrected.taxonomy_version(), "mvp-2");
+    assert_eq!(corrected.classification_source().as_str(), "user_rule");
+
+    let different_title =
+        AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
+            .unwrap()
+            .process(RawEvent {
+                event_id: Uuid::new_v4(),
+                occurred_at: timestamp(11),
+                app_name: "Unknown Local App".into(),
+                window_title: "different private title".into(),
+                bundle_id: None,
+            })
+            .unwrap();
+    assert_eq!(different_title.classification_source().as_str(), "fallback");
+
+    assert!(repository
+        .remove_personal_override(corrected.stable_id())
+        .unwrap());
+    let reverted = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
+        .unwrap()
+        .process(RawEvent {
+            event_id: Uuid::new_v4(),
+            occurred_at: timestamp(11),
+            app_name: "Unknown Local App".into(),
+            window_title: "private title".into(),
+            bundle_id: None,
+        })
+        .unwrap();
+    assert_eq!(reverted.classification_source().as_str(), "fallback");
+
+    repository
+        .save_personal_override(reverted.stable_id(), "COMMUNICATION")
+        .unwrap();
+    assert_eq!(repository.personal_override_count().unwrap(), 1);
+    assert_eq!(repository.reset_personal_overrides().unwrap(), 1);
+    assert_eq!(repository.personal_override_count().unwrap(), 0);
 }
 
 #[test]
@@ -324,6 +409,7 @@ fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_local
         .unwrap()
         .process(raw.clone())
         .unwrap();
+    assert_eq!(abstracted.local_display_label(), Some("Slack"));
     let outbound = serde_json::to_value(BatchEventPayload::from_abstracted(
         raw.event_id.to_string(),
         &abstracted,
@@ -332,6 +418,7 @@ fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_local
     .unwrap();
     assert_eq!(outbound["abstraction_type"], "communication:slack");
     assert!(!outbound.to_string().contains("Private team conversation"));
+    assert!(!outbound.to_string().contains("Slack"));
 
     let rehydrator = LocalInsightRehydrator::new(database.abstraction_map_repo());
     let delivered = parse_insight_with_rehydrator(
@@ -354,6 +441,41 @@ fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_local
     assert!(!delivered.text.contains("communication:slack"));
 }
 
+#[test]
+fn raw_title_never_becomes_a_local_display_label_or_ready_insight() {
+    let database = database();
+    let raw_title = "Secret acquisition plan";
+    let abstracted = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
+        .unwrap()
+        .process(RawEvent {
+            event_id: Uuid::new_v4(),
+            occurred_at: timestamp(10),
+            app_name: "Unknown Local App".into(),
+            window_title: raw_title.into(),
+            bundle_id: None,
+        })
+        .unwrap();
+
+    assert_eq!(abstracted.local_display_label(), None);
+    let rehydrator = LocalInsightRehydrator::new(database.abstraction_map_repo());
+    let delivered = parse_insight_with_rehydrator(
+        serde_json::json!({
+            "date": "2026-05-23",
+            "text": "You switched activities.",
+            "template": "You switched to {label_0}.",
+            "label_references": [{"token": "label_0", "label": "unlogged"}],
+            "confidence_level": "low",
+            "low_confidence": true,
+            "generated_at": "2026-05-24T00:00:00Z"
+        }),
+        Some(&rehydrator),
+    )
+    .unwrap();
+
+    assert!(!delivered.text.contains(raw_title));
+    assert_eq!(delivered.text, "You switched to an activity.");
+}
+
 #[tokio::test]
 async fn concurrent_writes_are_serialized_without_busy_errors_or_panics() {
     let database = Arc::new(database());
@@ -370,6 +492,9 @@ async fn concurrent_writes_are_serialized_without_busy_errors_or_panics() {
                     category: "FOCUS_WORK".into(),
                     taxonomy_version: "mvp-1".into(),
                     classification_tier: "exact_match".into(),
+                    classification_status: "classified".into(),
+                    classification_confidence: "high".into(),
+                    classification_source: "seed".into(),
                     display_name: None,
                 })?;
             }

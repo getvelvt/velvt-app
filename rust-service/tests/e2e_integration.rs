@@ -463,11 +463,10 @@ async fn path1_raw_event_is_abstracted_with_local_only_queue_labels() {
             "every persisted row must carry a privacy-safe label"
         );
     }
-    assert_eq!(
-        entries[0].local_display_label.as_deref(),
-        Some("main.rs — velvt")
-    );
-    assert_eq!(entries[1].local_display_label.as_deref(), Some("untitled"));
+    assert_eq!(entries[0].local_display_label.as_deref(), Some("VS Code"));
+    assert_eq!(entries[1].local_display_label, None);
+    assert!(!format!("{:?}", entries).contains("main.rs — velvt"));
+    assert!(!format!("{:?}", entries).contains("untitled"));
 }
 
 // ---------------------------------------------------------------------------

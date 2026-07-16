@@ -45,9 +45,12 @@ final class DeliveryModuleTests: XCTestCase {
             eventID: eventID,
             stableID: "abs_safe",
             label: "unlogged",
-            localLabel: "Local App",
+            localLabel: "Browser",
             category: "UNLOGGED",
             classificationTier: "fallback",
+            classificationStatus: .unclassified,
+            classificationConfidence: .none,
+            classificationSource: .fallback,
             occurredAt: Date()
         )
 
@@ -61,6 +64,38 @@ final class DeliveryModuleTests: XCTestCase {
                 stableID: "abs_safe",
                 category: "COMMUNICATION"
             ))]
+        )
+    }
+
+
+    @MainActor
+    func testCorrectionCanBeUndoneAndAllLearningReset() async {
+        let client = FakeIPCClient()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let sut = MenuStatusViewModel(ipcClient: client, messages: messages)
+        let event = QueuedEventSummary(
+            eventID: UUID(),
+            stableID: "abs_safe",
+            label: "communication:inferred",
+            localLabel: "Slack",
+            category: "COMMUNICATION",
+            classificationTier: "exact_match",
+            classificationStatus: .classified,
+            classificationConfidence: .high,
+            classificationSource: .userRule,
+            occurredAt: Date()
+        )
+
+        sut.undoCorrection(event)
+        sut.resetClassificationLearning()
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(
+            client.sentMessages,
+            [
+                .removeClassificationOverride(.init(stableID: "abs_safe")),
+                .resetClassificationOverrides,
+            ]
         )
     }
 }

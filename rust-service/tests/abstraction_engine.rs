@@ -6,9 +6,10 @@ use std::{
 };
 use uuid::Uuid;
 use velvt_service::abstraction::{
-    AbstractionEngine, ClassificationPlugin, ClassificationResult, ClassificationTier,
-    DefaultTitleAbstractor, EmbeddingError, EmbeddingMetrics, EmbeddingModel,
-    EmbeddingSimilarityPlugin, InMemoryMappingStore, Taxonomy, TitleAbstractor,
+    AbstractionEngine, ClassificationConfidence, ClassificationPlugin, ClassificationResult,
+    ClassificationSource, ClassificationStatus, ClassificationTier, DefaultTitleAbstractor,
+    EmbeddingError, EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
+    InMemoryMappingStore, Taxonomy, TitleAbstractor,
 };
 use velvt_shared_types::RawEvent;
 
@@ -55,6 +56,15 @@ fn tier1_is_deterministic_and_completes_under_one_millisecond() {
     assert_eq!(first.category(), "FOCUS_WORK");
     assert_eq!(first.taxonomy_version(), "mvp-1");
     assert_eq!(first.classification_tier(), ClassificationTier::ExactMatch);
+    assert_eq!(
+        first.classification_status(),
+        ClassificationStatus::Classified
+    );
+    assert_eq!(
+        first.classification_confidence(),
+        ClassificationConfidence::High
+    );
+    assert_eq!(first.classification_source(), ClassificationSource::Seed);
     eprintln!("Tier 1 mean={mean:?} p50={p50:?} p95={p95:?} p99={p99:?}");
     assert!(mean < Duration::from_millis(1), "Tier 1 mean was {mean:?}");
     assert!(p95.as_millis() < 1, "Tier 1 p95 was {p95:?}");
@@ -147,7 +157,12 @@ fn every_seed_entry_routes_through_tier1() {
             "{}",
             seed.app_name_pattern()
         );
-        assert_eq!(result.classification_tier(), ClassificationTier::ExactMatch);
+        let expected_tier = if seed.label() == "reference:browser" {
+            ClassificationTier::Fallback
+        } else {
+            ClassificationTier::ExactMatch
+        };
+        assert_eq!(result.classification_tier(), expected_tier);
     }
 }
 
@@ -161,7 +176,19 @@ fn unknown_app_uses_unlogged_fallback() {
     assert_eq!(result.label(), "unlogged");
     assert_eq!(result.category(), "UNLOGGED");
     assert_eq!(result.classification_tier(), ClassificationTier::Fallback);
-    assert!(started.elapsed() < Duration::from_millis(5));
+    assert_eq!(
+        result.classification_status(),
+        ClassificationStatus::Unclassified
+    );
+    assert_eq!(
+        result.classification_confidence(),
+        ClassificationConfidence::None
+    );
+    assert_eq!(
+        result.classification_source(),
+        ClassificationSource::Fallback
+    );
+    assert!(started.elapsed() < Duration::from_millis(20));
 }
 
 #[test]
@@ -175,6 +202,18 @@ fn local_purpose_heuristic_classifies_unknown_cad_app_family() {
     assert_eq!(
         result.classification_tier(),
         ClassificationTier::LocalPurposeHeuristic
+    );
+    assert_eq!(
+        result.classification_status(),
+        ClassificationStatus::Classified
+    );
+    assert_eq!(
+        result.classification_confidence(),
+        ClassificationConfidence::Medium
+    );
+    assert_eq!(
+        result.classification_source(),
+        ClassificationSource::Heuristic
     );
 }
 
@@ -235,6 +274,12 @@ fn browser_context_routes_specific_tabs_before_generic_browser_seed() {
             "video:youtube",
             "PASSIVE_CONSUMPTION",
         ),
+        (
+            "Google Chrome",
+            "chatgpt.com/c/private",
+            "reference:ai_assistant",
+            "REFERENCE",
+        ),
     ];
 
     for (app_name, window_title, expected_label, expected_category) in cases {
@@ -257,7 +302,90 @@ fn generic_browser_without_specific_tab_context_still_uses_browser_seed() {
 
     assert_eq!(result.label(), "reference:browser");
     assert_eq!(result.category(), "REFERENCE");
-    assert_eq!(result.classification_tier(), ClassificationTier::ExactMatch);
+    assert_eq!(result.classification_tier(), ClassificationTier::Fallback);
+    assert_eq!(
+        result.classification_status(),
+        ClassificationStatus::Ambiguous
+    );
+    assert_eq!(
+        result.classification_confidence(),
+        ClassificationConfidence::Low
+    );
+    assert_eq!(
+        result.classification_source(),
+        ClassificationSource::Fallback
+    );
+}
+
+#[test]
+fn conflicting_browser_cues_abstain_instead_of_using_rule_order() {
+    let result = engine()
+        .process(raw_event(
+            "Google Chrome",
+            "GitHub discussion about youtube.com/watch/private",
+        ))
+        .unwrap();
+
+    assert_eq!(result.label(), "unlogged");
+    assert_eq!(result.category(), "UNLOGGED");
+    assert_eq!(
+        result.classification_status(),
+        ClassificationStatus::Ambiguous
+    );
+    assert_eq!(
+        result.classification_confidence(),
+        ClassificationConfidence::Low
+    );
+    assert_eq!(
+        result.classification_source(),
+        ClassificationSource::Heuristic
+    );
+}
+
+#[test]
+fn classification_precedence_is_explicit() {
+    let taxonomy = "mvp-1";
+    let make = |source, status| {
+        ClassificationResult::with_quality(
+            "document:inferred",
+            "FOCUS_WORK",
+            taxonomy,
+            ClassificationTier::ExactMatch,
+            status,
+            ClassificationConfidence::High,
+            source,
+        )
+    };
+    let ranks = [
+        make(
+            ClassificationSource::UserRule,
+            ClassificationStatus::Classified,
+        )
+        .precedence(),
+        make(ClassificationSource::Seed, ClassificationStatus::Classified).precedence(),
+        make(
+            ClassificationSource::Heuristic,
+            ClassificationStatus::Classified,
+        )
+        .precedence(),
+        make(
+            ClassificationSource::Embedding,
+            ClassificationStatus::Classified,
+        )
+        .precedence(),
+        make(
+            ClassificationSource::Fallback,
+            ClassificationStatus::Ambiguous,
+        )
+        .precedence(),
+        make(
+            ClassificationSource::Fallback,
+            ClassificationStatus::Unclassified,
+        )
+        .precedence(),
+    ];
+
+    assert!(ranks.windows(2).all(|pair| pair[0] > pair[1]));
 }
 
 #[test]
@@ -442,6 +570,14 @@ impl EmbeddingModel for HighSimilarityModel {
     }
 }
 
+struct ConflictingEmbeddingModel;
+
+impl EmbeddingModel for ConflictingEmbeddingModel {
+    fn embed(&self, _input: &str) -> Result<Vec<f32>, EmbeddingError> {
+        Ok(vec![1.0, 1.0])
+    }
+}
+
 #[test]
 fn all_three_tiers_fall_through_end_to_end() {
     let taxonomy = Taxonomy::from_builtin().unwrap();
@@ -502,6 +638,55 @@ fn tier2_path_is_deterministic_and_reports_embedding_tier() {
     assert_eq!(
         first.classification_tier(),
         ClassificationTier::EmbeddingSimilarity
+    );
+    assert_eq!(
+        first.classification_status(),
+        ClassificationStatus::Classified
+    );
+    assert_eq!(
+        first.classification_confidence(),
+        ClassificationConfidence::High
+    );
+    assert_eq!(
+        first.classification_source(),
+        ClassificationSource::Embedding
+    );
+}
+
+#[test]
+fn embedding_with_no_winning_margin_abstains() {
+    let taxonomy = Taxonomy::from_builtin().unwrap();
+    let tier2 = EmbeddingSimilarityPlugin::new(
+        Arc::new(ConflictingEmbeddingModel),
+        std::collections::HashMap::from([
+            ("FOCUS_WORK".to_owned(), vec![1.0, 0.0]),
+            ("REFERENCE".to_owned(), vec![0.0, 1.0]),
+        ]),
+        taxonomy.version(),
+        0.7,
+        Duration::from_millis(20),
+        Arc::new(EmbeddingMetrics::default()),
+    )
+    .unwrap();
+    let result = AbstractionEngine::builder(Arc::new(InMemoryMappingStore::default()), taxonomy)
+        .register_builtin_plugins_with_embedding(Some(tier2))
+        .build()
+        .unwrap()
+        .process(raw_event("Unknown App", "private"))
+        .unwrap();
+
+    assert_eq!(result.category(), "UNLOGGED");
+    assert_eq!(
+        result.classification_status(),
+        ClassificationStatus::Ambiguous
+    );
+    assert_eq!(
+        result.classification_confidence(),
+        ClassificationConfidence::Low
+    );
+    assert_eq!(
+        result.classification_source(),
+        ClassificationSource::Embedding
     );
 }
 

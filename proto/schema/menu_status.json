@@ -46,7 +46,7 @@
           "maxItems": 10,
           "items": {
             "type": "object",
-            "required": ["event_id", "stable_id", "label", "category", "classification_tier", "occurred_at"],
+            "required": ["event_id", "stable_id", "label", "category", "classification_tier", "classification_status", "classification_confidence", "classification_source", "occurred_at"],
             "properties": {
               "event_id": { "type": "string", "format": "uuid" },
               "stable_id": { "type": "string" },
@@ -58,6 +58,15 @@
               "category": { "type": "string" },
               "classification_tier": {
                 "enum": ["exact_match", "local_purpose_heuristic", "embedding_similarity", "fallback"]
+              },
+              "classification_status": {
+                "enum": ["classified", "ambiguous", "unclassified"]
+              },
+              "classification_confidence": {
+                "enum": ["high", "medium", "low", "none"]
+              },
+              "classification_source": {
+                "enum": ["seed", "heuristic", "embedding", "user_rule", "fallback"]
               },
               "occurred_at": { "type": "string", "format": "date-time" }
             },

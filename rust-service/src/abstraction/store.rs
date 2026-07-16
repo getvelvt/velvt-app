@@ -1,21 +1,25 @@
 use std::{collections::HashMap, sync::Mutex};
 
 /// Stable-ID persistence boundary. R3 will provide the SQLite implementation.
+pub struct MappingResolution<'a> {
+    pub stable_key: &'a str,
+    pub fresh_id: &'a str,
+    pub label: &'a str,
+    pub category: &'a str,
+    pub taxonomy_version: &'a str,
+    pub classification_tier: &'a str,
+    pub classification_status: &'a str,
+    pub classification_confidence: &'a str,
+    pub classification_source: &'a str,
+    pub local_display_label: Option<&'a str>,
+}
+
 pub trait AbstractionMappingStore: Send + Sync {
     /// Returns a user-selected category for the exact local app/title key.
     fn personal_override(&self, stable_key: &str) -> Result<Option<String>, StoreError>;
 
     /// Returns the existing ID for a key or atomically persists the fresh mapping.
-    fn resolve_id(
-        &self,
-        stable_key: &str,
-        fresh_id: &str,
-        label: &str,
-        category: &str,
-        taxonomy_version: &str,
-        classification_tier: &str,
-        display_name: &str,
-    ) -> Result<String, StoreError>;
+    fn resolve_id(&self, mapping: MappingResolution<'_>) -> Result<String, StoreError>;
 
     /// Increments a privacy-safe aggregate; no raw classifier input is stored.
     fn increment_classification_count(
@@ -42,20 +46,11 @@ impl AbstractionMappingStore for InMemoryMappingStore {
             .cloned())
     }
 
-    fn resolve_id(
-        &self,
-        stable_key: &str,
-        fresh_id: &str,
-        _label: &str,
-        _category: &str,
-        _taxonomy_version: &str,
-        _classification_tier: &str,
-        _display_name: &str,
-    ) -> Result<String, StoreError> {
+    fn resolve_id(&self, mapping: MappingResolution<'_>) -> Result<String, StoreError> {
         let mut mappings = self.mappings.lock().map_err(|_| StoreError::Unavailable)?;
         Ok(mappings
-            .entry(stable_key.to_owned())
-            .or_insert_with(|| fresh_id.to_owned())
+            .entry(mapping.stable_key.to_owned())
+            .or_insert_with(|| mapping.fresh_id.to_owned())
             .clone())
     }
 

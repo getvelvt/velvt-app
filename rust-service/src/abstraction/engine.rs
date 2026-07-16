@@ -6,12 +6,13 @@ use velvt_shared_types::RawEvent;
 
 use super::{
     plugin::{
-        BrowserContextPlugin, LocalPurposeHeuristicPlugin, SeedDictionaryPlugin,
-        UnloggedFallbackPlugin,
+        BrowserContextPlugin, GenericBrowserPriorPlugin, LocalPurposeHeuristicPlugin,
+        SeedDictionaryPlugin, UnloggedFallbackPlugin,
     },
     taxonomy::is_valid_label,
-    AbstractionMappingStore, ClassificationPlugin, ClassificationResult, ClassificationTier,
-    RawKey, StoreError, Taxonomy, TaxonomyError, TitleAbstractor,
+    AbstractionMappingStore, ClassificationConfidence, ClassificationPlugin, ClassificationResult,
+    ClassificationSource, ClassificationStatus, ClassificationTier, MappingResolution, RawKey,
+    StoreError, Taxonomy, TaxonomyError, TitleAbstractor,
 };
 
 /// Privacy-safe result. Raw fields cannot be constructed into or read from this type.
@@ -24,6 +25,11 @@ pub struct AbstractedEvent {
     occurred_at: DateTime<Utc>,
     #[serde(skip)]
     classification_tier: ClassificationTier,
+    classification_status: ClassificationStatus,
+    classification_confidence: ClassificationConfidence,
+    classification_source: ClassificationSource,
+    #[serde(skip)]
+    local_display_label: Option<String>,
 }
 
 impl AbstractedEvent {
@@ -44,6 +50,18 @@ impl AbstractedEvent {
     }
     pub fn classification_tier(&self) -> ClassificationTier {
         self.classification_tier
+    }
+    pub fn classification_status(&self) -> ClassificationStatus {
+        self.classification_status
+    }
+    pub fn classification_confidence(&self) -> ClassificationConfidence {
+        self.classification_confidence
+    }
+    pub fn classification_source(&self) -> ClassificationSource {
+        self.classification_source
+    }
+    pub fn local_display_label(&self) -> Option<&str> {
+        self.local_display_label.as_deref()
     }
 }
 
@@ -87,12 +105,15 @@ impl AbstractionEngine {
         let abstracted_title = self.title_abstractor.abstract_title(raw_key.window_title());
         let stable_key = raw_key.stable_key();
         let classification = match self.store.personal_override(&stable_key)? {
-            Some(category) => ClassificationResult::new(
+            Some(category) => ClassificationResult::with_quality(
                 override_label_for_category(&category)
                     .ok_or(AbstractionError::InvalidPluginResult)?,
                 category,
                 self.taxonomy.version(),
                 ClassificationTier::ExactMatch,
+                ClassificationStatus::Classified,
+                ClassificationConfidence::High,
+                ClassificationSource::UserRule,
             ),
             None => self
                 .plugins
@@ -108,15 +129,23 @@ impl AbstractionEngine {
             return Err(AbstractionError::InvalidPluginResult);
         }
         let fresh_id = format!("abs_{}", Uuid::new_v4().simple());
-        let stable_id = self.store.resolve_id(
-            &stable_key,
-            &fresh_id,
-            classification.label(),
-            classification.category(),
-            classification.taxonomy_version(),
-            classification.tier().as_str(),
+        let local_display_label = curated_display_label(
             raw_key.app_name(),
-        )?;
+            raw_key.window_title(),
+            classification.label(),
+        );
+        let stable_id = self.store.resolve_id(MappingResolution {
+            stable_key: &stable_key,
+            fresh_id: &fresh_id,
+            label: classification.label(),
+            category: classification.category(),
+            taxonomy_version: classification.taxonomy_version(),
+            classification_tier: classification.tier().as_str(),
+            classification_status: classification.status().as_str(),
+            classification_confidence: classification.confidence().as_str(),
+            classification_source: classification.source().as_str(),
+            local_display_label: local_display_label.as_deref(),
+        })?;
         self.store.increment_classification_count(
             classification.taxonomy_version(),
             classification.tier().as_str(),
@@ -128,6 +157,10 @@ impl AbstractionEngine {
             taxonomy_version: classification.taxonomy_version().to_owned(),
             occurred_at,
             classification_tier: classification.tier(),
+            classification_status: classification.status(),
+            classification_confidence: classification.confidence(),
+            classification_source: classification.source(),
+            local_display_label,
         })
     }
 }
@@ -149,6 +182,25 @@ pub(crate) fn override_label_for_category(category: &str) -> Option<&'static str
 fn matches_raw_input(label: &str, raw_key: &RawKey) -> bool {
     label.eq_ignore_ascii_case(raw_key.app_name())
         || label.eq_ignore_ascii_case(raw_key.window_title())
+}
+
+fn curated_display_label(app_name: &str, window_title: &str, label: &str) -> Option<String> {
+    let app = app_name.to_ascii_lowercase();
+    let title = window_title.to_ascii_lowercase();
+    let curated = match label {
+        "communication:slack" => "Slack",
+        "reference:github" => "GitHub",
+        "document:docs" | "document:write" if title.contains("docs") => "Docs",
+        "reference:ai_assistant" => "AI Assistant",
+        "reference:browser" => "Browser",
+        "document:edit" | "document:code"
+            if app.contains("vs code") || app.contains("visual studio code") =>
+        {
+            "VS Code"
+        }
+        _ => return None,
+    };
+    Some(curated.to_owned())
 }
 
 pub struct AbstractionEngineBuilder {
@@ -187,7 +239,9 @@ impl AbstractionEngineBuilder {
             Some(plugin) => builder.register_plugin(plugin),
             None => builder,
         };
-        builder.register_plugin(UnloggedFallbackPlugin::new(version, default_category))
+        builder
+            .register_plugin(GenericBrowserPriorPlugin::new(version.clone()))
+            .register_plugin(UnloggedFallbackPlugin::new(version, default_category))
     }
 
     pub fn build(self) -> Result<AbstractionEngine, AbstractionError> {

@@ -16,6 +16,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case requestMenuStatus
     case flushUploadQueue
     case correctEventClassification(CorrectEventClassification)
+    case removeClassificationOverride(RemoveClassificationOverride)
+    case resetClassificationOverrides
 
     public init(from decoder: Decoder) throws {
         let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
@@ -48,6 +50,10 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .flushUploadQueue
         case "correct_event_classification":
             self = .correctEventClassification(try CorrectEventClassification(from: payload))
+        case "remove_classification_override":
+            self = .removeClassificationOverride(try RemoveClassificationOverride(from: payload))
+        case "reset_classification_overrides":
+            self = .resetClassificationOverrides
         default:
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
         }
@@ -95,6 +101,12 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case let .correctEventClassification(value):
             try envelope.encode("correct_event_classification", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .removeClassificationOverride(value):
+            try envelope.encode("remove_classification_override", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .resetClassificationOverrides:
+            try envelope.encode("reset_classification_overrides", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
 }
@@ -696,6 +708,27 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
 }
 
 /// Privacy-safe queued event metadata for the menu-bar settings UI.
+public enum ClassificationStatus: String, Codable, Equatable, Sendable {
+    case classified
+    case ambiguous
+    case unclassified
+}
+
+public enum ClassificationConfidence: String, Codable, Equatable, Sendable {
+    case high
+    case medium
+    case low
+    case none
+}
+
+public enum ClassificationSource: String, Codable, Equatable, Sendable {
+    case seed
+    case heuristic
+    case embedding
+    case userRule = "user_rule"
+    case fallback
+}
+
 public struct QueuedEventSummary: Codable, Equatable, Sendable, Identifiable {
     public let eventID: UUID
     public let stableID: String
@@ -703,6 +736,9 @@ public struct QueuedEventSummary: Codable, Equatable, Sendable, Identifiable {
     public let localLabel: String?
     public let category: String
     public let classificationTier: String
+    public let classificationStatus: ClassificationStatus
+    public let classificationConfidence: ClassificationConfidence
+    public let classificationSource: ClassificationSource
     public let occurredAt: Date
 
     public var id: UUID { eventID }
@@ -713,6 +749,9 @@ public struct QueuedEventSummary: Codable, Equatable, Sendable, Identifiable {
         case stableID = "stable_id"
         case localLabel = "local_label"
         case classificationTier = "classification_tier"
+        case classificationStatus = "classification_status"
+        case classificationConfidence = "classification_confidence"
+        case classificationSource = "classification_source"
         case occurredAt = "occurred_at"
     }
 }
@@ -732,6 +771,18 @@ public struct CorrectEventClassification: Codable, Equatable, Sendable {
         self.eventID = eventID
         self.stableID = stableID
         self.category = category
+    }
+}
+
+public struct RemoveClassificationOverride: Codable, Equatable, Sendable {
+    public let stableID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case stableID = "stable_id"
+    }
+
+    public init(stableID: String) {
+        self.stableID = stableID
     }
 }
 

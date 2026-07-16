@@ -220,6 +220,7 @@ public struct MenuBarPopoverView: View {
     @State private var showsQueuedEventsSubmenu = false
     @State private var showsCollectionSettingsSubmenu = false
     @State private var showsDebugSubmenu = false
+    @State private var confirmsClassificationReset = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -499,9 +500,26 @@ public struct MenuBarPopoverView: View {
                 Divider().padding(.top, 8)
                 Button("Send All Now") { menuStatusViewModel?.sendAllNow() }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                Button("Reset Classification Learning", role: .destructive) {
+                    confirmsClassificationReset = true
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
             }
             .onAppear { menuStatusViewModel?.refresh() }
+            .confirmationDialog(
+                "Reset all classification corrections on this Mac?",
+                isPresented: $confirmsClassificationReset,
+                titleVisibility: .visible
+            ) {
+                Button("Reset Learning", role: .destructive) {
+                    menuStatusViewModel?.resetClassificationLearning()
+                }
+                Button("Cancel", role: .cancel) { }
+            }
 
         case .collectionSettings:
             VStack(spacing: 0) {
@@ -689,7 +707,13 @@ public struct MenuBarPopoverView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            if event.category == "UNLOGGED" || ["embedding_similarity", "fallback"].contains(event.classificationTier) {
+            if event.classificationSource == .userRule {
+                Button("Undo correction") {
+                    menuStatusViewModel?.undoCorrection(event)
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+            } else if event.classificationStatus != .classified || event.classificationConfidence == .low {
                 Picker(
                     "Correct category",
                     selection: Binding(

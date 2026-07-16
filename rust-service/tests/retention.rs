@@ -29,6 +29,9 @@ fn make_event(n: u64) -> RawEventEntry {
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
         classification_tier: "exact_match".into(),
+        classification_status: "classified".into(),
+        classification_confidence: "high".into(),
+        classification_source: "seed".into(),
         occurred_at: Utc::now(),
         duration_seconds: 30,
     }

@@ -66,7 +66,8 @@ Direction is enforced by the workspace message envelopes:
 - Rust accepts only `client_hello`, `raw_event`, `error_response`,
   `request_latest_insight`, `request_latest_history`, `sign_up`, `log_in`,
   `log_out`, `delete_account`, `request_menu_status`, and
-  `flush_upload_queue`.
+  `flush_upload_queue`, `correct_event_classification`,
+  `remove_classification_override`, and `reset_classification_overrides`.
 - Rust emits only `server_hello`, `acknowledged`, `version_mismatch`,
   `malformed_message`, `raw_event_ack`, `insight_payload`, `history_payload`,
   `service_status`, `privacy_violation_alert`, `error_response`,
@@ -260,12 +261,20 @@ Direction: Rust to Swift. Purpose: report service status for the menu popover.
 - `rejected_upload_batch_count`: count of terminal privacy-rejected batches
 - `queued_event_count`: aggregate count of queued events
 - `queued_events`: newest privacy-safe queue summaries, each containing
-  `label`, `category`, optional local-only `local_label`, and `occurred_at`
+  `label`, `category`, optional local-only `local_label`, classification
+  status/confidence/source, the compatibility tier, and `occurred_at`
 
 Upload diagnostics are derived from durable batch metadata only. They must not
 include raw event content, upload payloads, URLs, file paths, app names, window
 titles, or account secrets. `local_label` is display-only and must never be
-copied into upload DTOs or logs.
+copied into upload DTOs or logs. It is always a curated safe label, never a raw
+title, URL, or arbitrary app identity.
+
+Classification corrections create exact device-local rules. Removal deletes
+one rule by a local stable event identifier; reset deletes all rules. Neither
+operation uploads a raw correction target or opaque mapping key. A corrected
+event may still sync its already-safe category by event ID through the existing
+cloud correction endpoint.
 
 ## 4. Version Negotiation
 

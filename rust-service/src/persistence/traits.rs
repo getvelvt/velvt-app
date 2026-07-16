@@ -1,6 +1,7 @@
 use super::{
-    AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, NewUploadBatch,
-    PersistenceError, RawEventEntry, UploadBatch, UploadQueueDiagnostics,
+    AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, LocalDisplayAggregate,
+    LocalEventMetadata, NewUploadBatch, PersistenceError, RawEventEntry, UploadBatch,
+    UploadQueueDiagnostics,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -14,6 +15,9 @@ pub trait AbstractionMapRepo: Send + Sync {
         stable_id: &str,
         category: &str,
     ) -> Result<(), PersistenceError>;
+    fn remove_personal_override(&self, stable_id: &str) -> Result<bool, PersistenceError>;
+    fn reset_personal_overrides(&self) -> Result<u64, PersistenceError>;
+    fn personal_override_count(&self) -> Result<u64, PersistenceError>;
     fn display_name_for_label(&self, label: &str) -> Result<Option<String>, PersistenceError>;
 }
 
@@ -120,10 +124,17 @@ pub trait RawEventRepo: Send + Sync {
     fn insert(&self, event: &RawEventEntry) -> Result<(), PersistenceError>;
     fn unbatched_events(&self, limit: usize) -> Result<Vec<RawEventEntry>, PersistenceError>;
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError>;
-    fn local_display_labels(
+    fn local_event_metadata(
         &self,
         event_ids: &[String],
-    ) -> Result<HashMap<String, String>, PersistenceError>;
+    ) -> Result<HashMap<String, LocalEventMetadata>, PersistenceError>;
+    /// Returns at most `limit` curated labels plus an optional `Other` bucket.
+    fn local_display_aggregates(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<LocalDisplayAggregate>, PersistenceError>;
     fn update_classification(
         &self,
         event_id: &str,

@@ -18,8 +18,11 @@ pub use plugin::{
     ClassificationPlugin, ClassificationResult, ClassificationTier, EmbeddingError,
     EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
 };
-pub use store::{AbstractionMappingStore, InMemoryMappingStore, StoreError};
+pub use store::{AbstractionMappingStore, InMemoryMappingStore, MappingResolution, StoreError};
 pub use taxonomy::{SeedApplication, Taxonomy, TaxonomyError, API_EXPECTED_TAXONOMY_VERSION};
+pub use velvt_shared_types::{
+    ClassificationConfidence, ClassificationSource, ClassificationStatus,
+};
 
 use std::borrow::Cow;
 

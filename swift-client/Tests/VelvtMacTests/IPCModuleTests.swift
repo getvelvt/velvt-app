@@ -384,6 +384,8 @@ final class AuthIPCContractTests: XCTestCase {
             )),
             .logOut,
             .deleteAccount,
+            .removeClassificationOverride(.init(stableID: "abs_safe")),
+            .resetClassificationOverrides,
         ]
         for msg in messages {
             let data = try encoder.encode(msg)

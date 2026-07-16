@@ -60,6 +60,28 @@ public final class MenuStatusViewModel: ObservableObject {
             }
         }
     }
+
+    public func undoCorrection(_ event: QueuedEventSummary) {
+        Task {
+            do {
+                try await ipcClient.send(
+                    .removeClassificationOverride(.init(stableID: event.stableID))
+                )
+            } catch {
+                sendError = "Unable to remove this correction. Try again later."
+            }
+        }
+    }
+
+    public func resetClassificationLearning() {
+        Task {
+            do {
+                try await ipcClient.send(.resetClassificationOverrides)
+            } catch {
+                sendError = "Unable to reset classification learning. Try again later."
+            }
+        }
+    }
 }
 
 @MainActor

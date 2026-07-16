@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,6 +38,10 @@ pub enum ClientMessage {
     FlushUploadQueue(FlushUploadQueue),
     /// Saves a local personal override and syncs an uploaded historical event.
     CorrectEventClassification(CorrectEventClassification),
+    /// Removes one device-local personal rule.
+    RemoveClassificationOverride(RemoveClassificationOverride),
+    /// Removes every device-local personal rule.
+    ResetClassificationOverrides(ResetClassificationOverrides),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -264,6 +268,67 @@ pub enum ConfidenceLevel {
     High,
 }
 
+/// Quality status for one captured event's local classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassificationStatus {
+    Classified,
+    Ambiguous,
+    Unclassified,
+}
+
+impl ClassificationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Classified => "classified",
+            Self::Ambiguous => "ambiguous",
+            Self::Unclassified => "unclassified",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassificationConfidence {
+    High,
+    Medium,
+    Low,
+    None,
+}
+
+impl ClassificationConfidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::None => "none",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassificationSource {
+    Seed,
+    Heuristic,
+    Embedding,
+    UserRule,
+    Fallback,
+}
+
+impl ClassificationSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Seed => "seed",
+            Self::Heuristic => "heuristic",
+            Self::Embedding => "embedding",
+            Self::UserRule => "user_rule",
+            Self::Fallback => "fallback",
+        }
+    }
+}
+
 /// History availability status.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -342,6 +407,16 @@ pub struct CorrectEventClassification {
     pub category: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveClassificationOverride {
+    pub stable_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetClassificationOverrides {}
+
 /// One event waiting in the upload queue. `local_label` is display-only data
 /// sent over the device-local Unix socket and never appears in cloud DTOs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -354,6 +429,9 @@ pub struct QueuedEventSummary {
     pub local_label: Option<String>,
     pub category: String,
     pub classification_tier: String,
+    pub classification_status: ClassificationStatus,
+    pub classification_confidence: ClassificationConfidence,
+    pub classification_source: ClassificationSource,
     pub occurred_at: DateTime<Utc>,
 }
 

@@ -1,5 +1,12 @@
 # IPC Protocol Changelog
 
+## Version 14 - 2026-07-16
+
+- Queued-event summaries now distinguish classification status, confidence,
+  and provenance while retaining the legacy tier for compatibility.
+- Added device-local removal and reset operations for personal classification
+  rules. Neither operation transmits a raw target or local mapping key.
+
 ## Version 13 - 2026-07-15
 
 - Added `correct_event_classification` for device-local personal overrides and historical sync.

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "remove_classification_override" },
+    "payload": {
+      "type": "object",
+      "required": ["stable_id"],
+      "properties": {
+        "stable_id": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

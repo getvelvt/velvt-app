@@ -7,6 +7,7 @@ use std::{
     },
     time::Duration,
 };
+use velvt_shared_types::{ClassificationConfidence, ClassificationSource, ClassificationStatus};
 
 use super::{
     normalize::{contains_token_phrase, normalize_classifier_input, normalize_classifier_text},
@@ -41,6 +42,9 @@ pub struct ClassificationResult {
     category: String,
     taxonomy_version: String,
     tier: ClassificationTier,
+    status: ClassificationStatus,
+    confidence: ClassificationConfidence,
+    source: ClassificationSource,
 }
 
 impl ClassificationResult {
@@ -50,11 +54,57 @@ impl ClassificationResult {
         taxonomy_version: impl Into<String>,
         tier: ClassificationTier,
     ) -> Self {
+        let (status, confidence, source) = match tier {
+            ClassificationTier::ExactMatch => (
+                ClassificationStatus::Classified,
+                ClassificationConfidence::High,
+                ClassificationSource::Seed,
+            ),
+            ClassificationTier::LocalPurposeHeuristic => (
+                ClassificationStatus::Classified,
+                ClassificationConfidence::Medium,
+                ClassificationSource::Heuristic,
+            ),
+            ClassificationTier::EmbeddingSimilarity => (
+                ClassificationStatus::Classified,
+                ClassificationConfidence::Medium,
+                ClassificationSource::Embedding,
+            ),
+            ClassificationTier::Fallback => (
+                ClassificationStatus::Unclassified,
+                ClassificationConfidence::None,
+                ClassificationSource::Fallback,
+            ),
+        };
+        Self::with_quality(
+            label,
+            category,
+            taxonomy_version,
+            tier,
+            status,
+            confidence,
+            source,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_quality(
+        label: impl Into<String>,
+        category: impl Into<String>,
+        taxonomy_version: impl Into<String>,
+        tier: ClassificationTier,
+        status: ClassificationStatus,
+        confidence: ClassificationConfidence,
+        source: ClassificationSource,
+    ) -> Self {
         Self {
             label: label.into(),
             category: category.into(),
             taxonomy_version: taxonomy_version.into(),
             tier,
+            status,
+            confidence,
+            source,
         }
     }
 
@@ -72,6 +122,30 @@ impl ClassificationResult {
 
     pub fn tier(&self) -> ClassificationTier {
         self.tier
+    }
+
+    pub fn status(&self) -> ClassificationStatus {
+        self.status
+    }
+
+    pub fn confidence(&self) -> ClassificationConfidence {
+        self.confidence
+    }
+
+    pub fn source(&self) -> ClassificationSource {
+        self.source
+    }
+
+    /// Explicit arbitration rank. Higher-specificity evidence always wins.
+    pub fn precedence(&self) -> u8 {
+        match (self.source, self.status) {
+            (ClassificationSource::UserRule, _) => 6,
+            (ClassificationSource::Seed, _) => 5,
+            (ClassificationSource::Heuristic, _) => 4,
+            (ClassificationSource::Embedding, _) => 3,
+            (ClassificationSource::Fallback, ClassificationStatus::Ambiguous) => 2,
+            (ClassificationSource::Fallback, _) => 1,
+        }
     }
 }
 
@@ -95,12 +169,12 @@ impl SeedDictionaryPlugin {
 }
 
 impl ClassificationPlugin for SeedDictionaryPlugin {
-    fn classify(&self, app_name: &str, window_title: &str) -> Option<ClassificationResult> {
+    fn classify(&self, app_name: &str, _window_title: &str) -> Option<ClassificationResult> {
         self.entries
             .iter()
             .find(|entry| {
-                pattern_matches(entry.app_name_pattern(), app_name)
-                    || title_pattern_matches(entry.app_name_pattern(), window_title)
+                !is_browser_app(entry.app_name_pattern())
+                    && pattern_matches(entry.app_name_pattern(), app_name)
             })
             .map(|entry| {
                 ClassificationResult::new(
@@ -141,16 +215,6 @@ fn pattern_matches(pattern: &str, value: &str) -> bool {
     pattern.ends_with('*') || remainder.is_empty()
 }
 
-fn title_pattern_matches(pattern: &str, value: &str) -> bool {
-    if pattern.contains('*') {
-        return pattern_matches(pattern, value);
-    }
-
-    let pattern = normalize_classifier_text(pattern);
-    let value = normalize_classifier_text(value);
-    pattern.len() > 2 && contains_token_phrase(&value, &pattern)
-}
-
 pub(crate) struct LocalPurposeHeuristicPlugin {
     taxonomy_version: String,
 }
@@ -164,17 +228,7 @@ impl LocalPurposeHeuristicPlugin {
 impl ClassificationPlugin for LocalPurposeHeuristicPlugin {
     fn classify(&self, app_name: &str, window_title: &str) -> Option<ClassificationResult> {
         let haystack = normalized_purpose_input(app_name, window_title);
-        PURPOSE_RULES
-            .iter()
-            .find(|rule| rule.matches(&haystack))
-            .map(|rule| {
-                ClassificationResult::new(
-                    rule.label,
-                    rule.category,
-                    &self.taxonomy_version,
-                    ClassificationTier::LocalPurposeHeuristic,
-                )
-            })
+        classify_matching_rules(&haystack, PURPOSE_RULES, &self.taxonomy_version)
     }
 }
 
@@ -194,17 +248,33 @@ impl ClassificationPlugin for BrowserContextPlugin {
             return None;
         }
         let haystack = normalized_purpose_input(app_name, window_title);
-        BROWSER_CONTEXT_RULES
-            .iter()
-            .find(|rule| rule.matches(&haystack))
-            .map(|rule| {
-                ClassificationResult::new(
-                    rule.label,
-                    rule.category,
-                    &self.taxonomy_version,
-                    ClassificationTier::LocalPurposeHeuristic,
-                )
-            })
+        classify_matching_rules(&haystack, BROWSER_CONTEXT_RULES, &self.taxonomy_version)
+    }
+}
+
+pub(crate) struct GenericBrowserPriorPlugin {
+    taxonomy_version: String,
+}
+
+impl GenericBrowserPriorPlugin {
+    pub(crate) fn new(taxonomy_version: String) -> Self {
+        Self { taxonomy_version }
+    }
+}
+
+impl ClassificationPlugin for GenericBrowserPriorPlugin {
+    fn classify(&self, app_name: &str, _window_title: &str) -> Option<ClassificationResult> {
+        is_browser_app(app_name).then(|| {
+            ClassificationResult::with_quality(
+                "reference:browser",
+                "REFERENCE",
+                &self.taxonomy_version,
+                ClassificationTier::Fallback,
+                ClassificationStatus::Ambiguous,
+                ClassificationConfidence::Low,
+                ClassificationSource::Fallback,
+            )
+        })
     }
 }
 
@@ -241,6 +311,32 @@ impl PurposeRule {
             .iter()
             .any(|keyword| contains_token_phrase(haystack, keyword))
     }
+}
+
+fn classify_matching_rules(
+    haystack: &str,
+    rules: &[PurposeRule],
+    taxonomy_version: &str,
+) -> Option<ClassificationResult> {
+    let mut matches = rules.iter().filter(|rule| rule.matches(haystack));
+    let first = matches.next()?;
+    if matches.any(|rule| rule.category != first.category) {
+        return Some(ClassificationResult::with_quality(
+            "unlogged",
+            "UNLOGGED",
+            taxonomy_version,
+            ClassificationTier::LocalPurposeHeuristic,
+            ClassificationStatus::Ambiguous,
+            ClassificationConfidence::Low,
+            ClassificationSource::Heuristic,
+        ));
+    }
+    Some(ClassificationResult::new(
+        first.label,
+        first.category,
+        taxonomy_version,
+        ClassificationTier::LocalPurposeHeuristic,
+    ))
 }
 
 const BROWSER_CONTEXT_RULES: &[PurposeRule] = &[
@@ -867,27 +963,51 @@ impl ClassificationPlugin for EmbeddingSimilarityPlugin {
                 return None;
             }
         };
-        let (category, similarity) = self
+        let mut ranked = self
             .centroids
             .iter()
             .filter_map(|(category, centroid)| {
                 cosine_similarity(&embedding, centroid).map(|score| (category, score))
             })
-            .max_by(|(left_category, left), (right_category, right)| {
-                left.total_cmp(right)
-                    .then_with(|| right_category.cmp(left_category))
-            })?;
+            .collect::<Vec<_>>();
+        ranked.sort_by(|(left_category, left), (right_category, right)| {
+            right
+                .total_cmp(left)
+                .then_with(|| left_category.cmp(right_category))
+        });
+        let (category, similarity) = *ranked.first()?;
         // The threshold is inclusive so an offline-tuned boundary remains stable
         // after serialization. Tune it using labeled validation data, balancing
         // false-positive privacy risk against Tier 3 fallback frequency.
         if similarity < self.threshold {
             return None;
         }
-        Some(ClassificationResult::new(
+        if ranked
+            .get(1)
+            .is_some_and(|(_, runner_up)| similarity - runner_up < 0.05)
+        {
+            return Some(ClassificationResult::with_quality(
+                "unlogged",
+                "UNLOGGED",
+                &self.taxonomy_version,
+                ClassificationTier::EmbeddingSimilarity,
+                ClassificationStatus::Ambiguous,
+                ClassificationConfidence::Low,
+                ClassificationSource::Embedding,
+            ));
+        }
+        Some(ClassificationResult::with_quality(
             inferred_label_for_category(category)?,
             category,
             &self.taxonomy_version,
             ClassificationTier::EmbeddingSimilarity,
+            ClassificationStatus::Classified,
+            if similarity >= 0.9 {
+                ClassificationConfidence::High
+            } else {
+                ClassificationConfidence::Medium
+            },
+            ClassificationSource::Embedding,
         ))
     }
 }
@@ -930,7 +1050,7 @@ mod tests {
     }
 
     #[test]
-    fn seed_dictionary_matches_window_title_for_browser_contexts() {
+    fn seed_dictionary_does_not_promote_raw_title_matches() {
         let plugin = super::SeedDictionaryPlugin::new(
             vec![super::SeedApplication::new_for_test(
                 "YouTube",
@@ -942,10 +1062,7 @@ mod tests {
 
         let result = plugin.classify("Google Chrome", "YouTube - Creator Studio");
 
-        assert_eq!(
-            result.map(|classification| classification.category().to_owned()),
-            Some("PASSIVE_CONSUMPTION".to_owned())
-        );
+        assert!(result.is_none());
     }
 
     #[test]

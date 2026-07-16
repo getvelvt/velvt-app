@@ -394,6 +394,7 @@ fn payload_serialization_matches_the_cloud_event_contract() {
         vec![
             "abstraction_type",
             "abstraction_type_version",
+            "classification_tier",
             "event_id",
             "occurred_at",
             "payload",
@@ -402,6 +403,7 @@ fn payload_serialization_matches_the_cloud_event_contract() {
     assert_eq!(event["event_id"], "one");
     assert_eq!(event["abstraction_type"], "document:edit");
     assert_eq!(event["abstraction_type_version"], "1");
+    assert_eq!(event["classification_tier"], "exact_match");
     assert_eq!(
         event["payload"],
         serde_json::json!({

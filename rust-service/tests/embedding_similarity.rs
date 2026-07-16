@@ -5,8 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 use velvt_service::abstraction::{
-    ClassificationPlugin, ClassificationTier, EmbeddingError, EmbeddingMetrics, EmbeddingModel,
-    EmbeddingSimilarityPlugin,
+    ClassificationConfidence, ClassificationPlugin, ClassificationStatus, ClassificationTier,
+    EmbeddingError, EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
 };
 
 struct FakeEmbeddingModel {
@@ -138,7 +138,7 @@ fn inferred_label_preserves_the_selected_category() {
 }
 
 #[test]
-fn equal_similarity_uses_category_key_as_deterministic_tiebreaker() {
+fn equal_similarity_abstains_deterministically() {
     let plugin = EmbeddingSimilarityPlugin::new(
         Arc::new(FakeEmbeddingModel {
             embedding: vec![1.0, 0.0],
@@ -157,8 +157,10 @@ fn equal_similarity_uses_category_key_as_deterministic_tiebreaker() {
 
     for _ in 0..20 {
         let result = plugin.classify("Unknown", "Unknown").unwrap();
-        assert_eq!(result.category(), "COMMUNICATION");
-        assert_eq!(result.label(), "communication:inferred");
+        assert_eq!(result.category(), "UNLOGGED");
+        assert_eq!(result.label(), "unlogged");
+        assert_eq!(result.status(), ClassificationStatus::Ambiguous);
+        assert_eq!(result.confidence(), ClassificationConfidence::Low);
     }
 }
 

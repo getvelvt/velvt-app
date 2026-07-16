@@ -8,8 +8,8 @@ use std::{
 use chrono::Utc;
 use uuid::Uuid;
 use velvt_shared_types::{
-    CacheEmpty, ClientMessage, MenuStatus, QueuedEventSummary, RawEventAck, RawEventStatus,
-    ServerMessage,
+    CacheEmpty, ClassificationConfidence, ClassificationSource, ClassificationStatus,
+    ClientMessage, MenuStatus, QueuedEventSummary, RawEventAck, RawEventStatus, ServerMessage,
 };
 
 use crate::abstraction::AbstractionEngine;
@@ -99,22 +99,32 @@ impl MenuStatusProviding for MenuStatusProvider {
                 .iter()
                 .map(|event| event.event_id.clone())
                 .collect::<Vec<_>>();
-            let local_labels = self
+            let local_metadata = self
                 .raw_events
-                .local_display_labels(&event_ids)
+                .local_event_metadata(&event_ids)
                 .unwrap_or_default();
             let queued_events = events
                 .into_iter()
                 .take(10)
                 .filter_map(|event| {
                     let event_id = Uuid::parse_str(&event.event_id).ok()?;
+                    let metadata = local_metadata.get(&event.event_id);
                     Some(QueuedEventSummary {
                         event_id,
                         stable_id: event.stable_id,
                         label: event.label,
-                        local_label: local_labels.get(&event.event_id).cloned(),
+                        local_label: metadata.and_then(|value| value.local_display_label.clone()),
                         category: event.category,
                         classification_tier: event.classification_tier,
+                        classification_status: parse_classification_status(
+                            metadata.map(|value| value.classification_status.as_str()),
+                        ),
+                        classification_confidence: parse_classification_confidence(
+                            metadata.map(|value| value.classification_confidence.as_str()),
+                        ),
+                        classification_source: parse_classification_source(
+                            metadata.map(|value| value.classification_source.as_str()),
+                        ),
                         occurred_at: event.occurred_at,
                     })
                 })
@@ -132,6 +142,15 @@ impl MenuStatusProviding for MenuStatusProvider {
                         local_label: event.local_display_label,
                         category: event.category,
                         classification_tier: event.classification_tier,
+                        classification_status: parse_classification_status(Some(
+                            &event.classification_status,
+                        )),
+                        classification_confidence: parse_classification_confidence(Some(
+                            &event.classification_confidence,
+                        )),
+                        classification_source: parse_classification_source(Some(
+                            &event.classification_source,
+                        )),
                         occurred_at: event.occurred_at,
                     })
                 }))
@@ -472,6 +491,41 @@ impl MessageRouter for R7Router {
                 )))
             }
 
+            ClientMessage::RemoveClassificationOverride(request) => {
+                let Some(abstraction_map) = &self.abstraction_map else {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_unavailable",
+                    )));
+                };
+                if abstraction_map
+                    .remove_personal_override(&request.stable_id)
+                    .is_err()
+                {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_persistence_failed",
+                    )));
+                }
+                Ok(Some(ServerMessage::MenuStatus(
+                    self.menu_status.snapshot().await,
+                )))
+            }
+
+            ClientMessage::ResetClassificationOverrides(_) => {
+                let Some(abstraction_map) = &self.abstraction_map else {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_unavailable",
+                    )));
+                };
+                if abstraction_map.reset_personal_overrides().is_err() {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_persistence_failed",
+                    )));
+                }
+                Ok(Some(ServerMessage::MenuStatus(
+                    self.menu_status.snapshot().await,
+                )))
+            }
+
             ClientMessage::RequestLatestInsight(req) => {
                 let result = self.cache.daily_insight(req.date).await;
                 let response = match result {
@@ -542,6 +596,33 @@ fn classification_correction_error(code: &str) -> ServerMessage {
     })
 }
 
+fn parse_classification_status(value: Option<&str>) -> ClassificationStatus {
+    match value {
+        Some("classified") => ClassificationStatus::Classified,
+        Some("ambiguous") => ClassificationStatus::Ambiguous,
+        _ => ClassificationStatus::Unclassified,
+    }
+}
+
+fn parse_classification_confidence(value: Option<&str>) -> ClassificationConfidence {
+    match value {
+        Some("high") => ClassificationConfidence::High,
+        Some("medium") => ClassificationConfidence::Medium,
+        Some("low") => ClassificationConfidence::Low,
+        _ => ClassificationConfidence::None,
+    }
+}
+
+fn parse_classification_source(value: Option<&str>) -> ClassificationSource {
+    match value {
+        Some("seed") => ClassificationSource::Seed,
+        Some("heuristic") => ClassificationSource::Heuristic,
+        Some("embedding") => ClassificationSource::Embedding,
+        Some("user_rule") => ClassificationSource::UserRule,
+        _ => ClassificationSource::Fallback,
+    }
+}
+
 impl R7Router {
     /// Runs the privacy-enforcement boundary: classify, persist a privacy-safe
     /// audit row, feed the upload batcher, and acknowledge. Raw `app_name`/
@@ -550,17 +631,22 @@ impl R7Router {
     async fn handle_raw_event(&self, event: velvt_shared_types::RawEvent) -> ServerMessage {
         let event_id = event.event_id;
         let occurred_at = event.occurred_at;
-        let local_display_label = raw_display_label(&event.app_name, &event.window_title);
         match self.abstraction_engine.process(event) {
             Ok(abstracted) => {
                 let entry = RawEventEntry {
                     event_id: event_id.to_string(),
                     stable_id: abstracted.stable_id().to_owned(),
                     label: abstracted.label().to_owned(),
-                    local_display_label,
+                    local_display_label: abstracted.local_display_label().map(str::to_owned),
                     category: abstracted.category().to_owned(),
                     taxonomy_version: abstracted.taxonomy_version().to_owned(),
                     classification_tier: abstracted.classification_tier().as_str().to_owned(),
+                    classification_status: abstracted.classification_status().as_str().to_owned(),
+                    classification_confidence: abstracted
+                        .classification_confidence()
+                        .as_str()
+                        .to_owned(),
+                    classification_source: abstracted.classification_source().as_str().to_owned(),
                     occurred_at,
                     duration_seconds: 0,
                 };
@@ -606,16 +692,6 @@ impl R7Router {
                 })
             }
         }
-    }
-}
-
-fn raw_display_label(app_name: &str, window_title: &str) -> Option<String> {
-    let title = window_title.trim();
-    if !title.is_empty() {
-        Some(title.to_owned())
-    } else {
-        let app = app_name.trim();
-        (!app.is_empty()).then(|| app.to_owned())
     }
 }
 

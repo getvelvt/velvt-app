@@ -187,6 +187,11 @@ public struct WorkBlockView: View {
           .font(.body)
           .fixedSize(horizontal: false, vertical: true)
 
+        Text(evidenceLabel(result))
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+
         HStack(spacing: 14) {
           resultMetric("Elapsed", result.elapsedDurationSeconds)
           resultMetric("Longest stretch", result.longestUninterruptedSeconds)
@@ -292,6 +297,13 @@ public struct WorkBlockView: View {
 
   private func coverageLabel(_ result: WorkBlockResult) -> String {
     "\(result.coverage.rawValue.capitalized) coverage · \(result.confidence.rawValue.capitalized) confidence"
+  }
+
+  private func evidenceLabel(_ result: WorkBlockResult) -> String {
+    guard let category = result.safeEvidenceCategory else {
+      return "Evidence: no supported category was recorded."
+    }
+    return "Evidence category: \(categoryLabel(category))."
   }
 
   private func durationLabel(_ seconds: Int) -> String {

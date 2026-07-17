@@ -2,7 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
 
-use crate::persistence::{HistoryCacheRepo, InsightCacheRepo, RawEventRepo, UploadBatchRepo};
+use crate::persistence::{
+    HistoryCacheRepo, InsightCacheRepo, RawEventRepo, UploadBatchRepo, WorkBlockRepo,
+};
 
 use super::{CleanupReport, RetentionError, RetentionTarget};
 
@@ -142,6 +144,31 @@ impl RetentionTarget for CacheRetentionTarget {
 
         Ok(CleanupReport {
             deleted: history_deleted + insight_deleted,
+        })
+    }
+}
+
+/// Clears expired free-form intention text while preserving safe block/result
+/// evidence. The intention deadline is stored per block and never extended by
+/// ordinary reads.
+pub struct WorkBlockIntentionRetentionTarget {
+    repo: Arc<dyn WorkBlockRepo>,
+}
+
+impl WorkBlockIntentionRetentionTarget {
+    pub fn new(repo: Arc<dyn WorkBlockRepo>) -> Self {
+        Self { repo }
+    }
+}
+
+impl RetentionTarget for WorkBlockIntentionRetentionTarget {
+    fn name(&self) -> &'static str {
+        "work_block_intention"
+    }
+
+    fn run_cleanup(&self) -> Result<CleanupReport, RetentionError> {
+        Ok(CleanupReport {
+            deleted: self.repo.expire_intentions(Utc::now())?,
         })
     }
 }

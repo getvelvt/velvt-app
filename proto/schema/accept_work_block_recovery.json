@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "accept_work_block_recovery" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id", "action_id"],
+      "properties": {
+        "block_id": { "type": "string", "format": "uuid" },
+        "action_id": { "const": "protect_next_10" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

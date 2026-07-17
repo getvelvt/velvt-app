@@ -18,6 +18,14 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case correctEventClassification(CorrectEventClassification)
     case removeClassificationOverride(RemoveClassificationOverride)
     case resetClassificationOverrides
+    case startWorkBlock(StartWorkBlock)
+    case pauseWorkBlock(WorkBlockIdentifier)
+    case resumeWorkBlock(WorkBlockIdentifier)
+    case endWorkBlock(WorkBlockIdentifier)
+    case requestWorkBlockState
+    case acceptWorkBlockRecovery(AcceptWorkBlockRecovery)
+    case workBlockLifecycle(WorkBlockLifecycle)
+    case clearWorkBlockData
 
     public init(from decoder: Decoder) throws {
         let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
@@ -54,6 +62,22 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .removeClassificationOverride(try RemoveClassificationOverride(from: payload))
         case "reset_classification_overrides":
             self = .resetClassificationOverrides
+        case "start_work_block":
+            self = .startWorkBlock(try StartWorkBlock(from: payload))
+        case "pause_work_block":
+            self = .pauseWorkBlock(try WorkBlockIdentifier(from: payload))
+        case "resume_work_block":
+            self = .resumeWorkBlock(try WorkBlockIdentifier(from: payload))
+        case "end_work_block":
+            self = .endWorkBlock(try WorkBlockIdentifier(from: payload))
+        case "request_work_block_state":
+            self = .requestWorkBlockState
+        case "accept_work_block_recovery":
+            self = .acceptWorkBlockRecovery(try AcceptWorkBlockRecovery(from: payload))
+        case "work_block_lifecycle":
+            self = .workBlockLifecycle(try WorkBlockLifecycle(from: payload))
+        case "clear_work_block_data":
+            self = .clearWorkBlockData
         default:
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
         }
@@ -107,6 +131,30 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .resetClassificationOverrides:
             try envelope.encode("reset_classification_overrides", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case let .startWorkBlock(value):
+            try envelope.encode("start_work_block", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .pauseWorkBlock(value):
+            try envelope.encode("pause_work_block", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .resumeWorkBlock(value):
+            try envelope.encode("resume_work_block", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .endWorkBlock(value):
+            try envelope.encode("end_work_block", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .requestWorkBlockState:
+            try envelope.encode("request_work_block_state", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case let .acceptWorkBlockRecovery(value):
+            try envelope.encode("accept_work_block_recovery", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .workBlockLifecycle(value):
+            try envelope.encode("work_block_lifecycle", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .clearWorkBlockData:
+            try envelope.encode("clear_work_block_data", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
 }
@@ -136,6 +184,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     // Notification push (S7)
     case notificationPayload(NotificationPayload)
     case menuStatus(MenuStatus)
+    case workBlockState(WorkBlockSnapshot)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
@@ -185,6 +234,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .notificationPayload(try NotificationPayload(from: payload))
         case "menu_status":
             self = .menuStatus(try MenuStatus(from: payload))
+        case "work_block_state":
+            self = .workBlockState(try WorkBlockSnapshot(from: payload))
         default:
             self = .unknown(type: type)
         }
@@ -253,9 +304,41 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case let .menuStatus(value):
             try envelope.encode("menu_status", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .workBlockState(value):
+            try envelope.encode("work_block_state", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .unknown(type):
             try envelope.encode(type, forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        }
+    }
+
+    /// Payload-free discriminator suitable for unified logs and crash-safe
+    /// diagnostics. Never use `String(describing:)` on an IPC envelope.
+    var safeLogDescription: String {
+        switch self {
+        case .serverHello: "server_hello"
+        case .acknowledged: "acknowledged"
+        case .versionMismatch: "version_mismatch"
+        case .malformedMessage: "malformed_message"
+        case .rawEventAck: "raw_event_ack"
+        case .insightPayload: "insight_payload"
+        case .historyPayload: "history_payload"
+        case .serviceStatus: "service_status"
+        case .privacyViolationAlert: "privacy_violation_alert"
+        case .errorResponse: "error_response"
+        case .cacheEmpty: "cache_empty"
+        case .shuttingDown: "shutting_down"
+        case .authSuccess: "auth_success"
+        case .authSessionUpdated: "auth_session_updated"
+        case .authFailure: "auth_failure"
+        case .accountDeletionAccepted: "account_deletion_accepted"
+        case .needsReauth: "needs_reauth"
+        case .deviceRevoked: "device_revoked"
+        case .notificationPayload: "notification_payload"
+        case .menuStatus: "menu_status"
+        case .workBlockState: "work_block_state"
+        case .unknown: "unknown"
         }
     }
 }
@@ -848,6 +931,175 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         rejectedUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .rejectedUploadBatchCount) ?? 0
         queuedEventCount = try container.decode(Int.self, forKey: .queuedEventCount)
         queuedEvents = try container.decode([QueuedEventSummary].self, forKey: .queuedEvents)
+    }
+}
+
+// MARK: - Device-local meaningful-work DTOs (proto v15)
+
+public enum WorkBlockPurpose: String, Codable, Equatable, Sendable, CaseIterable, Identifiable {
+    case deepWork = "deep_work"
+    case study
+    case creativePractice = "creative_practice"
+    case healthyTechUse = "healthy_tech_use"
+    case workLifeBoundary = "work_life_boundary"
+
+    public var id: String { rawValue }
+}
+
+public enum WorkBlockIntensity: String, Codable, Equatable, Sendable, CaseIterable, Identifiable {
+    case light
+    case medium
+    case intense
+
+    public var id: String { rawValue }
+}
+
+public enum WorkBlockPhase: String, Codable, Equatable, Sendable {
+    case idle
+    case active
+    case paused
+    case completed
+    case abandoned
+    case expired
+}
+
+public struct StartWorkBlock: Codable, Equatable, Sendable {
+    public let intention: String?
+    public let plannedDurationSeconds: Int
+    public let purpose: WorkBlockPurpose?
+    public let intensity: WorkBlockIntensity
+
+    public init(
+        intention: String?,
+        plannedDurationSeconds: Int,
+        purpose: WorkBlockPurpose?,
+        intensity: WorkBlockIntensity
+    ) {
+        self.intention = intention
+        self.plannedDurationSeconds = plannedDurationSeconds
+        self.purpose = purpose
+        self.intensity = intensity
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case intention, purpose, intensity
+        case plannedDurationSeconds = "planned_duration_seconds"
+    }
+}
+
+public struct WorkBlockIdentifier: Codable, Equatable, Sendable {
+    public let blockID: UUID
+
+    public init(blockID: UUID) { self.blockID = blockID }
+
+    private enum CodingKeys: String, CodingKey { case blockID = "block_id" }
+}
+
+public struct AcceptWorkBlockRecovery: Codable, Equatable, Sendable {
+    public let blockID: UUID
+    public let actionID: String
+
+    public init(blockID: UUID, actionID: String) {
+        self.blockID = blockID
+        self.actionID = actionID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case blockID = "block_id"
+        case actionID = "action_id"
+    }
+}
+
+public enum WorkBlockLifecycleEvent: String, Codable, Equatable, Sendable {
+    case sleep
+    case wake
+    case clockChanged = "clock_changed"
+    case timeZoneChanged = "time_zone_changed"
+}
+
+public struct WorkBlockLifecycle: Codable, Equatable, Sendable {
+    public let event: WorkBlockLifecycleEvent
+    public init(event: WorkBlockLifecycleEvent) { self.event = event }
+}
+
+public enum WorkBlockCoverage: String, Codable, Equatable, Sendable {
+    case insufficient
+    case partial
+    case good
+}
+
+public struct WorkBlockNextAction: Codable, Equatable, Sendable {
+    public let actionID: String
+    public let label: String
+    public let durationSeconds: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case label
+        case actionID = "action_id"
+        case durationSeconds = "duration_seconds"
+    }
+}
+
+public struct WorkBlockResult: Codable, Equatable, Sendable {
+    public let plannedDurationSeconds: Int
+    public let elapsedDurationSeconds: Int
+    public let longestUninterruptedSeconds: Int
+    public let switchAwayCount: Int
+    public let recoveryCount: Int
+    public let confidence: ConfidenceLevel
+    public let coverage: WorkBlockCoverage
+    public let coverageRatio: Double
+    public let safeEvidenceCategory: String?
+    public let observation: String
+    public let nextAction: WorkBlockNextAction
+
+    private enum CodingKeys: String, CodingKey {
+        case confidence, coverage, observation
+        case plannedDurationSeconds = "planned_duration_seconds"
+        case elapsedDurationSeconds = "elapsed_duration_seconds"
+        case longestUninterruptedSeconds = "longest_uninterrupted_seconds"
+        case switchAwayCount = "switch_away_count"
+        case recoveryCount = "recovery_count"
+        case coverageRatio = "coverage_ratio"
+        case safeEvidenceCategory = "safe_evidence_category"
+        case nextAction = "next_action"
+    }
+}
+
+public struct WorkBlockSnapshot: Codable, Equatable, Sendable {
+    public let stateVersion: Int
+    public let phase: WorkBlockPhase
+    public let blockID: UUID?
+    public let intention: String?
+    public let purpose: WorkBlockPurpose?
+    public let intensity: WorkBlockIntensity?
+    public let plannedDurationSeconds: Int
+    public let elapsedDurationSeconds: Int
+    public let remainingDurationSeconds: Int
+    public let startedAt: Date?
+    public let endsAt: Date?
+    public let pausedAt: Date?
+    public let recoveredAfterRestart: Bool
+    public let currentCategory: String?
+    public let classificationStatus: ClassificationStatus
+    public let confidence: ClassificationConfidence
+    public let statusLine: String
+    public let result: WorkBlockResult?
+
+    private enum CodingKeys: String, CodingKey {
+        case phase, intention, purpose, intensity, confidence, result
+        case stateVersion = "state_version"
+        case blockID = "block_id"
+        case plannedDurationSeconds = "planned_duration_seconds"
+        case elapsedDurationSeconds = "elapsed_duration_seconds"
+        case remainingDurationSeconds = "remaining_duration_seconds"
+        case startedAt = "started_at"
+        case endsAt = "ends_at"
+        case pausedAt = "paused_at"
+        case recoveredAfterRestart = "recovered_after_restart"
+        case currentCategory = "current_category"
+        case classificationStatus = "classification_status"
+        case statusLine = "status_line"
     }
 }
 

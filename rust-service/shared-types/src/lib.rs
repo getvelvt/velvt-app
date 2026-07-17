@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,6 +42,22 @@ pub enum ClientMessage {
     RemoveClassificationOverride(RemoveClassificationOverride),
     /// Removes every device-local personal rule.
     ResetClassificationOverrides(ResetClassificationOverrides),
+    /// Starts one bounded, device-local meaningful-work block.
+    StartWorkBlock(StartWorkBlock),
+    /// Pauses the current work block.
+    PauseWorkBlock(PauseWorkBlock),
+    /// Resumes the current paused work block.
+    ResumeWorkBlock(ResumeWorkBlock),
+    /// Ends the current work block before its planned deadline.
+    EndWorkBlock(EndWorkBlock),
+    /// Requests the current or most recent local work-block state.
+    RequestWorkBlockState(RequestWorkBlockState),
+    /// Accepts the one bounded recovery action offered by a terminal result.
+    AcceptWorkBlockRecovery(AcceptWorkBlockRecovery),
+    /// Reports an OS lifecycle boundary relevant to honest elapsed time.
+    WorkBlockLifecycle(WorkBlockLifecycle),
+    /// Clears local work-block state, observations, results, and intention text.
+    ClearWorkBlockData(ClearWorkBlockData),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -100,6 +116,8 @@ pub enum ServerMessage {
     NotificationPayload(NotificationPayload),
     /// Privacy-safe menu-bar settings data.
     MenuStatus(MenuStatus),
+    /// Current or most recent device-local work-block state.
+    WorkBlockState(WorkBlockSnapshot),
 }
 
 /// Server's first message on every connection.
@@ -416,6 +434,237 @@ pub struct RemoveClassificationOverride {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResetClassificationOverrides {}
+
+/// Version of the persisted and wire-visible work-block state machine.
+pub const WORK_BLOCK_STATE_VERSION: u32 = 1;
+
+/// Optional coarse purpose selected directly by the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkBlockPurpose {
+    DeepWork,
+    Study,
+    CreativePractice,
+    HealthyTechUse,
+    WorkLifeBoundary,
+}
+
+impl WorkBlockPurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DeepWork => "deep_work",
+            Self::Study => "study",
+            Self::CreativePractice => "creative_practice",
+            Self::HealthyTechUse => "healthy_tech_use",
+            Self::WorkLifeBoundary => "work_life_boundary",
+        }
+    }
+}
+
+/// User-selected feedback intensity. Every mode uses the same non-shaming
+/// evidence rules; this value only selects bounded reviewed copy/cadence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkBlockIntensity {
+    Light,
+    Medium,
+    Intense,
+}
+
+impl WorkBlockIntensity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Medium => "medium",
+            Self::Intense => "intense",
+        }
+    }
+}
+
+/// Persisted state-machine phases. `Expired` is used only when a restart or
+/// clock discontinuity makes an on-time completion impossible to establish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkBlockPhase {
+    Idle,
+    Active,
+    Paused,
+    Completed,
+    Abandoned,
+    Expired,
+}
+
+impl WorkBlockPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+            Self::Abandoned => "abandoned",
+            Self::Expired => "expired",
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartWorkBlock {
+    /// Free-form intention. Device-local only; all Debug output is redacted.
+    pub intention: Option<String>,
+    pub planned_duration_seconds: u32,
+    pub purpose: Option<WorkBlockPurpose>,
+    pub intensity: WorkBlockIntensity,
+}
+
+impl std::fmt::Debug for StartWorkBlock {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StartWorkBlock")
+            .field("intention", &self.intention.as_ref().map(|_| "[redacted]"))
+            .field("planned_duration_seconds", &self.planned_duration_seconds)
+            .field("purpose", &self.purpose)
+            .field("intensity", &self.intensity)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PauseWorkBlock {
+    pub block_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResumeWorkBlock {
+    pub block_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EndWorkBlock {
+    pub block_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestWorkBlockState {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptWorkBlockRecovery {
+    pub block_id: Uuid,
+    pub action_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkBlockLifecycleEvent {
+    Sleep,
+    Wake,
+    ClockChanged,
+    TimeZoneChanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkBlockLifecycle {
+    pub event: WorkBlockLifecycleEvent,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClearWorkBlockData {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkBlockCoverage {
+    Insufficient,
+    Partial,
+    Good,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkBlockNextAction {
+    pub action_id: String,
+    pub label: String,
+    pub duration_seconds: u32,
+}
+
+/// Safe local result consumed by Scope 3. It deliberately has no intention,
+/// app identity, title, URL, local label, notification ID, or cloud ID field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkBlockResult {
+    pub planned_duration_seconds: u32,
+    pub elapsed_duration_seconds: u32,
+    pub longest_uninterrupted_seconds: u32,
+    pub switch_away_count: u32,
+    pub recovery_count: u32,
+    pub confidence: ConfidenceLevel,
+    pub coverage: WorkBlockCoverage,
+    pub coverage_ratio: f64,
+    pub safe_evidence_category: Option<String>,
+    pub observation: String,
+    /// Singular by construction: every result offers exactly one action.
+    pub next_action: WorkBlockNextAction,
+}
+
+/// Rust-authored, ready-to-render state. Swift may render and issue direct
+/// commands but must not recompute evidence or author behavioral claims.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkBlockSnapshot {
+    pub state_version: u32,
+    pub phase: WorkBlockPhase,
+    pub block_id: Option<Uuid>,
+    pub intention: Option<String>,
+    pub purpose: Option<WorkBlockPurpose>,
+    pub intensity: Option<WorkBlockIntensity>,
+    pub planned_duration_seconds: u32,
+    pub elapsed_duration_seconds: u32,
+    pub remaining_duration_seconds: u32,
+    pub started_at: Option<DateTime<Utc>>,
+    pub ends_at: Option<DateTime<Utc>>,
+    pub paused_at: Option<DateTime<Utc>>,
+    pub recovered_after_restart: bool,
+    pub current_category: Option<String>,
+    pub classification_status: ClassificationStatus,
+    pub confidence: ClassificationConfidence,
+    pub status_line: String,
+    pub result: Option<WorkBlockResult>,
+}
+
+impl std::fmt::Debug for WorkBlockSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkBlockSnapshot")
+            .field("state_version", &self.state_version)
+            .field("phase", &self.phase)
+            .field("block_id", &self.block_id)
+            .field("intention", &self.intention.as_ref().map(|_| "[redacted]"))
+            .field("purpose", &self.purpose)
+            .field("intensity", &self.intensity)
+            .field("planned_duration_seconds", &self.planned_duration_seconds)
+            .field("elapsed_duration_seconds", &self.elapsed_duration_seconds)
+            .field(
+                "remaining_duration_seconds",
+                &self.remaining_duration_seconds,
+            )
+            .field("started_at", &self.started_at)
+            .field("ends_at", &self.ends_at)
+            .field("paused_at", &self.paused_at)
+            .field("recovered_after_restart", &self.recovered_after_restart)
+            .field("current_category", &self.current_category)
+            .field("classification_status", &self.classification_status)
+            .field("confidence", &self.confidence)
+            .field("status_line", &"[reviewed_copy]")
+            .field("result", &self.result)
+            .finish()
+    }
+}
 
 /// One event waiting in the upload queue. `local_label` is display-only data
 /// sent over the device-local Unix socket and never appears in cloud DTOs.

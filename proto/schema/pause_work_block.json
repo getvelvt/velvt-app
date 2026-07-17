@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "pause_work_block" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id"],
+      "properties": { "block_id": { "type": "string", "format": "uuid" } },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

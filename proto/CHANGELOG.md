@@ -1,5 +1,15 @@
 # IPC Protocol Changelog
 
+## Version 15 - 2026-07-16
+
+- Added the device-local meaningful-work loop: start, pause, resume, end,
+  lifecycle, recovery, clear-data, and state request/response messages.
+- `work_block_state` is Rust-authored and versioned independently at state
+  version 1. Free-form intention is permitted only on local IPC and is absent
+  from cloud/upload/cache/notification contracts.
+- Added a singular bounded `next_action` to the safe local session result;
+  exactly one 10-minute recovery action is representable.
+
 ## Version 14 - 2026-07-16
 
 - Queued-event summaries now distinguish classification status, confidence,

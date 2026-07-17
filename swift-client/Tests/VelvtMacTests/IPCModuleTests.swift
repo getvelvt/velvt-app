@@ -107,6 +107,55 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(ClientMessage.self, from: encoder.encode(message)), message)
     }
 
+    func testWorkBlockCommandsUseTypedLocalProtocolShapes() throws {
+        let blockID = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        let messages: [ClientMessage] = [
+            .startWorkBlock(.init(
+                intention: "Private local intention",
+                plannedDurationSeconds: 1_500,
+                purpose: .deepWork,
+                intensity: .medium
+            )),
+            .pauseWorkBlock(.init(blockID: blockID)),
+            .resumeWorkBlock(.init(blockID: blockID)),
+            .endWorkBlock(.init(blockID: blockID)),
+            .requestWorkBlockState,
+            .acceptWorkBlockRecovery(.init(blockID: blockID, actionID: "protect_next_10")),
+            .workBlockLifecycle(.init(event: .sleep)),
+            .clearWorkBlockData,
+        ]
+
+        for message in messages {
+            XCTAssertEqual(try decoder.decode(ClientMessage.self, from: encoder.encode(message)), message)
+        }
+        let start = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(messages[0])) as? [String: Any])
+        XCTAssertEqual(start["type"] as? String, "start_work_block")
+    }
+
+    func testWorkBlockResultHasExactlyOneActionAndNoIntention() throws {
+        let result = WorkBlockResult(
+            plannedDurationSeconds: 1_500,
+            elapsedDurationSeconds: 1_500,
+            longestUninterruptedSeconds: 900,
+            switchAwayCount: 2,
+            recoveryCount: 1,
+            confidence: .high,
+            coverage: .good,
+            coverageRatio: 0.9,
+            safeEvidenceCategory: "FOCUS_WORK",
+            observation: "Velvt observed two category changes.",
+            nextAction: .init(
+                actionID: "protect_next_10",
+                label: "Protect the next 10 minutes.",
+                durationSeconds: 600
+            )
+        )
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(result)) as? [String: Any])
+        XCTAssertNotNil(value["next_action"] as? [String: Any])
+        XCTAssertNil(value["next_actions"])
+        XCTAssertNil(value["intention"])
+    }
+
     func testCacheEmptyRoundTrips() throws {
         let message = ServerMessage.cacheEmpty(CacheEmpty(payloadType: "insight_payload"))
         XCTAssertEqual(try decoder.decode(ServerMessage.self, from: encoder.encode(message)), message)

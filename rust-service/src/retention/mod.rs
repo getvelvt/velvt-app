@@ -18,7 +18,10 @@ mod scheduler;
 mod targets;
 
 pub use scheduler::RetentionScheduler;
-pub use targets::{CacheRetentionTarget, RawEventRetentionTarget, UploadBatchRetentionTarget};
+pub use targets::{
+    CacheRetentionTarget, RawEventRetentionTarget, UploadBatchRetentionTarget,
+    WorkBlockIntentionRetentionTarget,
+};
 
 use crate::persistence::PersistenceError;
 

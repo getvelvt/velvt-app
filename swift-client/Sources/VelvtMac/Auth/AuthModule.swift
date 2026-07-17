@@ -405,7 +405,7 @@ public final class AccountStateManager: ObservableObject {
     // MARK: - Private
 
     private func handle(_ message: ServerMessage) {
-        authLogger.debug("IPC message received: \(String(describing: message))")
+        authLogger.debug("IPC message received: \(message.safeLogDescription)")
         serverMessages.send(message)
         switch message {
         case .authSuccess(let success):

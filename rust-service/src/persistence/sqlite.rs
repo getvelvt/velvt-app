@@ -2,7 +2,8 @@ use super::{
     AbstractionMapRepo, AbstractionMapping, BatchEvent, HistoryCacheEntry, HistoryCacheRepo,
     InsightCacheEntry, InsightCacheRepo, LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch,
     RawEventEntry, RawEventRepo, UploadBatch, UploadBatchRepo, UploadBatchStatus,
-    UploadQueueDiagnostics,
+    UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockObservation, WorkBlockRecord,
+    WorkBlockRepo,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -10,6 +11,10 @@ use std::{
     collections::HashMap,
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
+};
+use velvt_shared_types::{
+    ClassificationConfidence, ClassificationStatus, WorkBlockIntensity, WorkBlockPhase,
+    WorkBlockPurpose, WorkBlockResult,
 };
 
 struct Migration {
@@ -32,6 +37,8 @@ pub enum PersistenceError {
     InvalidTimestamp,
     #[error("SQLite persistence row not found: {entity}")]
     NotFound { entity: &'static str },
+    #[error("SQLite persistence contains invalid safe JSON")]
+    InvalidJson(#[from] serde_json::Error),
 }
 
 #[derive(Clone)]
@@ -44,9 +51,22 @@ impl SqlitePersistence {
         let path = path.as_ref();
         if path != Path::new(":memory:") {
             let parent = path.parent().ok_or(PersistenceError::PathUnavailable)?;
+            let parent_existed = parent.exists();
             std::fs::create_dir_all(parent).map_err(|_| PersistenceError::PathUnavailable)?;
+            #[cfg(unix)]
+            if !parent_existed || parent.file_name().is_some_and(|name| name == ".velvt") {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|_| PersistenceError::PathUnavailable)?;
+            }
         }
         let connection = Connection::open(path)?;
+        #[cfg(unix)]
+        if path != Path::new(":memory:") {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|_| PersistenceError::PathUnavailable)?;
+        }
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let persistence = Self {
@@ -113,6 +133,10 @@ impl SqlitePersistence {
 
     pub fn raw_event_repo(&self) -> Arc<dyn RawEventRepo> {
         Arc::new(SqliteRawEventRepo(self.clone()))
+    }
+
+    pub fn work_block_repo(&self) -> Arc<dyn WorkBlockRepo> {
+        Arc::new(SqliteWorkBlockRepo(self.clone()))
     }
 
     fn insert_batch_with_events(
@@ -1004,6 +1028,252 @@ impl InsightCacheRepo for SqliteInsightCacheRepo {
     }
 }
 
+#[derive(Clone)]
+struct SqliteWorkBlockRepo(SqlitePersistence);
+
+impl WorkBlockRepo for SqliteWorkBlockRepo {
+    fn create(&self, block: &WorkBlockRecord) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO work_block(
+                block_id, state_version, phase, intention, purpose, intensity,
+                planned_duration_seconds, started_at, paused_at, total_paused_seconds,
+                ended_at, recovered_after_restart, recovery_of, intention_expires_at, updated_at
+             ) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                block.block_id,
+                block.phase.as_str(),
+                block.intention,
+                block.purpose.map(WorkBlockPurpose::as_str),
+                block.intensity.as_str(),
+                block.planned_duration_seconds,
+                block.started_at.timestamp(),
+                block.paused_at.map(|value| value.timestamp()),
+                block.total_paused_seconds,
+                block.ended_at.map(|value| value.timestamp()),
+                i64::from(block.recovered_after_restart),
+                block.recovery_of,
+                block.intention_expires_at.timestamp(),
+                block.updated_at.timestamp(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn latest(&self) -> Result<Option<WorkBlockRecord>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT block_id, phase, intention, purpose, intensity, planned_duration_seconds,
+                        started_at, paused_at, total_paused_seconds, ended_at,
+                        recovered_after_restart, recovery_of, intention_expires_at, updated_at
+                 FROM work_block ORDER BY rowid DESC LIMIT 1",
+                [],
+                work_block_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn get(&self, block_id: &str) -> Result<WorkBlockRecord, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT block_id, phase, intention, purpose, intensity, planned_duration_seconds,
+                        started_at, paused_at, total_paused_seconds, ended_at,
+                        recovered_after_restart, recovery_of, intention_expires_at, updated_at
+                 FROM work_block WHERE block_id = ?1",
+                [block_id],
+                work_block_from_row,
+            )
+            .optional()?
+            .ok_or(PersistenceError::NotFound {
+                entity: "work_block",
+            })
+    }
+
+    fn set_paused(&self, block_id: &str, at: DateTime<Utc>) -> Result<(), PersistenceError> {
+        update_work_block(
+            &self.0,
+            "UPDATE work_block SET phase = 'paused', paused_at = ?2, updated_at = ?2
+             WHERE block_id = ?1 AND phase = 'active'",
+            params![block_id, at.timestamp()],
+        )
+    }
+
+    fn set_active(
+        &self,
+        block_id: &str,
+        at: DateTime<Utc>,
+        total_paused_seconds: u32,
+    ) -> Result<(), PersistenceError> {
+        update_work_block(
+            &self.0,
+            "UPDATE work_block SET phase = 'active', paused_at = NULL,
+                    total_paused_seconds = ?3, updated_at = ?2
+             WHERE block_id = ?1 AND phase = 'paused'",
+            params![block_id, at.timestamp(), total_paused_seconds],
+        )
+    }
+
+    fn mark_recovered(&self, block_id: &str, at: DateTime<Utc>) -> Result<(), PersistenceError> {
+        update_work_block(
+            &self.0,
+            "UPDATE work_block SET recovered_after_restart = 1, updated_at = ?2
+             WHERE block_id = ?1 AND phase IN ('active', 'paused')",
+            params![block_id, at.timestamp()],
+        )
+    }
+
+    fn close_open_observation(
+        &self,
+        block_id: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "UPDATE work_block_observation
+             SET ended_at = MAX(occurred_at, ?2)
+             WHERE block_id = ?1 AND ended_at IS NULL",
+            params![block_id, at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn append_observation(
+        &self,
+        block_id: &str,
+        observation: &WorkBlockObservation,
+    ) -> Result<(), PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO work_block_observation(
+                block_id, occurred_at, ended_at, category,
+                classification_status, classification_confidence
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                block_id,
+                observation.occurred_at.timestamp(),
+                observation.ended_at.map(|value| value.timestamp()),
+                observation.category,
+                observation.classification_status.as_str(),
+                observation.classification_confidence.as_str(),
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE work_block SET updated_at = MAX(updated_at, ?2) WHERE block_id = ?1",
+            params![block_id, observation.occurred_at.timestamp()],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn observations(&self, block_id: &str) -> Result<Vec<WorkBlockObservation>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT occurred_at, ended_at, category, classification_status,
+                    classification_confidence
+             FROM work_block_observation WHERE block_id = ?1
+             ORDER BY occurred_at, id",
+        )?;
+        let observations = statement
+            .query_map([block_id], work_block_observation_from_row)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(PersistenceError::from)?;
+        Ok(observations)
+    }
+
+    fn latest_observation(
+        &self,
+        block_id: &str,
+    ) -> Result<Option<WorkBlockObservation>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT occurred_at, ended_at, category, classification_status,
+                        classification_confidence
+                 FROM work_block_observation WHERE block_id = ?1
+                 ORDER BY occurred_at DESC, id DESC LIMIT 1",
+                [block_id],
+                work_block_observation_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn finalize(
+        &self,
+        block_id: &str,
+        completion: &WorkBlockCompletion,
+    ) -> Result<WorkBlockResult, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        if let Some(payload) = transaction
+            .query_row(
+                "SELECT payload FROM work_block_result WHERE block_id = ?1",
+                [block_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            transaction.commit()?;
+            return serde_json::from_str(&payload).map_err(Into::into);
+        }
+        let updated = transaction.execute(
+            "UPDATE work_block SET phase = ?2, ended_at = ?3, paused_at = NULL,
+                    intention_expires_at = MIN(intention_expires_at, ?4), updated_at = ?3
+             WHERE block_id = ?1 AND phase IN ('active', 'paused')",
+            params![
+                block_id,
+                completion.phase.as_str(),
+                completion.ended_at.timestamp(),
+                (completion.ended_at + chrono::Duration::hours(24)).timestamp(),
+            ],
+        )?;
+        if updated == 0 {
+            return Err(PersistenceError::NotFound {
+                entity: "active_work_block",
+            });
+        }
+        let payload = serde_json::to_string(&completion.result)?;
+        transaction.execute(
+            "INSERT INTO work_block_result(block_id, payload) VALUES (?1, ?2)",
+            params![block_id, payload],
+        )?;
+        transaction.commit()?;
+        Ok(completion.result.clone())
+    }
+
+    fn result(&self, block_id: &str) -> Result<Option<WorkBlockResult>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let payload = connection
+            .query_row(
+                "SELECT payload FROM work_block_result WHERE block_id = ?1",
+                [block_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        payload
+            .map(|value| serde_json::from_str(&value).map_err(PersistenceError::from))
+            .transpose()
+    }
+
+    fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        Ok(connection.execute(
+            "UPDATE work_block SET intention = NULL
+             WHERE intention IS NOT NULL AND intention_expires_at <= ?1",
+            [now.timestamp()],
+        )? as u64)
+    }
+
+    fn clear_all(&self) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        Ok(connection.execute("DELETE FROM work_block", [])? as u64)
+    }
+}
+
 fn insert_batch(connection: &Connection, batch: &NewUploadBatch) -> Result<(), PersistenceError> {
     connection.execute(
         "INSERT INTO upload_batch(batch_id) VALUES (?1)",
@@ -1051,6 +1321,125 @@ fn raw_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEventEntry
         occurred_at: timestamp_from_row(row, 10)?,
         duration_seconds: row.get(11)?,
     })
+}
+
+fn work_block_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkBlockRecord> {
+    let phase = parse_work_block_phase(&row.get::<_, String>(1)?)?;
+    let purpose = row
+        .get::<_, Option<String>>(3)?
+        .map(|value| parse_work_block_purpose(&value))
+        .transpose()?;
+    let intensity = parse_work_block_intensity(&row.get::<_, String>(4)?)?;
+    Ok(WorkBlockRecord {
+        block_id: row.get(0)?,
+        phase,
+        intention: row.get(2)?,
+        purpose,
+        intensity,
+        planned_duration_seconds: row.get(5)?,
+        started_at: timestamp_from_row(row, 6)?,
+        paused_at: row
+            .get::<_, Option<i64>>(7)?
+            .map(|value| timestamp_to_datetime(value, 7))
+            .transpose()?,
+        total_paused_seconds: row.get(8)?,
+        ended_at: row
+            .get::<_, Option<i64>>(9)?
+            .map(|value| timestamp_to_datetime(value, 9))
+            .transpose()?,
+        recovered_after_restart: row.get::<_, i64>(10)? != 0,
+        recovery_of: row.get(11)?,
+        intention_expires_at: timestamp_from_row(row, 12)?,
+        updated_at: timestamp_from_row(row, 13)?,
+    })
+}
+
+fn work_block_observation_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<WorkBlockObservation> {
+    Ok(WorkBlockObservation {
+        occurred_at: timestamp_from_row(row, 0)?,
+        ended_at: row
+            .get::<_, Option<i64>>(1)?
+            .map(|value| timestamp_to_datetime(value, 1))
+            .transpose()?,
+        category: row.get(2)?,
+        classification_status: parse_classification_status_value(&row.get::<_, String>(3)?)?,
+        classification_confidence: parse_classification_confidence_value(
+            &row.get::<_, String>(4)?,
+        )?,
+    })
+}
+
+fn invalid_enum() -> rusqlite::Error {
+    rusqlite::Error::InvalidQuery
+}
+
+fn parse_work_block_phase(value: &str) -> rusqlite::Result<WorkBlockPhase> {
+    match value {
+        "active" => Ok(WorkBlockPhase::Active),
+        "paused" => Ok(WorkBlockPhase::Paused),
+        "completed" => Ok(WorkBlockPhase::Completed),
+        "abandoned" => Ok(WorkBlockPhase::Abandoned),
+        "expired" => Ok(WorkBlockPhase::Expired),
+        _ => Err(invalid_enum()),
+    }
+}
+
+fn parse_work_block_purpose(value: &str) -> rusqlite::Result<WorkBlockPurpose> {
+    match value {
+        "deep_work" => Ok(WorkBlockPurpose::DeepWork),
+        "study" => Ok(WorkBlockPurpose::Study),
+        "creative_practice" => Ok(WorkBlockPurpose::CreativePractice),
+        "healthy_tech_use" => Ok(WorkBlockPurpose::HealthyTechUse),
+        "work_life_boundary" => Ok(WorkBlockPurpose::WorkLifeBoundary),
+        _ => Err(invalid_enum()),
+    }
+}
+
+fn parse_work_block_intensity(value: &str) -> rusqlite::Result<WorkBlockIntensity> {
+    match value {
+        "light" => Ok(WorkBlockIntensity::Light),
+        "medium" => Ok(WorkBlockIntensity::Medium),
+        "intense" => Ok(WorkBlockIntensity::Intense),
+        _ => Err(invalid_enum()),
+    }
+}
+
+fn parse_classification_status_value(value: &str) -> rusqlite::Result<ClassificationStatus> {
+    match value {
+        "classified" => Ok(ClassificationStatus::Classified),
+        "ambiguous" => Ok(ClassificationStatus::Ambiguous),
+        "unclassified" => Ok(ClassificationStatus::Unclassified),
+        _ => Err(invalid_enum()),
+    }
+}
+
+fn parse_classification_confidence_value(
+    value: &str,
+) -> rusqlite::Result<ClassificationConfidence> {
+    match value {
+        "high" => Ok(ClassificationConfidence::High),
+        "medium" => Ok(ClassificationConfidence::Medium),
+        "low" => Ok(ClassificationConfidence::Low),
+        "none" => Ok(ClassificationConfidence::None),
+        _ => Err(invalid_enum()),
+    }
+}
+
+fn update_work_block<P: rusqlite::Params>(
+    persistence: &SqlitePersistence,
+    query: &str,
+    params: P,
+) -> Result<(), PersistenceError> {
+    let connection = persistence.connection()?;
+    if connection.execute(query, params)? == 0 {
+        Err(PersistenceError::NotFound {
+            entity: "work_block_transition",
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn batch_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BatchEvent> {

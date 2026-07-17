@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "work_block_lifecycle" },
+    "payload": {
+      "type": "object",
+      "required": ["event"],
+      "properties": { "event": { "enum": ["sleep", "wake", "clock_changed", "time_zone_changed"] } },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

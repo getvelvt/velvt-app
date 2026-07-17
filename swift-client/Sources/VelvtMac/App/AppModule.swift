@@ -34,6 +34,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notificationResponseRouter: NotificationResponseRouter?
     private var menuBarDataLoader: MenuBarDataLoader?
     private var menuStatusViewModel: MenuStatusViewModel?
+    private var workBlockCoordinator: WorkBlockCoordinator?
     private var collectionAuthCancellable: AnyCancellable?
     private var authGatedCollectionController: AuthGatedCollectionController?
     private let metricsStore = AppMetricsStore()
@@ -96,6 +97,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         statusViewModel.start()
         menuStatusViewModel = statusViewModel
         let serviceAlertModel = ServiceAlertModel(messages: accountStateManager.serverMessages)
+        let workBlocks = WorkBlockCoordinator(ipcClient: client)
+        workBlocks.start(
+            messages: accountStateManager.serverMessages,
+            connectionStatus: client.connectionStatus
+        )
+        workBlockCoordinator = workBlocks
 
         let relay = EventRelay(ipcClient: client, metrics: metricsStore)
         let currentActivity = CurrentActivityModel()
@@ -132,6 +139,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             currentActivity: currentActivity,
             serviceAlertModel: serviceAlertModel,
             collectionSettings: collectionSettings,
+            workBlockCoordinator: workBlocks,
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
             simulateNotification: {

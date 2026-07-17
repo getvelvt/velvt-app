@@ -92,12 +92,13 @@ async fn main() {
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
             CacheRetentionTarget, RawEventRetentionTarget, RetentionScheduler,
-            UploadBatchRetentionTarget,
+            UploadBatchRetentionTarget, WorkBlockIntentionRetentionTarget,
         };
         use velvt_service::upload::{
             BatchAssembler, EventIngestor, HttpBatchUploader, SharedUploadBatcher, UploadBatcher,
             UploadCoordinator,
         };
+        use velvt_service::work_block::{run_deadline_scheduler, WorkBlockManager};
 
         let token = CancellationToken::new();
         let abstraction_engine = Arc::new(abstraction_engine);
@@ -106,6 +107,8 @@ async fn main() {
         let history_cache_repo = persistence.history_cache_repo();
         let insight_cache_repo = persistence.insight_cache_repo();
         let raw_event_repo = persistence.raw_event_repo();
+        let work_block_repo = persistence.work_block_repo();
+        let work_block_retention_repo = Arc::clone(&work_block_repo);
 
         let (auth_session_tx, mut auth_session_rx) = tokio::sync::mpsc::unbounded_channel();
         let token_store = Arc::new(VolatileTokenStore::with_update_sender(auth_session_tx));
@@ -151,6 +154,22 @@ async fn main() {
         // Acquire the initial queue so PushAdapter can enqueue proactively.
         let initial_queue = reconnect_tracker.acquire();
         let push_adapter = PushAdapter::new(Arc::clone(&initial_queue));
+        let work_blocks = Arc::new(WorkBlockManager::new(work_block_repo));
+        match work_blocks.recover_after_restart(chrono::Utc::now()) {
+            Ok(snapshot) if snapshot.phase != velvt_shared_types::WorkBlockPhase::Idle => {
+                push_adapter.push_work_block_state(snapshot).await;
+            }
+            Ok(_) => {}
+            Err(_) => tracing::warn!(
+                error_code = "work_block_restart_recovery_failed",
+                "local work-block recovery was unavailable"
+            ),
+        }
+        let work_block_deadline_task = tokio::spawn(run_deadline_scheduler(
+            Arc::clone(&work_blocks),
+            Arc::clone(&push_adapter),
+            token.subscribe(),
+        ));
         {
             let push_adapter_for_auth_session = Arc::clone(&push_adapter);
             tokio::spawn(async move {
@@ -372,7 +391,10 @@ async fn main() {
             RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
                 .add_target(raw_event_target)
                 .add_target(upload_batch_target)
-                .add_target(cache_target);
+                .add_target(cache_target)
+                .add_target(WorkBlockIntentionRetentionTarget::new(
+                    work_block_retention_repo,
+                ));
         let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
 
         // R7 + R8 transport — shutdown-aware, reconnect-tracking.
@@ -392,6 +414,7 @@ async fn main() {
                 Arc::clone(&upload_batch_repo),
                 Arc::clone(&authenticated_http) as Arc<dyn HttpClient>,
             )
+            .with_work_blocks(Arc::clone(&work_blocks), Arc::clone(&push_adapter))
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,
                 Arc::clone(&token_store) as Arc<dyn TokenStore>,
@@ -445,6 +468,7 @@ async fn main() {
             let _ = server_task.await;
             let _ = retention_task.await;
             let _ = flush_task.await;
+            let _ = work_block_deadline_task.await;
         })
         .await;
 

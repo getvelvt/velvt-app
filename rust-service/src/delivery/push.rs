@@ -63,6 +63,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::DeviceRevoked(_) => "device_revoked",
         ServerMessage::NotificationPayload(_) => "notification_payload",
         ServerMessage::MenuStatus(_) => "menu_status",
+        ServerMessage::WorkBlockState(_) => "work_block_state",
     }
 }
 
@@ -311,6 +312,14 @@ impl PushAdapter {
                     reason: reason.map(str::to_owned),
                 },
             ))
+            .await;
+    }
+
+    /// Pushes Rust-authored local work-block state. The free-form intention is
+    /// permitted only on this device-local queue and is never logged here.
+    pub async fn push_work_block_state(&self, snapshot: velvt_shared_types::WorkBlockSnapshot) {
+        self.queue
+            .enqueue(ServerMessage::WorkBlockState(snapshot))
             .await;
     }
 }

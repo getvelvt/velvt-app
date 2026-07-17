@@ -10,7 +10,7 @@ final class ConfigModuleTests: XCTestCase {
         let config = try loader.load()
 
         XCTAssertEqual(config.socketPath, "~/.velvt/velvt-service.sock")
-        XCTAssertEqual(config.protocolVersion, 14)
+        XCTAssertEqual(config.protocolVersion, 15)
         XCTAssertEqual(config.clientVersion, "0.1.0")
         XCTAssertEqual(config.apnsEnvironment, .development)
     }
@@ -139,7 +139,7 @@ final class ConfigModuleTests: XCTestCase {
     private func validDictionary() -> [String: Any] {
         [
             "VelvtSocketPath": "~/.velvt/velvt-service.sock",
-            "VelvtProtocolVersion": "14",
+            "VelvtProtocolVersion": "15",
             "VelvtClientVersion": "0.1.0",
             "VelvtAPNSEnv": "development",
             "VelvtAPIBaseURL": "https://staging.api.velvt.test",

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "clear_work_block_data" },
+    "payload": { "type": "object", "maxProperties": 0, "additionalProperties": false }
+  },
+  "additionalProperties": false
+}

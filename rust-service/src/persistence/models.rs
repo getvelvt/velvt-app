@@ -1,4 +1,8 @@
 use chrono::{DateTime, Utc};
+use velvt_shared_types::{
+    ClassificationConfidence, ClassificationStatus, WorkBlockIntensity, WorkBlockPhase,
+    WorkBlockPurpose, WorkBlockResult,
+};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AbstractionMapping {
@@ -134,4 +138,60 @@ pub struct InsightCacheEntry {
     pub expires_at: DateTime<Utc>,
     /// True when this entry records a 404 (no approved insight for the date).
     pub is_negative: bool,
+}
+
+#[derive(Clone, PartialEq)]
+pub struct WorkBlockRecord {
+    pub block_id: String,
+    pub phase: WorkBlockPhase,
+    pub intention: Option<String>,
+    pub purpose: Option<WorkBlockPurpose>,
+    pub intensity: WorkBlockIntensity,
+    pub planned_duration_seconds: u32,
+    pub started_at: DateTime<Utc>,
+    pub paused_at: Option<DateTime<Utc>>,
+    pub total_paused_seconds: u32,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub recovered_after_restart: bool,
+    pub recovery_of: Option<String>,
+    pub intention_expires_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for WorkBlockRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkBlockRecord")
+            .field("block_id", &self.block_id)
+            .field("phase", &self.phase)
+            .field("intention", &self.intention.as_ref().map(|_| "[redacted]"))
+            .field("purpose", &self.purpose)
+            .field("intensity", &self.intensity)
+            .field("planned_duration_seconds", &self.planned_duration_seconds)
+            .field("started_at", &self.started_at)
+            .field("paused_at", &self.paused_at)
+            .field("total_paused_seconds", &self.total_paused_seconds)
+            .field("ended_at", &self.ended_at)
+            .field("recovered_after_restart", &self.recovered_after_restart)
+            .field("recovery_of", &self.recovery_of)
+            .field("intention_expires_at", &self.intention_expires_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkBlockObservation {
+    pub occurred_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub category: String,
+    pub classification_status: ClassificationStatus,
+    pub classification_confidence: ClassificationConfidence,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkBlockCompletion {
+    pub phase: WorkBlockPhase,
+    pub ended_at: DateTime<Utc>,
+    pub result: WorkBlockResult,
 }

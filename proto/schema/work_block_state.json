@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Rust to Swift. Local IPC only. Behavioral copy and evidence are authored/aggregated in Rust.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "work_block_state" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "state_version", "phase", "block_id", "intention", "purpose", "intensity",
+        "planned_duration_seconds", "elapsed_duration_seconds", "remaining_duration_seconds",
+        "started_at", "ends_at", "paused_at", "recovered_after_restart", "current_category",
+        "classification_status", "confidence", "status_line", "result"
+      ],
+      "properties": {
+        "state_version": { "const": 1 },
+        "phase": { "enum": ["idle", "active", "paused", "completed", "abandoned", "expired"] },
+        "block_id": { "type": ["string", "null"], "format": "uuid" },
+        "intention": { "type": ["string", "null"], "maxLength": 120 },
+        "purpose": {
+          "type": ["string", "null"],
+          "enum": [null, "deep_work", "study", "creative_practice", "healthy_tech_use", "work_life_boundary"]
+        },
+        "intensity": { "type": ["string", "null"], "enum": [null, "light", "medium", "intense"] },
+        "planned_duration_seconds": { "type": "integer", "minimum": 0, "maximum": 10800 },
+        "elapsed_duration_seconds": { "type": "integer", "minimum": 0, "maximum": 10800 },
+        "remaining_duration_seconds": { "type": "integer", "minimum": 0, "maximum": 10800 },
+        "started_at": { "type": ["string", "null"], "format": "date-time" },
+        "ends_at": { "type": ["string", "null"], "format": "date-time" },
+        "paused_at": { "type": ["string", "null"], "format": "date-time" },
+        "recovered_after_restart": { "type": "boolean" },
+        "current_category": { "type": ["string", "null"] },
+        "classification_status": { "enum": ["classified", "ambiguous", "unclassified"] },
+        "confidence": { "enum": ["high", "medium", "low", "none"] },
+        "status_line": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "result": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": [
+                "planned_duration_seconds", "elapsed_duration_seconds", "longest_uninterrupted_seconds",
+                "switch_away_count", "recovery_count", "confidence", "coverage", "coverage_ratio",
+                "safe_evidence_category", "observation", "next_action"
+              ],
+              "properties": {
+                "planned_duration_seconds": { "type": "integer", "minimum": 0 },
+                "elapsed_duration_seconds": { "type": "integer", "minimum": 0 },
+                "longest_uninterrupted_seconds": { "type": "integer", "minimum": 0 },
+                "switch_away_count": { "type": "integer", "minimum": 0 },
+                "recovery_count": { "type": "integer", "minimum": 0 },
+                "confidence": { "enum": ["none", "low", "medium", "high"] },
+                "coverage": { "enum": ["insufficient", "partial", "good"] },
+                "coverage_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+                "safe_evidence_category": { "type": ["string", "null"] },
+                "observation": { "type": "string", "minLength": 1, "maxLength": 300 },
+                "next_action": {
+                  "type": "object",
+                  "required": ["action_id", "label", "duration_seconds"],
+                  "properties": {
+                    "action_id": { "const": "protect_next_10" },
+                    "label": { "type": "string", "minLength": 1, "maxLength": 100 },
+                    "duration_seconds": { "const": 600 }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

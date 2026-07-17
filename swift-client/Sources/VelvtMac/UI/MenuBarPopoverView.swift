@@ -208,6 +208,7 @@ public struct MenuBarPopoverView: View {
     @ObservedObject private var currentActivity: CurrentActivityModel
     @ObservedObject private var serviceAlertModel: ServiceAlertModel
     @ObservedObject private var collectionSettings: CollectionSettingsModel
+    @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
     private let accountStateManager: AccountStateManager?
     private let ipcClient: (any IPCClientProtocol)?
     private let menuStatusViewModel: MenuStatusViewModel?
@@ -221,6 +222,7 @@ public struct MenuBarPopoverView: View {
     @State private var showsCollectionSettingsSubmenu = false
     @State private var showsDebugSubmenu = false
     @State private var confirmsClassificationReset = false
+    @State private var confirmsWorkBlockClear = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -232,6 +234,7 @@ public struct MenuBarPopoverView: View {
         currentActivity: CurrentActivityModel,
         serviceAlertModel: ServiceAlertModel,
         collectionSettings: CollectionSettingsModel = CollectionSettingsModel(),
+        workBlockCoordinator: WorkBlockCoordinator? = nil,
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
@@ -248,6 +251,7 @@ public struct MenuBarPopoverView: View {
         self.currentActivity = currentActivity
         self.serviceAlertModel = serviceAlertModel
         self.collectionSettings = collectionSettings
+        self.workBlockCoordinator = workBlockCoordinator ?? WorkBlockCoordinator(ipcClient: UnavailableWorkBlockIPCClient())
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
@@ -264,7 +268,7 @@ public struct MenuBarPopoverView: View {
                 .transition(transition)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: navigator.route)
-        .frame(width: 680)
+        .frame(width: 380)
         .preferredColorScheme(.dark)
         .onExitCommand(perform: onEscape)
     }
@@ -296,13 +300,6 @@ public struct MenuBarPopoverView: View {
                 serviceAlertRow(alert)
                 Divider().opacity(0.15)
             }
-            if collectionActivityStatus.status == .running {
-                gatheringInfoStatus
-                if let activity = currentActivity.activity {
-                    currentActivityStatus(activity)
-                }
-                Divider().opacity(0.15)
-            }
             if presentation.showsOnboarding {
                 GoalOnboardingView { intensity, purpose in
                     presentation.saveGoal(intensity: intensity, purpose: purpose)
@@ -311,9 +308,8 @@ public struct MenuBarPopoverView: View {
             } else if presentation.showsAccessibilityRecovery {
                 PermissionRecoveryView().padding(16)
             } else {
-                VelvtPopoverContentView(coordinator: coordinator)
+                WorkBlockView(coordinator: workBlockCoordinator)
             }
-            metricsRow
             Divider().opacity(0.15)
             HStack {
                 if let accountStateManager, let ipcClient {
@@ -529,6 +525,22 @@ public struct MenuBarPopoverView: View {
                     .font(.caption)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
+                Button("Clear Local Work Blocks", role: .destructive) {
+                    confirmsWorkBlockClear = true
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .confirmationDialog(
+                    "Clear local intentions, work blocks, and results from this Mac?",
+                    isPresented: $confirmsWorkBlockClear,
+                    titleVisibility: .visible
+                ) {
+                    Button("Clear Local Work Blocks", role: .destructive) {
+                        workBlockCoordinator.clearLocalData()
+                    }
+                    Button("Cancel", role: .cancel) { }
+                }
             }
 
         case .debug:

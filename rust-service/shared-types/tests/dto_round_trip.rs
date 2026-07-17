@@ -103,6 +103,68 @@ fn classification_override_management_is_local_and_typed() {
 }
 
 #[test]
+fn work_block_contract_round_trips_and_redacts_intention_from_debug() {
+    let sentinel = "PRIVATE_INTENTION_SENTINEL";
+    let start = ClientMessage::StartWorkBlock(StartWorkBlock {
+        intention: Some(sentinel.into()),
+        planned_duration_seconds: 1_500,
+        purpose: Some(WorkBlockPurpose::DeepWork),
+        intensity: WorkBlockIntensity::Medium,
+    });
+    assert_round_trip(start.clone());
+    assert!(!format!("{start:?}").contains(sentinel));
+
+    let snapshot = WorkBlockSnapshot {
+        state_version: WORK_BLOCK_STATE_VERSION,
+        phase: WorkBlockPhase::Active,
+        block_id: Some(event_id()),
+        intention: Some(sentinel.into()),
+        purpose: Some(WorkBlockPurpose::DeepWork),
+        intensity: Some(WorkBlockIntensity::Medium),
+        planned_duration_seconds: 1_500,
+        elapsed_duration_seconds: 60,
+        remaining_duration_seconds: 1_440,
+        started_at: Some(timestamp()),
+        ends_at: Some(timestamp() + chrono::Duration::seconds(1_500)),
+        paused_at: None,
+        recovered_after_restart: false,
+        current_category: Some("FOCUS_WORK".into()),
+        classification_status: ClassificationStatus::Classified,
+        confidence: ClassificationConfidence::High,
+        status_line: "Current category: Focus work.".into(),
+        result: None,
+    };
+    assert_round_trip(ServerMessage::WorkBlockState(snapshot.clone()));
+    assert!(!format!("{snapshot:?}").contains(sentinel));
+}
+
+#[test]
+fn safe_work_block_result_has_one_action_and_no_intention_field() {
+    let result = WorkBlockResult {
+        planned_duration_seconds: 1_500,
+        elapsed_duration_seconds: 1_500,
+        longest_uninterrupted_seconds: 900,
+        switch_away_count: 2,
+        recovery_count: 1,
+        confidence: ConfidenceLevel::High,
+        coverage: WorkBlockCoverage::Good,
+        coverage_ratio: 0.9,
+        safe_evidence_category: Some("FOCUS_WORK".into()),
+        observation: "Velvt observed two category changes.".into(),
+        next_action: WorkBlockNextAction {
+            action_id: "protect_next_10".into(),
+            label: "Protect the next 10 minutes.".into(),
+            duration_seconds: 600,
+        },
+    };
+    let value = serde_json::to_value(&result).unwrap();
+    assert!(value.get("next_action").unwrap().is_object());
+    assert!(value.get("next_actions").is_none());
+    assert!(value.get("intention").is_none());
+    assert_round_trip(result);
+}
+
+#[test]
 fn queued_event_quality_metadata_round_trips_without_raw_fields() {
     let event = QueuedEventSummary {
         event_id: event_id(),

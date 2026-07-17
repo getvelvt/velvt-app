@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. intention is device-local only and forbidden from logs, telemetry, notification IDs, caches, and cloud payloads.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "start_work_block" },
+    "payload": {
+      "type": "object",
+      "required": ["intention", "planned_duration_seconds", "purpose", "intensity"],
+      "properties": {
+        "intention": { "type": ["string", "null"], "maxLength": 120, "pattern": "^[^\\r\\n]*$" },
+        "planned_duration_seconds": { "type": "integer", "minimum": 300, "maximum": 10800 },
+        "purpose": {
+          "type": ["string", "null"],
+          "enum": [null, "deep_work", "study", "creative_practice", "healthy_tech_use", "work_life_boundary"]
+        },
+        "intensity": { "enum": ["light", "medium", "intense"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -16,11 +16,12 @@ use crate::abstraction::AbstractionEngine;
 use crate::auth::{
     AccountAuthService, AuthError, HttpClient, HttpRequest, SessionValidator, TokenStore,
 };
-use crate::delivery::{shaper, CacheManager};
+use crate::delivery::{shaper, CacheManager, PushAdapter};
 use crate::persistence::{
     AbstractionMapRepo, RawEventEntry, RawEventRepo, UploadBatchRepo, UploadQueueDiagnostics,
 };
 use crate::upload::EventIngestor;
+use crate::work_block::{WorkBlockError, WorkBlockManager};
 
 use super::IpcError;
 
@@ -299,6 +300,8 @@ pub struct R7Router {
     abstraction_map: Option<Arc<dyn AbstractionMapRepo>>,
     correction_http: Option<Arc<dyn HttpClient>>,
     upload_batches: Option<Arc<dyn UploadBatchRepo>>,
+    work_blocks: Option<Arc<WorkBlockManager>>,
+    work_block_push: Option<Arc<PushAdapter>>,
 }
 
 impl R7Router {
@@ -320,6 +323,8 @@ impl R7Router {
             abstraction_map: None,
             correction_http: None,
             upload_batches: None,
+            work_blocks: None,
+            work_block_push: None,
         }
     }
 
@@ -342,6 +347,16 @@ impl R7Router {
         self.abstraction_map = Some(abstraction_map);
         self.upload_batches = Some(upload_batches);
         self.correction_http = Some(correction_http);
+        self
+    }
+
+    pub fn with_work_blocks(
+        mut self,
+        work_blocks: Arc<WorkBlockManager>,
+        push: Arc<PushAdapter>,
+    ) -> Self {
+        self.work_blocks = Some(work_blocks);
+        self.work_block_push = Some(push);
         self
     }
 }
@@ -526,6 +541,40 @@ impl MessageRouter for R7Router {
                 )))
             }
 
+            ClientMessage::StartWorkBlock(request) => {
+                self.work_block_response(|manager| manager.start(request, Utc::now()))
+            }
+
+            ClientMessage::PauseWorkBlock(request) => {
+                self.work_block_response(|manager| manager.pause(request.block_id, Utc::now()))
+            }
+
+            ClientMessage::ResumeWorkBlock(request) => {
+                self.work_block_response(|manager| manager.resume(request.block_id, Utc::now()))
+            }
+
+            ClientMessage::EndWorkBlock(request) => {
+                self.work_block_response(|manager| manager.end(request.block_id, Utc::now()))
+            }
+
+            ClientMessage::RequestWorkBlockState(_) => {
+                self.work_block_response(|manager| manager.request_state(Utc::now()))
+            }
+
+            ClientMessage::AcceptWorkBlockRecovery(request) => {
+                self.work_block_response(|manager| {
+                    manager.accept_recovery(request.block_id, &request.action_id, Utc::now())
+                })
+            }
+
+            ClientMessage::WorkBlockLifecycle(request) => {
+                self.work_block_response(|manager| manager.lifecycle(request.event, Utc::now()))
+            }
+
+            ClientMessage::ClearWorkBlockData(_) => {
+                self.work_block_response(WorkBlockManager::clear_data)
+            }
+
             ClientMessage::RequestLatestInsight(req) => {
                 let result = self.cache.daily_insight(req.date).await;
                 let response = match result {
@@ -624,6 +673,31 @@ fn parse_classification_source(value: Option<&str>) -> ClassificationSource {
 }
 
 impl R7Router {
+    fn work_block_response(
+        &self,
+        operation: impl FnOnce(
+            &WorkBlockManager,
+        ) -> Result<velvt_shared_types::WorkBlockSnapshot, WorkBlockError>,
+    ) -> Result<Option<ServerMessage>, IpcError> {
+        let Some(manager) = &self.work_blocks else {
+            return Ok(Some(work_block_error("work_block_unavailable")));
+        };
+        Ok(Some(match operation(manager) {
+            Ok(snapshot) => ServerMessage::WorkBlockState(snapshot),
+            Err(WorkBlockError::InvalidRequest) => work_block_error("invalid_work_block_request"),
+            Err(WorkBlockError::InvalidTransition) => {
+                work_block_error("invalid_work_block_transition")
+            }
+            Err(WorkBlockError::Persistence(_)) => {
+                tracing::error!(
+                    error_code = "work_block_persistence_failed",
+                    "local work-block operation failed"
+                );
+                work_block_error("work_block_persistence_failed")
+            }
+        }))
+    }
+
     /// Runs the privacy-enforcement boundary: classify, persist a privacy-safe
     /// audit row, feed the upload batcher, and acknowledge. Raw `app_name`/
     /// `window_title` are consumed only by `abstraction_engine.process` and
@@ -673,6 +747,25 @@ impl R7Router {
                         "failed to enqueue abstracted event for upload"
                     );
                 }
+                if let Some(work_blocks) = &self.work_blocks {
+                    match work_blocks.observe_safe_category(
+                        abstracted.category(),
+                        abstracted.classification_status(),
+                        abstracted.classification_confidence(),
+                        occurred_at,
+                    ) {
+                        Ok(Some(snapshot)) => {
+                            if let Some(push) = &self.work_block_push {
+                                push.push_work_block_state(snapshot).await;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(_) => tracing::warn!(
+                            error_code = "work_block_observation_failed",
+                            "safe work-block observation was not recorded"
+                        ),
+                    }
+                }
                 ServerMessage::RawEventAck(RawEventAck {
                     event_id,
                     status: RawEventStatus::Accepted,
@@ -693,6 +786,14 @@ impl R7Router {
             }
         }
     }
+}
+
+fn work_block_error(code: &str) -> ServerMessage {
+    ServerMessage::ErrorResponse(velvt_shared_types::ErrorResponse {
+        code: code.to_owned(),
+        message: "Unable to update this local work block. Try again.".into(),
+        related_event_id: None,
+    })
 }
 
 fn cache_empty(payload_type: &'static str) -> ServerMessage {

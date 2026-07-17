@@ -1,10 +1,11 @@
 use super::{
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, LocalDisplayAggregate,
     LocalEventMetadata, NewUploadBatch, PersistenceError, RawEventEntry, UploadBatch,
-    UploadQueueDiagnostics,
+    UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockObservation, WorkBlockRecord,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use velvt_shared_types::WorkBlockResult;
 
 pub trait AbstractionMapRepo: Send + Sync {
     fn upsert(&self, mapping: &AbstractionMapping) -> Result<(), PersistenceError>;
@@ -149,4 +150,41 @@ pub trait RawEventRepo: Send + Sync {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<u64, PersistenceError>;
+}
+
+pub trait WorkBlockRepo: Send + Sync {
+    fn create(&self, block: &WorkBlockRecord) -> Result<(), PersistenceError>;
+    fn latest(&self) -> Result<Option<WorkBlockRecord>, PersistenceError>;
+    fn get(&self, block_id: &str) -> Result<WorkBlockRecord, PersistenceError>;
+    fn set_paused(&self, block_id: &str, at: DateTime<Utc>) -> Result<(), PersistenceError>;
+    fn set_active(
+        &self,
+        block_id: &str,
+        at: DateTime<Utc>,
+        total_paused_seconds: u32,
+    ) -> Result<(), PersistenceError>;
+    fn mark_recovered(&self, block_id: &str, at: DateTime<Utc>) -> Result<(), PersistenceError>;
+    fn close_open_observation(
+        &self,
+        block_id: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError>;
+    fn append_observation(
+        &self,
+        block_id: &str,
+        observation: &WorkBlockObservation,
+    ) -> Result<(), PersistenceError>;
+    fn observations(&self, block_id: &str) -> Result<Vec<WorkBlockObservation>, PersistenceError>;
+    fn latest_observation(
+        &self,
+        block_id: &str,
+    ) -> Result<Option<WorkBlockObservation>, PersistenceError>;
+    fn finalize(
+        &self,
+        block_id: &str,
+        completion: &WorkBlockCompletion,
+    ) -> Result<WorkBlockResult, PersistenceError>;
+    fn result(&self, block_id: &str) -> Result<Option<WorkBlockResult>, PersistenceError>;
+    fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError>;
+    fn clear_all(&self) -> Result<u64, PersistenceError>;
 }

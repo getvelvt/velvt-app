@@ -300,6 +300,13 @@ public struct MenuBarPopoverView: View {
                 serviceAlertRow(alert)
                 Divider().opacity(0.15)
             }
+            if collectionActivityStatus.status == .running {
+                gatheringInfoStatus
+                if let activity = currentActivity.activity {
+                    currentActivityStatus(activity)
+                }
+                Divider().opacity(0.15)
+            }
             if presentation.showsOnboarding {
                 GoalOnboardingView { intensity, purpose in
                     presentation.saveGoal(intensity: intensity, purpose: purpose)
@@ -309,7 +316,10 @@ public struct MenuBarPopoverView: View {
                 PermissionRecoveryView().padding(16)
             } else {
                 WorkBlockView(coordinator: workBlockCoordinator)
+                Divider().opacity(0.15)
+                VelvtPopoverContentView(coordinator: coordinator)
             }
+            metricsRow
             Divider().opacity(0.15)
             HStack {
                 if let accountStateManager, let ipcClient {

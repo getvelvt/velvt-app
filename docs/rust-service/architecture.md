@@ -15,6 +15,7 @@ The Rust service is organized around narrow modules that own one runtime concern
 | `src/auth/` | Account auth relay, token store traits, auth state machine, refresh/reissue logic |
 | `src/delivery/` | Fetching history/insight, cache management, payload shaping, IPC push adapter |
 | `src/retention/` | Scheduled cleanup for raw events, sent/rejected batches, and caches |
+| `src/work_block/` | Versioned work-block state machine, safe observation aggregation, deterministic copy, restart recovery, and one-shot deadline |
 | `src/lifecycle/` | Cancellation token used by long-running tasks |
 | `shared-types/` | IPC DTOs and protocol constants shared by service tests and Swift-equivalent schemas |
 
@@ -38,6 +39,7 @@ PollScheduler task
 Upload retry task
 Age-based flush task
 RetentionScheduler task
+WorkBlockManager restart recovery + one-shot deadline task
 TokioUnixTransport task
 signal wait
 graceful shutdown
@@ -92,6 +94,21 @@ The `local_display_label` field is selected from a small curated set such as
 `VS Code`, `Slack`, `GitHub`, `Docs`, `Browser`, and `AI Assistant`. It is used
 for local menu display and bounded five-label-plus-`Other` aggregation, and is
 never used in cloud DTOs or logs. Raw titles are never display labels.
+
+Migration 9 adds local `work_block`, `work_block_observation`, and
+`work_block_result` tables. The optional intention is redacted from `Debug`,
+expires after 24 hours, and is absent from every upload/cache DTO. Result
+finalization is atomic and unique per block, making deadline and restart paths
+idempotent.
+
+## Meaningful-Work Aggregation
+
+`WorkBlockManager` receives safe category/status/confidence evidence after the
+abstraction engine. It alone derives coverage, longest uninterrupted stretch,
+neutral category transitions, returns, evidence category, observation copy,
+and the singular recovery action. Swift receives a ready-to-render snapshot.
+Deadline scheduling uses a replaceable one-shot sleep rather than polling. See
+`docs/architecture/work-block-loop.md` for the state machine and field boundary.
 
 ## Upload Pipeline
 

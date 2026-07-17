@@ -33,6 +33,14 @@ re-appear downstream: `AbstractedEvent`, the SQLite schema, and the upload
 DTO (`BatchEventPayload`/`BatchPayload`) simply have no field that could
 hold one.
 
+An optional work-block intention also stays on the Mac. It crosses only the
+local Unix socket, is stored in the protected SQLite file for at most 24 hours,
+and is never added to upload JSON, cloud/cache payloads, logs, telemetry,
+crash-safe diagnostics, or notification identifiers. Safe work-block results
+are local-only aggregates. See
+[`docs/architecture/work-block-loop.md`](docs/architecture/work-block-loop.md)
+for the exact per-field boundary.
+
 ## What is stored locally, and for how long
 
 All persistence lives in a SQLite database at
@@ -44,6 +52,9 @@ All persistence lives in a SQLite database at
 | `raw_event_buffer` | privacy-safe abstracted event metadata, used for short-lived audit/replay | 72 hours (`VELVT_RAW_EVENT_TTL_HOURS`) |
 | `upload_batch` / `batch_event` | privacy-safe events grouped into upload batches | sent batches: 30 days; rejected batches: 7 days (audit window) |
 | `history_cache` / `insight_cache` | ready-to-display summaries fetched from the cloud | minutes to tens of minutes, per `VELVT_HISTORY_TTL_SECONDS`/`VELVT_INSIGHT_TTL_SECONDS` |
+| `work_block` | local state and optional free-form intention | intention: 24 hours; safe state retained until clear |
+| `work_block_observation` | safe category/status/confidence spans only | retained with local work-block data |
+| `work_block_result` | safe local duration, transition, recovery, coverage, evidence, observation, and one next action | retained until clear |
 
 Despite its name, `raw_event_buffer` never contains raw app names or window
 titles — see [`PRIVACY_AUDIT.md`](PRIVACY_AUDIT.md) Audit 1 for the
@@ -89,7 +100,7 @@ into a local-only mapping table, not a reversible encoding).
 
 The SQLite database is a plain file at `~/.velvt/velvt-service.sqlite3`.
 Open it with any SQLite browser (`sqlite3 ~/.velvt/velvt-service.sqlite3`)
-and inspect the six tables listed above — every column is named in
+and inspect the tables listed above — every column is named in
 `rust-service/migrations/`, and the migration SQL itself documents the "no
 raw content" invariant inline. The full abstraction and upload code paths
 are open source in this repository; `PRIVACY_AUDIT.md` is the line-by-line

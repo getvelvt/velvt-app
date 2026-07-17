@@ -36,6 +36,7 @@ PermissionCollectionCoordinator
 MenuBarController
 NotificationDeliveryCoordinator
 NotificationResponseRouter
+WorkBlockCoordinator
 ```
 
 The ordering matters:
@@ -111,6 +112,15 @@ Tests use `FakeIPCClient` to drive state and messages without a real Unix socket
 `MenuBarDataLoader` requests today's insight and seven days of history once the account is logged in and the socket is connected.
 
 `NotificationDeliveryCoordinator` listens for `notification_payload` and schedules a user notification through `NotificationScheduling`. Swift does not create notification copy; the service payload is already ready to display.
+
+## Local Work Blocks
+
+`WorkBlockCoordinator` subscribes to Rust `work_block_state` pushes and sends
+only start/pause/resume/end/recovery/clear commands plus macOS lifecycle events.
+It does not persist intention, aggregate evidence, or author result/status
+claims. `WorkBlockView` renders the exact Rust snapshot, using SwiftUI's timer
+rendering for the displayed clock without adding a state polling loop. Offline
+send failures leave the displayed Rust-owned state unchanged.
 
 ## Permissions
 

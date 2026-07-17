@@ -51,6 +51,10 @@ Swift Client                                      Rust Service
      |--- request_menu_status / flush_upload_queue ---->|
      |<-- menu_status ----------------------------------|
      |                                                  |
+     |--- start/pause/resume/end work block ----------->|
+     |--- work block lifecycle/recovery/clear --------->|
+     |<-- work_block_state -----------------------------|
+     |                                                  |
      |--- error_response ------------------------------>|
      |<-- error_response -------------------------------|
      |                                                  |
@@ -67,19 +71,39 @@ Direction is enforced by the workspace message envelopes:
   `request_latest_insight`, `request_latest_history`, `sign_up`, `log_in`,
   `log_out`, `delete_account`, `request_menu_status`, and
   `flush_upload_queue`, `correct_event_classification`,
-  `remove_classification_override`, and `reset_classification_overrides`.
+  `remove_classification_override`, `reset_classification_overrides`,
+  `start_work_block`, `pause_work_block`, `resume_work_block`,
+  `end_work_block`, `request_work_block_state`,
+  `accept_work_block_recovery`, `work_block_lifecycle`, and
+  `clear_work_block_data`.
 - Rust emits only `server_hello`, `acknowledged`, `version_mismatch`,
   `malformed_message`, `raw_event_ack`, `insight_payload`, `history_payload`,
   `service_status`, `privacy_violation_alert`, `error_response`,
   `cache_empty`, `shutting_down`, `auth_success`, `auth_failure`,
   `account_deletion_accepted`, `needs_reauth`, `device_revoked`,
-  `notification_payload`, and `menu_status`.
+  `notification_payload`, `menu_status`, and `work_block_state`.
 - Swift sends only the Rust inbound set and accepts only the Rust outbound set.
 
 ## 3. Message Catalog
 
-All schemas use JSON Schema draft-07 and reject undeclared fields with
+Schemas declare their JSON Schema draft and reject undeclared fields with
 `additionalProperties: false`.
+
+### Local work-block messages
+
+Direction: Swift to Rust for start, pause, resume, end, state request,
+recovery acceptance, lifecycle, and clear; Rust to Swift for
+`work_block_state`.
+
+Protocol state version 1 contains the persisted phase and timing, optional
+local intention/purpose/intensity, current safe classification evidence,
+Rust-authored status line, and optional terminal result. The result contains
+planned/elapsed duration, longest stretch, neutral transition and return
+counts, confidence/coverage, safe evidence category, Rust-authored observation,
+and exactly one `protect_next_10` action. These messages are local-socket-only;
+none is an upload or notification contract. Full field constraints live in
+`proto/schema/*work_block*.json` and the privacy boundary is documented in
+`docs/architecture/work-block-loop.md`.
 
 Every message uses a `type` discriminant and a `payload` object. Catalog fields
 listed below live inside `payload`.

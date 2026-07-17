@@ -21,3 +21,4 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Collection agent deep dive | `docs/architecture/collection-agent.md` | Existing detailed guide for macOS Accessibility event collection |
 | Auth and onboarding deep dive | `docs/architecture/auth-onboarding.md` | Existing detailed guide for onboarding and authentication behavior |
 | Menu bar and notifications deep dive | `docs/architecture/s7-menu-bar-and-notifications.md` | Existing detailed guide for menu bar presentation and notification delivery |
+| Local meaningful-work loop | `docs/architecture/work-block-loop.md` | Work-block ownership, state machine, evidence rules, privacy field table, lifecycle, and failure behavior |

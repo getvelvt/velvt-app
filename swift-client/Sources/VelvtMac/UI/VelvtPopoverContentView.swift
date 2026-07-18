@@ -98,10 +98,10 @@ public struct LocalDashboardView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Live Focus")
+                    Text("Recent activity")
                         .font(.headline)
                         .foregroundStyle(Color.velvtText)
-                    Text("Last 60 minutes")
+                    Text("A rough view of the last hour")
                         .font(.caption2)
                         .foregroundStyle(Color.velvtMuted)
                 }
@@ -114,6 +114,7 @@ public struct LocalDashboardView: View {
                 Text(coverageText(snapshot.coverage))
                     .font(.caption2)
                     .foregroundStyle(Color.velvtMuted)
+                categoryGuide
             } else if let commandError = coordinator.commandError {
                 Text(commandError)
                     .font(.caption)
@@ -130,7 +131,7 @@ public struct LocalDashboardView: View {
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Live focus timeline")
+        .accessibilityLabel("Recent activity timeline")
     }
 
     private var metric: some View {
@@ -169,15 +170,54 @@ public struct LocalDashboardView: View {
                         RoundedRectangle(cornerRadius: 3)
                             .fill(color(for: segment.category))
                             .frame(width: max(4, proxy.size.width * duration / window))
-                            .help("\(categoryLabel(segment.category)), \(formatDuration(duration))")
-                            .accessibilityLabel("\(categoryLabel(segment.category)), \(formatDuration(duration))")
+                            .help("\(categoryLabel(segment.category)): \(categoryDescription(segment.category)); \(formatDuration(duration))")
+                            .accessibilityLabel("\(categoryLabel(segment.category)): \(categoryDescription(segment.category)); \(formatDuration(duration))")
                     }
                 }
             }
         }
         .frame(height: 18)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Last 60 minutes of observed categories")
+        .accessibilityLabel("Last hour of broad, approximate activity groupings")
+    }
+
+    private var categoryGuide: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Color guide")
+                .font(.caption2.bold())
+                .foregroundStyle(Color.velvtText)
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    guideItem("FOCUS_WORK")
+                    guideItem("REFERENCE")
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    guideItem("COMMUNICATION")
+                    guideItem("CREATIVE")
+                }
+            }
+            Text("These are rough local groupings, not a productivity score or a judgment.")
+                .font(.caption2)
+                .foregroundStyle(Color.velvtMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func guideItem(_ category: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Circle()
+                .fill(color(for: category))
+                .frame(width: 6, height: 6)
+            Text(categoryLabel(category))
+                .font(.caption2)
+                .foregroundStyle(Color.velvtText)
+            Text("— \(categoryDescription(category))")
+                .font(.caption2)
+                .foregroundStyle(Color.velvtMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .help("\(categoryLabel(category)): \(categoryDescription(category))")
     }
 
     private func coverageText(_ coverage: LocalDashboardCoverage) -> String {
@@ -199,11 +239,23 @@ public struct LocalDashboardView: View {
     }
 
     private func categoryLabel(_ category: String) -> String {
-        category
-            .replacingOccurrences(of: "_", with: " ")
-            .split(separator: " ")
-            .map { $0.prefix(1).uppercased() + $0.dropFirst().lowercased() }
-            .joined(separator: " ")
+        switch category {
+        case "FOCUS_WORK": return "Focus work"
+        case "REFERENCE": return "Reading & research"
+        case "COMMUNICATION": return "Messages & meetings"
+        case "CREATIVE": return "Design & creative"
+        default: return "Other activity"
+        }
+    }
+
+    private func categoryDescription(_ category: String) -> String {
+        switch category {
+        case "FOCUS_WORK": return "writing, coding, or building"
+        case "REFERENCE": return "reading, notes, or research"
+        case "COMMUNICATION": return "email, chat, or calls"
+        case "CREATIVE": return "visual or audio work"
+        default: return "not enough information to tell"
+        }
     }
 
     private func formatDuration(_ seconds: TimeInterval) -> String {

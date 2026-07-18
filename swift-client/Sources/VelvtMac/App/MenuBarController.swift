@@ -262,7 +262,8 @@ public final class MenuBarController: NSObject {
     public func showPopover() {
         guard let button = statusItem?.button, !popover.isShown else { return }
         activateApp()
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        let positioningRect = button.bounds.offsetBy(dx: -16, dy: 0)
+        popover.show(relativeTo: positioningRect, of: button, preferredEdge: .minY)
     }
 
     public func closePopover() {

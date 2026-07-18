@@ -271,7 +271,8 @@ public struct MenuBarPopoverView: View {
                 .transition(transition)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: navigator.route)
-        .frame(width: 760)
+        .frame(width: 680, alignment: .top)
+        .frame(minHeight: 540, alignment: .top)
         .preferredColorScheme(.dark)
         .onExitCommand(perform: onEscape)
     }
@@ -324,12 +325,12 @@ public struct MenuBarPopoverView: View {
                         Divider().opacity(0.15)
                         LocalDashboardView(coordinator: localDashboardCoordinator)
                     }
-                    .frame(width: 380)
+                    .frame(width: 340)
 
                     Divider().opacity(0.2)
 
                     VelvtPopoverContentView(coordinator: coordinator)
-                        .frame(width: 380, alignment: .topLeading)
+                        .frame(width: 340, alignment: .topLeading)
                 }
             }
             if metricsStore.isAuthenticated {

@@ -409,26 +409,7 @@ public struct MenuBarPopoverView: View {
         VStack(spacing: 0) {
             mainHeader
             Divider().opacity(0.2)
-            if let alert = serviceAlertModel.alert {
-                serviceAlertRow(alert)
-                Divider().opacity(0.15)
-            }
-            if collectionActivityStatus.status == .running {
-                gatheringInfoStatus
-                Divider().opacity(0.15)
-            }
             workspace
-            if metricsStore.isAuthenticated {
-                metricsRow
-                Divider().opacity(0.15)
-            }
-            HStack {
-                if let accountStateManager, let ipcClient {
-                    MenuBarAccountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 16).padding(.vertical, 10)
         }
         .task {
             _ = await permissionManager?.checkStatus(for: .accessibility)
@@ -442,13 +423,40 @@ public struct MenuBarPopoverView: View {
 
             Divider().opacity(0.2)
 
+            workspaceDetailPane
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var workspaceDetailPane: some View {
+        VStack(spacing: 0) {
+            if let alert = serviceAlertModel.alert {
+                serviceAlertRow(alert)
+                Divider().opacity(0.15)
+            }
+            if collectionActivityStatus.status == .running {
+                gatheringInfoStatus
+                Divider().opacity(0.15)
+            }
+
             ScrollView {
                 selectedWorkspaceContent
                     .frame(maxWidth: .infinity, alignment: .topLeading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .layoutPriority(1)
+
+            if metricsStore.isAuthenticated {
+                Divider().opacity(0.15)
+                metricsRow
+            }
+            if let accountStateManager, let ipcClient {
+                Divider().opacity(0.15)
+                accountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.black.opacity(0.08))
     }
 
     private var workspaceNavigationRail: some View {
@@ -474,6 +482,7 @@ public struct MenuBarPopoverView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 10)
+        .frame(maxHeight: .infinity)
         .background(Color.velvtSurface.opacity(0.55))
     }
 
@@ -484,7 +493,8 @@ public struct MenuBarPopoverView: View {
         } label: {
             Label(tab.title, systemImage: tab.systemImage)
                 .font(.caption)
-                .foregroundStyle(isSelected ? Color.velvtText : Color.velvtMuted)
+                .fontWeight(isSelected ? .semibold : .medium)
+                .foregroundStyle(isSelected ? Color.velvtText : Color.velvtText.opacity(0.62))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .padding(.horizontal, 10)
@@ -507,7 +517,18 @@ public struct MenuBarPopoverView: View {
             }
             .padding(16)
         } else if presentation.showsAccessibilityRecovery {
-            PermissionRecoveryView().padding(16)
+            PermissionRecoveryView()
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    Color.velvtSurface.opacity(0.92),
+                    in: RoundedRectangle(cornerRadius: 10)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                }
+                .padding(16)
         } else {
             switch navigator.selectedWorkspaceTab {
             case .workBlock:
@@ -529,7 +550,21 @@ public struct MenuBarPopoverView: View {
             metricCounter(title: "Interventions", value: metricsStore.interventions)
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 10)
+        .padding(.vertical, 10)
+        .background(Color.velvtSurface.opacity(0.32))
+    }
+
+    private func accountControls(
+        accountStateManager: AccountStateManager,
+        ipcClient: any IPCClientProtocol
+    ) -> some View {
+        HStack {
+            MenuBarAccountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.velvtSurface.opacity(0.32))
     }
 
     private func metricCounter(title: String, value: Int) -> some View {

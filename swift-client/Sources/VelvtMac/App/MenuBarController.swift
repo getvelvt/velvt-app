@@ -124,6 +124,7 @@ enum MenuBarIconProvider {
 public final class MenuBarController: NSObject {
     private let resolver = MenuBarStateResolver()
     private let popover: NSPopover
+    private let popoverWillOpen = CurrentValueSubject<Void, Never>(())
     private let activateApp: () -> Void
     private let terminateApp: () -> Void
     private let serviceConnectionStatus: ServiceConnectionStatusModel
@@ -196,10 +197,12 @@ public final class MenuBarController: NSObject {
                 menuStatusViewModel: menuStatusViewModel,
                 simulateNotification: simulateNotification,
                 metricsStore: metricsStore,
+                popoverWillOpen: popoverWillOpen.eraseToAnyPublisher(),
                 onEscape: { [weak self] in self?.closePopover() },
                 onTerminate: { [weak self] in self?.terminateApp() }
             )
         )
+        popover.contentSize = MenuBarPopoverLayout.preferredContentSize
     }
 
     // MARK: Lifecycle
@@ -261,6 +264,10 @@ public final class MenuBarController: NSObject {
     /// tap arriving while backgrounded).
     public func showPopover() {
         guard let button = statusItem?.button, !popover.isShown else { return }
+        popoverWillOpen.send()
+        popover.contentSize = MenuBarPopoverLayout.contentSize(
+            for: button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        )
         activateApp()
         let positioningRect = button.bounds.offsetBy(dx: -16, dy: 0)
         popover.show(relativeTo: positioningRect, of: button, preferredEdge: .minY)

@@ -12,6 +12,25 @@ final class MenuBarControllerTests: XCTestCase {
         )
     }
 
+    func testPopoverUsesPreferredCompactSizeWhenScreenAllows() {
+        let visibleFrame = CGRect(x: 0, y: 0, width: 1_440, height: 900)
+
+        XCTAssertEqual(
+            MenuBarPopoverLayout.contentSize(for: visibleFrame),
+            MenuBarPopoverLayout.preferredContentSize
+        )
+    }
+
+    func testPopoverSizeStaysWithinVisibleScreen() {
+        let visibleFrame = CGRect(x: 0, y: 0, width: 600, height: 500)
+        let size = MenuBarPopoverLayout.contentSize(for: visibleFrame)
+
+        XCTAssertLessThanOrEqual(size.width, visibleFrame.width)
+        XCTAssertLessThanOrEqual(size.height, visibleFrame.height)
+        XCTAssertEqual(size.width, visibleFrame.width - MenuBarPopoverLayout.screenInset)
+        XCTAssertEqual(size.height, visibleFrame.height - MenuBarPopoverLayout.screenInset)
+    }
+
     // MARK: - Popover stays open across data pushes
 
     func testPopoverStaysOpenWhenANewInsightArrivesWhileShown() {

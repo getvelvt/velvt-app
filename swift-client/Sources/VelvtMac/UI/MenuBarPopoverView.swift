@@ -7,6 +7,42 @@ public enum MenuBarAccountAction: Equatable {
     case logOut
 }
 
+private struct HistoryWorkspaceView: View {
+    @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
+    let accountStateManager: AccountStateManager?
+
+    var body: some View {
+        if let accountStateManager {
+            AccountGatedHistoryWorkspaceView(
+                coordinator: coordinator,
+                accountStateManager: accountStateManager
+            )
+        } else {
+            VelvtPopoverContentView(coordinator: coordinator)
+        }
+    }
+}
+
+private struct AccountGatedHistoryWorkspaceView: View {
+    @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
+    @ObservedObject var accountStateManager: AccountStateManager
+
+    var body: some View {
+        switch accountStateManager.accountState {
+        case .loggedIn:
+            VelvtPopoverContentView(coordinator: coordinator)
+        case .loggedOut, .loggingIn, .loggingOut, .pendingErasure:
+            EmptyDeliveryState(
+                text: "Sign in to view your 7-day history",
+                systemImage: "person.crop.circle.badge.exclamationmark"
+            )
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("Sign in to view 7-Day History")
+        }
+    }
+}
+
 public enum MenuBarAccountActionResolver {
     public static func actions(for accountState: AccountState) -> [MenuBarAccountAction] {
         switch accountState {
@@ -171,11 +207,63 @@ public enum MenuBarPopoverRoute: Equatable {
     case settings
 }
 
-private enum SettingsSubmenu: Equatable {
+public enum MenuBarPopoverLayout {
+    public static let preferredContentSize = CGSize(width: 620, height: 580)
+    public static let screenInset: CGFloat = 24
+
+    public static func contentSize(for visibleFrame: CGRect?) -> CGSize {
+        guard let visibleFrame else { return preferredContentSize }
+        return CGSize(
+            width: min(preferredContentSize.width, max(1, visibleFrame.width - screenInset)),
+            height: min(preferredContentSize.height, max(1, visibleFrame.height - screenInset))
+        )
+    }
+}
+
+public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
+    case workBlock
+    case history
+    case recentActivity
+
+    public var title: String {
+        switch self {
+        case .workBlock: return "Work Block"
+        case .history: return "7-Day History"
+        case .recentActivity: return "Recent Activity"
+        }
+    }
+
+    fileprivate var systemImage: String {
+        switch self {
+        case .workBlock: return "timer"
+        case .history: return "calendar"
+        case .recentActivity: return "waveform.path.ecg"
+        }
+    }
+
+    fileprivate var keyboardShortcut: KeyEquivalent {
+        switch self {
+        case .workBlock: return "1"
+        case .history: return "2"
+        case .recentActivity: return "3"
+        }
+    }
+}
+
+enum SettingsSubmenu: CaseIterable, Equatable {
     case appInfo
     case queuedEvents
     case collectionSettings
     case debug
+
+    var title: String {
+        switch self {
+        case .appInfo: return "App Info"
+        case .queuedEvents: return "Queued Events"
+        case .collectionSettings: return "Collection Settings"
+        case .debug: return "Debug"
+        }
+    }
 }
 
 public enum MenuBarPopoverDirection: Equatable { case forward, backward }
@@ -183,8 +271,12 @@ public enum MenuBarPopoverDirection: Equatable { case forward, backward }
 public struct MenuBarPopoverNavigator {
     public private(set) var route: MenuBarPopoverRoute = .main
     public private(set) var direction: MenuBarPopoverDirection = .forward
+    public private(set) var selectedWorkspaceTab: MenuBarWorkspaceTab = .workBlock
 
     public init() {}
+    public mutating func selectWorkspaceTab(_ tab: MenuBarWorkspaceTab) {
+        selectedWorkspaceTab = tab
+    }
     public mutating func showSettings() { move(to: .settings) }
     public mutating func goBack() {
         direction = .backward
@@ -192,6 +284,11 @@ public struct MenuBarPopoverNavigator {
         case .main: .main
         case .settings: .main
         }
+    }
+    public mutating func resetForPopoverOpening() {
+        route = .main
+        direction = .backward
+        selectedWorkspaceTab = .workBlock
     }
     private mutating func move(to route: MenuBarPopoverRoute) {
         direction = .forward
@@ -215,6 +312,7 @@ public struct MenuBarPopoverView: View {
     private let menuStatusViewModel: MenuStatusViewModel?
     private let simulateNotification: (() -> Void)?
     @ObservedObject private var metricsStore: AppMetricsStore
+    private let popoverWillOpen: AnyPublisher<Void, Never>
     private let onEscape: () -> Void
     private let onTerminate: () -> Void
     @State private var navigator = MenuBarPopoverNavigator()
@@ -242,6 +340,7 @@ public struct MenuBarPopoverView: View {
         menuStatusViewModel: MenuStatusViewModel? = nil,
         simulateNotification: (() -> Void)? = nil,
         metricsStore: AppMetricsStore = AppMetricsStore(defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
+        popoverWillOpen: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher(),
         onEscape: @escaping () -> Void,
         onTerminate: @escaping () -> Void = { }
     ) {
@@ -260,6 +359,7 @@ public struct MenuBarPopoverView: View {
         self.menuStatusViewModel = menuStatusViewModel
         self.simulateNotification = simulateNotification
         self.metricsStore = metricsStore
+        self.popoverWillOpen = popoverWillOpen
         self.onEscape = onEscape
         self.onTerminate = onTerminate
     }
@@ -271,10 +371,19 @@ public struct MenuBarPopoverView: View {
                 .transition(transition)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: navigator.route)
-        .frame(width: 680, alignment: .top)
-        .frame(minHeight: 540, alignment: .top)
+        .frame(
+            idealWidth: MenuBarPopoverLayout.preferredContentSize.width,
+            maxWidth: .infinity,
+            idealHeight: MenuBarPopoverLayout.preferredContentSize.height,
+            maxHeight: .infinity,
+            alignment: .top
+        )
         .preferredColorScheme(.dark)
         .onExitCommand(perform: onEscape)
+        .onReceive(popoverWillOpen) {
+            dismissSettingsSubmenus()
+            navigator.resetForPopoverOpening()
+        }
     }
 
     private var mainHeader: some View {
@@ -306,33 +415,9 @@ public struct MenuBarPopoverView: View {
             }
             if collectionActivityStatus.status == .running {
                 gatheringInfoStatus
-                if let activity = currentActivity.activity {
-                    currentActivityStatus(activity)
-                }
                 Divider().opacity(0.15)
             }
-            if presentation.showsOnboarding {
-                GoalOnboardingView { intensity, purpose in
-                    presentation.saveGoal(intensity: intensity, purpose: purpose)
-                }
-                .padding(16)
-            } else if presentation.showsAccessibilityRecovery {
-                PermissionRecoveryView().padding(16)
-            } else {
-                HStack(alignment: .top, spacing: 0) {
-                    VStack(spacing: 0) {
-                        WorkBlockView(coordinator: workBlockCoordinator)
-                        Divider().opacity(0.15)
-                        LocalDashboardView(coordinator: localDashboardCoordinator)
-                    }
-                    .frame(width: 340)
-
-                    Divider().opacity(0.2)
-
-                    VelvtPopoverContentView(coordinator: coordinator)
-                        .frame(width: 340, alignment: .topLeading)
-                }
-            }
+            workspace
             if metricsStore.isAuthenticated {
                 metricsRow
                 Divider().opacity(0.15)
@@ -342,12 +427,99 @@ public struct MenuBarPopoverView: View {
                     MenuBarAccountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
                 }
                 Spacer(minLength: 0)
-                Button("Settings") { navigator.showSettings() }.buttonStyle(.plain)
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
         }
         .task {
             _ = await permissionManager?.checkStatus(for: .accessibility)
+        }
+    }
+
+    private var workspace: some View {
+        HStack(spacing: 0) {
+            workspaceNavigationRail
+                .frame(width: 152)
+
+            Divider().opacity(0.2)
+
+            ScrollView {
+                selectedWorkspaceContent
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var workspaceNavigationRail: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(MenuBarWorkspaceTab.allCases, id: \.self) { tab in
+                workspaceNavigationButton(tab)
+            }
+
+            Spacer(minLength: 12)
+            Divider().opacity(0.2)
+            Button {
+                navigator.showSettings()
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(",", modifiers: .command)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .accessibilityLabel("Open Settings")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+        .background(Color.velvtSurface.opacity(0.55))
+    }
+
+    private func workspaceNavigationButton(_ tab: MenuBarWorkspaceTab) -> some View {
+        let isSelected = navigator.selectedWorkspaceTab == tab
+        return Button {
+            navigator.selectWorkspaceTab(tab)
+        } label: {
+            Label(tab.title, systemImage: tab.systemImage)
+                .font(.caption)
+                .foregroundStyle(isSelected ? Color.velvtText : Color.velvtMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(isSelected ? Color.velvtPanelHighlight : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(tab.keyboardShortcut, modifiers: .command)
+        .accessibilityLabel(tab.title)
+        .accessibilityValue(isSelected ? "Selected" : "")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    @ViewBuilder
+    private var selectedWorkspaceContent: some View {
+        if presentation.showsOnboarding {
+            GoalOnboardingView { intensity, purpose in
+                presentation.saveGoal(intensity: intensity, purpose: purpose)
+            }
+            .padding(16)
+        } else if presentation.showsAccessibilityRecovery {
+            PermissionRecoveryView().padding(16)
+        } else {
+            switch navigator.selectedWorkspaceTab {
+            case .workBlock:
+                WorkBlockView(coordinator: workBlockCoordinator)
+            case .history:
+                HistoryWorkspaceView(
+                    coordinator: coordinator,
+                    accountStateManager: accountStateManager
+                )
+            case .recentActivity:
+                LocalDashboardView(coordinator: localDashboardCoordinator)
+            }
         }
     }
 
@@ -415,39 +587,21 @@ public struct MenuBarPopoverView: View {
         .padding(.vertical, 9)
     }
 
-    private func currentActivityStatus(_ activity: CurrentActivity) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Currently on")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(activity.appName)
-                .font(.caption.bold())
-                .lineLimit(1)
-            if !activity.windowTitle.isEmpty {
-                Text(activity.windowTitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 9)
-    }
-
     private var settingsContent: some View {
         VStack(spacing: 0) {
             SettingsTitle(title: "Settings", goBack: {
                 dismissSettingsSubmenus()
                 navigator.goBack()
             })
-            settingsSubmenuRow("App Info", submenu: .appInfo)
-            settingsSubmenuRow("Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))", submenu: .queuedEvents)
-            settingsSubmenuRow("Collection Settings", submenu: .collectionSettings)
+            settingsSubmenuRow(SettingsSubmenu.appInfo.title, submenu: .appInfo)
+            settingsSubmenuRow(
+                "\(SettingsSubmenu.queuedEvents.title) (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))",
+                submenu: .queuedEvents
+            )
+            settingsSubmenuRow(SettingsSubmenu.collectionSettings.title, submenu: .collectionSettings)
             #if DEBUG
             if simulateNotification != nil {
-                settingsSubmenuRow("Debug", submenu: .debug)
+                settingsSubmenuRow(SettingsSubmenu.debug.title, submenu: .debug)
             }
             #endif
             Divider().padding(.vertical, 8)
@@ -462,6 +616,7 @@ public struct MenuBarPopoverView: View {
             .padding(.horizontal, 16).padding(.vertical, 8)
         }
         .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear { dismissSettingsSubmenus() }
     }
 
@@ -470,7 +625,7 @@ public struct MenuBarPopoverView: View {
         switch submenu {
         case .appInfo:
             VStack(spacing: 0) {
-                submenuTitle("App Info")
+                submenuTitle(submenu.title)
                 infoRow("Version", appVersion)
                 infoRow("Device ID", menuStatusViewModel?.status?.deviceID ?? "Not registered")
                 authenticationInfoRow()
@@ -493,7 +648,7 @@ public struct MenuBarPopoverView: View {
 
         case .queuedEvents:
             VStack(spacing: 0) {
-                submenuTitle("Queued Events (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))")
+                submenuTitle("\(submenu.title) (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))")
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         let queuedEvents = Array((menuStatusViewModel?.status?.queuedEvents ?? []).prefix(10))
@@ -545,7 +700,7 @@ public struct MenuBarPopoverView: View {
 
         case .collectionSettings:
             VStack(spacing: 0) {
-                submenuTitle("Collection Settings")
+                submenuTitle(submenu.title)
                 Toggle("Offline Event Collection", isOn: $collectionSettings.offlineEventCollectionEnabled)
                     .toggleStyle(.switch)
                     .font(.caption)
@@ -571,7 +726,7 @@ public struct MenuBarPopoverView: View {
 
         case .debug:
             VStack(spacing: 0) {
-                submenuTitle("Debug")
+                submenuTitle(submenu.title)
                 Button {
                     runDebugInsightSimulation()
                 } label: {

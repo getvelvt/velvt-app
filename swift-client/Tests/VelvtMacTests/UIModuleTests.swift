@@ -111,6 +111,39 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(navigator.direction, .backward)
     }
 
+    func testWorkspaceNavigationDefaultsToWorkBlockAndSelectsSeparateTabs() {
+        var navigator = MenuBarPopoverNavigator()
+
+        XCTAssertEqual(navigator.selectedWorkspaceTab, .workBlock)
+        XCTAssertEqual(MenuBarWorkspaceTab.allCases.map(\.title), [
+            "Work Block", "7-Day History", "Recent Activity",
+        ])
+
+        navigator.selectWorkspaceTab(.history)
+        XCTAssertEqual(navigator.selectedWorkspaceTab, .history)
+
+        navigator.selectWorkspaceTab(.recentActivity)
+        XCTAssertEqual(navigator.selectedWorkspaceTab, .recentActivity)
+    }
+
+    func testOpeningPopoverRestoresMainWorkBlockFromSettings() {
+        var navigator = MenuBarPopoverNavigator()
+        navigator.selectWorkspaceTab(.recentActivity)
+        navigator.showSettings()
+
+        navigator.resetForPopoverOpening()
+
+        XCTAssertEqual(navigator.route, .main)
+        XCTAssertEqual(navigator.selectedWorkspaceTab, .workBlock)
+        XCTAssertEqual(navigator.direction, .backward)
+    }
+
+    func testSettingsRetainsEveryDestination() {
+        XCTAssertEqual(SettingsSubmenu.allCases.map(\.title), [
+            "App Info", "Queued Events", "Collection Settings", "Debug",
+        ])
+    }
+
     func testSettingsBackNavigationAlwaysReturnsToMain() {
         var navigator = MenuBarPopoverNavigator()
         navigator.showSettings()

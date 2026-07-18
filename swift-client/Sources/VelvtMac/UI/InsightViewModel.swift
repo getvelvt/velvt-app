@@ -10,6 +10,13 @@ import Foundation
 public final class InsightViewModel: ObservableObject {
 
     @Published public private(set) var text: String = ""
+    @Published public private(set) var observation: String = ""
+    @Published public private(set) var baselineComparison: String = ""
+    @Published public private(set) var suggestedAction: String = ""
+    @Published public private(set) var suggestedActionButtonLabel: String = ""
+    @Published public private(set) var suggestedActionMinutes: Int = 0
+    @Published public private(set) var evidenceSummary: String = ""
+    @Published public private(set) var emotionalStage: EmotionalStage = .early
     /// "Today", "Yesterday", or a long-form weekday date.
     @Published public private(set) var date: String = ""
     /// "early data" | "moderate" | "high"
@@ -22,6 +29,15 @@ public final class InsightViewModel: ObservableObject {
 
     public func update(from payload: InsightPayload) {
         text = payload.text
+        observation = payload.evidence.observation
+        baselineComparison = payload.evidence.comparison
+        suggestedAction = payload.evidence.suggestedAction
+        suggestedActionMinutes = payload.evidence.actionMinutes
+        suggestedActionButtonLabel = payload.evidence.actionMinutes > 0
+            ? "Protect my next \(payload.evidence.actionMinutes) minutes"
+            : ""
+        evidenceSummary = Self.evidenceSummary(payload.evidence)
+        emotionalStage = payload.evidence.toneStage
         date = Self.formatDate(payload.date)
         confidenceLabel = Self.confidenceLabel(for: payload.confidenceLevel, isLow: payload.lowConfidence)
         generatedAt = Self.formatGeneratedAt(payload.generatedAt)
@@ -30,6 +46,13 @@ public final class InsightViewModel: ObservableObject {
 
     public func reset() {
         text = ""
+        observation = ""
+        baselineComparison = ""
+        suggestedAction = ""
+        suggestedActionButtonLabel = ""
+        suggestedActionMinutes = 0
+        evidenceSummary = ""
+        emotionalStage = .early
         date = ""
         confidenceLabel = ""
         generatedAt = ""
@@ -65,5 +88,18 @@ public final class InsightViewModel: ObservableObject {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
         return "Generated \(formatter.string(from: date))"
+    }
+
+    static func evidenceSummary(_ evidence: InsightEvidence) -> String {
+        guard evidence.observationType != "unavailable" else {
+            return "Evidence is unavailable for this older insight."
+        }
+        let categories = evidence.safeCategories
+            .map { $0.replacingOccurrences(of: "_", with: " ") }
+            .joined(separator: ", ")
+        let measured = "Measured \(evidence.metricValue) \(evidence.metricUnit)"
+        let scope = categories.isEmpty ? "" : " across \(categories)"
+        let confidence = "\(Int((evidence.coverage * 100).rounded()))% classified coverage"
+        return "\(measured)\(scope); \(confidence). No app names, titles, URLs, or local labels were used."
     }
 }

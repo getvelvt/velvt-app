@@ -39,6 +39,26 @@ final class IPCModuleTests: XCTestCase {
                 InsightPayload(
                     date: "2026-06-13",
                     text: "ready-to-display",
+                    evidence: InsightEvidence(
+                        observation: "You made 8 meaningful switches.",
+                        comparison: "That stayed within your usual range.",
+                        suggestedAction: "Try protecting your next 20 minutes for one work lane.",
+                        toneStage: .stable,
+                        observationType: "repeated_switching_loop",
+                        templateID: "repeated_switching_loop",
+                        metricValue: 8,
+                        metricUnit: "transitions",
+                        timeWindow: ["kind": "current_day", "date": "2026-06-13"],
+                        safeCategories: ["document"],
+                        confidence: "high",
+                        coverage: 0.91,
+                        baselineStatus: "mature",
+                        actionMinutes: 20,
+                        repetitionDays: 1,
+                        nextActionID: "protect_next_20",
+                        direction: "stable",
+                        magnitude: 2.5
+                    ),
                     confidenceLevel: .high,
                     lowConfidence: false,
                     generatedAt: Date(timeIntervalSince1970: 1_700_000_000)

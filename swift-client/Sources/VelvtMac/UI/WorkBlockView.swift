@@ -50,6 +50,11 @@ public struct WorkBlockView: View {
       Text("Protect one work block")
         .font(.headline)
 
+      Text("A work block is a bounded period you choose for one lane of work.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
       TextField("Intention (optional)", text: $intention)
         .textFieldStyle(.roundedBorder)
         .onChange(of: intention) { value in

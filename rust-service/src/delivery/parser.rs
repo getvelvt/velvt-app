@@ -7,7 +7,8 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use velvt_shared_types::{
-    ActivityProportion, ConfidenceLevel, DailySummary, HistoryStatus, InsightPayload,
+    ActivityProportion, ConfidenceLevel, DailySummary, HistoryStatus, InsightEvidence,
+    InsightPayload,
 };
 
 use super::{InsightLabelReference, LocalInsightRehydrator};
@@ -39,6 +40,9 @@ struct RawDailySummary {
     status: Option<HistoryStatus>,
     event_count: Option<u64>,
     active_seconds: Option<u64>,
+    focused_seconds: Option<u64>,
+    meaningful_switch_count: Option<u64>,
+    focus_seconds: Option<u64>,
     confidence_level: Option<ConfidenceLevel>,
     baseline_status: Option<String>,
     baseline_comparison: Option<serde_json::Value>,
@@ -64,6 +68,7 @@ struct RawInsightResponse {
     confidence_level: Option<ConfidenceLevel>,
     low_confidence: Option<bool>,
     generated_at: Option<DateTime<Utc>>,
+    quality_metadata: Option<serde_json::Value>,
 }
 
 pub fn parse_history(value: serde_json::Value) -> Result<HistoryApiResponse, ParseError> {
@@ -87,6 +92,9 @@ pub fn parse_history(value: serde_json::Value) -> Result<HistoryApiResponse, Par
             active_seconds: s.active_seconds.ok_or(ParseError::MissingField {
                 field: "summaries[].active_seconds",
             })?,
+            focused_seconds: s.focused_seconds.unwrap_or(0),
+            meaningful_switch_count: s.meaningful_switch_count.unwrap_or(0),
+            longest_uninterrupted_seconds: s.focus_seconds.unwrap_or(0),
             confidence_level: s.confidence_level.ok_or(ParseError::MissingField {
                 field: "summaries[].confidence_level",
             })?,
@@ -127,9 +135,11 @@ pub fn parse_insight_with_rehydrator(
         }
         _ => fallback_text,
     };
+    let evidence = parse_evidence(raw.quality_metadata)?;
     Ok(InsightPayload {
         date: raw.date.ok_or(ParseError::MissingField { field: "date" })?,
         text,
+        evidence,
         confidence_level: raw.confidence_level.ok_or(ParseError::MissingField {
             field: "confidence_level",
         })?,
@@ -140,6 +150,13 @@ pub fn parse_insight_with_rehydrator(
             field: "generated_at",
         })?,
     })
+}
+
+fn parse_evidence(value: Option<serde_json::Value>) -> Result<InsightEvidence, ParseError> {
+    let Some(evidence) = value.and_then(|quality| quality.get("evidence").cloned()) else {
+        return Ok(InsightEvidence::default());
+    };
+    serde_json::from_value(evidence).map_err(ParseError::Json)
 }
 
 #[cfg(test)]

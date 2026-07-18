@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -223,12 +223,77 @@ pub struct InsightPayload {
     pub date: NaiveDate,
     /// Ready-to-display insight copy.
     pub text: String,
+    /// Exact reviewed aggregate evidence used to render the insight.
+    pub evidence: InsightEvidence,
     /// Confidence classification.
     pub confidence_level: ConfidenceLevel,
     /// Whether low-confidence treatment is required.
     pub low_confidence: bool,
     /// UTC generation timestamp.
     pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InsightEvidence {
+    pub observation: String,
+    pub comparison: String,
+    pub suggested_action: String,
+    pub tone_stage: EmotionalStage,
+    pub observation_type: String,
+    pub template_id: String,
+    pub metric_value: i64,
+    pub metric_unit: String,
+    pub time_window: serde_json::Value,
+    pub safe_categories: Vec<String>,
+    pub confidence: String,
+    pub coverage: f64,
+    pub baseline_status: String,
+    pub baseline_comparison: serde_json::Value,
+    pub action_minutes: u32,
+    pub repetition_days: u32,
+    pub next_action_id: String,
+    pub direction: String,
+    pub magnitude: f64,
+}
+
+impl Default for InsightEvidence {
+    fn default() -> Self {
+        Self {
+            observation: "Evidence unavailable".into(),
+            comparison: "Baseline comparison unavailable".into(),
+            suggested_action: "Protect one realistic work block".into(),
+            tone_stage: EmotionalStage::Early,
+            observation_type: "unavailable".into(),
+            template_id: "unavailable".into(),
+            metric_value: 0,
+            metric_unit: "none".into(),
+            time_window: serde_json::json!({}),
+            safe_categories: vec![],
+            confidence: "none".into(),
+            coverage: 0.0,
+            baseline_status: "unknown".into(),
+            baseline_comparison: serde_json::json!({}),
+            action_minutes: 0,
+            repetition_days: 0,
+            next_action_id: "unavailable".into(),
+            direction: "stable".into(),
+            magnitude: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmotionalStage {
+    Early,
+    Stable,
+    PositiveDeviation,
+    SustainedPositiveTrend,
+    NegativeDeviation,
+    RepeatedNegativeTrend,
+    SustainedHighConfidenceDecline,
+    Recovery,
 }
 
 /// Ready-to-display history summary.
@@ -259,6 +324,12 @@ pub struct DailySummary {
     pub confidence_level: ConfidenceLevel,
     /// Total active seconds.
     pub active_seconds: u64,
+    /// Aggregate time in broad focus-oriented work lanes.
+    pub focused_seconds: u64,
+    /// Changes between broad work lanes, excluding same-lane activity.
+    pub meaningful_switch_count: u64,
+    /// Longest recorded work session without a broad-lane switch.
+    pub longest_uninterrupted_seconds: u64,
     /// Personalized baseline state from the backend, e.g. `early_stage`,
     /// `mature`, or `no_data`.
     pub baseline_status: String,

@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import XCTest
 @testable import VelvtMac
@@ -116,7 +117,7 @@ final class MenuBarNavigationTests: XCTestCase {
 
         XCTAssertEqual(navigator.selectedWorkspaceTab, .workBlock)
         XCTAssertEqual(MenuBarWorkspaceTab.allCases.map(\.title), [
-            "Work Block", "7-Day History", "Recent Activity",
+            "Today", "Your Week", "Activity",
         ])
 
         navigator.selectWorkspaceTab(.history)
@@ -124,6 +125,15 @@ final class MenuBarNavigationTests: XCTestCase {
 
         navigator.selectWorkspaceTab(.recentActivity)
         XCTAssertEqual(navigator.selectedWorkspaceTab, .recentActivity)
+    }
+
+    func testWorkspaceKeyboardShortcutsRemainOneTwoThree() {
+        XCTAssertEqual(MenuBarWorkspaceTab.allCases.map(\.keyboardShortcut), ["1", "2", "3"])
+    }
+
+    func testReducedMotionDisablesPopoverRouteAnimation() {
+        XCTAssertFalse(MenuBarMotionPolicy.shouldAnimate(reduceMotion: true))
+        XCTAssertTrue(MenuBarMotionPolicy.shouldAnimate(reduceMotion: false))
     }
 
     func testOpeningPopoverRestoresMainWorkBlockFromSettings() {
@@ -140,8 +150,71 @@ final class MenuBarNavigationTests: XCTestCase {
 
     func testSettingsRetainsEveryDestination() {
         XCTAssertEqual(SettingsSubmenu.allCases.map(\.title), [
-            "App Info", "Queued Events", "Collection Settings", "Debug",
+            "App Info", "Queued Events", "Collection Settings", "Debug/Testing",
         ])
+    }
+
+    func testTemporaryReconnectKeepsConfirmedConnectedPresentationDuringGrace() async {
+        let client = FakeIPCClient()
+        let scheduler = ManualConnectionGraceScheduler()
+        let notifications = NotificationCenter()
+        let model = ServiceConnectionStatusModel(
+            connectionStatus: client.connectionStatus,
+            scheduler: scheduler,
+            graceInterval: 4,
+            workspaceNotifications: notifications
+        )
+
+        client.setConnectionStatus(.connected)
+        await Task.yield()
+        client.setConnectionStatus(.reconnecting(attempt: 1, nextRetryIn: 1))
+        await Task.yield()
+
+        XCTAssertEqual(model.phase, .connected)
+
+        scheduler.fireLatest()
+        XCTAssertEqual(model.phase, .unavailable)
+    }
+
+    func testReconnectHandshakeBeforeGraceExpiresNeverShowsFailure() async {
+        let client = FakeIPCClient()
+        let scheduler = ManualConnectionGraceScheduler()
+        let model = ServiceConnectionStatusModel(
+            connectionStatus: client.connectionStatus,
+            scheduler: scheduler,
+            workspaceNotifications: NotificationCenter()
+        )
+
+        client.setConnectionStatus(.connected)
+        await Task.yield()
+        client.setConnectionStatus(.disconnected)
+        await Task.yield()
+        client.setConnectionStatus(.connected)
+        await Task.yield()
+        scheduler.fireAll()
+
+        XCTAssertEqual(model.phase, .connected)
+    }
+
+    func testSleepWakeUsesRecoverableWakingStateUntilHandshake() async {
+        let client = FakeIPCClient()
+        let scheduler = ManualConnectionGraceScheduler()
+        let notifications = NotificationCenter()
+        let model = ServiceConnectionStatusModel(
+            connectionStatus: client.connectionStatus,
+            scheduler: scheduler,
+            workspaceNotifications: notifications
+        )
+        client.setConnectionStatus(.connected)
+        await Task.yield()
+
+        notifications.post(name: NSWorkspace.willSleepNotification, object: nil)
+        notifications.post(name: NSWorkspace.didWakeNotification, object: nil)
+        XCTAssertEqual(model.phase, .waking)
+
+        client.setConnectionStatus(.connected)
+        await Task.yield()
+        XCTAssertEqual(model.phase, .connected)
     }
 
     func testSettingsBackNavigationAlwaysReturnsToMain() {
@@ -217,6 +290,38 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(frame.height, debugSubmenuSize.height, accuracy: 0.001)
     }
 
+}
+
+@MainActor
+private final class ManualConnectionGraceScheduler: ConnectionGraceScheduling {
+    private final class Entry {
+        var isCancelled = false
+        let action: @MainActor () -> Void
+
+        init(action: @escaping @MainActor () -> Void) {
+            self.action = action
+        }
+    }
+
+    private var entries: [Entry] = []
+
+    func schedule(
+        after interval: TimeInterval,
+        action: @escaping @MainActor () -> Void
+    ) -> AnyCancellable {
+        let entry = Entry(action: action)
+        entries.append(entry)
+        return AnyCancellable { entry.isCancelled = true }
+    }
+
+    func fireLatest() {
+        guard let entry = entries.last, !entry.isCancelled else { return }
+        entry.action()
+    }
+
+    func fireAll() {
+        entries.filter { !$0.isCancelled }.forEach { $0.action() }
+    }
 }
 
 // MARK: - DeviceRevoked integration tests

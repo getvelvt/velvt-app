@@ -234,13 +234,25 @@ public final class MenuBarController: NSObject {
     /// single `MenuBarState` via `MenuBarStateResolver` on every change.
     public func observe(
         collectionStatus: some Publisher<CollectionStatus, Never>,
-        connectionStatus: some Publisher<ConnectionStatus, Never>,
+        connectionStatus _: some Publisher<ConnectionStatus, Never>,
         accountStateManager: AccountStateManager
     ) {
+        let stableConnectionStatus = serviceConnectionStatus.$phase
+            .map { phase -> ConnectionStatus in
+                switch phase {
+                case .connected, .waking:
+                    return .connected
+                case .starting:
+                    return .connecting
+                case .unavailable:
+                    return .disconnected
+                }
+            }
+            .eraseToAnyPublisher()
         MenuBarStateStream.make(
             resolver: resolver,
             collectionStatus: collectionStatus,
-            connectionStatus: connectionStatus,
+            connectionStatus: stableConnectionStatus,
             accountStateManager: accountStateManager
         )
         .sink { [weak self] state in

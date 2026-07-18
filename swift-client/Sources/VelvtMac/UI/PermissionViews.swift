@@ -4,6 +4,9 @@ import SwiftUI
 
 public protocol OnboardingStateStoring: AnyObject {
     var hasCompletedPermissionOnboarding: Bool { get set }
+    var hasSeenValueProposition: Bool { get set }
+    var hasRequestedAccessibilityPermission: Bool { get set }
+    var hasRequestedNotificationsPermission: Bool { get set }
     var attentionIntensity: AttentionIntensity { get set }
     var attentionPurpose: AttentionPurpose { get set }
 }
@@ -49,22 +52,46 @@ public final class UserDefaultsOnboardingStateStore: OnboardingStateStoring {
     private let key: String
     private let intensityKey: String
     private let purposeKey: String
+    private let valueKey: String
+    private let accessibilityRequestKey: String
+    private let notificationsRequestKey: String
 
     public init(
         defaults: UserDefaults = .standard,
         key: String = "hasCompletedPermissionOnboarding",
         intensityKey: String = "attentionIntensity",
-        purposeKey: String = "attentionPurpose"
+        purposeKey: String = "attentionPurpose",
+        valueKey: String = "hasSeenValueProposition",
+        accessibilityRequestKey: String = "hasRequestedAccessibilityPermission",
+        notificationsRequestKey: String = "hasRequestedNotificationsPermission"
     ) {
         self.defaults = defaults
         self.key = key
         self.intensityKey = intensityKey
         self.purposeKey = purposeKey
+        self.valueKey = valueKey
+        self.accessibilityRequestKey = accessibilityRequestKey
+        self.notificationsRequestKey = notificationsRequestKey
     }
 
     public var hasCompletedPermissionOnboarding: Bool {
         get { defaults.bool(forKey: key) }
         set { defaults.set(newValue, forKey: key) }
+    }
+
+    public var hasSeenValueProposition: Bool {
+        get { defaults.bool(forKey: valueKey) }
+        set { defaults.set(newValue, forKey: valueKey) }
+    }
+
+    public var hasRequestedAccessibilityPermission: Bool {
+        get { defaults.bool(forKey: accessibilityRequestKey) }
+        set { defaults.set(newValue, forKey: accessibilityRequestKey) }
+    }
+
+    public var hasRequestedNotificationsPermission: Bool {
+        get { defaults.bool(forKey: notificationsRequestKey) }
+        set { defaults.set(newValue, forKey: notificationsRequestKey) }
     }
 
     public var attentionIntensity: AttentionIntensity {
@@ -86,17 +113,26 @@ public final class UserDefaultsOnboardingStateStore: OnboardingStateStoring {
 
 public final class InMemoryOnboardingStateStore: OnboardingStateStoring {
     public var hasCompletedPermissionOnboarding: Bool
+    public var hasSeenValueProposition: Bool
+    public var hasRequestedAccessibilityPermission: Bool
+    public var hasRequestedNotificationsPermission: Bool
     public var attentionIntensity: AttentionIntensity
     public var attentionPurpose: AttentionPurpose
 
     public init(
         hasCompletedOnboarding: Bool = false,
         attentionIntensity: AttentionIntensity = .medium,
-        attentionPurpose: AttentionPurpose = .deepWork
+        attentionPurpose: AttentionPurpose = .deepWork,
+        hasSeenValueProposition: Bool = false,
+        hasRequestedAccessibilityPermission: Bool = false,
+        hasRequestedNotificationsPermission: Bool = false
     ) {
         hasCompletedPermissionOnboarding = hasCompletedOnboarding
         self.attentionIntensity = attentionIntensity
         self.attentionPurpose = attentionPurpose
+        self.hasSeenValueProposition = hasSeenValueProposition
+        self.hasRequestedAccessibilityPermission = hasRequestedAccessibilityPermission
+        self.hasRequestedNotificationsPermission = hasRequestedNotificationsPermission
     }
 }
 
@@ -114,6 +150,18 @@ public final class PermissionPresentationModel: ObservableObject {
         case .unknown, .granted:
             return false
         }
+    }
+
+    public var hasSeenValueProposition: Bool {
+        onboardingStateStore.hasSeenValueProposition
+    }
+
+    public var hasRequestedAccessibilityPermission: Bool {
+        onboardingStateStore.hasRequestedAccessibilityPermission
+    }
+
+    public var hasRequestedNotificationsPermission: Bool {
+        onboardingStateStore.hasRequestedNotificationsPermission
     }
 
     private let onboardingStateStore: any OnboardingStateStoring
@@ -139,6 +187,21 @@ public final class PermissionPresentationModel: ObservableObject {
     public func completeOnboarding() {
         onboardingStateStore.hasCompletedPermissionOnboarding = true
         showsOnboarding = false
+    }
+
+    public func acknowledgeValueProposition() {
+        onboardingStateStore.hasSeenValueProposition = true
+        objectWillChange.send()
+    }
+
+    public func markPermissionRequested(_ permission: PermissionType) {
+        switch permission {
+        case .accessibility:
+            onboardingStateStore.hasRequestedAccessibilityPermission = true
+        case .notifications:
+            onboardingStateStore.hasRequestedNotificationsPermission = true
+        }
+        objectWillChange.send()
     }
 
     public func saveGoal(intensity: AttentionIntensity, purpose: AttentionPurpose) {
@@ -245,5 +308,178 @@ public struct GoalOnboardingView: View {
             .buttonStyle(.borderedProminent)
         }
         .pickerStyle(.menu)
+    }
+}
+
+public enum FirstRunOnboardingState: Equatable, Sendable {
+    case valueProposition
+    case accessibilityExplanation
+    case accessibilityDenied
+    case notificationsExplanation
+    case authenticationRequired
+    case serviceStarting
+    case serviceUnavailable
+    case collectionStarting
+    case collectionActive(BaselineProgress)
+
+    public static func resolve(
+        hasSeenValueProposition: Bool,
+        accessibilityStatus: PermissionStatus,
+        hasRequestedAccessibility: Bool,
+        notificationsStatus: PermissionStatus,
+        hasRequestedNotifications: Bool,
+        isAuthenticated: Bool,
+        servicePhase: LocalServiceConnectionPhase,
+        collectionIsRunning: Bool,
+        baselineProgress: BaselineProgress
+    ) -> FirstRunOnboardingState {
+        guard hasSeenValueProposition else { return .valueProposition }
+        guard accessibilityStatus == .granted else {
+            return hasRequestedAccessibility ? .accessibilityDenied : .accessibilityExplanation
+        }
+        if notificationsStatus == .unknown, !hasRequestedNotifications {
+            return .notificationsExplanation
+        }
+        guard isAuthenticated else { return .authenticationRequired }
+        switch servicePhase {
+        case .starting, .waking:
+            return .serviceStarting
+        case .unavailable:
+            return .serviceUnavailable
+        case .connected:
+            break
+        }
+        guard collectionIsRunning else { return .collectionStarting }
+        return .collectionActive(baselineProgress)
+    }
+}
+
+public struct FirstRunOnboardingView: View {
+    @ObservedObject private var presentation: PermissionPresentationModel
+    private let permissionManager: (any PermissionManagerProtocol)?
+    private let servicePhase: LocalServiceConnectionPhase
+    private let collectionIsRunning: Bool
+    private let isAuthenticated: Bool
+    private let baselineProgress: BaselineProgress
+
+    public init(
+        presentation: PermissionPresentationModel,
+        permissionManager: (any PermissionManagerProtocol)?,
+        servicePhase: LocalServiceConnectionPhase,
+        collectionIsRunning: Bool,
+        isAuthenticated: Bool,
+        baselineProgress: BaselineProgress
+    ) {
+        self.presentation = presentation
+        self.permissionManager = permissionManager
+        self.servicePhase = servicePhase
+        self.collectionIsRunning = collectionIsRunning
+        self.isAuthenticated = isAuthenticated
+        self.baselineProgress = baselineProgress
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            content
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.velvtPanel, in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var state: FirstRunOnboardingState {
+        FirstRunOnboardingState.resolve(
+            hasSeenValueProposition: presentation.hasSeenValueProposition,
+            accessibilityStatus: presentation.statuses[.accessibility] ?? .unknown,
+            hasRequestedAccessibility: presentation.hasRequestedAccessibilityPermission,
+            notificationsStatus: presentation.statuses[.notifications] ?? .unknown,
+            hasRequestedNotifications: presentation.hasRequestedNotificationsPermission,
+            isAuthenticated: isAuthenticated,
+            servicePhase: servicePhase,
+            collectionIsRunning: collectionIsRunning,
+            baselineProgress: baselineProgress
+        )
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch state {
+        case .valueProposition:
+            Text("Know when focus broke — and what to protect next")
+                .font(.title3.bold())
+            Text("Velvt shows when your work became fragmented, why it happened, and one realistic way to protect your next focus block.")
+                .font(.body)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Set up Velvt") { presentation.acknowledgeValueProposition() }
+                .buttonStyle(.borderedProminent)
+
+        case .accessibilityExplanation:
+            Label("Allow local activity collection", systemImage: "hand.raised")
+                .font(.headline)
+            Text("Accessibility lets Velvt notice broad work changes on this Mac. Raw app names, window titles, URLs, and local labels never leave your device.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Continue to System Settings") {
+                presentation.markPermissionRequested(.accessibility)
+                Task { _ = await permissionManager?.requestPermission(for: .accessibility) }
+            }
+            .buttonStyle(.borderedProminent)
+
+        case .accessibilityDenied:
+            PermissionRecoveryView()
+
+        case .notificationsExplanation:
+            Label("Choose whether Velvt can notify you", systemImage: "bell")
+                .font(.headline)
+            Text("Notifications can surface a concise, evidence-grounded observation. Saying no will not block collection.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Not now") { presentation.markPermissionRequested(.notifications) }
+                Button("Allow Notifications") {
+                    presentation.markPermissionRequested(.notifications)
+                    Task { _ = await permissionManager?.requestPermission(for: .notifications) }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+        case .authenticationRequired:
+            Label("Sign in to continue", systemImage: "person.crop.circle")
+                .font(.headline)
+            Text("Velvt requires an account for private history and insight delivery. Use the sign-in control below; local collection starts after authentication.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+        case .serviceStarting:
+            ProgressView("Starting local service…")
+                .controlSize(.small)
+            Text("This normally takes only a moment.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+        case .serviceUnavailable:
+            Label("Local service unavailable", systemImage: "exclamationmark.triangle")
+                .font(.headline)
+            Text("Quit and reopen Velvt to restart the local service. Your existing local data is preserved.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+        case .collectionStarting:
+            ProgressView("Starting local collection…")
+                .controlSize(.small)
+
+        case .collectionActive(let progress):
+            Label("Local collection has started", systemImage: "checkmark.circle.fill")
+                .font(.headline)
+                .foregroundStyle(Color.velvtGreen)
+            Text(progress.label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Open Today") { presentation.completeOnboarding() }
+                .buttonStyle(.borderedProminent)
+        }
     }
 }

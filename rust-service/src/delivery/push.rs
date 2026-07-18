@@ -449,6 +449,7 @@ mod tests {
         InsightPayload {
             date: Utc::now().date_naive(),
             text: text.into(),
+            evidence: Default::default(),
             confidence_level: ConfidenceLevel::High,
             low_confidence: false,
             generated_at: Utc::now(),

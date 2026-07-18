@@ -571,6 +571,7 @@ async fn validation_failure_for_one_type_does_not_block_another_type() {
         .push_insight(InsightPayload {
             date: chrono::Utc::now().date_naive(),
             text: String::new(),
+            evidence: Default::default(),
             confidence_level: ConfidenceLevel::High,
             low_confidence: false,
             generated_at: chrono::Utc::now(),

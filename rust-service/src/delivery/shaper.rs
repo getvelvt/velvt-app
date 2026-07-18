@@ -107,6 +107,21 @@ impl ValidatePayload for InsightPayload {
         if self.text.is_empty() {
             return Err(ValidationError::EmptyField { field: "text" });
         }
+        if self.evidence.observation.is_empty() {
+            return Err(ValidationError::EmptyField {
+                field: "evidence.observation",
+            });
+        }
+        if self.evidence.comparison.is_empty() {
+            return Err(ValidationError::EmptyField {
+                field: "evidence.comparison",
+            });
+        }
+        if self.evidence.suggested_action.is_empty() {
+            return Err(ValidationError::EmptyField {
+                field: "evidence.suggested_action",
+            });
+        }
         Ok(())
     }
 }
@@ -229,6 +244,7 @@ mod tests {
         InsightPayload {
             date: Utc::now().date_naive(),
             text: "Focus was high this morning.".into(),
+            evidence: Default::default(),
             confidence_level: ConfidenceLevel::High,
             low_confidence: false,
             generated_at: Utc::now(),

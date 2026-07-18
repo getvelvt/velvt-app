@@ -10,6 +10,9 @@ public struct DaySummaryViewModel: Identifiable, Equatable {
     public let date: String            // "Mon 9"
     public let statusLabel: String     // "ready" | "no data"
     public let activeTime: String      // "3h 12m" | "45m" | "—"
+    public let focusedTime: String
+    public let meaningfulSwitchCount: Int
+    public let longestUninterrupted: String
     public let focusScore: Int?        // nil when isNoData
     public let fragmentationScore: Int?
     public let eventCount: Int
@@ -25,6 +28,11 @@ public struct DaySummaryViewModel: Identifiable, Equatable {
         date = DaySummaryViewModel.formatDate(summary.date)
         statusLabel = isNoData ? "no data" : "ready"
         activeTime = isNoData ? "—" : DaySummaryViewModel.formatActiveTime(summary.activeSeconds)
+        focusedTime = isNoData ? "—" : DaySummaryViewModel.formatActiveTime(summary.focusedSeconds)
+        meaningfulSwitchCount = isNoData ? 0 : summary.meaningfulSwitchCount
+        longestUninterrupted = isNoData
+            ? "—"
+            : DaySummaryViewModel.formatActiveTime(summary.longestUninterruptedSeconds)
         focusScore = isNoData ? nil : summary.focusScore.map { Int($0.rounded()) }
         fragmentationScore = isNoData ? nil : summary.fragmentationScore.map { Int($0.rounded()) }
         eventCount = summary.eventCount
@@ -98,6 +106,14 @@ public final class HistoryViewModel: ObservableObject {
 
     public init() {}
 
+    public var latestReadyDay: DaySummaryViewModel? {
+        days.last { !$0.isNoData }
+    }
+
+    public var baselineProgress: BaselineProgress {
+        BaselineProgress(collectedDays: days.filter { !$0.isNoData }.count)
+    }
+
     public func update(from payload: HistoryPayload) {
         let mapped = payload.summaries.map(DaySummaryViewModel.init)
         days = HistoryViewModel.padded(mapped, toCount: payload.days)
@@ -147,5 +163,21 @@ public final class HistoryViewModel: ObservableObject {
             return DaySummaryViewModel(stub)
         }
         return stubs + existing
+    }
+}
+
+public struct BaselineProgress: Equatable, Sendable {
+    public static let targetDays = 7
+    public let collectedDays: Int
+
+    public init(collectedDays: Int) {
+        self.collectedDays = min(max(collectedDays, 0), Self.targetDays)
+    }
+
+    public var isComplete: Bool { collectedDays >= Self.targetDays }
+    public var label: String {
+        isComplete
+            ? "Your seven-day baseline is ready"
+            : "Collecting your baseline — Day \(collectedDays) of \(Self.targetDays)"
     }
 }

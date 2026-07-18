@@ -55,6 +55,38 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertFalse(sut.days.contains(where: { $0.isNoData }))
   }
 
+  func testBaselineProgressCountsOnlyRealSummaryDays() {
+    let sut = HistoryViewModel()
+    sut.update(from: makeHistoryPayload(readyCount: 2))
+
+    XCTAssertEqual(sut.baselineProgress.collectedDays, 2)
+    XCTAssertEqual(sut.baselineProgress.label, "Collecting your baseline — Day 2 of 7")
+    XCTAssertFalse(sut.baselineProgress.isComplete)
+  }
+
+  func testBaselineProgressCompletesAtSevenRealDays() {
+    let sut = HistoryViewModel()
+    sut.update(from: makeHistoryPayload(readyCount: 7))
+
+    XCTAssertTrue(sut.baselineProgress.isComplete)
+    XCTAssertEqual(sut.baselineProgress.label, "Your seven-day baseline is ready")
+  }
+
+  func testTodayMetricsComeDirectlyFromSummaryFields() {
+    let summary = DailySummary(
+      date: "2026-06-15", status: .ready, eventCount: 50,
+      focusScore: 65, fragmentationScore: 22,
+      confidenceLevel: .medium, activeSeconds: 7200,
+      focusedSeconds: 3900, meaningfulSwitchCount: 14,
+      longestUninterruptedSeconds: 1500)
+
+    let row = DaySummaryViewModel(summary)
+
+    XCTAssertEqual(row.focusedTime, "1h 5m")
+    XCTAssertEqual(row.meaningfulSwitchCount, 14)
+    XCTAssertEqual(row.longestUninterrupted, "25m")
+  }
+
   func testDayOrderMatchesSummaryOrder() {
     let sut = HistoryViewModel()
     let payload = makeHistoryPayload()

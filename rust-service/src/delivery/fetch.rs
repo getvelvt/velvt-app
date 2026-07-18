@@ -23,7 +23,7 @@ use crate::{
         HistoryCacheEntry, HistoryCacheRepo, InsightCacheEntry, InsightCacheRepo, PersistenceError,
     },
 };
-use velvt_shared_types::{DailySummary, HistoryPayload, InsightPayload};
+use velvt_shared_types::{DailySummary, EmotionalStage, HistoryPayload, InsightPayload};
 
 use super::parser::{self, ParseError};
 use super::push::PushAdapter;
@@ -257,14 +257,16 @@ impl<H: HttpClient> FetchService<H> {
                 );
                 if let Some(adapter) = &self.push_adapter {
                     adapter.push_insight(insight.clone()).await;
-                    adapter
-                        .push_notification(
-                            uuid::Uuid::new_v4(),
-                            "Your Velvt insight is ready",
-                            &insight.text,
-                            insight.date,
-                        )
-                        .await;
+                    if insight.evidence.tone_stage != EmotionalStage::Early {
+                        adapter
+                            .push_notification(
+                                uuid::Uuid::new_v4(),
+                                "Your Velvt insight is ready",
+                                &insight.text,
+                                insight.date,
+                            )
+                            .await;
+                    }
                 }
                 Ok(Some(insight))
             }
@@ -508,6 +510,9 @@ mod tests {
             status: HistoryStatus::Ready,
             event_count: 10,
             active_seconds: 3600,
+            focused_seconds: 2400,
+            meaningful_switch_count: 4,
+            longest_uninterrupted_seconds: 1200,
             confidence_level: ConfidenceLevel::High,
             focus_score: Some(0.8),
             fragmentation_score: None,
@@ -521,6 +526,7 @@ mod tests {
         InsightPayload {
             date,
             text: "Test insight text".into(),
+            evidence: Default::default(),
             confidence_level: ConfidenceLevel::High,
             low_confidence: false,
             generated_at: Utc::now(),

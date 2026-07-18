@@ -45,16 +45,24 @@ extension View {
 /// Displays the latest insight or a skeleton while data is loading.
 public struct InsightCardView: View {
     @ObservedObject private var viewModel: InsightViewModel
+    private let onSuggestedAction: (() -> Void)?
 
-    public init(viewModel: InsightViewModel) {
+    public init(
+        viewModel: InsightViewModel,
+        onSuggestedAction: (() -> Void)? = nil
+    ) {
         self.viewModel = viewModel
+        self.onSuggestedAction = onSuggestedAction
     }
 
     public var body: some View {
         if viewModel.isLoading {
             InsightCardSkeletonView()
         } else {
-            InsightCardContentView(viewModel: viewModel)
+            InsightCardContentView(
+                viewModel: viewModel,
+                onSuggestedAction: onSuggestedAction
+            )
         }
     }
 }
@@ -63,33 +71,81 @@ public struct InsightCardView: View {
 
 private struct InsightCardContentView: View {
     @ObservedObject var viewModel: InsightViewModel
+    let onSuggestedAction: (() -> Void)?
+    @State private var showsEvidence = false
+
+    private var primaryObservation: String {
+        viewModel.observation == InsightEvidence.unavailable.observation
+            ? viewModel.text
+            : viewModel.observation
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center) {
                 Text(viewModel.date)
                     .font(.caption)
                     .foregroundStyle(Color.velvtMuted)
                 Spacer()
-                ConfidenceDotView(label: viewModel.confidenceLabel)
+                Text("Daily observation")
+                    .font(.caption2)
+                    .foregroundStyle(Color.velvtMuted)
             }
 
-            Text(viewModel.text)
-                .font(.body)
+            Text(primaryObservation)
+                .font(.body.weight(.medium))
                 .foregroundStyle(Color.velvtText)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(viewModel.generatedAt)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(Color.velvtMuted.opacity(0.7))
+            Text(viewModel.baselineComparison)
+                .font(.caption)
+                .foregroundStyle(Color.velvtMuted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("A realistic next step")
+                    .font(.caption2.bold())
+                    .foregroundStyle(Color.velvtMuted)
+                Text(viewModel.suggestedAction)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.velvtText)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let onSuggestedAction,
+                   !viewModel.suggestedActionButtonLabel.isEmpty {
+                    Button(viewModel.suggestedActionButtonLabel, action: onSuggestedAction)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .keyboardShortcut(.defaultAction)
+                        .padding(.top, 4)
+                        .accessibilityHint("Starts this private work block on the local service")
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.velvtPanelHighlight.opacity(0.75))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+
+            DisclosureGroup("Why am I seeing this?", isExpanded: $showsEvidence) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(viewModel.evidenceSummary)
+                    Text("Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
+                }
+                .font(.caption2)
+                .foregroundStyle(Color.velvtMuted)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 5)
+            }
+            .font(.caption)
+            .tint(Color.velvtText)
+            .accessibilityHint("Shows the privacy-safe numbers behind this observation")
         }
         .padding(14)
         .background(Color.velvtSurface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .focusable()
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Insight for \(viewModel.date)")
-        .accessibilityValue("\(viewModel.text). Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
+        .accessibilityValue("\(primaryObservation). \(viewModel.baselineComparison). \(viewModel.suggestedAction).")
     }
 }
 

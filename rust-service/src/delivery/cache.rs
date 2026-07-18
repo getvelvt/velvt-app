@@ -245,6 +245,9 @@ mod tests {
                 status: HistoryStatus::Ready,
                 event_count: 5,
                 active_seconds: 1800,
+                focused_seconds: 1200,
+                meaningful_switch_count: 3,
+                longest_uninterrupted_seconds: 600,
                 confidence_level: ConfidenceLevel::Medium,
                 focus_score: None,
                 fragmentation_score: None,
@@ -270,6 +273,7 @@ mod tests {
         let insight = InsightPayload {
             date,
             text: "Some insight".into(),
+            evidence: Default::default(),
             confidence_level: ConfidenceLevel::High,
             low_confidence: false,
             generated_at: chrono::Utc::now(),

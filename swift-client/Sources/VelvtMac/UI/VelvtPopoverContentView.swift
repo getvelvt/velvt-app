@@ -18,23 +18,13 @@ public struct VelvtPopoverContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             switch coordinator.state {
             case .loading:
-                InsightCardSkeletonView()
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                sectionDivider
                 HistorySkeletonView()
                     .padding(.bottom, 8)
 
-            case .populated(let insightVM, let historyVM):
-                insightSection(viewModel: insightVM)
-                sectionDivider
+            case .populated(_, let historyVM):
                 historySection(viewModel: historyVM)
 
             case .error(let message):
-                InsightCardSkeletonView()
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                sectionDivider
                 HistorySkeletonView()
                 IPCStatusBanner(message: message)
                     .padding(.horizontal, 14)
@@ -42,30 +32,6 @@ public struct VelvtPopoverContentView: View {
             }
         }
         .preferredColorScheme(.dark)
-    }
-
-    private var sectionDivider: some View {
-        Divider()
-            .opacity(0.15)
-            .padding(.vertical, 8)
-    }
-
-    @ViewBuilder
-    private func insightSection(viewModel: InsightViewModel) -> some View {
-        switch coordinator.insightAvailability {
-        case .available:
-            InsightCardView(viewModel: viewModel)
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-        case .notGenerated:
-            EmptyDeliveryState(text: "No daily insight generated yet", systemImage: "sparkles")
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-        case .loading:
-            InsightCardSkeletonView()
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-        }
     }
 
     @ViewBuilder
@@ -85,6 +51,136 @@ public struct VelvtPopoverContentView: View {
     }
 }
 
+public struct TodayWorkspaceView: View {
+    @ObservedObject private var coordinator: ConcreteDisplayDataCoordinator
+    @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
+
+    public init(
+        coordinator: ConcreteDisplayDataCoordinator,
+        workBlockCoordinator: WorkBlockCoordinator
+    ) {
+        self.coordinator = coordinator
+        self.workBlockCoordinator = workBlockCoordinator
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            baselineStatus
+            dailyMetrics
+            observation
+            Divider().opacity(0.15)
+            WorkBlockView(coordinator: workBlockCoordinator)
+        }
+        .padding(.vertical, 12)
+    }
+
+    private var baselineStatus: some View {
+        Label(
+            coordinator.historyViewModel.baselineProgress.label,
+            systemImage: coordinator.historyViewModel.baselineProgress.isComplete
+                ? "checkmark.circle"
+                : "circle.dotted"
+        )
+        .font(.caption)
+        .foregroundStyle(Color.velvtMuted)
+        .padding(.horizontal, 16)
+        .accessibilityHint("Built only from days with real privacy-safe summaries")
+    }
+
+    @ViewBuilder
+    private var dailyMetrics: some View {
+        if let day = coordinator.historyViewModel.latestReadyDay {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    metricViews(for: day)
+                }
+                VStack(spacing: 8) {
+                    metricViews(for: day)
+                }
+            }
+            .padding(.horizontal, 16)
+        } else {
+            EmptyDeliveryState(
+                text: "Today’s focus metrics will appear after collection begins",
+                systemImage: "chart.bar"
+            )
+            .padding(.horizontal, 16)
+        }
+    }
+
+    @ViewBuilder
+    private func metricViews(for day: DaySummaryViewModel) -> some View {
+        todayMetric(
+            title: "Focused time",
+            value: day.focusedTime,
+            explanation: "Time in broad focus-oriented work categories."
+        )
+        todayMetric(
+            title: "Meaningful switches",
+            value: "\(day.meaningfulSwitchCount)",
+            explanation: "Changes between broad work categories; brief system activity is excluded."
+        )
+        todayMetric(
+            title: "Longest block",
+            value: day.longestUninterrupted,
+            explanation: "Your longest recorded work block without a broad-category switch."
+        )
+    }
+
+    private func todayMetric(title: String, value: String, explanation: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value)
+                .font(.title3.bold().monospacedDigit())
+                .foregroundStyle(Color.velvtText)
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(Color.velvtMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
+        .background(Color.velvtPanel)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .help(explanation)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+        .accessibilityHint(explanation)
+    }
+
+    @ViewBuilder
+    private var observation: some View {
+        switch coordinator.insightAvailability {
+        case .available:
+            InsightCardView(
+                viewModel: coordinator.insightViewModel,
+                onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
+                    ? startSuggestedWorkBlock
+                    : nil
+            )
+                .padding(.horizontal, 16)
+        case .notGenerated:
+            EmptyDeliveryState(
+                text: "No evidence-grounded observation is ready yet",
+                systemImage: "sparkles"
+            )
+            .padding(.horizontal, 16)
+        case .loading:
+            InsightCardSkeletonView()
+                .padding(.horizontal, 16)
+        }
+    }
+
+    private func startSuggestedWorkBlock() {
+        workBlockCoordinator.startBlock(
+            intention: nil,
+            durationSeconds: coordinator.insightViewModel.suggestedActionMinutes * 60,
+            purpose: nil,
+            intensity: .medium
+        )
+    }
+}
+
 /// The live Focus Fragmentation surface. All timing and switch-rate values
 /// come from the local Rust service; this view only lays out safe segments.
 public struct LocalDashboardView: View {
@@ -98,7 +194,7 @@ public struct LocalDashboardView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Recent activity")
+                    Text("Activity")
                         .font(.headline)
                         .foregroundStyle(Color.velvtText)
                     Text("A rough view of the last hour")
@@ -131,7 +227,7 @@ public struct LocalDashboardView: View {
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Recent activity timeline")
+        .accessibilityLabel("Local activity timeline")
     }
 
     private var metric: some View {

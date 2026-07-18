@@ -43,6 +43,39 @@ private struct AccountGatedHistoryWorkspaceView: View {
     }
 }
 
+private struct TodayAccountGate: View {
+    @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
+    @ObservedObject var workBlockCoordinator: WorkBlockCoordinator
+    let accountStateManager: AccountStateManager?
+
+    var body: some View {
+        if let accountStateManager {
+            switch accountStateManager.accountState {
+            case .loggedIn:
+                TodayWorkspaceView(
+                    coordinator: coordinator,
+                    workBlockCoordinator: workBlockCoordinator
+                )
+            case .loggedOut, .loggingIn, .loggingOut, .pendingErasure:
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("See when your work became fragmented, why it happened, and one realistic way to protect your next focus block.")
+                        .font(.body.weight(.medium))
+                    Label("Sign in below to start collection and receive private, evidence-grounded observations.", systemImage: "person.crop.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            TodayWorkspaceView(
+                coordinator: coordinator,
+                workBlockCoordinator: workBlockCoordinator
+            )
+        }
+    }
+}
+
 public enum MenuBarAccountActionResolver {
     public static func actions(for accountState: AccountState) -> [MenuBarAccountAction] {
         switch accountState {
@@ -56,10 +89,97 @@ public enum MenuBarAccountActionResolver {
 @MainActor
 public final class ServiceConnectionStatusModel: ObservableObject {
     @Published public private(set) var status: ConnectionStatus = .disconnected
+    @Published public private(set) var phase: LocalServiceConnectionPhase = .starting
     private var cancellable: AnyCancellable?
+    private var graceTimer: AnyCancellable?
+    private var lifecycleCancellables = Set<AnyCancellable>()
+    private let scheduler: any ConnectionGraceScheduling
+    private let graceInterval: TimeInterval
+    private var hasConfirmedHandshake = false
+    private var isWaking = false
 
-    public init(connectionStatus: AnyPublisher<ConnectionStatus, Never>) {
-        cancellable = connectionStatus.receive(on: RunLoop.main).sink { [weak self] in self?.status = $0 }
+    public init(
+        connectionStatus: AnyPublisher<ConnectionStatus, Never>,
+        scheduler: (any ConnectionGraceScheduling)? = nil,
+        graceInterval: TimeInterval = 4,
+        workspaceNotifications: NotificationCenter = NSWorkspace.shared.notificationCenter
+    ) {
+        self.scheduler = scheduler ?? DispatchConnectionGraceScheduler()
+        self.graceInterval = graceInterval
+        cancellable = connectionStatus.receive(on: RunLoop.main).sink { [weak self] status in
+            self?.handle(status)
+        }
+        workspaceNotifications.publisher(for: NSWorkspace.willSleepNotification)
+            .sink { [weak self] _ in self?.prepareForSleep() }
+            .store(in: &lifecycleCancellables)
+        workspaceNotifications.publisher(for: NSWorkspace.didWakeNotification)
+            .sink { [weak self] _ in self?.handleWake() }
+            .store(in: &lifecycleCancellables)
+        scheduleTimeout()
+    }
+
+    private func handle(_ status: ConnectionStatus) {
+        self.status = status
+        if status == .connected {
+            graceTimer?.cancel()
+            hasConfirmedHandshake = true
+            isWaking = false
+            phase = .connected
+            return
+        }
+
+        if isWaking {
+            phase = .waking
+        } else if !hasConfirmedHandshake {
+            phase = .starting
+        }
+        scheduleTimeout()
+    }
+
+    private func prepareForSleep() {
+        graceTimer?.cancel()
+        isWaking = true
+    }
+
+    private func handleWake() {
+        isWaking = true
+        phase = .waking
+        scheduleTimeout()
+    }
+
+    private func scheduleTimeout() {
+        graceTimer?.cancel()
+        graceTimer = scheduler.schedule(after: graceInterval) { [weak self] in
+            guard let self, self.status != .connected else { return }
+            self.isWaking = false
+            self.phase = .unavailable
+        }
+    }
+}
+
+public enum LocalServiceConnectionPhase: Equatable, Sendable {
+    case starting
+    case waking
+    case connected
+    case unavailable
+}
+
+@MainActor
+public protocol ConnectionGraceScheduling: AnyObject {
+    func schedule(after interval: TimeInterval, action: @escaping @MainActor () -> Void) -> AnyCancellable
+}
+
+@MainActor
+public final class DispatchConnectionGraceScheduler: ConnectionGraceScheduling {
+    public init() {}
+
+    public func schedule(
+        after interval: TimeInterval,
+        action: @escaping @MainActor () -> Void
+    ) -> AnyCancellable {
+        let workItem = DispatchWorkItem { Task { @MainActor in action() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: workItem)
+        return AnyCancellable { workItem.cancel() }
     }
 }
 
@@ -187,6 +307,11 @@ public struct PopoverConnectionPresentation {
     public let label: String
     public let color: Color
 
+    public init(label: String, color: Color) {
+        self.label = label
+        self.color = color
+    }
+
     public init(status: ConnectionStatus) {
         switch status {
         case .connected:
@@ -198,6 +323,23 @@ public struct PopoverConnectionPresentation {
         case .connecting, .handshaking, .reconnecting:
             label = "Connecting"
             color = .yellow
+        }
+    }
+
+    public init(phase: LocalServiceConnectionPhase) {
+        switch phase {
+        case .starting:
+            label = "Starting local service…"
+            color = .yellow
+        case .waking:
+            label = "Waking local service…"
+            color = .yellow
+        case .connected:
+            label = "Connected"
+            color = .green
+        case .unavailable:
+            label = "Local service unavailable"
+            color = .red
         }
     }
 }
@@ -220,6 +362,12 @@ public enum MenuBarPopoverLayout {
     }
 }
 
+public enum MenuBarMotionPolicy {
+    public static func shouldAnimate(reduceMotion: Bool) -> Bool {
+        !reduceMotion
+    }
+}
+
 public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
     case workBlock
     case history
@@ -227,9 +375,9 @@ public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
 
     public var title: String {
         switch self {
-        case .workBlock: return "Work Block"
-        case .history: return "7-Day History"
-        case .recentActivity: return "Recent Activity"
+        case .workBlock: return "Today"
+        case .history: return "Your Week"
+        case .recentActivity: return "Activity"
         }
     }
 
@@ -241,7 +389,7 @@ public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
         }
     }
 
-    fileprivate var keyboardShortcut: KeyEquivalent {
+    var keyboardShortcut: KeyEquivalent {
         switch self {
         case .workBlock: return "1"
         case .history: return "2"
@@ -261,7 +409,7 @@ enum SettingsSubmenu: CaseIterable, Equatable {
         case .appInfo: return "App Info"
         case .queuedEvents: return "Queued Events"
         case .collectionSettings: return "Collection Settings"
-        case .debug: return "Debug"
+        case .debug: return "Debug/Testing"
         }
     }
 }
@@ -370,7 +518,12 @@ public struct MenuBarPopoverView: View {
                 .id(navigator.route)
                 .transition(transition)
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: navigator.route)
+        .animation(
+            MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion)
+                ? .easeInOut(duration: 0.18)
+                : nil,
+            value: navigator.route
+        )
         .frame(
             idealWidth: MenuBarPopoverLayout.preferredContentSize.width,
             maxWidth: .infinity,
@@ -387,13 +540,27 @@ public struct MenuBarPopoverView: View {
     }
 
     private var mainHeader: some View {
-        HStack(spacing: 8) {
-            Text("Velvt").font(.headline)
+        HStack(alignment: .top, spacing: 8) {
+            Text("Velvt")
+                .font(.headline)
+                .layoutPriority(1)
             Spacer()
-            Text(connectionPresentation.label)
-                .font(.caption)
-                .foregroundStyle(connectionPresentation.color)
-            Circle().fill(connectionPresentation.color).frame(width: 7, height: 7)
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(localCollectionPresentation.label)
+                        .font(.caption)
+                        .foregroundStyle(localCollectionPresentation.color)
+                        .multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Circle().fill(localCollectionPresentation.color).frame(width: 7, height: 7)
+                }
+                Text(backendStatusLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: 360, alignment: .trailing)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
     }
@@ -419,7 +586,7 @@ public struct MenuBarPopoverView: View {
     private var workspace: some View {
         HStack(spacing: 0) {
             workspaceNavigationRail
-                .frame(width: 152)
+                .frame(width: 132)
 
             Divider().opacity(0.2)
 
@@ -446,10 +613,6 @@ public struct MenuBarPopoverView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
 
-            if metricsStore.isAuthenticated {
-                Divider().opacity(0.15)
-                metricsRow
-            }
             if let accountStateManager, let ipcClient {
                 Divider().opacity(0.15)
                 accountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
@@ -512,9 +675,14 @@ public struct MenuBarPopoverView: View {
     @ViewBuilder
     private var selectedWorkspaceContent: some View {
         if presentation.showsOnboarding {
-            GoalOnboardingView { intensity, purpose in
-                presentation.saveGoal(intensity: intensity, purpose: purpose)
-            }
+            FirstRunOnboardingView(
+                presentation: presentation,
+                permissionManager: permissionManager,
+                servicePhase: serviceConnectionStatus.phase,
+                collectionIsRunning: collectionActivityStatus.status == .running,
+                isAuthenticated: isAuthenticated,
+                baselineProgress: coordinator.historyViewModel.baselineProgress
+            )
             .padding(16)
         } else if presentation.showsAccessibilityRecovery {
             PermissionRecoveryView()
@@ -532,7 +700,11 @@ public struct MenuBarPopoverView: View {
         } else {
             switch navigator.selectedWorkspaceTab {
             case .workBlock:
-                WorkBlockView(coordinator: workBlockCoordinator)
+                TodayAccountGate(
+                    coordinator: coordinator,
+                    workBlockCoordinator: workBlockCoordinator,
+                    accountStateManager: accountStateManager
+                )
             case .history:
                 HistoryWorkspaceView(
                     coordinator: coordinator,
@@ -542,16 +714,6 @@ public struct MenuBarPopoverView: View {
                 LocalDashboardView(coordinator: localDashboardCoordinator)
             }
         }
-    }
-
-    private var metricsRow: some View {
-        HStack(spacing: 10) {
-            metricCounter(title: "Actions Logged", value: metricsStore.actionsLogged)
-            metricCounter(title: "Interventions", value: metricsStore.interventions)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color.velvtSurface.opacity(0.32))
     }
 
     private func accountControls(
@@ -567,19 +729,6 @@ public struct MenuBarPopoverView: View {
         .background(Color.velvtSurface.opacity(0.32))
     }
 
-    private func metricCounter(title: String, value: Int) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(value)")
-                .font(.headline.monospacedDigit())
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private var gatheringInfoStatus: some View {
         HStack(spacing: 8) {
             ProgressView()
@@ -589,8 +738,8 @@ public struct MenuBarPopoverView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            Text("\(currentActivity.collectedEventCount) events")
-                .font(.caption.monospacedDigit())
+            Text("Local collection active")
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 16)
@@ -678,6 +827,8 @@ public struct MenuBarPopoverView: View {
                 )
                 infoRow("Uploads", uploadStatusDescription)
                 infoRow("Events collected", "\(currentActivity.collectedEventCount)")
+                infoRow("Actions logged", "\(metricsStore.actionsLogged)")
+                infoRow("Interventions", "\(metricsStore.interventions)")
             }
             .onAppear { menuStatusViewModel?.refresh() }
 
@@ -781,14 +932,36 @@ public struct MenuBarPopoverView: View {
     }
 
     private var transition: AnyTransition {
-        guard !reduceMotion else { return .identity }
+        guard MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion) else {
+            return .identity
+        }
         return navigator.direction == .forward
             ? .asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .trailing))
             : .asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .leading))
     }
 
     private var connectionPresentation: PopoverConnectionPresentation {
-        PopoverConnectionPresentation(status: serviceConnectionStatus.status)
+        PopoverConnectionPresentation(phase: serviceConnectionStatus.phase)
+    }
+
+    private var localCollectionPresentation: PopoverConnectionPresentation {
+        if presentation.statuses[.accessibility] != .granted {
+            return PopoverConnectionPresentation(
+                label: "Collection paused: Accessibility permission required",
+                color: .yellow
+            )
+        }
+        return connectionPresentation
+    }
+
+    private var backendStatusLabel: String {
+        guard let accountStateManager,
+              case .loggedIn = accountStateManager.accountState else {
+            return "Sign in required for insights"
+        }
+        return menuStatusViewModel?.status?.cloudReady == true
+            ? "Backend ready"
+            : "Backend unavailable"
     }
 
     private var appVersion: String {
@@ -805,6 +978,14 @@ public struct MenuBarPopoverView: View {
             accountState: accountStateManager.accountState,
             email: accountStateManager.accountEmail
         )
+    }
+
+    private var isAuthenticated: Bool {
+        guard let accountStateManager else { return true }
+        if case .loggedIn = accountStateManager.accountState {
+            return true
+        }
+        return false
     }
 
     private var uploadStatusDescription: String {

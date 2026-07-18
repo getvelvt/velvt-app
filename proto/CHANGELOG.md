@@ -1,5 +1,15 @@
 # IPC Protocol Changelog
 
+## Version 18 - 2026-07-18
+
+- Daily insights now include the exact privacy-safe evidence layers, approved
+  emotional stage, baseline comparison, and suggested action used to render
+  the insight. Raw local activity remains forbidden.
+- Daily history now carries aggregate focused seconds, meaningful switch
+  count, and longest uninterrupted seconds for the Today surface.
+- Early-baseline insight payloads remain inspectable but do not trigger a
+  user notification.
+
 ## Version 17 - 2026-07-17
 
 - Raw activity events now include a bounded, locally measured `duration_seconds`

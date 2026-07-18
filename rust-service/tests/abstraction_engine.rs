@@ -20,6 +20,7 @@ fn raw_event(app_name: &str, window_title: &str) -> RawEvent {
         app_name: app_name.to_owned(),
         window_title: window_title.to_owned(),
         bundle_id: None,
+        duration_seconds: 0,
     }
 }
 

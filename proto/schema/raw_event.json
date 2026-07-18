@@ -10,10 +10,11 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["event_id", "occurred_at", "app_name", "window_title", "bundle_id"],
+      "required": ["event_id", "occurred_at", "duration_seconds", "app_name", "window_title", "bundle_id"],
       "properties": {
         "event_id": { "type": "string", "format": "uuid" },
         "occurred_at": { "type": "string", "format": "date-time" },
+        "duration_seconds": { "type": "integer", "minimum": 0, "maximum": 1800 },
         "app_name": { "type": "string" },
         "window_title": { "type": "string" },
         "bundle_id": { "type": ["string", "null"] }

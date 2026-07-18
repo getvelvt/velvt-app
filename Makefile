@@ -27,7 +27,7 @@ else
 endif
 
 build-rust: check-rust-toolchain
-	cd rust-service && cargo build --release
+	cd rust-service && cargo build --release --features onnx
 
 test-rust: check-rust-toolchain
 	cd rust-service && cargo test

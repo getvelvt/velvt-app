@@ -84,7 +84,8 @@ final class CollectionModuleTests: XCTestCase {
         accessibility.initialTitles = [10: "First", 20: "Second"]
         let dates = DateQueue([
             Date(timeIntervalSince1970: 10),
-            Date(timeIntervalSince1970: 20)
+            Date(timeIntervalSince1970: 20),
+            Date(timeIntervalSince1970: 30)
         ])
         let agent = makeAgent(
             sink: sink,
@@ -101,8 +102,12 @@ final class CollectionModuleTests: XCTestCase {
         XCTAssertEqual(
             sink.events,
             [
-                RawEvent(appName: "One", windowTitle: "First", occurredAt: Date(timeIntervalSince1970: 10)),
-                RawEvent(appName: "Two", windowTitle: "Second", occurredAt: Date(timeIntervalSince1970: 20))
+                RawEvent(
+                    appName: "One",
+                    windowTitle: "First",
+                    occurredAt: Date(timeIntervalSince1970: 10),
+                    durationSeconds: 10
+                )
             ]
         )
     }
@@ -139,7 +144,18 @@ final class CollectionModuleTests: XCTestCase {
         let workspace = FakeWorkspaceObserver()
         let accessibility = FakeAccessibilityObserver()
         accessibility.initialTitles = [10: "Before", 20: "After"]
-        let agent = makeAgent(sink: sink, workspace: workspace, accessibility: accessibility)
+        let dates = DateQueue([
+            Date(timeIntervalSince1970: 10),
+            Date(timeIntervalSince1970: 25),
+            Date(timeIntervalSince1970: 30),
+            Date(timeIntervalSince1970: 40)
+        ])
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            now: dates.next
+        )
         var statuses: [CollectionStatus] = []
         agent.status.sink { statuses.append($0) }.store(in: &cancellables)
 
@@ -149,7 +165,17 @@ final class CollectionModuleTests: XCTestCase {
         workspace.activate(.init(processIdentifier: 20, appName: "Two"))
 
         XCTAssertTrue(statuses.contains(.error("ax_observer_failed:\(AXError.invalidUIElement.rawValue)")))
-        XCTAssertEqual(sink.events.map(\.appName), ["One", "Two"])
+        XCTAssertEqual(
+            sink.events,
+            [
+                RawEvent(
+                    appName: "One",
+                    windowTitle: "Before",
+                    occurredAt: Date(timeIntervalSince1970: 10),
+                    durationSeconds: 15
+                )
+            ]
+        )
         XCTAssertEqual(accessibility.maximumActiveObserverCount, 1)
     }
 
@@ -161,7 +187,8 @@ final class CollectionModuleTests: XCTestCase {
         let dates = DateQueue([
             Date(timeIntervalSince1970: 1),
             Date(timeIntervalSince1970: 2),
-            Date(timeIntervalSince1970: 3)
+            Date(timeIntervalSince1970: 3),
+            Date(timeIntervalSince1970: 4)
         ])
         let agent = makeAgent(
             sink: sink,
@@ -178,9 +205,18 @@ final class CollectionModuleTests: XCTestCase {
         XCTAssertEqual(
             sink.events,
             [
-                RawEvent(appName: "One", windowTitle: "Initial", occurredAt: Date(timeIntervalSince1970: 1)),
-                RawEvent(appName: "One", windowTitle: "", occurredAt: Date(timeIntervalSince1970: 2)),
-                RawEvent(appName: "One", windowTitle: "", occurredAt: Date(timeIntervalSince1970: 3))
+                RawEvent(
+                    appName: "One",
+                    windowTitle: "Initial",
+                    occurredAt: Date(timeIntervalSince1970: 1),
+                    durationSeconds: 1
+                ),
+                RawEvent(
+                    appName: "One",
+                    windowTitle: "",
+                    occurredAt: Date(timeIntervalSince1970: 2),
+                    durationSeconds: 1
+                )
             ]
         )
     }
@@ -204,7 +240,42 @@ final class CollectionModuleTests: XCTestCase {
         XCTAssertEqual(accessibility.startCallCount, 5)
         XCTAssertEqual(accessibility.maximumActiveObserverCount, 1)
         XCTAssertEqual(accessibility.activeObserverCount, 1)
-        XCTAssertEqual(sink.events.map(\.appName), ["App 1", "App 2", "App 3", "App 4", "App 5"])
+        XCTAssertEqual(sink.events.map(\.appName), ["App 1", "App 2", "App 3", "App 4"])
+    }
+
+    func testStopFlushesTheCurrentDwellIntervalWithTheConfiguredCap() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "Long task"]
+        let dates = DateQueue([
+            Date(timeIntervalSince1970: 10),
+            Date(timeIntervalSince1970: 10_000)
+        ])
+        let agent = AXCollectionAgent(
+            eventSink: sink,
+            permissionChecker: FakePermissionChecker(isTrusted: true),
+            workspaceObserver: workspace,
+            accessibilityObserver: accessibility,
+            now: dates.next,
+            maximumDwellDuration: 30 * 60
+        )
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+        agent.stop()
+
+        XCTAssertEqual(
+            sink.events,
+            [
+                RawEvent(
+                    appName: "Editor",
+                    windowTitle: "Long task",
+                    occurredAt: Date(timeIntervalSince1970: 10),
+                    durationSeconds: 30 * 60
+                )
+            ]
+        )
     }
 
     func testAccessibilityPermissionErrorAfterStartPublishesPermissionRevoked() throws {
@@ -258,7 +329,7 @@ final class CollectionModuleTests: XCTestCase {
         XCTAssertTrue(statuses.contains(.error("ax_observer_registration_failed:\(AXError.noValue.rawValue)")))
         XCTAssertEqual(statuses.filter { $0 == .running }.count, 1)
         XCTAssertEqual(workspace.stopCallCount, 0)
-        XCTAssertEqual(sink.events.map(\.appName), ["Editor"])
+        XCTAssertTrue(sink.events.isEmpty)
     }
 
     func testNoEventsAreGeneratedWithoutExplicitNotification() throws {

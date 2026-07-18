@@ -5,7 +5,7 @@
 The collection layer is local-only and event-driven. Its only output is:
 
 ```swift
-RawEvent(appName: String, windowTitle: String, bundleID: String?, occurredAt: Date)
+RawEvent(appName: String, windowTitle: String, occurredAt: Date, durationSeconds: Int)
 ```
 
 It sends events only through `EventSink.receive(_:)`. It has no IPC, database,
@@ -34,7 +34,7 @@ On application activation:
 2. Stop and release the previous per-process AX observer.
 3. Create an AX observer for the new PID.
 4. Register the two approved AX notifications.
-5. Emit the new application's initial raw event.
+5. Start a local dwell interval for the new application's initial raw event.
 
 Only one AX observer is active at a time. `stop()` is idempotent and removes the
 AX run-loop source and the NSWorkspace subscription at most once. An abrupt app
@@ -45,7 +45,19 @@ activation.
 
 AX elements are callback-local values. The collection layer does not cache an
 `AXUIElement` across callbacks or application switches. A missing or empty AX
-title is emitted as an empty `windowTitle`; it is not skipped.
+title starts an interval with an empty `windowTitle`; it is not skipped.
+
+## Dwell Time
+
+The collection agent does not use a timer or poll for activity. Each observed
+app or title boundary closes the preceding local interval and emits that event
+with its whole-second `durationSeconds`; the new observation begins the next
+interval. `stop()` and a permission revocation close and emit the current
+interval as well.
+
+To avoid treating an unattended period as active use, a single interval is
+capped at 1,800 seconds (30 minutes). The raw title and app name remain local;
+only the resulting duration follows the existing IPC path.
 
 ## Threading Model
 

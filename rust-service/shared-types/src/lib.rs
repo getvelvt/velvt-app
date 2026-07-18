@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,6 +181,9 @@ pub struct RawEvent {
     pub event_id: Uuid,
     /// UTC time at which the event occurred.
     pub occurred_at: DateTime<Utc>,
+    /// Locally measured dwell interval, bounded to avoid treating an
+    /// unattended machine as active.
+    pub duration_seconds: u64,
     /// Raw application name; local-only.
     pub app_name: String,
     /// Raw focused-window title; local-only.

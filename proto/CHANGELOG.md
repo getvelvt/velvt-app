@@ -1,5 +1,19 @@
 # IPC Protocol Changelog
 
+## Version 17 - 2026-07-17
+
+- Raw activity events now include a bounded, locally measured `duration_seconds`
+  dwell interval. This remains local-only until the Rust privacy boundary
+  abstracts and uploads the event.
+- Both the Swift collector and Rust privacy boundary enforce the 1,800-second
+  maximum so unattended time cannot be counted as active use.
+
+## Version 16 - 2026-07-17
+
+- Added the bounded, local-only recent-activity dashboard request and snapshot.
+- Dashboard rows contain safe categories and aggregate metrics only; raw app
+  names and window titles never cross the Rust privacy boundary.
+
 ## Version 15 - 2026-07-16
 
 - Added the device-local meaningful-work loop: start, pause, resume, end,

@@ -314,6 +314,7 @@ public actor EventRelay: EventRelayProtocol {
         RawEventMessage(
             eventID: UUID(),
             occurredAt: event.occurredAt,
+            durationSeconds: event.durationSeconds,
             appName: event.appName,
             windowTitle: event.windowTitle,
             bundleID: nil

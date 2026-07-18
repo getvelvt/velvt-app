@@ -487,13 +487,22 @@ public struct MalformedMessage: Codable, Equatable, Sendable {
 public struct RawEventMessage: Codable, Equatable, Sendable {
     public let eventID: UUID
     public let occurredAt: Date
+    public let durationSeconds: Int
     public let appName: String
     public let windowTitle: String
     public let bundleID: String?
 
-    public init(eventID: UUID, occurredAt: Date, appName: String, windowTitle: String, bundleID: String?) {
+    public init(
+        eventID: UUID,
+        occurredAt: Date,
+        durationSeconds: Int = 0,
+        appName: String,
+        windowTitle: String,
+        bundleID: String?
+    ) {
         self.eventID = eventID
         self.occurredAt = occurredAt
+        self.durationSeconds = durationSeconds
         self.appName = appName
         self.windowTitle = windowTitle
         self.bundleID = bundleID
@@ -502,6 +511,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case eventID = "event_id"
         case occurredAt = "occurred_at"
+        case durationSeconds = "duration_seconds"
         case appName = "app_name"
         case windowTitle = "window_title"
         case bundleID = "bundle_id"
@@ -511,6 +521,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         eventID = try container.decode(UUID.self, forKey: .eventID)
         occurredAt = try container.decode(Date.self, forKey: .occurredAt)
+        durationSeconds = try container.decode(Int.self, forKey: .durationSeconds)
         appName = try container.decode(String.self, forKey: .appName)
         windowTitle = try container.decode(String.self, forKey: .windowTitle)
         bundleID = try container.decodeIfPresent(String.self, forKey: .bundleID)
@@ -520,6 +531,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(eventID, forKey: .eventID)
         try container.encode(occurredAt, forKey: .occurredAt)
+        try container.encode(durationSeconds, forKey: .durationSeconds)
         try container.encode(appName, forKey: .appName)
         try container.encode(windowTitle, forKey: .windowTitle)
         try container.encode(bundleID, forKey: .bundleID)

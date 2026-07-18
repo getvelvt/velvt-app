@@ -301,6 +301,7 @@ fn abstraction_engine_uses_sqlite_mapping_store_across_recreation() {
         app_name: "VS Code".into(),
         window_title: "private title".into(),
         bundle_id: None,
+        duration_seconds: 0,
     };
     let first = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
         .unwrap()
@@ -326,6 +327,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
         app_name: "Unknown Local App".into(),
         window_title: "private title".into(),
         bundle_id: None,
+        duration_seconds: 0,
     };
     let initial = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
         .unwrap()
@@ -365,6 +367,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
             .process(RawEvent {
                 event_id: Uuid::new_v4(),
                 occurred_at: timestamp(11),
+                duration_seconds: 0,
                 app_name: "Unknown Local App".into(),
                 window_title: "different private title".into(),
                 bundle_id: None,
@@ -380,6 +383,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
         .process(RawEvent {
             event_id: Uuid::new_v4(),
             occurred_at: timestamp(11),
+            duration_seconds: 0,
             app_name: "Unknown Local App".into(),
             window_title: "private title".into(),
             bundle_id: None,
@@ -404,6 +408,7 @@ fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_local
         app_name: "Slack".into(),
         window_title: "Private team conversation".into(),
         bundle_id: None,
+        duration_seconds: 0,
     };
     let abstracted = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
         .unwrap()
@@ -450,6 +455,7 @@ fn raw_title_never_becomes_a_local_display_label_or_ready_insight() {
         .process(RawEvent {
             event_id: Uuid::new_v4(),
             occurred_at: timestamp(10),
+            duration_seconds: 0,
             app_name: "Unknown Local App".into(),
             window_title: raw_title.into(),
             bundle_id: None,

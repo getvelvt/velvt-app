@@ -12,11 +12,27 @@ public struct RawEvent: Equatable, Sendable {
     public let appName: String
     public let windowTitle: String
     public let occurredAt: Date
+    public let durationSeconds: Int
 
-    public init(appName: String, windowTitle: String, occurredAt: Date) {
+    public init(
+        appName: String,
+        windowTitle: String,
+        occurredAt: Date,
+        durationSeconds: Int = 0
+    ) {
         self.appName = appName
         self.windowTitle = windowTitle
         self.occurredAt = occurredAt
+        self.durationSeconds = durationSeconds
+    }
+
+    func withDuration(seconds: Int) -> RawEvent {
+        RawEvent(
+            appName: appName,
+            windowTitle: windowTitle,
+            occurredAt: occurredAt,
+            durationSeconds: seconds
+        )
     }
 }
 
@@ -94,10 +110,12 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     private let workspaceObserver: any WorkspaceActivationObserving
     private let accessibilityObserver: any AccessibilityObserving
     private let now: () -> Date
+    private let maximumDwellDuration: TimeInterval
     private let statusSubject = CurrentValueSubject<CollectionStatus, Never>(.idle)
     private let lock = NSLock()
     private var isRunning = false
     private var activeProcessIdentifier: pid_t?
+    private var pendingDwellEvent: RawEvent?
 
     public convenience init(eventSink: any EventSink) {
         self.init(
@@ -113,13 +131,15 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         permissionChecker: any AccessibilityPermissionChecking,
         workspaceObserver: any WorkspaceActivationObserving,
         accessibilityObserver: any AccessibilityObserving,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        maximumDwellDuration: TimeInterval = 30 * 60
     ) {
         self.eventSink = eventSink
         self.permissionChecker = permissionChecker
         self.workspaceObserver = workspaceObserver
         self.accessibilityObserver = accessibilityObserver
         self.now = now
+        self.maximumDwellDuration = maximumDwellDuration
     }
 
     public func start() throws {
@@ -159,16 +179,23 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     }
 
     public func stop() {
-        let shouldStop = lock.withLock {
+        let result = lock.withLock { () -> (shouldStop: Bool, finalEvent: RawEvent?) in
             guard isRunning else {
-                return false
+                return (false, nil)
             }
             isRunning = false
             activeProcessIdentifier = nil
-            return true
+            let finalEvent = pendingDwellEvent.map {
+                $0.withDuration(seconds: dwellSeconds(from: $0.occurredAt, through: now()))
+            }
+            pendingDwellEvent = nil
+            return (true, finalEvent)
         }
-        guard shouldStop else {
+        guard result.shouldStop else {
             return
+        }
+        if let finalEvent = result.finalEvent {
+            eventSink?.receive(finalEvent)
         }
         accessibilityObserver.stop()
         workspaceObserver.stop()
@@ -240,27 +267,51 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     }
 
     private func emit(processIdentifier: pid_t, appName: String, windowTitle: String) {
-        guard lock.withLock({ isRunning && activeProcessIdentifier == processIdentifier }) else {
-            return
-        }
         guard permissionChecker.hasPermission() else {
             stopAfterPermissionRevocation()
             return
         }
-        eventSink?.receive(RawEvent(appName: appName, windowTitle: windowTitle, occurredAt: now()))
+        let nextEvent = RawEvent(appName: appName, windowTitle: windowTitle, occurredAt: now())
+        let completedEvent = lock.withLock { () -> RawEvent? in
+            guard isRunning && activeProcessIdentifier == processIdentifier else {
+                return nil
+            }
+            defer { pendingDwellEvent = nextEvent }
+            guard let previousEvent = pendingDwellEvent else {
+                return nil
+            }
+            return previousEvent.withDuration(seconds: dwellSeconds(
+                from: previousEvent.occurredAt,
+                through: nextEvent.occurredAt
+            ))
+        }
+        if let completedEvent {
+            eventSink?.receive(completedEvent)
+        }
     }
 
     private func accessibilityObserverFailed(_ error: CollectionError, processIdentifier: pid_t) {
-        guard lock.withLock({ isRunning && activeProcessIdentifier == processIdentifier }) else {
-            return
-        }
         if error == .permissionRevoked {
             stopAfterPermissionRevocation()
             return
         }
-        accessibilityObserver.stop()
-        lock.withLock {
+        let result = lock.withLock { () -> (shouldHandle: Bool, finalEvent: RawEvent?) in
+            guard isRunning && activeProcessIdentifier == processIdentifier else {
+                return (false, nil)
+            }
             activeProcessIdentifier = nil
+            let finalEvent = pendingDwellEvent.map {
+                $0.withDuration(seconds: dwellSeconds(from: $0.occurredAt, through: now()))
+            }
+            pendingDwellEvent = nil
+            return (true, finalEvent)
+        }
+        guard result.shouldHandle else {
+            return
+        }
+        accessibilityObserver.stop()
+        if let finalEvent = result.finalEvent {
+            eventSink?.receive(finalEvent)
         }
         if case let .observerRegistrationFailed(code) = error {
             statusSubject.send(.error("ax_observer_failed:\(code)"))
@@ -270,20 +321,32 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     }
 
     private func stopAfterPermissionRevocation() {
-        let shouldStop = lock.withLock {
+        let result = lock.withLock { () -> (shouldStop: Bool, finalEvent: RawEvent?) in
             guard isRunning else {
-                return false
+                return (false, nil)
             }
             isRunning = false
             activeProcessIdentifier = nil
-            return true
+            let finalEvent = pendingDwellEvent.map {
+                $0.withDuration(seconds: dwellSeconds(from: $0.occurredAt, through: now()))
+            }
+            pendingDwellEvent = nil
+            return (true, finalEvent)
         }
-        guard shouldStop else {
+        guard result.shouldStop else {
             return
+        }
+        if let finalEvent = result.finalEvent {
+            eventSink?.receive(finalEvent)
         }
         accessibilityObserver.stop()
         workspaceObserver.stop()
         statusSubject.send(.permissionRevoked)
+    }
+
+    private func dwellSeconds(from start: Date, through end: Date) -> Int {
+        let elapsed = max(0, end.timeIntervalSince(start))
+        return Int(min(elapsed, maximumDwellDuration).rounded(.down))
     }
 }
 

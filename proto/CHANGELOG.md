@@ -1,5 +1,11 @@
 # IPC Protocol Changelog
 
+## Version 14 - 2026-07-16
+
+- Raw activity events now include a bounded, locally measured `duration_seconds`
+  dwell interval. This remains local-only until the Rust privacy boundary
+  abstracts and uploads the event.
+
 ## Version 13 - 2026-07-15
 
 - Added `correct_event_classification` for device-local personal overrides and historical sync.

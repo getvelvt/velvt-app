@@ -252,6 +252,7 @@ fn abstraction_engine_uses_sqlite_mapping_store_across_recreation() {
         app_name: "VS Code".into(),
         window_title: "private title".into(),
         bundle_id: None,
+        duration_seconds: 0,
     };
     let first = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
         .unwrap()
@@ -277,6 +278,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
         app_name: "Unknown Local App".into(),
         window_title: "private title".into(),
         bundle_id: None,
+        duration_seconds: 0,
     };
     let initial = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
         .unwrap()
@@ -319,6 +321,7 @@ fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_local
         app_name: "Slack".into(),
         window_title: "Private team conversation".into(),
         bundle_id: None,
+        duration_seconds: 0,
     };
     let abstracted = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
         .unwrap()

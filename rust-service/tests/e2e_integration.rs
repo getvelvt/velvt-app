@@ -97,6 +97,7 @@ fn raw_event(seconds: i64, app_name: &str, window_title: &str) -> RawEvent {
         app_name: app_name.into(),
         window_title: window_title.into(),
         bundle_id: None,
+        duration_seconds: 0,
     }
 }
 
@@ -408,11 +409,9 @@ async fn path1_raw_event_is_abstracted_with_local_only_queue_labels() {
     complete_handshake(&mut read, &mut write).await;
 
     // Step 1: a known app (seed dictionary hit, Tier 1).
-    write_message(
-        &mut write,
-        &ClientMessage::RawEvent(raw_event(10, "VS Code", "main.rs — velvt")),
-    )
-    .await;
+    let mut first_event = raw_event(10, "VS Code", "main.rs — velvt");
+    first_event.duration_seconds = 30 * 60 + 1;
+    write_message(&mut write, &ClientMessage::RawEvent(first_event)).await;
     let ack = read_message(&mut read).await;
     assert!(
         matches!(
@@ -467,6 +466,7 @@ async fn path1_raw_event_is_abstracted_with_local_only_queue_labels() {
         entries[0].local_display_label.as_deref(),
         Some("main.rs — velvt")
     );
+    assert_eq!(entries[0].duration_seconds, 30 * 60);
     assert_eq!(entries[1].local_display_label.as_deref(), Some("untitled"));
 }
 

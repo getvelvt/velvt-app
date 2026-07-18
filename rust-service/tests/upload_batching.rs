@@ -394,6 +394,7 @@ fn payload_serialization_matches_the_cloud_event_contract() {
         vec![
             "abstraction_type",
             "abstraction_type_version",
+            "classification_tier",
             "event_id",
             "occurred_at",
             "payload",
@@ -402,6 +403,7 @@ fn payload_serialization_matches_the_cloud_event_contract() {
     assert_eq!(event["event_id"], "one");
     assert_eq!(event["abstraction_type"], "document:edit");
     assert_eq!(event["abstraction_type_version"], "1");
+    assert_eq!(event["classification_tier"], "exact_match");
     assert_eq!(
         event["payload"],
         serde_json::json!({
@@ -1016,6 +1018,7 @@ async fn upload_batcher_accumulates_abstracted_events_and_flushes_on_count() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                duration_seconds: 0,
             })
             .unwrap();
 
@@ -1073,6 +1076,7 @@ async fn upload_batcher_flush_now_drains_memory_and_resumes_ready_batches() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                duration_seconds: 0,
             })
             .unwrap();
 
@@ -1163,6 +1167,7 @@ async fn flush_now_requeues_events_after_a_persistence_failure() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                duration_seconds: 0,
             })
             .unwrap();
 
@@ -1202,6 +1207,7 @@ async fn flush_now_does_not_requeue_after_persisted_batch_upload_error() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                duration_seconds: 0,
             })
             .unwrap();
     batcher
@@ -1235,6 +1241,7 @@ async fn flush_now_attempts_a_failed_batch_once() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                duration_seconds: 0,
             })
             .unwrap();
 
@@ -1267,6 +1274,7 @@ async fn flush_now_requeues_multiple_events_ahead_of_later_ingestion() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                duration_seconds: 0,
             })
             .unwrap();
 
@@ -1347,6 +1355,7 @@ async fn shared_flush_now_does_not_block_ingestion_during_persisted_replay() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                duration_seconds: 0,
             })
             .unwrap();
     let flush_task = tokio::spawn({

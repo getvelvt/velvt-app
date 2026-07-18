@@ -328,6 +328,10 @@ must be accompanied by its `tokenizer.json` and a version-matched centroid
 file. Model training, fine-tuning, and artifact generation happen offline and
 are intentionally not part of the service.
 
+The bundled macOS service is built with ONNX support. Inference remains
+disabled until an approved, matching artifact bundle is configured; the service
+never downloads a model or sends raw activity to a remote embedding API.
+
 Install an approved model artifact bundle by placing its files together and
 configuring:
 

@@ -12,6 +12,7 @@ final class IPCModuleTests: XCTestCase {
                 RawEventMessage(
                     eventID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
                     occurredAt: Date(timeIntervalSince1970: 1_700_000_000),
+                    durationSeconds: 120,
                     appName: "local-only",
                     windowTitle: "local-only",
                     bundleID: nil

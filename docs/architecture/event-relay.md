@@ -113,8 +113,9 @@ while the relay is stopped are silently dropped and are not buffered.
   Only integer counts (`bufferedEventCount`, `droppedEventCount`) are logged.
 - The ring buffer is heap-only (`[Element?]` array). No data is written to disk
   or any persistent store at any point.
-- `RawEventMessage` is constructed from `RawEvent` fields at send time;
-  `bundleID` is always `nil` because the collection agent does not capture it.
+- `RawEventMessage` is constructed from `RawEvent` fields at send time,
+  including the bounded dwell duration. The collection agent does not capture
+  a bundle ID.
 
 ## Testability
 

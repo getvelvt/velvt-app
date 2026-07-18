@@ -550,6 +550,7 @@ impl R7Router {
     async fn handle_raw_event(&self, event: velvt_shared_types::RawEvent) -> ServerMessage {
         let event_id = event.event_id;
         let occurred_at = event.occurred_at;
+        let duration_seconds = event.duration_seconds.min(30 * 60);
         let local_display_label = raw_display_label(&event.app_name, &event.window_title);
         match self.abstraction_engine.process(event) {
             Ok(abstracted) => {
@@ -562,7 +563,7 @@ impl R7Router {
                     taxonomy_version: abstracted.taxonomy_version().to_owned(),
                     classification_tier: abstracted.classification_tier().as_str().to_owned(),
                     occurred_at,
-                    duration_seconds: 0,
+                    duration_seconds,
                 };
                 if let Err(err) = self.raw_event_repo.insert(&entry) {
                     tracing::error!(
@@ -578,7 +579,12 @@ impl R7Router {
                 }
                 if let Err(err) = self
                     .ingestor
-                    .ingest(event_id.to_string(), &abstracted, 0, Utc::now())
+                    .ingest(
+                        event_id.to_string(),
+                        &abstracted,
+                        duration_seconds,
+                        Utc::now(),
+                    )
                     .await
                 {
                     tracing::error!(

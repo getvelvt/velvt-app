@@ -263,7 +263,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\ncd \"$RUST_DIR\"\ncargo build --release 2>&1\ncp target/release/velvt-service \"$RESOURCES_DIR/velvt-service\"\n";
+			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\ncd \"$RUST_DIR\"\ncargo build --release --features onnx 2>&1\ncp target/release/velvt-service \"$RESOURCES_DIR/velvt-service\"\n";
 		};
 		C8D9E0F1A2B3C4D5E6F70819 /* Inject Custom Info.plist Keys */ = {
 			isa = PBXShellScriptBuildPhase;

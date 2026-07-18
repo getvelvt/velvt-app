@@ -183,10 +183,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         authGatedCollectionController = collectionController
+        metricsStore.setAuthenticated(Self.isLoggedIn(accountStateManager.accountState))
         collectionController.apply(accountState: accountStateManager.accountState)
         collectionAuthCancellable = accountStateManager.$accountState
             .dropFirst()
-            .sink { [weak collectionController] state in
+            .sink { [weak collectionController, metricsStore] state in
+                metricsStore.setAuthenticated(Self.isLoggedIn(state))
                 collectionController?.apply(accountState: state)
             }
 
@@ -205,6 +207,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 // The IPC client owns retry behavior for transport failures.
             }
         }
+    }
+
+    private static func isLoggedIn(_ state: AccountState) -> Bool {
+        if case .loggedIn = state {
+            return true
+        }
+        return false
     }
 
     public func applicationWillTerminate(_ notification: Notification) {

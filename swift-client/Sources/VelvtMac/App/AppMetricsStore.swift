@@ -32,6 +32,7 @@ public protocol AppMetricsCounting: AnyObject, Sendable {
 public final class AppMetricsStore: ObservableObject, AppMetricsCounting, @unchecked Sendable {
     @Published public private(set) var actionsLogged: Int
     @Published public private(set) var interventions: Int
+    @Published public private(set) var isAuthenticated = false
 
     private enum Key {
         static let actionsLogged = "velvt.metrics.actions_logged"
@@ -53,6 +54,21 @@ public final class AppMetricsStore: ObservableObject, AppMetricsCounting, @unche
 
     public func incrementInterventions() {
         increment(\.interventions, key: Key.interventions)
+    }
+
+    /// Keeps local diagnostics scoped to the authenticated account session.
+    /// Leaving the account clears the counters so they cannot be shown to a
+    /// logged-out user or carried into another account on the same Mac.
+    public func setAuthenticated(_ authenticated: Bool) {
+        lock.withLock {
+            if !authenticated {
+                defaults.removeObject(forKey: Key.actionsLogged)
+                defaults.removeObject(forKey: Key.interventions)
+                actionsLogged = 0
+                interventions = 0
+            }
+            isAuthenticated = authenticated
+        }
     }
 
     private func increment(_ keyPath: ReferenceWritableKeyPath<AppMetricsStore, Int>, key: String) {

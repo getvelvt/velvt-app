@@ -271,7 +271,7 @@ public struct MenuBarPopoverView: View {
                 .transition(transition)
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: navigator.route)
-        .frame(width: 380)
+        .frame(width: 760)
         .preferredColorScheme(.dark)
         .onExitCommand(perform: onEscape)
     }
@@ -318,14 +318,24 @@ public struct MenuBarPopoverView: View {
             } else if presentation.showsAccessibilityRecovery {
                 PermissionRecoveryView().padding(16)
             } else {
-                WorkBlockView(coordinator: workBlockCoordinator)
-                Divider().opacity(0.15)
-                LocalDashboardView(coordinator: localDashboardCoordinator)
-                Divider().opacity(0.15)
-                VelvtPopoverContentView(coordinator: coordinator)
+                HStack(alignment: .top, spacing: 0) {
+                    VStack(spacing: 0) {
+                        WorkBlockView(coordinator: workBlockCoordinator)
+                        Divider().opacity(0.15)
+                        LocalDashboardView(coordinator: localDashboardCoordinator)
+                    }
+                    .frame(width: 380)
+
+                    Divider().opacity(0.2)
+
+                    VelvtPopoverContentView(coordinator: coordinator)
+                        .frame(width: 380, alignment: .topLeading)
+                }
             }
-            metricsRow
-            Divider().opacity(0.15)
+            if metricsStore.isAuthenticated {
+                metricsRow
+                Divider().opacity(0.15)
+            }
             HStack {
                 if let accountStateManager, let ipcClient {
                     MenuBarAccountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)

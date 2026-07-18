@@ -12,7 +12,9 @@
 use std::{collections::VecDeque, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use tokio::sync::{Mutex, Notify};
-use velvt_shared_types::{HistoryPayload, InsightPayload, PrivacyViolationAlert, ServerMessage};
+use velvt_shared_types::{
+    HistoryPayload, InsightPayload, LocalDashboardSnapshot, PrivacyViolationAlert, ServerMessage,
+};
 
 use super::shaper;
 
@@ -64,6 +66,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::NotificationPayload(_) => "notification_payload",
         ServerMessage::MenuStatus(_) => "menu_status",
         ServerMessage::WorkBlockState(_) => "work_block_state",
+        ServerMessage::LocalDashboard(_) => "local_dashboard",
     }
 }
 
@@ -321,6 +324,22 @@ impl PushAdapter {
         self.queue
             .enqueue(ServerMessage::WorkBlockState(snapshot))
             .await;
+    }
+
+    pub async fn push_local_dashboard(&self, snapshot: LocalDashboardSnapshot) {
+        match shaper::shape_local_dashboard(snapshot) {
+            Ok(validated) => {
+                self.queue
+                    .enqueue(ServerMessage::LocalDashboard(validated.into_inner()))
+                    .await;
+            }
+            Err(err) => tracing::warn!(
+                message_type = "local_dashboard",
+                error_code = "outbound_validation_failed",
+                error = %err,
+                "local dashboard payload failed validation; dropped without sending"
+            ),
+        }
     }
 }
 

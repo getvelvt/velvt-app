@@ -23,6 +23,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case resumeWorkBlock(WorkBlockIdentifier)
     case endWorkBlock(WorkBlockIdentifier)
     case requestWorkBlockState
+    case requestLocalDashboard(RequestLocalDashboard)
     case acceptWorkBlockRecovery(AcceptWorkBlockRecovery)
     case workBlockLifecycle(WorkBlockLifecycle)
     case clearWorkBlockData
@@ -72,6 +73,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .endWorkBlock(try WorkBlockIdentifier(from: payload))
         case "request_work_block_state":
             self = .requestWorkBlockState
+        case "request_local_dashboard":
+            self = .requestLocalDashboard(try RequestLocalDashboard(from: payload))
         case "accept_work_block_recovery":
             self = .acceptWorkBlockRecovery(try AcceptWorkBlockRecovery(from: payload))
         case "work_block_lifecycle":
@@ -146,6 +149,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .requestWorkBlockState:
             try envelope.encode("request_work_block_state", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case let .requestLocalDashboard(value):
+            try envelope.encode("request_local_dashboard", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .acceptWorkBlockRecovery(value):
             try envelope.encode("accept_work_block_recovery", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
@@ -185,6 +191,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case notificationPayload(NotificationPayload)
     case menuStatus(MenuStatus)
     case workBlockState(WorkBlockSnapshot)
+    case localDashboard(LocalDashboardSnapshot)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
@@ -236,6 +243,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .menuStatus(try MenuStatus(from: payload))
         case "work_block_state":
             self = .workBlockState(try WorkBlockSnapshot(from: payload))
+        case "local_dashboard":
+            self = .localDashboard(try LocalDashboardSnapshot(from: payload))
         default:
             self = .unknown(type: type)
         }
@@ -307,6 +316,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case let .workBlockState(value):
             try envelope.encode("work_block_state", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .localDashboard(value):
+            try envelope.encode("local_dashboard", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .unknown(type):
             try envelope.encode(type, forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
@@ -338,6 +350,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case .notificationPayload: "notification_payload"
         case .menuStatus: "menu_status"
         case .workBlockState: "work_block_state"
+        case .localDashboard: "local_dashboard"
         case .unknown: "unknown"
         }
     }
@@ -934,7 +947,59 @@ public struct MenuStatus: Codable, Equatable, Sendable {
     }
 }
 
-// MARK: - Device-local meaningful-work DTOs (proto v15)
+// MARK: - Device-local dashboard and meaningful-work DTOs (proto v16)
+
+public struct RequestLocalDashboard: Codable, Equatable, Sendable {
+    public let windowSeconds: Int
+
+    public init(windowSeconds: Int = 3600) {
+        self.windowSeconds = windowSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case windowSeconds = "window_seconds"
+    }
+}
+
+public enum LocalDashboardCoverage: String, Codable, Equatable, Sendable {
+    case noData = "no_data"
+    case partial
+    case good
+}
+
+public struct LocalTimelineSegment: Codable, Equatable, Sendable, Identifiable {
+    public let startedAt: Date
+    public let endedAt: Date
+    public let category: String
+    public let confidence: ClassificationConfidence
+
+    public var id: String { "\(startedAt.timeIntervalSince1970)-\(category)" }
+
+    private enum CodingKeys: String, CodingKey {
+        case category, confidence
+        case startedAt = "started_at"
+        case endedAt = "ended_at"
+    }
+}
+
+public struct LocalDashboardSnapshot: Codable, Equatable, Sendable {
+    public let generatedAt: Date
+    public let windowStart: Date
+    public let windowEnd: Date
+    public let switchCount: Int
+    public let switchesPerHour: Double
+    public let coverage: LocalDashboardCoverage
+    public let segments: [LocalTimelineSegment]
+
+    private enum CodingKeys: String, CodingKey {
+        case coverage, segments
+        case generatedAt = "generated_at"
+        case windowStart = "window_start"
+        case windowEnd = "window_end"
+        case switchCount = "switch_count"
+        case switchesPerHour = "switches_per_hour"
+    }
+}
 
 public enum WorkBlockPurpose: String, Codable, Equatable, Sendable, CaseIterable, Identifiable {
     case deepWork = "deep_work"

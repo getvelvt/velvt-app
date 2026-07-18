@@ -314,6 +314,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::NotificationPayload(_) => "notification_payload",
         ServerMessage::MenuStatus(_) => "menu_status",
         ServerMessage::WorkBlockState(_) => "work_block_state",
+        ServerMessage::LocalDashboard(_) => "local_dashboard",
     }
 }
 

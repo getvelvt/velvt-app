@@ -112,10 +112,19 @@ private struct DailyActivityRow: View {
 
             SplitActivityBar(day: day)
 
-            Text(day.eventCount == 0 ? "--" : "\(day.eventCount)")
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(Color.velvtMuted)
-                .frame(width: 34, alignment: .trailing)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(day.eventCount == 0 ? "--" : "\(day.eventCount)")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Color.velvtMuted)
+                Text(day.fragmentationScore.map(String.init) ?? "—")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(day.fragmentationScore == nil ? Color.velvtMuted.opacity(0.45) : Color.velvtPink)
+                    .help("Fragmentation score: higher means more observed category movement in this day's summary.")
+            }
+            .frame(width: 42, alignment: .trailing)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Events and fragmentation score")
+            .accessibilityValue("\(day.eventCount == 0 ? "No events" : "\(day.eventCount) events"), fragmentation \(day.fragmentationScore.map(String.init) ?? "no data")")
         }
     }
 }

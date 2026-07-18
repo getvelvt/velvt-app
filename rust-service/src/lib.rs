@@ -3,6 +3,7 @@
 pub mod abstraction;
 pub mod auth;
 pub mod config;
+pub mod dashboard;
 pub mod delivery;
 pub mod ipc;
 pub mod lifecycle;

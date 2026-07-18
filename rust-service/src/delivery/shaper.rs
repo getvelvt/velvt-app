@@ -9,7 +9,9 @@
 //! function here — no changes to the transport or cache layers.
 
 use serde::Serialize;
-use velvt_shared_types::{CacheEmpty, HistoryPayload, InsightPayload, PrivacyViolationAlert};
+use velvt_shared_types::{
+    CacheEmpty, HistoryPayload, InsightPayload, LocalDashboardSnapshot, PrivacyViolationAlert,
+};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -147,6 +149,36 @@ impl ValidatePayload for CacheEmpty {
     }
 }
 
+impl ValidatePayload for LocalDashboardSnapshot {
+    const TYPE_NAME: &'static str = "local_dashboard";
+
+    fn validate_fields(&self) -> Result<(), ValidationError> {
+        if self.window_end <= self.window_start {
+            return Err(ValidationError::OutOfRange {
+                field: "window_bounds",
+            });
+        }
+        if self.segments.len() > 512
+            || !self.switches_per_hour.is_finite()
+            || self.switches_per_hour < 0.0
+        {
+            return Err(ValidationError::OutOfRange {
+                field: "segments_or_switch_rate",
+            });
+        }
+        for segment in &self.segments {
+            if segment.started_at >= segment.ended_at
+                || segment.started_at < self.window_start
+                || segment.ended_at > self.window_end
+                || segment.category.is_empty()
+            {
+                return Err(ValidationError::OutOfRange { field: "segment" });
+            }
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shaper functions — sole conversion point from cache data to wire DTOs
 // ---------------------------------------------------------------------------
@@ -175,6 +207,12 @@ pub fn shape_cache_empty(
     ValidatedPayload::new(CacheEmpty {
         payload_type: payload_type.to_owned(),
     })
+}
+
+pub fn shape_local_dashboard(
+    payload: LocalDashboardSnapshot,
+) -> Result<ValidatedPayload<LocalDashboardSnapshot>, ValidationError> {
+    ValidatedPayload::new(payload)
 }
 
 // ---------------------------------------------------------------------------

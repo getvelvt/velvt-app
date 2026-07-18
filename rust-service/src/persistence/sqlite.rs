@@ -507,6 +507,32 @@ impl RawEventRepo for SqliteRawEventRepo {
             .collect()
     }
 
+    fn events_between(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<RawEventEntry>, PersistenceError> {
+        if end <= start || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT event_id, stable_id, label, local_display_label, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
+             FROM raw_event_buffer
+             WHERE occurred_at >= ?1 AND occurred_at <= ?2
+             ORDER BY occurred_at ASC LIMIT ?3",
+        )?;
+        let rows = statement
+            .query_map(
+                params![start.timestamp(), end.timestamp(), limit as i64],
+                raw_event_from_row,
+            )?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into);
+        rows
+    }
+
     fn local_event_metadata(
         &self,
         event_ids: &[String],

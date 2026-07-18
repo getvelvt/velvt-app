@@ -9,7 +9,8 @@ use chrono::Utc;
 use uuid::Uuid;
 use velvt_shared_types::{
     CacheEmpty, ClassificationConfidence, ClassificationSource, ClassificationStatus,
-    ClientMessage, MenuStatus, QueuedEventSummary, RawEventAck, RawEventStatus, ServerMessage,
+    ClientMessage, MenuStatus, QueuedEventSummary, RawEventAck, RawEventStatus,
+    RequestLocalDashboard, ServerMessage,
 };
 
 use crate::abstraction::AbstractionEngine;
@@ -302,6 +303,7 @@ pub struct R7Router {
     upload_batches: Option<Arc<dyn UploadBatchRepo>>,
     work_blocks: Option<Arc<WorkBlockManager>>,
     work_block_push: Option<Arc<PushAdapter>>,
+    dashboard_push: Option<Arc<PushAdapter>>,
 }
 
 impl R7Router {
@@ -325,6 +327,7 @@ impl R7Router {
             upload_batches: None,
             work_blocks: None,
             work_block_push: None,
+            dashboard_push: None,
         }
     }
 
@@ -356,6 +359,7 @@ impl R7Router {
         push: Arc<PushAdapter>,
     ) -> Self {
         self.work_blocks = Some(work_blocks);
+        self.dashboard_push = Some(Arc::clone(&push));
         self.work_block_push = Some(push);
         self
     }
@@ -561,6 +565,8 @@ impl MessageRouter for R7Router {
                 self.work_block_response(|manager| manager.request_state(Utc::now()))
             }
 
+            ClientMessage::RequestLocalDashboard(request) => self.local_dashboard_response(request),
+
             ClientMessage::AcceptWorkBlockRecovery(request) => {
                 self.work_block_response(|manager| {
                     manager.accept_recovery(request.block_id, &request.action_id, Utc::now())
@@ -673,6 +679,46 @@ fn parse_classification_source(value: Option<&str>) -> ClassificationSource {
 }
 
 impl R7Router {
+    fn local_dashboard_response(
+        &self,
+        request: RequestLocalDashboard,
+    ) -> Result<Option<ServerMessage>, IpcError> {
+        let snapshot = match crate::dashboard::snapshot(
+            &*self.raw_event_repo,
+            Utc::now(),
+            request.window_seconds,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                return Ok(Some(ServerMessage::ErrorResponse(
+                    velvt_shared_types::ErrorResponse {
+                        code: "local_dashboard_unavailable".into(),
+                        message: "Local dashboard data is temporarily unavailable.".into(),
+                        related_event_id: None,
+                    },
+                )))
+            }
+        };
+        match shaper::shape_local_dashboard(snapshot) {
+            Ok(validated) => Ok(Some(ServerMessage::LocalDashboard(validated.into_inner()))),
+            Err(err) => {
+                tracing::warn!(
+                    message_type = "local_dashboard",
+                    error_code = "outbound_validation_failed",
+                    error = %err,
+                    "local dashboard payload failed validation"
+                );
+                Ok(Some(ServerMessage::ErrorResponse(
+                    velvt_shared_types::ErrorResponse {
+                        code: "local_dashboard_unavailable".into(),
+                        message: "Local dashboard data is temporarily unavailable.".into(),
+                        related_event_id: None,
+                    },
+                )))
+            }
+        }
+    }
+
     fn work_block_response(
         &self,
         operation: impl FnOnce(
@@ -763,6 +809,15 @@ impl R7Router {
                         Err(_) => tracing::warn!(
                             error_code = "work_block_observation_failed",
                             "safe work-block observation was not recorded"
+                        ),
+                    }
+                }
+                if let Some(push) = &self.dashboard_push {
+                    match crate::dashboard::snapshot(&*self.raw_event_repo, Utc::now(), 3600) {
+                        Ok(snapshot) => push.push_local_dashboard(snapshot).await,
+                        Err(_) => tracing::warn!(
+                            error_code = "local_dashboard_aggregation_failed",
+                            "failed to refresh local dashboard after event"
                         ),
                     }
                 }

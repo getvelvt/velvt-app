@@ -128,7 +128,72 @@ public final class WorkBlockCoordinator: ObservableObject {
   }
 }
 
+/// Owns the Rust-authored bounded live dashboard payload. Swift only stores
+/// and renders the received snapshot; it does not inspect event history or
+/// derive switch rates.
+@MainActor
+public final class LocalDashboardCoordinator: ObservableObject {
+  @Published public private(set) var snapshot: LocalDashboardSnapshot?
+  @Published public private(set) var commandError: String?
+
+  private let ipcClient: any IPCClientProtocol
+  private var cancellables = Set<AnyCancellable>()
+
+  public init(ipcClient: any IPCClientProtocol) {
+    self.ipcClient = ipcClient
+  }
+
+  public func start(
+    messages: some Publisher<ServerMessage, Never>,
+    connectionStatus: some Publisher<ConnectionStatus, Never>
+  ) {
+    messages
+      .receive(on: RunLoop.main)
+      .sink { [weak self] message in
+        switch message {
+        case .localDashboard(let snapshot):
+          self?.snapshot = snapshot
+          self?.commandError = nil
+        case .errorResponse(let error) where error.code == "local_dashboard_unavailable":
+          self?.commandError = error.message
+        default:
+          break
+        }
+      }
+      .store(in: &cancellables)
+
+    connectionStatus
+      .removeDuplicates()
+      .receive(on: RunLoop.main)
+      .sink { [weak self] status in
+        guard status == .connected else { return }
+        self?.refresh()
+      }
+      .store(in: &cancellables)
+  }
+
+  public func refresh() {
+    Task {
+      do {
+        try await ipcClient.send(.requestLocalDashboard(.init(windowSeconds: 3600)))
+      } catch {
+        commandError = "The local dashboard is temporarily unavailable."
+      }
+    }
+  }
+}
+
 final class UnavailableWorkBlockIPCClient: IPCClientProtocol {
+  let incomingMessages: AsyncStream<ServerMessage> = AsyncStream { $0.finish() }
+  var connectionStatus: AnyPublisher<ConnectionStatus, Never> {
+    Just(.disconnected).eraseToAnyPublisher()
+  }
+  func connect() async throws {}
+  func disconnect() {}
+  func send(_ message: ClientMessage) async throws { throw IPCError.notConnected }
+}
+
+final class UnavailableLocalDashboardIPCClient: IPCClientProtocol {
   let incomingMessages: AsyncStream<ServerMessage> = AsyncStream { $0.finish() }
   var connectionStatus: AnyPublisher<ConnectionStatus, Never> {
     Just(.disconnected).eraseToAnyPublisher()

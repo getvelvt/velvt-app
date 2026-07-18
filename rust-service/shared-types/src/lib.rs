@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +52,8 @@ pub enum ClientMessage {
     EndWorkBlock(EndWorkBlock),
     /// Requests the current or most recent local work-block state.
     RequestWorkBlockState(RequestWorkBlockState),
+    /// Requests the bounded, local-only live dashboard window.
+    RequestLocalDashboard(RequestLocalDashboard),
     /// Accepts the one bounded recovery action offered by a terminal result.
     AcceptWorkBlockRecovery(AcceptWorkBlockRecovery),
     /// Reports an OS lifecycle boundary relevant to honest elapsed time.
@@ -118,6 +120,8 @@ pub enum ServerMessage {
     MenuStatus(MenuStatus),
     /// Current or most recent device-local work-block state.
     WorkBlockState(WorkBlockSnapshot),
+    /// Bounded, local-only live dashboard data.
+    LocalDashboard(LocalDashboardSnapshot),
 }
 
 /// Server's first message on every connection.
@@ -551,6 +555,14 @@ pub struct EndWorkBlock {
 #[serde(deny_unknown_fields)]
 pub struct RequestWorkBlockState {}
 
+/// Requests one bounded local dashboard window. The service caps this value
+/// so the UI cannot accidentally turn a live view into a history scan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestLocalDashboard {
+    pub window_seconds: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcceptWorkBlockRecovery {
@@ -635,6 +647,40 @@ pub struct WorkBlockSnapshot {
     pub confidence: ClassificationConfidence,
     pub status_line: String,
     pub result: Option<WorkBlockResult>,
+}
+
+/// Coverage state for the local live dashboard window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalDashboardCoverage {
+    NoData,
+    Partial,
+    Good,
+}
+
+/// One safe category segment in the bounded live timeline. It contains no
+/// application, window, URL, local label, or intention text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalTimelineSegment {
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub category: String,
+    pub confidence: ClassificationConfidence,
+}
+
+/// Rust-authored local dashboard data. Swift renders this payload and does not
+/// scan event history or calculate competing metrics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalDashboardSnapshot {
+    pub generated_at: DateTime<Utc>,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub switch_count: u32,
+    pub switches_per_hour: f64,
+    pub coverage: LocalDashboardCoverage,
+    pub segments: Vec<LocalTimelineSegment>,
 }
 
 impl std::fmt::Debug for WorkBlockSnapshot {

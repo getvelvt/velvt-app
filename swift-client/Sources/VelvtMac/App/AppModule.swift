@@ -35,6 +35,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarDataLoader: MenuBarDataLoader?
     private var menuStatusViewModel: MenuStatusViewModel?
     private var workBlockCoordinator: WorkBlockCoordinator?
+    private var localDashboardCoordinator: LocalDashboardCoordinator?
     private var collectionAuthCancellable: AnyCancellable?
     private var authGatedCollectionController: AuthGatedCollectionController?
     private let metricsStore = AppMetricsStore()
@@ -103,6 +104,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             connectionStatus: client.connectionStatus
         )
         workBlockCoordinator = workBlocks
+        let localDashboard = LocalDashboardCoordinator(ipcClient: client)
+        localDashboard.start(
+            messages: accountStateManager.serverMessages,
+            connectionStatus: client.connectionStatus
+        )
+        localDashboardCoordinator = localDashboard
 
         let relay = EventRelay(ipcClient: client, metrics: metricsStore)
         let currentActivity = CurrentActivityModel()
@@ -140,6 +147,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             serviceAlertModel: serviceAlertModel,
             collectionSettings: collectionSettings,
             workBlockCoordinator: workBlocks,
+            localDashboardCoordinator: localDashboard,
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
             simulateNotification: {

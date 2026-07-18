@@ -209,6 +209,7 @@ public struct MenuBarPopoverView: View {
     @ObservedObject private var serviceAlertModel: ServiceAlertModel
     @ObservedObject private var collectionSettings: CollectionSettingsModel
     @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
+    @ObservedObject private var localDashboardCoordinator: LocalDashboardCoordinator
     private let accountStateManager: AccountStateManager?
     private let ipcClient: (any IPCClientProtocol)?
     private let menuStatusViewModel: MenuStatusViewModel?
@@ -235,6 +236,7 @@ public struct MenuBarPopoverView: View {
         serviceAlertModel: ServiceAlertModel,
         collectionSettings: CollectionSettingsModel = CollectionSettingsModel(),
         workBlockCoordinator: WorkBlockCoordinator? = nil,
+        localDashboardCoordinator: LocalDashboardCoordinator? = nil,
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
@@ -252,6 +254,7 @@ public struct MenuBarPopoverView: View {
         self.serviceAlertModel = serviceAlertModel
         self.collectionSettings = collectionSettings
         self.workBlockCoordinator = workBlockCoordinator ?? WorkBlockCoordinator(ipcClient: UnavailableWorkBlockIPCClient())
+        self.localDashboardCoordinator = localDashboardCoordinator ?? LocalDashboardCoordinator(ipcClient: UnavailableLocalDashboardIPCClient())
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
@@ -316,6 +319,8 @@ public struct MenuBarPopoverView: View {
                 PermissionRecoveryView().padding(16)
             } else {
                 WorkBlockView(coordinator: workBlockCoordinator)
+                Divider().opacity(0.15)
+                LocalDashboardView(coordinator: localDashboardCoordinator)
                 Divider().opacity(0.15)
                 VelvtPopoverContentView(coordinator: coordinator)
             }

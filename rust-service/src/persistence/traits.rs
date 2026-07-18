@@ -125,6 +125,13 @@ pub trait RawEventRepo: Send + Sync {
     fn insert(&self, event: &RawEventEntry) -> Result<(), PersistenceError>;
     fn unbatched_events(&self, limit: usize) -> Result<Vec<RawEventEntry>, PersistenceError>;
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError>;
+    /// Returns at most `limit` abstracted events in a bounded time window.
+    fn events_between(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<RawEventEntry>, PersistenceError>;
     fn local_event_metadata(
         &self,
         event_ids: &[String],

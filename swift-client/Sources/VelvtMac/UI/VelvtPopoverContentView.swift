@@ -94,8 +94,6 @@ public struct TodayWorkspaceView: View {
             baselineStatus
             dailyMetrics
             observation
-            Divider().opacity(0.15)
-            WorkBlockView(coordinator: workBlockCoordinator)
         }
         .padding(.vertical, 12)
     }
@@ -221,18 +219,21 @@ public struct TodayWorkspaceView: View {
                 .padding(.horizontal, 16)
             }
         case .progress:
-            EmptyDeliveryState(
-                text: todayProgressExplanation,
-                systemImage: "sparkles"
-            )
-            .padding(.horizontal, 16)
+            if coordinator.insightNotReadyReason != "insufficient_evidence"
+                || coordinator.historyViewModel.baselineProgress.isComplete {
+                EmptyDeliveryState(
+                    text: todayProgressExplanation,
+                    systemImage: "sparkles"
+                )
+                .padding(.horizontal, 16)
+            }
         }
     }
 
     private var todayProgressExplanation: String {
         switch coordinator.insightNotReadyReason {
         case "backend_unavailable":
-            "Working offline. Your local progress remains available while backend synchronization retries."
+            "Working offline. Your local progress remains available while cloud synchronization retries."
         case "insufficient_evidence":
             "No cloud observation was generated because evidence is still limited; the local signal will appear first."
         default:
@@ -284,7 +285,10 @@ private struct EarlySignalProgressView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.velvtText)
             if let signal {
-                ProgressView(value: Double(min(signal.observedSeconds, 60)), total: 60)
+                ProgressView(
+                    value: Double(signal.observedSeconds),
+                    total: Double(max(1, signal.observedSeconds + signal.requiredSeconds))
+                )
                     .tint(Color.velvtPink)
                 Text(progressText(signal))
                     .font(.caption)
@@ -308,11 +312,10 @@ private struct EarlySignalProgressView: View {
     }
 
     private func progressText(_ signal: LocalEarlySignal) -> String {
-        let eventWord = signal.evidenceEventCount == 1 ? "event" : "events"
         if signal.requiredSeconds > 0 {
-            return "Observed \(signal.observedSeconds)s across \(signal.evidenceEventCount) privacy-safe \(eventWord); about \(signal.requiredSeconds)s more qualifying evidence is needed."
+            return "Velvt needs about \(signal.requiredSeconds) more seconds of qualifying activity before it can show your first local pattern."
         }
-        return "Observed \(signal.observedSeconds)s; the local service is checking that the evidence belongs to a privacy-safe broad category."
+        return "Velvt is checking that this activity can be summarized without exposing private details."
     }
 }
 

@@ -54,7 +54,12 @@ The app uses AppKit for process and menu bar integration:
 - `NSPopover` hosting SwiftUI content.
 - Accessory activation policy so no dock window is created.
 
-SwiftUI owns rendered content inside the popover and sheets. `MenuBarPopoverView` routes between the main view and settings. Auth uses a sheet driven by `AuthViewModel`.
+The generated bundle declares `Velvt` as both its bundle and display name and
+uses the `AppIcon` asset for LaunchServices and macOS permission panes. On app
+quit, `ServiceProcessLauncher` sends SIGTERM to its bundled Rust helper and
+waits for that helper's bounded graceful shutdown before the app exits.
+
+SwiftUI owns rendered content inside the popover and sheets. `MenuBarPopoverView` presents Today, Your Week, Activity, and Settings as peer workspace tabs. Auth uses a sheet driven by `AuthViewModel`.
 
 ## State Flow
 

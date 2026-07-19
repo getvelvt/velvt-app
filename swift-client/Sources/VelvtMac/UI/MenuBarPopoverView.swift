@@ -347,11 +347,6 @@ public struct PopoverConnectionPresentation {
     }
 }
 
-public enum MenuBarPopoverRoute: Equatable {
-    case main
-    case settings
-}
-
 public enum MenuBarPopoverLayout {
     public static let preferredContentSize = CGSize(width: 660, height: 350)
     public static let screenInset: CGFloat = 24
@@ -375,12 +370,14 @@ public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
     case workBlock
     case history
     case recentActivity
+    case settings
 
     public var title: String {
         switch self {
         case .workBlock: return "Today"
         case .history: return "Your Week"
         case .recentActivity: return "Activity"
+        case .settings: return "Settings"
         }
     }
 
@@ -389,6 +386,7 @@ public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
         case .workBlock: return "timer"
         case .history: return "calendar"
         case .recentActivity: return "waveform.path.ecg"
+        case .settings: return "gearshape"
         }
     }
 
@@ -397,6 +395,7 @@ public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
         case .workBlock: return "1"
         case .history: return "2"
         case .recentActivity: return "3"
+        case .settings: return "4"
         }
     }
 }
@@ -419,35 +418,29 @@ enum SettingsSubmenu: CaseIterable, Equatable {
         #endif
         }
     }
+
+    var preferredHeight: CGFloat {
+        switch self {
+        case .appInfo: return 420
+        case .queuedEvents: return 340
+        case .collectionSettings: return 140
+        #if DEBUG
+        case .debug: return 90
+        #endif
+        }
+    }
 }
 
-public enum MenuBarPopoverDirection: Equatable { case forward, backward }
-
 public struct MenuBarPopoverNavigator {
-    public private(set) var route: MenuBarPopoverRoute = .main
-    public private(set) var direction: MenuBarPopoverDirection = .forward
     public private(set) var selectedWorkspaceTab: MenuBarWorkspaceTab = .workBlock
 
     public init() {}
     public mutating func selectWorkspaceTab(_ tab: MenuBarWorkspaceTab) {
         selectedWorkspaceTab = tab
     }
-    public mutating func showSettings() { move(to: .settings) }
-    public mutating func goBack() {
-        direction = .backward
-        route = switch route {
-        case .main: .main
-        case .settings: .main
-        }
-    }
+    public mutating func showSettings() { selectedWorkspaceTab = .settings }
     public mutating func resetForPopoverOpening() {
-        route = .main
-        direction = .backward
         selectedWorkspaceTab = .workBlock
-    }
-    private mutating func move(to route: MenuBarPopoverRoute) {
-        direction = .forward
-        self.route = route
     }
 }
 
@@ -472,13 +465,11 @@ public struct MenuBarPopoverView: View {
     private let onEscape: () -> Void
     private let onTerminate: () -> Void
     @State private var navigator = MenuBarPopoverNavigator()
-    @State private var showsAppInfoSubmenu = false
-    @State private var showsQueuedEventsSubmenu = false
-    @State private var showsCollectionSettingsSubmenu = false
-    @State private var showsDebugSubmenu = false
+    @State private var presentedSettingsSubmenu: SettingsSubmenu?
     @State private var confirmsClassificationReset = false
     @State private var confirmsWorkBlockClear = false
     @State private var diagnosticsCopied = false
+    @State private var showsFocusSession = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -524,17 +515,7 @@ public struct MenuBarPopoverView: View {
     }
 
     public var body: some View {
-        ZStack {
-            routeContent
-                .id(navigator.route)
-                .transition(transition)
-        }
-        .animation(
-            MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion)
-                ? .easeInOut(duration: 0.18)
-                : nil,
-            value: navigator.route
-        )
+        mainContent
         .frame(
             idealWidth: MenuBarPopoverLayout.preferredContentSize.width,
             maxWidth: .infinity,
@@ -552,8 +533,13 @@ public struct MenuBarPopoverView: View {
 
     private var mainHeader: some View {
         HStack(alignment: .top, spacing: 8) {
-            Text("Velvt")
-                .font(.headline)
+            Image("VelvtWordmark")
+                .resizable()
+                .renderingMode(.template)
+                .scaledToFit()
+                .foregroundStyle(Color.velvtText)
+                .frame(width: 76, height: 30, alignment: .leading)
+                .accessibilityLabel("Velvt")
                 .layoutPriority(1)
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
@@ -567,20 +553,13 @@ public struct MenuBarPopoverView: View {
                 }
                 Text(backendStatusLabel)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.velvtMuted.opacity(0.72))
                     .multilineTextAlignment(.trailing)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: 360, alignment: .trailing)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
-    }
-
-    @ViewBuilder private var routeContent: some View {
-        switch navigator.route {
-        case .main: mainContent
-        case .settings: settingsContent
-        }
     }
 
     private var mainContent: some View {
@@ -618,16 +597,24 @@ public struct MenuBarPopoverView: View {
             }
 
             ScrollView {
-                selectedWorkspaceContent
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                ZStack(alignment: .topLeading) {
+                    selectedWorkspaceContent
+                        .id(navigator.selectedWorkspaceTab)
+                        .transition(.opacity)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .animation(
+                    MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion)
+                        ? .easeOut(duration: 0.16)
+                        : nil,
+                    value: navigator.selectedWorkspaceTab
+                )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
 
-            if let accountStateManager, let ipcClient {
-                Divider().opacity(0.15)
-                accountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
-            }
+            Divider().opacity(0.15)
+            workspaceBottomBar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.black.opacity(0.08))
@@ -640,19 +627,6 @@ public struct MenuBarPopoverView: View {
             }
 
             Spacer(minLength: 12)
-            Divider().opacity(0.2)
-            Button {
-                navigator.showSettings()
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(",", modifiers: .command)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .accessibilityLabel("Open Settings")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 10)
@@ -663,6 +637,8 @@ public struct MenuBarPopoverView: View {
     private func workspaceNavigationButton(_ tab: MenuBarWorkspaceTab) -> some View {
         let isSelected = navigator.selectedWorkspaceTab == tab
         return Button {
+            guard !isSelected else { return }
+            dismissSettingsSubmenus()
             navigator.selectWorkspaceTab(tab)
         } label: {
             Label(tab.title, systemImage: tab.systemImage)
@@ -685,7 +661,9 @@ public struct MenuBarPopoverView: View {
 
     @ViewBuilder
     private var selectedWorkspaceContent: some View {
-        if presentation.showsOnboarding {
+        if navigator.selectedWorkspaceTab == .settings {
+            settingsContent
+        } else if presentation.showsOnboarding {
             FirstRunOnboardingView(
                 presentation: presentation,
                 permissionManager: permissionManager,
@@ -724,20 +702,36 @@ public struct MenuBarPopoverView: View {
                 )
             case .recentActivity:
                 LocalDashboardView(coordinator: localDashboardCoordinator)
+            case .settings:
+                settingsContent
             }
         }
     }
 
-    private func accountControls(
-        accountStateManager: AccountStateManager,
-        ipcClient: any IPCClientProtocol
-    ) -> some View {
-        HStack {
-            MenuBarAccountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
-            Spacer(minLength: 0)
+    private var workspaceBottomBar: some View {
+        HStack(spacing: 10) {
+            if let accountStateManager, let ipcClient {
+                MenuBarAccountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
+            }
+            Spacer(minLength: 8)
+            Button {
+                showsFocusSession.toggle()
+            } label: {
+                Label("Start a focus session", systemImage: "timer")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .popover(isPresented: $showsFocusSession, arrowEdge: .bottom) {
+                ScrollView {
+                    WorkBlockView(coordinator: workBlockCoordinator)
+                }
+                .frame(width: 400, height: 390, alignment: .top)
+                .background(Color.velvtSurface)
+                .preferredColorScheme(.dark)
+            }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 9)
         .background(Color.velvtSurface.opacity(0.32))
     }
 
@@ -785,10 +779,11 @@ public struct MenuBarPopoverView: View {
 
     private var settingsContent: some View {
         VStack(spacing: 0) {
-            SettingsTitle(title: "Settings", goBack: {
-                dismissSettingsSubmenus()
-                navigator.goBack()
-            })
+            Text("Settings")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
             settingsSubmenuRow(SettingsSubmenu.appInfo.title, submenu: .appInfo)
             settingsSubmenuRow(
                 "\(SettingsSubmenu.queuedEvents.title) (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))",
@@ -831,7 +826,7 @@ public struct MenuBarPopoverView: View {
                     refresh: { menuStatusViewModel?.refresh() }
                 )
                 infoRow("Collection", localCollectionPresentation.label)
-                infoRow("Backend sync", uploadStatusDescription)
+                infoRow("Cloud sync", uploadStatusDescription)
                 infoRow("Last synchronized", lastSuccessfulSyncDescription)
                 infoRow("Queued", "\(menuStatusViewModel?.status?.queuedEventCount ?? 0) events")
                 infoRow("Next retry", nextRetryDescription)
@@ -839,7 +834,7 @@ public struct MenuBarPopoverView: View {
                 infoRow("Actions logged", "\(metricsStore.actionsLogged)")
                 infoRow("Interventions", "\(metricsStore.interventions)")
                 Divider().padding(.vertical, 6)
-                Button("Retry Backend Synchronization") {
+                Button("Retry Cloud Synchronization") {
                     menuStatusViewModel?.sendAllNow()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -889,7 +884,7 @@ public struct MenuBarPopoverView: View {
                         .padding(.top, 8)
                 }
                 Divider().padding(.top, 8)
-                Button("Retry Backend Synchronization") { menuStatusViewModel?.sendAllNow() }
+                Button("Retry Cloud Synchronization") { menuStatusViewModel?.sendAllNow() }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
@@ -961,15 +956,6 @@ public struct MenuBarPopoverView: View {
         }
     }
 
-    private var transition: AnyTransition {
-        guard MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion) else {
-            return .identity
-        }
-        return navigator.direction == .forward
-            ? .asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .trailing))
-            : .asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .leading))
-    }
-
     private var connectionPresentation: PopoverConnectionPresentation {
         PopoverConnectionPresentation(phase: serviceConnectionStatus.phase)
     }
@@ -988,7 +974,7 @@ public struct MenuBarPopoverView: View {
     }
 
     private var backendStatusLabel: String {
-        guard let accountStateManager else { return "Backend status unavailable" }
+        guard let accountStateManager else { return "Cloud status unavailable" }
         if accountStateManager.requiresReauthentication {
             return "Sign in required"
         }
@@ -996,17 +982,17 @@ public struct MenuBarPopoverView: View {
             return "Sign in required for synchronization"
         }
         guard let status = menuStatusViewModel?.status else {
-            return "Checking backend synchronization…"
+            return "Checking cloud synchronization…"
         }
         if !status.cloudReady {
             return status.queuedEventCount > 0
                 ? "Working offline · \(status.queuedEventCount) queued"
-                : "Backend unreachable"
+                : "Cloud unreachable"
         }
         if status.uploadStatus == "retrying" || status.uploadStatus == "rate_limited" {
-            return "Backend synchronization retrying"
+            return "Cloud synchronization retrying"
         }
-        return "Backend synchronized"
+        return "Cloud synchronized"
     }
 
     private var appVersion: String {
@@ -1146,9 +1132,11 @@ public struct MenuBarPopoverView: View {
             SubmenuPopoverAnchor(
                 isPresented: submenuBinding(for: submenu)
             ) {
-                settingsSubmenuContent(for: submenu)
-                    .frame(width: 280)
-                    .preferredColorScheme(.dark)
+                ScrollView {
+                    settingsSubmenuContent(for: submenu)
+                }
+                .frame(width: 300, height: submenu.preferredHeight, alignment: .top)
+                .preferredColorScheme(.dark)
             }
             .frame(width: 1, height: 1)
             .allowsHitTesting(false)
@@ -1156,43 +1144,31 @@ public struct MenuBarPopoverView: View {
     }
 
     private func showSettingsSubmenu(_ submenu: SettingsSubmenu) {
-        showsAppInfoSubmenu = submenu == .appInfo
-        showsQueuedEventsSubmenu = submenu == .queuedEvents
-        showsCollectionSettingsSubmenu = submenu == .collectionSettings
-        #if DEBUG
-        showsDebugSubmenu = submenu == .debug
-        #else
-        showsDebugSubmenu = false
-        #endif
+        guard presentedSettingsSubmenu != submenu else { return }
+        presentedSettingsSubmenu = submenu
     }
 
     private func dismissSettingsSubmenus() {
-        showsAppInfoSubmenu = false
-        showsQueuedEventsSubmenu = false
-        showsCollectionSettingsSubmenu = false
-        showsDebugSubmenu = false
+        presentedSettingsSubmenu = nil
     }
 
     private func runDebugInsightSimulation() {
         simulateNotification?()
         dismissSettingsSubmenus()
-        navigator.goBack()
         onEscape()
     }
 
     private func submenuBinding(for submenu: SettingsSubmenu) -> Binding<Bool> {
-        switch submenu {
-        case .appInfo:
-            return $showsAppInfoSubmenu
-        case .queuedEvents:
-            return $showsQueuedEventsSubmenu
-        case .collectionSettings:
-            return $showsCollectionSettingsSubmenu
-        #if DEBUG
-        case .debug:
-            return $showsDebugSubmenu
-        #endif
-        }
+        Binding(
+            get: { presentedSettingsSubmenu == submenu },
+            set: { isPresented in
+                if isPresented {
+                    showSettingsSubmenu(submenu)
+                } else if presentedSettingsSubmenu == submenu {
+                    dismissSettingsSubmenus()
+                }
+            }
+        )
     }
     private func infoRow(_ title: String, _ value: String) -> some View {
         HStack { Text(title).foregroundStyle(.secondary); Spacer(); Text(value).lineLimit(1).truncationMode(.middle) }
@@ -1286,30 +1262,6 @@ public struct MenuBarPopoverView: View {
     }
 }
 
-private struct SettingsTitle: View {
-    let title: String
-    let goBack: () -> Void
-    var body: some View {
-        ZStack {
-            Text(title)
-                .font(.headline)
-            .frame(maxWidth: .infinity, alignment: .center)
-
-            HStack {
-                Button(action: goBack) {
-                    Image(systemName: "chevron.left")
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Spacer()
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-    }
-}
-
 private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
     @Binding var isPresented: Bool
     let content: () -> Content
@@ -1325,8 +1277,7 @@ private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.updateBinding($isPresented)
         let popover = context.coordinator.popover
-        let contentViewController = NSHostingController(rootView: content())
-        popover.contentViewController = contentViewController
+        let contentViewController = context.coordinator.host(content())
 
         if isPresented {
             let targetView = nsView.bounds.isEmpty ? (nsView.superview ?? nsView) : nsView
@@ -1360,9 +1311,15 @@ private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
         }
     }
 
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.dismantle()
+    }
+
     final class Coordinator: NSObject, NSPopoverDelegate {
         let popover = NSPopover()
+        private var contentViewController: NSHostingController<Content>?
         private var setPresented: (Bool) -> Void
+        private var isDismantling = false
 
         init(isPresented: Binding<Bool>) {
             setPresented = { isPresented.wrappedValue = $0 }
@@ -1371,11 +1328,31 @@ private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
             popover.delegate = self
         }
 
+        func host(_ content: Content) -> NSHostingController<Content> {
+            if let contentViewController {
+                contentViewController.rootView = content
+                return contentViewController
+            }
+            let contentViewController = NSHostingController(rootView: content)
+            self.contentViewController = contentViewController
+            popover.contentViewController = contentViewController
+            return contentViewController
+        }
+
         func updateBinding(_ isPresented: Binding<Bool>) {
             setPresented = { isPresented.wrappedValue = $0 }
         }
 
+        func dismantle() {
+            isDismantling = true
+            popover.delegate = nil
+            popover.close()
+            popover.contentViewController = nil
+            contentViewController = nil
+        }
+
         func popoverDidClose(_ notification: Notification) {
+            guard !isDismantling else { return }
             setPresented(false)
         }
     }

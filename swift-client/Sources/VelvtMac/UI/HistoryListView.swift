@@ -75,13 +75,13 @@ private struct HistoryDashboardView: View {
                     .foregroundStyle(Color.velvtMuted)
             }
 
-            VStack(spacing: 8) {
+            VStack(spacing: 3) {
                 ForEach(days) { day in
                     DailyActivityRow(day: day)
                 }
             }
         }
-        .padding(14)
+        .padding(10)
         .background(Color.velvtPanel)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -95,8 +95,8 @@ private struct DailyActivityRow: View {
     let day: DaySummaryViewModel
 
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 8) {
+            HStack(spacing: 5) {
                 Text(day.date)
                     .font(.caption.bold())
                     .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.5) : Color.velvtText)
@@ -104,7 +104,7 @@ private struct DailyActivityRow: View {
                     .font(.caption2)
                     .foregroundStyle(Color.velvtMuted)
             }
-            .frame(width: 62, alignment: .leading)
+            .frame(width: 92, alignment: .leading)
 
             SplitActivityBar(day: day)
 
@@ -123,6 +123,7 @@ private struct DailyActivityRow: View {
             .accessibilityLabel("Meaningful switches and fragmentation")
             .accessibilityValue("\(day.isNoData ? "No switches" : "\(day.meaningfulSwitchCount) meaningful switches"), fragmentation \(day.fragmentationScore.map(String.init) ?? "no data")")
         }
+        .frame(height: 20)
     }
 }
 
@@ -135,51 +136,32 @@ private struct SplitActivityBar: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ZStack(alignment: .leading) {
-                if let hoveredSegmentHelp {
-                    Text(hoveredSegmentHelp)
-                        .font(.caption2)
-                        .foregroundStyle(Color.velvtText)
-                        .lineLimit(1)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.black.opacity(0.78))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .transition(.opacity)
-                }
-            }
-            .frame(height: 18)
-
-            GeometryReader { proxy in
-                HStack(spacing: 2) {
-                    if segments.isEmpty {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.white.opacity(day.isNoData ? 0.06 : 0.12))
-                            .help(emptyHelpText)
-                    } else {
-                        ForEach(Array(segments.enumerated()), id: \.element.category) { index, segment in
-                            let text = helpText(for: segment)
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(color(for: segment.category, index: index))
-                                .frame(width: max(6, proxy.size.width * CGFloat(segment.proportion)))
-                                .help(text)
-                                .onHover { hovering in
-                                    hoveredSegmentHelp = hovering ? text : nil
-                                }
-                        }
+        GeometryReader { proxy in
+            HStack(spacing: 2) {
+                if segments.isEmpty {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.white.opacity(day.isNoData ? 0.06 : 0.12))
+                        .help(emptyHelpText)
+                } else {
+                    ForEach(Array(segments.enumerated()), id: \.element.category) { index, segment in
+                        let text = helpText(for: segment)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(color(for: segment.category, index: index))
+                            .frame(width: max(5, proxy.size.width * CGFloat(segment.proportion)))
+                            .help(text)
+                            .onHover { hovering in
+                                hoveredSegmentHelp = hovering ? text : nil
+                            }
                     }
                 }
             }
-            .frame(height: 14)
         }
-        .animation(.easeInOut(duration: 0.12), value: hoveredSegmentHelp)
         .onHover { hovering in
             if !hovering {
                 hoveredSegmentHelp = nil
             }
         }
-        .frame(height: 36)
+        .frame(height: 10)
     }
 
     private var emptyHelpText: String {

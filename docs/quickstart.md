@@ -55,13 +55,13 @@ make build-app-local-core
 This produces:
 
 ```text
-dist/velvt-mac.app
+dist/Velvt.app
 ```
 
 The packaged app embeds the Rust helper at:
 
 ```text
-dist/velvt-mac.app/Contents/Resources/velvt-service
+dist/Velvt.app/Contents/Resources/velvt-service
 ```
 
 When launched as a packaged app, `ServiceProcessLauncher` starts the embedded Rust service and stops it on app quit.
@@ -76,7 +76,7 @@ Build the app:
 make build-app
 ```
 
-Then open `dist/velvt-mac.app` from Finder or with an approved local GUI launch flow. On first use, macOS may require Accessibility and Notifications permissions.
+Then open `dist/Velvt.app` from Finder or with an approved local GUI launch flow. On first use, macOS may require Accessibility and Notifications permissions.
 
 When running against a local `velvt-core-api`, use `make build-app-local-core`
 instead so the bundled Rust service is built with

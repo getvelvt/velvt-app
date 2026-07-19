@@ -100,16 +100,11 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertNil(model.alert)
     }
 
-    func testSettingsNavigationMovesForwardAndBack() {
+    func testSettingsUsesWorkspaceNavigation() {
         var navigator = MenuBarPopoverNavigator()
 
         navigator.showSettings()
-        XCTAssertEqual(navigator.route, .settings)
-        XCTAssertEqual(navigator.direction, .forward)
-
-        navigator.goBack()
-        XCTAssertEqual(navigator.route, .main)
-        XCTAssertEqual(navigator.direction, .backward)
+        XCTAssertEqual(navigator.selectedWorkspaceTab, .settings)
     }
 
     func testWorkspaceNavigationDefaultsToWorkBlockAndSelectsSeparateTabs() {
@@ -117,7 +112,7 @@ final class MenuBarNavigationTests: XCTestCase {
 
         XCTAssertEqual(navigator.selectedWorkspaceTab, .workBlock)
         XCTAssertEqual(MenuBarWorkspaceTab.allCases.map(\.title), [
-            "Today", "Your Week", "Activity",
+            "Today", "Your Week", "Activity", "Settings",
         ])
 
         navigator.selectWorkspaceTab(.history)
@@ -127,8 +122,8 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(navigator.selectedWorkspaceTab, .recentActivity)
     }
 
-    func testWorkspaceKeyboardShortcutsRemainOneTwoThree() {
-        XCTAssertEqual(MenuBarWorkspaceTab.allCases.map(\.keyboardShortcut), ["1", "2", "3"])
+    func testWorkspaceKeyboardShortcutsUseOneThroughFour() {
+        XCTAssertEqual(MenuBarWorkspaceTab.allCases.map(\.keyboardShortcut), ["1", "2", "3", "4"])
     }
 
     func testReducedMotionDisablesPopoverRouteAnimation() {
@@ -143,9 +138,7 @@ final class MenuBarNavigationTests: XCTestCase {
 
         navigator.resetForPopoverOpening()
 
-        XCTAssertEqual(navigator.route, .main)
         XCTAssertEqual(navigator.selectedWorkspaceTab, .workBlock)
-        XCTAssertEqual(navigator.direction, .backward)
     }
 
     func testSettingsRetainsEveryDestination() {
@@ -260,14 +253,6 @@ final class MenuBarNavigationTests: XCTestCase {
         client.setConnectionStatus(.connected)
         await Task.yield()
         XCTAssertEqual(model.phase, .connected)
-    }
-
-    func testSettingsBackNavigationAlwaysReturnsToMain() {
-        var navigator = MenuBarPopoverNavigator()
-        navigator.showSettings()
-        navigator.goBack()
-        XCTAssertEqual(navigator.route, .main)
-        XCTAssertEqual(navigator.direction, .backward)
     }
 
     func testAuthenticationPresentationShowsLoggedOutState() {

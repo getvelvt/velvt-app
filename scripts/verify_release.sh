@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app_path="${1:-dist/velvt-mac.app}"
+app_path="${1:-dist/Velvt.app}"
 if [[ ! -d "$app_path" ]]; then
   echo "ERROR: Release app not found at '$app_path'." >&2
   exit 1

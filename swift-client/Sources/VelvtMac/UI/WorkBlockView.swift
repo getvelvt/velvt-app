@@ -47,10 +47,10 @@ public struct WorkBlockView: View {
 
   private var startForm: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Protect one work block")
+      Text("Start a focus session")
         .font(.headline)
 
-      Text("A work block is a bounded period you choose for one lane of work.")
+      Text("Choose the time and kind of work you want to protect.")
         .font(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -63,12 +63,17 @@ public struct WorkBlockView: View {
         .accessibilityLabel("Optional local intention")
         .accessibilityHint("Stored only on this Mac for a short time")
 
+      Text("Duration")
+        .font(.caption.bold())
+        .foregroundStyle(.secondary)
+
       Picker("Duration", selection: $durationChoice) {
         Text("25 min").tag(WorkBlockDurationChoice.twentyFive)
         Text("50 min").tag(WorkBlockDurationChoice.fifty)
         Text("Custom").tag(WorkBlockDurationChoice.custom)
       }
       .pickerStyle(.segmented)
+      .labelsHidden()
 
       if durationChoice == .custom {
         Stepper("\(customMinutes) minutes", value: $customMinutes, in: 5...180, step: 5)
@@ -77,17 +82,32 @@ public struct WorkBlockView: View {
           .accessibilityValue("\(customMinutes) minutes")
       }
 
-      HStack(spacing: 10) {
-        Picker("Purpose", selection: $purpose) {
-          Text("No purpose").tag(nil as WorkBlockPurpose?)
-          ForEach(WorkBlockPurpose.allCases) { value in
-            Text(purposeLabel(value)).tag(value as WorkBlockPurpose?)
+      HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: 5) {
+          Text("Work type")
+            .font(.caption.bold())
+            .foregroundStyle(.secondary)
+          Picker("Work type", selection: $purpose) {
+            Text("General focus").tag(nil as WorkBlockPurpose?)
+            ForEach(WorkBlockPurpose.allCases) { value in
+              Text(purposeLabel(value)).tag(value as WorkBlockPurpose?)
+            }
           }
+          .labelsHidden()
+          .frame(maxWidth: .infinity)
         }
-        Picker("Intensity", selection: $intensity) {
-          ForEach(WorkBlockIntensity.allCases) { value in
-            Text(intensityLabel(value)).tag(value)
+
+        VStack(alignment: .leading, spacing: 5) {
+          Text("Guidance")
+            .font(.caption.bold())
+            .foregroundStyle(.secondary)
+          Picker("Guidance", selection: $intensity) {
+            ForEach(WorkBlockIntensity.allCases) { value in
+              Text(intensityLabel(value)).tag(value)
+            }
           }
+          .labelsHidden()
+          .frame(maxWidth: .infinity)
         }
       }
 
@@ -103,7 +123,7 @@ public struct WorkBlockView: View {
           .accessibilityLabel("Work block error: \(error)")
       }
 
-      Button("Start") {
+      Button(startButtonLabel) {
         coordinator.startBlock(
           intention: intention.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
           durationSeconds: durationSeconds,
@@ -112,6 +132,7 @@ public struct WorkBlockView: View {
         )
       }
       .buttonStyle(.borderedProminent)
+      .tint(Color.velvtPink)
       .keyboardShortcut(.defaultAction)
       .accessibilityHint("Starts this bounded work block on the local service")
     }
@@ -262,6 +283,10 @@ public struct WorkBlockView: View {
     case .fifty: 50 * 60
     case .custom: customMinutes * 60
     }
+  }
+
+  private var startButtonLabel: String {
+    "Start \(durationSeconds / 60)-minute session"
   }
 
   private var intensityExplanation: String {

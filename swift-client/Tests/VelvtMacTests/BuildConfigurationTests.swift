@@ -13,6 +13,10 @@ final class BuildConfigurationTests: XCTestCase {
 
         for path in configPaths {
             let contents = try String(contentsOf: path, encoding: .utf8)
+            XCTAssertTrue(contents.contains("INFOPLIST_KEY_CFBundleName = Velvt"))
+            XCTAssertTrue(contents.contains("INFOPLIST_KEY_CFBundleDisplayName = Velvt"))
+            XCTAssertTrue(contents.contains("INFOPLIST_KEY_CFBundleIconFile = AppIcon"))
+            XCTAssertTrue(contents.contains("INFOPLIST_KEY_CFBundleIconName = AppIcon"))
             XCTAssertFalse(
                 contents.contains("INFOPLIST_KEY_LSUIElement = YES"),
                 "\(path.lastPathComponent) must not make the app an LSUIElement agent; runtime activation policy keeps it menu-bar-only."

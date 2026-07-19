@@ -81,7 +81,7 @@ def assert_private_payload(payload: object) -> None:
 
 def main() -> int:
     args = parse_args()
-    executable = args.app / "Contents" / "MacOS" / "velvt-mac"
+    executable = args.app / "Contents" / "MacOS" / "Velvt"
     helper = args.app / "Contents" / "Resources" / "velvt-service"
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise SystemExit(f"packaged app executable is unavailable: {executable}")
@@ -90,7 +90,7 @@ def main() -> int:
     started = time.monotonic()
     deadline = started + args.timeout_seconds
     metrics: dict[str, object] = {}
-    app_pids = matching_pids("velvt-mac")
+    app_pids = matching_pids("Velvt")
     helper_pids = matching_pids("velvt-service")
     if args.attach:
         if not app_pids or not helper_pids:
@@ -101,7 +101,7 @@ def main() -> int:
         subprocess.run(["open", str(args.app.resolve())], check=True)
 
     while not app_pids and time.monotonic() < deadline:
-        app_pids = matching_pids("velvt-mac")
+        app_pids = matching_pids("Velvt")
         if not app_pids:
             time.sleep(0.01)
     if not app_pids:

@@ -288,7 +288,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\ncd \"$RUST_DIR\"\nVELVT_API_BASE_URL=\"${VELVT_API_BASE_URL}\" VELVT_APNS_ENV=\"${VELVT_APNS_ENV}\" cargo build --release --features onnx 2>&1\ncp target/release/velvt-service \"$RESOURCES_DIR/velvt-service\"\ncp resources/abstraction-taxonomy-mvp-1.json \"$RESOURCES_DIR/abstraction-taxonomy-mvp-1.json\"\n\"$RESOURCES_DIR/velvt-service\" --version > \"$RESOURCES_DIR/velvt-service.version\"\n\"$RESOURCES_DIR/velvt-service\" --protocol-version > \"$RESOURCES_DIR/velvt-service.protocol-version\"\n";
+			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\ncd \"$RUST_DIR\"\nif [ \"$(uname -m)\" = \"arm64\" ]; then\n  VELVT_API_BASE_URL=\"${VELVT_API_BASE_URL}\" VELVT_APNS_ENV=\"${VELVT_APNS_ENV}\" cargo build --release --features onnx 2>&1\nelse\n  VELVT_API_BASE_URL=\"${VELVT_API_BASE_URL}\" VELVT_APNS_ENV=\"${VELVT_APNS_ENV}\" cargo build --release 2>&1\nfi\ncp target/release/velvt-service \"$RESOURCES_DIR/velvt-service\"\ncp resources/abstraction-taxonomy-mvp-1.json \"$RESOURCES_DIR/abstraction-taxonomy-mvp-1.json\"\n\"$RESOURCES_DIR/velvt-service\" --version > \"$RESOURCES_DIR/velvt-service.version\"\n\"$RESOURCES_DIR/velvt-service\" --protocol-version > \"$RESOURCES_DIR/velvt-service.protocol-version\"\n";
 		};
 		C8D9E0F1A2B3C4D5E6F70819 /* Inject Custom Info.plist Keys */ = {
 			isa = PBXShellScriptBuildPhase;

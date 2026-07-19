@@ -49,7 +49,7 @@ cd /Users/kevinzhou/Desktop/businesses.ai/velvt.ai
 Use this when you want the local backend and packaged Mac app to come up
 together. It opens Docker Desktop if needed, starts the FastAPI backend, waits
 for readiness, clears stale display caches, and launches
-`velvt-app/dist/velvt-mac.app`.
+`velvt-app/dist/Velvt.app`.
 
 After changing Swift or Rust helper code, rebuild as part of startup:
 
@@ -78,7 +78,7 @@ make test-swift
 make build-app
 ```
 
-Produces `dist/velvt-mac.app` — one double-clickable artifact with both the
+Produces `dist/Velvt.app` — one double-clickable artifact with both the
 Swift UI and the Rust service binary embedded at
 `Contents/Resources/velvt-service`. `AppDelegate` launches the bundled helper at
 startup (see `ServiceProcessLauncher.swift`) and stops it on quit, so this
@@ -99,7 +99,7 @@ make build-app-local-core
 This bakes `VELVT_API_BASE_URL=http://localhost:8000` into the bundled Rust
 service and the app's processed `Info.plist`. The packaged app is signed
 ad-hoc by default so macOS can register it consistently for notifications,
-Keychain, TCC, and LaunchServices. Copy `dist/velvt-mac.app` to `/Applications`
+Keychain, TCC, and LaunchServices. Copy `dist/Velvt.app` to `/Applications`
 when you want it to appear in Launchpad.
 
 ### Build Both Local Targets (development)
@@ -112,7 +112,7 @@ make build-all
 ```
 
 The native macOS application target is `velvt-mac` in
-`swift-client/VelvtMac.xcodeproj`. It produces `velvt-mac.app` without the
+`swift-client/VelvtMac.xcodeproj`. It produces `Velvt.app` without the
 Rust binary embedded (use `make build-app` for that); SwiftPM remains the
 unit-test harness.
 
@@ -274,7 +274,7 @@ make test-swift         # swift test --package-path swift-client
 
 ## Smoke-Testing Against a Local velvt-core Instance
 
-1. Run `make build-app-local-core`, then open `dist/velvt-mac.app`.
+1. Run `make build-app-local-core`, then open `dist/Velvt.app`.
    This points the bundled Rust service at `http://localhost:8000`.
 2. Start your local `velvt-core-api` if it is not already running.
 3. Grant Accessibility and Notifications when prompted.

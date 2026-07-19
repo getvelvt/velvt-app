@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "30B8CF68810D18DF9F11DB7B"
-               BuildableName = "velvt-mac.app"
+               BuildableName = "Velvt.app"
                BlueprintName = "velvt-mac"
                ReferencedContainer = "container:VelvtMac.xcodeproj">
             </BuildableReference>
@@ -45,7 +45,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "30B8CF68810D18DF9F11DB7B"
-            BuildableName = "velvt-mac.app"
+            BuildableName = "Velvt.app"
             BlueprintName = "velvt-mac"
             ReferencedContainer = "container:VelvtMac.xcodeproj">
          </BuildableReference>
@@ -79,7 +79,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "30B8CF68810D18DF9F11DB7B"
-            BuildableName = "velvt-mac.app"
+            BuildableName = "Velvt.app"
             BlueprintName = "velvt-mac"
             ReferencedContainer = "container:VelvtMac.xcodeproj">
          </BuildableReference>

@@ -144,7 +144,6 @@ private struct InsightCardContentView: View {
         .padding(14)
         .background(Color.velvtSurface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .focusable()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Insight for \(viewModel.date)")
         .accessibilityValue("\(primaryObservation). \(viewModel.baselineComparison). \(viewModel.suggestedAction).")

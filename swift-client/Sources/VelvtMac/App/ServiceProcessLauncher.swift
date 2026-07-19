@@ -16,6 +16,10 @@ public final class ServiceProcessLauncher {
 
     public init() {}
 
+    init(process: Process) {
+        self.process = process
+    }
+
     /// Locates the bundled helper. Returns `nil` when running outside an
     /// app bundle (e.g. `swift run`), where the service is expected to be
     /// started separately per the README's development instructions.
@@ -95,18 +99,20 @@ public final class ServiceProcessLauncher {
         "velvt-service \(label) emitted \(byteCount) bytes; content redacted"
     }
 
-    /// Sends SIGTERM and gives the helper a moment to flush before the app
-    /// exits, mirroring the graceful-shutdown sequence the Rust service
-    /// implements for its own SIGTERM/SIGINT handling.
+    /// Sends SIGTERM and waits for the helper's bounded graceful shutdown to
+    /// finish before allowing the app process to exit.
     public func stop() {
         guard let task = process, task.isRunning else {
             process = nil
             return
         }
+        task.terminate()
+        task.waitUntilExit()
         (task.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
         (task.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
-        task.terminate()
-        process = nil
+        if process === task {
+            process = nil
+        }
     }
 
     /// Performs a graceful, user-requested helper restart. The existing IPC

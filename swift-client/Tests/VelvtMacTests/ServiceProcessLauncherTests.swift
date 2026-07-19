@@ -14,4 +14,16 @@ final class ServiceProcessLauncherTests: XCTestCase {
         XCTAssertTrue(diagnostic.contains("\(sensitiveOutput.utf8.count)"))
         XCTAssertFalse(diagnostic.contains(sensitiveOutput))
     }
+
+    func testStopWaitsForOwnedHelperToExit() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+        let launcher = ServiceProcessLauncher(process: process)
+
+        launcher.stop()
+
+        XCTAssertFalse(process.isRunning)
+    }
 }

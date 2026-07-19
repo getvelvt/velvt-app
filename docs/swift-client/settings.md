@@ -1,26 +1,32 @@
 # Swift Client Settings
 
-The current settings surface is a compact menu bar route, not a standalone Preferences window. Settings are split between local UI preferences stored by Swift, runtime status fetched from Rust, and build/runtime configuration loaded at app startup.
+The current settings surface is a compact menu bar workspace tab, not a standalone Preferences window. Settings are split between local UI preferences stored by Swift, runtime status fetched from Rust, and build/runtime configuration loaded at app startup.
 
 ## Settings UI
 
-`MenuBarPopoverView` owns a two-route navigation model:
+`MenuBarPopoverView` includes Settings in the same workspace navigation model as Today, Your Week, and Activity:
 
 ```swift
-public enum MenuBarPopoverRoute: Equatable {
-    case main
+public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
+    case workBlock
+    case history
+    case recentActivity
     case settings
 }
 ```
 
-The settings route currently exposes:
+The settings tab currently exposes:
 
 - App Info submenu.
 - Queued Events submenu.
+- Collection Settings submenu.
 - Quit Velvt action.
 - App version display.
 
 Submenus are hosted in AppKit popovers through `SubmenuPopoverAnchor`.
+Each submenu uses a stable, predetermined viewport and reuses its hosting
+controller so live status updates do not resize its controls during the opening
+animation.
 Submenus are explicitly positioned after AppKit shows the popover: short
 submenus, such as Debug, are centered on the source row; taller submenus are
 clamped to the top of the settings popover so they do not cover the title bar

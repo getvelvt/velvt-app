@@ -9,6 +9,7 @@ VELVT_BUILD_CONFIGURATION = Debug
 // Auto-generate Info.plist from build settings instead of a literal file —
 // INFOPLIST_KEY_* below is silently ignored otherwise.
 GENERATE_INFOPLIST_FILE = YES
+PRODUCT_NAME = Velvt
 MARKETING_VERSION = 0.1.0
 CURRENT_PROJECT_VERSION = 1
 
@@ -20,7 +21,9 @@ INFOPLIST_KEY_VelvtProtocolVersion = $(VELVT_PROTOCOL_VERSION)
 INFOPLIST_KEY_VelvtClientVersion = $(MARKETING_VERSION)
 
 // Migrated from the former literal Resources/Info.plist (see CONFIGURATION.md).
+INFOPLIST_KEY_CFBundleName = Velvt
 INFOPLIST_KEY_CFBundleDisplayName = Velvt
+INFOPLIST_KEY_CFBundleIconFile = AppIcon
 INFOPLIST_KEY_CFBundleIconName = AppIcon
 INFOPLIST_KEY_LSMinimumSystemVersion = $(MACOSX_DEPLOYMENT_TARGET)
 

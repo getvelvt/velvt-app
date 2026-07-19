@@ -43,6 +43,20 @@ final class InsightViewModelTests: XCTestCase {
         XCTAssertEqual(sut.text, "Second insight.")
     }
 
+    func testOlderCloudInsightIsNotEligibleForToday() {
+        let sut = InsightViewModel()
+        sut.update(from: InsightPayload(
+            date: "2026-07-17",
+            text: "Older observation",
+            confidenceLevel: .medium,
+            lowConfidence: false,
+            generatedAt: Date()
+        ))
+
+        XCTAssertFalse(sut.isForLocalDate("2026-07-18"))
+        XCTAssertTrue(sut.isForLocalDate("2026-07-17"))
+    }
+
     // MARK: - Date formatting
 
     func testTodayDateString() {
@@ -168,6 +182,76 @@ final class InsightViewModelTests: XCTestCase {
         sut.update(from: makeInsight(text: "First."))
         sut.update(from: makeInsight(text: "Second."))
         XCTAssertFalse(sut.isLoading)
+    }
+
+    func testEvidenceDisclosureUsesExactSafeNumbersAndNoRawActivity() {
+        let evidence = InsightEvidence(
+            observation: "You made 14 meaningful switches across communication and document work.",
+            comparison: "That was 9 points above your usual range.",
+            suggestedAction: "Try protecting your next 20 minutes for one work lane.",
+            toneStage: .negativeDeviation,
+            observationType: "repeated_switching_loop",
+            metricValue: 14,
+            metricUnit: "transitions",
+            timeWindow: ["kind": "current_day", "date": "2026-06-15"],
+            safeCategories: ["communication", "document"],
+            confidence: "high",
+            coverage: 0.92,
+            baselineStatus: "mature",
+            baselineComparison: BaselineComparison(
+                status: "compared",
+                fragmentationDelta: 9
+            ),
+            actionMinutes: 20,
+            repetitionDays: 1
+        )
+        let sut = InsightViewModel()
+
+        sut.update(from: InsightPayload(
+            date: "2026-06-15",
+            text: "Approved combined copy.",
+            evidence: evidence,
+            confidenceLevel: .high,
+            lowConfidence: false,
+            generatedAt: Date(timeIntervalSince1970: 1_750_000_000)
+        ))
+
+        XCTAssertEqual(sut.observation, evidence.observation)
+        XCTAssertEqual(sut.baselineComparison, evidence.comparison)
+        XCTAssertEqual(sut.suggestedAction, evidence.suggestedAction)
+        XCTAssertEqual(sut.suggestedActionButtonLabel, "Protect my next 20 minutes")
+        XCTAssertEqual(sut.suggestedActionMinutes, 20)
+        XCTAssertEqual(sut.emotionalStage, .negativeDeviation)
+        XCTAssertTrue(sut.evidenceSummary.contains("14 transitions"))
+        XCTAssertTrue(sut.evidenceSummary.contains("92% classified coverage"))
+        XCTAssertTrue(sut.evidenceSummary.contains("No app names"))
+    }
+
+    func testEveryEmotionalStageRoundTripsToPresentation() {
+        for stage in EmotionalStage.allCases {
+            let evidence = InsightEvidence(
+                observation: "Safe observation.",
+                comparison: "Safe comparison.",
+                suggestedAction: "Safe action.",
+                toneStage: stage,
+                observationType: "recorded_activity",
+                metricValue: 1,
+                metricUnit: "minutes",
+                timeWindow: [:],
+                safeCategories: ["document"],
+                confidence: "high",
+                coverage: 1,
+                baselineStatus: "mature",
+                actionMinutes: 20,
+                repetitionDays: 1
+            )
+            let sut = InsightViewModel()
+            sut.update(from: InsightPayload(
+                date: "2026-06-15", text: "Safe copy.", evidence: evidence,
+                confidenceLevel: .high, lowConfidence: false, generatedAt: Date()
+            ))
+            XCTAssertEqual(sut.emotionalStage, stage)
+        }
     }
 
     // MARK: - Helpers

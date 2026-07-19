@@ -10,7 +10,8 @@
 
 use serde::Serialize;
 use velvt_shared_types::{
-    CacheEmpty, HistoryPayload, InsightPayload, LocalDashboardSnapshot, PrivacyViolationAlert,
+    CacheEmpty, HistoryPayload, InsightPayload, LocalDashboardSnapshot, LocalEarlySignalStatus,
+    PrivacyViolationAlert,
 };
 
 // ---------------------------------------------------------------------------
@@ -107,6 +108,21 @@ impl ValidatePayload for InsightPayload {
         if self.text.is_empty() {
             return Err(ValidationError::EmptyField { field: "text" });
         }
+        if self.evidence.observation.is_empty() {
+            return Err(ValidationError::EmptyField {
+                field: "evidence.observation",
+            });
+        }
+        if self.evidence.comparison.is_empty() {
+            return Err(ValidationError::EmptyField {
+                field: "evidence.comparison",
+            });
+        }
+        if self.evidence.suggested_action.is_empty() {
+            return Err(ValidationError::EmptyField {
+                field: "evidence.suggested_action",
+            });
+        }
         Ok(())
     }
 }
@@ -175,6 +191,42 @@ impl ValidatePayload for LocalDashboardSnapshot {
                 return Err(ValidationError::OutOfRange { field: "segment" });
             }
         }
+        let signal = &self.early_signal;
+        if signal.observed_through != self.generated_at
+            || signal.observed_seconds > 3600
+            || signal.focused_seconds > signal.observed_seconds
+            || signal.longest_uninterrupted_seconds > signal.observed_seconds
+        {
+            return Err(ValidationError::OutOfRange {
+                field: "early_signal",
+            });
+        }
+        match signal.status {
+            LocalEarlySignalStatus::Ready
+                if signal.observation.as_deref().unwrap_or_default().is_empty()
+                    || signal
+                        .suggested_action
+                        .as_deref()
+                        .unwrap_or_default()
+                        .is_empty()
+                    || signal.required_seconds != 0
+                    || signal.action_minutes == 0 =>
+            {
+                return Err(ValidationError::EmptyField {
+                    field: "early_signal_ready_copy",
+                });
+            }
+            LocalEarlySignalStatus::InsufficientEvidence
+                if signal.observation.is_some()
+                    || signal.suggested_action.is_some()
+                    || signal.action_minutes != 0 =>
+            {
+                return Err(ValidationError::OutOfRange {
+                    field: "early_signal_insufficient",
+                });
+            }
+            _ => {}
+        }
         Ok(())
     }
 }
@@ -206,6 +258,7 @@ pub fn shape_cache_empty(
 ) -> Result<ValidatedPayload<CacheEmpty>, ValidationError> {
     ValidatedPayload::new(CacheEmpty {
         payload_type: payload_type.to_owned(),
+        reason: None,
     })
 }
 
@@ -229,6 +282,7 @@ mod tests {
         InsightPayload {
             date: Utc::now().date_naive(),
             text: "Focus was high this morning.".into(),
+            evidence: Default::default(),
             confidence_level: ConfidenceLevel::High,
             low_confidence: false,
             generated_at: Utc::now(),

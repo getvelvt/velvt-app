@@ -209,6 +209,7 @@ fn server_message_variants_round_trip() {
         ServerMessage::InsightPayload(InsightPayload {
             date: NaiveDate::from_ymd_opt(2026, 6, 13).unwrap(),
             text: "ready-to-display".into(),
+            evidence: Default::default(),
             confidence_level: ConfidenceLevel::High,
             low_confidence: false,
             generated_at: timestamp(),

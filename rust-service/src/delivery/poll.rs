@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tokio::sync::watch;
-use velvt_shared_types::{ConfidenceLevel, InsightPayload};
+use velvt_shared_types::{ConfidenceLevel, EmotionalStage, InsightEvidence, InsightPayload};
 
 use crate::auth::{AuthError, AuthState, HttpClient, HttpRequest};
 
@@ -26,7 +26,7 @@ pub struct PolledInsight {
 
 #[derive(Debug, PartialEq)]
 pub enum PollOutcome {
-    Insight(PolledInsight),
+    Insight(Box<PolledInsight>),
     NoContent,
 }
 
@@ -80,10 +80,10 @@ impl<H: HttpClient> PollClient<H> {
                 let body = response
                     .raw_body
                     .ok_or(parser::ParseError::MissingField { field: "body" })?;
-                Ok(PollOutcome::Insight(parse_polled_insight(
+                Ok(PollOutcome::Insight(Box::new(parse_polled_insight(
                     body,
                     self.insight_rehydrator.as_deref(),
-                )?))
+                )?)))
             }
             204 => Ok(PollOutcome::NoContent),
             429 => Err(PollError::RateLimited {
@@ -136,7 +136,7 @@ impl<H: HttpClient> PollScheduler<H> {
             match self.client.poll_once().await {
                 Ok(PollOutcome::Insight(insight)) => {
                     self.backoff.reset();
-                    deliver_polled_insight(&self.push_adapter, &mut self.dedupe, insight).await;
+                    deliver_polled_insight(&self.push_adapter, &mut self.dedupe, *insight).await;
                 }
                 Ok(PollOutcome::NoContent) => {
                     self.backoff.reset();
@@ -237,6 +237,7 @@ struct RawPolledInsight {
 struct RawPolledInsightMeta {
     confidence_level: Option<ConfidenceLevel>,
     low_confidence: Option<bool>,
+    quality_metadata: Option<serde_json::Value>,
 }
 
 fn parse_polled_insight(
@@ -264,6 +265,15 @@ fn parse_polled_insight(
             .date
             .ok_or(parser::ParseError::MissingField { field: "date" })?,
         text,
+        evidence: match meta
+            .quality_metadata
+            .as_ref()
+            .and_then(|quality| quality.get("evidence"))
+            .cloned()
+        {
+            Some(evidence) => serde_json::from_value::<InsightEvidence>(evidence)?,
+            None => InsightEvidence::default(),
+        },
         confidence_level: meta
             .confidence_level
             .ok_or(parser::ParseError::MissingField {
@@ -333,12 +343,15 @@ pub async fn deliver_polled_insight(
     }
     let notification_id = uuid::Uuid::new_v4();
     let title = "Your Velvt insight is ready";
+    let should_notify = insight.payload.evidence.tone_stage != EmotionalStage::Early;
     let body = insight.payload.text.clone();
     let date = insight.payload.date;
     push_adapter.push_insight(insight.payload).await;
-    push_adapter
-        .push_notification(notification_id, title, &body, date)
-        .await;
+    if should_notify {
+        push_adapter
+            .push_notification(notification_id, title, &body, date)
+            .await;
+    }
 }
 
 #[cfg(test)]
@@ -409,7 +422,8 @@ mod tests {
             "generated_at": "2026-06-14T10:00:00Z",
             "meta": {
                 "confidence_level": "high",
-                "low_confidence": false
+                "low_confidence": false,
+                "quality_metadata": {"evidence": stable_evidence()}
             }
         })
     }
@@ -420,8 +434,17 @@ mod tests {
             "text": "You switched away from your document 23 times in 40 minutes.",
             "confidence_level": "high",
             "low_confidence": false,
-            "generated_at": "2026-06-14T10:00:00Z"
+            "generated_at": "2026-06-14T10:00:00Z",
+            "quality_metadata": {"evidence": stable_evidence()}
         })
+    }
+
+    fn stable_evidence() -> serde_json::Value {
+        serde_json::to_value(InsightEvidence {
+            tone_stage: EmotionalStage::Stable,
+            ..Default::default()
+        })
+        .unwrap()
     }
 
     fn config() -> PollConfig {
@@ -566,5 +589,33 @@ mod tests {
             }
         }
         assert_eq!(count, 2, "one insight push and one notification push");
+    }
+
+    #[tokio::test]
+    async fn early_baseline_delivers_insight_without_notification() {
+        let queue = crate::delivery::PushQueue::new(10);
+        let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+        let mut dedupe = InsightDedupeGuard::default();
+        let insight = PolledInsight {
+            id: "early-insight".into(),
+            payload: InsightPayload {
+                date: Utc::now().date_naive(),
+                text: "Neutral baseline information.".into(),
+                evidence: InsightEvidence::default(),
+                confidence_level: ConfidenceLevel::Low,
+                low_confidence: true,
+                generated_at: Utc::now(),
+            },
+        };
+
+        deliver_polled_insight(&push, &mut dedupe, insight).await;
+
+        let first = queue.try_pop().await;
+        let second = queue.try_pop().await;
+        assert!(matches!(first, Some(ServerMessage::InsightPayload(_))));
+        assert!(
+            second.is_none(),
+            "early baseline must not schedule a notification"
+        );
     }
 }

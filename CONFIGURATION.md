@@ -18,7 +18,7 @@ builds.
 | `swift-client/Configs/Debug.xcconfig` | Local development, CI Debug |
 | `swift-client/Configs/Release.xcconfig` | Distribution / production |
 
-Each xcconfig defines five variables:
+Each xcconfig defines seven variables:
 
 | Variable | Description |
 |---|---|
@@ -27,6 +27,8 @@ Each xcconfig defines five variables:
 | `VELVT_SOCKET_PATH` | Unix domain socket path; must match `proto/ipc_socket_path` |
 | `VELVT_PROTOCOL_VERSION` | Integer protocol version; must match `proto/version` |
 | `VELVT_CLIENT_VERSION` | Set to `$(MARKETING_VERSION)` — stays in sync with `CFBundleShortVersionString` automatically |
+| `VELVT_DISTRIBUTABLE` | `YES` only for Release; activates hosted-endpoint preflight |
+| `VELVT_BUILD_CONFIGURATION` | Artifact marker verified as `Release` before distribution |
 
 These are promoted to `Info.plist` keys (`VelvtAPIBaseURL`, `VelvtAPNSEnv`,
 `VelvtSocketPath`, `VelvtProtocolVersion`, `VelvtClientVersion`) via
@@ -56,15 +58,16 @@ them as:
 - `VELVT_API_BASE_URL_COMPILED`
 - `VELVT_APNS_ENV_COMPILED`
 
-`ServiceConfig` consumes `env!("VELVT_API_BASE_URL_COMPILED")` — a
-compile-time macro that is locked at link time and cannot be overridden by
-any runtime environment variable.
+`ServiceConfig` consumes `env!("VELVT_API_BASE_URL_COMPILED")`. Standalone
+developer service runs may override it explicitly, but `ServiceProcessLauncher`
+removes that override for a bundled helper so a distributed app always uses
+the endpoint compiled into its signed artifact.
 
 Fallback defaults when neither is set (bare `cargo build` or `cargo test`):
 
 | Constant | Default |
 |---|---|
-| `VELVT_API_BASE_URL_COMPILED` | `https://staging.api.velvt.test` |
+| `VELVT_API_BASE_URL_COMPILED` | `https://api.getvelvt.com` |
 | `VELVT_APNS_ENV_COMPILED` | `development` |
 
 The Xcode "Bundle Rust Service" Run Script phase exports these from Xcode's
@@ -118,73 +121,58 @@ invalidates the cached binary when these values change between builds.
 
 ---
 
-## ServiceManager version-check and update loop
+## Release packaging and verification
 
-This section describes the future `SMAppService` update path for signed
-distribution builds. The default local Debug app launched by `make build-app`
-uses `ServiceProcessLauncher` to start the bundled helper directly from
-`Contents/Resources/velvt-service`.
-
-### How version comparison works
-
-The Xcode Run Script build phase writes the Rust binary's version (from
-`cargo metadata`) to `Contents/Resources/velvt-service.version` alongside
-the binary in the app bundle.
-
-On each app launch, `ServiceManager`:
-
-1. Reads `Contents/Resources/velvt-service.version` (the bundled version).
-2. Reads `~/Library/Application Support/Velvt/velvt-service.version` (the
-   installed version, if present).
-3. If the strings differ — or if no installed version file exists — it:
-   - Sets state to `.updateInProgress`
-   - Calls `SMAppService.agent(plistName:).unregister()`
-   - Overwrites the binary atomically (remove → copy → `chmod 0755`)
-   - Copies the new version sidecar
-   - Calls `SMAppService.agent(plistName:).register()`
-   - Sets state to `.running`
-
-### What to do if the update loop fails
-
-`ServiceManager` does not throw — errors set `state = .failed(error)` and
-surface `ServiceUnavailableView`. The user sees the error description and a
-"Try Again" button that re-runs the same `ensureInstalled → ensureUpToDate →
-start` sequence.
-
-Common failure modes:
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `binaryNotFoundInBundle` | Run Script build phase did not run or `cargo build` failed | Rebuild with `make build-app`; check Xcode build log |
-| `versionSidecarNotFoundInBundle` | Run Script phase did not write the version file | Rebuild; check the `cargo metadata` step in the Run Script |
-| `templateNotFoundInBundle` | `com.velvt.service.plist.template` not in Resources build phase | Verify the file is in the Xcode Resources build phase |
-| SMAppService error | LaunchAgent plist missing or malformed; sandbox restrictions | Check `~/Library/LaunchAgents/com.velvt.service.plist`; verify app is not sandboxed |
-
-If the update loop appears stuck (e.g., versions keep mismatching after a
-reinstall), delete the installed sidecar and retry:
+Create the distributable artifact with:
 
 ```sh
-rm ~/Library/Application\ Support/Velvt/velvt-service.version
+make package-release VELVT_CODESIGN_IDENTITY=-
+make verify-release
 ```
+
+`package-release` uses Xcode's Release configuration, rejects loopback API
+URLs, embeds the release Rust helper and taxonomy, signs the complete bundle,
+and runs `scripts/verify_release.sh`. Verification checks the Release marker,
+hosted API URL, embedded helper, app/helper protocol match, strict codesign
+validity, and absence of preview/debug dylibs. Ad-hoc signing is sufficient for
+this local verification and does not alter the stable `com.velvt.mac` identity.
+
+The explicitly named `make build-app-local-core` command is the only packaging
+path intended to embed a localhost backend; it builds Debug and is never a
+distribution artifact.
+
+## Bundled helper lifecycle
+
+The app uses `ServiceProcessLauncher` to start the bundled helper directly from
+`Contents/Resources/velvt-service`, points it at the bundled taxonomy, and
+terminates it gracefully when Velvt quits. Users do not install or start Rust,
+Python, Docker, Terminal, or a separate local backend.
+
+The Xcode phase writes `velvt-service.version` and
+`velvt-service.protocol-version` beside the helper. Release verification also
+executes `velvt-service --protocol-version` and compares the result with the
+app's processed Info.plist, so a stale sidecar cannot hide a binary mismatch.
+
+If the helper becomes unavailable after launch, Settings offers **Restart Local
+Service**. This sends a graceful termination, waits briefly, and starts the
+same embedded helper again; it does not clear SQLite, Keychain, UserDefaults,
+permissions, accounts, or caches.
 
 ---
 
-## `CODE_SIGNING_ALLOWED = NO` and distribution
+## Credentialed signing and notarization
 
 The Xcode build itself does not require a provisioning profile or Developer ID
-certificate for local development. The packaging targets in `Makefile` sign
-`dist/velvt-mac.app` after copying it out of DerivedData. They default to
-ad-hoc signing (`VELVT_CODESIGN_IDENTITY=-`) so the bundle still has a stable
-LaunchServices/notification/Keychain identity for local testing.
+certificate for local verification. The packaging target signs the completed
+bundle after copying it out of DerivedData and supports ad-hoc signing with
+`VELVT_CODESIGN_IDENTITY=-`.
 
 **Before distributing outside of direct Xcode installs**, signing must be
 enabled:
 
-1. Set `CODE_SIGNING_ALLOWED = YES` and configure a Developer ID certificate
-   in each `XCBuildConfiguration`.
-2. The "Bundle Rust Service" Run Script phase must codesign the Rust binary
-   with Hardened Runtime enabled. Add this line to the script (after the
-   `cp` line), guarded by a signing-identity check:
+1. Run `make package-release VELVT_CODESIGN_IDENTITY="Developer ID Application: …"`.
+2. Re-sign with Hardened Runtime and the release entitlements if the selected
+   identity policy does not already apply them:
 
    ```sh
    if [ -n "${EXPANDED_CODE_SIGN_IDENTITY}" ]; then
@@ -194,13 +182,13 @@ enabled:
    fi
    ```
 
-3. Add the `com.apple.smjobbless` entitlement (or confirm sandbox is off)
-   so `SMAppService.agent(plistName:).register()` succeeds in a signed build.
-4. Notarize the `.app` with `xcrun notarytool`. Apple's notarization scanner
+3. Archive the verified app, submit it with `xcrun notarytool`, wait for
+   acceptance, and staple the ticket. Apple's notarization scanner
    requires every Mach-O to carry a valid Developer ID signature with
    Hardened Runtime — unsigned or ad-hoc-signed helpers will be rejected.
 
-These steps are deferred pending team provisioning. See `DEFERRED.md`.
+These credential-dependent steps are deferred pending team provisioning. No
+local acceptance check requires access to signing or notarization credentials.
 
 ---
 

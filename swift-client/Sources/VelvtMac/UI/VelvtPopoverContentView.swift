@@ -1,5 +1,28 @@
 import SwiftUI
 
+enum TodayObservationKind: Equatable {
+    case cloud
+    case earlyLocal
+    case progress
+}
+
+enum TodayObservationResolver {
+    static func resolve(
+        cloudAvailable: Bool,
+        cloudSourceDate: String,
+        currentLocalDate: String,
+        earlySignalStatus: LocalEarlySignalStatus?
+    ) -> TodayObservationKind {
+        if cloudAvailable && cloudSourceDate == currentLocalDate {
+            return .cloud
+        }
+        if earlySignalStatus == .ready {
+            return .earlyLocal
+        }
+        return .progress
+    }
+}
+
 // MARK: - VelvtPopoverContentView
 
 /// Root content for the menu bar popover.
@@ -18,23 +41,13 @@ public struct VelvtPopoverContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             switch coordinator.state {
             case .loading:
-                InsightCardSkeletonView()
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                sectionDivider
                 HistorySkeletonView()
                     .padding(.bottom, 8)
 
-            case .populated(let insightVM, let historyVM):
-                insightSection(viewModel: insightVM)
-                sectionDivider
+            case .populated(_, let historyVM):
                 historySection(viewModel: historyVM)
 
             case .error(let message):
-                InsightCardSkeletonView()
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                sectionDivider
                 HistorySkeletonView()
                 IPCStatusBanner(message: message)
                     .padding(.horizontal, 14)
@@ -42,30 +55,6 @@ public struct VelvtPopoverContentView: View {
             }
         }
         .preferredColorScheme(.dark)
-    }
-
-    private var sectionDivider: some View {
-        Divider()
-            .opacity(0.15)
-            .padding(.vertical, 8)
-    }
-
-    @ViewBuilder
-    private func insightSection(viewModel: InsightViewModel) -> some View {
-        switch coordinator.insightAvailability {
-        case .available:
-            InsightCardView(viewModel: viewModel)
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-        case .notGenerated:
-            EmptyDeliveryState(text: "No daily insight generated yet", systemImage: "sparkles")
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-        case .loading:
-            InsightCardSkeletonView()
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-        }
     }
 
     @ViewBuilder
@@ -85,6 +74,293 @@ public struct VelvtPopoverContentView: View {
     }
 }
 
+public struct TodayWorkspaceView: View {
+    @ObservedObject private var coordinator: ConcreteDisplayDataCoordinator
+    @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
+    @ObservedObject private var localDashboardCoordinator: LocalDashboardCoordinator
+
+    public init(
+        coordinator: ConcreteDisplayDataCoordinator,
+        workBlockCoordinator: WorkBlockCoordinator,
+        localDashboardCoordinator: LocalDashboardCoordinator
+    ) {
+        self.coordinator = coordinator
+        self.workBlockCoordinator = workBlockCoordinator
+        self.localDashboardCoordinator = localDashboardCoordinator
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            baselineStatus
+            dailyMetrics
+            observation
+            Divider().opacity(0.15)
+            WorkBlockView(coordinator: workBlockCoordinator)
+        }
+        .padding(.vertical, 12)
+    }
+
+    private var baselineStatus: some View {
+        Label(
+            coordinator.historyViewModel.baselineProgress.label,
+            systemImage: coordinator.historyViewModel.baselineProgress.isComplete
+                ? "checkmark.circle"
+                : "circle.dotted"
+        )
+        .font(.caption)
+        .foregroundStyle(Color.velvtMuted)
+        .padding(.horizontal, 16)
+        .accessibilityHint("Built only from days with real privacy-safe summaries")
+    }
+
+    @ViewBuilder
+    private var dailyMetrics: some View {
+        if let day = coordinator.historyViewModel.todayReadyDay {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    metricViews(for: day)
+                }
+                VStack(spacing: 8) {
+                    metricViews(for: day)
+                }
+            }
+            .padding(.horizontal, 16)
+        } else if let signal = readyLocalSignal {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { localMetricViews(for: signal) }
+                VStack(spacing: 8) { localMetricViews(for: signal) }
+            }
+            .padding(.horizontal, 16)
+        } else {
+            EarlySignalProgressView(
+                signal: localDashboardCoordinator.snapshot?.earlySignal,
+                errorMessage: localDashboardCoordinator.commandError
+            )
+            .padding(.horizontal, 16)
+        }
+    }
+
+    @ViewBuilder
+    private func localMetricViews(for signal: LocalEarlySignal) -> some View {
+        todayMetric(
+            title: "Focused time",
+            value: DaySummaryViewModel.formatActiveTime(signal.focusedSeconds),
+            explanation: "Observed time in the broad focus-work category during this local window."
+        )
+        todayMetric(
+            title: "Meaningful switches",
+            value: "\(signal.meaningfulSwitchCount)",
+            explanation: "Changes between privacy-safe broad categories; system and unclassified activity are excluded."
+        )
+        todayMetric(
+            title: "Longest stretch",
+            value: DaySummaryViewModel.formatActiveTime(signal.longestUninterruptedSeconds),
+            explanation: "The longest observed privacy-safe category stretch in this local window."
+        )
+    }
+
+    @ViewBuilder
+    private func metricViews(for day: DaySummaryViewModel) -> some View {
+        todayMetric(
+            title: "Focused time",
+            value: day.focusedTime,
+            explanation: "Time in broad focus-oriented work categories."
+        )
+        todayMetric(
+            title: "Meaningful switches",
+            value: "\(day.meaningfulSwitchCount)",
+            explanation: "Changes between broad work categories; brief system activity is excluded."
+        )
+        todayMetric(
+            title: "Longest block",
+            value: day.longestUninterrupted,
+            explanation: "Your longest recorded work block without a broad-category switch."
+        )
+    }
+
+    private func todayMetric(title: String, value: String, explanation: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value)
+                .font(.title3.bold().monospacedDigit())
+                .foregroundStyle(Color.velvtText)
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(Color.velvtMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
+        .background(Color.velvtPanel)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .help(explanation)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+        .accessibilityHint(explanation)
+    }
+
+    @ViewBuilder
+    private var observation: some View {
+        switch observationKind {
+        case .cloud:
+            InsightCardView(
+                viewModel: coordinator.insightViewModel,
+                onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
+                    ? startSuggestedWorkBlock
+                    : nil
+            )
+                .padding(.horizontal, 16)
+        case .earlyLocal:
+            if let signal = readyLocalSignal {
+                EarlyLocalSignalView(
+                    signal: signal,
+                    onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
+                        ? { startEarlySignalWorkBlock(signal) }
+                        : nil
+                )
+                .padding(.horizontal, 16)
+            }
+        case .progress:
+            EmptyDeliveryState(
+                text: todayProgressExplanation,
+                systemImage: "sparkles"
+            )
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private var todayProgressExplanation: String {
+        switch coordinator.insightNotReadyReason {
+        case "backend_unavailable":
+            "Working offline. Your local progress remains available while backend synchronization retries."
+        case "insufficient_evidence":
+            "No cloud observation was generated because evidence is still limited; the local signal will appear first."
+        default:
+            "A local observation will replace this progress state once enough evidence is available."
+        }
+    }
+
+    private var observationKind: TodayObservationKind {
+        TodayObservationResolver.resolve(
+            cloudAvailable: coordinator.insightAvailability == .available,
+            cloudSourceDate: coordinator.insightViewModel.sourceDate,
+            currentLocalDate: HistoryViewModel.localDateString(),
+            earlySignalStatus: localDashboardCoordinator.snapshot?.earlySignal.status
+        )
+    }
+
+    private var readyLocalSignal: LocalEarlySignal? {
+        guard let signal = localDashboardCoordinator.snapshot?.earlySignal,
+              signal.status == .ready else { return nil }
+        return signal
+    }
+
+    private func startSuggestedWorkBlock() {
+        workBlockCoordinator.startBlock(
+            intention: nil,
+            durationSeconds: coordinator.insightViewModel.suggestedActionMinutes * 60,
+            purpose: nil,
+            intensity: .medium
+        )
+    }
+
+    private func startEarlySignalWorkBlock(_ signal: LocalEarlySignal) {
+        workBlockCoordinator.startBlock(
+            intention: nil,
+            durationSeconds: signal.actionMinutes * 60,
+            purpose: nil,
+            intensity: .medium
+        )
+    }
+}
+
+private struct EarlySignalProgressView: View {
+    let signal: LocalEarlySignal?
+    let errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Building an early local signal", systemImage: "waveform.path")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.velvtText)
+            if let signal {
+                ProgressView(value: Double(min(signal.observedSeconds, 60)), total: 60)
+                    .tint(Color.velvtPink)
+                Text(progressText(signal))
+                    .font(.caption)
+                    .foregroundStyle(Color.velvtMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened)) · raw app names, titles, URLs, and files stay on this Mac")
+                    .font(.caption2)
+                    .foregroundStyle(Color.velvtMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(errorMessage ?? "Waiting for the local privacy service to report this observation window.")
+                    .font(.caption)
+                    .foregroundStyle(Color.velvtMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.velvtPanel)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func progressText(_ signal: LocalEarlySignal) -> String {
+        let eventWord = signal.evidenceEventCount == 1 ? "event" : "events"
+        if signal.requiredSeconds > 0 {
+            return "Observed \(signal.observedSeconds)s across \(signal.evidenceEventCount) privacy-safe \(eventWord); about \(signal.requiredSeconds)s more qualifying evidence is needed."
+        }
+        return "Observed \(signal.observedSeconds)s; the local service is checking that the evidence belongs to a privacy-safe broad category."
+    }
+}
+
+private struct EarlyLocalSignalView: View {
+    let signal: LocalEarlySignal
+    let onSuggestedAction: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Early local signal")
+                    .font(.caption.bold())
+                    .foregroundStyle(Color.velvtPink)
+                Spacer()
+                Text(windowText)
+                    .font(.caption2)
+                    .foregroundStyle(Color.velvtMuted)
+            }
+            Text(signal.observation ?? "Your activity is still settling.")
+                .font(.body.weight(.medium))
+                .foregroundStyle(Color.velvtText)
+                .fixedSize(horizontal: false, vertical: true)
+            if let suggestion = signal.suggestedAction {
+                Text(suggestion)
+                    .font(.caption)
+                    .foregroundStyle(Color.velvtMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let onSuggestedAction, signal.actionMinutes > 0 {
+                Button("Protect \(signal.actionMinutes) minutes", action: onSuggestedAction)
+                    .buttonStyle(.borderedProminent)
+            }
+            Text("Computed only from abstracted categories on this Mac · Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened))")
+                .font(.caption2)
+                .foregroundStyle(Color.velvtMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .background(Color.velvtSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var windowText: String {
+        guard let start = signal.observedFrom else { return "Current window" }
+        return "\(start.formatted(date: .omitted, time: .shortened))–\(signal.observedThrough.formatted(date: .omitted, time: .shortened))"
+    }
+}
+
 /// The live Focus Fragmentation surface. All timing and switch-rate values
 /// come from the local Rust service; this view only lays out safe segments.
 public struct LocalDashboardView: View {
@@ -98,7 +374,7 @@ public struct LocalDashboardView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Recent activity")
+                    Text("Activity")
                         .font(.headline)
                         .foregroundStyle(Color.velvtText)
                     Text("A rough view of the last hour")
@@ -131,7 +407,7 @@ public struct LocalDashboardView: View {
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Recent activity timeline")
+        .accessibilityLabel("Local activity timeline")
     }
 
     private var metric: some View {

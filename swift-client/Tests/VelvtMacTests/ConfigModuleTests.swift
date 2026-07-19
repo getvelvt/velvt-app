@@ -10,7 +10,7 @@ final class ConfigModuleTests: XCTestCase {
         let config = try loader.load()
 
         XCTAssertEqual(config.socketPath, "~/.velvt/velvt-service.sock")
-        XCTAssertEqual(config.protocolVersion, 17)
+        XCTAssertEqual(config.protocolVersion, 19)
         XCTAssertEqual(config.clientVersion, "0.1.0")
         XCTAssertEqual(config.apnsEnvironment, .development)
     }
@@ -96,25 +96,54 @@ final class ConfigModuleTests: XCTestCase {
         }
     }
 
+    func testDistributionPreflightRejectsLocalhost() throws {
+        let result = try runDistributionPreflight(url: "https://localhost:8000")
+        XCTAssertNotEqual(result, 0)
+    }
+
+    func testDistributionPreflightAcceptsHostedHTTPSURL() throws {
+        let result = try runDistributionPreflight(url: "https://dev-api.getvelvt.com")
+        XCTAssertEqual(result, 0)
+    }
+
+    func testProtocolVersionSourcesMatch() throws {
+        let root = repositoryRoot
+        let proto = try String(
+            contentsOf: root.appendingPathComponent("proto/version"),
+            encoding: .utf8
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let debug = try String(
+            contentsOf: root.appendingPathComponent("swift-client/Configs/Debug.xcconfig"),
+            encoding: .utf8
+        )
+        let release = try String(
+            contentsOf: root.appendingPathComponent("swift-client/Configs/Release.xcconfig"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(debug.contains("VELVT_PROTOCOL_VERSION = \(proto)"))
+        XCTAssertTrue(release.contains("VELVT_PROTOCOL_VERSION = \(proto)"))
+    }
+
     // MARK: - EnvironmentConfigLoader (debug builds only)
 
 #if DEBUG
     func testEnvironmentConfigLoaderHappyPath() throws {
         let env: [String: String] = [
             "VELVT_SOCKET_PATH": "~/.velvt/test.sock",
-            "VELVT_PROTOCOL_VERSION": "17",
+            "VELVT_PROTOCOL_VERSION": "19",
             "VELVT_CLIENT_VERSION": "0.1.0",
         ]
         let config = try EnvironmentConfigLoader(environment: env).load()
         XCTAssertEqual(config.socketPath, "~/.velvt/test.sock")
-        XCTAssertEqual(config.protocolVersion, 17)
+        XCTAssertEqual(config.protocolVersion, 19)
         XCTAssertEqual(config.clientVersion, "0.1.0")
         XCTAssertEqual(config.apnsEnvironment, .development)
     }
 
     func testEnvironmentConfigLoaderMissingSocketPath() {
         let env: [String: String] = [
-            "VELVT_PROTOCOL_VERSION": "17",
+            "VELVT_PROTOCOL_VERSION": "19",
             "VELVT_CLIENT_VERSION": "0.1.0",
         ]
         XCTAssertThrowsError(try EnvironmentConfigLoader(environment: env).load()) { error in
@@ -139,10 +168,30 @@ final class ConfigModuleTests: XCTestCase {
     private func validDictionary() -> [String: Any] {
         [
             "VelvtSocketPath": "~/.velvt/velvt-service.sock",
-            "VelvtProtocolVersion": "17",
+            "VelvtProtocolVersion": "19",
             "VelvtClientVersion": "0.1.0",
             "VelvtAPNSEnv": "development",
             "VelvtAPIBaseURL": "https://staging.api.velvt.test",
         ]
+    }
+
+    private var repositoryRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private func runDistributionPreflight(url: String) throws -> Int32 {
+        let process = Process()
+        process.executableURL = repositoryRoot
+            .appendingPathComponent("scripts/preflight_distribution.sh")
+        process.arguments = [url]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
     }
 }

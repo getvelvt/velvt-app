@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -223,12 +223,77 @@ pub struct InsightPayload {
     pub date: NaiveDate,
     /// Ready-to-display insight copy.
     pub text: String,
+    /// Exact reviewed aggregate evidence used to render the insight.
+    pub evidence: InsightEvidence,
     /// Confidence classification.
     pub confidence_level: ConfidenceLevel,
     /// Whether low-confidence treatment is required.
     pub low_confidence: bool,
     /// UTC generation timestamp.
     pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InsightEvidence {
+    pub observation: String,
+    pub comparison: String,
+    pub suggested_action: String,
+    pub tone_stage: EmotionalStage,
+    pub observation_type: String,
+    pub template_id: String,
+    pub metric_value: i64,
+    pub metric_unit: String,
+    pub time_window: serde_json::Value,
+    pub safe_categories: Vec<String>,
+    pub confidence: String,
+    pub coverage: f64,
+    pub baseline_status: String,
+    pub baseline_comparison: serde_json::Value,
+    pub action_minutes: u32,
+    pub repetition_days: u32,
+    pub next_action_id: String,
+    pub direction: String,
+    pub magnitude: f64,
+}
+
+impl Default for InsightEvidence {
+    fn default() -> Self {
+        Self {
+            observation: "Evidence unavailable".into(),
+            comparison: "Baseline comparison unavailable".into(),
+            suggested_action: "Protect one realistic work block".into(),
+            tone_stage: EmotionalStage::Early,
+            observation_type: "unavailable".into(),
+            template_id: "unavailable".into(),
+            metric_value: 0,
+            metric_unit: "none".into(),
+            time_window: serde_json::json!({}),
+            safe_categories: vec![],
+            confidence: "none".into(),
+            coverage: 0.0,
+            baseline_status: "unknown".into(),
+            baseline_comparison: serde_json::json!({}),
+            action_minutes: 0,
+            repetition_days: 0,
+            next_action_id: "unavailable".into(),
+            direction: "stable".into(),
+            magnitude: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmotionalStage {
+    Early,
+    Stable,
+    PositiveDeviation,
+    SustainedPositiveTrend,
+    NegativeDeviation,
+    RepeatedNegativeTrend,
+    SustainedHighConfidenceDecline,
+    Recovery,
 }
 
 /// Ready-to-display history summary.
@@ -259,6 +324,12 @@ pub struct DailySummary {
     pub confidence_level: ConfidenceLevel,
     /// Total active seconds.
     pub active_seconds: u64,
+    /// Aggregate time in broad focus-oriented work lanes.
+    pub focused_seconds: u64,
+    /// Changes between broad work lanes, excluding same-lane activity.
+    pub meaningful_switch_count: u64,
+    /// Longest recorded work session without a broad-lane switch.
+    pub longest_uninterrupted_seconds: u64,
     /// Personalized baseline state from the backend, e.g. `early_stage`,
     /// `mature`, or `no_data`.
     pub baseline_status: String,
@@ -672,6 +743,33 @@ pub struct LocalTimelineSegment {
     pub confidence: ClassificationConfidence,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalEarlySignalStatus {
+    InsufficientEvidence,
+    Ready,
+}
+
+/// A bounded, Rust-authored summary of privacy-safe local evidence. Copy is
+/// deliberately observational: no productivity score, causal claim, raw
+/// activity, or inferred intention can be represented by this contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalEarlySignal {
+    pub status: LocalEarlySignalStatus,
+    pub observed_from: Option<DateTime<Utc>>,
+    pub observed_through: DateTime<Utc>,
+    pub observed_seconds: u64,
+    pub required_seconds: u64,
+    pub evidence_event_count: u32,
+    pub focused_seconds: u64,
+    pub meaningful_switch_count: u32,
+    pub longest_uninterrupted_seconds: u64,
+    pub observation: Option<String>,
+    pub suggested_action: Option<String>,
+    pub action_minutes: u32,
+}
+
 /// Rust-authored local dashboard data. Swift renders this payload and does not
 /// scan event history or calculate competing metrics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -683,6 +781,7 @@ pub struct LocalDashboardSnapshot {
     pub switch_count: u32,
     pub switches_per_hour: f64,
     pub coverage: LocalDashboardCoverage,
+    pub early_signal: LocalEarlySignal,
     pub segments: Vec<LocalTimelineSegment>,
 }
 
@@ -742,6 +841,7 @@ pub struct MenuStatus {
     pub upload_status: String,
     pub last_upload_error_code: Option<String>,
     pub next_upload_attempt_at: Option<DateTime<Utc>>,
+    pub last_successful_sync_at: Option<DateTime<Utc>>,
     pub pending_upload_batch_count: u64,
     pub failed_upload_batch_count: u64,
     pub rejected_upload_batch_count: u64,
@@ -755,6 +855,8 @@ pub struct MenuStatus {
 pub struct CacheEmpty {
     /// Which payload type was requested (`"insight_payload"` or `"history_payload"`).
     pub payload_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Sent to all connected clients during a graceful service shutdown.

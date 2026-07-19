@@ -449,6 +449,7 @@ mod tests {
         InsightPayload {
             date: Utc::now().date_naive(),
             text: text.into(),
+            evidence: Default::default(),
             confidence_level: ConfidenceLevel::High,
             low_confidence: false,
             generated_at: Utc::now(),
@@ -469,10 +470,12 @@ mod tests {
         let q = PushQueue::new(10);
         q.enqueue(ServerMessage::CacheEmpty(velvt_shared_types::CacheEmpty {
             payload_type: "insight_payload".into(),
+            reason: None,
         }))
         .await;
         q.enqueue(ServerMessage::CacheEmpty(velvt_shared_types::CacheEmpty {
             payload_type: "history_payload".into(),
+            reason: None,
         }))
         .await;
 
@@ -550,6 +553,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         q.enqueue(ServerMessage::CacheEmpty(velvt_shared_types::CacheEmpty {
             payload_type: "history_payload".into(),
+            reason: None,
         }))
         .await;
 

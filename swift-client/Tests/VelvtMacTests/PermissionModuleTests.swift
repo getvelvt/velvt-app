@@ -438,6 +438,155 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertTrue(presentation.showsAccessibilityRecovery)
         XCTAssertEqual(presentation.statuses[.notifications], .denied)
     }
+
+    func testFirstRunResolverCoversValuePermissionsAuthenticationAndCollection() {
+        let progress = BaselineProgress(collectedDays: 2)
+        let base = FirstRunOnboardingState.resolve(
+            hasSeenValueProposition: false,
+            accessibilityStatus: .unknown,
+            hasRequestedAccessibility: false,
+            notificationsStatus: .unknown,
+            hasRequestedNotifications: false,
+            isAuthenticated: false,
+            servicePhase: .starting,
+            collectionIsRunning: false,
+            baselineProgress: progress
+        )
+        XCTAssertEqual(base, .valueProposition)
+
+        XCTAssertEqual(
+            FirstRunOnboardingState.resolve(
+                hasSeenValueProposition: true,
+                accessibilityStatus: .denied,
+                hasRequestedAccessibility: false,
+                notificationsStatus: .unknown,
+                hasRequestedNotifications: false,
+                isAuthenticated: false,
+                servicePhase: .starting,
+                collectionIsRunning: false,
+                baselineProgress: progress
+            ),
+            .accessibilityExplanation
+        )
+        XCTAssertEqual(
+            FirstRunOnboardingState.resolve(
+                hasSeenValueProposition: true,
+                accessibilityStatus: .denied,
+                hasRequestedAccessibility: true,
+                notificationsStatus: .unknown,
+                hasRequestedNotifications: false,
+                isAuthenticated: false,
+                servicePhase: .starting,
+                collectionIsRunning: false,
+                baselineProgress: progress
+            ),
+            .accessibilityDenied
+        )
+        XCTAssertEqual(
+            resolvedFirstRun(
+                notificationsStatus: .unknown,
+                hasRequestedNotifications: false,
+                isAuthenticated: false,
+                servicePhase: .starting,
+                collectionIsRunning: false,
+                progress: progress
+            ),
+            .notificationsExplanation
+        )
+        XCTAssertEqual(
+            resolvedFirstRun(
+                notificationsStatus: .denied,
+                hasRequestedNotifications: true,
+                isAuthenticated: false,
+                servicePhase: .starting,
+                collectionIsRunning: false,
+                progress: progress
+            ),
+            .authenticationRequired
+        )
+        XCTAssertEqual(
+            resolvedFirstRun(
+                notificationsStatus: .denied,
+                hasRequestedNotifications: true,
+                isAuthenticated: true,
+                servicePhase: .starting,
+                collectionIsRunning: false,
+                progress: progress
+            ),
+            .serviceStarting
+        )
+        XCTAssertEqual(
+            resolvedFirstRun(
+                notificationsStatus: .denied,
+                hasRequestedNotifications: true,
+                isAuthenticated: true,
+                servicePhase: .unavailable,
+                collectionIsRunning: false,
+                progress: progress
+            ),
+            .serviceUnavailable
+        )
+        XCTAssertEqual(
+            resolvedFirstRun(
+                notificationsStatus: .denied,
+                hasRequestedNotifications: true,
+                isAuthenticated: true,
+                servicePhase: .connected,
+                collectionIsRunning: false,
+                progress: progress
+            ),
+            .collectionStarting
+        )
+        XCTAssertEqual(
+            resolvedFirstRun(
+                notificationsStatus: .denied,
+                hasRequestedNotifications: true,
+                isAuthenticated: true,
+                servicePhase: .connected,
+                collectionIsRunning: true,
+                progress: progress
+            ),
+            .collectionActive(progress)
+        )
+    }
+
+    func testPermissionRequestChoicesPersistWithoutCompletingOnboarding() {
+        let store = InMemoryOnboardingStateStore()
+        let presentation = PermissionPresentationModel(
+            permissionManager: FakePermissionManager(),
+            onboardingStateStore: store
+        )
+
+        presentation.acknowledgeValueProposition()
+        presentation.markPermissionRequested(.accessibility)
+        presentation.markPermissionRequested(.notifications)
+
+        XCTAssertTrue(store.hasSeenValueProposition)
+        XCTAssertTrue(store.hasRequestedAccessibilityPermission)
+        XCTAssertTrue(store.hasRequestedNotificationsPermission)
+        XCTAssertTrue(presentation.showsOnboarding)
+    }
+
+    private func resolvedFirstRun(
+        notificationsStatus: PermissionStatus,
+        hasRequestedNotifications: Bool,
+        isAuthenticated: Bool,
+        servicePhase: LocalServiceConnectionPhase,
+        collectionIsRunning: Bool,
+        progress: BaselineProgress
+    ) -> FirstRunOnboardingState {
+        FirstRunOnboardingState.resolve(
+            hasSeenValueProposition: true,
+            accessibilityStatus: .granted,
+            hasRequestedAccessibility: true,
+            notificationsStatus: notificationsStatus,
+            hasRequestedNotifications: hasRequestedNotifications,
+            isAuthenticated: isAuthenticated,
+            servicePhase: servicePhase,
+            collectionIsRunning: collectionIsRunning,
+            baselineProgress: progress
+        )
+    }
 }
 
 private extension PermissionType {

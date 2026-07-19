@@ -237,6 +237,7 @@ public final class AccountStateManager: ObservableObject {
     /// Set to `true` when a `device_revoked` push is received. Reset by calling
     /// `clearDeviceRevokedFlag()` after the recovery UI has been shown.
     @Published public private(set) var isDeviceRevoked: Bool
+    @Published public private(set) var requiresReauthentication: Bool
 
     /// Fan-out relay for all incoming server messages. Consumers subscribe here
     /// rather than iterating `incomingMessages` directly so only one task owns
@@ -263,6 +264,7 @@ public final class AccountStateManager: ObservableObject {
         }
         _accountState = Published(wrappedValue: initialState)
         _isDeviceRevoked = Published(wrappedValue: false)
+        _requiresReauthentication = Published(wrappedValue: false)
         serverMessages = PassthroughSubject()
         cachedSession = storedSnapshot?.session
         accountEmailCache = .some(storedSnapshot?.email)
@@ -335,6 +337,7 @@ public final class AccountStateManager: ObservableObject {
         cachedSession = nil
         pendingEmail = nil
         accountEmailCache = .some(nil)
+        requiresReauthentication = false
         accountState = .loggedOut
     }
 
@@ -426,18 +429,21 @@ public final class AccountStateManager: ObservableObject {
             cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
+            requiresReauthentication = false
             accountState = .loggedOut
         case .needsReauth:
             keychain.deleteAll()
             cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
+            requiresReauthentication = true
             accountState = .loggedOut
         case .deviceRevoked:
             keychain.deleteAll()
             cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
+            requiresReauthentication = false
             accountState = .loggedOut
             isDeviceRevoked = true
         default:
@@ -471,6 +477,7 @@ public final class AccountStateManager: ObservableObject {
             )
             try store(snapshot: snapshot)
             cachedSession = session
+            requiresReauthentication = false
             accountEmailCache = .some(pendingEmail)
             authLogger.debug(
                 "auth.handleAuthSuccess: Keychain snapshot write succeeded, transitioning to loggedIn"

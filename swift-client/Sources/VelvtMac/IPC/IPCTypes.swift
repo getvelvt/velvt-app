@@ -377,13 +377,16 @@ public struct RequestLatestHistory: Codable, Equatable, Sendable {
 
 public struct CacheEmpty: Codable, Equatable, Sendable {
     public let payloadType: String
+    public let reason: String?
 
-    public init(payloadType: String) {
+    public init(payloadType: String, reason: String? = nil) {
         self.payloadType = payloadType
+        self.reason = reason
     }
 
     private enum CodingKeys: String, CodingKey {
         case payloadType = "payload_type"
+        case reason
     }
 }
 
@@ -585,17 +588,140 @@ public enum ConfidenceLevel: String, Codable, Equatable, Sendable {
     case high
 }
 
+public enum EmotionalStage: String, Codable, Equatable, Sendable, CaseIterable {
+    case early
+    case stable
+    case positiveDeviation = "positive_deviation"
+    case sustainedPositiveTrend = "sustained_positive_trend"
+    case negativeDeviation = "negative_deviation"
+    case repeatedNegativeTrend = "repeated_negative_trend"
+    case sustainedHighConfidenceDecline = "sustained_high_confidence_decline"
+    case recovery
+}
+
+public struct InsightEvidence: Codable, Equatable, Sendable {
+    public let observation: String
+    public let comparison: String
+    public let suggestedAction: String
+    public let toneStage: EmotionalStage
+    public let observationType: String
+    public let templateID: String
+    public let metricValue: Int
+    public let metricUnit: String
+    public let timeWindow: [String: String]
+    public let safeCategories: [String]
+    public let confidence: String
+    public let coverage: Double
+    public let baselineStatus: String
+    public let baselineComparison: BaselineComparison?
+    public let actionMinutes: Int
+    public let repetitionDays: Int
+    public let nextActionID: String
+    public let direction: String
+    public let magnitude: Double
+
+    public init(
+        observation: String,
+        comparison: String,
+        suggestedAction: String,
+        toneStage: EmotionalStage,
+        observationType: String,
+        templateID: String = "unavailable",
+        metricValue: Int,
+        metricUnit: String,
+        timeWindow: [String: String],
+        safeCategories: [String],
+        confidence: String,
+        coverage: Double,
+        baselineStatus: String,
+        baselineComparison: BaselineComparison? = nil,
+        actionMinutes: Int,
+        repetitionDays: Int,
+        nextActionID: String = "unavailable",
+        direction: String = "stable",
+        magnitude: Double = 0
+    ) {
+        self.observation = observation
+        self.comparison = comparison
+        self.suggestedAction = suggestedAction
+        self.toneStage = toneStage
+        self.observationType = observationType
+        self.templateID = templateID
+        self.metricValue = metricValue
+        self.metricUnit = metricUnit
+        self.timeWindow = timeWindow
+        self.safeCategories = safeCategories
+        self.confidence = confidence
+        self.coverage = coverage
+        self.baselineStatus = baselineStatus
+        self.baselineComparison = baselineComparison
+        self.actionMinutes = actionMinutes
+        self.repetitionDays = repetitionDays
+        self.nextActionID = nextActionID
+        self.direction = direction
+        self.magnitude = magnitude
+    }
+
+    public static let unavailable = InsightEvidence(
+        observation: "Insight evidence is unavailable.",
+        comparison: "No baseline comparison is available.",
+        suggestedAction: "Protect one realistic work block.",
+        toneStage: .early,
+        observationType: "unavailable",
+        templateID: "unavailable",
+        metricValue: 0,
+        metricUnit: "none",
+        timeWindow: [:],
+        safeCategories: [],
+        confidence: "none",
+        coverage: 0,
+        baselineStatus: "unknown",
+        actionMinutes: 0,
+        repetitionDays: 0,
+        nextActionID: "unavailable",
+        direction: "stable",
+        magnitude: 0
+    )
+
+    private enum CodingKeys: String, CodingKey {
+        case observation, comparison, confidence, coverage
+        case suggestedAction = "suggested_action"
+        case toneStage = "tone_stage"
+        case observationType = "observation_type"
+        case templateID = "template_id"
+        case metricValue = "metric_value"
+        case metricUnit = "metric_unit"
+        case timeWindow = "time_window"
+        case safeCategories = "safe_categories"
+        case baselineStatus = "baseline_status"
+        case baselineComparison = "baseline_comparison"
+        case actionMinutes = "action_minutes"
+        case repetitionDays = "repetition_days"
+        case nextActionID = "next_action_id"
+        case direction, magnitude
+    }
+}
+
 /// A ready-to-display daily insight.
 public struct InsightPayload: Codable, Equatable, Sendable {
     public let date: String
     public let text: String
+    public let evidence: InsightEvidence
     public let confidenceLevel: ConfidenceLevel
     public let lowConfidence: Bool
     public let generatedAt: Date
 
-    public init(date: String, text: String, confidenceLevel: ConfidenceLevel, lowConfidence: Bool, generatedAt: Date) {
+    public init(
+        date: String,
+        text: String,
+        evidence: InsightEvidence = .unavailable,
+        confidenceLevel: ConfidenceLevel,
+        lowConfidence: Bool,
+        generatedAt: Date
+    ) {
         self.date = date
         self.text = text
+        self.evidence = evidence
         self.confidenceLevel = confidenceLevel
         self.lowConfidence = lowConfidence
         self.generatedAt = generatedAt
@@ -604,6 +730,7 @@ public struct InsightPayload: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case date
         case text
+        case evidence
         case confidenceLevel = "confidence_level"
         case lowConfidence = "low_confidence"
         case generatedAt = "generated_at"
@@ -613,6 +740,7 @@ public struct InsightPayload: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         date = try container.decode(String.self, forKey: .date)
         text = try container.decode(String.self, forKey: .text)
+        evidence = try container.decodeIfPresent(InsightEvidence.self, forKey: .evidence) ?? .unavailable
         confidenceLevel = try container.decode(ConfidenceLevel.self, forKey: .confidenceLevel)
         lowConfidence = try container.decode(Bool.self, forKey: .lowConfidence)
         generatedAt = try container.decode(Date.self, forKey: .generatedAt)
@@ -622,6 +750,7 @@ public struct InsightPayload: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(date, forKey: .date)
         try container.encode(text, forKey: .text)
+        try container.encode(evidence, forKey: .evidence)
         try container.encode(confidenceLevel, forKey: .confidenceLevel)
         try container.encode(lowConfidence, forKey: .lowConfidence)
         try container.encode(generatedAt, forKey: .generatedAt)
@@ -643,6 +772,9 @@ public struct DailySummary: Codable, Equatable, Sendable {
     public let fragmentationScore: Double?
     public let confidenceLevel: ConfidenceLevel
     public let activeSeconds: Int
+    public let focusedSeconds: Int
+    public let meaningfulSwitchCount: Int
+    public let longestUninterruptedSeconds: Int
     public let baselineStatus: String
     public let baselineComparison: BaselineComparison?
     public let typeProportions: [ActivityProportion]
@@ -655,6 +787,9 @@ public struct DailySummary: Codable, Equatable, Sendable {
         case fragmentationScore = "fragmentation_score"
         case confidenceLevel = "confidence_level"
         case activeSeconds = "active_seconds"
+        case focusedSeconds = "focused_seconds"
+        case meaningfulSwitchCount = "meaningful_switch_count"
+        case longestUninterruptedSeconds = "focus_seconds"
         case baselineStatus = "baseline_status"
         case baselineComparison = "baseline_comparison"
         case typeProportions = "type_proportions"
@@ -668,6 +803,9 @@ public struct DailySummary: Codable, Equatable, Sendable {
         fragmentationScore: Double?,
         confidenceLevel: ConfidenceLevel,
         activeSeconds: Int,
+        focusedSeconds: Int = 0,
+        meaningfulSwitchCount: Int = 0,
+        longestUninterruptedSeconds: Int = 0,
         baselineStatus: String = "unknown",
         baselineComparison: BaselineComparison? = nil,
         typeProportions: [ActivityProportion] = []
@@ -679,6 +817,9 @@ public struct DailySummary: Codable, Equatable, Sendable {
         self.fragmentationScore = fragmentationScore
         self.confidenceLevel = confidenceLevel
         self.activeSeconds = activeSeconds
+        self.focusedSeconds = focusedSeconds
+        self.meaningfulSwitchCount = meaningfulSwitchCount
+        self.longestUninterruptedSeconds = longestUninterruptedSeconds
         self.baselineStatus = baselineStatus
         self.baselineComparison = baselineComparison
         self.typeProportions = typeProportions
@@ -693,6 +834,9 @@ public struct DailySummary: Codable, Equatable, Sendable {
         fragmentationScore = try container.decodeIfPresent(Double.self, forKey: .fragmentationScore)
         confidenceLevel = try container.decode(ConfidenceLevel.self, forKey: .confidenceLevel)
         activeSeconds = try container.decode(Int.self, forKey: .activeSeconds)
+        focusedSeconds = try container.decodeIfPresent(Int.self, forKey: .focusedSeconds) ?? 0
+        meaningfulSwitchCount = try container.decodeIfPresent(Int.self, forKey: .meaningfulSwitchCount) ?? 0
+        longestUninterruptedSeconds = try container.decodeIfPresent(Int.self, forKey: .longestUninterruptedSeconds) ?? 0
         baselineStatus = try container.decodeIfPresent(String.self, forKey: .baselineStatus) ?? "unknown"
         baselineComparison = try container.decodeIfPresent(BaselineComparison.self, forKey: .baselineComparison)
         typeProportions = try container.decodeIfPresent([ActivityProportion].self, forKey: .typeProportions) ?? []
@@ -707,6 +851,9 @@ public struct DailySummary: Codable, Equatable, Sendable {
         try container.encodeIfPresent(fragmentationScore, forKey: .fragmentationScore)
         try container.encode(confidenceLevel, forKey: .confidenceLevel)
         try container.encode(activeSeconds, forKey: .activeSeconds)
+        try container.encode(focusedSeconds, forKey: .focusedSeconds)
+        try container.encode(meaningfulSwitchCount, forKey: .meaningfulSwitchCount)
+        try container.encode(longestUninterruptedSeconds, forKey: .longestUninterruptedSeconds)
         try container.encode(baselineStatus, forKey: .baselineStatus)
         try container.encodeIfPresent(baselineComparison, forKey: .baselineComparison)
         try container.encode(typeProportions, forKey: .typeProportions)
@@ -901,6 +1048,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
     public let uploadStatus: String
     public let lastUploadErrorCode: String?
     public let nextUploadAttemptAt: Date?
+    public let lastSuccessfulSyncAt: Date?
     public let pendingUploadBatchCount: Int
     public let failedUploadBatchCount: Int
     public let rejectedUploadBatchCount: Int
@@ -913,6 +1061,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         case uploadStatus = "upload_status"
         case lastUploadErrorCode = "last_upload_error_code"
         case nextUploadAttemptAt = "next_upload_attempt_at"
+        case lastSuccessfulSyncAt = "last_successful_sync_at"
         case pendingUploadBatchCount = "pending_upload_batch_count"
         case failedUploadBatchCount = "failed_upload_batch_count"
         case rejectedUploadBatchCount = "rejected_upload_batch_count"
@@ -926,6 +1075,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         uploadStatus: String,
         lastUploadErrorCode: String?,
         nextUploadAttemptAt: Date?,
+        lastSuccessfulSyncAt: Date? = nil,
         pendingUploadBatchCount: Int,
         failedUploadBatchCount: Int,
         rejectedUploadBatchCount: Int,
@@ -937,6 +1087,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         self.uploadStatus = uploadStatus
         self.lastUploadErrorCode = lastUploadErrorCode
         self.nextUploadAttemptAt = nextUploadAttemptAt
+        self.lastSuccessfulSyncAt = lastSuccessfulSyncAt
         self.pendingUploadBatchCount = pendingUploadBatchCount
         self.failedUploadBatchCount = failedUploadBatchCount
         self.rejectedUploadBatchCount = rejectedUploadBatchCount
@@ -951,6 +1102,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         uploadStatus = try container.decodeIfPresent(String.self, forKey: .uploadStatus) ?? (cloudReady ? "ready" : "network_unavailable")
         lastUploadErrorCode = try container.decodeIfPresent(String.self, forKey: .lastUploadErrorCode)
         nextUploadAttemptAt = try container.decodeIfPresent(Date.self, forKey: .nextUploadAttemptAt)
+        lastSuccessfulSyncAt = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulSyncAt)
         pendingUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .pendingUploadBatchCount) ?? 0
         failedUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .failedUploadBatchCount) ?? 0
         rejectedUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .rejectedUploadBatchCount) ?? 0
@@ -994,6 +1146,68 @@ public struct LocalTimelineSegment: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+public enum LocalEarlySignalStatus: String, Codable, Equatable, Sendable {
+    case insufficientEvidence = "insufficient_evidence"
+    case ready
+}
+
+public struct LocalEarlySignal: Codable, Equatable, Sendable {
+    public let status: LocalEarlySignalStatus
+    public let observedFrom: Date?
+    public let observedThrough: Date
+    public let observedSeconds: Int
+    public let requiredSeconds: Int
+    public let evidenceEventCount: Int
+    public let focusedSeconds: Int
+    public let meaningfulSwitchCount: Int
+    public let longestUninterruptedSeconds: Int
+    public let observation: String?
+    public let suggestedAction: String?
+    public let actionMinutes: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case status, observation
+        case observedFrom = "observed_from"
+        case observedThrough = "observed_through"
+        case observedSeconds = "observed_seconds"
+        case requiredSeconds = "required_seconds"
+        case evidenceEventCount = "evidence_event_count"
+        case focusedSeconds = "focused_seconds"
+        case meaningfulSwitchCount = "meaningful_switch_count"
+        case longestUninterruptedSeconds = "longest_uninterrupted_seconds"
+        case suggestedAction = "suggested_action"
+        case actionMinutes = "action_minutes"
+    }
+
+    public init(
+        status: LocalEarlySignalStatus,
+        observedFrom: Date?,
+        observedThrough: Date,
+        observedSeconds: Int,
+        requiredSeconds: Int,
+        evidenceEventCount: Int,
+        focusedSeconds: Int,
+        meaningfulSwitchCount: Int,
+        longestUninterruptedSeconds: Int,
+        observation: String?,
+        suggestedAction: String?,
+        actionMinutes: Int
+    ) {
+        self.status = status
+        self.observedFrom = observedFrom
+        self.observedThrough = observedThrough
+        self.observedSeconds = observedSeconds
+        self.requiredSeconds = requiredSeconds
+        self.evidenceEventCount = evidenceEventCount
+        self.focusedSeconds = focusedSeconds
+        self.meaningfulSwitchCount = meaningfulSwitchCount
+        self.longestUninterruptedSeconds = longestUninterruptedSeconds
+        self.observation = observation
+        self.suggestedAction = suggestedAction
+        self.actionMinutes = actionMinutes
+    }
+}
+
 public struct LocalDashboardSnapshot: Codable, Equatable, Sendable {
     public let generatedAt: Date
     public let windowStart: Date
@@ -1001,10 +1215,12 @@ public struct LocalDashboardSnapshot: Codable, Equatable, Sendable {
     public let switchCount: Int
     public let switchesPerHour: Double
     public let coverage: LocalDashboardCoverage
+    public let earlySignal: LocalEarlySignal
     public let segments: [LocalTimelineSegment]
 
     private enum CodingKeys: String, CodingKey {
         case coverage, segments
+        case earlySignal = "early_signal"
         case generatedAt = "generated_at"
         case windowStart = "window_start"
         case windowEnd = "window_end"

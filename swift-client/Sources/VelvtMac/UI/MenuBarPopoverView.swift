@@ -43,6 +43,42 @@ private struct AccountGatedHistoryWorkspaceView: View {
     }
 }
 
+private struct TodayAccountGate: View {
+    @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
+    @ObservedObject var workBlockCoordinator: WorkBlockCoordinator
+    @ObservedObject var localDashboardCoordinator: LocalDashboardCoordinator
+    let accountStateManager: AccountStateManager?
+
+    var body: some View {
+        if let accountStateManager {
+            switch accountStateManager.accountState {
+            case .loggedIn:
+                TodayWorkspaceView(
+                    coordinator: coordinator,
+                    workBlockCoordinator: workBlockCoordinator,
+                    localDashboardCoordinator: localDashboardCoordinator
+                )
+            case .loggedOut, .loggingIn, .loggingOut, .pendingErasure:
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("See when your work became fragmented, why it happened, and one realistic way to protect your next focus block.")
+                        .font(.body.weight(.medium))
+                    Label("Sign in below to start collection and receive private, evidence-grounded observations.", systemImage: "person.crop.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            TodayWorkspaceView(
+                coordinator: coordinator,
+                workBlockCoordinator: workBlockCoordinator,
+                localDashboardCoordinator: localDashboardCoordinator
+            )
+        }
+    }
+}
+
 public enum MenuBarAccountActionResolver {
     public static func actions(for accountState: AccountState) -> [MenuBarAccountAction] {
         switch accountState {
@@ -56,10 +92,97 @@ public enum MenuBarAccountActionResolver {
 @MainActor
 public final class ServiceConnectionStatusModel: ObservableObject {
     @Published public private(set) var status: ConnectionStatus = .disconnected
+    @Published public private(set) var phase: LocalServiceConnectionPhase = .starting
     private var cancellable: AnyCancellable?
+    private var graceTimer: AnyCancellable?
+    private var lifecycleCancellables = Set<AnyCancellable>()
+    private let scheduler: any ConnectionGraceScheduling
+    private let graceInterval: TimeInterval
+    private var hasConfirmedHandshake = false
+    private var isWaking = false
 
-    public init(connectionStatus: AnyPublisher<ConnectionStatus, Never>) {
-        cancellable = connectionStatus.receive(on: RunLoop.main).sink { [weak self] in self?.status = $0 }
+    public init(
+        connectionStatus: AnyPublisher<ConnectionStatus, Never>,
+        scheduler: (any ConnectionGraceScheduling)? = nil,
+        graceInterval: TimeInterval = 4,
+        workspaceNotifications: NotificationCenter = NSWorkspace.shared.notificationCenter
+    ) {
+        self.scheduler = scheduler ?? DispatchConnectionGraceScheduler()
+        self.graceInterval = graceInterval
+        cancellable = connectionStatus.receive(on: RunLoop.main).sink { [weak self] status in
+            self?.handle(status)
+        }
+        workspaceNotifications.publisher(for: NSWorkspace.willSleepNotification)
+            .sink { [weak self] _ in self?.prepareForSleep() }
+            .store(in: &lifecycleCancellables)
+        workspaceNotifications.publisher(for: NSWorkspace.didWakeNotification)
+            .sink { [weak self] _ in self?.handleWake() }
+            .store(in: &lifecycleCancellables)
+        scheduleTimeout()
+    }
+
+    private func handle(_ status: ConnectionStatus) {
+        self.status = status
+        if status == .connected {
+            graceTimer?.cancel()
+            hasConfirmedHandshake = true
+            isWaking = false
+            phase = .connected
+            return
+        }
+
+        if isWaking {
+            phase = .waking
+        } else if !hasConfirmedHandshake {
+            phase = .starting
+        }
+        scheduleTimeout()
+    }
+
+    private func prepareForSleep() {
+        graceTimer?.cancel()
+        isWaking = true
+    }
+
+    private func handleWake() {
+        isWaking = true
+        phase = .waking
+        scheduleTimeout()
+    }
+
+    private func scheduleTimeout() {
+        graceTimer?.cancel()
+        graceTimer = scheduler.schedule(after: graceInterval) { [weak self] in
+            guard let self, self.status != .connected else { return }
+            self.isWaking = false
+            self.phase = .unavailable
+        }
+    }
+}
+
+public enum LocalServiceConnectionPhase: Equatable, Sendable {
+    case starting
+    case waking
+    case connected
+    case unavailable
+}
+
+@MainActor
+public protocol ConnectionGraceScheduling: AnyObject {
+    func schedule(after interval: TimeInterval, action: @escaping @MainActor () -> Void) -> AnyCancellable
+}
+
+@MainActor
+public final class DispatchConnectionGraceScheduler: ConnectionGraceScheduling {
+    public init() {}
+
+    public func schedule(
+        after interval: TimeInterval,
+        action: @escaping @MainActor () -> Void
+    ) -> AnyCancellable {
+        let workItem = DispatchWorkItem { Task { @MainActor in action() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: workItem)
+        return AnyCancellable { workItem.cancel() }
     }
 }
 
@@ -187,10 +310,15 @@ public struct PopoverConnectionPresentation {
     public let label: String
     public let color: Color
 
+    public init(label: String, color: Color) {
+        self.label = label
+        self.color = color
+    }
+
     public init(status: ConnectionStatus) {
         switch status {
         case .connected:
-            label = "Connected"
+            label = "Local service connected"
             color = .green
         case .disconnected:
             label = "Disconnected"
@@ -198,6 +326,23 @@ public struct PopoverConnectionPresentation {
         case .connecting, .handshaking, .reconnecting:
             label = "Connecting"
             color = .yellow
+        }
+    }
+
+    public init(phase: LocalServiceConnectionPhase) {
+        switch phase {
+        case .starting:
+            label = "Starting local service…"
+            color = .yellow
+        case .waking:
+            label = "Waking local service…"
+            color = .yellow
+        case .connected:
+            label = "Local service connected"
+            color = .green
+        case .unavailable:
+            label = "Local service unavailable"
+            color = .red
         }
     }
 }
@@ -208,7 +353,7 @@ public enum MenuBarPopoverRoute: Equatable {
 }
 
 public enum MenuBarPopoverLayout {
-    public static let preferredContentSize = CGSize(width: 620, height: 580)
+    public static let preferredContentSize = CGSize(width: 660, height: 350)
     public static let screenInset: CGFloat = 24
 
     public static func contentSize(for visibleFrame: CGRect?) -> CGSize {
@@ -220,6 +365,12 @@ public enum MenuBarPopoverLayout {
     }
 }
 
+public enum MenuBarMotionPolicy {
+    public static func shouldAnimate(reduceMotion: Bool) -> Bool {
+        !reduceMotion
+    }
+}
+
 public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
     case workBlock
     case history
@@ -227,9 +378,9 @@ public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
 
     public var title: String {
         switch self {
-        case .workBlock: return "Work Block"
-        case .history: return "7-Day History"
-        case .recentActivity: return "Recent Activity"
+        case .workBlock: return "Today"
+        case .history: return "Your Week"
+        case .recentActivity: return "Activity"
         }
     }
 
@@ -241,7 +392,7 @@ public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
         }
     }
 
-    fileprivate var keyboardShortcut: KeyEquivalent {
+    var keyboardShortcut: KeyEquivalent {
         switch self {
         case .workBlock: return "1"
         case .history: return "2"
@@ -254,14 +405,18 @@ enum SettingsSubmenu: CaseIterable, Equatable {
     case appInfo
     case queuedEvents
     case collectionSettings
+    #if DEBUG
     case debug
+    #endif
 
     var title: String {
         switch self {
         case .appInfo: return "App Info"
         case .queuedEvents: return "Queued Events"
         case .collectionSettings: return "Collection Settings"
-        case .debug: return "Debug"
+        #if DEBUG
+        case .debug: return "Debug/Testing"
+        #endif
         }
     }
 }
@@ -311,6 +466,7 @@ public struct MenuBarPopoverView: View {
     private let ipcClient: (any IPCClientProtocol)?
     private let menuStatusViewModel: MenuStatusViewModel?
     private let simulateNotification: (() -> Void)?
+    private let restartLocalService: (() -> Void)?
     @ObservedObject private var metricsStore: AppMetricsStore
     private let popoverWillOpen: AnyPublisher<Void, Never>
     private let onEscape: () -> Void
@@ -322,6 +478,7 @@ public struct MenuBarPopoverView: View {
     @State private var showsDebugSubmenu = false
     @State private var confirmsClassificationReset = false
     @State private var confirmsWorkBlockClear = false
+    @State private var diagnosticsCopied = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -339,6 +496,7 @@ public struct MenuBarPopoverView: View {
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
         simulateNotification: (() -> Void)? = nil,
+        restartLocalService: (() -> Void)? = nil,
         metricsStore: AppMetricsStore = AppMetricsStore(defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
         popoverWillOpen: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher(),
         onEscape: @escaping () -> Void,
@@ -358,6 +516,7 @@ public struct MenuBarPopoverView: View {
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
         self.simulateNotification = simulateNotification
+        self.restartLocalService = restartLocalService
         self.metricsStore = metricsStore
         self.popoverWillOpen = popoverWillOpen
         self.onEscape = onEscape
@@ -370,7 +529,12 @@ public struct MenuBarPopoverView: View {
                 .id(navigator.route)
                 .transition(transition)
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: navigator.route)
+        .animation(
+            MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion)
+                ? .easeInOut(duration: 0.18)
+                : nil,
+            value: navigator.route
+        )
         .frame(
             idealWidth: MenuBarPopoverLayout.preferredContentSize.width,
             maxWidth: .infinity,
@@ -387,13 +551,27 @@ public struct MenuBarPopoverView: View {
     }
 
     private var mainHeader: some View {
-        HStack(spacing: 8) {
-            Text("Velvt").font(.headline)
+        HStack(alignment: .top, spacing: 8) {
+            Text("Velvt")
+                .font(.headline)
+                .layoutPriority(1)
             Spacer()
-            Text(connectionPresentation.label)
-                .font(.caption)
-                .foregroundStyle(connectionPresentation.color)
-            Circle().fill(connectionPresentation.color).frame(width: 7, height: 7)
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(localCollectionPresentation.label)
+                        .font(.caption)
+                        .foregroundStyle(localCollectionPresentation.color)
+                        .multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Circle().fill(localCollectionPresentation.color).frame(width: 7, height: 7)
+                }
+                Text(backendStatusLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: 360, alignment: .trailing)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
     }
@@ -419,7 +597,7 @@ public struct MenuBarPopoverView: View {
     private var workspace: some View {
         HStack(spacing: 0) {
             workspaceNavigationRail
-                .frame(width: 152)
+                .frame(width: 132)
 
             Divider().opacity(0.2)
 
@@ -446,10 +624,6 @@ public struct MenuBarPopoverView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
 
-            if metricsStore.isAuthenticated {
-                Divider().opacity(0.15)
-                metricsRow
-            }
             if let accountStateManager, let ipcClient {
                 Divider().opacity(0.15)
                 accountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
@@ -512,9 +686,14 @@ public struct MenuBarPopoverView: View {
     @ViewBuilder
     private var selectedWorkspaceContent: some View {
         if presentation.showsOnboarding {
-            GoalOnboardingView { intensity, purpose in
-                presentation.saveGoal(intensity: intensity, purpose: purpose)
-            }
+            FirstRunOnboardingView(
+                presentation: presentation,
+                permissionManager: permissionManager,
+                servicePhase: serviceConnectionStatus.phase,
+                collectionIsRunning: collectionActivityStatus.status == .running,
+                isAuthenticated: isAuthenticated,
+                baselineProgress: coordinator.historyViewModel.baselineProgress
+            )
             .padding(16)
         } else if presentation.showsAccessibilityRecovery {
             PermissionRecoveryView()
@@ -532,7 +711,12 @@ public struct MenuBarPopoverView: View {
         } else {
             switch navigator.selectedWorkspaceTab {
             case .workBlock:
-                WorkBlockView(coordinator: workBlockCoordinator)
+                TodayAccountGate(
+                    coordinator: coordinator,
+                    workBlockCoordinator: workBlockCoordinator,
+                    localDashboardCoordinator: localDashboardCoordinator,
+                    accountStateManager: accountStateManager
+                )
             case .history:
                 HistoryWorkspaceView(
                     coordinator: coordinator,
@@ -542,16 +726,6 @@ public struct MenuBarPopoverView: View {
                 LocalDashboardView(coordinator: localDashboardCoordinator)
             }
         }
-    }
-
-    private var metricsRow: some View {
-        HStack(spacing: 10) {
-            metricCounter(title: "Actions Logged", value: metricsStore.actionsLogged)
-            metricCounter(title: "Interventions", value: metricsStore.interventions)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color.velvtSurface.opacity(0.32))
     }
 
     private func accountControls(
@@ -567,19 +741,6 @@ public struct MenuBarPopoverView: View {
         .background(Color.velvtSurface.opacity(0.32))
     }
 
-    private func metricCounter(title: String, value: Int) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(value)")
-                .font(.headline.monospacedDigit())
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private var gatheringInfoStatus: some View {
         HStack(spacing: 8) {
             ProgressView()
@@ -589,8 +750,8 @@ public struct MenuBarPopoverView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            Text("\(currentActivity.collectedEventCount) events")
-                .font(.caption.monospacedDigit())
+            Text("Local collection active")
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 16)
@@ -665,19 +826,37 @@ public struct MenuBarPopoverView: View {
                 infoRow("Device ID", menuStatusViewModel?.status?.deviceID ?? "Not registered")
                 authenticationInfoRow()
                 statusRow(
-                    "Local service",
+                    "Local privacy service",
                     presentation: connectionPresentation,
                     refresh: { menuStatusViewModel?.refresh() }
                 )
-                statusRow(
-                    "Cloud server",
-                    presentation: menuStatusViewModel?.status?.cloudReady == true
-                        ? PopoverConnectionPresentation(status: .connected)
-                        : PopoverConnectionPresentation(status: .disconnected),
-                    refresh: { menuStatusViewModel?.refresh() }
-                )
-                infoRow("Uploads", uploadStatusDescription)
+                infoRow("Collection", localCollectionPresentation.label)
+                infoRow("Backend sync", uploadStatusDescription)
+                infoRow("Last synchronized", lastSuccessfulSyncDescription)
+                infoRow("Queued", "\(menuStatusViewModel?.status?.queuedEventCount ?? 0) events")
+                infoRow("Next retry", nextRetryDescription)
                 infoRow("Events collected", "\(currentActivity.collectedEventCount)")
+                infoRow("Actions logged", "\(metricsStore.actionsLogged)")
+                infoRow("Interventions", "\(metricsStore.interventions)")
+                Divider().padding(.vertical, 6)
+                Button("Retry Backend Synchronization") {
+                    menuStatusViewModel?.sendAllNow()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                if restartLocalService != nil {
+                    Button("Restart Local Service") { restartLocalService?() }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                }
+                Button(diagnosticsCopied ? "Diagnostics Copied" : "Copy Diagnostics") {
+                    copyDiagnostics()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
             }
             .onAppear { menuStatusViewModel?.refresh() }
 
@@ -710,7 +889,7 @@ public struct MenuBarPopoverView: View {
                         .padding(.top, 8)
                 }
                 Divider().padding(.top, 8)
-                Button("Send All Now") { menuStatusViewModel?.sendAllNow() }
+                Button("Retry Backend Synchronization") { menuStatusViewModel?.sendAllNow() }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
@@ -759,6 +938,7 @@ public struct MenuBarPopoverView: View {
                 }
             }
 
+        #if DEBUG
         case .debug:
             VStack(spacing: 0) {
                 submenuTitle(submenu.title)
@@ -777,18 +957,56 @@ public struct MenuBarPopoverView: View {
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
             }
+        #endif
         }
     }
 
     private var transition: AnyTransition {
-        guard !reduceMotion else { return .identity }
+        guard MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion) else {
+            return .identity
+        }
         return navigator.direction == .forward
             ? .asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .trailing))
             : .asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .leading))
     }
 
     private var connectionPresentation: PopoverConnectionPresentation {
-        PopoverConnectionPresentation(status: serviceConnectionStatus.status)
+        PopoverConnectionPresentation(phase: serviceConnectionStatus.phase)
+    }
+
+    private var localCollectionPresentation: PopoverConnectionPresentation {
+        if presentation.statuses[.accessibility] != .granted {
+            return PopoverConnectionPresentation(
+                label: "Collection paused: Accessibility permission required",
+                color: .yellow
+            )
+        }
+        if collectionActivityStatus.status == .running {
+            return PopoverConnectionPresentation(label: "Collection active", color: .green)
+        }
+        return PopoverConnectionPresentation(label: "Collection paused", color: .yellow)
+    }
+
+    private var backendStatusLabel: String {
+        guard let accountStateManager else { return "Backend status unavailable" }
+        if accountStateManager.requiresReauthentication {
+            return "Sign in required"
+        }
+        guard case .loggedIn = accountStateManager.accountState else {
+            return "Sign in required for synchronization"
+        }
+        guard let status = menuStatusViewModel?.status else {
+            return "Checking backend synchronization…"
+        }
+        if !status.cloudReady {
+            return status.queuedEventCount > 0
+                ? "Working offline · \(status.queuedEventCount) queued"
+                : "Backend unreachable"
+        }
+        if status.uploadStatus == "retrying" || status.uploadStatus == "rate_limited" {
+            return "Backend synchronization retrying"
+        }
+        return "Backend synchronized"
     }
 
     private var appVersion: String {
@@ -803,8 +1021,17 @@ public struct MenuBarPopoverView: View {
         }
         return AuthenticationStatusPresentation(
             accountState: accountStateManager.accountState,
-            email: accountStateManager.accountEmail
+            email: accountStateManager.accountEmail,
+            requiresReauthentication: accountStateManager.requiresReauthentication
         )
+    }
+
+    private var isAuthenticated: Bool {
+        guard let accountStateManager else { return true }
+        if case .loggedIn = accountStateManager.accountState {
+            return true
+        }
+        return false
     }
 
     private var uploadStatusDescription: String {
@@ -844,6 +1071,60 @@ public struct MenuBarPopoverView: View {
         return "\(description) · next retry \(retryAt.formatted(date: .omitted, time: .shortened))"
     }
 
+    private var lastSuccessfulSyncDescription: String {
+        guard let date = menuStatusViewModel?.status?.lastSuccessfulSyncAt else {
+            return "Not yet"
+        }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private var nextRetryDescription: String {
+        guard let date = menuStatusViewModel?.status?.nextUploadAttemptAt else {
+            return "No retry scheduled"
+        }
+        return date.formatted(date: .omitted, time: .shortened)
+    }
+
+    private func copyDiagnostics() {
+        let status = menuStatusViewModel?.status
+        let accountStatus: String
+        if accountStateManager?.requiresReauthentication == true {
+            accountStatus = "sign_in_required"
+        } else if isAuthenticated {
+            accountStatus = "authenticated"
+        } else {
+            accountStatus = "signed_out"
+        }
+        let protocolVersion = Bundle.main.object(
+            forInfoDictionaryKey: "VelvtProtocolVersion"
+        ) as? String ?? "unknown"
+        let lines = [
+            "Velvt privacy-safe diagnostics",
+            "app_version=\(appVersion)",
+            "protocol_version=\(protocolVersion)",
+            "local_service=\(String(describing: serviceConnectionStatus.phase))",
+            "collection=\(collectionDiagnosticCode)",
+            "account=\(accountStatus)",
+            "backend=\(status?.uploadStatus ?? "unknown")",
+            "queued_event_count=\(status?.queuedEventCount ?? 0)",
+            "last_successful_sync=\(status?.lastSuccessfulSyncAt?.ISO8601Format() ?? "none")",
+            "next_retry=\(status?.nextUploadAttemptAt?.ISO8601Format() ?? "none")",
+            "last_error_code=\(status?.lastUploadErrorCode ?? "none")",
+        ]
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+        diagnosticsCopied = true
+    }
+
+    private var collectionDiagnosticCode: String {
+        switch collectionActivityStatus.status {
+        case .idle: "idle"
+        case .running: "active"
+        case .permissionRevoked: "permission_required"
+        case .error: "error"
+        }
+    }
+
     private func settingsRow(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack { Text(title); Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary) }
@@ -878,7 +1159,11 @@ public struct MenuBarPopoverView: View {
         showsAppInfoSubmenu = submenu == .appInfo
         showsQueuedEventsSubmenu = submenu == .queuedEvents
         showsCollectionSettingsSubmenu = submenu == .collectionSettings
+        #if DEBUG
         showsDebugSubmenu = submenu == .debug
+        #else
+        showsDebugSubmenu = false
+        #endif
     }
 
     private func dismissSettingsSubmenus() {
@@ -903,8 +1188,10 @@ public struct MenuBarPopoverView: View {
             return $showsQueuedEventsSubmenu
         case .collectionSettings:
             return $showsCollectionSettingsSubmenu
+        #if DEBUG
         case .debug:
             return $showsDebugSubmenu
+        #endif
         }
     }
     private func infoRow(_ title: String, _ value: String) -> some View {
@@ -1146,9 +1433,12 @@ private struct MenuBarAccountControls: View {
     }
     @ViewBuilder private func actionButton(for action: MenuBarAccountAction) -> some View {
         switch action {
-        case .authenticate(let mode): Button(mode == .logIn ? "Sign In" : "Sign Up") { authenticationMode = mode; authViewModel.authMode = mode; showsAuthentication = true }
+        case .authenticate(let mode): Button(mode == .logIn ? signInLabel : "Sign Up") { authenticationMode = mode; authViewModel.authMode = mode; showsAuthentication = true }
         case .logOut: Button("Log Out", role: .destructive) { authViewModel.logOut() }
         }
+    }
+    private var signInLabel: String {
+        accountStateManager.requiresReauthentication ? "Reauthenticate" : "Sign In"
     }
 }
 

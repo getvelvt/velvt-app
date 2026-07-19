@@ -1,5 +1,23 @@
 # IPC Protocol Changelog
 
+## Version 19 - 2026-07-18
+
+- The device-local dashboard now includes a Rust-authored early Today signal
+  with finite evidence progress, actual observation bounds, broad-category
+  aggregates, and one modest local action.
+- The early signal contains no raw app names, titles, URLs, filenames, paths,
+  contacts, local labels, or inferred intentions.
+
+## Version 18 - 2026-07-18
+
+- Daily insights now include the exact privacy-safe evidence layers, approved
+  emotional stage, baseline comparison, and suggested action used to render
+  the insight. Raw local activity remains forbidden.
+- Daily history now carries aggregate focused seconds, meaningful switch
+  count, and longest uninterrupted seconds for the Today surface.
+- Early-baseline insight payloads remain inspectable but do not trigger a
+  user notification.
+
 ## Version 17 - 2026-07-17
 
 - Raw activity events now include a bounded, locally measured `duration_seconds`

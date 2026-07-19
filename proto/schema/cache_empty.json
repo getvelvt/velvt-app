@@ -12,7 +12,11 @@
       "additionalProperties": false,
       "required": ["payload_type"],
       "properties": {
-        "payload_type": { "type": "string", "enum": ["insight_payload", "history_payload"] }
+        "payload_type": { "type": "string", "enum": ["insight_payload", "history_payload"] },
+        "reason": {
+          "type": "string",
+          "enum": ["insufficient_evidence", "backend_unavailable", "invalid_cached_payload"]
+        }
       }
     }
   }

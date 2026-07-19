@@ -112,6 +112,49 @@ enum MenuBarIconProvider {
     }
 }
 
+@MainActor
+public protocol PopoverPresenting: AnyObject {
+    var behavior: NSPopover.Behavior { get set }
+    var animates: Bool { get set }
+    var contentViewController: NSViewController? { get set }
+    var contentSize: NSSize { get set }
+    var isShown: Bool { get }
+
+    func show(relativeTo positioningRect: NSRect, of positioningView: NSView, preferredEdge: NSRectEdge)
+    func close()
+}
+
+extension NSPopover: PopoverPresenting {}
+
+@MainActor
+public protocol StatusItemManaging: AnyObject {
+    var button: NSButton? { get }
+
+    func install(target: AnyObject, action: Selector)
+    func remove()
+}
+
+@MainActor
+private final class SystemStatusItemManager: StatusItemManaging {
+    private var statusItem: NSStatusItem?
+
+    var button: NSButton? { statusItem?.button }
+
+    func install(target: AnyObject, action: Selector) {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.target = target
+        item.button?.action = action
+        statusItem = item
+    }
+
+    func remove() {
+        if let statusItem {
+            NSStatusBar.system.removeStatusItem(statusItem)
+        }
+        statusItem = nil
+    }
+}
+
 // MARK: - MenuBarController
 
 /// Owns the `NSStatusItem` and its `NSPopover`. This is the only type in the
@@ -123,7 +166,7 @@ enum MenuBarIconProvider {
 @MainActor
 public final class MenuBarController: NSObject {
     private let resolver = MenuBarStateResolver()
-    private let popover: NSPopover
+    private let popover: any PopoverPresenting
     private let popoverWillOpen = CurrentValueSubject<Void, Never>(())
     private let activateApp: () -> Void
     private let terminateApp: () -> Void
@@ -133,7 +176,7 @@ public final class MenuBarController: NSObject {
     private let serviceAlertModel: ServiceAlertModel
     private let collectionSettings: CollectionSettingsModel
     private let metricsStore: AppMetricsStore
-    private var statusItem: NSStatusItem?
+    private let statusItemManager: any StatusItemManaging
     private var cancellables = Set<AnyCancellable>()
 
     /// Whether the popover is currently shown. Exposed for tests; production
@@ -156,6 +199,9 @@ public final class MenuBarController: NSObject {
         collectionStatus: AnyPublisher<CollectionStatus, Never> = Just(.idle).eraseToAnyPublisher(),
         connectionStatus: AnyPublisher<ConnectionStatus, Never> = Just(.disconnected).eraseToAnyPublisher(),
         simulateNotification: (() -> Void)? = nil,
+        restartLocalService: (() -> Void)? = nil,
+        popover: (any PopoverPresenting)? = nil,
+        statusItemManager: (any StatusItemManaging)? = nil,
         activateApp: @escaping @MainActor () -> Void = {
             NSApp.unhide(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -171,16 +217,17 @@ public final class MenuBarController: NSObject {
         self.serviceAlertModel = serviceAlertModel
         self.collectionSettings = collectionSettings
         self.metricsStore = metricsStore
-        popover = NSPopover()
+        self.popover = popover ?? NSPopover()
+        self.statusItemManager = statusItemManager ?? SystemStatusItemManager()
         self.activateApp = activateApp
         self.terminateApp = terminateApp
         super.init()
-        popover.behavior = .transient
+        self.popover.behavior = .transient
         // Disabling the fade keeps show/close synchronous (isShown flips
         // immediately), which both reads more like a snappy status-item
         // utility and avoids a test-only race on the animation completion.
-        popover.animates = false
-        popover.contentViewController = NSHostingController(
+        self.popover.animates = false
+        let hostingController = NSHostingController(
             rootView: MenuBarPopoverView(
                 presentation: presentation,
                 permissionManager: permissionManager,
@@ -196,36 +243,35 @@ public final class MenuBarController: NSObject {
                 ipcClient: ipcClient,
                 menuStatusViewModel: menuStatusViewModel,
                 simulateNotification: simulateNotification,
+                restartLocalService: restartLocalService,
                 metricsStore: metricsStore,
                 popoverWillOpen: popoverWillOpen.eraseToAnyPublisher(),
                 onEscape: { [weak self] in self?.closePopover() },
                 onTerminate: { [weak self] in self?.terminateApp() }
             )
         )
-        popover.contentSize = MenuBarPopoverLayout.preferredContentSize
+        // The popover owns its explicit, screen-clamped size. Without this,
+        // NSHostingController can replace it with SwiftUI's flexible fitting
+        // size after presentation and expand the popover to the screen height.
+        hostingController.sizingOptions = []
+        self.popover.contentViewController = hostingController
+        self.popover.contentSize = MenuBarPopoverLayout.preferredContentSize
     }
 
     // MARK: Lifecycle
 
     /// Creates the `NSStatusItem` and sets the initial (`.normal`) icon.
-    /// Hides the Dock icon so the app behaves as a menu-bar-only accessory;
-    /// this does not prevent the app from showing windows (e.g. onboarding)
-    /// or from terminating normally.
+    /// The executable entry point owns the application's activation policy;
+    /// keeping that process-wide lifecycle decision out of this controller
+    /// also lets the complete XCTest bundle finish normally.
     public func install() {
-        NSApp.setActivationPolicy(.accessory)
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.target = self
-        item.button?.action = #selector(handleStatusItemClick)
-        statusItem = item
+        statusItemManager.install(target: self, action: #selector(handleStatusItemClick))
         applyIcon(for: .normal)
     }
 
     /// Removes the status item. Safe to call multiple times.
     public func remove() {
-        if let statusItem {
-            NSStatusBar.system.removeStatusItem(statusItem)
-        }
-        statusItem = nil
+        statusItemManager.remove()
     }
 
     // MARK: State observation
@@ -234,13 +280,25 @@ public final class MenuBarController: NSObject {
     /// single `MenuBarState` via `MenuBarStateResolver` on every change.
     public func observe(
         collectionStatus: some Publisher<CollectionStatus, Never>,
-        connectionStatus: some Publisher<ConnectionStatus, Never>,
+        connectionStatus _: some Publisher<ConnectionStatus, Never>,
         accountStateManager: AccountStateManager
     ) {
+        let stableConnectionStatus = serviceConnectionStatus.$phase
+            .map { phase -> ConnectionStatus in
+                switch phase {
+                case .connected, .waking:
+                    return .connected
+                case .starting:
+                    return .connecting
+                case .unavailable:
+                    return .disconnected
+                }
+            }
+            .eraseToAnyPublisher()
         MenuBarStateStream.make(
             resolver: resolver,
             collectionStatus: collectionStatus,
-            connectionStatus: connectionStatus,
+            connectionStatus: stableConnectionStatus,
             accountStateManager: accountStateManager
         )
         .sink { [weak self] state in
@@ -263,7 +321,7 @@ public final class MenuBarController: NSObject {
     /// even if the app is currently hidden (e.g. via Cmd+H or a notification
     /// tap arriving while backgrounded).
     public func showPopover() {
-        guard let button = statusItem?.button, !popover.isShown else { return }
+        guard let button = statusItemManager.button, !popover.isShown else { return }
         popoverWillOpen.send()
         popover.contentSize = MenuBarPopoverLayout.contentSize(
             for: button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
@@ -294,8 +352,8 @@ public final class MenuBarController: NSObject {
 
     private func applyIcon(for state: MenuBarState) {
         let description = MenuBarIconProvider.accessibilityDescription(for: state)
-        statusItem?.button?.image = NSImage(named: "VelvtMenuBarIcon")
-        statusItem?.button?.image?.isTemplate = true
-        statusItem?.button?.toolTip = description
+        statusItemManager.button?.image = NSImage(named: "VelvtMenuBarIcon")
+        statusItemManager.button?.image?.isTemplate = true
+        statusItemManager.button?.toolTip = description
     }
 }

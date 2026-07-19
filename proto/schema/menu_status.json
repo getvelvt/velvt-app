@@ -12,6 +12,7 @@
         "upload_status",
         "last_upload_error_code",
         "next_upload_attempt_at",
+        "last_successful_sync_at",
         "pending_upload_batch_count",
         "failed_upload_batch_count",
         "rejected_upload_batch_count",
@@ -34,6 +35,10 @@
         },
         "last_upload_error_code": { "type": ["string", "null"] },
         "next_upload_attempt_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "last_successful_sync_at": {
           "type": ["string", "null"],
           "format": "date-time"
         },

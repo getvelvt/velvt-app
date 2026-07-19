@@ -10,10 +10,36 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["date", "text", "confidence_level", "low_confidence", "generated_at"],
+      "required": ["date", "text", "evidence", "confidence_level", "low_confidence", "generated_at"],
       "properties": {
         "date": { "type": "string", "format": "date" },
         "text": { "type": "string" },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observation", "comparison", "suggested_action", "tone_stage", "observation_type", "template_id", "metric_value", "metric_unit", "time_window", "safe_categories", "confidence", "coverage", "baseline_status", "baseline_comparison", "action_minutes", "repetition_days", "next_action_id", "direction", "magnitude"],
+          "properties": {
+            "observation": { "type": "string", "minLength": 1 },
+            "comparison": { "type": "string", "minLength": 1 },
+            "suggested_action": { "type": "string", "minLength": 1 },
+            "tone_stage": { "enum": ["early", "stable", "positive_deviation", "sustained_positive_trend", "negative_deviation", "repeated_negative_trend", "sustained_high_confidence_decline", "recovery"] },
+            "observation_type": { "type": "string" },
+            "template_id": { "type": "string" },
+            "metric_value": { "type": "integer" },
+            "metric_unit": { "type": "string" },
+            "time_window": { "type": "object", "additionalProperties": { "type": "string" } },
+            "safe_categories": { "type": "array", "items": { "type": "string" } },
+            "confidence": { "type": "string" },
+            "coverage": { "type": "number", "minimum": 0, "maximum": 1 },
+            "baseline_status": { "type": "string" },
+            "baseline_comparison": { "type": "object" },
+            "action_minutes": { "type": "integer", "minimum": 0 },
+            "repetition_days": { "type": "integer", "minimum": 0 },
+            "next_action_id": { "type": "string" },
+            "direction": { "enum": ["positive", "negative", "stable"] },
+            "magnitude": { "type": "number", "minimum": 0 }
+          }
+        },
         "confidence_level": { "enum": ["low", "medium", "high"] },
         "low_confidence": { "type": "boolean" },
         "generated_at": { "type": "string", "format": "date-time" }

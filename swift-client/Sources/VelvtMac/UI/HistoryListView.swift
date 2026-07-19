@@ -34,22 +34,18 @@ private struct HistoryDashboardView: View {
         readyDays.last
     }
 
-    private var confidenceText: String {
-        latestDay?.confidenceLabel ?? "none"
-    }
-
     private var movingAverageText: String {
-        guard let latestDay else { return "No rolling baseline yet" }
+        guard let latestDay else { return "No personal baseline yet" }
         guard latestDay.baselineStatus == "mature" || latestDay.baselineComparison?.status == "compared" else {
-            return "Building 14-day average"
+            return "Collecting a seven-day baseline"
         }
         if let delta = latestDay.baselineComparison?.fragmentationDelta {
             if delta > 0 {
-                return "+\(formatDelta(delta)) vs 14-day avg"
+                return "+\(formatDelta(delta)) vs your usual range"
             }
-            return "\(formatDelta(delta)) vs 14-day avg"
+            return "\(formatDelta(delta)) vs your usual range"
         }
-        return "Compared to 14-day avg"
+        return "Compared with your usual range"
     }
 
     var body: some View {
@@ -66,10 +62,10 @@ private struct HistoryDashboardView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Daily Activity")
+                    Text("Your week")
                         .font(.headline)
                         .foregroundStyle(Color.velvtText)
-                    Text("Pattern Confidence: \(confidenceText.capitalized) - \(movingAverageText)")
+                    Text(movingAverageText)
                         .font(.caption2)
                         .foregroundStyle(Color.velvtMuted)
                 }
@@ -113,9 +109,10 @@ private struct DailyActivityRow: View {
             SplitActivityBar(day: day)
 
             VStack(alignment: .trailing, spacing: 2) {
-                Text(day.eventCount == 0 ? "--" : "\(day.eventCount)")
+                Text(day.isNoData ? "--" : "\(day.meaningfulSwitchCount)")
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(Color.velvtMuted)
+                    .help("Meaningful switches are changes between broad work categories; brief system activity is excluded.")
                 Text(day.fragmentationScore.map(String.init) ?? "—")
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(day.fragmentationScore == nil ? Color.velvtMuted.opacity(0.45) : Color.velvtPink)
@@ -123,8 +120,8 @@ private struct DailyActivityRow: View {
             }
             .frame(width: 42, alignment: .trailing)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Events and fragmentation score")
-            .accessibilityValue("\(day.eventCount == 0 ? "No events" : "\(day.eventCount) events"), fragmentation \(day.fragmentationScore.map(String.init) ?? "no data")")
+            .accessibilityLabel("Meaningful switches and fragmentation")
+            .accessibilityValue("\(day.isNoData ? "No switches" : "\(day.meaningfulSwitchCount) meaningful switches"), fragmentation \(day.fragmentationScore.map(String.init) ?? "no data")")
         }
     }
 }

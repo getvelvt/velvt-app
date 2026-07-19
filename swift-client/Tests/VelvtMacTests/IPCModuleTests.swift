@@ -39,6 +39,26 @@ final class IPCModuleTests: XCTestCase {
                 InsightPayload(
                     date: "2026-06-13",
                     text: "ready-to-display",
+                    evidence: InsightEvidence(
+                        observation: "You made 8 meaningful switches.",
+                        comparison: "That stayed within your usual range.",
+                        suggestedAction: "Try protecting your next 20 minutes for one work lane.",
+                        toneStage: .stable,
+                        observationType: "repeated_switching_loop",
+                        templateID: "repeated_switching_loop",
+                        metricValue: 8,
+                        metricUnit: "transitions",
+                        timeWindow: ["kind": "current_day", "date": "2026-06-13"],
+                        safeCategories: ["document"],
+                        confidence: "high",
+                        coverage: 0.91,
+                        baselineStatus: "mature",
+                        actionMinutes: 20,
+                        repetitionDays: 1,
+                        nextActionID: "protect_next_20",
+                        direction: "stable",
+                        magnitude: 2.5
+                    ),
                     confidenceLevel: .high,
                     lowConfidence: false,
                     generatedAt: Date(timeIntervalSince1970: 1_700_000_000)
@@ -155,6 +175,31 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertNotNil(value["next_action"] as? [String: Any])
         XCTAssertNil(value["next_actions"])
         XCTAssertNil(value["intention"])
+    }
+
+    func testEarlyLocalSignalContainsNoRawActivityFields() throws {
+        let signal = LocalEarlySignal(
+            status: .ready,
+            observedFrom: Date(timeIntervalSince1970: 0),
+            observedThrough: Date(timeIntervalSince1970: 60),
+            observedSeconds: 60,
+            requiredSeconds: 0,
+            evidenceEventCount: 1,
+            focusedSeconds: 60,
+            meaningfulSwitchCount: 0,
+            longestUninterruptedSeconds: 60,
+            observation: "Your activity is still settling into a steady context.",
+            suggestedAction: "Protect a short block for the context you want to stay with.",
+            actionMinutes: 10
+        )
+        let encoded = String(data: try JSONEncoder().encode(signal), encoding: .utf8) ?? ""
+
+        for forbidden in [
+            "app_name", "window_title", "url", "filename", "path",
+            "contact", "intention", "local_label", "stable_id",
+        ] {
+            XCTAssertFalse(encoded.contains(forbidden), "Found forbidden field \(forbidden)")
+        }
     }
 
     func testCacheEmptyRoundTrips() throws {

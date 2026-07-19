@@ -196,6 +196,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 8A7F96CAB8DEDE2A664DFD54 /* Build configuration list for PBXNativeTarget "velvt-mac" */;
 			buildPhases = (
+				D9E0F1A2B3C4D5E6F708192A /* Preflight Distribution Configuration */,
 				5ED7FFF41BDCDD531CCEBA0A /* Sources */,
 				7294A54385813BCC9BAC078F /* Frameworks */,
 				A1B2C3D4E5F60123456789AE /* Bundle Rust Service */,
@@ -251,6 +252,24 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		D9E0F1A2B3C4D5E6F708192A /* Preflight Distribution Configuration */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Preflight Distribution Configuration";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\nif [ \"${VELVT_DISTRIBUTABLE:-NO}\" = \"YES\" ]; then\n  \"${SRCROOT}/../scripts/preflight_distribution.sh\" \"${VELVT_API_BASE_URL:-}\"\nfi\n";
+		};
 		A1B2C3D4E5F60123456789AE /* Bundle Rust Service */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -269,7 +288,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\ncd \"$RUST_DIR\"\ncargo build --release --features onnx 2>&1\ncp target/release/velvt-service \"$RESOURCES_DIR/velvt-service\"\n";
+			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\ncd \"$RUST_DIR\"\nVELVT_API_BASE_URL=\"${VELVT_API_BASE_URL}\" VELVT_APNS_ENV=\"${VELVT_APNS_ENV}\" cargo build --release --features onnx 2>&1\ncp target/release/velvt-service \"$RESOURCES_DIR/velvt-service\"\ncp resources/abstraction-taxonomy-mvp-1.json \"$RESOURCES_DIR/abstraction-taxonomy-mvp-1.json\"\n\"$RESOURCES_DIR/velvt-service\" --version > \"$RESOURCES_DIR/velvt-service.version\"\n\"$RESOURCES_DIR/velvt-service\" --protocol-version > \"$RESOURCES_DIR/velvt-service.protocol-version\"\n";
 		};
 		C8D9E0F1A2B3C4D5E6F70819 /* Inject Custom Info.plist Keys */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -287,7 +306,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\n# GENERATE_INFOPLIST_FILE=YES only supports Xcode's fixed INFOPLIST_KEY_*\n# allowlist (~79 Apple-defined keys) -- custom keys like VelvtAPIBaseURL are\n# silently dropped by Xcode's plist generator no matter how they're set in\n# xcconfig. This phase injects them directly into the already-generated\n# Info.plist using the same resolved build settings the xcconfig defines.\nPLIST=\"${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}\"\nset_plist_string() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 string $2\" \"$PLIST\"\n}\nset_plist_string VelvtAPIBaseURL \"${VELVT_API_BASE_URL}\"\nset_plist_string VelvtAPNSEnv \"${VELVT_APNS_ENV}\"\nset_plist_string VelvtSocketPath \"${VELVT_SOCKET_PATH}\"\nset_plist_string VelvtProtocolVersion \"${VELVT_PROTOCOL_VERSION}\"\nset_plist_string VelvtClientVersion \"${MARKETING_VERSION}\"\n";
+			shellScript = "set -euo pipefail\n# GENERATE_INFOPLIST_FILE=YES only supports Xcode's fixed INFOPLIST_KEY_*\n# allowlist (~79 Apple-defined keys) -- custom keys like VelvtAPIBaseURL are\n# silently dropped by Xcode's plist generator no matter how they're set in\n# xcconfig. This phase injects them directly into the already-generated\n# Info.plist using the same resolved build settings the xcconfig defines.\nPLIST=\"${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}\"\nset_plist_string() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 string $2\" \"$PLIST\"\n}\nset_plist_string VelvtAPIBaseURL \"${VELVT_API_BASE_URL}\"\nset_plist_string VelvtAPNSEnv \"${VELVT_APNS_ENV}\"\nset_plist_string VelvtSocketPath \"${VELVT_SOCKET_PATH}\"\nset_plist_string VelvtProtocolVersion \"${VELVT_PROTOCOL_VERSION}\"\nset_plist_string VelvtClientVersion \"${MARKETING_VERSION}\"\nset_plist_string VelvtBuildConfiguration \"${VELVT_BUILD_CONFIGURATION}\"\nset_plist_string VelvtDistributable \"${VELVT_DISTRIBUTABLE}\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

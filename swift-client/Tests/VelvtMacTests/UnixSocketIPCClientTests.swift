@@ -1,9 +1,21 @@
 import Combine
+import Darwin
+import Network
 import XCTest
 @testable import VelvtMac
 
 final class UnixSocketIPCClientTests: XCTestCase {
     private var cancellables: Set<AnyCancellable> = []
+
+    func testWaitingConnectionRefusedFailsImmediatelyForFastHelperRetry() {
+        let state = NWConnection.State.waiting(.posix(.ECONNREFUSED))
+
+        XCTAssertEqual(
+            UnixSocketTransport.connectionError(for: state),
+            .socket(code: ECONNREFUSED)
+        )
+        XCTAssertNil(UnixSocketTransport.connectionError(for: .preparing))
+    }
 
     func testHandshakeSuccessSendsClientHelloAndConnects() async throws {
         let transport = ScriptedIPCTransport(

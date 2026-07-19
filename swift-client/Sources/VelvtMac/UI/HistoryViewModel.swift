@@ -110,6 +110,14 @@ public final class HistoryViewModel: ObservableObject {
         days.last { !$0.isNoData }
     }
 
+    public var todayReadyDay: DaySummaryViewModel? {
+        readyDay(for: Self.localDateString())
+    }
+
+    public func readyDay(for localDate: String) -> DaySummaryViewModel? {
+        days.first { $0.id == localDate && !$0.isNoData }
+    }
+
     public var baselineProgress: BaselineProgress {
         BaselineProgress(collectedDays: days.filter { !$0.isNoData }.count)
     }
@@ -163,6 +171,21 @@ public final class HistoryViewModel: ObservableObject {
             return DaySummaryViewModel(stub)
         }
         return stubs + existing
+    }
+
+    nonisolated static func localDateString(
+        now: Date = Date(),
+        timeZone: TimeZone = .current
+    ) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let components = calendar.dateComponents([.year, .month, .day], from: now)
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
     }
 }
 

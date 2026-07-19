@@ -119,20 +119,26 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         }
     }
 
-    func testLatestClosedUTCDateStringUsesPreviousUTCDate() throws {
+    func testCurrentLocalDateStringUsesRequestedTimeZone() throws {
         let formatter = ISO8601DateFormatter()
         let now = try XCTUnwrap(formatter.date(from: "2026-06-27T02:00:00Z"))
 
-        XCTAssertEqual(MenuBarDataLoader.latestClosedUTCDateString(now: now), "2026-06-26")
+        XCTAssertEqual(
+            MenuBarDataLoader.currentLocalDateString(
+                now: now,
+                timeZone: TimeZone(secondsFromGMT: 0)!
+            ),
+            "2026-06-27"
+        )
     }
 
-    func testDataLoaderRequestsLatestClosedInsightDateWhenConnectedAndLoggedIn() async {
+    func testDataLoaderRequestsCurrentLocalInsightDateWhenConnectedAndLoggedIn() async {
         let client = FakeIPCClient()
         client.setConnectionStatus(.connected)
         let account = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "user-1"))
         let sut = MenuBarDataLoader(
             ipcClient: client,
-            latestClosedInsightDate: { "2026-06-26" }
+            currentLocalInsightDate: { "2026-06-26" }
         )
 
         sut.start(accountState: account.eraseToAnyPublisher())
@@ -163,7 +169,7 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         let account = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "user-1"))
         let sut = MenuBarDataLoader(
             ipcClient: client,
-            latestClosedInsightDate: { "2026-06-26" },
+            currentLocalInsightDate: { "2026-06-26" },
             retryDelayNanoseconds: 10_000_000
         )
 
@@ -569,7 +575,7 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         let accountState = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "u1"))
         let sut = MenuBarDataLoader(
             ipcClient: client,
-            latestClosedInsightDate: { "2026-07-03" }
+            currentLocalInsightDate: { "2026-07-03" }
         )
         sut.start(accountState: accountState.eraseToAnyPublisher())
 
@@ -594,7 +600,7 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         let accountState = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "u1"))
         let sut = MenuBarDataLoader(
             ipcClient: client,
-            latestClosedInsightDate: { "2026-07-03" }
+            currentLocalInsightDate: { "2026-07-03" }
         )
         sut.start(accountState: accountState.eraseToAnyPublisher())
 

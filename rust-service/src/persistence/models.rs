@@ -122,6 +122,7 @@ pub struct UploadQueueDiagnostics {
     pub rejected_batch_count: u64,
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub last_error_code: Option<String>,
+    pub last_successful_sync_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

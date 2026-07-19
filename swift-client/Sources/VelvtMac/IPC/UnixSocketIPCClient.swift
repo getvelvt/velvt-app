@@ -305,12 +305,10 @@ actor UnixSocketTransport: IPCTransportProtocol {
                     switch state {
                     case .ready:
                         gate.resume()
-                    case let .failed(error):
-                        gate.resume(throwing: IPCError.socket(code: error.safeCode))
-                    case .cancelled:
-                        gate.resume(throwing: IPCError.connectionClosed)
                     default:
-                        break
+                        if let error = Self.connectionError(for: state) {
+                            gate.resume(throwing: error)
+                        }
                     }
                 }
                 connection.start(queue: DispatchQueue(label: "com.velvt.mac.ipc.socket"))
@@ -366,6 +364,21 @@ actor UnixSocketTransport: IPCTransportProtocol {
         connection?.cancel()
         connection = nil
         bufferedData.removeAll(keepingCapacity: false)
+    }
+
+    /// Network.framework reports a refused Unix-domain connection as
+    /// `.waiting`, not `.failed`. Treating that as an immediate transport
+    /// error lets the client's 250 ms bundled-helper retry cadence run instead
+    /// of holding the startup UI until the five-second safety timeout.
+    static func connectionError(for state: NWConnection.State) -> IPCError? {
+        switch state {
+        case let .waiting(error), let .failed(error):
+            .socket(code: error.safeCode)
+        case .cancelled:
+            .connectionClosed
+        default:
+            nil
+        }
     }
 }
 

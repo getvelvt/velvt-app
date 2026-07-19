@@ -177,6 +177,31 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertNil(value["intention"])
     }
 
+    func testEarlyLocalSignalContainsNoRawActivityFields() throws {
+        let signal = LocalEarlySignal(
+            status: .ready,
+            observedFrom: Date(timeIntervalSince1970: 0),
+            observedThrough: Date(timeIntervalSince1970: 60),
+            observedSeconds: 60,
+            requiredSeconds: 0,
+            evidenceEventCount: 1,
+            focusedSeconds: 60,
+            meaningfulSwitchCount: 0,
+            longestUninterruptedSeconds: 60,
+            observation: "Your activity is still settling into a steady context.",
+            suggestedAction: "Protect a short block for the context you want to stay with.",
+            actionMinutes: 10
+        )
+        let encoded = String(data: try JSONEncoder().encode(signal), encoding: .utf8) ?? ""
+
+        for forbidden in [
+            "app_name", "window_title", "url", "filename", "path",
+            "contact", "intention", "local_label", "stable_id",
+        ] {
+            XCTAssertFalse(encoded.contains(forbidden), "Found forbidden field \(forbidden)")
+        }
+    }
+
     func testCacheEmptyRoundTrips() throws {
         let message = ServerMessage.cacheEmpty(CacheEmpty(payloadType: "insight_payload"))
         XCTAssertEqual(try decoder.decode(ServerMessage.self, from: encoder.encode(message)), message)

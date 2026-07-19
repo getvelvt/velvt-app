@@ -20,13 +20,15 @@ extension Color {
 
 /// Pulses content behind a `.redacted` placeholder to produce a shimmer effect.
 struct ShimmerModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var opacity: Double = 0.3
 
     func body(content: Content) -> some View {
         content
             .redacted(reason: .placeholder)
-            .opacity(opacity)
+            .opacity(reduceMotion ? 0.5 : opacity)
             .onAppear {
+                guard !reduceMotion else { return }
                 withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
                     opacity = 0.65
                 }

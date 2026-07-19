@@ -43,6 +43,20 @@ final class InsightViewModelTests: XCTestCase {
         XCTAssertEqual(sut.text, "Second insight.")
     }
 
+    func testOlderCloudInsightIsNotEligibleForToday() {
+        let sut = InsightViewModel()
+        sut.update(from: InsightPayload(
+            date: "2026-07-17",
+            text: "Older observation",
+            confidenceLevel: .medium,
+            lowConfidence: false,
+            generatedAt: Date()
+        ))
+
+        XCTAssertFalse(sut.isForLocalDate("2026-07-18"))
+        XCTAssertTrue(sut.isForLocalDate("2026-07-17"))
+    }
+
     // MARK: - Date formatting
 
     func testTodayDateString() {

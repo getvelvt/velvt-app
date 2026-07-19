@@ -10,7 +10,16 @@ public struct AuthenticationStatusPresentation: Equatable {
     public let text: String
     public let indicatorColor: AuthenticationStatusIndicatorColor
 
-    public init(accountState: AccountState, email: String?) {
+    public init(
+        accountState: AccountState,
+        email: String?,
+        requiresReauthentication: Bool = false
+    ) {
+        if requiresReauthentication {
+            text = "Sign in required"
+            indicatorColor = .red
+            return
+        }
         switch accountState {
         case .loggedIn:
             text = email?.isEmpty == false ? email! : "Authenticated"

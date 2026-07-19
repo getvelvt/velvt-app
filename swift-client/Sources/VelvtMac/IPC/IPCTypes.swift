@@ -377,13 +377,16 @@ public struct RequestLatestHistory: Codable, Equatable, Sendable {
 
 public struct CacheEmpty: Codable, Equatable, Sendable {
     public let payloadType: String
+    public let reason: String?
 
-    public init(payloadType: String) {
+    public init(payloadType: String, reason: String? = nil) {
         self.payloadType = payloadType
+        self.reason = reason
     }
 
     private enum CodingKeys: String, CodingKey {
         case payloadType = "payload_type"
+        case reason
     }
 }
 
@@ -1045,6 +1048,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
     public let uploadStatus: String
     public let lastUploadErrorCode: String?
     public let nextUploadAttemptAt: Date?
+    public let lastSuccessfulSyncAt: Date?
     public let pendingUploadBatchCount: Int
     public let failedUploadBatchCount: Int
     public let rejectedUploadBatchCount: Int
@@ -1057,6 +1061,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         case uploadStatus = "upload_status"
         case lastUploadErrorCode = "last_upload_error_code"
         case nextUploadAttemptAt = "next_upload_attempt_at"
+        case lastSuccessfulSyncAt = "last_successful_sync_at"
         case pendingUploadBatchCount = "pending_upload_batch_count"
         case failedUploadBatchCount = "failed_upload_batch_count"
         case rejectedUploadBatchCount = "rejected_upload_batch_count"
@@ -1070,6 +1075,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         uploadStatus: String,
         lastUploadErrorCode: String?,
         nextUploadAttemptAt: Date?,
+        lastSuccessfulSyncAt: Date? = nil,
         pendingUploadBatchCount: Int,
         failedUploadBatchCount: Int,
         rejectedUploadBatchCount: Int,
@@ -1081,6 +1087,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         self.uploadStatus = uploadStatus
         self.lastUploadErrorCode = lastUploadErrorCode
         self.nextUploadAttemptAt = nextUploadAttemptAt
+        self.lastSuccessfulSyncAt = lastSuccessfulSyncAt
         self.pendingUploadBatchCount = pendingUploadBatchCount
         self.failedUploadBatchCount = failedUploadBatchCount
         self.rejectedUploadBatchCount = rejectedUploadBatchCount
@@ -1095,6 +1102,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         uploadStatus = try container.decodeIfPresent(String.self, forKey: .uploadStatus) ?? (cloudReady ? "ready" : "network_unavailable")
         lastUploadErrorCode = try container.decodeIfPresent(String.self, forKey: .lastUploadErrorCode)
         nextUploadAttemptAt = try container.decodeIfPresent(Date.self, forKey: .nextUploadAttemptAt)
+        lastSuccessfulSyncAt = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulSyncAt)
         pendingUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .pendingUploadBatchCount) ?? 0
         failedUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .failedUploadBatchCount) ?? 0
         rejectedUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .rejectedUploadBatchCount) ?? 0
@@ -1138,6 +1146,68 @@ public struct LocalTimelineSegment: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+public enum LocalEarlySignalStatus: String, Codable, Equatable, Sendable {
+    case insufficientEvidence = "insufficient_evidence"
+    case ready
+}
+
+public struct LocalEarlySignal: Codable, Equatable, Sendable {
+    public let status: LocalEarlySignalStatus
+    public let observedFrom: Date?
+    public let observedThrough: Date
+    public let observedSeconds: Int
+    public let requiredSeconds: Int
+    public let evidenceEventCount: Int
+    public let focusedSeconds: Int
+    public let meaningfulSwitchCount: Int
+    public let longestUninterruptedSeconds: Int
+    public let observation: String?
+    public let suggestedAction: String?
+    public let actionMinutes: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case status, observation
+        case observedFrom = "observed_from"
+        case observedThrough = "observed_through"
+        case observedSeconds = "observed_seconds"
+        case requiredSeconds = "required_seconds"
+        case evidenceEventCount = "evidence_event_count"
+        case focusedSeconds = "focused_seconds"
+        case meaningfulSwitchCount = "meaningful_switch_count"
+        case longestUninterruptedSeconds = "longest_uninterrupted_seconds"
+        case suggestedAction = "suggested_action"
+        case actionMinutes = "action_minutes"
+    }
+
+    public init(
+        status: LocalEarlySignalStatus,
+        observedFrom: Date?,
+        observedThrough: Date,
+        observedSeconds: Int,
+        requiredSeconds: Int,
+        evidenceEventCount: Int,
+        focusedSeconds: Int,
+        meaningfulSwitchCount: Int,
+        longestUninterruptedSeconds: Int,
+        observation: String?,
+        suggestedAction: String?,
+        actionMinutes: Int
+    ) {
+        self.status = status
+        self.observedFrom = observedFrom
+        self.observedThrough = observedThrough
+        self.observedSeconds = observedSeconds
+        self.requiredSeconds = requiredSeconds
+        self.evidenceEventCount = evidenceEventCount
+        self.focusedSeconds = focusedSeconds
+        self.meaningfulSwitchCount = meaningfulSwitchCount
+        self.longestUninterruptedSeconds = longestUninterruptedSeconds
+        self.observation = observation
+        self.suggestedAction = suggestedAction
+        self.actionMinutes = actionMinutes
+    }
+}
+
 public struct LocalDashboardSnapshot: Codable, Equatable, Sendable {
     public let generatedAt: Date
     public let windowStart: Date
@@ -1145,10 +1215,12 @@ public struct LocalDashboardSnapshot: Codable, Equatable, Sendable {
     public let switchCount: Int
     public let switchesPerHour: Double
     public let coverage: LocalDashboardCoverage
+    public let earlySignal: LocalEarlySignal
     public let segments: [LocalTimelineSegment]
 
     private enum CodingKeys: String, CodingKey {
         case coverage, segments
+        case earlySignal = "early_signal"
         case generatedAt = "generated_at"
         case windowStart = "window_start"
         case windowEnd = "window_end"

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LocalDashboardSnapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "generated_at",
+    "window_start",
+    "window_end",
+    "switch_count",
+    "switches_per_hour",
+    "coverage",
+    "early_signal",
+    "segments"
+  ],
+  "properties": {
+    "generated_at": { "type": "string", "format": "date-time" },
+    "window_start": { "type": "string", "format": "date-time" },
+    "window_end": { "type": "string", "format": "date-time" },
+    "switch_count": { "type": "integer", "minimum": 0 },
+    "switches_per_hour": { "type": "number", "minimum": 0 },
+    "coverage": { "enum": ["no_data", "partial", "good"] },
+    "early_signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "observed_through",
+        "observed_seconds",
+        "required_seconds",
+        "evidence_event_count",
+        "focused_seconds",
+        "meaningful_switch_count",
+        "longest_uninterrupted_seconds",
+        "action_minutes"
+      ],
+      "properties": {
+        "status": { "enum": ["insufficient_evidence", "ready"] },
+        "observed_from": { "type": ["string", "null"], "format": "date-time" },
+        "observed_through": { "type": "string", "format": "date-time" },
+        "observed_seconds": { "type": "integer", "minimum": 0, "maximum": 3600 },
+        "required_seconds": { "type": "integer", "minimum": 0, "maximum": 60 },
+        "evidence_event_count": { "type": "integer", "minimum": 0, "maximum": 512 },
+        "focused_seconds": { "type": "integer", "minimum": 0, "maximum": 3600 },
+        "meaningful_switch_count": { "type": "integer", "minimum": 0 },
+        "longest_uninterrupted_seconds": { "type": "integer", "minimum": 0, "maximum": 3600 },
+        "observation": { "type": ["string", "null"] },
+        "suggested_action": { "type": ["string", "null"] },
+        "action_minutes": { "type": "integer", "minimum": 0, "maximum": 30 }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "maxItems": 512,
+      "items": { "type": "object" }
+    }
+  }
+}

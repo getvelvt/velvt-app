@@ -153,6 +153,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             simulateNotification: {
                 _ = notificationCoordinator.simulateDebugInsightReceipt()
             },
+            restartLocalService: { [weak serviceProcessLauncher] in
+                serviceProcessLauncher?.restart()
+            },
             terminateApp: { NSApp.terminate(nil) }
         )
         menuBar.install()

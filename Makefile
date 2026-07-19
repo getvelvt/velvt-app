@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app build-app-local-core clean
+.PHONY: check-rust-toolchain check-swift-toolchain build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app package-release verify-release build-app-local-core clean
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -52,20 +52,25 @@ test-all: test-rust test-swift
 # Produces a single runnable artifact: dist/velvt-mac.app. The Xcode
 # "Bundle Rust Service" Run Script phase builds cargo --release and embeds
 # the Rust binary at Contents/Resources/velvt-service automatically.
-# ServiceManager (not ServiceProcessLauncher) manages the installed helper
-# via SMAppService — no manual binary copy needed here.
-build-app: check-swift-toolchain
-	rm -rf dist
+# ServiceProcessLauncher owns the embedded helper for the app's lifetime; no
+# external runtime or manual helper installation is required.
+# Backward-compatible release entry point.
+build-app: package-release
+
+package-release: check-swift-toolchain
+	./scripts/preflight_distribution.sh "$(VELVT_API_BASE_URL)"
+	rm -rf dist/.derivedData-release dist/velvt-mac.app
 	mkdir -p dist
 	xcodebuild \
 		-project swift-client/VelvtMac.xcodeproj \
 		-scheme velvt-mac \
+		-configuration Release \
 		-destination 'platform=macOS' \
-		-derivedDataPath dist/.derivedData \
+		-derivedDataPath dist/.derivedData-release \
 		VELVT_API_BASE_URL="$(VELVT_API_BASE_URL)" \
 		build
-	cp -R dist/.derivedData/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
-	rm -rf dist/.derivedData
+	ditto dist/.derivedData-release/Build/Products/Release/velvt-mac.app dist/velvt-mac.app
+	rm -rf dist/.derivedData-release
 	# Prefer a stable local development identity so macOS TCC can remember
 	# Accessibility permission across relaunches and rebuilds. Fall back to
 	# ad-hoc signing when the configured identity is not installed locally.
@@ -73,20 +78,25 @@ build-app: check-swift-toolchain
 		echo "Configured signing identity unavailable; falling back to ad-hoc signing."; \
 		codesign --force --deep --sign - dist/velvt-mac.app; \
 	fi
-	@echo "Built dist/velvt-mac.app"
+	./scripts/verify_release.sh dist/velvt-mac.app
+	@echo "Built and verified Release artifact dist/velvt-mac.app"
+
+verify-release:
+	./scripts/verify_release.sh dist/velvt-mac.app
 
 build-app-local-core: check-swift-toolchain
-	rm -rf dist
+	rm -rf dist/.derivedData-local dist/velvt-mac.app
 	mkdir -p dist
 	xcodebuild \
 		-project swift-client/VelvtMac.xcodeproj \
 		-scheme velvt-mac \
+		-configuration Debug \
 		-destination 'platform=macOS' \
-		-derivedDataPath dist/.derivedData \
+		-derivedDataPath dist/.derivedData-local \
 		VELVT_API_BASE_URL="$(VELVT_LOCAL_API_BASE_URL)" \
 		build
-	cp -R dist/.derivedData/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
-	rm -rf dist/.derivedData
+	ditto dist/.derivedData-local/Build/Products/Debug/velvt-mac.app dist/velvt-mac.app
+	rm -rf dist/.derivedData-local
 	if ! codesign --force --deep --sign "$(VELVT_CODESIGN_IDENTITY)" dist/velvt-mac.app; then \
 		echo "Configured signing identity unavailable; falling back to ad-hoc signing."; \
 		codesign --force --deep --sign - dist/velvt-mac.app; \

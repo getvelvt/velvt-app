@@ -85,7 +85,7 @@ or request account deletion. Alpha participation is voluntary and can end at any
 
 - 80% can explain Velvt’s purpose after one minute.
 - 90% complete permissions without assistance.
-- First useful observation within five minutes.
+- First useful privacy-safe local observation within 90 seconds of qualifying activity.
 - No connection-state flickering during normal sleep/wake.
 - Every insight has inspectable evidence.
 - At least 60% rate one first-week insight as useful.

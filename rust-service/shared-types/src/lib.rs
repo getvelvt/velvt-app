@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -743,6 +743,33 @@ pub struct LocalTimelineSegment {
     pub confidence: ClassificationConfidence,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalEarlySignalStatus {
+    InsufficientEvidence,
+    Ready,
+}
+
+/// A bounded, Rust-authored summary of privacy-safe local evidence. Copy is
+/// deliberately observational: no productivity score, causal claim, raw
+/// activity, or inferred intention can be represented by this contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalEarlySignal {
+    pub status: LocalEarlySignalStatus,
+    pub observed_from: Option<DateTime<Utc>>,
+    pub observed_through: DateTime<Utc>,
+    pub observed_seconds: u64,
+    pub required_seconds: u64,
+    pub evidence_event_count: u32,
+    pub focused_seconds: u64,
+    pub meaningful_switch_count: u32,
+    pub longest_uninterrupted_seconds: u64,
+    pub observation: Option<String>,
+    pub suggested_action: Option<String>,
+    pub action_minutes: u32,
+}
+
 /// Rust-authored local dashboard data. Swift renders this payload and does not
 /// scan event history or calculate competing metrics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -754,6 +781,7 @@ pub struct LocalDashboardSnapshot {
     pub switch_count: u32,
     pub switches_per_hour: f64,
     pub coverage: LocalDashboardCoverage,
+    pub early_signal: LocalEarlySignal,
     pub segments: Vec<LocalTimelineSegment>,
 }
 
@@ -813,6 +841,7 @@ pub struct MenuStatus {
     pub upload_status: String,
     pub last_upload_error_code: Option<String>,
     pub next_upload_attempt_at: Option<DateTime<Utc>>,
+    pub last_successful_sync_at: Option<DateTime<Utc>>,
     pub pending_upload_batch_count: u64,
     pub failed_upload_batch_count: u64,
     pub rejected_upload_batch_count: u64,
@@ -826,6 +855,8 @@ pub struct MenuStatus {
 pub struct CacheEmpty {
     /// Which payload type was requested (`"insight_payload"` or `"history_payload"`).
     pub payload_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Sent to all connected clients during a graceful service shutdown.

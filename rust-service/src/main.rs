@@ -5,6 +5,20 @@
 
 #[tokio::main]
 async fn main() {
+    if let Some(argument) = std::env::args().nth(1) {
+        match argument.as_str() {
+            "--protocol-version" => {
+                println!("{}", velvt_shared_types::PROTOCOL_VERSION);
+                return;
+            }
+            "--version" => {
+                println!("{}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
+            _ => {}
+        }
+    }
+
     use tracing_subscriber::EnvFilter;
     use velvt_service::abstraction::{AbstractionEngine, Taxonomy, API_EXPECTED_TAXONOMY_VERSION};
     use velvt_service::config::ServiceConfig;

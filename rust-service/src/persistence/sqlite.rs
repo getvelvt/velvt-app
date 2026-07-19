@@ -761,6 +761,14 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
+        let last_successful_sync_at = connection
+            .query_row(
+                "SELECT MAX(sent_at) FROM upload_batch WHERE status = 'sent'",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )?
+            .map(|timestamp| timestamp_to_datetime(timestamp, 0))
+            .transpose()?;
         Ok(UploadQueueDiagnostics {
             pending_batch_count,
             failed_batch_count,
@@ -769,6 +777,7 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
                 .map(|timestamp| timestamp_to_datetime(timestamp, 3))
                 .transpose()?,
             last_error_code,
+            last_successful_sync_at,
         })
     }
 

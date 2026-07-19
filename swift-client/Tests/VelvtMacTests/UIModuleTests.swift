@@ -9,7 +9,7 @@ import XCTest
 final class MenuBarNavigationTests: XCTestCase {
 
     func testConnectionPresentationUsesRequestedLabelsAndColors() {
-        XCTAssertEqual(PopoverConnectionPresentation(status: .connected).label, "Connected")
+        XCTAssertEqual(PopoverConnectionPresentation(status: .connected).label, "Local service connected")
         XCTAssertEqual(PopoverConnectionPresentation(status: .connecting).label, "Connecting")
         XCTAssertEqual(PopoverConnectionPresentation(status: .disconnected).label, "Disconnected")
     }
@@ -154,6 +154,51 @@ final class MenuBarNavigationTests: XCTestCase {
         ])
     }
 
+    func testEarlyLocalSignalAppearsOnlyWithSufficientEvidence() {
+        XCTAssertEqual(
+            TodayObservationResolver.resolve(
+                cloudAvailable: false,
+                cloudSourceDate: "",
+                currentLocalDate: "2026-07-18",
+                earlySignalStatus: .insufficientEvidence
+            ),
+            .progress
+        )
+        XCTAssertEqual(
+            TodayObservationResolver.resolve(
+                cloudAvailable: false,
+                cloudSourceDate: "",
+                currentLocalDate: "2026-07-18",
+                earlySignalStatus: .ready
+            ),
+            .earlyLocal
+        )
+    }
+
+    func testCurrentDayCloudInsightReplacesEarlySignalWithoutLoadingState() {
+        XCTAssertEqual(
+            TodayObservationResolver.resolve(
+                cloudAvailable: true,
+                cloudSourceDate: "2026-07-18",
+                currentLocalDate: "2026-07-18",
+                earlySignalStatus: .ready
+            ),
+            .cloud
+        )
+    }
+
+    func testOlderCloudInsightCannotReplaceTodayEarlySignal() {
+        XCTAssertEqual(
+            TodayObservationResolver.resolve(
+                cloudAvailable: true,
+                cloudSourceDate: "2026-07-17",
+                currentLocalDate: "2026-07-18",
+                earlySignalStatus: .ready
+            ),
+            .earlyLocal
+        )
+    }
+
     func testTemporaryReconnectKeepsConfirmedConnectedPresentationDuringGrace() async {
         let client = FakeIPCClient()
         let scheduler = ManualConnectionGraceScheduler()
@@ -232,6 +277,17 @@ final class MenuBarNavigationTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.text, "Not Authenticated")
+        XCTAssertEqual(presentation.indicatorColor, .red)
+    }
+
+    func testAuthenticationPresentationShowsReauthenticationRecovery() {
+        let presentation = AuthenticationStatusPresentation(
+            accountState: .loggedOut,
+            email: nil,
+            requiresReauthentication: true
+        )
+
+        XCTAssertEqual(presentation.text, "Sign in required")
         XCTAssertEqual(presentation.indicatorColor, .red)
     }
 

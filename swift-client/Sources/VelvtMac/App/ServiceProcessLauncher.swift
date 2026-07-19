@@ -37,7 +37,17 @@ public final class ServiceProcessLauncher {
 
         let task = Process()
         task.executableURL = serviceURL
-        task.environment = environment
+        var serviceEnvironment = environment
+        // Bundled helpers always use the endpoint compiled into the signed
+        // artifact, never a developer override inherited by the app process.
+        serviceEnvironment.removeValue(forKey: "VELVT_API_BASE_URL")
+        if let taxonomyURL = Bundle.main.url(
+            forResource: "abstraction-taxonomy-mvp-1",
+            withExtension: "json"
+        ) {
+            serviceEnvironment["VELVT_ABSTRACTION_TAXONOMY_PATH"] = taxonomyURL.path
+        }
+        task.environment = serviceEnvironment
         let outputPipe = Pipe()
         let errorPipe = Pipe()
         task.standardOutput = outputPipe
@@ -97,6 +107,16 @@ public final class ServiceProcessLauncher {
         (task.standardError as? Pipe)?.fileHandleForReading.readabilityHandler = nil
         task.terminate()
         process = nil
+    }
+
+    /// Performs a graceful, user-requested helper restart. The existing IPC
+    /// four-second grace interval covers this short launchd-free handoff so
+    /// valid displayed data remains visible while the socket is recreated.
+    public func restart() {
+        stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+            self?.start()
+        }
     }
 }
 

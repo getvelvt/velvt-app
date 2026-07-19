@@ -87,26 +87,28 @@ public final class MenuStatusViewModel: ObservableObject {
 @MainActor
 final class MenuBarDataLoader {
     private let ipcClient: any IPCClientProtocol
-    private let latestClosedInsightDate: () -> String
+    private let currentLocalInsightDate: () -> String
     private let retryDelayNanoseconds: UInt64
     private var cancellable: AnyCancellable?
     private var requestedForConnection = false
     private var requestInFlight = false
     private var canRequest = false
 
-    init(ipcClient: any IPCClientProtocol, latestClosedInsightDate: @escaping () -> String = {
-        MenuBarDataLoader.latestClosedUTCDateString()
+    init(ipcClient: any IPCClientProtocol, currentLocalInsightDate: @escaping () -> String = {
+        MenuBarDataLoader.currentLocalDateString()
     }, retryDelayNanoseconds: UInt64 = 2_000_000_000) {
         self.ipcClient = ipcClient
-        self.latestClosedInsightDate = latestClosedInsightDate
+        self.currentLocalInsightDate = currentLocalInsightDate
         self.retryDelayNanoseconds = retryDelayNanoseconds
     }
 
-    nonisolated static func latestClosedUTCDateString(now: Date = Date()) -> String {
+    nonisolated static func currentLocalDateString(
+        now: Date = Date(),
+        timeZone: TimeZone = .current
+    ) -> String {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let closedDay = calendar.date(byAdding: .day, value: -1, to: now) ?? now
-        let components = calendar.dateComponents([.year, .month, .day], from: closedDay)
+        calendar.timeZone = timeZone
+        let components = calendar.dateComponents([.year, .month, .day], from: now)
         return String(
             format: "%04d-%02d-%02d",
             components.year ?? 0,
@@ -134,9 +136,9 @@ final class MenuBarDataLoader {
     private func requestDisplayDataIfNeeded() {
         guard canRequest, !requestedForConnection, !requestInFlight else { return }
         requestInFlight = true
-        Task { [weak self, ipcClient, latestClosedInsightDate] in
+        Task { [weak self, ipcClient, currentLocalInsightDate] in
             do {
-                try await ipcClient.send(.requestLatestInsight(.init(date: latestClosedInsightDate())))
+                try await ipcClient.send(.requestLatestInsight(.init(date: currentLocalInsightDate())))
                 try await ipcClient.send(.requestLatestHistory(.init(days: 7)))
                 await MainActor.run {
                     guard let self else { return }
@@ -212,6 +214,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     @Published public private(set) var state: DisplayState = .loading
     @Published public private(set) var insightAvailability: InsightAvailability = .loading
     @Published public private(set) var historyAvailability: DeliveryAvailability = .loading
+    @Published public private(set) var insightNotReadyReason: String?
 
     public var displayState: AnyPublisher<DisplayState, Never> {
         $state.eraseToAnyPublisher()
@@ -301,6 +304,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
         switch payload.payloadType {
         case "insight_payload":
             insightAvailability = .notGenerated
+            insightNotReadyReason = payload.reason
         case "history_payload":
             historyAvailability = .notGenerated
         default:
@@ -320,6 +324,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
         insightViewModel.reset()
         historyViewModel.reset()
         insightAvailability = .loading
+        insightNotReadyReason = nil
         historyAvailability = .loading
         state = .loading
     }

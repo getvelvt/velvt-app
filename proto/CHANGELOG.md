@@ -1,5 +1,13 @@
 # IPC Protocol Changelog
 
+## Version 19 - 2026-07-18
+
+- The device-local dashboard now includes a Rust-authored early Today signal
+  with finite evidence progress, actual observation bounds, broad-category
+  aggregates, and one modest local action.
+- The early signal contains no raw app names, titles, URLs, filenames, paths,
+  contacts, local labels, or inferred intentions.
+
 ## Version 18 - 2026-07-18
 
 - Daily insights now include the exact privacy-safe evidence layers, approved

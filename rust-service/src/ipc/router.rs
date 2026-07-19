@@ -170,6 +170,7 @@ impl MenuStatusProviding for MenuStatusProvider {
                     rejected_batch_count: 0,
                     next_attempt_at: None,
                     last_error_code: None,
+                    last_successful_sync_at: None,
                 }
             });
             let upload_status = upload_status_for(cloud_ready, &diagnostics).to_owned();
@@ -179,6 +180,7 @@ impl MenuStatusProviding for MenuStatusProvider {
                 upload_status,
                 last_upload_error_code: diagnostics.last_error_code,
                 next_upload_attempt_at: diagnostics.next_attempt_at,
+                last_successful_sync_at: diagnostics.last_successful_sync_at,
                 pending_upload_batch_count: diagnostics.pending_batch_count,
                 failed_upload_batch_count: diagnostics.failed_batch_count,
                 rejected_upload_batch_count: diagnostics.rejected_batch_count,
@@ -199,6 +201,7 @@ impl MenuStatusProviding for EmptyMenuStatusProvider {
                 upload_status: "network_unavailable".into(),
                 last_upload_error_code: None,
                 next_upload_attempt_at: None,
+                last_successful_sync_at: None,
                 pending_upload_batch_count: 0,
                 failed_upload_batch_count: 0,
                 rejected_upload_batch_count: 0,
@@ -593,10 +596,10 @@ impl MessageRouter for R7Router {
                                 error = %err,
                                 "shaped insight failed validation; sending cache_empty"
                             );
-                            cache_empty("insight_payload")
+                            cache_empty("insight_payload", "invalid_cached_payload")
                         }
                     },
-                    Ok(None) => cache_empty("insight_payload"),
+                    Ok(None) => cache_empty("insight_payload", "insufficient_evidence"),
                     Err(err) => {
                         tracing::warn!(
                             date = %req.date,
@@ -604,7 +607,7 @@ impl MessageRouter for R7Router {
                             error = %err,
                             "failed to read insight from cache"
                         );
-                        cache_empty("insight_payload")
+                        cache_empty("insight_payload", "backend_unavailable")
                     }
                 };
                 Ok(Some(response))
@@ -622,7 +625,7 @@ impl MessageRouter for R7Router {
                                 error = %err,
                                 "shaped history failed validation; sending cache_empty"
                             );
-                            cache_empty("history_payload")
+                            cache_empty("history_payload", "invalid_cached_payload")
                         }
                     },
                     Err(err) => {
@@ -632,7 +635,7 @@ impl MessageRouter for R7Router {
                             error = %err,
                             "failed to read history from cache"
                         );
-                        cache_empty("history_payload")
+                        cache_empty("history_payload", "backend_unavailable")
                     }
                 };
                 Ok(Some(response))
@@ -857,8 +860,9 @@ fn work_block_error(code: &str) -> ServerMessage {
     })
 }
 
-fn cache_empty(payload_type: &'static str) -> ServerMessage {
+fn cache_empty(payload_type: &'static str, reason: &'static str) -> ServerMessage {
     ServerMessage::CacheEmpty(CacheEmpty {
         payload_type: payload_type.to_owned(),
+        reason: Some(reason.to_owned()),
     })
 }

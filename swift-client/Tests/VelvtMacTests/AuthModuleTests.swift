@@ -312,6 +312,7 @@ final class AccountStateManagerTests: XCTestCase {
         await fulfillment(of: [settled], timeout: 1)
         XCTAssertEqual(sut.accountState, .loggedOut)
         XCTAssertTrue(keychain.isEmpty)
+        XCTAssertFalse(sut.requiresReauthentication)
     }
 
     // MARK: Invalid transitions — must be silently rejected
@@ -361,6 +362,7 @@ final class AccountStateManagerTests: XCTestCase {
         await fulfillment(of: [settled], timeout: 1)
         XCTAssertEqual(sut.accountState, .loggedOut)
         XCTAssertTrue(keychain.isEmpty)
+        XCTAssertTrue(sut.requiresReauthentication)
     }
 
     // MARK: Server push: DeviceRevoked

@@ -24,10 +24,16 @@ public final class InsightViewModel: ObservableObject {
     /// Muted monospace timestamp: "Generated HH:mm"
     @Published public private(set) var generatedAt: String = ""
     @Published public private(set) var isLoading: Bool = true
+    @Published public private(set) var sourceDate: String = ""
 
     public init() {}
 
+    public func isForLocalDate(_ localDate: String) -> Bool {
+        !isLoading && sourceDate == localDate
+    }
+
     public func update(from payload: InsightPayload) {
+        sourceDate = payload.date
         text = payload.text
         observation = payload.evidence.observation
         baselineComparison = payload.evidence.comparison
@@ -45,6 +51,7 @@ public final class InsightViewModel: ObservableObject {
     }
 
     public func reset() {
+        sourceDate = ""
         text = ""
         observation = ""
         baselineComparison = ""

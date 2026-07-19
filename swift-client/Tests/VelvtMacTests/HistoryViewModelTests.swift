@@ -325,6 +325,26 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertEqual(row.id, "2026-06-10")
   }
 
+  func testTodaySelectsOnlyExactCurrentLocalDate() {
+    let sut = HistoryViewModel()
+    sut.update(from: HistoryPayload(days: 2, summaries: [
+      readySummary(date: "2026-07-17"),
+      readySummary(date: "2026-07-18"),
+    ]))
+
+    XCTAssertEqual(sut.readyDay(for: "2026-07-18")?.id, "2026-07-18")
+  }
+
+  func testOlderSummaryCannotMasqueradeAsToday() {
+    let sut = HistoryViewModel()
+    sut.update(from: HistoryPayload(days: 1, summaries: [
+      readySummary(date: "2026-07-17")
+    ]))
+
+    XCTAssertNil(sut.readyDay(for: "2026-07-18"))
+    XCTAssertEqual(sut.latestReadyDay?.id, "2026-07-17")
+  }
+
   // MARK: - Helpers
 
   private func noDataSummary(date: String = "2026-06-09") -> DailySummary {

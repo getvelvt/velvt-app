@@ -221,6 +221,7 @@ fn sent_upload_batches_do_not_report_stale_retry_errors() {
     let diagnostics = repository.queue_diagnostics().unwrap();
     assert_eq!(diagnostics.failed_batch_count, 0);
     assert_eq!(diagnostics.last_error_code, None);
+    assert!(diagnostics.last_successful_sync_at.is_some());
 }
 
 #[test]

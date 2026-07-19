@@ -1,6 +1,36 @@
 import Combine
+import SwiftUI
 import XCTest
 @testable import VelvtMac
+
+@MainActor
+private final class TestPopover: PopoverPresenting {
+    var behavior: NSPopover.Behavior = .transient
+    var animates = false
+    var contentViewController: NSViewController?
+    var contentSize = NSSize.zero
+    private(set) var isShown = false
+
+    func show(relativeTo _: NSRect, of _: NSView, preferredEdge _: NSRectEdge) {
+        isShown = true
+    }
+
+    func close() {
+        isShown = false
+    }
+}
+
+@MainActor
+private final class TestStatusItemManager: StatusItemManaging {
+    let button: NSButton? = NSButton()
+
+    func install(target: AnyObject, action: Selector) {
+        button?.target = target
+        button?.action = action
+    }
+
+    func remove() {}
+}
 
 @MainActor
 final class MenuBarControllerTests: XCTestCase {
@@ -15,6 +45,7 @@ final class MenuBarControllerTests: XCTestCase {
     func testPopoverUsesPreferredCompactSizeWhenScreenAllows() {
         let visibleFrame = CGRect(x: 0, y: 0, width: 1_440, height: 900)
 
+        XCTAssertEqual(MenuBarPopoverLayout.preferredContentSize, CGSize(width: 660, height: 350))
         XCTAssertEqual(
             MenuBarPopoverLayout.contentSize(for: visibleFrame),
             MenuBarPopoverLayout.preferredContentSize
@@ -22,7 +53,7 @@ final class MenuBarControllerTests: XCTestCase {
     }
 
     func testPopoverSizeStaysWithinVisibleScreen() {
-        let visibleFrame = CGRect(x: 0, y: 0, width: 600, height: 500)
+        let visibleFrame = CGRect(x: 0, y: 0, width: 600, height: 300)
         let size = MenuBarPopoverLayout.contentSize(for: visibleFrame)
 
         XCTAssertLessThanOrEqual(size.width, visibleFrame.width)
@@ -31,11 +62,35 @@ final class MenuBarControllerTests: XCTestCase {
         XCTAssertEqual(size.height, visibleFrame.height - MenuBarPopoverLayout.screenInset)
     }
 
+    func testHostingControllerCannotOverrideExplicitPopoverSize() throws {
+        let popover = TestPopover()
+
+        _ = MenuBarController(
+            presentation: makePresentation(),
+            displayCoordinator: ConcreteDisplayDataCoordinator(),
+            popover: popover,
+            statusItemManager: TestStatusItemManager(),
+            activateApp: {}
+        )
+
+        let hostingController = try XCTUnwrap(
+            popover.contentViewController as? NSHostingController<MenuBarPopoverView>
+        )
+        XCTAssertTrue(hostingController.sizingOptions.isEmpty)
+        XCTAssertEqual(popover.contentSize, MenuBarPopoverLayout.preferredContentSize)
+    }
+
     // MARK: - Popover stays open across data pushes
 
     func testPopoverStaysOpenWhenANewInsightArrivesWhileShown() {
         let coordinator = ConcreteDisplayDataCoordinator()
-        let sut = MenuBarController(presentation: makePresentation(), displayCoordinator: coordinator)
+        let sut = MenuBarController(
+            presentation: makePresentation(),
+            displayCoordinator: coordinator,
+            popover: TestPopover(),
+            statusItemManager: TestStatusItemManager(),
+            activateApp: {}
+        )
         sut.install()
 
         sut.showPopover()
@@ -88,6 +143,8 @@ final class MenuBarControllerTests: XCTestCase {
         let sut = MenuBarController(
             presentation: makePresentation(),
             displayCoordinator: coordinator,
+            popover: TestPopover(),
+            statusItemManager: TestStatusItemManager(),
             activateApp: { activateCallCount += 1 }
         )
         sut.install()
@@ -107,6 +164,8 @@ final class MenuBarControllerTests: XCTestCase {
         let sut = MenuBarController(
             presentation: makePresentation(),
             displayCoordinator: coordinator,
+            popover: TestPopover(),
+            statusItemManager: TestStatusItemManager(),
             activateApp: { activateCallCount += 1 }
         )
         sut.install()
@@ -127,6 +186,8 @@ final class MenuBarControllerTests: XCTestCase {
         let menuBar = MenuBarController(
             presentation: makePresentation(),
             displayCoordinator: coordinator,
+            popover: TestPopover(),
+            statusItemManager: TestStatusItemManager(),
             activateApp: { activateCallCount += 1 }
         )
         menuBar.install()
@@ -150,7 +211,13 @@ final class MenuBarControllerTests: XCTestCase {
 
     func testToggleOpensThenClosesThePopover() {
         let coordinator = ConcreteDisplayDataCoordinator()
-        let sut = MenuBarController(presentation: makePresentation(), displayCoordinator: coordinator)
+        let sut = MenuBarController(
+            presentation: makePresentation(),
+            displayCoordinator: coordinator,
+            popover: TestPopover(),
+            statusItemManager: TestStatusItemManager(),
+            activateApp: {}
+        )
         sut.install()
 
         sut.togglePopover()
@@ -164,7 +231,13 @@ final class MenuBarControllerTests: XCTestCase {
 
     func testClosePopoverClosesAnOpenPopover() {
         let coordinator = ConcreteDisplayDataCoordinator()
-        let sut = MenuBarController(presentation: makePresentation(), displayCoordinator: coordinator)
+        let sut = MenuBarController(
+            presentation: makePresentation(),
+            displayCoordinator: coordinator,
+            popover: TestPopover(),
+            statusItemManager: TestStatusItemManager(),
+            activateApp: {}
+        )
         sut.install()
 
         sut.showPopover()

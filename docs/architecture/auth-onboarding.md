@@ -109,47 +109,42 @@ The Swift client never initiates a refresh.
 ## 4. Onboarding flow
 
 ```
-PermissionRootView
-    │
-    ├─ isDeviceRevoked ────────────────────► DeviceRevokedView
-    │                                        (non-dismissible; "Sign In Again"
-    │                                         clears the flag)
-    │
-    ├─ accountState == .pendingErasure ────► PendingDeletionView
-    │                                        (blocks normal use; "Cancel" calls
-    │                                         cancelPendingErasure())
-    │
-    ├─ showsOnboarding || !loggedIn ──────► OnboardingContainer
-    │                                        │
-    │                                        └─ OnboardingFlowView (NavigationStack)
-    │                                              │
-    │                                              ├─ WelcomeView (root)
-    │                                              │      ▼ advanceFromWelcome()
-    │                                              ├─ PermissionsStepView
-    │                                              │   (reuses S3 PermissionOnboardingModel)
-    │                                              │      ▼ advanceFromPermissions()
-    │                                              ├─ AuthStepView
-    │                                              │   (email/password, mode toggle,
-    │                                              │    observes accountState for loggedIn)
-    │                                              │      ▼ authDidComplete()
-    │                                              └─ OnboardingCompleteView
-    │                                                     ▼ finishOnboarding()
-    │                                                   onComplete() → completeOnboarding()
-    │
-    └─ loggedIn + onboarding done ────────► "Velvt is available from the menu bar."
+AppDelegate
+    ├─ first clean launch ────────────────► OnboardingWindowController
+    │                                      Welcome → Privacy → Helps with → Ready
+    │                                          ├─ Skip intro → 30-second summary → Today
+    │                                          ├─ Start using Velvt → Today
+    │                                          └─ Take guided tour → live menu-bar tour
+    └─ completed/existing installation ──► menu-bar Today
+
+Settings → Onboarding & Tour
+    ├─ Replay Full Intro ─────────────────► OnboardingWindowController
+    └─ Take Guided Tour ──────────────────► live menu-bar tour
 ```
 
-**Auth is never bypassable when logged out.** `AuthStepView` is only reachable
-by following the `NavigationStack` path through `WelcomeView` and
-`PermissionsStepView`, or via `skipToAuth()` which is only called from
-`PermissionRootView` when onboarding was previously completed but the session
-has since expired.
+The intro is optional and independent of authentication. Sign-in remains available in the main
+popover and is required for synchronized history and beta insight delivery, but it does not block
+the local explanation, permission recovery, or early local value.
 
-**`needs_reauth` re-auth path:**  
-`AccountStateManager` clears tokens and transitions to `.loggedOut`.
-`PermissionRootView` detects `!loggedIn && !showsOnboarding` and renders
-`OnboardingContainer(skipToAuth: true)`, landing the user directly on
-`AuthStepView` without repeating the permissions step.
+`UserDefaultsOnboardingStateStore` remains the single persistence owner. It preserves the legacy
+completion key and adds a versioned completion marker. An installation with an existing Velvt UI
+preference is migrated as established and bypasses the new intro. A clean installation presents it
+once. Skip and completion write only onboarding keys; they do not alter TCC, Keychain, accounts,
+permissions, caches, SQLite, or Docker data. Replays do not clear completion.
+
+Permission status is always checked independently. The intro never calls either system permission
+API on appearance or Continue; **Allow Accessibility** and **Allow Notifications** are the only
+request actions. Skipping therefore cannot mark either permission granted. Denial stays recoverable
+from the live popover.
+
+The six-step guided tour renders below the real 660×350 popover content, selects actual Today, Your
+Week, Activity, status/recovery, and Settings destinations, and leaves their controls reachable.
+Back, Next, Skip tour, Done, and Escape are deterministic. Reduced Motion disables transitions.
+Command-1, Command-2, Command-3, Command-comma, and the normal Escape close behavior remain owned by
+`MenuBarPopoverView`.
+
+**`needs_reauth` path:** `AccountStateManager` clears tokens and transitions to `.loggedOut`. The
+main popover presents the sign-in controls without replaying onboarding.
 
 ---
 

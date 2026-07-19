@@ -60,9 +60,9 @@ final class MenuBarNavigationTests: XCTestCase {
         let model = ServiceAlertModel(messages: messages)
 
         messages.send(.privacyViolationAlert(PrivacyViolationAlert(
-            code: "raw_content_detected",
-            message: "Sensitive content was blocked."
-        )))
+                    code: "raw_content_detected",
+                    message: "Sensitive content was blocked."
+                )))
         await Task.yield()
 
         XCTAssertEqual(model.alert?.severity, .error)
@@ -86,10 +86,10 @@ final class MenuBarNavigationTests: XCTestCase {
         let model = ServiceAlertModel(messages: messages)
 
         messages.send(.errorResponse(ErrorResponse(
-            code: "unexpected",
-            message: "Something went wrong.",
-            relatedEventID: nil
-        )))
+                    code: "unexpected",
+                    message: "Something went wrong.",
+                    relatedEventID: nil
+                )))
         await Task.yield()
 
         XCTAssertEqual(model.alert?.severity, .error)
@@ -131,6 +131,19 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertTrue(MenuBarMotionPolicy.shouldAnimate(reduceMotion: false))
     }
 
+    func testOnboardingWindowClampsToTheVisibleScreen() {
+        XCTAssertEqual(
+            OnboardingWindowLayout.contentSize(
+                for: CGRect(x: 0, y: 0, width: 640, height: 480)
+            ),
+            CGSize(width: 592, height: 432)
+        )
+        XCTAssertEqual(
+            OnboardingWindowLayout.contentSize(for: nil),
+            CGSize(width: 720, height: 520)
+        )
+    }
+
     func testOpeningPopoverRestoresMainWorkBlockFromSettings() {
         var navigator = MenuBarPopoverNavigator()
         navigator.selectWorkspaceTab(.recentActivity)
@@ -142,9 +155,48 @@ final class MenuBarNavigationTests: XCTestCase {
     }
 
     func testSettingsRetainsEveryDestination() {
+        #if DEBUG
         XCTAssertEqual(SettingsSubmenu.allCases.map(\.title), [
-            "App Info", "Queued Events", "Collection Settings", "Debug/Testing",
+            "App Info", "Queued Events", "Collection Settings", "Onboarding & Tour",
+            "Debug/Testing",
         ])
+        #else
+        XCTAssertEqual(SettingsSubmenu.allCases.map(\.title), [
+            "App Info", "Queued Events", "Collection Settings", "Onboarding & Tour",
+        ])
+        #endif
+    }
+
+    func testGuidedTourCoversOnlyLiveDestinationsAndMovesDeterministically() {
+        let tour = GuidedTourModel()
+
+        tour.start()
+        XCTAssertTrue(tour.isPresented)
+        XCTAssertEqual(tour.step, .today)
+        XCTAssertEqual(
+            GuidedTourStep.allCases,
+            [
+                .today, .earlySignal, .yourWeek, .activity, .statusAndRecovery, .settings,
+            ])
+
+        tour.advance()
+        XCTAssertEqual(tour.step, .earlySignal)
+        tour.goBack()
+        XCTAssertEqual(tour.step, .today)
+        tour.dismiss()
+        XCTAssertFalse(tour.isPresented)
+    }
+
+    func testGuidedTourDoneDismissesFromSettings() {
+        let tour = GuidedTourModel()
+        tour.start()
+        for _ in 1..<GuidedTourStep.allCases.count { tour.advance() }
+
+        XCTAssertEqual(tour.step, .settings)
+        XCTAssertTrue(tour.isLastStep)
+
+        tour.advance()
+        XCTAssertFalse(tour.isPresented)
     }
 
     func testEarlyLocalSignalAppearsOnlyWithSufficientEvidence() {

@@ -7,6 +7,7 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 |---|---|---|
 | Monorepo overview | `docs/architecture.md` | High-level structure, subproject relationships, privacy boundary, and data flow |
 | Quickstart | `docs/quickstart.md` | Prerequisites, install steps, build commands, tests, and local run paths |
+| Private-beta guide | `docs/private-beta-guide.md` | Canonical participant install, onboarding, privacy, recovery, account, uninstall, support, and limitations path |
 | Contribution workflow | `docs/contributing.md` | Documentation-aware contribution checklist and review expectations |
 | Rust service overview | `docs/rust-service/overview.md` | Purpose and role of the Rust service |
 | Rust service internals | `docs/rust-service/architecture.md` | Module structure, startup path, persistence, abstraction, delivery, and lifecycle decisions |
@@ -21,4 +22,5 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Collection agent deep dive | `docs/architecture/collection-agent.md` | Existing detailed guide for macOS Accessibility event collection |
 | Auth and onboarding deep dive | `docs/architecture/auth-onboarding.md` | Existing detailed guide for onboarding and authentication behavior |
 | Menu bar and notifications deep dive | `docs/architecture/s7-menu-bar-and-notifications.md` | Existing detailed guide for menu bar presentation and notification delivery |
+| Release readiness | `docs/macos-signing-and-accessibility.md` | Distribution signing, notarization, clean-Mac acceptance, hosted-backend smoke, checksum, and rollback handoff |
 | Local meaningful-work loop | `docs/architecture/work-block-loop.md` | Work-block ownership, state machine, evidence rules, privacy field table, lifecycle, and failure behavior |

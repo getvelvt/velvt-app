@@ -9,10 +9,10 @@ final class MenuBarAccountActionResolverTests: XCTestCase {
         )
     }
 
-    func testLoggedInAccountShowsLogOutAction() {
+    func testLoggedInAccountShowsLogOutAndDeleteActions() {
         XCTAssertEqual(
             MenuBarAccountActionResolver.actions(for: .loggedIn(userId: "user")),
-            [.logOut]
+            [.logOut, .deleteAccount]
         )
     }
 

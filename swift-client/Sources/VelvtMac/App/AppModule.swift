@@ -30,6 +30,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var collectionAgent: (any CollectionAgentProtocol)?
     private var permissionCoordinator: PermissionCollectionCoordinator?
     private var menuBarController: MenuBarController?
+    private var onboardingWindowController: OnboardingWindowController?
     private var notificationDeliveryCoordinator: NotificationDeliveryCoordinator?
     private var notificationResponseRouter: NotificationResponseRouter?
     private var menuBarDataLoader: MenuBarDataLoader?
@@ -156,6 +157,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             restartLocalService: { [weak serviceProcessLauncher] in
                 serviceProcessLauncher?.restart()
             },
+            replayOnboarding: { [weak self] in
+                self?.onboardingWindowController?.presentReplay()
+            },
+            startGuidedTour: { [weak self] in
+                self?.menuBarController?.beginGuidedTour()
+            },
             terminateApp: { NSApp.terminate(nil) }
         )
         menuBar.install()
@@ -165,6 +172,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             accountStateManager: accountStateManager
         )
         menuBarController = menuBar
+
+        let onboardingWindow = OnboardingWindowController(
+            presentation: permissionPresentation,
+            permissionManager: permissionManager,
+            onStartUsing: { [weak menuBar] in menuBar?.showToday() },
+            onStartTour: { [weak menuBar] in menuBar?.beginGuidedTour() }
+        )
+        onboardingWindowController = onboardingWindow
+        onboardingWindow.presentIfNeeded()
 
         let responseRouter = NotificationResponseRouter(
             openPopover: { [weak menuBar] in menuBar?.showPopover() },
@@ -225,6 +241,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         collectionAuthCancellable?.cancel()
         accountStateManager.stopListening()
         menuBarController?.remove()
+        onboardingWindowController?.close()
         let relay = eventRelay
         Task { await relay?.stop() }
         ipcClient.disconnect()
@@ -234,13 +251,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func makeIPCClient() throws -> any IPCClientProtocol {
         let config: FocusAgentConfig
         #if DEBUG
-        do {
-            config = try BundleConfigLoader().load()
-        } catch {
-            config = try EnvironmentConfigLoader().load()
-        }
+            do {
+                config = try BundleConfigLoader().load()
+            } catch {
+                config = try EnvironmentConfigLoader().load()
+            }
         #else
-        config = try BundleConfigLoader().load()
+            config = try BundleConfigLoader().load()
         #endif
         return UnixSocketIPCClient(
             socketPath: config.socketPath,
@@ -268,8 +285,8 @@ private final class UnavailableIPCClient: IPCClientProtocol {
     }
 }
 
-/// Menu-bar-only executable entry point. No `WindowGroup` is created: every
-/// user-facing route is hosted by `MenuBarController`'s popover.
+/// Menu-bar executable entry point. The first-run intro uses one AppKit window;
+/// normal product routes remain hosted by `MenuBarController`'s popover.
 @main
 public enum VelvtMacApp {
     public static func main() {

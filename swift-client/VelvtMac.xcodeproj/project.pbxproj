@@ -47,6 +47,7 @@
 		A19C7D204B9345F3A6E1C101 /* CredentialTextField.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19C7D204B9345F3A6E1C102 /* CredentialTextField.swift */; };
 		B20C7D204B9345F3A6E1C101 /* WorkBlockCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20C7D204B9345F3A6E1C102 /* WorkBlockCoordinator.swift */; };
 		B20C7D204B9345F3A6E1C103 /* WorkBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20C7D204B9345F3A6E1C104 /* WorkBlockView.swift */; };
+		C31D8E315B114A8B9345F301 /* OnboardingExperience.swift in Sources */ = {isa = PBXBuildFile; fileRef = C31D8E315B114A8B9345F302 /* OnboardingExperience.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -87,6 +88,7 @@
 		A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceUnavailableView.swift; path = UI/ServiceUnavailableView.swift; sourceTree = "<group>"; };
 		BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthModule.swift; path = Auth/AuthModule.swift; sourceTree = "<group>"; };
 		C9F1ADB76DD4328B7586E87C /* UIModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UIModule.swift; path = UI/UIModule.swift; sourceTree = "<group>"; };
+		C31D8E315B114A8B9345F302 /* OnboardingExperience.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = OnboardingExperience.swift; path = UI/OnboardingExperience.swift; sourceTree = "<group>"; };
 		D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceProcessLauncher.swift; path = App/ServiceProcessLauncher.swift; sourceTree = "<group>"; };
 		D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeliveryModule.swift; path = Delivery/DeliveryModule.swift; sourceTree = "<group>"; };
 		E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DisplayDataCoordinator.swift; path = Delivery/DisplayDataCoordinator.swift; sourceTree = "<group>"; };
@@ -153,6 +155,7 @@
 				22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */,
 				C9F1ADB76DD4328B7586E87C /* UIModule.swift */,
 				46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */,
+				C31D8E315B114A8B9345F302 /* OnboardingExperience.swift */,
 				A19C7D204B9345F3A6E1C102 /* CredentialTextField.swift */,
 				93C055AD72C0443A8CD98C13 /* PermissionManager.swift */,
 				D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */,
@@ -334,6 +337,7 @@
 				89AC090DEEE9F19A1A61543B /* UnixSocketIPCClient.swift in Sources */,
 				5C4179B95803E953316EC37F /* UIModule.swift in Sources */,
 				FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */,
+				C31D8E315B114A8B9345F301 /* OnboardingExperience.swift in Sources */,
 				A19C7D204B9345F3A6E1C101 /* CredentialTextField.swift in Sources */,
 				38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */,
 				97552E1EF5904F8599EAC9E6 /* ServiceProcessLauncher.swift in Sources */,

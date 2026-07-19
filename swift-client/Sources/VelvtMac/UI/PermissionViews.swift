@@ -48,8 +48,11 @@ public enum AttentionPurpose: String, CaseIterable, Identifiable {
 }
 
 public final class UserDefaultsOnboardingStateStore: OnboardingStateStoring {
+    public static let currentIntroVersion = 1
+
     private let defaults: UserDefaults
     private let key: String
+    private let completionVersionKey: String
     private let intensityKey: String
     private let purposeKey: String
     private let valueKey: String
@@ -59,6 +62,7 @@ public final class UserDefaultsOnboardingStateStore: OnboardingStateStoring {
     public init(
         defaults: UserDefaults = .standard,
         key: String = "hasCompletedPermissionOnboarding",
+        completionVersionKey: String = "velvt.onboarding.completed_version",
         intensityKey: String = "attentionIntensity",
         purposeKey: String = "attentionPurpose",
         valueKey: String = "hasSeenValueProposition",
@@ -67,16 +71,44 @@ public final class UserDefaultsOnboardingStateStore: OnboardingStateStoring {
     ) {
         self.defaults = defaults
         self.key = key
+        self.completionVersionKey = completionVersionKey
         self.intensityKey = intensityKey
         self.purposeKey = purposeKey
         self.valueKey = valueKey
         self.accessibilityRequestKey = accessibilityRequestKey
         self.notificationsRequestKey = notificationsRequestKey
+
+        let establishedInstallationKeys = [
+            valueKey,
+            accessibilityRequestKey,
+            notificationsRequestKey,
+            intensityKey,
+            purposeKey,
+            "velvt.collection.offline_events_enabled",
+            "velvt.metrics.actions_logged",
+            "velvt.metrics.interventions",
+        ]
+        if defaults.object(forKey: key) == nil,
+            defaults.object(forKey: completionVersionKey) == nil,
+            establishedInstallationKeys.contains(where: { defaults.object(forKey: $0) != nil })
+        {
+            defaults.set(Self.currentIntroVersion, forKey: completionVersionKey)
+        }
     }
 
     public var hasCompletedPermissionOnboarding: Bool {
-        get { defaults.bool(forKey: key) }
-        set { defaults.set(newValue, forKey: key) }
+        get {
+            defaults.bool(forKey: key)
+                || defaults.integer(forKey: completionVersionKey) >= Self.currentIntroVersion
+        }
+        set {
+            defaults.set(newValue, forKey: key)
+            if newValue {
+                defaults.set(Self.currentIntroVersion, forKey: completionVersionKey)
+            } else {
+                defaults.removeObject(forKey: completionVersionKey)
+            }
+        }
     }
 
     public var hasSeenValueProposition: Bool {
@@ -187,6 +219,10 @@ public final class PermissionPresentationModel: ObservableObject {
     public func completeOnboarding() {
         onboardingStateStore.hasCompletedPermissionOnboarding = true
         showsOnboarding = false
+    }
+
+    public func replayOnboarding() {
+        showsOnboarding = true
     }
 
     public func acknowledgeValueProposition() {
@@ -409,8 +445,8 @@ public struct FirstRunOnboardingView: View {
             Text("Know when focus broke — and what to protect next")
                 .font(.title3.bold())
             Text("Velvt shows when your work became fragmented, why it happened, and one realistic way to protect your next focus block.")
-                .font(.body)
-                .fixedSize(horizontal: false, vertical: true)
+            .font(.body)
+            .fixedSize(horizontal: false, vertical: true)
             Button("Set up Velvt") { presentation.acknowledgeValueProposition() }
                 .buttonStyle(.borderedProminent)
 
@@ -418,9 +454,9 @@ public struct FirstRunOnboardingView: View {
             Label("Allow local activity collection", systemImage: "hand.raised")
                 .font(.headline)
             Text("Accessibility lets Velvt notice broad work changes on this Mac. Raw app names, window titles, URLs, and local labels never leave your device.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
             Button("Continue to System Settings") {
                 presentation.markPermissionRequested(.accessibility)
                 Task { _ = await permissionManager?.requestPermission(for: .accessibility) }
@@ -434,9 +470,9 @@ public struct FirstRunOnboardingView: View {
             Label("Choose whether Velvt can notify you", systemImage: "bell")
                 .font(.headline)
             Text("Notifications can surface a concise, evidence-grounded observation. Saying no will not block collection.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button("Not now") { presentation.markPermissionRequested(.notifications) }
                 Button("Allow Notifications") {
@@ -450,8 +486,8 @@ public struct FirstRunOnboardingView: View {
             Label("Sign in to continue", systemImage: "person.crop.circle")
                 .font(.headline)
             Text("Velvt requires an account for private history and insight delivery. Use the sign-in control below; local collection starts after authentication.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.caption)
+            .foregroundStyle(.secondary)
 
         case .serviceStarting:
             ProgressView("Starting local service…")
@@ -464,8 +500,8 @@ public struct FirstRunOnboardingView: View {
             Label("Local service unavailable", systemImage: "exclamationmark.triangle")
                 .font(.headline)
             Text("Quit and reopen Velvt to restart the local service. Your existing local data is preserved.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.caption)
+            .foregroundStyle(.secondary)
 
         case .collectionStarting:
             ProgressView("Starting local collection…")

@@ -370,6 +370,72 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertFalse(secondLaunch.showsOnboarding)
     }
 
+    func testEstablishedInstallationBypassesNewIntroWithoutChangingLegacyValues() {
+        let suite = "onboarding.migration.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(false, forKey: "velvt.collection.offline_events_enabled")
+
+        let store = UserDefaultsOnboardingStateStore(defaults: defaults)
+
+        XCTAssertTrue(store.hasCompletedPermissionOnboarding)
+        XCTAssertFalse(defaults.bool(forKey: "velvt.collection.offline_events_enabled"))
+        XCTAssertEqual(
+            defaults.integer(forKey: "velvt.onboarding.completed_version"),
+            UserDefaultsOnboardingStateStore.currentIntroVersion
+        )
+        defaults.removePersistentDomain(forName: suite)
+    }
+
+    func testCleanInstallationSeesIntroAndCompletionSurvivesRelaunch() {
+        let suite = "onboarding.first-run.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let firstStore = UserDefaultsOnboardingStateStore(defaults: defaults)
+        XCTAssertFalse(firstStore.hasCompletedPermissionOnboarding)
+
+        firstStore.hasCompletedPermissionOnboarding = true
+        let relaunchedStore = UserDefaultsOnboardingStateStore(defaults: defaults)
+
+        XCTAssertTrue(relaunchedStore.hasCompletedPermissionOnboarding)
+        defaults.removePersistentDomain(forName: suite)
+    }
+
+    @MainActor
+    func testIntroContinueBackSkipAndReadyActionsAreDeterministic() {
+        var persistenceCount = 0
+        var startCount = 0
+        var tourCount = 0
+        let model = IntroFlowModel(
+            persistCompletion: { persistenceCount += 1 },
+            startUsing: { startCount += 1 },
+            startTour: { tourCount += 1 }
+        )
+
+        model.continueForward()
+        XCTAssertEqual(model.step, .privacy)
+        model.goBack()
+        XCTAssertEqual(model.step, .welcome)
+        model.skipIntro()
+        XCTAssertEqual(model.step, .quickStart)
+        XCTAssertEqual(persistenceCount, 1)
+        model.finishAndStartUsing()
+        XCTAssertEqual(startCount, 1)
+
+        model.showFullIntro()
+        model.continueForward()
+        model.continueForward()
+        model.continueForward()
+        XCTAssertEqual(model.step, .ready)
+        model.finishAndStartTour()
+        XCTAssertEqual(tourCount, 1)
+    }
+
+    func testOnboardingPrivacyCopyMatchesTheAuditedBoundary() {
+        XCTAssertEqual(
+            OnboardingCopy.privacySummary,
+            "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights."
+        )
+    }
+
     func testPresentationSavesGoalChoicesWhenCompletingOnboarding() {
         let store = InMemoryOnboardingStateStore()
         let presentation = PermissionPresentationModel(

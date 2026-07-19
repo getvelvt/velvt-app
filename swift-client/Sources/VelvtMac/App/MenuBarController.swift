@@ -176,6 +176,7 @@ public final class MenuBarController: NSObject {
     private let serviceAlertModel: ServiceAlertModel
     private let collectionSettings: CollectionSettingsModel
     private let metricsStore: AppMetricsStore
+    private let guidedTour = GuidedTourModel()
     private let statusItemManager: any StatusItemManaging
     private var cancellables = Set<AnyCancellable>()
 
@@ -200,6 +201,8 @@ public final class MenuBarController: NSObject {
         connectionStatus: AnyPublisher<ConnectionStatus, Never> = Just(.disconnected).eraseToAnyPublisher(),
         simulateNotification: (() -> Void)? = nil,
         restartLocalService: (() -> Void)? = nil,
+        replayOnboarding: (() -> Void)? = nil,
+        startGuidedTour: (() -> Void)? = nil,
         popover: (any PopoverPresenting)? = nil,
         statusItemManager: (any StatusItemManaging)? = nil,
         activateApp: @escaping @MainActor () -> Void = {
@@ -244,6 +247,9 @@ public final class MenuBarController: NSObject {
                 menuStatusViewModel: menuStatusViewModel,
                 simulateNotification: simulateNotification,
                 restartLocalService: restartLocalService,
+                replayOnboarding: replayOnboarding,
+                startGuidedTour: startGuidedTour,
+                guidedTour: guidedTour,
                 metricsStore: metricsStore,
                 popoverWillOpen: popoverWillOpen.eraseToAnyPublisher(),
                 onEscape: { [weak self] in self?.closePopover() },
@@ -333,6 +339,16 @@ public final class MenuBarController: NSObject {
 
     public func closePopover() {
         popover.close()
+    }
+
+    public func showToday() {
+        guidedTour.dismiss()
+        showPopover()
+    }
+
+    public func beginGuidedTour() {
+        showPopover()
+        guidedTour.start()
     }
 
     // MARK: Private

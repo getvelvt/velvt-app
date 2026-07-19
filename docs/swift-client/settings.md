@@ -20,6 +20,7 @@ The settings tab currently exposes:
 - App Info submenu.
 - Queued Events submenu.
 - Collection Settings submenu.
+- Onboarding & Tour submenu, including replay actions for both experiences.
 - Quit Velvt action.
 - App version display.
 
@@ -63,7 +64,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
 }
 ```
 
-The UI renders `localLabel ?? label` and category. `localLabel` is device-local display data returned over IPC. It must not be added to cloud upload DTOs.
+The UI renders only the broad category and queued time. `localLabel` remains device-local data returned over IPC and is deliberately excluded from this diagnostic surface as well as every cloud upload DTO.
 
 The "Send All Now" action sends:
 
@@ -79,7 +80,7 @@ Swift persists only lightweight UI/session state:
 
 | State | Storage | File |
 |---|---|---|
-| Permission onboarding completion | `UserDefaults` key `hasCompletedPermissionOnboarding` | `UI/PermissionViews.swift` |
+| First-run completion | `UserDefaults` keys `hasCompletedPermissionOnboarding` and `velvt.onboarding.completed_version` | `UI/PermissionViews.swift` |
 | Action counter | `UserDefaults` key `velvt.metrics.actions_logged` | `App/AppMetricsStore.swift` |
 | Intervention counter | `UserDefaults` key `velvt.metrics.interventions` | `App/AppMetricsStore.swift` |
 | Auth session and account email | Keychain | `Auth/AuthModule.swift` |

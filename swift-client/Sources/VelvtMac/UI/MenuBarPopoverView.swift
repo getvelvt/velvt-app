@@ -5,6 +5,7 @@ import SwiftUI
 public enum MenuBarAccountAction: Equatable {
     case authenticate(AuthViewModel.AuthMode)
     case logOut
+    case deleteAccount
 }
 
 private struct HistoryWorkspaceView: View {
@@ -61,10 +62,10 @@ private struct TodayAccountGate: View {
             case .loggedOut, .loggingIn, .loggingOut, .pendingErasure:
                 VStack(alignment: .leading, spacing: 8) {
                     Text("See when your work became fragmented, why it happened, and one realistic way to protect your next focus block.")
-                        .font(.body.weight(.medium))
+                    .font(.body.weight(.medium))
                     Label("Sign in below to start collection and receive private, evidence-grounded observations.", systemImage: "person.crop.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
                 .padding(18)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -83,7 +84,7 @@ public enum MenuBarAccountActionResolver {
     public static func actions(for accountState: AccountState) -> [MenuBarAccountAction] {
         switch accountState {
         case .loggedOut: return [.authenticate(.logIn), .authenticate(.signUp)]
-        case .loggedIn: return [.logOut]
+        case .loggedIn: return [.logOut, .deleteAccount]
         case .loggingIn, .loggingOut, .pendingErasure: return []
         }
     }
@@ -404,8 +405,9 @@ enum SettingsSubmenu: CaseIterable, Equatable {
     case appInfo
     case queuedEvents
     case collectionSettings
+    case onboarding
     #if DEBUG
-    case debug
+        case debug
     #endif
 
     var title: String {
@@ -413,8 +415,9 @@ enum SettingsSubmenu: CaseIterable, Equatable {
         case .appInfo: return "App Info"
         case .queuedEvents: return "Queued Events"
         case .collectionSettings: return "Collection Settings"
+        case .onboarding: return "Onboarding & Tour"
         #if DEBUG
-        case .debug: return "Debug/Testing"
+            case .debug: return "Debug/Testing"
         #endif
         }
     }
@@ -424,6 +427,7 @@ enum SettingsSubmenu: CaseIterable, Equatable {
         case .appInfo: return 420
         case .queuedEvents: return 340
         case .collectionSettings: return 140
+        case .onboarding: return 210
         #if DEBUG
         case .debug: return 90
         #endif
@@ -460,6 +464,9 @@ public struct MenuBarPopoverView: View {
     private let menuStatusViewModel: MenuStatusViewModel?
     private let simulateNotification: (() -> Void)?
     private let restartLocalService: (() -> Void)?
+    private let replayOnboarding: (() -> Void)?
+    private let startGuidedTour: (() -> Void)?
+    @ObservedObject private var guidedTour: GuidedTourModel
     @ObservedObject private var metricsStore: AppMetricsStore
     private let popoverWillOpen: AnyPublisher<Void, Never>
     private let onEscape: () -> Void
@@ -488,10 +495,13 @@ public struct MenuBarPopoverView: View {
         menuStatusViewModel: MenuStatusViewModel? = nil,
         simulateNotification: (() -> Void)? = nil,
         restartLocalService: (() -> Void)? = nil,
+        replayOnboarding: (() -> Void)? = nil,
+        startGuidedTour: (() -> Void)? = nil,
+        guidedTour: GuidedTourModel = GuidedTourModel(),
         metricsStore: AppMetricsStore = AppMetricsStore(defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
         popoverWillOpen: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher(),
         onEscape: @escaping () -> Void,
-        onTerminate: @escaping () -> Void = { }
+        onTerminate: @escaping () -> Void = {}
     ) {
         self.presentation = presentation
         self.permissionManager = permissionManager
@@ -508,6 +518,9 @@ public struct MenuBarPopoverView: View {
         self.menuStatusViewModel = menuStatusViewModel
         self.simulateNotification = simulateNotification
         self.restartLocalService = restartLocalService
+        self.replayOnboarding = replayOnboarding
+        self.startGuidedTour = startGuidedTour
+        self.guidedTour = guidedTour
         self.metricsStore = metricsStore
         self.popoverWillOpen = popoverWillOpen
         self.onEscape = onEscape
@@ -515,7 +528,20 @@ public struct MenuBarPopoverView: View {
     }
 
     public var body: some View {
-        mainContent
+        VStack(spacing: 0) {
+            mainContent
+            if guidedTour.isPresented {
+                Divider().opacity(0.2)
+                GuidedTourBar(model: guidedTour)
+                    .transition(.opacity)
+            }
+        }
+        .animation(
+            MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion)
+                ? .easeInOut(duration: 0.18)
+                : nil,
+            value: guidedTour.isPresented
+        )
         .frame(
             idealWidth: MenuBarPopoverLayout.preferredContentSize.width,
             maxWidth: .infinity,
@@ -524,7 +550,22 @@ public struct MenuBarPopoverView: View {
             alignment: .top
         )
         .preferredColorScheme(.dark)
-        .onExitCommand(perform: onEscape)
+        .onExitCommand {
+            if guidedTour.isPresented {
+                guidedTour.dismiss()
+            } else {
+                onEscape()
+            }
+        }
+        .onChange(of: guidedTour.step) { route(to: $0) }
+        .onChange(of: guidedTour.isPresented) { isPresented in
+            if isPresented {
+                route(to: guidedTour.step)
+            } else {
+                dismissSettingsSubmenus()
+                navigator.selectWorkspaceTab(.workBlock)
+            }
+        }
         .onReceive(popoverWillOpen) {
             dismissSettingsSubmenus()
             navigator.resetForPopoverOpening()
@@ -560,6 +601,14 @@ public struct MenuBarPopoverView: View {
             .frame(maxWidth: 360, alignment: .trailing)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
+        .overlay {
+            if guidedTour.isPresented, guidedTour.step == .statusAndRecovery {
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(Color.velvtPink, lineWidth: 2)
+                    .padding(4)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     private var mainContent: some View {
@@ -618,6 +667,16 @@ public struct MenuBarPopoverView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.black.opacity(0.08))
+        .overlay {
+            if guidedTour.isPresented,
+               guidedTour.step != .statusAndRecovery,
+               guidedTour.step != .settings {
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(Color.velvtPink, lineWidth: 2)
+                    .padding(4)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     private var workspaceNavigationRail: some View {
@@ -657,36 +716,33 @@ public struct MenuBarPopoverView: View {
         .accessibilityLabel(tab.title)
         .accessibilityValue(isSelected ? "Selected" : "")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .overlay {
+            if guidedTour.isPresented, tourTab == tab {
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(Color.velvtPink, lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     @ViewBuilder
     private var selectedWorkspaceContent: some View {
-        if navigator.selectedWorkspaceTab == .settings {
-            settingsContent
-        } else if presentation.showsOnboarding {
-            FirstRunOnboardingView(
-                presentation: presentation,
-                permissionManager: permissionManager,
-                servicePhase: serviceConnectionStatus.phase,
-                collectionIsRunning: collectionActivityStatus.status == .running,
-                isAuthenticated: isAuthenticated,
-                baselineProgress: coordinator.historyViewModel.baselineProgress
-            )
-            .padding(16)
-        } else if presentation.showsAccessibilityRecovery {
-            PermissionRecoveryView()
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    Color.velvtSurface.opacity(0.92),
-                    in: RoundedRectangle(cornerRadius: 10)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                }
-                .padding(16)
-        } else {
+        VStack(alignment: .leading, spacing: 0) {
+            if presentation.showsAccessibilityRecovery {
+                PermissionRecoveryView()
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        Color.velvtSurface.opacity(0.92),
+                        in: RoundedRectangle(cornerRadius: 10)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            }
             switch navigator.selectedWorkspaceTab {
             case .workBlock:
                 TodayAccountGate(
@@ -790,10 +846,11 @@ public struct MenuBarPopoverView: View {
                 submenu: .queuedEvents
             )
             settingsSubmenuRow(SettingsSubmenu.collectionSettings.title, submenu: .collectionSettings)
+            settingsSubmenuRow(SettingsSubmenu.onboarding.title, submenu: .onboarding)
             #if DEBUG
-            if simulateNotification != nil {
-                settingsSubmenuRow(SettingsSubmenu.debug.title, submenu: .debug)
-            }
+                if simulateNotification != nil {
+                    settingsSubmenuRow(SettingsSubmenu.debug.title, submenu: .debug)
+                }
             #endif
             Divider().padding(.vertical, 8)
             HStack {
@@ -830,9 +887,11 @@ public struct MenuBarPopoverView: View {
                 infoRow("Last synchronized", lastSuccessfulSyncDescription)
                 infoRow("Queued", "\(menuStatusViewModel?.status?.queuedEventCount ?? 0) events")
                 infoRow("Next retry", nextRetryDescription)
-                infoRow("Events collected", "\(currentActivity.collectedEventCount)")
-                infoRow("Actions logged", "\(metricsStore.actionsLogged)")
-                infoRow("Interventions", "\(metricsStore.interventions)")
+                #if DEBUG
+                    infoRow("Events collected", "\(currentActivity.collectedEventCount)")
+                    infoRow("Actions logged", "\(metricsStore.actionsLogged)")
+                    infoRow("Interventions", "\(metricsStore.interventions)")
+                #endif
                 Divider().padding(.vertical, 6)
                 Button("Retry Cloud Synchronization") {
                     menuStatusViewModel?.sendAllNow()
@@ -904,17 +963,17 @@ public struct MenuBarPopoverView: View {
                 Button("Reset Learning", role: .destructive) {
                     menuStatusViewModel?.resetClassificationLearning()
                 }
-                Button("Cancel", role: .cancel) { }
+                Button("Cancel", role: .cancel) {}
             }
 
         case .collectionSettings:
             VStack(spacing: 0) {
                 submenuTitle(submenu.title)
                 Toggle("Offline Event Collection", isOn: $collectionSettings.offlineEventCollectionEnabled)
-                    .toggleStyle(.switch)
-                    .font(.caption)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                .toggleStyle(.switch)
+                .font(.caption)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
                 Button("Clear Local Work Blocks", role: .destructive) {
                     confirmsWorkBlockClear = true
                 }
@@ -929,30 +988,86 @@ public struct MenuBarPopoverView: View {
                     Button("Clear Local Work Blocks", role: .destructive) {
                         workBlockCoordinator.clearLocalData()
                     }
-                    Button("Cancel", role: .cancel) { }
+                    Button("Cancel", role: .cancel) {}
                 }
             }
 
-        #if DEBUG
-        case .debug:
+        case .onboarding:
             VStack(spacing: 0) {
                 submenuTitle(submenu.title)
-                Button {
-                    runDebugInsightSimulation()
-                } label: {
-                    HStack {
-                        Image(systemName: "bell.badge")
-                        Text("Simulate Insight")
-                        Spacer()
-                    }
-                    .contentShape(Rectangle())
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                Text(
+                    "Replay the full first-run explanation or tour the live menu-bar interface again."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+                Button("Replay Full Intro") {
+                    dismissSettingsSubmenus()
+                    replayOnboarding?()
+                    onEscape()
                 }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                Button("Take Guided Tour") {
+                    dismissSettingsSubmenus()
+                    startGuidedTour?()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
             }
+
+        #if DEBUG
+            case .debug:
+                VStack(spacing: 0) {
+                    submenuTitle(submenu.title)
+                    Button {
+                        runDebugInsightSimulation()
+                    } label: {
+                        HStack {
+                            Image(systemName: "bell.badge")
+                            Text("Simulate Insight")
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                }
         #endif
+        }
+    }
+
+    private var tourTab: MenuBarWorkspaceTab? {
+        switch guidedTour.step {
+        case .today, .earlySignal, .statusAndRecovery:
+            return .workBlock
+        case .yourWeek:
+            return .history
+        case .activity:
+            return .recentActivity
+        case .settings:
+            return .settings
+        }
+    }
+
+    private func route(to step: GuidedTourStep) {
+        dismissSettingsSubmenus()
+        switch step {
+        case .today, .earlySignal, .statusAndRecovery:
+            navigator.selectWorkspaceTab(.workBlock)
+        case .yourWeek:
+            navigator.selectWorkspaceTab(.history)
+        case .activity:
+            navigator.selectWorkspaceTab(.recentActivity)
+        case .settings:
+            navigator.showSettings()
         }
     }
 
@@ -961,11 +1076,19 @@ public struct MenuBarPopoverView: View {
     }
 
     private var localCollectionPresentation: PopoverConnectionPresentation {
-        if presentation.statuses[.accessibility] != .granted {
+        switch presentation.statuses[.accessibility] ?? .unknown {
+        case .unknown:
+            return PopoverConnectionPresentation(
+                label: "Checking Accessibility…",
+                color: .gray
+            )
+        case .denied, .restricted:
             return PopoverConnectionPresentation(
                 label: "Collection paused: Accessibility permission required",
                 color: .yellow
             )
+        case .granted:
+            break
         }
         if collectionActivityStatus.status == .running {
             return PopoverConnectionPresentation(label: "Collection active", color: .green)
@@ -1082,8 +1205,8 @@ public struct MenuBarPopoverView: View {
             accountStatus = "signed_out"
         }
         let protocolVersion = Bundle.main.object(
-            forInfoDictionaryKey: "VelvtProtocolVersion"
-        ) as? String ?? "unknown"
+                forInfoDictionaryKey: "VelvtProtocolVersion"
+            ) as? String ?? "unknown"
         let lines = [
             "Velvt privacy-safe diagnostics",
             "app_version=\(appVersion)",
@@ -1114,16 +1237,16 @@ public struct MenuBarPopoverView: View {
     private func settingsRow(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack { Text(title); Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary) }
-                .contentShape(Rectangle()).padding(.horizontal, 16).padding(.vertical, 12)
+            .contentShape(Rectangle()).padding(.horizontal, 16).padding(.vertical, 12)
         }.buttonStyle(.plain).frame(maxWidth: .infinity)
     }
 
     private func settingsSubmenuRow(_ title: String, submenu: SettingsSubmenu) -> some View {
         Button { showSettingsSubmenu(submenu) } label: {
             HStack { Text(title); Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary) }
-                .contentShape(Rectangle())
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+            .contentShape(Rectangle())
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
@@ -1172,7 +1295,7 @@ public struct MenuBarPopoverView: View {
     }
     private func infoRow(_ title: String, _ value: String) -> some View {
         HStack { Text(title).foregroundStyle(.secondary); Spacer(); Text(value).lineLimit(1).truncationMode(.middle) }
-            .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
+        .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
     }
     private func authenticationInfoRow() -> some View {
         let presentation = authenticationPresentation
@@ -1190,11 +1313,11 @@ public struct MenuBarPopoverView: View {
     }
     private func queuedEventRow(_ event: QueuedEventSummary) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(event.localLabel ?? event.label)
+            Text(event.category.replacingOccurrences(of: "_", with: " ").capitalized)
                 .font(.subheadline)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            Text(event.category.replacingOccurrences(of: "_", with: " ").capitalized)
+            Text("Queued \(event.occurredAt.formatted(date: .omitted, time: .shortened))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -1259,6 +1382,55 @@ public struct MenuBarPopoverView: View {
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+    }
+}
+
+private struct GuidedTourBar: View {
+    @ObservedObject var model: GuidedTourModel
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 12) {
+                tourCopy
+                Spacer(minLength: 4)
+                controls
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                tourCopy
+                controls
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(Color.velvtPanel)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var tourCopy: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("\(model.progressLabel) · \(model.step.title)")
+                .font(.caption.bold())
+                .foregroundStyle(Color.velvtText)
+            Text(model.step.detail)
+                .font(.caption2)
+                .foregroundStyle(Color.velvtMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Tour step \(model.progressLabel), \(model.step.title)")
+        .accessibilityValue(model.step.detail)
+    }
+
+    private var controls: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Button("Skip tour") { model.dismiss() }
+                .buttonStyle(.plain)
+            Button("Back") { model.goBack() }
+                .disabled(!model.canGoBack)
+            Button(model.isLastStep ? "Done" : "Next") { model.advance() }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+        }
     }
 }
 
@@ -1399,19 +1571,43 @@ private struct MenuBarAccountControls: View {
             case .loggingOut: ProgressView("Signing out").controlSize(.small)
             case .pendingErasure: Text("Account deletion in progress").font(.caption).foregroundStyle(.secondary)
             default:
-                HStack(spacing: 8) {
-                    ForEach(Array(MenuBarAccountActionResolver.actions(for: accountStateManager.accountState).enumerated()), id: \.offset) { _, action in actionButton(for: action) }
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(MenuBarAccountActionResolver.actions(for: accountStateManager.accountState).enumerated()), id: \.offset) { _, action in actionButton(for: action) }
+                    }
+                    if let error = authViewModel.errorMessage {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
                 }
             }
         }
         .sheet(isPresented: $showsAuthentication) {
             MenuBarAuthenticationView(authViewModel: authViewModel, accountStateManager: accountStateManager, initialMode: authenticationMode, dismiss: { showsAuthentication = false })
         }
+        .confirmationDialog(
+            "Delete your Velvt account? This request cannot be undone.",
+            isPresented: Binding(
+                get: { authViewModel.showDeleteConfirmation },
+                set: { if !$0 { authViewModel.cancelAccountDeletion() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Account", role: .destructive) {
+                Task { await authViewModel.confirmAccountDeletion() }
+            }
+            Button("Cancel", role: .cancel) { authViewModel.cancelAccountDeletion() }
+        }
     }
     @ViewBuilder private func actionButton(for action: MenuBarAccountAction) -> some View {
         switch action {
         case .authenticate(let mode): Button(mode == .logIn ? signInLabel : "Sign Up") { authenticationMode = mode; authViewModel.authMode = mode; showsAuthentication = true }
         case .logOut: Button("Log Out", role: .destructive) { authViewModel.logOut() }
+        case .deleteAccount:
+            Button("Delete Account", role: .destructive) {
+                authViewModel.requestAccountDeletion()
+            }
         }
     }
     private var signInLabel: String {

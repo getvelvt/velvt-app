@@ -73,7 +73,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         permissionManager.startMonitoring()
         Task {
-            _ = await permissionManager.checkStatus(for: .accessibility)
+            _ = await permissionManager.refreshAccessibilityPermissionOnLaunch()
             _ = await permissionManager.checkStatus(for: .notifications)
         }
 

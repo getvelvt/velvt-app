@@ -45,7 +45,7 @@ final class MenuBarControllerTests: XCTestCase {
     func testPopoverUsesPreferredCompactSizeWhenScreenAllows() {
         let visibleFrame = CGRect(x: 0, y: 0, width: 1_440, height: 900)
 
-        XCTAssertEqual(MenuBarPopoverLayout.preferredContentSize, CGSize(width: 660, height: 350))
+        XCTAssertEqual(MenuBarPopoverLayout.preferredContentSize, CGSize(width: 660, height: 450))
         XCTAssertEqual(
             MenuBarPopoverLayout.contentSize(for: visibleFrame),
             MenuBarPopoverLayout.preferredContentSize

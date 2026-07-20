@@ -1,5 +1,18 @@
 import SwiftUI
 
+extension View {
+    func tourHighlight(_ isHighlighted: Bool) -> some View {
+        overlay {
+            if isHighlighted {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.velvtPink, lineWidth: 2)
+                    .padding(2)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
 enum TodayObservationKind: Equatable {
     case cloud
     case earlyLocal
@@ -78,15 +91,18 @@ public struct TodayWorkspaceView: View {
     @ObservedObject private var coordinator: ConcreteDisplayDataCoordinator
     @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
     @ObservedObject private var localDashboardCoordinator: LocalDashboardCoordinator
+    private let highlightsEarlySignal: Bool
 
     public init(
         coordinator: ConcreteDisplayDataCoordinator,
         workBlockCoordinator: WorkBlockCoordinator,
-        localDashboardCoordinator: LocalDashboardCoordinator
+        localDashboardCoordinator: LocalDashboardCoordinator,
+        highlightsEarlySignal: Bool = false
     ) {
         self.coordinator = coordinator
         self.workBlockCoordinator = workBlockCoordinator
         self.localDashboardCoordinator = localDashboardCoordinator
+        self.highlightsEarlySignal = highlightsEarlySignal
     }
 
     public var body: some View {
@@ -135,6 +151,7 @@ public struct TodayWorkspaceView: View {
                 errorMessage: localDashboardCoordinator.commandError
             )
             .padding(.horizontal, 16)
+            .tourHighlight(highlightsEarlySignal)
         }
     }
 
@@ -217,6 +234,7 @@ public struct TodayWorkspaceView: View {
                         : nil
                 )
                 .padding(.horizontal, 16)
+                .tourHighlight(highlightsEarlySignal)
             }
         case .progress:
             if coordinator.insightNotReadyReason != "insufficient_evidence"

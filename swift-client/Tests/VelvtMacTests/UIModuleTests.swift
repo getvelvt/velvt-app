@@ -144,6 +144,10 @@ final class MenuBarNavigationTests: XCTestCase {
         )
     }
 
+    func testTourSafePopoverHeightIs450Points() {
+        XCTAssertEqual(MenuBarPopoverLayout.preferredContentSize, CGSize(width: 660, height: 450))
+    }
+
     func testOpeningPopoverRestoresMainWorkBlockFromSettings() {
         var navigator = MenuBarPopoverNavigator()
         navigator.selectWorkspaceTab(.recentActivity)

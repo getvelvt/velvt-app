@@ -49,6 +49,7 @@ private struct TodayAccountGate: View {
     @ObservedObject var workBlockCoordinator: WorkBlockCoordinator
     @ObservedObject var localDashboardCoordinator: LocalDashboardCoordinator
     let accountStateManager: AccountStateManager?
+    let highlightedTourStep: GuidedTourStep?
 
     var body: some View {
         if let accountStateManager {
@@ -57,7 +58,8 @@ private struct TodayAccountGate: View {
                 TodayWorkspaceView(
                     coordinator: coordinator,
                     workBlockCoordinator: workBlockCoordinator,
-                    localDashboardCoordinator: localDashboardCoordinator
+                    localDashboardCoordinator: localDashboardCoordinator,
+                    highlightsEarlySignal: highlightedTourStep == .earlySignal
                 )
             case .loggedOut, .loggingIn, .loggingOut, .pendingErasure:
                 VStack(alignment: .leading, spacing: 8) {
@@ -74,7 +76,8 @@ private struct TodayAccountGate: View {
             TodayWorkspaceView(
                 coordinator: coordinator,
                 workBlockCoordinator: workBlockCoordinator,
-                localDashboardCoordinator: localDashboardCoordinator
+                localDashboardCoordinator: localDashboardCoordinator,
+                highlightsEarlySignal: highlightedTourStep == .earlySignal
             )
         }
     }
@@ -349,7 +352,7 @@ public struct PopoverConnectionPresentation {
 }
 
 public enum MenuBarPopoverLayout {
-    public static let preferredContentSize = CGSize(width: 660, height: 350)
+    public static let preferredContentSize = CGSize(width: 660, height: 450)
     public static let screenInset: CGFloat = 24
 
     public static func contentSize(for visibleFrame: CGRect?) -> CGSize {
@@ -667,16 +670,6 @@ public struct MenuBarPopoverView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.black.opacity(0.08))
-        .overlay {
-            if guidedTour.isPresented,
-               guidedTour.step != .statusAndRecovery,
-               guidedTour.step != .settings {
-                RoundedRectangle(cornerRadius: 7)
-                    .stroke(Color.velvtPink, lineWidth: 2)
-                    .padding(4)
-                    .allowsHitTesting(false)
-            }
-        }
     }
 
     private var workspaceNavigationRail: some View {
@@ -749,7 +742,8 @@ public struct MenuBarPopoverView: View {
                     coordinator: coordinator,
                     workBlockCoordinator: workBlockCoordinator,
                     localDashboardCoordinator: localDashboardCoordinator,
-                    accountStateManager: accountStateManager
+                    accountStateManager: accountStateManager,
+                    highlightedTourStep: guidedTour.isPresented ? guidedTour.step : nil
                 )
             case .history:
                 HistoryWorkspaceView(
@@ -777,6 +771,7 @@ public struct MenuBarPopoverView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
+            .tourHighlight(guidedTour.isPresented && guidedTour.step == .today)
             .popover(isPresented: $showsFocusSession, arrowEdge: .bottom) {
                 ScrollView {
                     WorkBlockView(coordinator: workBlockCoordinator)

@@ -73,7 +73,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         permissionManager.startMonitoring()
         Task {
-            _ = await permissionManager.refreshAccessibilityPermissionOnLaunch()
+            // Read the current state without opening the macOS prompt. The
+            // onboarding window owns the explicit Accessibility request after
+            // the intro has been shown.
+            _ = await permissionManager.checkStatus(for: .accessibility)
             _ = await permissionManager.checkStatus(for: .notifications)
         }
 
@@ -180,7 +183,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             onStartTour: { [weak menuBar] in menuBar?.beginGuidedTour() }
         )
         onboardingWindowController = onboardingWindow
-        onboardingWindow.presentIfNeeded()
+        onboardingWindow.presentOnLaunch()
 
         let responseRouter = NotificationResponseRouter(
             openPopover: { [weak menuBar] in menuBar?.showPopover() },

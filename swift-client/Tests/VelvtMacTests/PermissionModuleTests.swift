@@ -396,6 +396,19 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertFalse(secondLaunch.showsOnboarding)
     }
 
+    func testLaunchReplayShowsIntroEvenAfterCompletion() {
+        let presentation = PermissionPresentationModel(
+            permissionManager: FakePermissionManager(),
+            onboardingStateStore: InMemoryOnboardingStateStore(hasCompletedOnboarding: true)
+        )
+
+        XCTAssertFalse(presentation.showsOnboarding)
+
+        presentation.replayOnboarding()
+
+        XCTAssertTrue(presentation.showsOnboarding)
+    }
+
     func testEstablishedInstallationBypassesNewIntroWithoutChangingLegacyValues() {
         let suite = "onboarding.migration.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -456,6 +469,51 @@ final class PermissionModuleTests: XCTestCase {
 
         model.finishAndStartUsing()
         XCTAssertEqual(startCount, 2)
+    }
+
+    @MainActor
+    func testAccessibilityPromptCanBeSkippedWithoutRequestingPermission() {
+        let permissions = FakePermissionManager()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore()
+        )
+        var continueCount = 0
+        let model = AccessibilityPromptModel(
+            presentation: presentation,
+            permissionManager: permissions,
+            onContinue: { continueCount += 1 }
+        )
+
+        model.skip()
+
+        XCTAssertEqual(continueCount, 1)
+        XCTAssertTrue(permissions.requestedPermissions.isEmpty)
+        XCTAssertFalse(model.hasRequested)
+    }
+
+    @MainActor
+    func testAccessibilityPromptRequestsOnlyAccessibilityBeforeWalkthrough() async {
+        let permissions = FakePermissionManager()
+        let store = InMemoryOnboardingStateStore()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: store
+        )
+        var continueCount = 0
+        let model = AccessibilityPromptModel(
+            presentation: presentation,
+            permissionManager: permissions,
+            onContinue: { continueCount += 1 }
+        )
+
+        await model.request()
+        model.continueToWalkthrough()
+
+        XCTAssertEqual(permissions.requestedPermissions, [.accessibility])
+        XCTAssertTrue(store.hasRequestedAccessibilityPermission)
+        XCTAssertFalse(store.hasRequestedNotificationsPermission)
+        XCTAssertEqual(continueCount, 1)
     }
 
     func testOnboardingPrivacyCopyMatchesTheAuditedBoundary() {

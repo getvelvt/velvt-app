@@ -18,6 +18,23 @@ final class MenuBarNavigationTests: XCTestCase {
     XCTAssertEqual(MinimalDashboardSurface.activity.rawValue, "activity")
   }
 
+  func testRestoredWorkspaceNavigationKeepsThePreviousOrderAndTitles() {
+    XCTAssertEqual(
+      MenuBarWorkspaceTab.allCases.map(\.title),
+      ["Today", "Your Week", "Settings"]
+    )
+  }
+
+  func testRestoredWorkspaceNavigatorResetsToToday() {
+    var navigator = MenuBarPopoverNavigator()
+
+    navigator.selectWorkspaceTab(.history)
+    XCTAssertEqual(navigator.selectedWorkspaceTab, .history)
+
+    navigator.resetForPopoverOpening()
+    XCTAssertEqual(navigator.selectedWorkspaceTab, .workBlock)
+  }
+
     func testConnectionPresentationUsesRequestedLabelsAndColors() {
     XCTAssertEqual(
       PopoverConnectionPresentation(status: .connected).label, "Local service connected")

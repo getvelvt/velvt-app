@@ -7,6 +7,42 @@ public enum MenuBarAccountAction: Equatable {
     case logOut
     case deleteAccount
 }
+
+private struct HistoryWorkspaceView: View {
+    @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
+    let accountStateManager: AccountStateManager?
+
+    var body: some View {
+        if let accountStateManager {
+            AccountGatedHistoryWorkspaceView(
+                coordinator: coordinator,
+                accountStateManager: accountStateManager
+            )
+        } else {
+            VelvtPopoverContentView(coordinator: coordinator)
+        }
+    }
+}
+
+private struct AccountGatedHistoryWorkspaceView: View {
+    @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
+    @ObservedObject var accountStateManager: AccountStateManager
+
+    var body: some View {
+        switch accountStateManager.accountState {
+        case .loggedIn:
+            VelvtPopoverContentView(coordinator: coordinator)
+        case .loggedOut, .loggingIn, .loggingOut, .pendingErasure:
+            EmptyDeliveryState(
+                text: "Sign in to view your 7-day history",
+                systemImage: "person.crop.circle.badge.exclamationmark"
+            )
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("Sign in to view 7-Day History")
+        }
+    }
+}
 public enum MenuBarAccountActionResolver {
     public static func actions(for accountState: AccountState) -> [MenuBarAccountAction] {
         switch accountState {
@@ -331,6 +367,54 @@ enum SettingsSubmenu: CaseIterable, Equatable {
     }
 }
 
+public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
+    case workBlock
+    case history
+    case settings
+
+    public var title: String {
+        switch self {
+        case .workBlock: return "Today"
+        case .history: return "Your Week"
+        case .settings: return "Settings"
+        }
+    }
+
+    fileprivate var systemImage: String {
+        switch self {
+        case .workBlock: return "timer"
+        case .history: return "calendar"
+        case .settings: return "gearshape"
+        }
+    }
+
+    var keyboardShortcut: KeyEquivalent {
+        switch self {
+        case .workBlock: return "1"
+        case .history: return "2"
+        case .settings: return "3"
+        }
+    }
+}
+
+public struct MenuBarPopoverNavigator {
+    public private(set) var selectedWorkspaceTab: MenuBarWorkspaceTab = .workBlock
+
+    public init() {}
+
+    public mutating func selectWorkspaceTab(_ tab: MenuBarWorkspaceTab) {
+        selectedWorkspaceTab = tab
+    }
+
+    public mutating func showSettings() {
+        selectedWorkspaceTab = .settings
+    }
+
+    public mutating func resetForPopoverOpening() {
+        selectedWorkspaceTab = .workBlock
+    }
+}
+
 public struct MenuBarPopoverView: View {
     @ObservedObject private var presentation: PermissionPresentationModel
     private let permissionManager: (any PermissionManagerProtocol)?
@@ -354,6 +438,7 @@ public struct MenuBarPopoverView: View {
     private let popoverWillOpen: AnyPublisher<Void, Never>
     private let onEscape: () -> Void
     private let onTerminate: () -> Void
+    @State private var navigator = MenuBarPopoverNavigator()
     @State private var presentedSettingsSubmenu: SettingsSubmenu?
     @State private var confirmsClassificationReset = false
     @State private var confirmsWorkBlockClear = false
@@ -444,13 +529,18 @@ public struct MenuBarPopoverView: View {
                 onEscape()
             }
         }
+        .onChange(of: guidedTour.step) { route(to: $0) }
         .onChange(of: guidedTour.isPresented) { isPresented in
-            if !isPresented {
+            if isPresented {
+                route(to: guidedTour.step)
+            } else {
                 dismissSettingsSubmenus()
+                navigator.selectWorkspaceTab(.workBlock)
             }
         }
         .onReceive(popoverWillOpen) {
             dismissSettingsSubmenus()
+            navigator.resetForPopoverOpening()
         }
     }
 
@@ -465,6 +555,22 @@ public struct MenuBarPopoverView: View {
                 .accessibilityLabel("Velvt")
                 .layoutPriority(1)
             Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(localCollectionPresentation.label)
+                        .font(.caption)
+                        .foregroundStyle(localCollectionPresentation.color)
+                        .multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Circle().fill(localCollectionPresentation.color).frame(width: 7, height: 7)
+                }
+                Text(backendStatusLabel)
+                    .font(.caption2)
+                    .foregroundStyle(Color.velvtMuted.opacity(0.72))
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: 360, alignment: .trailing)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .overlay {
@@ -489,7 +595,14 @@ public struct MenuBarPopoverView: View {
     }
 
     private var workspace: some View {
+        HStack(spacing: 0) {
+            workspaceNavigationRail
+                .frame(width: 132)
+
+            Divider().opacity(0.2)
+
             workspaceDetailPane
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -499,15 +612,79 @@ public struct MenuBarPopoverView: View {
                 serviceAlertRow(alert)
                 Divider().opacity(0.15)
             }
+            if collectionActivityStatus.status == .running {
+                gatheringInfoStatus
+                Divider().opacity(0.15)
+            }
+
             ScrollView {
+                ZStack(alignment: .topLeading) {
                     selectedWorkspaceContent
+                        .id(navigator.selectedWorkspaceTab)
+                        .transition(.opacity)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
+                .animation(
+                    MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion)
+                        ? .easeOut(duration: 0.16)
+                        : nil,
+                    value: navigator.selectedWorkspaceTab
+                )
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
+
+            Divider().opacity(0.15)
+            workspaceBottomBar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.black.opacity(0.08))
+    }
+
+    private var workspaceNavigationRail: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(MenuBarWorkspaceTab.allCases, id: \.self) { tab in
+                workspaceNavigationButton(tab)
+            }
+
+            Spacer(minLength: 12)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+        .frame(maxHeight: .infinity)
+        .background(Color.velvtSurface.opacity(0.55))
+    }
+
+    private func workspaceNavigationButton(_ tab: MenuBarWorkspaceTab) -> some View {
+        let isSelected = navigator.selectedWorkspaceTab == tab
+        return Button {
+            guard !isSelected else { return }
+            dismissSettingsSubmenus()
+            navigator.selectWorkspaceTab(tab)
+        } label: {
+            Label(tab.title, systemImage: tab.systemImage)
+                .font(.caption)
+                .fontWeight(isSelected ? .semibold : .medium)
+                .foregroundStyle(isSelected ? Color.velvtText : Color.velvtText.opacity(0.62))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(isSelected ? Color.velvtPanelHighlight : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(tab.keyboardShortcut, modifiers: .command)
+        .accessibilityLabel(tab.title)
+        .accessibilityValue(isSelected ? "Selected" : "")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .overlay {
+            if guidedTour.isPresented, tourTab == tab {
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(Color.velvtPink, lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     @ViewBuilder
@@ -528,38 +705,42 @@ public struct MenuBarPopoverView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
             }
-      MinimalDashboardWorkspaceView(
+            switch navigator.selectedWorkspaceTab {
+            case .workBlock:
+                MinimalDashboardWorkspaceView(
                     coordinator: coordinator,
                     workBlockCoordinator: workBlockCoordinator,
                     localDashboardCoordinator: localDashboardCoordinator,
-        onStartWorkBlock: { showsFocusSession = true }
+                    onStartWorkBlock: { showsFocusSession = true }
                 )
 
-      DisclosureGroup("Settings, privacy & system state", isExpanded: $showsSystemState) {
-        VStack(alignment: .leading, spacing: 8) {
-          Label(localCollectionPresentation.label, systemImage: "lock.shield")
-          Text(backendStatusLabel)
-          Text(
-            "Raw work activity and local display labels stay on this Mac. Privacy-safe abstractions may synchronize for summaries and insights."
+                DisclosureGroup("Privacy details", isExpanded: $showsSystemState) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(
+                            "Raw work activity and local display labels stay on this Mac. Only privacy-safe abstractions may synchronize for summaries and insights."
+                        )
+                    }
+                    .font(.caption)
+                    .foregroundStyle(Color.velvtMuted)
+                    .padding(.top, 8)
+                }
+                .font(.caption)
+                .tint(Color.velvtText)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+                .accessibilityHint(
+                    "Expands the plain-language privacy explanation"
                 )
-          if collectionActivityStatus.status == .running {
-            Text("Local collection active")
-          }
-          if let accountStateManager, let ipcClient {
-            MenuBarAccountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
-          }
+
+            case .history:
+                HistoryWorkspaceView(
+                    coordinator: coordinator,
+                    accountStateManager: accountStateManager
+                )
+
+            case .settings:
                 settingsContent
             }
-        .font(.caption)
-        .foregroundStyle(Color.velvtMuted)
-        .padding(.top, 8)
-      }
-      .font(.caption)
-      .tint(Color.velvtText)
-      .padding(.horizontal, 12)
-      .padding(.bottom, 12)
-      .accessibilityHint(
-        "Expands settings, privacy wording, collection status, and account controls")
     }
     .popover(isPresented: $showsFocusSession, arrowEdge: .bottom) {
       ScrollView {
@@ -569,6 +750,34 @@ public struct MenuBarPopoverView: View {
       .background(Color.velvtSurface)
       .preferredColorScheme(.dark)
         }
+    }
+
+    private var workspaceBottomBar: some View {
+        HStack(spacing: 10) {
+            if let accountStateManager, let ipcClient {
+                MenuBarAccountControls(accountStateManager: accountStateManager, ipcClient: ipcClient)
+            }
+            Spacer(minLength: 8)
+            Button {
+                showsFocusSession.toggle()
+            } label: {
+                Label("Start a focus session", systemImage: "timer")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .tourHighlight(guidedTour.isPresented && guidedTour.step == .today)
+            .popover(isPresented: $showsFocusSession, arrowEdge: .bottom) {
+                ScrollView {
+                    WorkBlockView(coordinator: workBlockCoordinator)
+                }
+                .frame(width: 400, height: 390, alignment: .top)
+                .background(Color.velvtSurface)
+                .preferredColorScheme(.dark)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .background(Color.velvtSurface.opacity(0.32))
     }
 
     private var gatheringInfoStatus: some View {
@@ -823,6 +1032,25 @@ public struct MenuBarPopoverView: View {
                     .frame(maxWidth: .infinity)
                 }
         #endif
+        }
+    }
+
+    private var tourTab: MenuBarWorkspaceTab? {
+        switch guidedTour.step {
+        case .today, .earlySignal, .focusFragmentation, .dailyActivity, .statusAndRecovery:
+            return .workBlock
+        case .settings:
+            return .settings
+        }
+    }
+
+    private func route(to step: GuidedTourStep) {
+        dismissSettingsSubmenus()
+        switch step {
+        case .today, .earlySignal, .focusFragmentation, .dailyActivity, .statusAndRecovery:
+            navigator.selectWorkspaceTab(.workBlock)
+        case .settings:
+            navigator.showSettings()
         }
     }
 

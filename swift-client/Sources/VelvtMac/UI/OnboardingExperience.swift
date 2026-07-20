@@ -80,6 +80,60 @@ public final class IntroFlowModel: ObservableObject {
     }
 }
 
+@MainActor
+public final class AccessibilityPromptModel: ObservableObject {
+    @Published public private(set) var hasRequested = false
+    @Published public private(set) var isRequesting = false
+
+    private let presentation: PermissionPresentationModel
+    private let permissionManager: any PermissionManagerProtocol
+    private let onContinue: () -> Void
+
+    public init(
+        presentation: PermissionPresentationModel,
+        permissionManager: any PermissionManagerProtocol,
+        onContinue: @escaping () -> Void
+    ) {
+        self.presentation = presentation
+        self.permissionManager = permissionManager
+        self.onContinue = onContinue
+    }
+
+    public var status: PermissionStatus {
+        presentation.statuses[.accessibility] ?? .unknown
+    }
+
+    public var canContinue: Bool {
+        (hasRequested && !isRequesting) || status == .granted
+    }
+
+    public func request() async {
+        guard !isRequesting, status != .granted else { return }
+        presentation.markPermissionRequested(.accessibility)
+        hasRequested = true
+
+        switch status {
+        case .denied, .restricted:
+            PermissionRecoveryView.openAccessibilitySettings()
+        case .unknown:
+            isRequesting = true
+            _ = await permissionManager.requestPermission(for: .accessibility)
+            isRequesting = false
+        case .granted:
+            break
+        }
+    }
+
+    public func skip() {
+        onContinue()
+    }
+
+    public func continueToWalkthrough() {
+        guard canContinue, !isRequesting else { return }
+        onContinue()
+    }
+}
+
 public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
     case today
     case earlySignal
@@ -152,18 +206,15 @@ public final class GuidedTourModel: ObservableObject {
 
 public struct FirstRunExperienceView: View {
     @ObservedObject private var model: IntroFlowModel
-    @ObservedObject private var presentation: PermissionPresentationModel
-    private let permissionManager: any PermissionManagerProtocol
+    private let followsLaunchSequence: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
         model: IntroFlowModel,
-        presentation: PermissionPresentationModel,
-        permissionManager: any PermissionManagerProtocol
+        followsLaunchSequence: Bool = false
     ) {
         self.model = model
-        self.presentation = presentation
-        self.permissionManager = permissionManager
+        self.followsLaunchSequence = followsLaunchSequence
     }
 
     public var body: some View {
@@ -188,6 +239,8 @@ public struct FirstRunExperienceView: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: model.step)
         .onExitCommand {
             if model.step == .quickStart {
+                model.finishAndStartUsing()
+            } else if followsLaunchSequence {
                 model.finishAndStartUsing()
             } else {
                 model.skipIntro()
@@ -233,28 +286,12 @@ public struct FirstRunExperienceView: View {
                     systemImage: "lock.shield",
                     title: "Private by design, clear about synchronization.",
                     body:
-                        "Accessibility lets Velvt notice when the active work context changes so it can build broad, privacy-safe patterns."
+                        "Velvt can build broad, privacy-safe patterns from the active work context. Raw activity details stay on this Mac."
                 )
                 Text(OnboardingCopy.privacySummary)
                     .font(.body)
                     .foregroundStyle(Color.velvtMuted)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    Button(accessibilityActionLabel) {
-                        presentation.markPermissionRequested(.accessibility)
-                        requestAccessibility()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(presentation.statuses[.accessibility] == .granted)
-                    .accessibilityHint("Opens the macOS Accessibility permission flow")
-                    Button(notificationsActionLabel) {
-                        presentation.markPermissionRequested(.notifications)
-                        Task { _ = await permissionManager.requestPermission(for: .notifications) }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(presentation.statuses[.notifications] == .granted)
-                    .accessibilityHint("Requests optional notification permission")
-                }
             }
         case .capabilities:
             VStack(alignment: .leading, spacing: 18) {
@@ -324,7 +361,13 @@ public struct FirstRunExperienceView: View {
             Button("View full intro") { model.showFullIntro() }
                 .buttonStyle(.plain)
         } else {
-            Button("Skip intro") { model.skipIntro() }
+            Button("Skip intro") {
+                if followsLaunchSequence {
+                    model.finishAndStartUsing()
+                } else {
+                    model.skipIntro()
+                }
+            }
                 .buttonStyle(.plain)
             if model.canGoBack {
                 Button("Back") { model.goBack() }
@@ -335,40 +378,27 @@ public struct FirstRunExperienceView: View {
     @ViewBuilder private var primaryActions: some View {
         switch model.step {
         case .ready:
-            Button("Skip tour and start using") { model.finishAndStartUsing() }
-                .buttonStyle(.plain)
-            Button("Start guided tour") { model.finishAndStartTour() }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
+            if followsLaunchSequence {
+                Button("Continue to Accessibility") { model.finishAndStartUsing() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            } else {
+                Button("Skip tour and start using") { model.finishAndStartUsing() }
+                    .buttonStyle(.plain)
+                Button("Start guided tour") { model.finishAndStartTour() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
         case .quickStart:
-            Button("Start using Velvt") { model.finishAndStartUsing() }
+            Button(
+                followsLaunchSequence ? "Continue to Accessibility" : "Start using Velvt"
+            ) { model.finishAndStartUsing() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
         default:
             Button("Continue") { model.continueForward() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-        }
-    }
-
-    private var accessibilityActionLabel: String {
-        presentation.statuses[.accessibility] == .granted
-            ? "Accessibility Allowed"
-            : "Allow Accessibility"
-    }
-
-    private var notificationsActionLabel: String {
-        presentation.statuses[.notifications] == .granted
-            ? "Notifications Allowed"
-            : "Allow Notifications"
-    }
-
-    private func requestAccessibility() {
-        switch presentation.statuses[.accessibility] ?? .unknown {
-        case .denied, .restricted:
-            PermissionRecoveryView.openAccessibilitySettings()
-        case .unknown, .granted:
-            Task { _ = await permissionManager.requestPermission(for: .accessibility) }
         }
     }
 
@@ -425,14 +455,159 @@ private struct IntroPage: View {
     }
 }
 
+public struct AccessibilityPermissionExperienceView: View {
+    @ObservedObject private var model: AccessibilityPromptModel
+    @ObservedObject private var presentation: PermissionPresentationModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    public init(
+        model: AccessibilityPromptModel,
+        presentation: PermissionPresentationModel
+    ) {
+        self.model = model
+        self.presentation = presentation
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                Image("VelvtMenuBarIcon")
+                    .resizable()
+                    .renderingMode(.template)
+                    .interpolation(.high)
+                    .frame(width: 30, height: 30)
+                    .foregroundStyle(Color.velvtText)
+                    .accessibilityHidden(true)
+                Text("Velvt")
+                    .font(.headline)
+                Spacer()
+                Text("Accessibility")
+                    .font(.caption)
+                    .foregroundStyle(Color.velvtMuted)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+
+            Divider().opacity(0.2)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Image(systemName: "accessibility")
+                        .font(.system(size: 36, weight: .medium))
+                        .foregroundStyle(Color.velvtPink)
+                        .accessibilityHidden(true)
+                    Text("Allow Accessibility after the intro.")
+                        .font(.largeTitle.bold())
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(
+                        "This lets Velvt notice broad changes in the active work context. It does not send raw app names, window titles, URLs, filenames, or paths to the cloud."
+                    )
+                    .font(.title3)
+                    .foregroundStyle(Color.velvtMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    if currentStatus == .granted {
+                        Label("Accessibility is already allowed.", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(Color.velvtGreen)
+                    } else if model.hasRequested {
+                        Text(
+                            "You can continue without this permission. Collection will remain limited until access is granted in System Settings."
+                        )
+                        .font(.body)
+                        .foregroundStyle(Color.velvtMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: 620, alignment: .leading)
+                .padding(36)
+            }
+
+            Divider().opacity(0.2)
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    skipButton
+                    Spacer()
+                    actionButtons
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    skipButton
+                    HStack(spacing: 12) {
+                        Spacer()
+                        actionButtons
+                    }
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+        }
+        .frame(
+            minWidth: OnboardingWindowLayout.minimumContentSize.width,
+            minHeight: OnboardingWindowLayout.minimumContentSize.height
+        )
+        .background(Color.velvtSurface)
+        .foregroundStyle(Color.velvtText)
+        .preferredColorScheme(.dark)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: model.hasRequested)
+        .onExitCommand { model.skip() }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var skipButton: some View {
+        Button("Skip for now") { model.skip() }
+            .buttonStyle(.plain)
+            .accessibilityHint("Continues to the walkthrough without requesting Accessibility")
+    }
+
+    @ViewBuilder private var actionButtons: some View {
+        if model.canContinue {
+            Button("Continue to walkthrough") { model.continueToWalkthrough() }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+        } else {
+            Button(requestActionLabel) {
+                Task { await model.request() }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.isRequesting)
+            .keyboardShortcut(.defaultAction)
+            .accessibilityHint("Requests macOS Accessibility access")
+        }
+    }
+
+    private var currentStatus: PermissionStatus {
+        presentation.statuses[.accessibility] ?? model.status
+    }
+
+    private var requestActionLabel: String {
+        switch currentStatus {
+        case .denied, .restricted:
+            "Open Accessibility Settings"
+        case .unknown:
+            "Allow Accessibility"
+        case .granted:
+            "Accessibility Allowed"
+        }
+    }
+}
+
 @MainActor
 public final class OnboardingWindowController: NSObject, NSWindowDelegate {
+    private enum LaunchStage {
+        case manual
+        case intro
+        case accessibility
+    }
+
     private let presentation: PermissionPresentationModel
     private let permissionManager: any PermissionManagerProtocol
     private let onStartUsing: () -> Void
     private let onStartTour: () -> Void
     private var windowController: NSWindowController?
     private var flowModel: IntroFlowModel?
+    private var accessibilityModel: AccessibilityPromptModel?
+    private var launchStage: LaunchStage = .manual
 
     public init(
         presentation: PermissionPresentationModel,
@@ -448,30 +623,45 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     public func presentIfNeeded() {
         guard presentation.showsOnboarding else { return }
-        present(replay: false)
+        launchStage = .manual
+        presentIntro(replay: false)
+    }
+
+    /// The intro is intentionally shown on every application launch. The
+    /// persisted completion state is still used for permission/account
+    /// behavior, but it no longer suppresses the launch walkthrough.
+    public func presentOnLaunch() {
+        presentation.replayOnboarding()
+        launchStage = .intro
+        presentIntro(replay: false)
     }
 
     public func presentReplay() {
         presentation.replayOnboarding()
-        present(replay: true)
+        launchStage = .manual
+        presentIntro(replay: true)
     }
 
     public func close() {
-        windowController?.window?.delegate = nil
-        windowController?.close()
-        windowController = nil
-        flowModel = nil
+        launchStage = .manual
+        dismissWindow()
     }
 
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
-        presentation.completeOnboarding()
-        onStartUsing()
-        windowController = nil
-        flowModel = nil
+        switch launchStage {
+        case .intro:
+            advanceFromIntro()
+        case .accessibility:
+            finishAccessibilityStage()
+        case .manual:
+            presentation.completeOnboarding()
+            dismissWindow()
+            onStartUsing()
+        }
         return true
     }
 
-    private func present(replay: Bool) {
+    private func presentIntro(replay: Bool) {
         if let window = windowController?.window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -479,25 +669,59 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         }
 
         let model = IntroFlowModel(
-            persistCompletion: { [weak presentation] in presentation?.completeOnboarding() },
+            persistCompletion: { [weak self] in
+                if self?.launchStage != .intro {
+                    self?.presentation.completeOnboarding()
+                }
+            },
             startUsing: { [weak self] in
-                self?.close()
-                self?.onStartUsing()
+                guard let self else { return }
+                if self.launchStage == .intro {
+                    self.advanceFromIntro()
+                } else {
+                    self.presentation.completeOnboarding()
+                    self.dismissWindow()
+                    self.onStartUsing()
+                }
             },
             startTour: { [weak self] in
-                self?.close()
-                self?.onStartTour()
+                guard let self else { return }
+                if self.launchStage == .intro {
+                    self.advanceFromIntro()
+                } else {
+                    self.presentation.completeOnboarding()
+                    self.dismissWindow()
+                    self.onStartTour()
+                }
             }
         )
         flowModel = model
-        let rootView = FirstRunExperienceView(
-            model: model,
-            presentation: presentation,
-            permissionManager: permissionManager
+        presentWindow(
+            FirstRunExperienceView(
+                model: model,
+                followsLaunchSequence: launchStage == .intro
+            ),
+            title: replay ? "Velvt Intro" : "Welcome to Velvt"
         )
+    }
+
+    private func presentAccessibilityStage() {
+        let model = AccessibilityPromptModel(
+            presentation: presentation,
+            permissionManager: permissionManager,
+            onContinue: { [weak self] in self?.finishAccessibilityStage() }
+        )
+        accessibilityModel = model
+        presentWindow(
+            AccessibilityPermissionExperienceView(model: model, presentation: presentation),
+            title: "Velvt Accessibility"
+        )
+    }
+
+    private func presentWindow<Content: View>(_ rootView: Content, title: String) {
         let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: hostingController)
-        window.title = replay ? "Velvt Intro" : "Welcome to Velvt"
+        window.title = title
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         let contentSize = OnboardingWindowLayout.contentSize(
             for: NSScreen.main?.visibleFrame
@@ -514,5 +738,29 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         windowController = controller
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func advanceFromIntro() {
+        guard launchStage == .intro else { return }
+        presentation.completeOnboarding()
+        dismissWindow()
+        launchStage = .accessibility
+        presentAccessibilityStage()
+    }
+
+    private func finishAccessibilityStage() {
+        guard launchStage == .accessibility else { return }
+        presentation.completeOnboarding()
+        launchStage = .manual
+        dismissWindow()
+        onStartTour()
+    }
+
+    private func dismissWindow() {
+        windowController?.window?.delegate = nil
+        windowController?.close()
+        windowController = nil
+        flowModel = nil
+        accessibilityModel = nil
     }
 }

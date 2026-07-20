@@ -93,6 +93,7 @@ private struct HistoryDashboardView: View {
 
 private struct DailyActivityRow: View {
     let day: DaySummaryViewModel
+    @State private var hoveredCategoryDetail: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -108,19 +109,38 @@ private struct DailyActivityRow: View {
                         .foregroundStyle(Color.velvtMuted)
                 }
                 Spacer(minLength: 8)
-                metric("Switches", day.isNoData ? "—" : "\(day.meaningfulSwitchCount)")
-                metric("Fragmentation", day.fragmentationScore.map(String.init) ?? "—")
+                metric("Context changes", day.isNoData ? "—" : "\(day.meaningfulSwitchCount)")
+                metric("Switching level", switchingLevel)
             }
 
-            SplitActivityBar(day: day)
+            SplitActivityBar(day: day) { detail in
+                hoveredCategoryDetail = detail
+            }
                 .frame(height: 10)
+
+            if let hoveredCategoryDetail {
+                Text(hoveredCategoryDetail)
+                    .font(.caption2)
+                    .foregroundStyle(Color.velvtMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
+            }
         }
         .padding(.vertical, 5)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(day.date)
         .accessibilityValue(
-            "\(day.isNoData ? "No activity" : day.activeTime), \(day.meaningfulSwitchCount) meaningful switches, fragmentation \(day.fragmentationScore.map(String.init) ?? "no data")"
+            "\(day.isNoData ? "No activity" : day.activeTime), \(day.meaningfulSwitchCount) context changes, switching level \(switchingLevel)"
         )
+    }
+
+    private var switchingLevel: String {
+        guard let score = day.fragmentationScore else { return "—" }
+        switch score {
+        case ..<34: return "Low"
+        case ..<67: return "Moderate"
+        default: return "High"
+        }
     }
 
     private func metric(_ title: String, _ value: String) -> some View {
@@ -132,7 +152,7 @@ private struct DailyActivityRow: View {
                 .font(.system(.caption2, design: .monospaced).weight(.semibold))
                 .foregroundStyle(value == "—" ? Color.velvtMuted.opacity(0.45) : Color.velvtPink)
         }
-        .frame(minWidth: title == "Fragmentation" ? 74 : 48, alignment: .trailing)
+        .frame(minWidth: title == "Switching level" ? 68 : 64, alignment: .trailing)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title): \(value)")
     }
@@ -140,7 +160,7 @@ private struct DailyActivityRow: View {
 
 private struct SplitActivityBar: View {
     let day: DaySummaryViewModel
-    @State private var hoveredSegmentHelp: String?
+    let onHover: (String?) -> Void
 
     private var segments: [ActivityProportion] {
         day.typeProportions.filter { $0.proportion > 0 }.prefix(5).map { $0 }
@@ -150,9 +170,12 @@ private struct SplitActivityBar: View {
         GeometryReader { proxy in
             HStack(spacing: 2) {
                 if segments.isEmpty {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.white.opacity(day.isNoData ? 0.06 : 0.12))
-                        .help(emptyHelpText)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Color.white.opacity(day.isNoData ? 0.06 : 0.12))
+                            .help(emptyHelpText)
+                            .onHover { hovering in
+                                onHover(hovering ? emptyHelpText : nil)
+                            }
                 } else {
                     ForEach(Array(segments.enumerated()), id: \.element.category) { index, segment in
                         let text = helpText(for: segment)
@@ -161,7 +184,7 @@ private struct SplitActivityBar: View {
                             .frame(width: max(5, proxy.size.width * CGFloat(segment.proportion)))
                             .help(text)
                             .onHover { hovering in
-                                hoveredSegmentHelp = hovering ? text : nil
+                                onHover(hovering ? text : nil)
                             }
                     }
                 }
@@ -169,7 +192,7 @@ private struct SplitActivityBar: View {
         }
         .onHover { hovering in
             if !hovering {
-                hoveredSegmentHelp = nil
+                onHover(nil)
             }
         }
         .frame(height: 10)

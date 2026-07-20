@@ -1409,7 +1409,8 @@ private struct GuidedTourBar: View {
             Text(model.step.detail)
                 .font(.caption2)
                 .foregroundStyle(Color.velvtMuted)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(2)
+                .accessibilityLabel(model.step.detail)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Tour step \(model.progressLabel), \(model.step.title)")

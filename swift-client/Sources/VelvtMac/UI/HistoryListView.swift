@@ -100,11 +100,13 @@ private struct DailyActivityRow: View {
                 Text(day.date)
                     .font(.caption.bold())
                     .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.5) : Color.velvtText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Text(day.isNoData ? "No data" : day.activeTime)
                     .font(.caption2)
                     .foregroundStyle(Color.velvtMuted)
             }
-            .frame(width: 92, alignment: .leading)
+            .frame(width: 86, alignment: .leading)
 
             SplitActivityBar(day: day)
 
@@ -118,7 +120,7 @@ private struct DailyActivityRow: View {
                     .foregroundStyle(day.fragmentationScore == nil ? Color.velvtMuted.opacity(0.45) : Color.velvtPink)
                     .help("Fragmentation score: higher means more observed category movement in this day's summary.")
             }
-            .frame(width: 42, alignment: .trailing)
+            .frame(width: 38, alignment: .trailing)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Meaningful switches and fragmentation")
             .accessibilityValue("\(day.isNoData ? "No switches" : "\(day.meaningfulSwitchCount) meaningful switches"), fragmentation \(day.fragmentationScore.map(String.init) ?? "no data")")

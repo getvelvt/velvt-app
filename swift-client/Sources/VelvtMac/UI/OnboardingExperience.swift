@@ -280,9 +280,9 @@ public struct FirstRunExperienceView: View {
         case .ready:
             IntroPage(
                 systemImage: "checkmark.circle.fill",
-                title: "Velvt is ready when you are.",
+                title: "Take a quick look around.",
                 body:
-                    "Start on Today with the content already available, or take a short tour of the real menu-bar interface."
+                    "The guided tour opens the live menu-bar interface and points to the controls you will use."
             )
         case .quickStart:
             VStack(alignment: .leading, spacing: 20) {
@@ -335,8 +335,9 @@ public struct FirstRunExperienceView: View {
     @ViewBuilder private var primaryActions: some View {
         switch model.step {
         case .ready:
-            Button("Start using Velvt") { model.finishAndStartUsing() }
-            Button("Take the guided tour") { model.finishAndStartTour() }
+            Button("Skip tour and start using") { model.finishAndStartUsing() }
+                .buttonStyle(.plain)
+            Button("Start guided tour") { model.finishAndStartTour() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
         case .quickStart:

@@ -427,6 +427,9 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(model.step, .ready)
         model.finishAndStartTour()
         XCTAssertEqual(tourCount, 1)
+
+        model.finishAndStartUsing()
+        XCTAssertEqual(startCount, 2)
     }
 
     func testOnboardingPrivacyCopyMatchesTheAuditedBoundary() {

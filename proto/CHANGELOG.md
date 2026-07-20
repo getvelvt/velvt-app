@@ -1,5 +1,16 @@
 # IPC Protocol Changelog
 
+## Version 20 - 2026-07-20
+
+- Replaced the local dashboard contract with exactly two analytical DTO branches:
+  explicit-work-block Focus Fragmentation and seven-row Daily Activity.
+- Rust now owns 60-minute clipping, deduplicated category transitions, version-1
+  five-minute switching clusters, recoveries, coverage, like-for-like comparison,
+  local day boundaries, local display-label aggregation, `Other`, and grounded
+  segment evidence. Swift only renders these bounded aggregates.
+- Local display labels remain local-IPC-only and are absent from cloud, upload,
+  telemetry, logging, and crash-diagnostic contracts.
+
 ## Version 19 - 2026-07-18
 
 - The device-local dashboard now includes a Rust-authored early Today signal

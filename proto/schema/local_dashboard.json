@@ -1,18 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Local IPC only. daily_activity labels must never enter cloud requests, telemetry, logs, or crash diagnostics.",
   "title": "LocalDashboardSnapshot",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "generated_at",
-    "window_start",
-    "window_end",
-    "switch_count",
-    "switches_per_hour",
-    "coverage",
-    "early_signal",
-    "segments"
-  ],
+  "required": ["generated_at", "window_start", "window_end", "switch_count", "switches_per_hour", "coverage", "early_signal", "segments", "focus_fragmentation", "daily_activity"],
   "properties": {
     "generated_at": { "type": "string", "format": "date-time" },
     "window_start": { "type": "string", "format": "date-time" },
@@ -23,17 +15,7 @@
     "early_signal": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "status",
-        "observed_through",
-        "observed_seconds",
-        "required_seconds",
-        "evidence_event_count",
-        "focused_seconds",
-        "meaningful_switch_count",
-        "longest_uninterrupted_seconds",
-        "action_minutes"
-      ],
+      "required": ["status", "observed_through", "observed_seconds", "required_seconds", "evidence_event_count", "focused_seconds", "meaningful_switch_count", "longest_uninterrupted_seconds", "action_minutes"],
       "properties": {
         "status": { "enum": ["insufficient_evidence", "ready"] },
         "observed_from": { "type": ["string", "null"], "format": "date-time" },
@@ -49,10 +31,128 @@
         "action_minutes": { "type": "integer", "minimum": 0, "maximum": 30 }
       }
     },
-    "segments": {
+    "segments": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/timeline_segment" } },
+    "focus_fragmentation": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["block_id", "phase", "window_label", "window_started_at", "window_ended_at", "planned_duration_seconds", "elapsed_duration_seconds", "longest_uninterrupted_seconds", "observed_switch_count", "recovery_count", "coverage", "coverage_ratio", "comparison", "observation", "next_action", "segments", "transitions", "clusters"],
+          "properties": {
+            "block_id": { "type": "string", "format": "uuid" },
+            "phase": { "enum": ["active", "paused", "completed", "abandoned", "expired"] },
+            "window_label": { "type": "string" },
+            "window_started_at": { "type": "string", "format": "date-time" },
+            "window_ended_at": { "type": "string", "format": "date-time" },
+            "planned_duration_seconds": { "type": "integer", "minimum": 0 },
+            "elapsed_duration_seconds": { "type": "integer", "minimum": 0 },
+            "longest_uninterrupted_seconds": { "type": "integer", "minimum": 0, "maximum": 3600 },
+            "observed_switch_count": { "type": "integer", "minimum": 0 },
+            "recovery_count": { "type": "integer", "minimum": 0 },
+            "coverage": { "enum": ["no_data", "partial", "good"] },
+            "coverage_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+            "comparison": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/focus_comparison" }
+              ]
+            },
+            "observation": { "type": "string" },
+            "next_action": { "type": "string" },
+            "segments": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/timeline_segment" } },
+            "transitions": { "type": "array", "maxItems": 511, "items": { "$ref": "#/$defs/transition_marker" } },
+            "clusters": { "type": "array", "maxItems": 511, "items": { "$ref": "#/$defs/switching_cluster" } }
+          }
+        }
+      ]
+    },
+    "daily_activity": {
       "type": "array",
-      "maxItems": 512,
-      "items": { "type": "object" }
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "date", "state", "active_seconds", "coverage", "segments"],
+        "properties": {
+          "id": { "type": "string" },
+          "date": { "type": "string", "format": "date" },
+          "state": { "enum": ["no_data", "low_confidence", "ready", "still_building"] },
+          "active_seconds": { "type": "integer", "minimum": 0 },
+          "coverage": { "enum": ["no_data", "partial", "good"] },
+          "segments": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "label", "category", "duration_seconds", "percentage", "confidence", "explanation"],
+              "properties": {
+                "id": { "type": "string" },
+                "label": { "type": "string" },
+                "category": { "type": "string" },
+                "duration_seconds": { "type": "integer", "minimum": 0 },
+                "percentage": { "type": "integer", "minimum": 0, "maximum": 100 },
+                "confidence": { "enum": ["none", "low", "medium", "high"] },
+                "explanation": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "focus_comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "label", "switch_delta", "explanation"],
+      "properties": {
+        "kind": { "enum": ["earlier_today", "seven_day_pattern"] },
+        "label": { "type": "string" },
+        "switch_delta": { "type": "integer" },
+        "explanation": { "type": "string" }
+      }
+    },
+    "transition_marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "occurred_at", "from_category", "to_category", "confidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "occurred_at": { "type": "string", "format": "date-time" },
+        "from_category": { "type": "string" },
+        "to_category": { "type": "string" },
+        "confidence": { "enum": ["none", "low", "medium", "high"] }
+      }
+    },
+    "switching_cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "rule_version", "started_at", "ended_at", "transition_count", "categories", "confidence", "explanation"],
+      "properties": {
+        "id": { "type": "string" },
+        "rule_version": { "type": "integer", "minimum": 1 },
+        "started_at": { "type": "string", "format": "date-time" },
+        "ended_at": { "type": "string", "format": "date-time" },
+        "transition_count": { "type": "integer", "minimum": 3 },
+        "categories": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "enum": ["none", "low", "medium", "high"] },
+        "explanation": { "type": "string" }
+      }
+    },
+    "timeline_segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "started_at", "ended_at", "category", "confidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "started_at": { "type": "string", "format": "date-time" },
+        "ended_at": { "type": "string", "format": "date-time" },
+        "category": { "type": "string" },
+        "confidence": { "enum": ["none", "low", "medium", "high"] }
+      }
     }
   }
 }

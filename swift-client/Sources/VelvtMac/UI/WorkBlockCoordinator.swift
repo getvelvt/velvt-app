@@ -154,6 +154,8 @@ public final class LocalDashboardCoordinator: ObservableObject {
         case .localDashboard(let snapshot):
           self?.snapshot = snapshot
           self?.commandError = nil
+        case .workBlockState:
+          self?.refresh()
         case .errorResponse(let error) where error.code == "local_dashboard_unavailable":
           self?.commandError = error.message
         default:
@@ -175,7 +177,14 @@ public final class LocalDashboardCoordinator: ObservableObject {
   public func refresh() {
     Task {
       do {
-        try await ipcClient.send(.requestLocalDashboard(.init(windowSeconds: 3600)))
+        try await ipcClient.send(
+          .requestLocalDashboard(
+            .init(
+              windowSeconds: 3600,
+              utcOffsetSeconds: TimeZone.current.secondsFromGMT()
+            )
+          )
+        )
       } catch {
         commandError = "The local dashboard is temporarily unavailable."
       }

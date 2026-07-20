@@ -126,6 +126,7 @@ fn work_block_contract_round_trips_and_redacts_intention_from_debug() {
         elapsed_duration_seconds: 60,
         remaining_duration_seconds: 1_440,
         started_at: Some(timestamp()),
+        analysis_ended_at: None,
         ends_at: Some(timestamp() + chrono::Duration::seconds(1_500)),
         paused_at: None,
         recovered_after_restart: false,

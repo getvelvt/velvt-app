@@ -83,8 +83,8 @@ public final class IntroFlowModel: ObservableObject {
 public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
     case today
     case earlySignal
-    case yourWeek
-    case activity
+    case focusFragmentation
+    case dailyActivity
     case statusAndRecovery
     case settings
 
@@ -92,8 +92,8 @@ public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
         switch self {
         case .today: "Today and work blocks"
         case .earlySignal: "Early local signal"
-        case .yourWeek: "Your Week"
-        case .activity: "Activity"
+        case .focusFragmentation: "Focus Fragmentation"
+        case .dailyActivity: "Daily Activity"
         case .statusAndRecovery: "Status and recovery"
         case .settings: "Settings"
         }
@@ -105,10 +105,10 @@ public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
             "Start or end a meaningful work block here. Its optional intention remains local."
         case .earlySignal:
             "Today adds an early local signal as evidence arrives, including its observation window and freshness."
-        case .yourWeek:
-            "Review recent privacy-safe summaries without scores, streaks, or moral judgment."
-        case .activity:
-            "See broad context switching and uninterrupted stretches without exposing raw activity."
+        case .focusFragmentation:
+            "Review the attention timeline for one explicit work block without exposing raw activity."
+        case .dailyActivity:
+            "Review exactly seven local days without scores, streaks, or moral judgment."
         case .statusAndRecovery:
             "The header and inline controls show scoped collection, sync, permission, and recovery status."
         case .settings:
@@ -275,7 +275,7 @@ public struct FirstRunExperienceView: View {
                 capability("leaf", "Take one modest recovery action.")
                 capability(
                     "calendar",
-                    "Review recent Activity and Your Week without scores or moral judgment.")
+                    "Review Focus Fragmentation and seven days of Activity without scores or moral judgment.")
             }
         case .ready:
             IntroPage(

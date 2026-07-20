@@ -8,6 +8,22 @@ import XCTest
 final class WorkBlockCoordinatorTests: XCTestCase {
   private var cancellables = Set<AnyCancellable>()
 
+  func testLocalDashboardRequestIncludesBoundedWindowAndLocalDayOffset() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let coordinator = LocalDashboardCoordinator(ipcClient: client)
+    coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+
+    client.setConnectionStatus(.connected)
+    try await waitUntil {
+      client.sentMessages.contains { message in
+        guard case .requestLocalDashboard(let request) = message else { return false }
+        return request.windowSeconds == 3_600
+          && request.utcOffsetSeconds == TimeZone.current.secondsFromGMT()
+      }
+    }
+  }
+
   func testConnectedRequestsStateOnceWithoutPolling() async throws {
     let client = FakeIPCClient()
     let messages = PassthroughSubject<ServerMessage, Never>()

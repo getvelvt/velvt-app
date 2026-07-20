@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -635,6 +635,9 @@ pub struct RequestWorkBlockState {}
 #[serde(deny_unknown_fields)]
 pub struct RequestLocalDashboard {
     pub window_seconds: u32,
+    /// Current local UTC offset supplied by Swift so Rust can produce exactly
+    /// seven bounded local-calendar rows without receiving locale or identity.
+    pub utc_offset_seconds: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -713,6 +716,7 @@ pub struct WorkBlockSnapshot {
     pub elapsed_duration_seconds: u32,
     pub remaining_duration_seconds: u32,
     pub started_at: Option<DateTime<Utc>>,
+    pub analysis_ended_at: Option<DateTime<Utc>>,
     pub ends_at: Option<DateTime<Utc>>,
     pub paused_at: Option<DateTime<Utc>>,
     pub recovered_after_restart: bool,
@@ -737,10 +741,130 @@ pub enum LocalDashboardCoverage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalTimelineSegment {
+    pub id: String,
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
     pub category: String,
     pub confidence: ClassificationConfidence,
+}
+
+/// One deduplicated movement between classified, non-system categories.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalTransitionMarker {
+    pub id: String,
+    pub occurred_at: DateTime<Utc>,
+    pub from_category: String,
+    pub to_category: String,
+    pub confidence: ClassificationConfidence,
+}
+
+/// A deterministic group of overlapping transition windows. Rule version 1
+/// means at least three category transitions inside an inclusive five minutes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalSwitchingCluster {
+    pub id: String,
+    pub rule_version: u32,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub transition_count: u32,
+    pub categories: Vec<String>,
+    pub confidence: ClassificationConfidence,
+    pub explanation: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalComparisonKind {
+    EarlierToday,
+    SevenDayPattern,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalFocusComparison {
+    pub kind: LocalComparisonKind,
+    pub label: String,
+    pub switch_delta: i32,
+    pub explanation: String,
+}
+
+/// The only session-analysis surface. It exists only for an explicit current
+/// or most-recent work block and is fully derived inside Rust.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalFocusFragmentation {
+    pub block_id: Uuid,
+    pub phase: WorkBlockPhase,
+    pub window_label: String,
+    pub window_started_at: DateTime<Utc>,
+    pub window_ended_at: DateTime<Utc>,
+    pub planned_duration_seconds: u32,
+    pub elapsed_duration_seconds: u32,
+    pub longest_uninterrupted_seconds: u64,
+    pub observed_switch_count: u32,
+    pub recovery_count: u32,
+    pub coverage: LocalDashboardCoverage,
+    pub coverage_ratio: f64,
+    pub comparison: Option<LocalFocusComparison>,
+    pub observation: String,
+    pub next_action: String,
+    pub segments: Vec<LocalTimelineSegment>,
+    pub transitions: Vec<LocalTransitionMarker>,
+    pub clusters: Vec<LocalSwitchingCluster>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalDailyActivityState {
+    NoData,
+    LowConfidence,
+    Ready,
+    StillBuilding,
+}
+
+/// One locally aggregated display-label bucket. `label` may cross only local
+/// IPC and is structurally absent from every cloud/upload DTO.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalDailyActivitySegment {
+    pub id: String,
+    pub label: String,
+    pub category: String,
+    pub duration_seconds: u64,
+    pub percentage: u32,
+    pub confidence: ClassificationConfidence,
+    pub explanation: Option<String>,
+}
+
+impl std::fmt::Debug for LocalDailyActivitySegment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalDailyActivitySegment")
+            .field("id", &self.id)
+            .field("label", &"[local_display_label]")
+            .field("category", &self.category)
+            .field("duration_seconds", &self.duration_seconds)
+            .field("percentage", &self.percentage)
+            .field("confidence", &self.confidence)
+            .field(
+                "explanation",
+                &self.explanation.as_ref().map(|_| "[reviewed_copy]"),
+            )
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalDailyActivityDay {
+    pub id: String,
+    pub date: NaiveDate,
+    pub state: LocalDailyActivityState,
+    pub active_seconds: u64,
+    pub coverage: LocalDashboardCoverage,
+    pub segments: Vec<LocalDailyActivitySegment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -783,6 +907,8 @@ pub struct LocalDashboardSnapshot {
     pub coverage: LocalDashboardCoverage,
     pub early_signal: LocalEarlySignal,
     pub segments: Vec<LocalTimelineSegment>,
+    pub focus_fragmentation: Option<LocalFocusFragmentation>,
+    pub daily_activity: Vec<LocalDailyActivityDay>,
 }
 
 impl std::fmt::Debug for WorkBlockSnapshot {
@@ -802,6 +928,7 @@ impl std::fmt::Debug for WorkBlockSnapshot {
                 &self.remaining_duration_seconds,
             )
             .field("started_at", &self.started_at)
+            .field("analysis_ended_at", &self.analysis_ended_at)
             .field("ends_at", &self.ends_at)
             .field("paused_at", &self.paused_at)
             .field("recovered_after_restart", &self.recovered_after_restart)

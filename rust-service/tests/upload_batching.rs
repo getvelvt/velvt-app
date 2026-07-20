@@ -420,6 +420,8 @@ fn payload_serialization_matches_the_cloud_event_contract() {
         "raw_window_title",
         "app_name",
         "window_title",
+        "local_display_label",
+        "local_label",
     ] {
         assert!(!json.contains(forbidden_raw_field), "{forbidden_raw_field}");
     }

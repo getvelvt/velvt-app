@@ -306,7 +306,6 @@ pub struct R7Router {
     upload_batches: Option<Arc<dyn UploadBatchRepo>>,
     work_blocks: Option<Arc<WorkBlockManager>>,
     work_block_push: Option<Arc<PushAdapter>>,
-    dashboard_push: Option<Arc<PushAdapter>>,
 }
 
 impl R7Router {
@@ -330,7 +329,6 @@ impl R7Router {
             upload_batches: None,
             work_blocks: None,
             work_block_push: None,
-            dashboard_push: None,
         }
     }
 
@@ -362,7 +360,6 @@ impl R7Router {
         push: Arc<PushAdapter>,
     ) -> Self {
         self.work_blocks = Some(work_blocks);
-        self.dashboard_push = Some(Arc::clone(&push));
         self.work_block_push = Some(push);
         self
     }
@@ -686,10 +683,17 @@ impl R7Router {
         &self,
         request: RequestLocalDashboard,
     ) -> Result<Option<ServerMessage>, IpcError> {
+        let now = Utc::now();
+        let work_block = self
+            .work_blocks
+            .as_ref()
+            .and_then(|manager| manager.request_state(now).ok());
         let snapshot = match crate::dashboard::snapshot(
             &*self.raw_event_repo,
-            Utc::now(),
+            work_block.as_ref(),
+            now,
             request.window_seconds,
+            request.utc_offset_seconds,
         ) {
             Ok(snapshot) => snapshot,
             Err(_) => {
@@ -818,15 +822,6 @@ impl R7Router {
                         Err(_) => tracing::warn!(
                             error_code = "work_block_observation_failed",
                             "safe work-block observation was not recorded"
-                        ),
-                    }
-                }
-                if let Some(push) = &self.dashboard_push {
-                    match crate::dashboard::snapshot(&*self.raw_event_repo, Utc::now(), 3600) {
-                        Ok(snapshot) => push.push_local_dashboard(snapshot).await,
-                        Err(_) => tracing::warn!(
-                            error_code = "local_dashboard_aggregation_failed",
-                            "failed to refresh local dashboard after event"
                         ),
                     }
                 }

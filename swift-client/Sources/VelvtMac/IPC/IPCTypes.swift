@@ -82,7 +82,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case "clear_work_block_data":
             self = .clearWorkBlockData
         default:
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
+      throw DecodingError.dataCorrupted(
+        .init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
         }
     }
 
@@ -164,7 +165,6 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         }
     }
 }
-
 /// Messages sent from the Rust service to the macOS client.
 public enum ServerMessage: Codable, Equatable, Sendable {
     case serverHello(ServerHello)
@@ -740,7 +740,8 @@ public struct InsightPayload: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         date = try container.decode(String.self, forKey: .date)
         text = try container.decode(String.self, forKey: .text)
-        evidence = try container.decodeIfPresent(InsightEvidence.self, forKey: .evidence) ?? .unavailable
+    evidence =
+      try container.decodeIfPresent(InsightEvidence.self, forKey: .evidence) ?? .unavailable
         confidenceLevel = try container.decode(ConfidenceLevel.self, forKey: .confidenceLevel)
         lowConfidence = try container.decode(Bool.self, forKey: .lowConfidence)
         generatedAt = try container.decode(Date.self, forKey: .generatedAt)
@@ -835,11 +836,16 @@ public struct DailySummary: Codable, Equatable, Sendable {
         confidenceLevel = try container.decode(ConfidenceLevel.self, forKey: .confidenceLevel)
         activeSeconds = try container.decode(Int.self, forKey: .activeSeconds)
         focusedSeconds = try container.decodeIfPresent(Int.self, forKey: .focusedSeconds) ?? 0
-        meaningfulSwitchCount = try container.decodeIfPresent(Int.self, forKey: .meaningfulSwitchCount) ?? 0
-        longestUninterruptedSeconds = try container.decodeIfPresent(Int.self, forKey: .longestUninterruptedSeconds) ?? 0
-        baselineStatus = try container.decodeIfPresent(String.self, forKey: .baselineStatus) ?? "unknown"
-        baselineComparison = try container.decodeIfPresent(BaselineComparison.self, forKey: .baselineComparison)
-        typeProportions = try container.decodeIfPresent([ActivityProportion].self, forKey: .typeProportions) ?? []
+    meaningfulSwitchCount =
+      try container.decodeIfPresent(Int.self, forKey: .meaningfulSwitchCount) ?? 0
+    longestUninterruptedSeconds =
+      try container.decodeIfPresent(Int.self, forKey: .longestUninterruptedSeconds) ?? 0
+    baselineStatus =
+      try container.decodeIfPresent(String.self, forKey: .baselineStatus) ?? "unknown"
+    baselineComparison = try container.decodeIfPresent(
+      BaselineComparison.self, forKey: .baselineComparison)
+    typeProportions =
+      try container.decodeIfPresent([ActivityProportion].self, forKey: .typeProportions) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1099,29 +1105,38 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
         cloudReady = try container.decode(Bool.self, forKey: .cloudReady)
-        uploadStatus = try container.decodeIfPresent(String.self, forKey: .uploadStatus) ?? (cloudReady ? "ready" : "network_unavailable")
+    uploadStatus =
+      try container.decodeIfPresent(String.self, forKey: .uploadStatus)
+      ?? (cloudReady ? "ready" : "network_unavailable")
         lastUploadErrorCode = try container.decodeIfPresent(String.self, forKey: .lastUploadErrorCode)
         nextUploadAttemptAt = try container.decodeIfPresent(Date.self, forKey: .nextUploadAttemptAt)
         lastSuccessfulSyncAt = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulSyncAt)
-        pendingUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .pendingUploadBatchCount) ?? 0
-        failedUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .failedUploadBatchCount) ?? 0
-        rejectedUploadBatchCount = try container.decodeIfPresent(Int.self, forKey: .rejectedUploadBatchCount) ?? 0
+    pendingUploadBatchCount =
+      try container.decodeIfPresent(Int.self, forKey: .pendingUploadBatchCount) ?? 0
+    failedUploadBatchCount =
+      try container.decodeIfPresent(Int.self, forKey: .failedUploadBatchCount) ?? 0
+    rejectedUploadBatchCount =
+      try container.decodeIfPresent(Int.self, forKey: .rejectedUploadBatchCount) ?? 0
         queuedEventCount = try container.decode(Int.self, forKey: .queuedEventCount)
         queuedEvents = try container.decode([QueuedEventSummary].self, forKey: .queuedEvents)
     }
 }
 
-// MARK: - Device-local dashboard and meaningful-work DTOs (proto v16)
+// MARK: - Device-local Focus/Activity and meaningful-work DTOs (proto v20)
 
 public struct RequestLocalDashboard: Codable, Equatable, Sendable {
     public let windowSeconds: Int
+  public let utcOffsetSeconds: Int
 
-    public init(windowSeconds: Int = 3600) {
+  public init(windowSeconds: Int = 3600, utcOffsetSeconds: Int = TimeZone.current.secondsFromGMT())
+  {
         self.windowSeconds = windowSeconds
+    self.utcOffsetSeconds = utcOffsetSeconds
     }
 
     private enum CodingKeys: String, CodingKey {
         case windowSeconds = "window_seconds"
+    case utcOffsetSeconds = "utc_offset_seconds"
     }
 }
 
@@ -1132,17 +1147,139 @@ public enum LocalDashboardCoverage: String, Codable, Equatable, Sendable {
 }
 
 public struct LocalTimelineSegment: Codable, Equatable, Sendable, Identifiable {
+  public let id: String
     public let startedAt: Date
     public let endedAt: Date
     public let category: String
     public let confidence: ClassificationConfidence
 
-    public var id: String { "\(startedAt.timeIntervalSince1970)-\(category)" }
+  private enum CodingKeys: String, CodingKey {
+    case id, category, confidence
+    case startedAt = "started_at"
+    case endedAt = "ended_at"
+  }
+}
+
+public struct LocalTransitionMarker: Codable, Equatable, Sendable, Identifiable {
+  public let id: String
+  public let occurredAt: Date
+  public let fromCategory: String
+  public let toCategory: String
+  public let confidence: ClassificationConfidence
+
+  private enum CodingKeys: String, CodingKey {
+    case id, confidence
+    case occurredAt = "occurred_at"
+    case fromCategory = "from_category"
+    case toCategory = "to_category"
+  }
+}
+
+public struct LocalSwitchingCluster: Codable, Equatable, Sendable, Identifiable {
+  public let id: String
+  public let ruleVersion: Int
+  public let startedAt: Date
+  public let endedAt: Date
+  public let transitionCount: Int
+  public let categories: [String]
+  public let confidence: ClassificationConfidence
+  public let explanation: String
 
     private enum CodingKeys: String, CodingKey {
-        case category, confidence
+    case id, categories, confidence, explanation
+    case ruleVersion = "rule_version"
         case startedAt = "started_at"
         case endedAt = "ended_at"
+    case transitionCount = "transition_count"
+  }
+}
+
+public enum LocalComparisonKind: String, Codable, Equatable, Sendable {
+  case earlierToday = "earlier_today"
+  case sevenDayPattern = "seven_day_pattern"
+}
+
+public struct LocalFocusComparison: Codable, Equatable, Sendable {
+  public let kind: LocalComparisonKind
+  public let label: String
+  public let switchDelta: Int
+  public let explanation: String
+
+  private enum CodingKeys: String, CodingKey {
+    case kind, label, explanation
+    case switchDelta = "switch_delta"
+  }
+}
+
+public struct LocalFocusFragmentation: Codable, Equatable, Sendable {
+  public let blockID: UUID
+  public let phase: WorkBlockPhase
+  public let windowLabel: String
+  public let windowStartedAt: Date
+  public let windowEndedAt: Date
+  public let plannedDurationSeconds: Int
+  public let elapsedDurationSeconds: Int
+  public let longestUninterruptedSeconds: Int
+  public let observedSwitchCount: Int
+  public let recoveryCount: Int
+  public let coverage: LocalDashboardCoverage
+  public let coverageRatio: Double
+  public let comparison: LocalFocusComparison?
+  public let observation: String
+  public let nextAction: String
+  public let segments: [LocalTimelineSegment]
+  public let transitions: [LocalTransitionMarker]
+  public let clusters: [LocalSwitchingCluster]
+
+  private enum CodingKeys: String, CodingKey {
+    case phase, coverage, comparison, observation, segments, transitions, clusters
+    case blockID = "block_id"
+    case windowLabel = "window_label"
+    case windowStartedAt = "window_started_at"
+    case windowEndedAt = "window_ended_at"
+    case plannedDurationSeconds = "planned_duration_seconds"
+    case elapsedDurationSeconds = "elapsed_duration_seconds"
+    case longestUninterruptedSeconds = "longest_uninterrupted_seconds"
+    case observedSwitchCount = "observed_switch_count"
+    case recoveryCount = "recovery_count"
+    case coverageRatio = "coverage_ratio"
+    case nextAction = "next_action"
+  }
+}
+
+public enum LocalDailyActivityState: String, Codable, Equatable, Sendable {
+  case noData = "no_data"
+  case lowConfidence = "low_confidence"
+  case ready
+  case stillBuilding = "still_building"
+}
+
+public struct LocalDailyActivitySegment: Codable, Equatable, Sendable, Identifiable {
+  public let id: String
+  public let label: String
+  public let category: String
+  public let durationSeconds: Int
+  public let percentage: Int
+  public let confidence: ClassificationConfidence
+  public let explanation: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case id, label, category, percentage, confidence, explanation
+    case durationSeconds = "duration_seconds"
+  }
+}
+
+public struct LocalDailyActivityDay: Codable, Equatable, Sendable, Identifiable {
+  public let id: String
+  public let date: String
+  public let state: LocalDailyActivityState
+  public let activeSeconds: Int
+  public let coverage: LocalDashboardCoverage
+  public let segments: [LocalDailyActivitySegment]
+
+  private enum CodingKeys: String, CodingKey {
+    case id, date, state, coverage, segments
+    case activeSeconds = "active_seconds"
     }
 }
 
@@ -1217,10 +1354,14 @@ public struct LocalDashboardSnapshot: Codable, Equatable, Sendable {
     public let coverage: LocalDashboardCoverage
     public let earlySignal: LocalEarlySignal
     public let segments: [LocalTimelineSegment]
+  public let focusFragmentation: LocalFocusFragmentation?
+  public let dailyActivity: [LocalDailyActivityDay]
 
     private enum CodingKeys: String, CodingKey {
         case coverage, segments
         case earlySignal = "early_signal"
+    case focusFragmentation = "focus_fragmentation"
+    case dailyActivity = "daily_activity"
         case generatedAt = "generated_at"
         case windowStart = "window_start"
         case windowEnd = "window_end"

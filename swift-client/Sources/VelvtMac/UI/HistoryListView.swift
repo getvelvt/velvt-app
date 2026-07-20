@@ -20,33 +20,10 @@ public struct HistoryListView: View {
         }
     }
 }
-
 // MARK: - HistoryDashboardView
 
 private struct HistoryDashboardView: View {
     let days: [DaySummaryViewModel]
-
-    private var readyDays: [DaySummaryViewModel] {
-        days.filter { !$0.isNoData }
-    }
-
-    private var latestDay: DaySummaryViewModel? {
-        readyDays.last
-    }
-
-    private var movingAverageText: String {
-        guard let latestDay else { return "No personal baseline yet" }
-        guard latestDay.baselineStatus == "mature" || latestDay.baselineComparison?.status == "compared" else {
-            return "Collecting a seven-day baseline"
-        }
-        if let delta = latestDay.baselineComparison?.fragmentationDelta {
-            if delta > 0 {
-                return "+\(formatDelta(delta)) vs your usual range"
-            }
-            return "\(formatDelta(delta)) vs your usual range"
-        }
-        return "Compared with your usual range"
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -62,10 +39,10 @@ private struct HistoryDashboardView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Your week")
+          Text("Daily Activity")
                         .font(.headline)
                         .foregroundStyle(Color.velvtText)
-                    Text(movingAverageText)
+          Text("Privacy-safe cloud summaries")
                         .font(.caption2)
                         .foregroundStyle(Color.velvtMuted)
                 }
@@ -84,10 +61,6 @@ private struct HistoryDashboardView: View {
         .padding(10)
         .background(Color.velvtPanel)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func formatDelta(_ value: Double) -> String {
-        String(format: "%.1f", value)
     }
 }
 
@@ -109,8 +82,6 @@ private struct DailyActivityRow: View {
                         .foregroundStyle(Color.velvtMuted)
                 }
                 Spacer(minLength: 8)
-                metric("Context changes", day.isNoData ? "—" : "\(day.meaningfulSwitchCount)")
-                metric("Switching level", switchingLevel)
             }
 
             SplitActivityBar(day: day) { detail in
@@ -130,31 +101,8 @@ private struct DailyActivityRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(day.date)
         .accessibilityValue(
-            "\(day.isNoData ? "No activity" : day.activeTime), \(day.meaningfulSwitchCount) context changes, switching level \(switchingLevel)"
+      day.isNoData ? "No activity" : day.activeTime
         )
-    }
-
-    private var switchingLevel: String {
-        guard let score = day.fragmentationScore else { return "—" }
-        switch score {
-        case ..<34: return "Low"
-        case ..<67: return "Moderate"
-        default: return "High"
-        }
-    }
-
-    private func metric(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .trailing, spacing: 1) {
-            Text(title)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(Color.velvtMuted)
-            Text(value)
-                .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                .foregroundStyle(value == "—" ? Color.velvtMuted.opacity(0.45) : Color.velvtPink)
-        }
-        .frame(minWidth: title == "Switching level" ? 68 : 64, alignment: .trailing)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title): \(value)")
     }
 }
 
@@ -199,7 +147,8 @@ private struct SplitActivityBar: View {
     }
 
     private var emptyHelpText: String {
-        day.isNoData ? "No daily summary for this day." : "No activity mix available for this summary yet."
+    day.isNoData
+      ? "No daily summary for this day." : "No activity mix available for this summary yet."
     }
 
     private func helpText(for segment: ActivityProportion) -> String {
@@ -207,7 +156,9 @@ private struct SplitActivityBar: View {
     }
 
     private func color(for category: String, index: Int) -> Color {
-        let palette: [Color] = [.velvtPink, .velvtGreen, .velvtBlue, .purple.opacity(0.85), .orange.opacity(0.85)]
+    let palette: [Color] = [
+      .velvtPink, .velvtGreen, .velvtBlue, .purple.opacity(0.85), .orange.opacity(0.85),
+    ]
         return palette[index % palette.count]
     }
 }
@@ -263,7 +214,9 @@ struct HistoryDayRowView: View {
         guard !day.isNoData else { return "No data" }
         var parts = ["Active \(day.activeTime)"]
         if let focusScore = day.focusScore { parts.append("Focus \(focusScore)") }
-        if let fragmentationScore = day.fragmentationScore { parts.append("Fragmentation \(fragmentationScore)") }
+    if let fragmentationScore = day.fragmentationScore {
+      parts.append("Fragmentation \(fragmentationScore)")
+    }
         return parts.joined(separator: ", ")
     }
 
@@ -334,15 +287,19 @@ struct HistoryListView_Previews: PreviewProvider {
     }
 
     static let previewSummaries: [DailySummary] = {
-        let dates = ["2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12",
-                     "2026-06-13", "2026-06-14", "2026-06-15"]
+      let dates = [
+        "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12",
+        "2026-06-13", "2026-06-14", "2026-06-15",
+      ]
         return dates.enumerated().map { i, date in
             if i % 3 == 0 {
-                return DailySummary(date: date, status: .noData, eventCount: 0,
+          return DailySummary(
+            date: date, status: .noData, eventCount: 0,
                                     focusScore: nil, fragmentationScore: nil,
                                     confidenceLevel: .low, activeSeconds: 0)
             }
-            return DailySummary(date: date, status: .ready, eventCount: 40 + i * 8,
+        return DailySummary(
+          date: date, status: .ready, eventCount: 40 + i * 8,
                                 focusScore: 55.0 + Double(i * 5),
                                 fragmentationScore: 30.0 - Double(i * 3),
                                 confidenceLevel: .medium,

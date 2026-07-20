@@ -40,7 +40,7 @@ impl std::fmt::Debug for AbstractionMapping {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RawEventEntry {
     pub event_id: String,
     pub stable_id: String,
@@ -54,6 +54,29 @@ pub struct RawEventEntry {
     pub classification_source: String,
     pub occurred_at: DateTime<Utc>,
     pub duration_seconds: u64,
+}
+
+impl std::fmt::Debug for RawEventEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawEventEntry")
+            .field("event_id", &self.event_id)
+            .field("stable_id", &"[local_identifier]")
+            .field("label", &self.label)
+            .field(
+                "local_display_label",
+                &self.local_display_label.as_ref().map(|_| "[redacted]"),
+            )
+            .field("category", &self.category)
+            .field("taxonomy_version", &self.taxonomy_version)
+            .field("classification_tier", &self.classification_tier)
+            .field("classification_status", &self.classification_status)
+            .field("classification_confidence", &self.classification_confidence)
+            .field("classification_source", &self.classification_source)
+            .field("occurred_at", &self.occurred_at)
+            .field("duration_seconds", &self.duration_seconds)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

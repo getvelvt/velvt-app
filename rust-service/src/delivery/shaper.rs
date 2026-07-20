@@ -191,6 +191,44 @@ impl ValidatePayload for LocalDashboardSnapshot {
                 return Err(ValidationError::OutOfRange { field: "segment" });
             }
         }
+        if self.daily_activity.len() != 7
+            || self.daily_activity.iter().any(|day| {
+                day.segments.len() > 6
+                    || day.segments.iter().any(|segment| segment.percentage > 100)
+            })
+        {
+            return Err(ValidationError::OutOfRange {
+                field: "daily_activity",
+            });
+        }
+        if let Some(focus) = &self.focus_fragmentation {
+            if focus.window_ended_at < focus.window_started_at
+                || (focus.window_ended_at - focus.window_started_at).num_seconds() > 3_600
+                || focus.segments.len() > 512
+                || focus.transitions.len() > 511
+                || focus.coverage_ratio < 0.0
+                || focus.coverage_ratio > 1.0
+                || focus.segments.iter().any(|segment| {
+                    segment.started_at < focus.window_started_at
+                        || segment.ended_at > focus.window_ended_at
+                })
+                || focus.transitions.iter().any(|transition| {
+                    transition.occurred_at < focus.window_started_at
+                        || transition.occurred_at > focus.window_ended_at
+                })
+                || focus.clusters.iter().any(|cluster| {
+                    cluster.rule_version == 0
+                        || cluster.transition_count < 3
+                        || cluster.started_at < focus.window_started_at
+                        || cluster.ended_at > focus.window_ended_at
+                        || cluster.ended_at < cluster.started_at
+                })
+            {
+                return Err(ValidationError::OutOfRange {
+                    field: "focus_fragmentation",
+                });
+            }
+        }
         let signal = &self.early_signal;
         if signal.observed_through != self.generated_at
             || signal.observed_seconds > 3600

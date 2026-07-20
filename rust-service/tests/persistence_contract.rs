@@ -3,6 +3,7 @@ use std::fs;
 use std::sync::Arc;
 use uuid::Uuid;
 use velvt_service::abstraction::{AbstractionEngine, Taxonomy};
+use velvt_service::dashboard;
 use velvt_service::delivery::{parse_insight_with_rehydrator, LocalInsightRehydrator};
 use velvt_service::persistence::{
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, NewUploadBatch,
@@ -13,6 +14,45 @@ use velvt_shared_types::RawEvent;
 
 fn database() -> SqlitePersistence {
     SqlitePersistence::open_in_memory().unwrap()
+}
+
+#[test]
+fn bounded_seven_day_dashboard_query_is_indexed_and_measured() {
+    let database = database();
+    let repository = database.raw_event_repo();
+    let now = Utc::now();
+    for index in 0..1_400_i64 {
+        repository
+            .insert(&RawEventEntry {
+                event_id: format!("measure-{index}"),
+                stable_id: format!("stable-{index}"),
+                label: "document:edit".into(),
+                local_display_label: Some(if index % 2 == 0 { "Docs" } else { "VS Code" }.into()),
+                category: "FOCUS_WORK".into(),
+                taxonomy_version: "mvp-1".into(),
+                classification_tier: "exact_match".into(),
+                classification_status: "classified".into(),
+                classification_confidence: "high".into(),
+                classification_source: "seed".into(),
+                occurred_at: now - Duration::seconds(index * 300),
+                duration_seconds: 240,
+            })
+            .unwrap();
+    }
+
+    let started = std::time::Instant::now();
+    let result = dashboard::snapshot(&*repository, None, now, 3_600, 0).unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(result.daily_activity.len(), 7);
+    assert!(
+        elapsed < std::time::Duration::from_millis(250),
+        "bounded query took {elapsed:?}"
+    );
+    eprintln!(
+        "bounded_scope3_dashboard_query_ms={:.3}",
+        elapsed.as_secs_f64() * 1_000.0
+    );
 }
 
 fn timestamp(seconds: i64) -> chrono::DateTime<Utc> {

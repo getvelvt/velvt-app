@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Offset is used only for bounded local-calendar day rows.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "request_local_dashboard" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["window_seconds", "utc_offset_seconds"],
+      "properties": {
+        "window_seconds": { "type": "integer", "minimum": 60, "maximum": 3600 },
+        "utc_offset_seconds": { "type": "integer", "minimum": -86399, "maximum": 86399 }
+      }
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import XCTest
+
 @testable import VelvtMac
 
 // MARK: - Menu bar navigation tests
@@ -8,8 +9,18 @@ import XCTest
 @MainActor
 final class MenuBarNavigationTests: XCTestCase {
 
+  func testMinimalDashboardHasExactlyTwoAnalyticalSurfaces() {
+    XCTAssertEqual(MinimalDashboardSurface.allCases.map(\.title), ["Focus", "Activity"])
+  }
+
+  func testMinimalDashboardPersistenceValuesAreStable() {
+    XCTAssertEqual(MinimalDashboardSurface.focus.rawValue, "focus")
+    XCTAssertEqual(MinimalDashboardSurface.activity.rawValue, "activity")
+  }
+
     func testConnectionPresentationUsesRequestedLabelsAndColors() {
-        XCTAssertEqual(PopoverConnectionPresentation(status: .connected).label, "Local service connected")
+    XCTAssertEqual(
+      PopoverConnectionPresentation(status: .connected).label, "Local service connected")
         XCTAssertEqual(PopoverConnectionPresentation(status: .connecting).label, "Connecting")
         XCTAssertEqual(PopoverConnectionPresentation(status: .disconnected).label, "Disconnected")
     }
@@ -59,7 +70,9 @@ final class MenuBarNavigationTests: XCTestCase {
         let messages = PassthroughSubject<ServerMessage, Never>()
         let model = ServiceAlertModel(messages: messages)
 
-        messages.send(.privacyViolationAlert(PrivacyViolationAlert(
+    messages.send(
+      .privacyViolationAlert(
+        PrivacyViolationAlert(
                     code: "raw_content_detected",
                     message: "Sensitive content was blocked."
                 )))
@@ -85,7 +98,9 @@ final class MenuBarNavigationTests: XCTestCase {
         let messages = PassthroughSubject<ServerMessage, Never>()
         let model = ServiceAlertModel(messages: messages)
 
-        messages.send(.errorResponse(ErrorResponse(
+    messages.send(
+      .errorResponse(
+        ErrorResponse(
                     code: "unexpected",
                     message: "Something went wrong.",
                     relatedEventID: nil
@@ -98,32 +113,6 @@ final class MenuBarNavigationTests: XCTestCase {
         model.dismiss()
 
         XCTAssertNil(model.alert)
-    }
-
-    func testSettingsUsesWorkspaceNavigation() {
-        var navigator = MenuBarPopoverNavigator()
-
-        navigator.showSettings()
-        XCTAssertEqual(navigator.selectedWorkspaceTab, .settings)
-    }
-
-    func testWorkspaceNavigationDefaultsToWorkBlockAndSelectsSeparateTabs() {
-        var navigator = MenuBarPopoverNavigator()
-
-        XCTAssertEqual(navigator.selectedWorkspaceTab, .workBlock)
-        XCTAssertEqual(MenuBarWorkspaceTab.allCases.map(\.title), [
-            "Today", "Your Week", "Activity", "Settings",
-        ])
-
-        navigator.selectWorkspaceTab(.history)
-        XCTAssertEqual(navigator.selectedWorkspaceTab, .history)
-
-        navigator.selectWorkspaceTab(.recentActivity)
-        XCTAssertEqual(navigator.selectedWorkspaceTab, .recentActivity)
-    }
-
-    func testWorkspaceKeyboardShortcutsUseOneThroughFour() {
-        XCTAssertEqual(MenuBarWorkspaceTab.allCases.map(\.keyboardShortcut), ["1", "2", "3", "4"])
     }
 
     func testReducedMotionDisablesPopoverRouteAnimation() {
@@ -148,24 +137,18 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(MenuBarPopoverLayout.preferredContentSize, CGSize(width: 660, height: 450))
     }
 
-    func testOpeningPopoverRestoresMainWorkBlockFromSettings() {
-        var navigator = MenuBarPopoverNavigator()
-        navigator.selectWorkspaceTab(.recentActivity)
-        navigator.showSettings()
-
-        navigator.resetForPopoverOpening()
-
-        XCTAssertEqual(navigator.selectedWorkspaceTab, .workBlock)
-    }
-
     func testSettingsRetainsEveryDestination() {
         #if DEBUG
-        XCTAssertEqual(SettingsSubmenu.allCases.map(\.title), [
+      XCTAssertEqual(
+        SettingsSubmenu.allCases.map(\.title),
+        [
             "App Info", "Queued Events", "Collection Settings", "Onboarding & Tour",
             "Debug/Testing",
         ])
         #else
-        XCTAssertEqual(SettingsSubmenu.allCases.map(\.title), [
+      XCTAssertEqual(
+        SettingsSubmenu.allCases.map(\.title),
+        [
             "App Info", "Queued Events", "Collection Settings", "Onboarding & Tour",
         ])
         #endif
@@ -180,7 +163,8 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(
             GuidedTourStep.allCases,
             [
-                .today, .earlySignal, .yourWeek, .activity, .statusAndRecovery, .settings,
+                .today, .earlySignal, .focusFragmentation, .dailyActivity, .statusAndRecovery,
+                .settings,
             ])
 
         tour.advance()
@@ -388,7 +372,6 @@ final class MenuBarNavigationTests: XCTestCase {
     }
 
 }
-
 @MainActor
 private final class ManualConnectionGraceScheduler: ConnectionGraceScheduling {
     private final class Entry {
@@ -438,7 +421,10 @@ final class DeviceRevokedUITests: XCTestCase {
         let flagSet = expectation(description: "isDeviceRevoked set to true")
         var cancellable: AnyCancellable?
         cancellable = manager.$isDeviceRevoked.dropFirst().sink { revoked in
-            if revoked { flagSet.fulfill(); cancellable?.cancel() }
+      if revoked {
+        flagSet.fulfill()
+        cancellable?.cancel()
+      }
         }
 
         client.inject(.deviceRevoked(DeviceRevoked(message: "Your device was revoked")))
@@ -457,7 +443,12 @@ final class DeviceRevokedUITests: XCTestCase {
 
         let flagSet = expectation(description: "isDeviceRevoked set")
         var cancellable: AnyCancellable?
-        cancellable = manager.$isDeviceRevoked.dropFirst().sink { if $0 { flagSet.fulfill(); cancellable?.cancel() } }
+    cancellable = manager.$isDeviceRevoked.dropFirst().sink {
+      if $0 {
+        flagSet.fulfill()
+        cancellable?.cancel()
+      }
+    }
         client.inject(.deviceRevoked(DeviceRevoked(message: "revoked")))
         await fulfillment(of: [flagSet], timeout: 1)
 

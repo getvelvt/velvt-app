@@ -1384,16 +1384,9 @@ private struct GuidedTourBar: View {
     @ObservedObject var model: GuidedTourModel
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 12) {
-                tourCopy
-                Spacer(minLength: 4)
-                controls
-            }
-            VStack(alignment: .leading, spacing: 7) {
-                tourCopy
-                controls
-            }
+        VStack(alignment: .leading, spacing: 10) {
+            tourCopy
+            controls
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -1418,11 +1411,13 @@ private struct GuidedTourBar: View {
     }
 
     private var controls: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center) {
             Button("Skip tour") { model.dismiss() }
                 .buttonStyle(.plain)
+            Spacer(minLength: 16)
             Button("Back") { model.goBack() }
                 .disabled(!model.canGoBack)
+            Spacer(minLength: 16)
             Button(model.isLastStep ? "Done" : "Next") { model.advance() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)

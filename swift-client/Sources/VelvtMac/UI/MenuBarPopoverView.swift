@@ -428,7 +428,7 @@ enum SettingsSubmenu: CaseIterable, Equatable {
     var preferredHeight: CGFloat {
         switch self {
         case .appInfo: return 420
-        case .queuedEvents: return 340
+        case .queuedEvents: return 400
         case .collectionSettings: return 140
         case .onboarding: return 210
         #if DEBUG
@@ -912,23 +912,25 @@ public struct MenuBarPopoverView: View {
         case .queuedEvents:
             VStack(spacing: 0) {
                 submenuTitle("\(submenu.title) (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))")
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        let queuedEvents = Array((menuStatusViewModel?.status?.queuedEvents ?? []).prefix(10))
-                        ForEach(queuedEvents) { event in
-                            queuedEventRow(event)
-                        }
-                        if queuedEvents.isEmpty {
-                            Text("No queued events")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
+                classificationExplanation
+                let queuedEvents = Array((menuStatusViewModel?.status?.queuedEvents ?? []).prefix(10))
+                if queuedEvents.isEmpty {
+                    Text("No queued events")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(queuedEvents) { event in
+                                queuedEventRow(event)
+                            }
                         }
                     }
+                    .frame(height: 150)
                 }
-                .frame(height: 180)
                 if let sendError = menuStatusViewModel?.sendError {
                     Text(sendError)
                         .font(.caption)
@@ -942,7 +944,7 @@ public struct MenuBarPopoverView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
-                Button("Reset Classification Learning", role: .destructive) {
+                Button("Reset Local Category Corrections", role: .destructive) {
                     confirmsClassificationReset = true
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -951,7 +953,7 @@ public struct MenuBarPopoverView: View {
             }
             .onAppear { menuStatusViewModel?.refresh() }
             .confirmationDialog(
-                "Reset all classification corrections on this Mac?",
+                "Reset all local category corrections on this Mac?",
                 isPresented: $confirmsClassificationReset,
                 titleVisibility: .visible
             ) {
@@ -1344,6 +1346,25 @@ public struct MenuBarPopoverView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+    }
+
+    private var classificationExplanation: some View {
+        Text(
+            "Velvt categorizes activity on this Mac. Unclassified means it is not sure. "
+                + "Correct category saves a local correction for similar activity; "
+                + "raw app and window details stay on this Mac."
+        )
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+        .accessibilityLabel(
+            "How categories work. Velvt categorizes activity on this Mac. "
+                + "Unclassified means it is not sure. Correct category saves a local correction "
+                + "for similar activity. Raw app and window details stay on this Mac."
+        )
     }
 
     private static let classificationCategories = [

@@ -95,37 +95,46 @@ private struct DailyActivityRow: View {
     let day: DaySummaryViewModel
 
     var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 5) {
-                Text(day.date)
-                    .font(.caption.bold())
-                    .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.5) : Color.velvtText)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text(day.isNoData ? "No data" : day.activeTime)
-                    .font(.caption2)
-                    .foregroundStyle(Color.velvtMuted)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                HStack(spacing: 5) {
+                    Text(day.date)
+                        .font(.caption.bold())
+                        .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.5) : Color.velvtText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(day.isNoData ? "No data" : day.activeTime)
+                        .font(.caption2)
+                        .foregroundStyle(Color.velvtMuted)
+                }
+                Spacer(minLength: 8)
+                metric("Switches", day.isNoData ? "—" : "\(day.meaningfulSwitchCount)")
+                metric("Fragmentation", day.fragmentationScore.map(String.init) ?? "—")
             }
-            .frame(width: 86, alignment: .leading)
 
             SplitActivityBar(day: day)
-
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(day.isNoData ? "--" : "\(day.meaningfulSwitchCount)")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(Color.velvtMuted)
-                    .help("Meaningful switches are changes between broad work categories; brief system activity is excluded.")
-                Text(day.fragmentationScore.map(String.init) ?? "—")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(day.fragmentationScore == nil ? Color.velvtMuted.opacity(0.45) : Color.velvtPink)
-                    .help("Fragmentation score: higher means more observed category movement in this day's summary.")
-            }
-            .frame(width: 38, alignment: .trailing)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Meaningful switches and fragmentation")
-            .accessibilityValue("\(day.isNoData ? "No switches" : "\(day.meaningfulSwitchCount) meaningful switches"), fragmentation \(day.fragmentationScore.map(String.init) ?? "no data")")
+                .frame(height: 10)
         }
-        .frame(height: 20)
+        .padding(.vertical, 5)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(day.date)
+        .accessibilityValue(
+            "\(day.isNoData ? "No activity" : day.activeTime), \(day.meaningfulSwitchCount) meaningful switches, fragmentation \(day.fragmentationScore.map(String.init) ?? "no data")"
+        )
+    }
+
+    private func metric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(title)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(Color.velvtMuted)
+            Text(value)
+                .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                .foregroundStyle(value == "—" ? Color.velvtMuted.opacity(0.45) : Color.velvtPink)
+        }
+        .frame(minWidth: title == "Fragmentation" ? 74 : 48, alignment: .trailing)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title): \(value)")
     }
 }
 

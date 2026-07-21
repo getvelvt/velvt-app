@@ -43,5 +43,6 @@ struct ServiceUnavailableView: View {
         }
         .padding(32)
         .frame(minWidth: 320)
+        .tint(Color.velvtPink)
     }
 }

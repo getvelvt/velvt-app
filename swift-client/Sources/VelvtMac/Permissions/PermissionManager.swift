@@ -184,6 +184,9 @@ public final class PermissionManager: PermissionManagerProtocol {
                 queue: .main
             ) { [weak self] _ in
                 self?.scheduleMonitor()
+                Task { [weak self] in
+                    _ = await self?.checkStatus(for: .notifications)
+                }
             },
             activityNotifications.addObserver(
                 forName: NSApplication.willResignActiveNotification,

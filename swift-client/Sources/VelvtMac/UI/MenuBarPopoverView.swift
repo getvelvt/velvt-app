@@ -316,13 +316,20 @@ public struct PopoverConnectionPresentation {
 
 public enum MenuBarPopoverLayout {
     public static let preferredContentSize = CGSize(width: 660, height: 450)
+    public static let walkthroughContentSize = CGSize(width: 660, height: 560)
     public static let screenInset: CGFloat = 24
 
-    public static func contentSize(for visibleFrame: CGRect?) -> CGSize {
-        guard let visibleFrame else { return preferredContentSize }
+    public static func contentSize(
+        for visibleFrame: CGRect?,
+        includesWalkthrough: Bool = false
+    ) -> CGSize {
+        let preferredSize = includesWalkthrough
+            ? walkthroughContentSize
+            : preferredContentSize
+        guard let visibleFrame else { return preferredSize }
         return CGSize(
-            width: min(preferredContentSize.width, max(1, visibleFrame.width - screenInset)),
-            height: min(preferredContentSize.height, max(1, visibleFrame.height - screenInset))
+            width: min(preferredSize.width, max(1, visibleFrame.width - screenInset)),
+            height: min(preferredSize.height, max(1, visibleFrame.height - screenInset))
         )
     }
 }
@@ -361,7 +368,7 @@ enum SettingsSubmenu: CaseIterable, Equatable {
         case .collectionSettings: return 140
         case .onboarding: return 210
         #if DEBUG
-        case .debug: return 90
+        case .debug: return 150
         #endif
         }
     }
@@ -429,7 +436,7 @@ public struct MenuBarPopoverView: View {
     private let accountStateManager: AccountStateManager?
     private let ipcClient: (any IPCClientProtocol)?
     private let menuStatusViewModel: MenuStatusViewModel?
-    private let simulateNotification: (() -> Void)?
+    private let simulateNotification: (() async -> DebugInsightSimulationResult)?
     private let restartLocalService: (() -> Void)?
     private let replayOnboarding: (() -> Void)?
     private let startGuidedTour: (() -> Void)?
@@ -443,6 +450,7 @@ public struct MenuBarPopoverView: View {
     @State private var confirmsClassificationReset = false
     @State private var confirmsWorkBlockClear = false
     @State private var diagnosticsCopied = false
+    @State private var debugInsightStatus: String?
     @State private var showsFocusSession = false
   @State private var showsSystemState = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -461,7 +469,7 @@ public struct MenuBarPopoverView: View {
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
-        simulateNotification: (() -> Void)? = nil,
+        simulateNotification: (() async -> DebugInsightSimulationResult)? = nil,
         restartLocalService: (() -> Void)? = nil,
         replayOnboarding: (() -> Void)? = nil,
         startGuidedTour: (() -> Void)? = nil,
@@ -522,6 +530,7 @@ public struct MenuBarPopoverView: View {
             alignment: .top
         )
         .preferredColorScheme(.dark)
+        .tint(Color.velvtPink)
         .onExitCommand {
             if guidedTour.isPresented {
                 guidedTour.dismiss()
@@ -572,7 +581,9 @@ public struct MenuBarPopoverView: View {
             }
             .frame(maxWidth: 360, alignment: .trailing)
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .padding(.top, 15)
+        .padding(.bottom, 10)
         .overlay {
             if guidedTour.isPresented, guidedTour.step == .statusAndRecovery {
                 RoundedRectangle(cornerRadius: 7)
@@ -617,19 +628,12 @@ public struct MenuBarPopoverView: View {
                 Divider().opacity(0.15)
             }
 
-            ScrollView {
-                ZStack(alignment: .topLeading) {
-                    selectedWorkspaceContent
-                        .id(navigator.selectedWorkspaceTab)
-                        .transition(.opacity)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
+            Group {
+                if navigator.selectedWorkspaceTab == .settings {
+                    ScrollView { workspaceTransitionContent }
+                } else {
+                    workspaceTransitionContent
                 }
-                .animation(
-                    MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion)
-                        ? .easeOut(duration: 0.16)
-                        : nil,
-                    value: navigator.selectedWorkspaceTab
-                )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
@@ -639,6 +643,21 @@ public struct MenuBarPopoverView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.black.opacity(0.08))
+    }
+
+    private var workspaceTransitionContent: some View {
+        ZStack(alignment: .topLeading) {
+            selectedWorkspaceContent
+                .id(navigator.selectedWorkspaceTab)
+                .transition(.opacity)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .animation(
+            MenuBarMotionPolicy.shouldAnimate(reduceMotion: reduceMotion)
+                ? .easeOut(duration: 0.16)
+                : nil,
+            value: navigator.selectedWorkspaceTab
+        )
     }
 
     private var workspaceNavigationRail: some View {
@@ -711,7 +730,10 @@ public struct MenuBarPopoverView: View {
                     coordinator: coordinator,
                     workBlockCoordinator: workBlockCoordinator,
                     localDashboardCoordinator: localDashboardCoordinator,
-                    onStartWorkBlock: { showsFocusSession = true }
+                    onStartWorkBlock: { showsFocusSession = true },
+                    highlightsInsight: guidedTour.isPresented && guidedTour.step == .earlySignal,
+                    highlightsFocus: guidedTour.isPresented
+                        && guidedTour.step == .focusFragmentation
                 )
 
                 DisclosureGroup("Privacy details", isExpanded: $showsSystemState) {
@@ -737,19 +759,12 @@ public struct MenuBarPopoverView: View {
                     coordinator: coordinator,
                     accountStateManager: accountStateManager
                 )
+                .tourHighlight(guidedTour.isPresented && guidedTour.step == .dailyActivity)
 
             case .settings:
                 settingsContent
             }
     }
-    .popover(isPresented: $showsFocusSession, arrowEdge: .bottom) {
-      ScrollView {
-        WorkBlockView(coordinator: workBlockCoordinator)
-      }
-      .frame(width: 400, height: 390, alignment: .top)
-      .background(Color.velvtSurface)
-      .preferredColorScheme(.dark)
-        }
     }
 
     private var workspaceBottomBar: some View {
@@ -842,7 +857,13 @@ public struct MenuBarPopoverView: View {
                 }
             #endif
             Divider().padding(.vertical, 8)
-            HStack {
+            HStack(spacing: 8) {
+                if let accountStateManager, let ipcClient {
+                    SettingsAccountDeletionButton(
+                        accountStateManager: accountStateManager,
+                        ipcClient: ipcClient
+                    )
+                }
                 Button("Quit Velvt", role: .destructive, action: onTerminate)
                     .buttonStyle(.bordered)
                 Spacer(minLength: 12)
@@ -1030,6 +1051,15 @@ public struct MenuBarPopoverView: View {
                     }
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
+                    if let debugInsightStatus {
+                        Text(debugInsightStatus)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 12)
+                    }
                 }
         #endif
         }
@@ -1037,18 +1067,20 @@ public struct MenuBarPopoverView: View {
 
     private var tourTab: MenuBarWorkspaceTab? {
         switch guidedTour.step {
-        case .today, .earlySignal, .focusFragmentation, .dailyActivity, .statusAndRecovery:
-            return .workBlock
         case .settings:
             return .settings
+        case .today, .earlySignal, .focusFragmentation, .dailyActivity, .statusAndRecovery:
+            return nil
         }
     }
 
     private func route(to step: GuidedTourStep) {
         dismissSettingsSubmenus()
         switch step {
-        case .today, .earlySignal, .focusFragmentation, .dailyActivity, .statusAndRecovery:
+        case .today, .earlySignal, .focusFragmentation, .statusAndRecovery:
             navigator.selectWorkspaceTab(.workBlock)
+        case .dailyActivity:
+            navigator.selectWorkspaceTab(.history)
         case .settings:
             navigator.showSettings()
         }
@@ -1270,9 +1302,21 @@ public struct MenuBarPopoverView: View {
     }
 
     private func runDebugInsightSimulation() {
-        simulateNotification?()
-        dismissSettingsSubmenus()
-        onEscape()
+        guard let simulateNotification else { return }
+        debugInsightStatus = "Preparing simulated insight…"
+        Task {
+            let result = await simulateNotification()
+            switch result {
+            case .scheduled:
+                debugInsightStatus = "Insight updated and notification scheduled by macOS."
+            case .permissionDenied:
+                debugInsightStatus =
+                    "Insight updated, but notifications are disabled in System Settings."
+            case .schedulingFailed:
+                debugInsightStatus =
+                    "Insight updated, but macOS could not schedule the notification."
+            }
+        }
     }
 
     private func submenuBinding(for submenu: SettingsSubmenu) -> Binding<Bool> {
@@ -1311,11 +1355,13 @@ public struct MenuBarPopoverView: View {
     }
     private func queuedEventRow(_ event: QueuedEventSummary) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(event.category.replacingOccurrences(of: "_", with: " ").capitalized)
+            Text(event.localLabel?.nilIfBlank ?? event.label)
                 .font(.subheadline)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            Text("Queued \(event.occurredAt.formatted(date: .omitted, time: .shortened))")
+            Text(
+                "\(friendlyClassification(event.category)) · Queued \(event.occurredAt.formatted(date: .omitted, time: .shortened))"
+            )
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -1325,7 +1371,8 @@ public struct MenuBarPopoverView: View {
                 }
                 .buttonStyle(.plain)
                 .font(.caption)
-      } else if event.classificationStatus != .classified || event.classificationConfidence == .low
+      } else if event.category == "UNLOGGED"
+        || event.classificationStatus != .classified || event.classificationConfidence == .low
       {
                 Picker(
                     "Correct category",
@@ -1379,6 +1426,10 @@ public struct MenuBarPopoverView: View {
         "SYSTEM",
         "UNLOGGED",
     ]
+
+    private func friendlyClassification(_ category: String) -> String {
+        category.replacingOccurrences(of: "_", with: " ").lowercased().capitalized
+    }
   private func statusRow(
     _ title: String, presentation: PopoverConnectionPresentation, refresh: @escaping () -> Void
   ) -> some View {
@@ -1414,7 +1465,8 @@ private struct GuidedTourBar: View {
             controls
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.top, 11)
+        .padding(.bottom, 16)
         .background(Color.velvtPanel)
         .accessibilityElement(children: .contain)
     }
@@ -1440,13 +1492,21 @@ private struct GuidedTourBar: View {
             Button("Skip tour") { model.dismiss() }
                 .buttonStyle(.plain)
             Spacer(minLength: 16)
-            Button("Back") { model.goBack() }
-                .disabled(!model.canGoBack)
-            Spacer(minLength: 16)
-            Button(model.isLastStep ? "Done" : "Next") { model.advance() }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
+            HStack(spacing: 8) {
+                Button("Back") { model.goBack() }
+                    .disabled(!model.canGoBack)
+                Button(model.isLastStep ? "Done" : "Next") { model.advance() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
         }
+        .tint(Color.velvtPink)
+    }
+}
+
+private extension String {
+    var nilIfBlank: String? {
+        trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
     }
 }
 
@@ -1613,19 +1673,6 @@ private struct MenuBarAccountControls: View {
         authViewModel: authViewModel, accountStateManager: accountStateManager,
         initialMode: authenticationMode, dismiss: { showsAuthentication = false })
         }
-        .confirmationDialog(
-            "Delete your Velvt account? This request cannot be undone.",
-            isPresented: Binding(
-                get: { authViewModel.showDeleteConfirmation },
-                set: { if !$0 { authViewModel.cancelAccountDeletion() } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete Account", role: .destructive) {
-                Task { await authViewModel.confirmAccountDeletion() }
-            }
-            Button("Cancel", role: .cancel) { authViewModel.cancelAccountDeletion() }
-        }
     }
     @ViewBuilder private func actionButton(for action: MenuBarAccountAction) -> some View {
         switch action {
@@ -1636,14 +1683,48 @@ private struct MenuBarAccountControls: View {
         showsAuthentication = true
       }
         case .logOut: Button("Log Out", role: .destructive) { authViewModel.logOut() }
-        case .deleteAccount:
-            Button("Delete Account", role: .destructive) {
-                authViewModel.requestAccountDeletion()
-            }
+        case .deleteAccount: EmptyView()
         }
     }
     private var signInLabel: String {
         accountStateManager.requiresReauthentication ? "Reauthenticate" : "Sign In"
+    }
+}
+
+private struct SettingsAccountDeletionButton: View {
+    @ObservedObject private var accountStateManager: AccountStateManager
+    @StateObject private var authViewModel: AuthViewModel
+
+    init(accountStateManager: AccountStateManager, ipcClient: any IPCClientProtocol) {
+        self.accountStateManager = accountStateManager
+        _authViewModel = StateObject(
+            wrappedValue: AuthViewModel(
+                accountStateManager: accountStateManager,
+                ipcClient: ipcClient
+            )
+        )
+    }
+
+    var body: some View {
+        if case .loggedIn = accountStateManager.accountState {
+            Button("Delete Account", role: .destructive) {
+                authViewModel.requestAccountDeletion()
+            }
+            .buttonStyle(.bordered)
+            .confirmationDialog(
+                "Delete your Velvt account? This request cannot be undone.",
+                isPresented: Binding(
+                    get: { authViewModel.showDeleteConfirmation },
+                    set: { if !$0 { authViewModel.cancelAccountDeletion() } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete Account", role: .destructive) {
+                    Task { await authViewModel.confirmAccountDeletion() }
+                }
+                Button("Cancel", role: .cancel) { authViewModel.cancelAccountDeletion() }
+            }
+        }
     }
 }
 

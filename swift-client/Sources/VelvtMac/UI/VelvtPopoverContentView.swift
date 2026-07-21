@@ -5,8 +5,7 @@ extension View {
         overlay {
             if isHighlighted {
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.velvtPink, lineWidth: 2)
-                    .padding(2)
+                    .strokeBorder(Color.velvtPink, lineWidth: 2)
                     .allowsHitTesting(false)
             }
         }
@@ -404,34 +403,30 @@ struct EmptyDeliveryState: View {
     }
 }
 
-public enum MinimalDashboardSurface: String, CaseIterable, Identifiable {
-  case focus
-  case activity
-
-  public var id: String { rawValue }
-  public var title: String { rawValue.capitalized }
-}
-
-/// The popover's single analytical workspace. The insight remains above the
-/// persisted two-item control, so switching surfaces never hides the action.
+/// Today's analytical workspace. Seven-day activity belongs in Your Week so
+/// the same monitor is not repeated in two tabs.
 public struct MinimalDashboardWorkspaceView: View {
   @ObservedObject private var coordinator: ConcreteDisplayDataCoordinator
   @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
   @ObservedObject private var localDashboardCoordinator: LocalDashboardCoordinator
   private let onStartWorkBlock: () -> Void
-  @AppStorage("velvt.minimalDashboard.surface") private var selectedRawValue =
-    MinimalDashboardSurface.focus.rawValue
+  private let highlightsInsight: Bool
+  private let highlightsFocus: Bool
 
   public init(
     coordinator: ConcreteDisplayDataCoordinator,
     workBlockCoordinator: WorkBlockCoordinator,
     localDashboardCoordinator: LocalDashboardCoordinator,
-    onStartWorkBlock: @escaping () -> Void
+    onStartWorkBlock: @escaping () -> Void,
+    highlightsInsight: Bool = false,
+    highlightsFocus: Bool = false
   ) {
     self.coordinator = coordinator
     self.workBlockCoordinator = workBlockCoordinator
     self.localDashboardCoordinator = localDashboardCoordinator
     self.onStartWorkBlock = onStartWorkBlock
+    self.highlightsInsight = highlightsInsight
+    self.highlightsFocus = highlightsFocus
   }
 
   public var body: some View {
@@ -443,26 +438,14 @@ public struct MinimalDashboardWorkspaceView: View {
       }
 
       latestInsight
+        .tourHighlight(highlightsInsight)
 
-      Picker("Analysis", selection: $selectedRawValue) {
-        ForEach(MinimalDashboardSurface.allCases) { surface in
-          Text(surface.title).tag(surface.rawValue)
-        }
-      }
-      .pickerStyle(.segmented)
-      .accessibilityLabel("Choose Focus Fragmentation or Daily Activity")
-      .help(
-        "Focus explains one explicit work block. Activity shows exactly seven local calendar days.")
-
-      if selectedRawValue == MinimalDashboardSurface.activity.rawValue {
-        DailyActivityView(snapshot: localDashboardCoordinator.snapshot)
-      } else {
-        FocusFragmentationView(
-          focus: localDashboardCoordinator.snapshot?.focusFragmentation,
-          errorMessage: localDashboardCoordinator.commandError,
-          onStartWorkBlock: onStartWorkBlock
-        )
-      }
+      FocusFragmentationView(
+        focus: localDashboardCoordinator.snapshot?.focusFragmentation,
+        errorMessage: localDashboardCoordinator.commandError,
+        onStartWorkBlock: onStartWorkBlock
+      )
+      .tourHighlight(highlightsFocus)
     }
     .padding(12)
     .onAppear { localDashboardCoordinator.refresh() }
@@ -474,8 +457,9 @@ public struct MinimalDashboardWorkspaceView: View {
       InsightCardView(
         viewModel: coordinator.insightViewModel,
         onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
-          ? startSuggestedWorkBlock
-          : nil
+          ? onStartWorkBlock
+          : nil,
+        compact: true
       )
     } else if let signal = localDashboardCoordinator.snapshot?.earlySignal,
       signal.status == .ready
@@ -483,7 +467,7 @@ public struct MinimalDashboardWorkspaceView: View {
       EarlyLocalSignalView(
         signal: signal,
         onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
-          ? { startLocalSignalBlock(signal) }
+          ? onStartWorkBlock
           : nil
       )
     } else {
@@ -494,23 +478,6 @@ public struct MinimalDashboardWorkspaceView: View {
     }
   }
 
-  private func startSuggestedWorkBlock() {
-    workBlockCoordinator.startBlock(
-      intention: nil,
-      durationSeconds: max(5, coordinator.insightViewModel.suggestedActionMinutes) * 60,
-      purpose: nil,
-      intensity: .medium
-    )
-  }
-
-  private func startLocalSignalBlock(_ signal: LocalEarlySignal) {
-    workBlockCoordinator.startBlock(
-      intention: nil,
-      durationSeconds: max(5, signal.actionMinutes) * 60,
-      purpose: nil,
-      intensity: .medium
-    )
-  }
 }
 
 private struct CompactWorkBlockControl: View {
@@ -557,49 +524,32 @@ public struct FocusFragmentationView: View {
   @FocusState private var focusedEvidenceID: String?
 
   public var body: some View {
-    VStack(alignment: .leading, spacing: 9) {
-      Text("Focus Fragmentation")
-        .font(.headline)
+    VStack(alignment: .leading, spacing: 7) {
       if let focus {
-        Text(focus.windowLabel)
-          .font(.caption2)
-          .foregroundStyle(Color.velvtMuted)
-          .accessibilityLabel("Timeline window: \(focus.windowLabel)")
-          .help(
-            "This window contains at most the most recent 60 minutes of one explicit work block.")
+        HStack(spacing: 6) {
+          Text("Focus Fragmentation").font(.headline)
+          Spacer()
+          Text(focus.windowLabel)
+            .font(.caption2)
+            .foregroundStyle(Color.velvtMuted)
+          Image(systemName: "info.circle")
+            .font(.caption2)
+            .foregroundStyle(Color.velvtMuted)
+            .help(focusHelp(focus))
+        }
         focusTimeline(focus)
-        if let hoveredDetail {
-          Text(hoveredDetail)
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityLabel(hoveredDetail)
-        }
         metrics(focus)
-        if let comparison = focus.comparison {
-          Text("\(comparison.label): \(comparison.explanation)")
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
-            .help(
-              "Like-for-like comparison of covered 60-minute active windows. Partial or low-confidence windows are never compared."
-            )
-            .accessibilityLabel("Comparison \(comparison.label). \(comparison.explanation)")
-        } else {
-          Text("Not enough comparable activity")
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
-            .help(
-              "No delta is shown unless both 60-minute windows have sufficient classified coverage."
-            )
-        }
         Text(focus.observation)
           .font(.caption)
-          .fixedSize(horizontal: false, vertical: true)
+          .lineLimit(2)
+          .help(focus.observation)
         Text(focus.nextAction)
           .font(.caption.bold())
-          .fixedSize(horizontal: false, vertical: true)
+          .lineLimit(1)
+          .help(focus.nextAction)
       } else {
         VStack(alignment: .leading, spacing: 8) {
+          Text("Focus Fragmentation").font(.headline)
           Text(
             errorMessage
               ?? "Start a work block to see its attention timeline. Velvt does not infer your intent from general activity."
@@ -741,7 +691,9 @@ public struct FocusFragmentationView: View {
 
   private func metrics(_ focus: LocalFocusFragmentation) -> some View {
     LazyVGrid(
-      columns: [GridItem(.adaptive(minimum: 82), spacing: 8)], alignment: .leading, spacing: 6
+      columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
+      alignment: .leading,
+      spacing: 4
     ) {
       focusMetric(
         "Planned / elapsed",
@@ -754,18 +706,10 @@ public struct FocusFragmentationView: View {
         "Switches", "\(focus.observedSwitchCount)",
         "Observed movement between classified categories; idle, system, duplicates, and unclassified movement are excluded."
       )
-      focusMetric(
-        "Recoveries", "\(focus.recoveryCount)",
-        "A recovery is a return to the block's dominant covered category after moving away, using the documented session rule."
-      )
-      focusMetric(
-        "Clusters", "\(focus.clusters.count)",
-        "A cluster is at least three category transitions inside five minutes under rule version 1."
-      )
-      focusMetric(
-        "Coverage", coverageLabel(focus),
-        "The share and confidence of this window that could be classified without guessing.")
     }
+    .help(
+      "\(focus.recoveryCount) recoveries · \(focus.clusters.count) switching clusters · \(coverageLabel(focus)) coverage"
+    )
   }
 
   private func focusMetric(_ title: String, _ value: String, _ help: String) -> some View {
@@ -791,6 +735,12 @@ public struct FocusFragmentationView: View {
       hoveredDetail =
         "Switching cluster. \(cluster.explanation) Confidence \(cluster.confidence.rawValue)."
     }
+  }
+
+  private func focusHelp(_ focus: LocalFocusFragmentation) -> String {
+    let comparison = focus.comparison.map { "\($0.label): \($0.explanation)" }
+      ?? "Not enough comparable activity."
+    return "Most recent explicit work-block window. \(comparison) \(focus.recoveryCount) recoveries, \(focus.clusters.count) clusters, \(coverageLabel(focus)) coverage."
   }
 
   private func segmentDetail(_ segment: LocalTimelineSegment) -> String {

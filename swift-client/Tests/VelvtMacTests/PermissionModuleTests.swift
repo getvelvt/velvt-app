@@ -223,6 +223,35 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(scheduler.startCallCount, 1, "periodic monitoring should still be scheduled")
     }
 
+    func testBecomingActiveRefreshesNotificationAuthorization() async {
+        let notifications = FakeNotificationPermissionClient()
+        notifications.status = .authorized
+        let activityNotifications = NotificationCenter()
+        let manager = PermissionManager(
+            accessibilityClient: FakeAccessibilityPermissionClient(isTrusted: true),
+            notificationClient: notifications,
+            applicationIsActive: { true },
+            monitorScheduler: FakePermissionMonitorScheduler(),
+            activityNotifications: activityNotifications
+        )
+        var statuses: [[PermissionType: PermissionStatus]] = []
+        manager.statusPublisher.sink { statuses.append($0) }.store(in: &cancellables)
+
+        manager.startMonitoring()
+        await MainActor.run {
+            activityNotifications.post(
+                name: NSApplication.didBecomeActiveNotification,
+                object: nil
+            )
+        }
+
+        for _ in 0..<50 where statuses.last?[.notifications] != .granted {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(statuses.last?[.notifications], .granted)
+    }
+
     func testAccessibilityMonitorPausesWhenAppMovesToBackground() {
         var isActive = true
         let scheduler = FakePermissionMonitorScheduler()
@@ -409,6 +438,28 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertTrue(presentation.showsOnboarding)
     }
 
+    @MainActor
+    func testCompletedOnboardingDoesNotPresentOnNormalLaunch() {
+        let permissions = FakePermissionManager()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore(hasCompletedOnboarding: true)
+        )
+        let controller = OnboardingWindowController(
+            presentation: presentation,
+            permissionManager: permissions,
+            accountStateManager: AccountStateManager(keychain: FakeKeychain()),
+            ipcClient: FakeIPCClient(),
+            onStartUsing: {},
+            onStartTour: {}
+        )
+
+        controller.presentOnLaunch()
+
+        XCTAssertFalse(controller.hasPresentedWindow)
+        XCTAssertFalse(presentation.showsOnboarding)
+    }
+
     func testEstablishedInstallationBypassesNewIntroWithoutChangingLegacyValues() {
         let suite = "onboarding.migration.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -472,7 +523,7 @@ final class PermissionModuleTests: XCTestCase {
     }
 
     @MainActor
-    func testAccessibilityPromptCanBeSkippedWithoutRequestingPermission() {
+    func testAccessibilityPromptCannotBeSkippedWithoutPermission() {
         let permissions = FakePermissionManager()
         let presentation = PermissionPresentationModel(
             permissionManager: permissions,
@@ -487,7 +538,7 @@ final class PermissionModuleTests: XCTestCase {
 
         model.skip()
 
-        XCTAssertEqual(continueCount, 1)
+        XCTAssertEqual(continueCount, 0)
         XCTAssertTrue(permissions.requestedPermissions.isEmpty)
         XCTAssertFalse(model.hasRequested)
     }
@@ -508,12 +559,99 @@ final class PermissionModuleTests: XCTestCase {
         )
 
         await model.request()
+        permissions.setStatus(.granted, for: .accessibility)
         model.continueToWalkthrough()
 
         XCTAssertEqual(permissions.requestedPermissions, [.accessibility])
         XCTAssertTrue(store.hasRequestedAccessibilityPermission)
         XCTAssertFalse(store.hasRequestedNotificationsPermission)
         XCTAssertEqual(continueCount, 1)
+    }
+
+    @MainActor
+    func testNotificationPromptRequestsNotificationsBeforeWalkthrough() async {
+        let permissions = FakePermissionManager()
+        let store = InMemoryOnboardingStateStore()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: store
+        )
+        var continueCount = 0
+        let model = NotificationPromptModel(
+            presentation: presentation,
+            permissionManager: permissions,
+            onContinue: { continueCount += 1 }
+        )
+
+        await model.requestAndContinue()
+
+        XCTAssertEqual(permissions.requestedPermissions, [.notifications])
+        XCTAssertTrue(store.hasRequestedNotificationsPermission)
+        XCTAssertEqual(continueCount, 1)
+    }
+
+    @MainActor
+    func testNotificationPromptCanBeSkippedWithoutRequestingSystemPermission() {
+        let permissions = FakePermissionManager()
+        let store = InMemoryOnboardingStateStore()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: store
+        )
+        var continueCount = 0
+        let model = NotificationPromptModel(
+            presentation: presentation,
+            permissionManager: permissions,
+            onContinue: { continueCount += 1 }
+        )
+
+        model.skip()
+
+        XCTAssertTrue(permissions.requestedPermissions.isEmpty)
+        XCTAssertTrue(store.hasRequestedNotificationsPermission)
+        XCTAssertEqual(continueCount, 1)
+    }
+
+    @MainActor
+    func testNotificationPromptReflectsPermissionGrantedOutsideTheApp() {
+        let permissions = FakePermissionManager()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore()
+        )
+        let model = NotificationPromptModel(
+            presentation: presentation,
+            permissionManager: permissions,
+            onContinue: {}
+        )
+
+        permissions.setStatus(.denied, for: .notifications)
+        XCTAssertEqual(model.status, .denied)
+
+        permissions.setStatus(.granted, for: .notifications)
+        XCTAssertEqual(model.status, .granted)
+    }
+
+    @MainActor
+    func testAccountOnboardingAppearsOnlyForSignedOutFirstRun() {
+        XCTAssertTrue(
+            OnboardingSequencePolicy.needsAccountStep(
+                firstRun: true,
+                accountState: .loggedOut
+            )
+        )
+        XCTAssertFalse(
+            OnboardingSequencePolicy.needsAccountStep(
+                firstRun: false,
+                accountState: .loggedOut
+            )
+        )
+        XCTAssertFalse(
+            OnboardingSequencePolicy.needsAccountStep(
+                firstRun: true,
+                accountState: .loggedIn(userId: "existing-user")
+            )
+        )
     }
 
     func testOnboardingPrivacyCopyMatchesTheAuditedBoundary() {

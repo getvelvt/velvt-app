@@ -62,6 +62,26 @@ final class MenuBarControllerTests: XCTestCase {
         XCTAssertEqual(size.height, visibleFrame.height - MenuBarPopoverLayout.screenInset)
     }
 
+    func testWalkthroughAddsHeightWithoutExceedingVisibleScreen() {
+        let roomyFrame = CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        let compactFrame = CGRect(x: 0, y: 0, width: 600, height: 500)
+
+        XCTAssertEqual(
+            MenuBarPopoverLayout.contentSize(
+                for: roomyFrame,
+                includesWalkthrough: true
+            ),
+            MenuBarPopoverLayout.walkthroughContentSize
+        )
+        XCTAssertEqual(
+            MenuBarPopoverLayout.contentSize(
+                for: compactFrame,
+                includesWalkthrough: true
+            ).height,
+            compactFrame.height - MenuBarPopoverLayout.screenInset
+        )
+    }
+
     func testHostingControllerCannotOverrideExplicitPopoverSize() throws {
         let popover = TestPopover()
 
@@ -78,6 +98,25 @@ final class MenuBarControllerTests: XCTestCase {
         )
         XCTAssertTrue(hostingController.sizingOptions.isEmpty)
         XCTAssertEqual(popover.contentSize, MenuBarPopoverLayout.preferredContentSize)
+    }
+
+    func testGuidedTourExpandsPopoverInsteadOfCompressingMainContent() {
+        let popover = TestPopover()
+        let sut = MenuBarController(
+            presentation: makePresentation(),
+            displayCoordinator: ConcreteDisplayDataCoordinator(),
+            popover: popover,
+            statusItemManager: TestStatusItemManager(),
+            activateApp: {}
+        )
+        sut.install()
+
+        sut.beginGuidedTour()
+
+        XCTAssertGreaterThan(
+            popover.contentSize.height,
+            MenuBarPopoverLayout.preferredContentSize.height
+        )
     }
 
     // MARK: - Popover stays open across data pushes

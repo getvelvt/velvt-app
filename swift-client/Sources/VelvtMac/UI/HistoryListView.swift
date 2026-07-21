@@ -36,7 +36,7 @@ private struct HistoryDashboardView: View {
     }
 
     private var dailyActivity: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
           Text("Daily Activity")
@@ -66,43 +66,44 @@ private struct HistoryDashboardView: View {
 
 private struct DailyActivityRow: View {
     let day: DaySummaryViewModel
-    @State private var hoveredCategoryDetail: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-                HStack(spacing: 5) {
-                    Text(day.date)
-                        .font(.caption.bold())
-                        .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.5) : Color.velvtText)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(day.isNoData ? "No data" : day.activeTime)
-                        .font(.caption2)
-                        .foregroundStyle(Color.velvtMuted)
-                }
-                Spacer(minLength: 8)
-            }
+        HStack(spacing: 8) {
+            Text(day.date)
+                .font(.caption.bold())
+                .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.5) : Color.velvtText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 62, alignment: .leading)
 
-            SplitActivityBar(day: day) { detail in
-                hoveredCategoryDetail = detail
-            }
-                .frame(height: 10)
+            SplitActivityBar(day: day) { _ in }
+                .frame(height: 9)
+                .frame(maxWidth: .infinity)
 
-            if let hoveredCategoryDetail {
-                Text(hoveredCategoryDetail)
-                    .font(.caption2)
-                    .foregroundStyle(Color.velvtMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .transition(.opacity)
-            }
+            Text(day.isNoData ? "No data" : day.activeTime)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(Color.velvtMuted)
+                .frame(width: 48, alignment: .trailing)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 3)
+        .help(dayHelpText)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(day.date)
         .accessibilityValue(
       day.isNoData ? "No activity" : day.activeTime
         )
+    }
+
+    private var dayHelpText: String {
+        guard !day.isNoData else { return "\(day.date): no daily summary." }
+        let categories = day.typeProportions
+            .filter { $0.proportion > 0 }
+            .prefix(5)
+            .map {
+                "\(categoryLabel($0.category)) \(Int(($0.proportion * 100).rounded()))%"
+            }
+            .joined(separator: ", ")
+        return "\(day.date): \(day.activeTime) active. \(categories)"
     }
 }
 

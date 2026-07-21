@@ -83,8 +83,9 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
 
         let now = ISO8601DateFormatter().date(from: "2026-06-15T12:00:00Z")!
-        await sut.simulateDebugInsightReceipt(now: now).value
+        let result = await sut.simulateDebugInsightReceipt(now: now).value
 
+        XCTAssertEqual(result, .scheduled)
         XCTAssertEqual(scheduler.scheduledPayloads.count, 1)
         XCTAssertEqual(scheduler.scheduledPayloads.first?.title, "Your Velvt insight is ready")
         XCTAssertEqual(scheduler.scheduledPayloads.first?.insightDate, "2026-06-15")
@@ -97,12 +98,29 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
 
         let now = ISO8601DateFormatter().date(from: "2026-06-15T12:00:00Z")!
-        await sut.simulateDebugInsightReceipt(now: now).value
+        let result = await sut.simulateDebugInsightReceipt(now: now).value
 
+        XCTAssertEqual(result, .scheduled)
         XCTAssertEqual(permissions.requestedPermissions, [.notifications])
         XCTAssertEqual(scheduler.scheduledPayloads.count, 1)
         XCTAssertEqual(scheduler.scheduledPayloads.first?.insightDate, "2026-06-15")
         XCTAssertNil(scheduler.scheduledPayloads.first?.doNotDisturbUntil)
+    }
+
+    func testDebugSimulationReportsDeniedNotificationPermission() async {
+        let scheduler = FakeNotificationScheduler()
+        let permissions = FakePermissionManager()
+        permissions.setStatus(.denied, for: .notifications)
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler,
+            permissionManager: permissions,
+            debounceInterval: .milliseconds(5)
+        )
+
+        let result = await sut.simulateDebugInsightReceipt().value
+
+        XCTAssertEqual(result, .permissionDenied)
+        XCTAssertTrue(scheduler.scheduledPayloads.isEmpty)
     }
 
     func testRepeatedDebugSimulationsScheduleSeparateNativeNotifications() async {
@@ -114,8 +132,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let now = ISO8601DateFormatter().date(from: "2026-06-15T12:00:00Z")!
         let first = sut.simulateDebugInsightReceipt(now: now)
         let second = sut.simulateDebugInsightReceipt(now: now.addingTimeInterval(1))
-        await first.value
-        await second.value
+        _ = await first.value
+        _ = await second.value
 
         XCTAssertEqual(scheduler.scheduledPayloads.count, 2)
         guard scheduler.scheduledPayloads.count == 2 else { return }

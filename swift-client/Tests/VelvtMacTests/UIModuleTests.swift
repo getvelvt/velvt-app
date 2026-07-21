@@ -9,15 +9,6 @@ import XCTest
 @MainActor
 final class MenuBarNavigationTests: XCTestCase {
 
-  func testMinimalDashboardHasExactlyTwoAnalyticalSurfaces() {
-    XCTAssertEqual(MinimalDashboardSurface.allCases.map(\.title), ["Focus", "Activity"])
-  }
-
-  func testMinimalDashboardPersistenceValuesAreStable() {
-    XCTAssertEqual(MinimalDashboardSurface.focus.rawValue, "focus")
-    XCTAssertEqual(MinimalDashboardSurface.activity.rawValue, "activity")
-  }
-
   func testRestoredWorkspaceNavigationKeepsThePreviousOrderAndTitles() {
     XCTAssertEqual(
       MenuBarWorkspaceTab.allCases.map(\.title),

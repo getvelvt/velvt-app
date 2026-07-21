@@ -7,7 +7,8 @@ import UserNotifications
 /// or log notification content (`title`/`body`) beyond the scope of building
 /// the `UNNotificationRequest`.
 public protocol NotificationSchedulerProtocol: AnyObject {
-    func schedule(_ payload: NotificationPayload) async
+    @discardableResult
+    func schedule(_ payload: NotificationPayload) async -> Bool
     func cancelAll()
 }
 
@@ -49,7 +50,8 @@ public final class UNNotificationScheduler: NotificationSchedulerProtocol {
         self.metrics = metrics
     }
 
-    public func schedule(_ payload: NotificationPayload) async {
+    @discardableResult
+    public func schedule(_ payload: NotificationPayload) async -> Bool {
         let content = UNMutableNotificationContent()
         content.title = payload.title
         content.body = payload.body
@@ -71,8 +73,9 @@ public final class UNNotificationScheduler: NotificationSchedulerProtocol {
         do {
             try await center.add(request)
             metrics?.incrementInterventions()
+            return true
         } catch {
-            return
+            return false
         }
     }
 
@@ -92,8 +95,10 @@ public final class FakeNotificationScheduler: NotificationSchedulerProtocol, @un
 
     public init() {}
 
-    public func schedule(_ payload: NotificationPayload) async {
+    @discardableResult
+    public func schedule(_ payload: NotificationPayload) async -> Bool {
         lock.withLock { scheduledPayloads.append(payload) }
+        return true
     }
 
     public func cancelAll() {

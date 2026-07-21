@@ -199,7 +199,7 @@ public final class MenuBarController: NSObject {
         localDashboardCoordinator: LocalDashboardCoordinator? = nil,
         collectionStatus: AnyPublisher<CollectionStatus, Never> = Just(.idle).eraseToAnyPublisher(),
         connectionStatus: AnyPublisher<ConnectionStatus, Never> = Just(.disconnected).eraseToAnyPublisher(),
-        simulateNotification: (() -> Void)? = nil,
+        simulateNotification: (() async -> DebugInsightSimulationResult)? = nil,
         restartLocalService: (() -> Void)? = nil,
         replayOnboarding: (() -> Void)? = nil,
         startGuidedTour: (() -> Void)? = nil,
@@ -262,6 +262,13 @@ public final class MenuBarController: NSObject {
         hostingController.sizingOptions = []
         self.popover.contentViewController = hostingController
         self.popover.contentSize = MenuBarPopoverLayout.preferredContentSize
+        guidedTour.$isPresented
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] isPresented in
+                self?.updatePopoverSize(includesWalkthrough: isPresented)
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: Lifecycle
@@ -330,7 +337,8 @@ public final class MenuBarController: NSObject {
         guard let button = statusItemManager.button, !popover.isShown else { return }
         popoverWillOpen.send()
         popover.contentSize = MenuBarPopoverLayout.contentSize(
-            for: button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+            for: button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame,
+            includesWalkthrough: guidedTour.isPresented
         )
         activateApp()
         let positioningRect = button.bounds.offsetBy(dx: -16, dy: 0)
@@ -365,6 +373,15 @@ public final class MenuBarController: NSObject {
     /// point size pins them to a consistent canvas so the icon's apparent
     /// position never moves, only its glyph.
     private static let iconConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+
+    private func updatePopoverSize(includesWalkthrough: Bool) {
+        let visibleFrame = statusItemManager.button?.window?.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+        popover.contentSize = MenuBarPopoverLayout.contentSize(
+            for: visibleFrame,
+            includesWalkthrough: includesWalkthrough
+        )
+    }
 
     private func applyIcon(for state: MenuBarState) {
         let description = MenuBarIconProvider.accessibilityDescription(for: state)

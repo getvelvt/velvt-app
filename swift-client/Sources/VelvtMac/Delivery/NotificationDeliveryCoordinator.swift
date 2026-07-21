@@ -2,6 +2,12 @@ import Combine
 import Foundation
 import UserNotifications
 
+public enum DebugInsightSimulationResult: Equatable, Sendable {
+    case scheduled
+    case permissionDenied
+    case schedulingFailed
+}
+
 // MARK: - NotificationDeliveryCoordinator
 
 /// Listens for `notificationPayload` server pushes and forwards them to a
@@ -70,7 +76,7 @@ public final class NotificationDeliveryCoordinator {
             guard !Task.isCancelled else { return }
             let status = await permissionManager.checkStatus(for: .notifications)
             guard status == .granted, !Task.isCancelled else { return }
-            await scheduler.schedule(payload)
+            _ = await scheduler.schedule(payload)
             self?.pendingTasksByDate.removeValue(forKey: payload.insightDate)
         }
         pendingTasksByDate[payload.insightDate] = task
@@ -81,23 +87,20 @@ public final class NotificationDeliveryCoordinator {
     /// Debug harness used by the menu bar app to exercise the same
     /// notification path as a Rust `notification_payload` IPC push.
     @discardableResult
-    public func simulateDebugInsightReceipt(now: Date = Date()) -> Task<Void, Never> {
+    public func simulateDebugInsightReceipt(
+        now: Date = Date()
+    ) -> Task<DebugInsightSimulationResult, Never> {
         let payload = Self.debugNotificationPayload(now: now)
-        let pendingKey = payload.notificationID.uuidString
-        let task = Task { @MainActor [weak self, scheduler, permissionManager, debounceInterval] in
+        return Task { @MainActor [scheduler, permissionManager, debounceInterval] in
             try? await Task.sleep(for: debounceInterval)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return .schedulingFailed }
             let currentStatus = await permissionManager.checkStatus(for: .notifications)
             let status = currentStatus == .unknown
                 ? await permissionManager.requestPermission(for: .notifications)
                 : currentStatus
-            guard status == .granted, !Task.isCancelled else { return }
-            await scheduler.schedule(payload)
-            self?.pendingTasksByDate.removeValue(forKey: pendingKey)
+            guard status == .granted, !Task.isCancelled else { return .permissionDenied }
+            return await scheduler.schedule(payload) ? .scheduled : .schedulingFailed
         }
-        pendingTasksByDate[pendingKey] = task
-        inFlightTask = task
-        return task
     }
 
     private static func debugNotificationPayload(now: Date) -> NotificationPayload {

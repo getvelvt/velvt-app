@@ -155,7 +155,18 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
             simulateNotification: {
-                _ = notificationCoordinator.simulateDebugInsightReceipt()
+                #if DEBUG
+                    displayCoord.updateInsight(
+                        InsightPayload(
+                            date: HistoryViewModel.localDateString(),
+                            text: "Your simulated insight is working. This preview follows the same UI path as a delivered insight.",
+                            confidenceLevel: .medium,
+                            lowConfidence: false,
+                            generatedAt: Date()
+                        )
+                    )
+                #endif
+                return await notificationCoordinator.simulateDebugInsightReceipt().value
             },
             restartLocalService: { [weak serviceProcessLauncher] in
                 serviceProcessLauncher?.restart()
@@ -179,6 +190,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         let onboardingWindow = OnboardingWindowController(
             presentation: permissionPresentation,
             permissionManager: permissionManager,
+            accountStateManager: accountStateManager,
+            ipcClient: client,
             onStartUsing: { [weak menuBar] in menuBar?.showToday() },
             onStartTour: { [weak menuBar] in menuBar?.beginGuidedTour() }
         )

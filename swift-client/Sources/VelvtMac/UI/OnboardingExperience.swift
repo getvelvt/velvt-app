@@ -104,7 +104,7 @@ public final class AccessibilityPromptModel: ObservableObject {
     }
 
     public var canContinue: Bool {
-        (hasRequested && !isRequesting) || status == .granted
+        status == .granted && !isRequesting
     }
 
     public func request() async {
@@ -125,12 +125,65 @@ public final class AccessibilityPromptModel: ObservableObject {
     }
 
     public func skip() {
+        guard status == .granted else { return }
         onContinue()
     }
 
     public func continueToWalkthrough() {
         guard canContinue, !isRequesting else { return }
         onContinue()
+    }
+}
+
+@MainActor
+public final class NotificationPromptModel: ObservableObject {
+    @Published public private(set) var isRequesting = false
+
+    private let presentation: PermissionPresentationModel
+    private let permissionManager: any PermissionManagerProtocol
+    private let onContinue: () -> Void
+
+    public init(
+        presentation: PermissionPresentationModel,
+        permissionManager: any PermissionManagerProtocol,
+        onContinue: @escaping () -> Void
+    ) {
+        self.presentation = presentation
+        self.permissionManager = permissionManager
+        self.onContinue = onContinue
+    }
+
+    public var status: PermissionStatus {
+        presentation.statuses[.notifications] ?? .unknown
+    }
+
+    public func requestAndContinue() async {
+        guard !isRequesting else { return }
+        presentation.markPermissionRequested(.notifications)
+
+        switch status {
+        case .unknown:
+            isRequesting = true
+            _ = await permissionManager.requestPermission(for: .notifications)
+            isRequesting = false
+            onContinue()
+        case .granted:
+            onContinue()
+        case .denied, .restricted:
+            Self.openNotificationSettings()
+        }
+    }
+
+    public func skip() {
+        presentation.markPermissionRequested(.notifications)
+        onContinue()
+    }
+
+    public static func openNotificationSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 }
 
@@ -144,11 +197,11 @@ public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
 
     public var title: String {
         switch self {
-        case .today: "Today and work blocks"
-        case .earlySignal: "Early local signal"
-        case .focusFragmentation: "Focus Fragmentation"
-        case .dailyActivity: "Daily Activity"
-        case .statusAndRecovery: "Status and recovery"
+        case .today: "Start a focus session"
+        case .earlySignal: "Today's insight"
+        case .focusFragmentation: "Focus fragmentation"
+        case .dailyActivity: "Your week"
+        case .statusAndRecovery: "Collection status"
         case .settings: "Settings"
         }
     }
@@ -156,17 +209,17 @@ public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
     public var detail: String {
         switch self {
         case .today:
-            "Start or end a meaningful work block here. Its optional intention remains local."
+            "Choose a work type and duration, then start a session. Your intention stays local."
         case .earlySignal:
-            "Today adds an early local signal as evidence arrives, including its observation window and freshness."
+            "A privacy-safe insight appears here as enough local evidence becomes available."
         case .focusFragmentation:
-            "Review the attention timeline for one explicit work block without exposing raw activity."
+            "Review broad context changes within your current focus session."
         case .dailyActivity:
-            "Review exactly seven local days without scores, streaks, or moral judgment."
+            "Review seven days of privacy-safe activity in one place."
         case .statusAndRecovery:
-            "The header and inline controls show scoped collection, sync, permission, and recovery status."
+            "See whether local collection and cloud synchronization need attention."
         case .settings:
-            "Manage local collection and your account, or replay this intro and tour at any time."
+            "Manage collection, queued events, your account, and this tour."
         }
     }
 }
@@ -233,9 +286,9 @@ public struct FirstRunExperienceView: View {
             minWidth: OnboardingWindowLayout.minimumContentSize.width,
             minHeight: OnboardingWindowLayout.minimumContentSize.height
         )
-        .background(Color.velvtSurface)
-        .foregroundStyle(Color.velvtText)
-        .preferredColorScheme(.dark)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle(.primary)
+        .tint(Color.velvtPink)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: model.step)
         .onExitCommand {
             if model.step == .quickStart {
@@ -250,21 +303,20 @@ public struct FirstRunExperienceView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image("VelvtMenuBarIcon")
+            Image("VelvtWordmark")
                 .resizable()
                 .renderingMode(.template)
                 .interpolation(.high)
-                .frame(width: 30, height: 30)
-                .foregroundStyle(Color.velvtText)
-                .accessibilityHidden(true)
-            Text("Velvt")
-                .font(.headline)
+                .scaledToFit()
+                .frame(width: 92, height: 36, alignment: .leading)
+                .foregroundStyle(.primary)
+                .accessibilityLabel("Velvt")
             Spacer()
             if model.step != .quickStart {
-                Text("Step \(model.step.rawValue + 1) of 4")
+                Text("Step \(model.step.rawValue + 1) of \(introStepCount)")
                     .font(.caption)
-                    .foregroundStyle(Color.velvtMuted)
-                    .accessibilityLabel("Intro step \(model.step.rawValue + 1) of 4")
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Intro step \(model.step.rawValue + 1) of \(introStepCount)")
             }
         }
         .padding(.horizontal, 24)
@@ -290,7 +342,7 @@ public struct FirstRunExperienceView: View {
                 )
                 Text(OnboardingCopy.privacySummary)
                     .font(.body)
-                    .foregroundStyle(Color.velvtMuted)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         case .capabilities:
@@ -395,11 +447,19 @@ public struct FirstRunExperienceView: View {
             ) { model.finishAndStartUsing() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
+        case .capabilities where followsLaunchSequence:
+            Button("Continue") { model.finishAndStartUsing() }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
         default:
             Button("Continue") { model.continueForward() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
         }
+    }
+
+    private var introStepCount: Int {
+        followsLaunchSequence ? 3 : 4
     }
 
     private func capability(_ systemImage: String, _ text: String) -> some View {
@@ -449,7 +509,7 @@ private struct IntroPage: View {
                 .accessibilityAddTraits(.isHeader)
             Text(detail)
                 .font(.title3)
-                .foregroundStyle(Color.velvtMuted)
+                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -471,19 +531,18 @@ public struct AccessibilityPermissionExperienceView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                Image("VelvtMenuBarIcon")
+                Image("VelvtWordmark")
                     .resizable()
                     .renderingMode(.template)
                     .interpolation(.high)
-                    .frame(width: 30, height: 30)
-                    .foregroundStyle(Color.velvtText)
-                    .accessibilityHidden(true)
-                Text("Velvt")
-                    .font(.headline)
+                    .scaledToFit()
+                    .frame(width: 92, height: 36, alignment: .leading)
+                    .foregroundStyle(.primary)
+                    .accessibilityLabel("Velvt")
                 Spacer()
                 Text("Accessibility")
                     .font(.caption)
-                    .foregroundStyle(Color.velvtMuted)
+                    .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
@@ -504,7 +563,7 @@ public struct AccessibilityPermissionExperienceView: View {
                         "This lets Velvt notice broad changes in the active work context. It does not send raw app names, window titles, URLs, filenames, or paths to the cloud."
                     )
                     .font(.title3)
-                    .foregroundStyle(Color.velvtMuted)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                     if currentStatus == .granted {
@@ -512,10 +571,10 @@ public struct AccessibilityPermissionExperienceView: View {
                             .foregroundStyle(Color.velvtGreen)
                     } else if model.hasRequested {
                         Text(
-                            "You can continue without this permission. Collection will remain limited until access is granted in System Settings."
+                            "Accessibility is not enabled yet. Allow Velvt in System Settings, then return here to continue."
                         )
                         .font(.body)
-                        .foregroundStyle(Color.velvtMuted)
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -525,19 +584,12 @@ public struct AccessibilityPermissionExperienceView: View {
 
             Divider().opacity(0.2)
 
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    skipButton
-                    Spacer()
-                    actionButtons
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    skipButton
-                    HStack(spacing: 12) {
-                        Spacer()
-                        actionButtons
-                    }
-                }
+            HStack(spacing: 12) {
+                Text("Accessibility is required for Velvt to observe broad context changes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                actionButtons
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
@@ -546,23 +598,16 @@ public struct AccessibilityPermissionExperienceView: View {
             minWidth: OnboardingWindowLayout.minimumContentSize.width,
             minHeight: OnboardingWindowLayout.minimumContentSize.height
         )
-        .background(Color.velvtSurface)
-        .foregroundStyle(Color.velvtText)
-        .preferredColorScheme(.dark)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle(.primary)
+        .tint(Color.velvtPink)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: model.hasRequested)
-        .onExitCommand { model.skip() }
         .accessibilityElement(children: .contain)
-    }
-
-    private var skipButton: some View {
-        Button("Skip for now") { model.skip() }
-            .buttonStyle(.plain)
-            .accessibilityHint("Continues to the walkthrough without requesting Accessibility")
     }
 
     @ViewBuilder private var actionButtons: some View {
         if model.canContinue {
-            Button("Continue to walkthrough") { model.continueToWalkthrough() }
+            Button("Continue to Notification Permissions") { model.continueToWalkthrough() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
         } else {
@@ -592,31 +637,341 @@ public struct AccessibilityPermissionExperienceView: View {
     }
 }
 
+public struct NotificationPermissionExperienceView: View {
+    @ObservedObject private var model: NotificationPromptModel
+    @ObservedObject private var presentation: PermissionPresentationModel
+
+    public init(
+        model: NotificationPromptModel,
+        presentation: PermissionPresentationModel
+    ) {
+        self.model = model
+        self.presentation = presentation
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                Image("VelvtWordmark")
+                    .resizable()
+                    .renderingMode(.template)
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 92, height: 36, alignment: .leading)
+                    .foregroundStyle(.primary)
+                    .accessibilityLabel("Velvt")
+                Spacer()
+                Text("Notifications")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+
+            Divider().opacity(0.2)
+
+            VStack(alignment: .leading, spacing: 18) {
+                Image(systemName: "bell.badge")
+                    .font(.system(size: 36, weight: .medium))
+                    .foregroundStyle(Color.velvtPink)
+                    .accessibilityHidden(true)
+                Text("Allow insight notifications.")
+                    .font(.largeTitle.bold())
+                    .accessibilityAddTraits(.isHeader)
+                Text(
+                    "Velvt can notify you when a privacy-safe insight is ready. Notifications contain only broad observations—never app names, window titles, URLs, filenames, or paths."
+                )
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                if currentStatus == .granted {
+                    Label("Notifications are already allowed.", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(Color.velvtGreen)
+                } else if currentStatus == .denied || currentStatus == .restricted {
+                    Text("Notifications are disabled. You can enable them in System Settings.")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
+            .padding(36)
+
+            Divider().opacity(0.2)
+
+            HStack(spacing: 12) {
+                Button("Not now") { model.skip() }
+                    .buttonStyle(.plain)
+                Spacer()
+                Button(actionLabel) {
+                    Task { await model.requestAndContinue() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.isRequesting)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+        }
+        .frame(
+            minWidth: OnboardingWindowLayout.minimumContentSize.width,
+            minHeight: OnboardingWindowLayout.minimumContentSize.height
+        )
+        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle(.primary)
+        .tint(Color.velvtPink)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var actionLabel: String {
+        switch currentStatus {
+        case .unknown: "Allow Notifications"
+        case .granted: "Continue"
+        case .denied, .restricted: "Open Notification Settings"
+        }
+    }
+
+    private var currentStatus: PermissionStatus {
+        presentation.statuses[.notifications] ?? model.status
+    }
+}
+
+public struct TourInvitationExperienceView: View {
+    private let onContinue: () -> Void
+    private let onStartTour: () -> Void
+
+    public init(
+        onContinue: @escaping () -> Void,
+        onStartTour: @escaping () -> Void
+    ) {
+        self.onContinue = onContinue
+        self.onStartTour = onStartTour
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                Image("VelvtWordmark")
+                    .resizable()
+                    .renderingMode(.template)
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 92, height: 36, alignment: .leading)
+                    .foregroundStyle(.primary)
+                    .accessibilityLabel("Velvt")
+                Spacer()
+                Text("Ready")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+
+            Divider().opacity(0.2)
+
+            IntroPage(
+                systemImage: "checkmark.circle.fill",
+                title: "Take a quick look around.",
+                body:
+                    "The guided tour opens the live menu-bar interface and points to the controls you will use."
+            )
+            .frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
+            .padding(36)
+
+            Divider().opacity(0.2)
+
+            HStack(spacing: 12) {
+                Button("Start using Velvt", action: onContinue)
+                    .buttonStyle(.plain)
+                Spacer()
+                Button("Show me around", action: onStartTour)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+        }
+        .frame(
+            minWidth: OnboardingWindowLayout.minimumContentSize.width,
+            minHeight: OnboardingWindowLayout.minimumContentSize.height
+        )
+        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle(.primary)
+        .tint(Color.velvtPink)
+    }
+}
+
+public struct OnboardingAccountExperienceView: View {
+    @ObservedObject private var accountStateManager: AccountStateManager
+    @StateObject private var authViewModel: AuthViewModel
+    private let onAuthenticated: () -> Void
+
+    public init(
+        accountStateManager: AccountStateManager,
+        authViewModel: AuthViewModel,
+        onAuthenticated: @escaping () -> Void
+    ) {
+        self.accountStateManager = accountStateManager
+        _authViewModel = StateObject(wrappedValue: authViewModel)
+        self.onAuthenticated = onAuthenticated
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                Image("VelvtWordmark")
+                    .resizable()
+                    .renderingMode(.template)
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 92, height: 36, alignment: .leading)
+                    .foregroundStyle(.primary)
+                    .accessibilityLabel("Velvt")
+                Spacer()
+                Text("Account")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+
+            Divider().opacity(0.2)
+
+            VStack(alignment: .leading, spacing: 18) {
+                Image(systemName: "person.crop.circle.badge.plus")
+                    .font(.system(size: 36, weight: .medium))
+                    .foregroundStyle(Color.velvtPink)
+                    .accessibilityHidden(true)
+                Text(authViewModel.authMode == .signUp ? "Create your Velvt account." : "Welcome back.")
+                    .font(.largeTitle.bold())
+                    .accessibilityAddTraits(.isHeader)
+                Text("Your account keeps private history and insight delivery connected across sessions.")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                CredentialTextField(placeholder: "Email", text: $authViewModel.email)
+                CredentialTextField(
+                    placeholder: "Password",
+                    text: $authViewModel.password,
+                    isSecure: true
+                )
+
+                if let error = authViewModel.errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Button(
+                    authViewModel.authMode == .signUp
+                        ? "I already have an account"
+                        : "Create a new account"
+                ) {
+                    authViewModel.toggleAuthMode()
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
+            .padding(36)
+
+            Divider().opacity(0.2)
+
+            HStack {
+                if authViewModel.connectionStatus != .connected {
+                    Text("Waiting for the local Velvt service…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(authViewModel.authMode == .signUp ? "Create Account" : "Sign In") {
+                    Task {
+                        if authViewModel.authMode == .signUp {
+                            await authViewModel.signUp()
+                        } else {
+                            await authViewModel.logIn()
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    authViewModel.isLoading
+                        || authViewModel.email.isEmpty
+                        || authViewModel.password.isEmpty
+                        || authViewModel.connectionStatus != .connected
+                )
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+        }
+        .frame(
+            minWidth: OnboardingWindowLayout.minimumContentSize.width,
+            minHeight: OnboardingWindowLayout.minimumContentSize.height
+        )
+        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle(.primary)
+        .tint(Color.velvtPink)
+        .onChange(of: accountStateManager.accountState) { state in
+            if case .loggedIn = state {
+                onAuthenticated()
+            }
+        }
+    }
+}
+
+public enum OnboardingSequencePolicy {
+    public static func needsAccountStep(firstRun: Bool, accountState: AccountState) -> Bool {
+        guard firstRun else { return false }
+        if case .loggedOut = accountState {
+            return true
+        }
+        return false
+    }
+}
+
 @MainActor
 public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private enum LaunchStage {
         case manual
         case intro
+        case account
         case accessibility
+        case notifications
+        case tourInvitation
     }
 
     private let presentation: PermissionPresentationModel
     private let permissionManager: any PermissionManagerProtocol
+    private let accountStateManager: AccountStateManager
+    private let ipcClient: any IPCClientProtocol
     private let onStartUsing: () -> Void
     private let onStartTour: () -> Void
     private var windowController: NSWindowController?
     private var flowModel: IntroFlowModel?
     private var accessibilityModel: AccessibilityPromptModel?
+    private var notificationModel: NotificationPromptModel?
     private var launchStage: LaunchStage = .manual
+    private var isFirstRunSequence = false
+
+    var hasPresentedWindow: Bool {
+        windowController != nil
+    }
 
     public init(
         presentation: PermissionPresentationModel,
         permissionManager: any PermissionManagerProtocol,
+        accountStateManager: AccountStateManager,
+        ipcClient: any IPCClientProtocol,
         onStartUsing: @escaping () -> Void,
         onStartTour: @escaping () -> Void
     ) {
         self.presentation = presentation
         self.permissionManager = permissionManager
+        self.accountStateManager = accountStateManager
+        self.ipcClient = ipcClient
         self.onStartUsing = onStartUsing
         self.onStartTour = onStartTour
     }
@@ -627,11 +982,11 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         presentIntro(replay: false)
     }
 
-    /// The intro is intentionally shown on every application launch. The
-    /// persisted completion state is still used for permission/account
-    /// behavior, but it no longer suppresses the launch walkthrough.
+    /// Normal launches respect the persisted completion flag. The Settings
+    /// replay action remains available through `presentReplay()`.
     public func presentOnLaunch() {
-        presentation.replayOnboarding()
+        guard presentation.showsOnboarding else { return }
+        isFirstRunSequence = true
         launchStage = .intro
         presentIntro(replay: false)
     }
@@ -651,8 +1006,22 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         switch launchStage {
         case .intro:
             advanceFromIntro()
+        case .account:
+            guard case .loggedIn = accountStateManager.accountState else {
+                NSSound.beep()
+                return false
+            }
+            finishAccountStage()
         case .accessibility:
+            guard accessibilityModel?.canContinue == true else {
+                NSSound.beep()
+                return false
+            }
             finishAccessibilityStage()
+        case .notifications:
+            finishNotificationStage()
+        case .tourInvitation:
+            finishWithoutTour()
         case .manual:
             presentation.completeOnboarding()
             dismissWindow()
@@ -718,6 +1087,44 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         )
     }
 
+    private func presentAccountStage() {
+        let authViewModel = AuthViewModel(
+            accountStateManager: accountStateManager,
+            ipcClient: ipcClient
+        )
+        presentWindow(
+            OnboardingAccountExperienceView(
+                accountStateManager: accountStateManager,
+                authViewModel: authViewModel,
+                onAuthenticated: { [weak self] in self?.finishAccountStage() }
+            ),
+            title: "Velvt Account"
+        )
+    }
+
+    private func presentNotificationStage() {
+        let model = NotificationPromptModel(
+            presentation: presentation,
+            permissionManager: permissionManager,
+            onContinue: { [weak self] in self?.finishNotificationStage() }
+        )
+        notificationModel = model
+        presentWindow(
+            NotificationPermissionExperienceView(model: model, presentation: presentation),
+            title: "Velvt Notifications"
+        )
+    }
+
+    private func presentTourInvitationStage() {
+        presentWindow(
+            TourInvitationExperienceView(
+                onContinue: { [weak self] in self?.finishWithoutTour() },
+                onStartTour: { [weak self] in self?.finishWithTour() }
+            ),
+            title: "Welcome to Velvt"
+        )
+    }
+
     private func presentWindow<Content: View>(_ rootView: Content, title: String) {
         let hostingController = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: hostingController)
@@ -742,7 +1149,22 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     private func advanceFromIntro() {
         guard launchStage == .intro else { return }
-        presentation.completeOnboarding()
+        dismissWindow()
+        if OnboardingSequencePolicy.needsAccountStep(
+            firstRun: isFirstRunSequence,
+            accountState: accountStateManager.accountState
+        ) {
+            launchStage = .account
+            presentAccountStage()
+            return
+        }
+        launchStage = .accessibility
+        presentAccessibilityStage()
+    }
+
+    private func finishAccountStage() {
+        guard launchStage == .account else { return }
+        guard case .loggedIn = accountStateManager.accountState else { return }
         dismissWindow()
         launchStage = .accessibility
         presentAccessibilityStage()
@@ -750,6 +1172,28 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     private func finishAccessibilityStage() {
         guard launchStage == .accessibility else { return }
+        dismissWindow()
+        launchStage = .notifications
+        presentNotificationStage()
+    }
+
+    private func finishNotificationStage() {
+        guard launchStage == .notifications else { return }
+        dismissWindow()
+        launchStage = .tourInvitation
+        presentTourInvitationStage()
+    }
+
+    private func finishWithoutTour() {
+        guard launchStage == .tourInvitation else { return }
+        presentation.completeOnboarding()
+        launchStage = .manual
+        dismissWindow()
+        onStartUsing()
+    }
+
+    private func finishWithTour() {
+        guard launchStage == .tourInvitation else { return }
         presentation.completeOnboarding()
         launchStage = .manual
         dismissWindow()
@@ -762,5 +1206,6 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         windowController = nil
         flowModel = nil
         accessibilityModel = nil
+        notificationModel = nil
     }
 }

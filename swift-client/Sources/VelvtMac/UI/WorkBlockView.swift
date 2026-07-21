@@ -15,6 +15,7 @@ public struct WorkBlockView: View {
   @State private var customMinutes = 30
   @State private var purpose: WorkBlockPurpose?
   @State private var intensity: WorkBlockIntensity = .medium
+  @State private var plansAnotherSession = false
 
   public init(coordinator: WorkBlockCoordinator) {
     self.coordinator = coordinator
@@ -22,7 +23,9 @@ public struct WorkBlockView: View {
 
   public var body: some View {
     Group {
-      if let snapshot = coordinator.snapshot {
+      if plansAnotherSession {
+        startForm
+      } else if let snapshot = coordinator.snapshot {
         switch snapshot.phase {
         case .idle:
           startForm
@@ -130,6 +133,7 @@ public struct WorkBlockView: View {
           purpose: purpose,
           intensity: intensity
         )
+        plansAnotherSession = false
       }
       .buttonStyle(.borderedProminent)
       .tint(Color.velvtPink)
@@ -232,10 +236,10 @@ public struct WorkBlockView: View {
           .font(.caption2)
           .foregroundStyle(.secondary)
 
-        Button(result.nextAction.label) { coordinator.acceptRecovery() }
+        Button("Plan another session") { plansAnotherSession = true }
           .buttonStyle(.borderedProminent)
           .keyboardShortcut(.defaultAction)
-          .accessibilityHint("Starts one ten-minute local recovery block")
+          .accessibilityHint("Choose the next session's work type and duration")
       }
 
       if let error = coordinator.commandError {

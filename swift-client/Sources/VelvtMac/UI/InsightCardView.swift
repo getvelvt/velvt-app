@@ -11,7 +11,8 @@ extension Color {
     static let velvtMuted = Color(red: 0.949, green: 0.929, blue: 0.906).opacity(0.45)
     static let velvtPanel = Color(red: 0.16, green: 0.11, blue: 0.13)
     static let velvtPanelHighlight = Color(red: 0.21, green: 0.15, blue: 0.18)
-    static let velvtPink = Color(red: 0.84, green: 0.38, blue: 0.78)
+    /// Brand accent (#B20D53).
+    static let velvtPink = Color(red: 178 / 255, green: 13 / 255, blue: 83 / 255)
     static let velvtGreen = Color(red: 0.45, green: 0.86, blue: 0.52)
     static let velvtBlue = Color(red: 0.43, green: 0.78, blue: 0.91)
 }
@@ -48,13 +49,16 @@ extension View {
 public struct InsightCardView: View {
     @ObservedObject private var viewModel: InsightViewModel
     private let onSuggestedAction: (() -> Void)?
+    private let compact: Bool
 
     public init(
         viewModel: InsightViewModel,
-        onSuggestedAction: (() -> Void)? = nil
+        onSuggestedAction: (() -> Void)? = nil,
+        compact: Bool = false
     ) {
         self.viewModel = viewModel
         self.onSuggestedAction = onSuggestedAction
+        self.compact = compact
     }
 
     public var body: some View {
@@ -63,7 +67,8 @@ public struct InsightCardView: View {
         } else {
             InsightCardContentView(
                 viewModel: viewModel,
-                onSuggestedAction: onSuggestedAction
+                onSuggestedAction: onSuggestedAction,
+                compact: compact
             )
         }
     }
@@ -74,6 +79,7 @@ public struct InsightCardView: View {
 private struct InsightCardContentView: View {
     @ObservedObject var viewModel: InsightViewModel
     let onSuggestedAction: (() -> Void)?
+    let compact: Bool
     @State private var showsEvidence = false
 
     private var primaryObservation: String {
@@ -83,7 +89,7 @@ private struct InsightCardContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: compact ? 7 : 12) {
             HStack(alignment: .center) {
                 Text(viewModel.date)
                     .font(.caption)
@@ -92,22 +98,48 @@ private struct InsightCardContentView: View {
                 Text("Daily observation")
                     .font(.caption2)
                     .foregroundStyle(Color.velvtMuted)
+                if compact {
+                    Image(systemName: "info.circle")
+                        .font(.caption2)
+                        .foregroundStyle(Color.velvtMuted)
+                        .help("\(viewModel.evidenceSummary) Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
+                }
             }
 
             Text(primaryObservation)
                 .font(.body.weight(.medium))
                 .foregroundStyle(Color.velvtText)
                 .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(compact ? 2 : nil)
+                .help(compact ? primaryObservation : "")
 
-            Text(viewModel.baselineComparison)
-                .font(.caption)
-                .foregroundStyle(Color.velvtMuted)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("A realistic next step")
-                    .font(.caption2.bold())
+            if !compact {
+                Text(viewModel.baselineComparison)
+                    .font(.caption)
                     .foregroundStyle(Color.velvtMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if compact {
+                HStack(spacing: 8) {
+                    Text(viewModel.suggestedAction)
+                        .font(.caption)
+                        .foregroundStyle(Color.velvtMuted)
+                        .lineLimit(1)
+                        .help(viewModel.suggestedAction)
+                    Spacer(minLength: 4)
+                    if let onSuggestedAction,
+                       !viewModel.suggestedActionButtonLabel.isEmpty {
+                        Button("Plan session", action: onSuggestedAction)
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("A realistic next step")
+                        .font(.caption2.bold())
+                        .foregroundStyle(Color.velvtMuted)
                 Text(viewModel.suggestedAction)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.velvtText)
@@ -121,13 +153,15 @@ private struct InsightCardContentView: View {
                         .padding(.top, 4)
                         .accessibilityHint("Starts this private work block on the local service")
                 }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.velvtPanelHighlight.opacity(0.75))
+                .clipShape(RoundedRectangle(cornerRadius: 7))
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.velvtPanelHighlight.opacity(0.75))
-            .clipShape(RoundedRectangle(cornerRadius: 7))
 
-            DisclosureGroup("Why am I seeing this?", isExpanded: $showsEvidence) {
+            if !compact {
+                DisclosureGroup("Why am I seeing this?", isExpanded: $showsEvidence) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(viewModel.evidenceSummary)
                     Text("Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
@@ -137,11 +171,12 @@ private struct InsightCardContentView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 5)
             }
-            .font(.caption)
-            .tint(Color.velvtText)
-            .accessibilityHint("Shows the privacy-safe numbers behind this observation")
+                .font(.caption)
+                .tint(Color.velvtText)
+                .accessibilityHint("Shows the privacy-safe numbers behind this observation")
+            }
         }
-        .padding(14)
+        .padding(compact ? 10 : 14)
         .background(Color.velvtSurface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .contain)

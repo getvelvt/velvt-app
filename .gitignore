@@ -12,6 +12,7 @@ swift-client/VelvtMac.xcodeproj/project.pbxproj
 
 # Packaged app artifact (make build-app)
 /dist/
+.build-tools/
 *.xcuserstate
 
 # macOS

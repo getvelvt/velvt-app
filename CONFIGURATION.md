@@ -18,7 +18,8 @@ builds.
 | `swift-client/Configs/Debug.xcconfig` | Local development, CI Debug |
 | `swift-client/Configs/Release.xcconfig` | Distribution / production |
 
-Each xcconfig defines seven variables:
+Each xcconfig defines seven core application variables plus the updater build
+switch, feed URL, and public key described in the release section below:
 
 | Variable | Description |
 |---|---|
@@ -162,33 +163,28 @@ permissions, accounts, or caches.
 
 ## Credentialed signing and notarization
 
-The Xcode build itself does not require a provisioning profile or Developer ID
-certificate for local verification. The packaging target signs the completed
-bundle after copying it out of DerivedData and supports ad-hoc signing with
-`VELVT_CODESIGN_IDENTITY=-`.
+Use `make dmg` for an ad-hoc local Release/DMG verification build. It is not a
+distributable trust artifact. Use the credential-gated `make release` target
+for Developer ID signing, notarization, stapling, Gatekeeper verification, and
+the final checksum. The production target fails closed and never falls back to
+ad-hoc signing.
 
-**Before distributing outside of direct Xcode installs**, signing must be
-enabled:
+See `docs/macos-distribution.md` for required variables, outputs, architecture
+policy, and the clean-machine gate.
 
-1. Run `make package-release VELVT_CODESIGN_IDENTITY="Developer ID Application: …"`.
-2. Re-sign with Hardened Runtime and the release entitlements if the selected
-   identity policy does not already apply them:
+### Secure update publishing
 
-   ```sh
-   if [ -n "${EXPANDED_CODE_SIGN_IDENTITY}" ]; then
-     codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
-              --options runtime \
-              "${RESOURCES_DIR}/velvt-service"
-   fi
-   ```
+Production release creation also requires exact version/build expectations, a
+new immutable update ZIP path, a new appcast path, an HTTPS archive base URL,
+Sparkle 2.9.4's tool directory, and an Ed25519 private-key file outside the
+repository. The private key must have mode 0400 or 0600. See
+`docs/updates.md` for the complete command and archive-first/appcast-last
+publishing procedure.
 
-3. Archive the verified app, submit it with `xcrun notarytool`, wait for
-   acceptance, and staple the ticket. Apple's notarization scanner
-   requires every Mach-O to carry a valid Developer ID signature with
-   Hardened Runtime — unsigned or ad-hoc-signed helpers will be rejected.
-
-These credential-dependent steps are deferred pending team provisioning. No
-local acceptance check requires access to signing or notarization credentials.
+`make test-update-release` runs the release-script fixtures without production
+credentials. `make verify-update-release` validates configuration and binds the
+appcast to the local ZIP and SHA-256, but live Sparkle verification still
+requires the documented packaged N-to-N+1 test.
 
 ---
 

@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Install pinned Rust toolchain
         working-directory: rust-service
@@ -34,7 +34,19 @@ jobs:
       - name: Test Swift
         run: make test-swift
 
+      - name: Test updater release gate
+        run: make test-update-release
+
       - name: Build and verify packaged local-core app
         run: |
           make build-app-local-core VELVT_CODESIGN_IDENTITY=-
-          codesign --verify --deep --strict dist/velvt-mac.app
+          codesign --verify --deep --strict dist/Velvt.app
+
+      - name: Build and verify universal Release DMG
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          make package-release
+          make prepare-dmg-tool
+          ./scripts/create_dmg.sh dist/Velvt.app dist/Velvt.dmg local
+          VELVT_RELEASE_ARCHS='arm64 x86_64' ./scripts/verify_release.sh \
+            --mode local --app dist/Velvt.app --dmg dist/Velvt.dmg

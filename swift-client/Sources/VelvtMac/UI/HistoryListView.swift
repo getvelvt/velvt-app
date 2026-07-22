@@ -24,6 +24,7 @@ public struct HistoryListView: View {
 
 private struct HistoryDashboardView: View {
     let days: [DaySummaryViewModel]
+    @State private var hoveredActivityDetail: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -39,12 +40,13 @@ private struct HistoryDashboardView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-          Text("Daily Activity")
+                    Text("Daily Activity")
                         .font(.headline)
                         .foregroundStyle(Color.velvtText)
-          Text("Privacy-safe cloud summaries")
+                    Text(hoveredActivityDetail ?? "Privacy-safe cloud summaries")
                         .font(.caption2)
                         .foregroundStyle(Color.velvtMuted)
+                        .lineLimit(1)
                 }
                 Spacer()
                 Text("7 days")
@@ -54,7 +56,9 @@ private struct HistoryDashboardView: View {
 
             VStack(spacing: 3) {
                 ForEach(days) { day in
-                    DailyActivityRow(day: day)
+                    DailyActivityRow(day: day) { detail in
+                        hoveredActivityDetail = detail
+                    }
                 }
             }
         }
@@ -66,6 +70,7 @@ private struct HistoryDashboardView: View {
 
 private struct DailyActivityRow: View {
     let day: DaySummaryViewModel
+    let onActivityHover: (String?) -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -76,7 +81,7 @@ private struct DailyActivityRow: View {
                 .truncationMode(.tail)
                 .frame(width: 62, alignment: .leading)
 
-            SplitActivityBar(day: day) { _ in }
+            SplitActivityBar(day: day, onHover: onActivityHover)
                 .frame(height: 9)
                 .frame(maxWidth: .infinity)
 
@@ -86,24 +91,11 @@ private struct DailyActivityRow: View {
                 .frame(width: 48, alignment: .trailing)
         }
         .padding(.vertical, 3)
-        .help(dayHelpText)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(day.date)
         .accessibilityValue(
       day.isNoData ? "No activity" : day.activeTime
         )
-    }
-
-    private var dayHelpText: String {
-        guard !day.isNoData else { return "\(day.date): no daily summary." }
-        let categories = day.typeProportions
-            .filter { $0.proportion > 0 }
-            .prefix(5)
-            .map {
-                "\(categoryLabel($0.category)) \(Int(($0.proportion * 100).rounded()))%"
-            }
-            .joined(separator: ", ")
-        return "\(day.date): \(day.activeTime) active. \(categories)"
     }
 }
 
@@ -132,6 +124,7 @@ private struct SplitActivityBar: View {
                             .fill(color(for: segment.category, index: index))
                             .frame(width: max(5, proxy.size.width * CGFloat(segment.proportion)))
                             .help(text)
+                            .accessibilityLabel(text)
                             .onHover { hovering in
                                 onHover(hovering ? text : nil)
                             }

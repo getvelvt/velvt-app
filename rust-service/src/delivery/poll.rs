@@ -343,7 +343,8 @@ pub async fn deliver_polled_insight(
     }
     let notification_id = uuid::Uuid::new_v4();
     let title = "Your Velvt insight is ready";
-    let should_notify = insight.payload.evidence.tone_stage != EmotionalStage::Early;
+    let should_notify = insight.payload.evidence.tone_stage != EmotionalStage::Early
+        && insight.payload.evidence.observation_type != "recorded_activity";
     let body = insight.payload.text.clone();
     let date = insight.payload.date;
     push_adapter.push_insight(insight.payload).await;
@@ -616,6 +617,38 @@ mod tests {
         assert!(
             second.is_none(),
             "early baseline must not schedule a notification"
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_recorded_activity_delivers_insight_without_notification() {
+        let queue = crate::delivery::PushQueue::new(10);
+        let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+        let mut dedupe = InsightDedupeGuard::default();
+        let mut evidence = InsightEvidence::default();
+        evidence.tone_stage = EmotionalStage::Stable;
+        evidence.observation_type = "recorded_activity".into();
+        let insight = PolledInsight {
+            id: "generic-insight".into(),
+            payload: InsightPayload {
+                date: Utc::now().date_naive(),
+                text: "Velvt recorded activity today.".into(),
+                evidence,
+                confidence_level: ConfidenceLevel::High,
+                low_confidence: false,
+                generated_at: Utc::now(),
+            },
+        };
+
+        deliver_polled_insight(&push, &mut dedupe, insight).await;
+
+        assert!(matches!(
+            queue.try_pop().await,
+            Some(ServerMessage::InsightPayload(_))
+        ));
+        assert!(
+            queue.try_pop().await.is_none(),
+            "generic activity recaps are UI content, not interruption-worthy notifications"
         );
     }
 }

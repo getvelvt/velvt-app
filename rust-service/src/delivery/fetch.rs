@@ -23,7 +23,7 @@ use crate::{
         HistoryCacheEntry, HistoryCacheRepo, InsightCacheEntry, InsightCacheRepo, PersistenceError,
     },
 };
-use velvt_shared_types::{DailySummary, EmotionalStage, HistoryPayload, InsightPayload};
+use velvt_shared_types::{DailySummary, HistoryPayload, InsightPayload};
 
 use super::parser::{self, ParseError};
 use super::push::PushAdapter;
@@ -257,16 +257,6 @@ impl<H: HttpClient> FetchService<H> {
                 );
                 if let Some(adapter) = &self.push_adapter {
                     adapter.push_insight(insight.clone()).await;
-                    if insight.evidence.tone_stage != EmotionalStage::Early {
-                        adapter
-                            .push_notification(
-                                uuid::Uuid::new_v4(),
-                                "Your Velvt insight is ready",
-                                &insight.text,
-                                insight.date,
-                            )
-                            .await;
-                    }
                 }
                 Ok(Some(insight))
             }
@@ -741,6 +731,37 @@ mod tests {
         let result2 = service.daily_insight(today).await.unwrap();
         assert_eq!(http.call_count(), 1, "second call must use cache");
         assert!(result2.is_some());
+    }
+
+    #[tokio::test]
+    async fn latest_insight_fetch_updates_display_without_scheduling_notification() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let today = Utc::now().date_naive();
+        let http = Arc::new(FakeHttpClient::new().with_route(
+            "/v1/insights/daily",
+            200,
+            insight_api_body(today),
+        ));
+        let queue = crate::delivery::PushQueue::new(10);
+        let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+        let service = FetchService::new(
+            Arc::clone(&http),
+            db.history_cache_repo(),
+            db.insight_cache_repo(),
+            test_config(),
+        )
+        .with_push_adapter(push);
+
+        service.daily_insight(today).await.unwrap();
+
+        assert!(matches!(
+            queue.try_pop().await,
+            Some(velvt_shared_types::ServerMessage::InsightPayload(_))
+        ));
+        assert!(
+            queue.try_pop().await.is_none(),
+            "only the claim-once long-poll path may enqueue a user notification"
+        );
     }
 
     #[tokio::test]

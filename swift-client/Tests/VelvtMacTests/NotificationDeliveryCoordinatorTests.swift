@@ -76,6 +76,88 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(scheduler.scheduledPayloads, [payload])
     }
 
+    func testSuccessfulScheduleIsDeduplicatedAcrossCoordinatorInstances() async {
+        let tracker = InMemoryScheduledNotificationTracker()
+        let scheduler = FakeNotificationScheduler()
+        let permissions = FakePermissionManager()
+        permissions.setStatus(.granted, for: .notifications)
+        let payload = makePayload()
+
+        let first = NotificationDeliveryCoordinator(
+            scheduler: scheduler,
+            permissionManager: permissions,
+            scheduledNotifications: tracker,
+            debounceInterval: .milliseconds(1)
+        )
+        await first.handle(payload).value
+        let afterRestart = NotificationDeliveryCoordinator(
+            scheduler: scheduler,
+            permissionManager: permissions,
+            scheduledNotifications: tracker,
+            debounceInterval: .milliseconds(1)
+        )
+        await afterRestart.handle(payload).value
+
+        XCTAssertEqual(scheduler.scheduledPayloads, [payload])
+    }
+
+    func testFailedScheduleRemainsEligibleForRetry() async {
+        let tracker = InMemoryScheduledNotificationTracker()
+        let scheduler = OutcomeNotificationScheduler(outcomes: [false, true])
+        let permissions = FakePermissionManager()
+        permissions.setStatus(.granted, for: .notifications)
+        let payload = makePayload()
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler,
+            permissionManager: permissions,
+            scheduledNotifications: tracker,
+            debounceInterval: .milliseconds(1)
+        )
+
+        await sut.handle(payload).value
+        await sut.handle(payload).value
+
+        XCTAssertEqual(scheduler.attemptedPayloads, [payload, payload])
+        XCTAssertTrue(tracker.contains(payload.notificationID))
+    }
+
+    func testDeniedPayloadIsNotMarkedScheduled() async {
+        let tracker = InMemoryScheduledNotificationTracker()
+        let scheduler = FakeNotificationScheduler()
+        let permissions = FakePermissionManager()
+        permissions.setStatus(.denied, for: .notifications)
+        let payload = makePayload()
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler,
+            permissionManager: permissions,
+            scheduledNotifications: tracker,
+            debounceInterval: .milliseconds(1)
+        )
+
+        await sut.handle(payload).value
+
+        XCTAssertFalse(tracker.contains(payload.notificationID))
+    }
+
+    func testPersistentLedgerIsBoundedAndStoresOnlyOpaqueIdentifiers() throws {
+        let suite = "NotificationDeliveryCoordinatorTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let tracker = UserDefaultsScheduledNotificationTracker(
+            defaults: defaults,
+            key: "testNotificationIDs",
+            capacity: 2
+        )
+        let ids = [UUID(), UUID(), UUID()]
+
+        ids.forEach(tracker.record)
+
+        XCTAssertFalse(tracker.contains(ids[0]))
+        XCTAssertTrue(tracker.contains(ids[1]))
+        XCTAssertTrue(tracker.contains(ids[2]))
+        let stored = try XCTUnwrap(defaults.stringArray(forKey: "testNotificationIDs"))
+        XCTAssertEqual(stored, ids.suffix(2).map(\.uuidString))
+    }
+
     func testDebugSimulationSchedulesImmediateNativeNotification() async {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
@@ -277,4 +359,32 @@ private final class RequestGrantingPermissionManager: PermissionManagerProtocol 
         status = .granted
         return status
     }
+}
+
+private final class InMemoryScheduledNotificationTracker: ScheduledNotificationTracking {
+    private var identifiers = Set<UUID>()
+
+    func contains(_ notificationID: UUID) -> Bool {
+        identifiers.contains(notificationID)
+    }
+
+    func record(_ notificationID: UUID) {
+        identifiers.insert(notificationID)
+    }
+}
+
+private final class OutcomeNotificationScheduler: NotificationSchedulerProtocol {
+    private var outcomes: [Bool]
+    private(set) var attemptedPayloads: [NotificationPayload] = []
+
+    init(outcomes: [Bool]) {
+        self.outcomes = outcomes
+    }
+
+    func schedule(_ payload: NotificationPayload) async -> Bool {
+        attemptedPayloads.append(payload)
+        return outcomes.isEmpty ? false : outcomes.removeFirst()
+    }
+
+    func cancelAll() {}
 }

@@ -1,10 +1,13 @@
-// Release build — production API, APNs production push.
-VELVT_API_BASE_URL = https:/$()/dev-api.getvelvt.com
+// Release builds receive the API URL explicitly from the release command.
+VELVT_API_BASE_URL =
 VELVT_APNS_ENV = production
 VELVT_SOCKET_PATH = ~/.velvt/velvt-service.sock
 VELVT_PROTOCOL_VERSION = 20
 VELVT_DISTRIBUTABLE = YES
 VELVT_BUILD_CONFIGURATION = Release
+VELVT_UPDATER_ENABLED = NO
+VELVT_UPDATE_FEED_URL =
+VELVT_UPDATE_PUBLIC_ED_KEY =
 
 // Auto-generate Info.plist from build settings instead of a literal file —
 // INFOPLIST_KEY_* below is silently ignored otherwise.

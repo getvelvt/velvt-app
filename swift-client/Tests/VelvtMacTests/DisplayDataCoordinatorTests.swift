@@ -132,6 +132,20 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         )
     }
 
+    func testCurrentUTCDateStringDoesNotAdvanceAtLocalMidnightBeforeUTCMidnight() throws {
+        let formatter = ISO8601DateFormatter()
+        let now = try XCTUnwrap(formatter.date(from: "2026-06-26T22:00:00Z"))
+
+        XCTAssertEqual(MenuBarDataLoader.currentUTCDateString(now: now), "2026-06-26")
+        XCTAssertEqual(
+            MenuBarDataLoader.currentLocalDateString(
+                now: now,
+                timeZone: TimeZone(secondsFromGMT: 4 * 3600)!
+            ),
+            "2026-06-27"
+        )
+    }
+
     func testDataLoaderRequestsCurrentLocalInsightDateWhenConnectedAndLoggedIn() async {
         let client = FakeIPCClient()
         client.setConnectionStatus(.connected)

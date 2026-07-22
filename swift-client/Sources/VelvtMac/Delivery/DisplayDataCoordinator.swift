@@ -95,7 +95,7 @@ final class MenuBarDataLoader {
     private var canRequest = false
 
     init(ipcClient: any IPCClientProtocol, currentLocalInsightDate: @escaping () -> String = {
-        MenuBarDataLoader.currentLocalDateString()
+        MenuBarDataLoader.currentUTCDateString()
     }, retryDelayNanoseconds: UInt64 = 2_000_000_000) {
         self.ipcClient = ipcClient
         self.currentLocalInsightDate = currentLocalInsightDate
@@ -115,6 +115,10 @@ final class MenuBarDataLoader {
             components.month ?? 0,
             components.day ?? 0
         )
+    }
+
+    nonisolated static func currentUTCDateString(now: Date = Date()) -> String {
+        currentLocalDateString(now: now, timeZone: TimeZone(secondsFromGMT: 0)!)
     }
 
     func start(accountState: AnyPublisher<AccountState, Never>) {

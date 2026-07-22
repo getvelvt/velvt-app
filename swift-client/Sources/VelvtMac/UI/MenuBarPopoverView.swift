@@ -440,6 +440,7 @@ public struct MenuBarPopoverView: View {
     private let restartLocalService: (() -> Void)?
     private let replayOnboarding: (() -> Void)?
     private let startGuidedTour: (() -> Void)?
+    @ObservedObject private var updateController: AppUpdateController
     @ObservedObject private var guidedTour: GuidedTourModel
     @ObservedObject private var metricsStore: AppMetricsStore
     private let popoverWillOpen: AnyPublisher<Void, Never>
@@ -473,6 +474,7 @@ public struct MenuBarPopoverView: View {
         restartLocalService: (() -> Void)? = nil,
         replayOnboarding: (() -> Void)? = nil,
         startGuidedTour: (() -> Void)? = nil,
+        updateController: AppUpdateController,
         guidedTour: GuidedTourModel = GuidedTourModel(),
     metricsStore: AppMetricsStore = AppMetricsStore(
       defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
@@ -500,6 +502,7 @@ public struct MenuBarPopoverView: View {
         self.restartLocalService = restartLocalService
         self.replayOnboarding = replayOnboarding
         self.startGuidedTour = startGuidedTour
+        self.updateController = updateController
         self.guidedTour = guidedTour
         self.metricsStore = metricsStore
         self.popoverWillOpen = popoverWillOpen
@@ -864,6 +867,11 @@ public struct MenuBarPopoverView: View {
                         ipcClient: ipcClient
                     )
                 }
+                Button("Check for Updates…") {
+                    updateController.checkForUpdates()
+                }
+                .buttonStyle(.bordered)
+                .disabled(!updateController.canCheckForUpdates)
                 Button("Quit Velvt", role: .destructive, action: onTerminate)
                     .buttonStyle(.bordered)
                 Spacer(minLength: 12)
@@ -875,7 +883,10 @@ public struct MenuBarPopoverView: View {
         }
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onAppear { dismissSettingsSubmenus() }
+        .onAppear {
+            dismissSettingsSubmenus()
+            updateController.refreshAvailability()
+        }
     }
 
     @ViewBuilder
@@ -1723,6 +1734,10 @@ private struct SettingsAccountDeletionButton: View {
                     Task { await authViewModel.confirmAccountDeletion() }
                 }
                 Button("Cancel", role: .cancel) { authViewModel.cancelAccountDeletion() }
+            } message: {
+                Text(
+                    "Velvt deletes behavioral data and disables authentication. It retains only an anonymized account record and the erasure/audit records required to prove deletion completed."
+                )
             }
         }
     }

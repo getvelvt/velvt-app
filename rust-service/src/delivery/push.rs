@@ -278,9 +278,9 @@ impl PushAdapter {
             .await;
     }
 
-    /// Pushed after a fresh (non-cached) daily insight fetch so Swift can
-    /// schedule a notification. `title`/`body` are Rust-authored display
-    /// copy; Swift never generates notification text itself.
+    /// Pushed after the backend atomically claims an undelivered insight so
+    /// Swift can schedule a notification. `title`/`body` are Rust-authored
+    /// display copy; Swift never generates notification text itself.
     pub async fn push_notification(
         &self,
         notification_id: uuid::Uuid,

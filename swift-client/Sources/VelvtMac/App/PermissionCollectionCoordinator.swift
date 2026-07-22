@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 
@@ -19,7 +20,10 @@ public final class PermissionCollectionCoordinator {
     private let collectionSettings: CollectionSettingsModel
     private let statusSubject = CurrentValueSubject<PermissionCollectionStatus, Never>(.unknown)
     private var cancellable: AnyCancellable?
+    private var lifecycleCancellables = Set<AnyCancellable>()
     private var isCollecting = false
+    private var isSuspendedForSleep = false
+    private var lastInputs: (PermissionStatus, ConnectionStatus, Bool)?
 
     public init(
         permissionManager: any PermissionManagerProtocol,
@@ -33,7 +37,9 @@ public final class PermissionCollectionCoordinator {
         self.collectionSettings = collectionSettings
     }
 
-    public func start() {
+    public func start(
+        workspaceNotifications: NotificationCenter = NSWorkspace.shared.notificationCenter
+    ) {
         guard cancellable == nil else {
             return
         }
@@ -43,6 +49,7 @@ public final class PermissionCollectionCoordinator {
             collectionSettings.$offlineEventCollectionEnabled
         )
         .sink { [weak self] status, connection, offlineEnabled in
+            self?.lastInputs = (status, connection, offlineEnabled)
             if Thread.isMainThread {
                 self?.handle(
                     permissionStatus: status,
@@ -59,11 +66,20 @@ public final class PermissionCollectionCoordinator {
                 }
             }
         }
+        workspaceNotifications.publisher(for: NSWorkspace.willSleepNotification)
+            .sink { [weak self] _ in self?.prepareForSleep() }
+            .store(in: &lifecycleCancellables)
+        workspaceNotifications.publisher(for: NSWorkspace.didWakeNotification)
+            .sink { [weak self] _ in self?.resumeAfterWake() }
+            .store(in: &lifecycleCancellables)
     }
 
     public func stop() {
         cancellable?.cancel()
         cancellable = nil
+        lifecycleCancellables.removeAll()
+        isSuspendedForSleep = false
+        lastInputs = nil
         stopCollection(force: true)
         statusSubject.send(.unknown)
     }
@@ -73,6 +89,10 @@ public final class PermissionCollectionCoordinator {
         connectionStatus: ConnectionStatus,
         offlineEventCollectionEnabled: Bool
     ) {
+        guard !isSuspendedForSleep else {
+            stopCollection()
+            return
+        }
         switch permissionStatus {
         case .unknown:
             statusSubject.send(.unknown)
@@ -87,6 +107,21 @@ public final class PermissionCollectionCoordinator {
             stopCollection(force: true)
             statusSubject.send(.permissionRequired)
         }
+    }
+
+    private func prepareForSleep() {
+        isSuspendedForSleep = true
+        stopCollection()
+    }
+
+    private func resumeAfterWake() {
+        isSuspendedForSleep = false
+        guard let (permission, connection, offlineEnabled) = lastInputs else { return }
+        handle(
+            permissionStatus: permission,
+            connectionStatus: connection,
+            offlineEventCollectionEnabled: offlineEnabled
+        )
     }
 
     private func startCollection() {

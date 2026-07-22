@@ -393,6 +393,24 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(statuses.last, .permissionRequired)
     }
 
+    func testCollectionStopsBeforeSleepAndRestartsAfterWake() {
+        let permissions = FakePermissionManager()
+        let collection = RecordingCollectionAgent()
+        let workspaceNotifications = NotificationCenter()
+        let coordinator = PermissionCollectionCoordinator(
+            permissionManager: permissions,
+            collectionAgent: collection
+        )
+
+        coordinator.start(workspaceNotifications: workspaceNotifications)
+        permissions.setStatus(.granted, for: .accessibility)
+        workspaceNotifications.post(name: NSWorkspace.willSleepNotification, object: nil)
+        workspaceNotifications.post(name: NSWorkspace.didWakeNotification, object: nil)
+
+        XCTAssertEqual(collection.startCallCount, 2)
+        XCTAssertEqual(collection.stopCallCount, 1)
+    }
+
     func testFakePermissionManagerCanPublishEveryPermissionStatus() {
         let manager = FakePermissionManager()
         var observed: [PermissionStatus] = []
@@ -657,7 +675,7 @@ final class PermissionModuleTests: XCTestCase {
     func testOnboardingPrivacyCopyMatchesTheAuditedBoundary() {
         XCTAssertEqual(
             OnboardingCopy.privacySummary,
-            "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights."
+            "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights. Depending on the service configuration, privacy-safe derived prompts may be processed by an approved external model provider."
         )
     }
 

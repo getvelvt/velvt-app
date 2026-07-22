@@ -26,8 +26,12 @@ They exist transiently in the Swift collection layer and are forwarded
 once, over a local Unix domain socket, to the Rust service running on the
 same machine. The Rust service is the privacy enforcement boundary: its
 abstraction engine consumes raw events and produces only an
-`AbstractedEvent` — a stable local ID, a category-scoped label
-(`document:edit`), a category, a taxonomy version, and a timestamp. The
+`AbstractedEvent` — a stable local ID, an on-device classification label,
+a category, a taxonomy version, and a timestamp. Some on-device labels and
+display names can identify the classified application so the local UI remains
+useful. The upload DTO collapses every such label to a fixed category-scoped
+cloud vocabulary (for example, `communication:inferred`) before serialization.
+The
 Rust type system makes it structurally impossible for a raw field to
 re-appear downstream: `AbstractedEvent`, the SQLite schema, and the upload
 DTO (`BatchEventPayload`/`BatchPayload`) simply have no field that could
@@ -58,24 +62,32 @@ All persistence lives in a SQLite database at
 
 Despite its name, `raw_event_buffer` never contains raw app names or window
 titles — see [`PRIVACY_AUDIT.md`](PRIVACY_AUDIT.md) Audit 1 for the
-verification. Auth and device-bound tokens are never stored in SQLite —
-they live in the macOS Keychain only, via `KeychainTokenStore` (Rust) and
-`KeychainService` (Swift).
+verification. Auth and device-bound tokens are never stored in SQLite. Swift
+persists the session in the macOS Keychain through `KeychainService`; after IPC
+connects it provides the active session to Rust, where `VolatileTokenStore`
+holds it in memory only for the service process lifetime.
 
 ## What is transmitted to the cloud, and in what form
 
 Only the following ever leave the device, over HTTPS:
 
-- Abstracted event batches (`POST /v1/events/batches`): `stable_id`,
-  `label`, `category`, `taxonomy_version`, `occurred_at`,
-  `duration_seconds` — never a raw app name, title, URL, path, or
-  filename.
+- Abstracted event batches (`POST /v1/events/batches`): event ID, a fixed
+  category-scoped abstraction type, classification tier, category, timestamp,
+  and duration — never a stable local ID, app-specific label, raw app name,
+  title, URL, path, or filename.
 - Device registration and auth (`POST /v1/devices`, `/v1/auth/refresh`,
   `/v1/auth/devices/reissue`, `/v1/auth/signup`, `/v1/auth/login`,
   `/v1/auth/logout`, `/v1/auth/account/delete`): device and account
   credentials, never raw event content.
 - History/insight fetch (`GET /v1/history/daily`, `/v1/insights/daily`):
   read-only requests for already-abstracted, server-side-derived summaries.
+
+The service may be configured to generate insight text through an approved
+external model provider. In that mode, it sends a privacy-safe derived prompt,
+not raw Mac activity, and stores the prompt, provider attempt, raw provider
+output, and quality-gate metadata under the configured insight retention
+policy. The production operator is responsible for naming the active provider
+and its data-processing terms before enabling it.
 
 The cloud independently enforces this boundary and rejects any batch
 containing a forbidden field with `raw_field_rejected`; the Rust service
@@ -85,11 +97,12 @@ can show it.
 
 ## What the abstraction engine does and does not preserve
 
-**Preserves:** a stable per-app/title identity (so "the same kind of
-activity" can be recognized across events), a coarse category
+**Preserves locally:** a stable per-app/title identity (so "the same kind of
+activity" can be recognized across events), an on-device display label, and a coarse category
 (`focus_work`, `communication`, `passive_consumption`, `system`,
-`unclassified`, ...), a human-meaningless `label` like `document:edit`, and
-timing.
+`unclassified`, ...), plus timing. The cloud receives only an allowlisted
+category-scoped abstraction type; unapproved values are replaced with
+`system:unknown` before persistence, metrics, or audit metadata.
 
 **Does not preserve:** the literal application name, the literal window
 title, any URL or file path that appeared in a title, or any way to

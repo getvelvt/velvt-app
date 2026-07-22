@@ -401,7 +401,7 @@ fn payload_serialization_matches_the_cloud_event_contract() {
         ]
     );
     assert_eq!(event["event_id"], "one");
-    assert_eq!(event["abstraction_type"], "document:edit");
+    assert_eq!(event["abstraction_type"], "document:inferred");
     assert_eq!(event["abstraction_type_version"], "1");
     assert_eq!(event["classification_tier"], "exact_match");
     assert_eq!(
@@ -513,7 +513,7 @@ async fn http_uploader_posts_exact_payload_and_maps_duplicate() {
     let body = requests[0].json_body.as_ref().unwrap();
     assert_eq!(body["schema_version"], "1");
     assert_eq!(body["client_version"], "0.1.0");
-    assert_eq!(body["supported_abstraction_types"][0], "document:edit");
+    assert_eq!(body["supported_abstraction_types"][0], "document:inferred");
     assert_eq!(body["category_taxonomy_version"], "mvp-1");
 }
 
@@ -644,7 +644,7 @@ async fn pending_batch_is_resumed_after_restart() {
     assert_eq!(inspection.batches().len(), 1);
     assert_eq!(
         inspection.batches()[0].supported_abstraction_types,
-        vec!["video:youtube"]
+        vec!["video:inferred"]
     );
     assert_eq!(
         repository.batch_status("batch-pending").unwrap(),

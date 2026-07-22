@@ -5,6 +5,9 @@ VELVT_SOCKET_PATH = ~/.velvt/velvt-service.sock
 VELVT_PROTOCOL_VERSION = 20
 VELVT_DISTRIBUTABLE = NO
 VELVT_BUILD_CONFIGURATION = Debug
+VELVT_UPDATER_ENABLED = NO
+VELVT_UPDATE_FEED_URL =
+VELVT_UPDATE_PUBLIC_ED_KEY =
 
 // Auto-generate Info.plist from build settings instead of a literal file —
 // INFOPLIST_KEY_* below is silently ignored otherwise.

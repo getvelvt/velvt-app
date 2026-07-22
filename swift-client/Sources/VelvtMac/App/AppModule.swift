@@ -22,6 +22,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public let permissionManager: PermissionManager
     public let permissionPresentation: PermissionPresentationModel
     public let accountStateManager: AccountStateManager
+    public let updateController: AppUpdateController
     public private(set) var displayCoordinator: ConcreteDisplayDataCoordinator?
 
     let ipcClient: any IPCClientProtocol
@@ -46,6 +47,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.init(
             permissionManager: PermissionManager(),
             accountStateManager: AccountStateManager(keychain: KeychainService()),
+            updateController: .live(),
             ipcClientFactory: Self.makeIPCClient
         )
     }
@@ -53,6 +55,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     init(
         permissionManager: PermissionManager,
         accountStateManager: AccountStateManager,
+        updateController: AppUpdateController? = nil,
         ipcClientFactory: @escaping () throws -> any IPCClientProtocol
     ) {
         self.permissionManager = permissionManager
@@ -61,6 +64,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             onboardingStateStore: UserDefaultsOnboardingStateStore()
         )
         self.accountStateManager = accountStateManager
+        self.updateController = updateController ?? .disabled()
         ipcClient = (try? ipcClientFactory()) ?? UnavailableIPCClient()
         super.init()
     }
@@ -177,6 +181,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             startGuidedTour: { [weak self] in
                 self?.menuBarController?.beginGuidedTour()
             },
+            updateController: updateController,
             terminateApp: { NSApp.terminate(nil) }
         )
         menuBar.install()

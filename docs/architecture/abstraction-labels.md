@@ -4,15 +4,19 @@ The Rust service owns Velvt's on-device abstraction privacy boundary.
 
 ## Label Schema `label-v1`
 
-Labels are privacy-safe behavioral descriptions. The standard format is
+On-device labels are behavioral descriptions. The standard format is
 `<type>:<behavior>`, using lowercase ASCII letters, digits, and underscores.
 Examples include `document:edit`, `meeting:active`, `video:passive`, and
 `document:inferred`. The fallback sentinel is the single-component label
 `unlogged`. It means the event was captured but could not be safely classified;
 product copy calls this state **Unclassified**, never “unlogged activity.”
 
-Labels must never contain app names, window titles, filenames, paths, URLs,
-contacts, or other raw identifying content. Title semantic abstraction is not
+Labels must never contain window titles, filenames, paths, URLs, contacts, or
+other user-provided content. Curated local labels may classify a known
+application, but the upload DTO never serializes them: it derives a fixed,
+category-scoped cloud abstraction type instead. The server independently
+allowlists that vocabulary and maps every other syntactically valid token to
+`system:unknown` before storage or logging. Title semantic abstraction is not
 implemented in MVP; `TitleAbstractor` is the V1 extension point.
 
 ## Category Taxonomy

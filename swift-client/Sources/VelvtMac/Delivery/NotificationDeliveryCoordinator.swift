@@ -8,6 +8,46 @@ public enum DebugInsightSimulationResult: Equatable, Sendable {
     case schedulingFailed
 }
 
+public protocol ScheduledNotificationTracking: AnyObject {
+    func contains(_ notificationID: UUID) -> Bool
+    func record(_ notificationID: UUID)
+}
+
+/// Persists only opaque notification UUIDs. No title, body, insight text, or
+/// behavioral metadata enters preferences. The bounded ledger makes a
+/// successful native schedule idempotent across helper/app reconnects while
+/// leaving failed schedules eligible for retry.
+public final class UserDefaultsScheduledNotificationTracker: ScheduledNotificationTracking {
+    private let defaults: UserDefaults
+    private let key: String
+    private let capacity: Int
+
+    public init(
+        defaults: UserDefaults = .standard,
+        key: String = "scheduledNotificationIDs",
+        capacity: Int = 256
+    ) {
+        self.defaults = defaults
+        self.key = key
+        self.capacity = max(1, capacity)
+    }
+
+    public func contains(_ notificationID: UUID) -> Bool {
+        identifiers.contains(notificationID.uuidString)
+    }
+
+    public func record(_ notificationID: UUID) {
+        let value = notificationID.uuidString
+        var updated = identifiers.filter { $0 != value }
+        updated.append(value)
+        defaults.set(Array(updated.suffix(capacity)), forKey: key)
+    }
+
+    private var identifiers: [String] {
+        defaults.stringArray(forKey: key) ?? []
+    }
+}
+
 // MARK: - NotificationDeliveryCoordinator
 
 /// Listens for `notificationPayload` server pushes and forwards them to a
@@ -20,6 +60,7 @@ public enum DebugInsightSimulationResult: Equatable, Sendable {
 public final class NotificationDeliveryCoordinator {
     private let scheduler: any NotificationSchedulerProtocol
     private let permissionManager: any PermissionManagerProtocol
+    private let scheduledNotifications: any ScheduledNotificationTracking
     private let debounceInterval: Duration
     private var cancellables = Set<AnyCancellable>()
 
@@ -39,10 +80,12 @@ public final class NotificationDeliveryCoordinator {
     public init(
         scheduler: any NotificationSchedulerProtocol,
         permissionManager: any PermissionManagerProtocol,
+        scheduledNotifications: any ScheduledNotificationTracking = UserDefaultsScheduledNotificationTracker(),
         debounceInterval: Duration = .milliseconds(250)
     ) {
         self.scheduler = scheduler
         self.permissionManager = permissionManager
+        self.scheduledNotifications = scheduledNotifications
         self.debounceInterval = debounceInterval
     }
 
@@ -69,14 +112,20 @@ public final class NotificationDeliveryCoordinator {
     @discardableResult
     public func handle(_ payload: NotificationPayload) -> Task<Void, Never> {
         pendingTasksByDate[payload.insightDate]?.cancel()
-        let task = Task { @MainActor [weak self, scheduler, permissionManager, debounceInterval] in
+        let task = Task { @MainActor [weak self, scheduler, permissionManager, scheduledNotifications, debounceInterval] in
             // Briefly wait so a near-simultaneous newer payload for the same
             // date can cancel this task before any scheduling work happens.
             try? await Task.sleep(for: debounceInterval)
             guard !Task.isCancelled else { return }
+            guard !scheduledNotifications.contains(payload.notificationID) else {
+                self?.pendingTasksByDate.removeValue(forKey: payload.insightDate)
+                return
+            }
             let status = await permissionManager.checkStatus(for: .notifications)
             guard status == .granted, !Task.isCancelled else { return }
-            _ = await scheduler.schedule(payload)
+            if await scheduler.schedule(payload) {
+                scheduledNotifications.record(payload.notificationID)
+            }
             self?.pendingTasksByDate.removeValue(forKey: payload.insightDate)
         }
         pendingTasksByDate[payload.insightDate] = task

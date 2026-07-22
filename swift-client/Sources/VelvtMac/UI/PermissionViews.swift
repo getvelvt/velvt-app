@@ -444,9 +444,9 @@ public struct FirstRunOnboardingView: View {
     private var content: some View {
         switch state {
         case .valueProposition:
-            Text("Know when focus broke — and what to protect next")
+            Text("See when work became fragmented — and what to protect next")
                 .font(.title3.bold())
-            Text("Velvt shows when your work became fragmented, why it happened, and one realistic way to protect your next focus block.")
+            Text("Velvt shows evidence of when your work became fragmented and one realistic way to protect your next focus block.")
             .font(.body)
             .fixedSize(horizontal: false, vertical: true)
             Button("Set up Velvt") { presentation.acknowledgeValueProposition() }

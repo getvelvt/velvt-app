@@ -3,7 +3,7 @@ import SwiftUI
 
 public enum OnboardingCopy {
     public static let privacySummary =
-        "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights."
+        "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights. Depending on the service configuration, privacy-safe derived prompts may be processed by an approved external model provider."
 }
 
 public enum IntroStep: Int, CaseIterable, Equatable, Sendable {

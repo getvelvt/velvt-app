@@ -462,7 +462,7 @@ fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_local
         60,
     ))
     .unwrap();
-    assert_eq!(outbound["abstraction_type"], "communication:slack");
+    assert_eq!(outbound["abstraction_type"], "communication:inferred");
     assert!(!outbound.to_string().contains("Private team conversation"));
     assert!(!outbound.to_string().contains("Slack"));
 

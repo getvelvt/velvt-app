@@ -48,6 +48,8 @@
 		B20C7D204B9345F3A6E1C101 /* WorkBlockCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20C7D204B9345F3A6E1C102 /* WorkBlockCoordinator.swift */; };
 		B20C7D204B9345F3A6E1C103 /* WorkBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20C7D204B9345F3A6E1C104 /* WorkBlockView.swift */; };
 		C31D8E315B114A8B9345F301 /* OnboardingExperience.swift in Sources */ = {isa = PBXBuildFile; fileRef = C31D8E315B114A8B9345F302 /* OnboardingExperience.swift */; };
+		D4A0C4A9A65047B88055A101 /* UpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A0C4A9A65047B88055A102 /* UpdateController.swift */; };
+		D4A0C4A9A65047B88055A103 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = D4A0C4A9A65047B88055A105 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -91,6 +93,7 @@
 		C31D8E315B114A8B9345F302 /* OnboardingExperience.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = OnboardingExperience.swift; path = UI/OnboardingExperience.swift; sourceTree = "<group>"; };
 		D6E8B36F349C4DC1A2E4D3D5 /* ServiceProcessLauncher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceProcessLauncher.swift; path = App/ServiceProcessLauncher.swift; sourceTree = "<group>"; };
 		D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeliveryModule.swift; path = Delivery/DeliveryModule.swift; sourceTree = "<group>"; };
+		D4A0C4A9A65047B88055A102 /* UpdateController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpdateController.swift; path = App/UpdateController.swift; sourceTree = "<group>"; };
 		E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DisplayDataCoordinator.swift; path = Delivery/DisplayDataCoordinator.swift; sourceTree = "<group>"; };
 		ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarPopoverView.swift; path = UI/MenuBarPopoverView.swift; sourceTree = "<group>"; };
 		EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FakeIPCClient.swift; path = IPC/FakeIPCClient.swift; sourceTree = "<group>"; };
@@ -103,6 +106,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				06C9D8301CC9C73FD56ECEB7 /* Cocoa.framework in Frameworks */,
+				D4A0C4A9A65047B88055A103 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -142,6 +146,7 @@
 				23D27C781D7B4200B0CA4AB7 /* AuthGatedCollectionController.swift */,
 				6E6FE1D6377F4F7ABF7EFD43 /* AppMetricsStore.swift */,
 				28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */,
+				D4A0C4A9A65047B88055A102 /* UpdateController.swift */,
 				BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */,
 				8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */,
 				928E12E20A85E864E9B7E683 /* ConfigModule.swift */,
@@ -210,6 +215,9 @@
 			);
 			dependencies = (
 			);
+			packageProductDependencies = (
+				D4A0C4A9A65047B88055A105 /* Sparkle */,
+			);
 			name = "velvt-mac";
 			productName = "velvt-mac";
 			productReference = 3342626EEF1A344019727851 /* velvt-mac.app */;
@@ -234,6 +242,9 @@
 			);
 			mainGroup = 470112A6B92F8CD311E162EE;
 			productRefGroup = EBE03290841BF7E9688A9514 /* Products */;
+			packageReferences = (
+				D4A0C4A9A65047B88055A104 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -291,7 +302,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\ncd \"$RUST_DIR\"\nif [ \"$(uname -m)\" = \"arm64\" ]; then\n  VELVT_API_BASE_URL=\"${VELVT_API_BASE_URL}\" VELVT_APNS_ENV=\"${VELVT_APNS_ENV}\" cargo build --release --features onnx 2>&1\nelse\n  VELVT_API_BASE_URL=\"${VELVT_API_BASE_URL}\" VELVT_APNS_ENV=\"${VELVT_APNS_ENV}\" cargo build --release 2>&1\nfi\ncp target/release/velvt-service \"$RESOURCES_DIR/velvt-service\"\ncp resources/abstraction-taxonomy-mvp-1.json \"$RESOURCES_DIR/abstraction-taxonomy-mvp-1.json\"\n\"$RESOURCES_DIR/velvt-service\" --version > \"$RESOURCES_DIR/velvt-service.version\"\n\"$RESOURCES_DIR/velvt-service\" --protocol-version > \"$RESOURCES_DIR/velvt-service.protocol-version\"\n";
+			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\nVELVT_API_BASE_URL=\"${VELVT_API_BASE_URL}\" VELVT_APNS_ENV=\"${VELVT_APNS_ENV}\" \\\n  \"${SRCROOT}/../scripts/build_rust_helper.sh\" \\\n  \"$RUST_DIR\" \"$RESOURCES_DIR/velvt-service\" \\\n  \"${VELVT_DISTRIBUTABLE:-NO}\" \"${ARCHS:-$(uname -m)}\"\ncp \"$RUST_DIR/resources/abstraction-taxonomy-mvp-1.json\" \"$RESOURCES_DIR/abstraction-taxonomy-mvp-1.json\"\n\"$RESOURCES_DIR/velvt-service\" --version > \"$RESOURCES_DIR/velvt-service.version\"\n\"$RESOURCES_DIR/velvt-service\" --protocol-version > \"$RESOURCES_DIR/velvt-service.protocol-version\"\n";
 		};
 		C8D9E0F1A2B3C4D5E6F70819 /* Inject Custom Info.plist Keys */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -301,15 +312,17 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
 			);
 			name = "Inject Custom Info.plist Keys";
 			outputFileListPaths = (
 			);
 			outputPaths = (
+				"$(DERIVED_FILE_DIR)/VelvtInfoPlistInjection.stamp",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\n# GENERATE_INFOPLIST_FILE=YES only supports Xcode's fixed INFOPLIST_KEY_*\n# allowlist (~79 Apple-defined keys) -- custom keys like VelvtAPIBaseURL are\n# silently dropped by Xcode's plist generator no matter how they're set in\n# xcconfig. This phase injects them directly into the already-generated\n# Info.plist using the same resolved build settings the xcconfig defines.\nPLIST=\"${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}\"\nset_plist_string() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 string $2\" \"$PLIST\"\n}\nset_plist_string VelvtAPIBaseURL \"${VELVT_API_BASE_URL}\"\nset_plist_string VelvtAPNSEnv \"${VELVT_APNS_ENV}\"\nset_plist_string VelvtSocketPath \"${VELVT_SOCKET_PATH}\"\nset_plist_string VelvtProtocolVersion \"${VELVT_PROTOCOL_VERSION}\"\nset_plist_string VelvtClientVersion \"${MARKETING_VERSION}\"\nset_plist_string VelvtBuildConfiguration \"${VELVT_BUILD_CONFIGURATION}\"\nset_plist_string VelvtDistributable \"${VELVT_DISTRIBUTABLE}\"\n";
+			shellScript = "set -euo pipefail\n# GENERATE_INFOPLIST_FILE=YES only supports Xcode's fixed INFOPLIST_KEY_*\n# allowlist (~79 Apple-defined keys) -- custom keys like VelvtAPIBaseURL are\n# silently dropped by Xcode's plist generator no matter how they're set in\n# xcconfig. This phase injects them directly into the already-generated\n# Info.plist using the same resolved build settings the xcconfig defines.\nPLIST=\"${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}\"\nset_plist_string() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 string $2\" \"$PLIST\"\n}\nset_plist_bool() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 bool $2\" \"$PLIST\"\n}\nset_plist_string VelvtAPIBaseURL \"${VELVT_API_BASE_URL}\"\nset_plist_string VelvtAPNSEnv \"${VELVT_APNS_ENV}\"\nset_plist_string VelvtSocketPath \"${VELVT_SOCKET_PATH}\"\nset_plist_string VelvtProtocolVersion \"${VELVT_PROTOCOL_VERSION}\"\nset_plist_string VelvtClientVersion \"${MARKETING_VERSION}\"\nset_plist_string VelvtBuildConfiguration \"${VELVT_BUILD_CONFIGURATION}\"\nset_plist_string VelvtDistributable \"${VELVT_DISTRIBUTABLE}\"\nfor key in SUFeedURL SUPublicEDKey SURequireSignedFeed SUVerifyUpdateBeforeExtraction SUSignedFeedFailureExpirationInterval SUEnableSystemProfiling; do\n  /usr/libexec/PlistBuddy -c \"Delete :$key\" \"$PLIST\" >/dev/null 2>&1 || true\ndone\nset_plist_bool VelvtUpdaterEnabled false\nif [ \"${VELVT_UPDATER_ENABLED:-NO}\" = \"YES\" ]; then\n  case \"${VELVT_UPDATE_FEED_URL:-}\" in\n    https://*) ;;\n    *) echo \"error: VELVT_UPDATE_FEED_URL must be HTTPS when updater is enabled\" >&2; exit 1 ;;\n  esac\n  feed_location=\"${VELVT_UPDATE_FEED_URL#https://}\"\n  feed_authority=\"${feed_location%%/*}\"\n  case \"$feed_location\" in *\\?*|*\\#*|*@*) echo \"error: update feed must not contain credentials, query, or fragment\" >&2; exit 1 ;; esac\n  case \"$feed_authority\" in *:443) ;; *:*) echo \"error: update feed must use the default HTTPS port\" >&2; exit 1 ;; esac\n  key_length=$(printf '%s' \"${VELVT_UPDATE_PUBLIC_ED_KEY:-}\" | /usr/bin/base64 -D | /usr/bin/wc -c | /usr/bin/tr -d ' ')\n  if [ \"$key_length\" != \"32\" ]; then\n    echo \"error: VELVT_UPDATE_PUBLIC_ED_KEY must be a base64-encoded 32-byte Ed25519 public key\" >&2\n    exit 1\n  fi\n  set_plist_bool VelvtUpdaterEnabled true\n  set_plist_string SUFeedURL \"${VELVT_UPDATE_FEED_URL}\"\n  set_plist_string SUPublicEDKey \"${VELVT_UPDATE_PUBLIC_ED_KEY}\"\n  set_plist_bool SURequireSignedFeed true\n  set_plist_bool SUVerifyUpdateBeforeExtraction true\n  /usr/libexec/PlistBuddy -c \"Add :SUSignedFeedFailureExpirationInterval integer 0\" \"$PLIST\"\n  set_plist_bool SUEnableSystemProfiling false\nfi\ntouch \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -322,6 +335,7 @@
 				1534D2B7C62A4F8FA882C19A /* AuthGatedCollectionController.swift in Sources */,
 				1597C5865C34465AA105915D /* AppMetricsStore.swift in Sources */,
 				143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */,
+				D4A0C4A9A65047B88055A101 /* UpdateController.swift in Sources */,
 				AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */,
 				07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */,
 				88D5FC587687DD9AB0300E53 /* ConfigModule.swift in Sources */,
@@ -534,6 +548,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		D4A0C4A9A65047B88055A104 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.4;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D4A0C4A9A65047B88055A105 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D4A0C4A9A65047B88055A104 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A59EA64B0E9A4F30889453D9 /* Project object */;
 }

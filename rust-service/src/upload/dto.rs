@@ -40,7 +40,11 @@ impl Serialize for BatchEventPayload {
         ApiBatchEvent {
             event_id: &self.event_id,
             occurred_at: self.occurred_at,
-            abstraction_type: &self.label,
+            // Local labels may be specific enough to make the UI useful. The
+            // cloud boundary deliberately collapses them to a category-scoped
+            // vocabulary so an application name can never be inferred from
+            // the uploaded abstraction type.
+            abstraction_type: cloud_abstraction_type(&self.category),
             abstraction_type_version: API_ABSTRACTION_TYPE_VERSION,
             classification_tier: &self.classification_tier,
             payload: ApiEventPayload {
@@ -87,10 +91,17 @@ impl BatchPayload {
         batch_id: impl Into<String>,
         schema_version: impl Into<String>,
         client_version: impl Into<String>,
-        supported_abstraction_types: Vec<String>,
+        _supported_abstraction_types: Vec<String>,
         category_taxonomy_version: impl Into<String>,
         events: Vec<BatchEventPayload>,
     ) -> Self {
+        let mut supported_abstraction_types = Vec::new();
+        for event in &events {
+            let safe_type = cloud_abstraction_type(&event.category).to_owned();
+            if !supported_abstraction_types.contains(&safe_type) {
+                supported_abstraction_types.push(safe_type);
+            }
+        }
         Self {
             batch_id: batch_id.into(),
             schema_version: schema_version.into(),
@@ -102,14 +113,28 @@ impl BatchPayload {
     }
 }
 
+fn cloud_abstraction_type(category: &str) -> &'static str {
+    match category {
+        "FOCUS_WORK" => "document:inferred",
+        "PASSIVE_CONSUMPTION" => "video:inferred",
+        "SOCIAL_FEED" => "social:inferred",
+        "COMMUNICATION" => "communication:inferred",
+        "TASK_MANAGEMENT" => "task:inferred",
+        "REFERENCE" => "reference:inferred",
+        "SYSTEM" => "system:inferred",
+        "UNLOGGED" => "unlogged",
+        _ => "system:unknown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::BatchEventPayload;
+    use super::{BatchEventPayload, BatchPayload};
     use chrono::{TimeZone, Utc};
     use serde_json::json;
 
     #[test]
-    fn batch_event_serializes_safe_label_as_abstraction_type() {
+    fn batch_event_collapses_local_label_at_cloud_boundary() {
         let event = BatchEventPayload {
             event_id: "event-1".into(),
             stable_id: "stable-1".into(),
@@ -128,7 +153,7 @@ mod tests {
             json!({
                 "event_id": "event-1",
                 "occurred_at": "2027-01-15T08:00:00Z",
-                "abstraction_type": "video:youtube",
+                "abstraction_type": "video:inferred",
                 "abstraction_type_version": "1",
                 "classification_tier": "exact_match",
                 "payload": {
@@ -137,5 +162,36 @@ mod tests {
                 }
             })
         );
+        assert!(!value.to_string().contains("youtube"));
+    }
+
+    #[test]
+    fn batch_supported_types_are_derived_from_safe_cloud_labels() {
+        let event = BatchEventPayload {
+            event_id: "event-1".into(),
+            stable_id: "stable-1".into(),
+            label: "communication:slack".into(),
+            category: "COMMUNICATION".into(),
+            taxonomy_version: "mvp-1".into(),
+            classification_tier: "exact_match".into(),
+            occurred_at: Utc.timestamp_opt(1_800_000_000, 0).unwrap(),
+            duration_seconds: 120,
+        };
+
+        let batch = BatchPayload::new(
+            "batch-1",
+            "1",
+            "1.0.0",
+            vec!["communication:slack".into()],
+            "mvp-1",
+            vec![event],
+        );
+        let value = serde_json::to_value(batch).unwrap();
+
+        assert_eq!(
+            value["supported_abstraction_types"],
+            json!(["communication:inferred"])
+        );
+        assert!(!value.to_string().contains("slack"));
     }
 }

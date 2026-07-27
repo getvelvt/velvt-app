@@ -20,7 +20,9 @@ jobs:
 
       - name: Install pinned Rust toolchain
         working-directory: rust-service
-        run: rustup show active-toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Lint Rust
         run: make lint-rust
@@ -44,7 +46,6 @@ jobs:
 
       - name: Build and verify universal Release DMG
         run: |
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
           make package-release
           make prepare-dmg-tool
           ./scripts/create_dmg.sh dist/Velvt.app dist/Velvt.dmg local

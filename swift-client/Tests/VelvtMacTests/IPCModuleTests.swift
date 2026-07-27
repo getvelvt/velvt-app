@@ -19,6 +19,24 @@ final class IPCModuleTests: XCTestCase {
                     bundleID: nil
                 )
             ),
+            .correctEventClassification(
+                CorrectEventClassification(
+                    eventID: UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!,
+                    stableID: "abs_safe",
+                    category: "REFERENCE",
+                    localActivityName: "Research reading"
+                )
+            ),
+            .updateClassificationOverride(
+                UpdateClassificationOverride(
+                    stableID: "abs_safe",
+                    category: "REFERENCE",
+                    localActivityName: "Research reading"
+                )
+            ),
+            .requestCorrectionHistory(
+                RequestCorrectionHistory(query: "Research", offset: 20, pageSize: 20)
+            ),
       .errorResponse(ErrorResponse(code: "safe_error", message: "safe", relatedEventID: nil)),
         ]
 
@@ -82,6 +100,46 @@ final class IPCModuleTests: XCTestCase {
                 )
             ),
             .serviceStatus(ServiceStatus(state: .ready, reason: nil)),
+            .menuStatus(
+                MenuStatus(
+                    deviceID: "device-1",
+                    cloudReady: true,
+                    uploadStatus: "ready",
+                    lastUploadErrorCode: nil,
+                    nextUploadAttemptAt: nil,
+                    pendingUploadBatchCount: 0,
+                    failedUploadBatchCount: 0,
+                    rejectedUploadBatchCount: 0,
+                    queuedEventCount: 0,
+                    queuedEvents: [],
+                    correctionHistory: [
+                        ClassificationCorrectionSummary(
+                            stableID: "abs_safe",
+                            label: "reference:inferred",
+                            localLabel: "Research reading",
+                            category: "REFERENCE",
+                            updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
+                        )
+                    ]
+                )
+            ),
+            .correctionHistoryPage(
+                CorrectionHistoryPage(
+                    items: [
+                        ClassificationCorrectionSummary(
+                            stableID: "abs_safe",
+                            label: "reference:inferred",
+                            localLabel: "Research reading",
+                            category: "REFERENCE",
+                            updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
+                        )
+                    ],
+                    offset: 20,
+                    pageSize: 20,
+                    totalCount: 45,
+                    hasMore: true
+                )
+            ),
       .privacyViolationAlert(
         PrivacyViolationAlert(code: "raw_field_rejected", message: "safe rejection")),
             .errorResponse(ErrorResponse(code: "safe_error", message: "safe", relatedEventID: nil)),
@@ -122,6 +180,52 @@ final class IPCModuleTests: XCTestCase {
 
         XCTAssertEqual(object["type"] as? String, "flush_upload_queue")
         XCTAssertTrue(payload.isEmpty)
+    }
+
+    func testCorrectionCarriesLocalActivityNameAcrossLocalIPC() throws {
+        let data = try encoder.encode(
+            ClientMessage.correctEventClassification(
+                CorrectEventClassification(
+                    eventID: UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!,
+                    stableID: "abs_safe",
+                    category: "REFERENCE",
+                    localActivityName: "Research reading"
+                )
+            )
+        )
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
+
+        XCTAssertEqual(object["type"] as? String, "correct_event_classification")
+        XCTAssertEqual(payload["category"] as? String, "REFERENCE")
+        XCTAssertEqual(payload["local_activity_name"] as? String, "Research reading")
+    }
+
+    func testCorrectionHistoryWireContractIsBoundedAndLocalOnly() throws {
+        let request = ClientMessage.requestCorrectionHistory(
+            RequestCorrectionHistory(query: "Private alias", offset: 20, pageSize: 500)
+        )
+        let requestData = try encoder.encode(request)
+        let requestObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: requestData) as? [String: Any]
+        )
+        let requestPayload = try XCTUnwrap(requestObject["payload"] as? [String: Any])
+        XCTAssertEqual(requestObject["type"] as? String, "request_correction_history")
+        XCTAssertEqual(requestPayload["page_size"] as? Int, 20)
+        XCTAssertEqual(requestPayload["offset"] as? Int, 20)
+
+        let update = ClientMessage.updateClassificationOverride(
+            UpdateClassificationOverride(
+                stableID: "abs_local",
+                category: "COMMUNICATION",
+                localActivityName: "Private alias"
+            )
+        )
+        let updateObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoder.encode(update)) as? [String: Any]
+        )
+        XCTAssertEqual(updateObject["type"] as? String, "update_classification_override")
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: encoder.encode(update)), update)
     }
 
     func testFlushUploadQueueRoundTrips() throws {

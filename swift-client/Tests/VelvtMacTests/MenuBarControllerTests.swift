@@ -46,6 +46,7 @@ final class MenuBarControllerTests: XCTestCase {
         let visibleFrame = CGRect(x: 0, y: 0, width: 1_440, height: 900)
 
         XCTAssertEqual(MenuBarPopoverLayout.preferredContentSize, CGSize(width: 660, height: 450))
+        XCTAssertEqual(MenuBarPopoverLayout.walkthroughContentSize, CGSize(width: 660, height: 600))
         XCTAssertEqual(
             MenuBarPopoverLayout.contentSize(for: visibleFrame),
             MenuBarPopoverLayout.preferredContentSize

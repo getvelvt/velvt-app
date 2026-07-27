@@ -5,22 +5,29 @@ Velvt supports macOS 13 Ventura and later. Use only the build and SHA-256 checks
 ## Install and begin
 
 1. Confirm the downloaded app matches the supplied checksum, move **velvt-mac.app** to `/Applications`, and open it from Finder.
-2. Read the optional intro, or choose **Skip intro** for the 30-second summary. The intro and guided tour remain available under **Settings → Onboarding & Tour**.
+2. Read the optional intro, or choose **Skip intro** for the 30-second summary. Established launches continue from the intro into the live guided tour. Both also remain available under **Settings → Onboarding & Tour**.
 3. On the privacy step, choose **Allow Accessibility** only when ready. macOS opens its permission flow only after that action. If access is denied, use **Open Accessibility Settings** in Velvt to recover.
 4. Notifications are optional. **Allow Notifications** requests access; declining does not prevent local collection, work blocks, Today, Activity, or Your Week.
 5. Sign in or create the private-beta account supplied for the cohort. In **Today**, enter an optional local intention and choose **Start Work Block**. End it from the same control.
 6. Keep Velvt running in the menu bar. Today shows observation progress immediately and replaces it with an early local signal when enough qualifying evidence is available. Its observation window and freshness explain what the signal covers.
+7. **Your Week** starts with **Today so far** after one observed day, advances to **This week so far** for a partial window, and uses **Week-over-week coaching** only when both weeks have sufficient coverage. Each card states its observed-day coverage and confidence.
+
+## Correct local activity
+
+Select an activity segment in **Your Week → Daily Activity** to rename or categorize it without leaving the row. A local suggestion may appear when Velvt has recognizable on-device application context; choose **Use suggestion** to confirm it, or edit it before saving. Low-confidence suggestions are never silently applied.
+
+Saved names and category rules affect future matching local activity. Search, edit, recategorize, page through, or undo all saved rules under **Settings → Activity & Corrections**. This history is independent of the upload queue and remains available after synchronization and relaunch.
 
 ## Privacy
 
-Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights.
+Raw app names, bundle identifiers, window titles, browser tabs, URLs, filenames, paths, contacts, icons, favicons, work-block intentions, local suggestions, and user-created activity aliases stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights.
 
 Velvt does not add product analytics or telemetry. Diagnostics copied from **Settings → App Info** contain status codes and coarse counts, not raw activity. Before sharing a screenshot, redact unrelated personal content visible elsewhere on the Mac.
 
 ## Everyday recovery and account controls
 
 - **Working offline:** continue normally. Privacy-safe batches can queue locally; the header and App Info show synchronization state. After connectivity returns, choose **Retry Backend Synchronization** if automatic retry has not recovered.
-- **Local service unavailable:** wait through the short startup/reconnect grace period. If the state remains unavailable, use **Restart Local Service** in App Info, then quit and reopen Velvt if needed. Relaunching does not restart onboarding or replace existing Today content.
+- **Local service unavailable:** wait through the short startup/reconnect grace period. If the state remains unavailable, use **Restart Local Service** in App Info, then quit and reopen Velvt if needed. Relaunching replays the short intro and guided tour without resetting account, permission, or Today state.
 - **Accessibility denied or revoked:** collection pauses. Choose **Open Accessibility Settings**, enable Velvt, and return to the app. No permission is marked granted merely by skipping onboarding.
 - **Sign out:** choose **Log Out** at the bottom of the main popover. This clears the local authenticated session; it does not pretend local data was deleted.
 - **Delete the account:** while signed in, choose **Delete Account** and confirm the destructive request. If the service is unreachable, Velvt returns to the signed-in state so the request can be retried.
@@ -37,7 +44,7 @@ Known limitations for 0.1.5:
 
 - It is a menu-bar app for macOS 13 or later; there is no dashboard or cross-platform client.
 - Early local signals need qualifying observed activity and may remain in progress during a short or sparse session.
-- Your Week and synchronized beta insights require sign-in and a reachable hosted beta backend; local work-block and early-signal value can appear sooner.
+- A true week-over-week comparison requires at least four observed current-week days and four observed prior-week days. Earlier tiers remain explicitly partial.
 - Notifications are local delivery of approved insight copy; remote APNs and adaptive notifications are not promised by this beta.
 - Ad-hoc local verification builds do not provide the stable signing identity required for durable Accessibility permission across rebuilds.
 

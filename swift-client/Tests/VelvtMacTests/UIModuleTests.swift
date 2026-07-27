@@ -150,7 +150,7 @@ final class MenuBarNavigationTests: XCTestCase {
       XCTAssertEqual(
         SettingsSubmenu.allCases.map(\.title),
         [
-            "App Info", "Queued Events", "Collection Settings", "Onboarding & Tour",
+            "App Info", "Activity & Corrections", "Collection Settings", "Onboarding & Tour",
             "Debug/Testing",
         ])
         #else

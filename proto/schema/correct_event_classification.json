@@ -12,6 +12,12 @@
         "stable_id": { "type": "string" },
         "category": {
           "enum": ["FOCUS_WORK", "PASSIVE_CONSUMPTION", "SOCIAL_FEED", "COMMUNICATION", "TASK_MANAGEMENT", "REFERENCE", "SYSTEM", "UNLOGGED"]
+        },
+        "local_activity_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48,
+          "description": "Device-local user label. Never include it in cloud requests, telemetry, logs, or crash diagnostics."
         }
       },
       "additionalProperties": false

@@ -457,25 +457,57 @@ final class PermissionModuleTests: XCTestCase {
     }
 
     @MainActor
-    func testCompletedOnboardingDoesNotPresentOnNormalLaunch() {
+    func testCompletedOnboardingPresentsIntroAndRoutesToTourOnNormalLaunch() {
         let permissions = FakePermissionManager()
         let presentation = PermissionPresentationModel(
             permissionManager: permissions,
             onboardingStateStore: InMemoryOnboardingStateStore(hasCompletedOnboarding: true)
         )
+        var tourStartCount = 0
         let controller = OnboardingWindowController(
             presentation: presentation,
             permissionManager: permissions,
             accountStateManager: AccountStateManager(keychain: FakeKeychain()),
             ipcClient: FakeIPCClient(),
             onStartUsing: {},
-            onStartTour: {}
+            onStartTour: { tourStartCount += 1 }
         )
 
         controller.presentOnLaunch()
 
+        XCTAssertTrue(controller.hasPresentedWindow)
+        XCTAssertTrue(presentation.showsOnboarding)
+
+        XCTAssertTrue(controller.windowShouldClose(NSWindow()))
         XCTAssertFalse(controller.hasPresentedWindow)
         XCTAssertFalse(presentation.showsOnboarding)
+        XCTAssertEqual(tourStartCount, 1)
+    }
+
+    @MainActor
+    func testFirstRunLaunchContinuesIntoSetupBeforeStartingTour() {
+        let permissions = FakePermissionManager()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore()
+        )
+        var tourStartCount = 0
+        let controller = OnboardingWindowController(
+            presentation: presentation,
+            permissionManager: permissions,
+            accountStateManager: AccountStateManager(keychain: FakeKeychain()),
+            ipcClient: FakeIPCClient(),
+            onStartUsing: {},
+            onStartTour: { tourStartCount += 1 }
+        )
+
+        controller.presentOnLaunch()
+        XCTAssertTrue(controller.windowShouldClose(NSWindow()))
+
+        XCTAssertTrue(controller.hasPresentedWindow)
+        XCTAssertTrue(presentation.showsOnboarding)
+        XCTAssertEqual(tourStartCount, 0)
+        controller.close()
     }
 
     func testEstablishedInstallationBypassesNewIntroWithoutChangingLegacyValues() {

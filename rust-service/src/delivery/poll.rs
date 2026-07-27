@@ -625,9 +625,11 @@ mod tests {
         let queue = crate::delivery::PushQueue::new(10);
         let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
         let mut dedupe = InsightDedupeGuard::default();
-        let mut evidence = InsightEvidence::default();
-        evidence.tone_stage = EmotionalStage::Stable;
-        evidence.observation_type = "recorded_activity".into();
+        let evidence = InsightEvidence {
+            tone_stage: EmotionalStage::Stable,
+            observation_type: "recorded_activity".into(),
+            ..InsightEvidence::default()
+        };
         let insight = PolledInsight {
             id: "generic-insight".into(),
             payload: InsightPayload {

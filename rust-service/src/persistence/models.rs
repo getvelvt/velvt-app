@@ -23,8 +23,8 @@ impl std::fmt::Debug for AbstractionMapping {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("AbstractionMapping")
-            .field("key_hash", &self.key_hash)
-            .field("stable_id", &self.stable_id)
+            .field("key_hash", &"[local_identifier]")
+            .field("stable_id", &"[local_identifier]")
             .field("label", &self.label)
             .field("category", &self.category)
             .field("taxonomy_version", &self.taxonomy_version)
@@ -46,6 +46,7 @@ pub struct RawEventEntry {
     pub stable_id: String,
     pub label: String,
     pub local_display_label: Option<String>,
+    pub local_name_suggestion: Option<String>,
     pub category: String,
     pub taxonomy_version: String,
     pub classification_tier: String,
@@ -67,6 +68,10 @@ impl std::fmt::Debug for RawEventEntry {
                 "local_display_label",
                 &self.local_display_label.as_ref().map(|_| "[redacted]"),
             )
+            .field(
+                "local_name_suggestion",
+                &self.local_name_suggestion.as_ref().map(|_| "[redacted]"),
+            )
             .field("category", &self.category)
             .field("taxonomy_version", &self.taxonomy_version)
             .field("classification_tier", &self.classification_tier)
@@ -79,7 +84,7 @@ impl std::fmt::Debug for RawEventEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct LocalEventMetadata {
     pub local_display_label: Option<String>,
     pub classification_status: String,
@@ -87,10 +92,60 @@ pub struct LocalEventMetadata {
     pub classification_source: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for LocalEventMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalEventMetadata")
+            .field(
+                "local_display_label",
+                &self.local_display_label.as_ref().map(|_| "[redacted]"),
+            )
+            .field("classification_status", &self.classification_status)
+            .field("classification_confidence", &self.classification_confidence)
+            .field("classification_source", &self.classification_source)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct LocalDisplayAggregate {
     pub label: String,
     pub duration_seconds: u64,
+}
+
+impl std::fmt::Debug for LocalDisplayAggregate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalDisplayAggregate")
+            .field("label", &"[redacted]")
+            .field("duration_seconds", &self.duration_seconds)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct PersonalOverrideRecord {
+    pub stable_id: String,
+    pub label: String,
+    pub local_activity_name: Option<String>,
+    pub category: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for PersonalOverrideRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PersonalOverrideRecord")
+            .field("stable_id", &"[local_identifier]")
+            .field("label", &self.label)
+            .field(
+                "local_activity_name",
+                &self.local_activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .field("category", &self.category)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

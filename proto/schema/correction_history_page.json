@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Local IPC only. Local aliases and stable identifiers must never enter cloud requests, telemetry, logs, or crash diagnostics.",
+  "title": "CorrectionHistoryPage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items", "offset", "page_size", "total_count", "has_more"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stable_id", "label", "category", "updated_at"],
+        "properties": {
+          "stable_id": { "type": "string" },
+          "label": { "type": "string" },
+          "local_label": { "type": ["string", "null"], "maxLength": 48 },
+          "category": { "type": "string" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "offset": { "type": "integer", "minimum": 0 },
+    "page_size": { "type": "integer", "minimum": 1, "maximum": 20 },
+    "total_count": { "type": "integer", "minimum": 0 },
+    "has_more": { "type": "boolean" }
+  }
+}

@@ -110,12 +110,12 @@ The Swift client never initiates a refresh.
 
 ```
 AppDelegate
-    ├─ first clean launch ────────────────► OnboardingWindowController
-    │                                      Welcome → Privacy → Helps with → Ready
-    │                                          ├─ Skip intro → 30-second summary → Today
-    │                                          ├─ Start using Velvt → Today
-    │                                          └─ Take guided tour → live menu-bar tour
-    └─ completed/existing installation ──► menu-bar Today
+    ├─ every launch ──────────────────────► OnboardingWindowController
+    │                                      Welcome → Privacy → Helps with
+    │                                          ├─ Skip intro → 30-second summary
+    │                                          └─ established install → live menu-bar tour
+    └─ first clean launch continues ──────► Account → Accessibility → Notifications
+                                               └─ tour invitation → Today or live tour
 
 Settings → Onboarding & Tour
     ├─ Replay Full Intro ─────────────────► OnboardingWindowController
@@ -127,18 +127,20 @@ popover and is required for synchronized history and beta insight delivery, but 
 the local explanation, permission recovery, or early local value.
 
 `UserDefaultsOnboardingStateStore` remains the single persistence owner. It preserves the legacy
-completion key and adds a versioned completion marker. An installation with an existing Velvt UI
-preference is migrated as established and bypasses the new intro. A clean installation presents it
-once. Skip and completion write only onboarding keys; they do not alter TCC, Keychain, accounts,
-permissions, caches, SQLite, or Docker data. Replays do not clear completion.
+completion key and adds a versioned completion marker. The marker distinguishes a clean first run,
+which includes account and permission setup, from an established launch, which replays the short
+intro and proceeds directly to the live menu-bar tour. Skip and completion write only onboarding
+keys; they do not alter TCC, Keychain, accounts, permissions, caches, SQLite, or Docker data.
+Replays do not clear completion.
 
 Permission status is always checked independently. The intro never calls either system permission
 API on appearance or Continue; **Allow Accessibility** and **Allow Notifications** are the only
 request actions. Skipping therefore cannot mark either permission granted. Denial stays recoverable
 from the live popover.
 
-The six-step guided tour renders below the real 660×350 popover content, selects actual Today, Your
-Week, Activity, status/recovery, and Settings destinations, and leaves their controls reachable.
+The six-step guided tour renders below the real menu-bar content, selects actual Today, Your Week,
+Activity, status/recovery, and Settings destinations, and reserves enough non-compressible space
+for its copy and controls so they remain reachable at the bottom of the screen-clamped popover.
 Back, Next, Skip tour, Done, and Escape are deterministic. Reduced Motion disables transitions.
 Command-1, Command-2, Command-3, Command-comma, and the normal Escape close behavior remain owned by
 `MenuBarPopoverView`.

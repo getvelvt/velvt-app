@@ -260,14 +260,17 @@ public final class GuidedTourModel: ObservableObject {
 public struct FirstRunExperienceView: View {
     @ObservedObject private var model: IntroFlowModel
     private let followsLaunchSequence: Bool
+    private let continuesToTour: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
         model: IntroFlowModel,
-        followsLaunchSequence: Bool = false
+        followsLaunchSequence: Bool = false,
+        continuesToTour: Bool = false
     ) {
         self.model = model
         self.followsLaunchSequence = followsLaunchSequence
+        self.continuesToTour = continuesToTour
     }
 
     public var body: some View {
@@ -443,12 +446,16 @@ public struct FirstRunExperienceView: View {
             }
         case .quickStart:
             Button(
-                followsLaunchSequence ? "Continue to Accessibility" : "Start using Velvt"
+                followsLaunchSequence
+                    ? (continuesToTour ? "Start guided tour" : "Continue setup")
+                    : "Start using Velvt"
             ) { model.finishAndStartUsing() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
         case .capabilities where followsLaunchSequence:
-            Button("Continue") { model.finishAndStartUsing() }
+            Button(continuesToTour ? "Start guided tour" : "Continue setup") {
+                model.finishAndStartUsing()
+            }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
         default:
@@ -982,11 +989,12 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         presentIntro(replay: false)
     }
 
-    /// Normal launches respect the persisted completion flag. The Settings
-    /// replay action remains available through `presentReplay()`.
+    /// Every launch replays the short introduction. Established installations
+    /// continue directly into the live guided tour; only a true first run
+    /// includes account and permission setup.
     public func presentOnLaunch() {
-        guard presentation.showsOnboarding else { return }
-        isFirstRunSequence = true
+        isFirstRunSequence = presentation.showsOnboarding
+        presentation.replayOnboarding()
         launchStage = .intro
         presentIntro(replay: false)
     }
@@ -1068,7 +1076,8 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         presentWindow(
             FirstRunExperienceView(
                 model: model,
-                followsLaunchSequence: launchStage == .intro
+                followsLaunchSequence: launchStage == .intro,
+                continuesToTour: launchStage == .intro && !isFirstRunSequence
             ),
             title: replay ? "Velvt Intro" : "Welcome to Velvt"
         )
@@ -1150,6 +1159,12 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private func advanceFromIntro() {
         guard launchStage == .intro else { return }
         dismissWindow()
+        guard isFirstRunSequence else {
+            presentation.completeOnboarding()
+            launchStage = .manual
+            onStartTour()
+            return
+        }
         if OnboardingSequencePolicy.needsAccountStep(
             firstRun: isFirstRunSequence,
             accountState: accountStateManager.accountState

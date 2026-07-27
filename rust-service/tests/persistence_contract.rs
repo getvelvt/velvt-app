@@ -28,6 +28,7 @@ fn bounded_seven_day_dashboard_query_is_indexed_and_measured() {
                 stable_id: format!("stable-{index}"),
                 label: "document:edit".into(),
                 local_display_label: Some(if index % 2 == 0 { "Docs" } else { "VS Code" }.into()),
+                local_name_suggestion: None,
                 category: "FOCUS_WORK".into(),
                 taxonomy_version: "mvp-1".into(),
                 classification_tier: "exact_match".into(),
@@ -140,6 +141,7 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
         stable_id: "abs_1".into(),
         label: "document:edit".into(),
         local_display_label: Some("Docs".into()),
+        local_name_suggestion: None,
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
         classification_tier: "exact_match".into(),
@@ -183,6 +185,7 @@ fn local_display_aggregation_is_bounded_to_five_labels_plus_other() {
                 stable_id: format!("abs-{index}"),
                 label: "document:edit".into(),
                 local_display_label: label.map(str::to_owned),
+                local_name_suggestion: None,
                 category: "FOCUS_WORK".into(),
                 taxonomy_version: "mvp-1".into(),
                 classification_tier: "exact_match".into(),
@@ -204,6 +207,26 @@ fn local_display_aggregation_is_bounded_to_five_labels_plus_other() {
     assert_eq!(aggregates[4].label, "Browser");
     assert_eq!(aggregates[5].label, "Other");
     assert_eq!(aggregates[5].duration_seconds, 30);
+}
+
+#[test]
+fn every_local_display_persistence_debug_surface_is_redacted() {
+    use velvt_service::persistence::{LocalDisplayAggregate, LocalEventMetadata};
+
+    let sentinel = "PRIVATE_LOCAL_NAME_SENTINEL";
+    let metadata = LocalEventMetadata {
+        local_display_label: Some(sentinel.into()),
+        classification_status: "classified".into(),
+        classification_confidence: "high".into(),
+        classification_source: "user_rule".into(),
+    };
+    let aggregate = LocalDisplayAggregate {
+        label: sentinel.into(),
+        duration_seconds: 60,
+    };
+
+    assert!(!format!("{metadata:?}").contains(sentinel));
+    assert!(!format!("{aggregate:?}").contains(sentinel));
 }
 
 #[test]
@@ -376,7 +399,11 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
         .unwrap();
     assert_eq!(initial.category(), "UNLOGGED");
     repository
-        .save_personal_override(initial.stable_id(), "COMMUNICATION")
+        .save_personal_override(
+            initial.stable_id(),
+            "COMMUNICATION",
+            Some("Client messages"),
+        )
         .unwrap();
     let updated_taxonomy = Taxonomy::from_json(
         br#"{
@@ -399,8 +426,46 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
 
     assert_eq!(corrected.category(), "COMMUNICATION");
     assert_eq!(corrected.label(), "communication:inferred");
+    assert_eq!(corrected.local_display_label(), Some("Client messages"));
     assert_eq!(corrected.taxonomy_version(), "mvp-2");
     assert_eq!(corrected.classification_source().as_str(), "user_rule");
+    let correction_history = repository.personal_overrides(25).unwrap();
+    assert_eq!(correction_history.len(), 1);
+    assert_eq!(correction_history[0].stable_id, corrected.stable_id());
+    assert_eq!(
+        correction_history[0].local_activity_name.as_deref(),
+        Some("Client messages")
+    );
+    assert_eq!(correction_history[0].category, "COMMUNICATION");
+    let correction_debug = format!("{:?}", correction_history[0]);
+    assert!(!correction_debug.contains("Client messages"));
+    assert!(!correction_debug.contains("private title"));
+    let uploads = database.upload_batch_repo();
+    uploads
+        .insert_batch_with_events(
+            &NewUploadBatch {
+                batch_id: "uploaded-correction".into(),
+            },
+            &[BatchEvent {
+                event_id: Uuid::new_v4().to_string(),
+                stable_id: corrected.stable_id().to_owned(),
+                label: corrected.label().to_owned(),
+                category: corrected.category().to_owned(),
+                taxonomy_version: corrected.taxonomy_version().to_owned(),
+                classification_tier: corrected.classification_tier().as_str().to_owned(),
+                occurred_at: timestamp(10),
+                duration_seconds: 60,
+            }],
+        )
+        .unwrap();
+    uploads.mark_sent("uploaded-correction").unwrap();
+    assert_eq!(
+        uploads
+            .delete_sent_batch(Utc::now() + Duration::minutes(1), 25)
+            .unwrap(),
+        1
+    );
+    assert_eq!(repository.personal_overrides(25).unwrap().len(), 1);
 
     let different_title =
         AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
@@ -433,11 +498,109 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
     assert_eq!(reverted.classification_source().as_str(), "fallback");
 
     repository
-        .save_personal_override(reverted.stable_id(), "COMMUNICATION")
+        .save_personal_override(reverted.stable_id(), "COMMUNICATION", None)
         .unwrap();
     assert_eq!(repository.personal_override_count().unwrap(), 1);
     assert_eq!(repository.reset_personal_overrides().unwrap(), 1);
     assert_eq!(repository.personal_override_count().unwrap(), 0);
+}
+
+#[test]
+fn correction_history_search_paginates_beyond_twenty_five_and_survives_upload_restart_edit_and_undo(
+) {
+    let path = std::env::temp_dir().join(format!(
+        "velvt-correction-history-{}.sqlite3",
+        Uuid::new_v4()
+    ));
+    {
+        let database = SqlitePersistence::open(&path).unwrap();
+        let repository = database.abstraction_map_repo();
+        for index in 0..45 {
+            let stable_id = format!("abs_{index:03}");
+            repository
+                .upsert(&AbstractionMapping {
+                    key_hash: format!("{index:064x}"),
+                    stable_id: stable_id.clone(),
+                    label: "reference:inferred".into(),
+                    category: "REFERENCE".into(),
+                    taxonomy_version: "mvp-1".into(),
+                    classification_tier: "exact_match".into(),
+                    classification_status: "classified".into(),
+                    classification_confidence: "high".into(),
+                    classification_source: "user_rule".into(),
+                    display_name: None,
+                })
+                .unwrap();
+            repository
+                .save_personal_override(&stable_id, "REFERENCE", Some(&format!("Research {index}")))
+                .unwrap();
+        }
+
+        let (first, total) = repository.search_personal_overrides(None, 0, 20).unwrap();
+        let (second, _) = repository.search_personal_overrides(None, 20, 20).unwrap();
+        let (third, _) = repository.search_personal_overrides(None, 40, 20).unwrap();
+        assert_eq!(
+            (first.len(), second.len(), third.len(), total),
+            (20, 20, 5, 45)
+        );
+        let (matches, match_count) = repository
+            .search_personal_overrides(Some("Research 3"), 0, 20)
+            .unwrap();
+        assert_eq!(matches.len(), 11);
+        assert_eq!(match_count, 11);
+
+        let uploads = database.upload_batch_repo();
+        uploads
+            .insert_batch_with_events(
+                &NewUploadBatch {
+                    batch_id: "correction-history-upload".into(),
+                },
+                &[BatchEvent {
+                    event_id: Uuid::new_v4().to_string(),
+                    stable_id: "abs_030".into(),
+                    label: "reference:inferred".into(),
+                    category: "REFERENCE".into(),
+                    taxonomy_version: "mvp-1".into(),
+                    classification_tier: "exact_match".into(),
+                    occurred_at: timestamp(10),
+                    duration_seconds: 60,
+                }],
+            )
+            .unwrap();
+        uploads.mark_sent("correction-history-upload").unwrap();
+        uploads
+            .delete_sent_batch(Utc::now() + Duration::minutes(1), 20)
+            .unwrap();
+    }
+
+    {
+        let database = SqlitePersistence::open(&path).unwrap();
+        let repository = database.abstraction_map_repo();
+        assert_eq!(
+            repository.search_personal_overrides(None, 0, 20).unwrap().1,
+            45
+        );
+        repository
+            .save_personal_override("abs_030", "COMMUNICATION", Some("Edited alias"))
+            .unwrap();
+        let (edited, total) = repository
+            .search_personal_overrides(Some("edited alias"), 0, 20)
+            .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(edited[0].category, "COMMUNICATION");
+        assert!(repository.remove_personal_override("abs_030").unwrap());
+    }
+
+    let reopened = SqlitePersistence::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .abstraction_map_repo()
+            .personal_override_count()
+            .unwrap(),
+        44
+    );
+    drop(reopened);
+    fs::remove_file(path).unwrap();
 }
 
 #[test]

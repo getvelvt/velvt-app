@@ -39,8 +39,10 @@ use velvt_service::upload::{
     IpcPrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator, UploadOutcome,
 };
 use velvt_shared_types::{
-    Acknowledged, ClientHello, ClientMessage, FlushUploadQueue, PrivacyViolationAlert, RawEvent,
-    RawEventAck, RawEventStatus, RequestMenuStatus, ServerMessage, ShuttingDown, PROTOCOL_VERSION,
+    Acknowledged, ClientHello, ClientMessage, CorrectEventClassification, FlushUploadQueue,
+    PrivacyViolationAlert, RawEvent, RawEventAck, RawEventStatus, RemoveClassificationOverride,
+    RequestCorrectionHistory, RequestMenuStatus, ServerMessage, ShuttingDown,
+    UpdateClassificationOverride, PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -350,6 +352,7 @@ async fn request_menu_status_reports_upload_auth_and_retry_state() {
         token_store as Arc<dyn TokenStore>,
         persistence.upload_batch_repo(),
         persistence.raw_event_repo(),
+        persistence.abstraction_map_repo(),
     )));
 
     let response = router
@@ -369,6 +372,144 @@ async fn request_menu_status_reports_upload_auth_and_retry_state() {
     assert_eq!(status.failed_upload_batch_count, 1);
     assert_eq!(status.queued_event_count, 1);
     assert!(status.next_upload_attempt_at.is_some());
+}
+
+#[tokio::test]
+async fn local_activity_name_stays_off_cloud_and_remains_in_correction_history() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let correction_http = Arc::new(FakeHttp::with_responses(vec![empty_response(200, None)]));
+    let menu_http = Arc::new(FakeHttp::with_responses(vec![ready_response()]));
+    let token_store = Arc::new(FakeTokenStore::default());
+    let router = build_router(
+        Arc::new(FakeCacheManager::new()),
+        &persistence,
+        Arc::new(RecordingIngestor::default()) as Arc<dyn EventIngestor>,
+        Arc::new(FakeHttp::default()),
+        Arc::new(FakeHttp::default()),
+    )
+    .with_classification_corrections(
+        persistence.abstraction_map_repo(),
+        persistence.upload_batch_repo(),
+        Arc::clone(&correction_http) as Arc<dyn HttpClient>,
+    )
+    .with_menu_status(Arc::new(MenuStatusProvider::new(
+        menu_http as Arc<dyn HttpClient>,
+        token_store as Arc<dyn TokenStore>,
+        persistence.upload_batch_repo(),
+        persistence.raw_event_repo(),
+        persistence.abstraction_map_repo(),
+    )));
+
+    let event = raw_event(1_800, "Private Research App", "Sensitive project title");
+    let event_id = event.event_id;
+    let response = router.route(ClientMessage::RawEvent(event)).await.unwrap();
+    assert!(matches!(
+        response,
+        Some(ServerMessage::RawEventAck(RawEventAck {
+            status: RawEventStatus::Accepted,
+            ..
+        }))
+    ));
+    let persisted = persistence
+        .raw_event_repo()
+        .events_before(Utc::now())
+        .unwrap();
+    let stable_id = persisted[0].stable_id.clone();
+
+    let response = router
+        .route(ClientMessage::CorrectEventClassification(
+            CorrectEventClassification {
+                event_id,
+                stable_id: stable_id.clone(),
+                category: "REFERENCE".into(),
+                local_activity_name: Some("Research reading".into()),
+            },
+        ))
+        .await
+        .unwrap();
+    let Some(ServerMessage::MenuStatus(status)) = response else {
+        panic!("expected menu_status");
+    };
+    assert_eq!(status.correction_history.len(), 1);
+    assert_eq!(status.correction_history[0].stable_id, stable_id);
+    assert_eq!(
+        status.correction_history[0].local_label.as_deref(),
+        Some("Research reading")
+    );
+    assert_eq!(status.correction_history[0].category, "REFERENCE");
+
+    let requests = correction_http.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].json_body,
+        Some(json!({ "category": "REFERENCE" }))
+    );
+    let outbound = requests[0].json_body.as_ref().unwrap().to_string();
+    assert!(!outbound.contains("Research reading"));
+    assert!(!outbound.contains("Private Research App"));
+    assert!(!outbound.contains("Sensitive project title"));
+
+    let response = router
+        .route(ClientMessage::RequestCorrectionHistory(
+            RequestCorrectionHistory {
+                query: Some("Research".into()),
+                offset: 0,
+                page_size: 20,
+            },
+        ))
+        .await
+        .unwrap();
+    let Some(ServerMessage::CorrectionHistoryPage(page)) = response else {
+        panic!("expected correction_history_page");
+    };
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.total_count, 1);
+    assert!(!page.has_more);
+
+    let response = router
+        .route(ClientMessage::UpdateClassificationOverride(
+            UpdateClassificationOverride {
+                stable_id: stable_id.clone(),
+                category: "COMMUNICATION".into(),
+                local_activity_name: Some("Edited private alias".into()),
+            },
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(response, Some(ServerMessage::MenuStatus(_))));
+    assert_eq!(
+        correction_http.requests().len(),
+        1,
+        "editing a saved local rule must not make another cloud request"
+    );
+
+    let response = router
+        .route(ClientMessage::RequestCorrectionHistory(
+            RequestCorrectionHistory {
+                query: Some("Edited".into()),
+                offset: 0,
+                page_size: 200,
+            },
+        ))
+        .await
+        .unwrap();
+    let Some(ServerMessage::CorrectionHistoryPage(page)) = response else {
+        panic!("expected correction_history_page");
+    };
+    assert_eq!(page.page_size, 20);
+    assert_eq!(page.items[0].category, "COMMUNICATION");
+    assert_eq!(
+        page.items[0].local_label.as_deref(),
+        Some("Edited private alias")
+    );
+
+    let response = router
+        .route(ClientMessage::RemoveClassificationOverride(
+            RemoveClassificationOverride { stable_id },
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(response, Some(ServerMessage::MenuStatus(_))));
 }
 
 // ---------------------------------------------------------------------------
@@ -851,7 +992,7 @@ async fn path6_raw_field_rejected_halts_only_the_offending_batch() {
 
     let uploader = FakeBatchUploader::with_outcomes(vec![
         UploadOutcome::RawFieldRejected {
-            message: "window_title field present".into(),
+            message: "PRIVATE_SERVER_ECHO_SENTINEL".into(),
         },
         UploadOutcome::Accepted,
     ]);
@@ -887,9 +1028,10 @@ async fn path6_raw_field_rejected_halts_only_the_offending_batch() {
         alert,
         PrivacyViolationAlert {
             code: "raw_field_rejected".into(),
-            message: "window_title field present".into(),
+            message: "Sensitive activity details were blocked before upload.".into(),
         }
     );
+    assert!(!alert.message.contains("PRIVATE_SERVER_ECHO_SENTINEL"));
 
     // Other pending batches are unaffected and continue to upload.
     let other = velvt_service::upload::BatchPayload::new(

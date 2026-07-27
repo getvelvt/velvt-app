@@ -189,7 +189,45 @@ fn unknown_app_uses_unlogged_fallback() {
         result.classification_source(),
         ClassificationSource::Fallback
     );
+    assert_eq!(result.local_name_suggestion(), None);
     assert!(started.elapsed() < Duration::from_millis(20));
+}
+
+#[test]
+fn responsible_local_suggestion_is_explicit_and_never_changes_low_confidence_classification() {
+    let sentinel = "Acme Quux Companion";
+    let result = engine()
+        .process(raw_event(sentinel, "private customer filename"))
+        .unwrap();
+
+    assert_eq!(result.local_name_suggestion(), Some(sentinel));
+    assert_eq!(result.label(), "unlogged");
+    assert_eq!(result.category(), "UNLOGGED");
+    assert_eq!(
+        result.classification_confidence(),
+        ClassificationConfidence::None
+    );
+    assert_eq!(
+        result.classification_source(),
+        ClassificationSource::Fallback
+    );
+
+    let serialized = serde_json::to_string(&result).unwrap();
+    let debug = format!("{result:?}");
+    assert!(!serialized.contains(sentinel));
+    assert!(!serialized.contains("private customer filename"));
+    assert!(!debug.contains(sentinel));
+    assert!(!debug.contains("private customer filename"));
+}
+
+#[test]
+fn generic_or_control_character_app_names_do_not_become_suggestions() {
+    for app_name in ["Unknown", "Unknown App", "Browser", "App", "bad\nname"] {
+        let result = engine()
+            .process(raw_event(app_name, "private title"))
+            .unwrap();
+        assert_eq!(result.local_name_suggestion(), None, "{app_name:?}");
+    }
 }
 
 #[test]
@@ -540,6 +578,22 @@ fn abstracted_event_serialization_excludes_raw_inputs_and_stable_key() {
     ] {
         assert!(!json.contains(forbidden), "{forbidden}");
     }
+}
+
+#[test]
+fn browser_context_exposes_a_specific_safe_activity_without_raw_tab_text() {
+    let raw_tab = "Private launch plan — YouTube";
+    let result = engine()
+        .process(raw_event("Google Chrome", raw_tab))
+        .unwrap();
+
+    assert_eq!(result.label(), "video:youtube");
+    assert_eq!(result.category(), "PASSIVE_CONSUMPTION");
+    assert_eq!(result.local_display_label(), Some("YouTube"));
+
+    let serialized = serde_json::to_string(&result).unwrap();
+    assert!(!serialized.contains(raw_tab));
+    assert!(!serialized.contains("Google Chrome"));
 }
 
 #[test]

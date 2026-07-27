@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import XCTest
 
@@ -6,7 +7,7 @@ import XCTest
 
 @MainActor
 final class Scope3SyntheticSnapshotTests: XCTestCase {
-  func testRenderSyntheticScope3SurfacesWhenRequested() throws {
+  func testRenderSyntheticScope3SurfacesWhenRequested() async throws {
     guard let output = ProcessInfo.processInfo.environment["VELVT_SCOPE3_SCREENSHOT_DIR"] else {
       throw XCTSkip("Set VELVT_SCOPE3_SCREENSHOT_DIR to render synthetic handoff screenshots")
     }
@@ -95,17 +96,117 @@ final class Scope3SyntheticSnapshotTests: XCTestCase {
       focusFragmentation: focus,
       dailyActivity: days
     )
+    let history = HistoryViewModel()
+    history.update(
+      from: HistoryPayload(
+        days: 14,
+        summaries: (0..<14).map { index in
+          let recent = index >= 7
+          return DailySummary(
+            date: String(format: "2026-07-%02d", 7 + index),
+            status: .ready,
+            eventCount: 48,
+            focusScore: recent ? 74 : 61,
+            fragmentationScore: recent ? 19 : 28,
+            confidenceLevel: .high,
+            activeSeconds: 7_200,
+            focusedSeconds: recent ? 4_500 : 3_100,
+            meaningfulSwitchCount: recent ? 5 : 8,
+            longestUninterruptedSeconds: recent ? 1_800 : 1_080
+          )
+        }
+      )
+    )
 
     let renderStartedAt = Date.timeIntervalSinceReferenceDate
+    let oneDayHistory = progressiveHistory(observedDays: 1)
+    let partialHistory = progressiveHistory(observedDays: 3)
+    try render(
+      WeekOverWeekCoachingView(availability: .available, viewModel: oneDayHistory),
+      named: "progressive-insight-one-day.png",
+      outputDirectory: output,
+      size: NSSize(width: 420, height: 235)
+    )
+    try render(
+      WeekOverWeekCoachingView(availability: .available, viewModel: partialHistory),
+      named: "progressive-insight-partial-week.png",
+      outputDirectory: output,
+      size: NSSize(width: 420, height: 235)
+    )
+    try render(
+      WeekOverWeekCoachingView(availability: .available, viewModel: history),
+      named: "progressive-insight-full-comparison.png",
+      outputDirectory: output,
+      size: NSSize(width: 420, height: 235)
+    )
+    let inlineSegment = LocalDailyActivitySegment(
+      id: "unknown-inline",
+      label: "Unclassified",
+      representativeEventID: UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+      stableID: "abs_inline_local",
+      suggestedName: "Sketch Companion",
+      category: "UNCLASSIFIED",
+      durationSeconds: 1_200,
+      percentage: 100,
+      confidence: .none,
+      explanation: "Observed locally for 20 minutes."
+    )
+    try render(
+      InlineActivityCorrectionEditor(
+        segment: inlineSegment,
+        onSave: { _, _ in },
+        onCancel: {},
+        onUndo: nil
+      ),
+      named: "inline-activity-naming.png",
+      outputDirectory: output,
+      size: NSSize(width: 520, height: 165)
+    )
+    let historyMessages = PassthroughSubject<ServerMessage, Never>()
+    let historyModel = MenuStatusViewModel(
+      ipcClient: FakeIPCClient(),
+      messages: historyMessages
+    )
+    historyMessages.send(
+      .correctionHistoryPage(
+        CorrectionHistoryPage(
+          items: (0..<20).map { index in
+            ClassificationCorrectionSummary(
+              stableID: "abs_snapshot_\(index)",
+              label: "reference:inferred",
+              localLabel: "Local correction \(index + 1)",
+              category: index.isMultiple(of: 2) ? "REFERENCE" : "FOCUS_WORK",
+              updatedAt: base
+            )
+          },
+          offset: 20,
+          pageSize: 20,
+          totalCount: 63,
+          hasMore: true
+        )
+      )
+    )
+    await Task.yield()
+    try render(
+      CorrectionHistoryBrowser(model: historyModel),
+      named: "paginated-correction-history.png",
+      outputDirectory: output,
+      size: NSSize(width: 560, height: 300)
+    )
     try render(
       FocusFragmentationView(focus: focus, errorMessage: nil, onStartWorkBlock: {}),
       named: "scope3-focus-fragmentation-synthetic.png",
       outputDirectory: output
     )
     try render(
-      DailyActivityView(snapshot: dashboard),
+      YourWeekContentView(
+        snapshot: dashboard,
+        historyAvailability: .available,
+        historyViewModel: history
+      ),
       named: "scope3-daily-activity-synthetic.png",
-      outputDirectory: output
+      outputDirectory: output,
+      size: NSSize(width: 620, height: 650)
     )
     let renderMilliseconds =
       (Date.timeIntervalSinceReferenceDate - renderStartedAt) * 1_000
@@ -113,12 +214,38 @@ final class Scope3SyntheticSnapshotTests: XCTestCase {
     XCTAssertLessThan(renderMilliseconds, 1_500)
   }
 
+  private func progressiveHistory(observedDays: Int) -> HistoryViewModel {
+    let history = HistoryViewModel()
+    var summaries: [DailySummary] = []
+    for index in 0..<observedDays {
+      let dayNumber = 26 - observedDays + index + 1
+      let focusScore = 62.0 + Double(index * 3)
+      let fragmentationScore = 20.0 - Double(index)
+      summaries.append(
+        DailySummary(
+          date: String(format: "2026-07-%02d", dayNumber),
+          status: .ready,
+          eventCount: 12 + index,
+          focusScore: focusScore,
+          fragmentationScore: fragmentationScore,
+          confidenceLevel: observedDays == 1 ? .low : .medium,
+          activeSeconds: 3_600,
+          focusedSeconds: 2_100 + index * 120,
+          meaningfulSwitchCount: 3,
+          longestUninterruptedSeconds: 1_200
+        )
+      )
+    }
+    history.update(from: HistoryPayload(days: 7, summaries: summaries))
+    return history
+  }
+
   private func render<V: View>(
     _ view: V,
     named name: String,
-    outputDirectory: String
+    outputDirectory: String,
+    size: NSSize = NSSize(width: 620, height: 390)
   ) throws {
-    let size = NSSize(width: 620, height: 390)
     let root = AnyView(
       view
         .padding(18)

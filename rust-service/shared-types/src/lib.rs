@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,6 +38,10 @@ pub enum ClientMessage {
     FlushUploadQueue(FlushUploadQueue),
     /// Saves a local personal override and syncs an uploaded historical event.
     CorrectEventClassification(CorrectEventClassification),
+    /// Edits a persisted device-local rule after its source event leaves the queue.
+    UpdateClassificationOverride(UpdateClassificationOverride),
+    /// Requests one bounded page of persisted device-local rules.
+    RequestCorrectionHistory(RequestCorrectionHistory),
     /// Removes one device-local personal rule.
     RemoveClassificationOverride(RemoveClassificationOverride),
     /// Removes every device-local personal rule.
@@ -118,6 +122,8 @@ pub enum ServerMessage {
     NotificationPayload(NotificationPayload),
     /// Privacy-safe menu-bar settings data.
     MenuStatus(MenuStatus),
+    /// One bounded page of persisted device-local rules.
+    CorrectionHistoryPage(CorrectionHistoryPage),
     /// Current or most recent device-local work-block state.
     WorkBlockState(WorkBlockSnapshot),
     /// Bounded, local-only live dashboard data.
@@ -174,7 +180,7 @@ pub enum MalformedMessageCode {
 }
 
 /// Local-only raw activity event accepted from Swift.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawEvent {
     /// Stable event identifier.
@@ -190,6 +196,20 @@ pub struct RawEvent {
     pub window_title: String,
     /// Optional raw application bundle identifier; local-only.
     pub bundle_id: Option<String>,
+}
+
+impl std::fmt::Debug for RawEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawEvent")
+            .field("event_id", &self.event_id)
+            .field("occurred_at", &self.occurred_at)
+            .field("duration_seconds", &self.duration_seconds)
+            .field("app_name", &"[redacted]")
+            .field("window_title", &"[redacted]")
+            .field("bundle_id", &self.bundle_id.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// Acknowledgement for one raw event.
@@ -495,12 +515,74 @@ pub struct RequestMenuStatus {}
 pub struct FlushUploadQueue {}
 
 /// User-selected correction for one locally known event.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CorrectEventClassification {
     pub event_id: Uuid,
     pub stable_id: String,
     pub category: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_activity_name: Option<String>,
+}
+
+/// Device-local edit of a persisted rule. No cloud request is made.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateClassificationOverride {
+    pub stable_id: String,
+    pub category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_activity_name: Option<String>,
+}
+
+impl std::fmt::Debug for UpdateClassificationOverride {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UpdateClassificationOverride")
+            .field("stable_id", &"[local_identifier]")
+            .field("category", &self.category)
+            .field(
+                "local_activity_name",
+                &self.local_activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
+}
+
+/// Search text is local-only because it may contain an activity alias.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestCorrectionHistory {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    pub offset: u32,
+    pub page_size: u32,
+}
+
+impl std::fmt::Debug for RequestCorrectionHistory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RequestCorrectionHistory")
+            .field("query", &self.query.as_ref().map(|_| "[redacted]"))
+            .field("offset", &self.offset)
+            .field("page_size", &self.page_size)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for CorrectEventClassification {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CorrectEventClassification")
+            .field("event_id", &self.event_id)
+            .field("stable_id", &"[local_identifier]")
+            .field("category", &self.category)
+            .field(
+                "local_activity_name",
+                &self.local_activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -831,6 +913,13 @@ pub enum LocalDailyActivityState {
 pub struct LocalDailyActivitySegment {
     pub id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representative_event_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_name: Option<String>,
+    pub alias_confirmed: bool,
     pub category: String,
     pub duration_seconds: u64,
     pub percentage: u32,
@@ -844,6 +933,22 @@ impl std::fmt::Debug for LocalDailyActivitySegment {
             .debug_struct("LocalDailyActivitySegment")
             .field("id", &self.id)
             .field("label", &"[local_display_label]")
+            .field(
+                "representative_event_id",
+                &self
+                    .representative_event_id
+                    .as_ref()
+                    .map(|_| "[local_identifier]"),
+            )
+            .field(
+                "stable_id",
+                &self.stable_id.as_ref().map(|_| "[local_identifier]"),
+            )
+            .field(
+                "suggested_name",
+                &self.suggested_name.as_ref().map(|_| "[redacted]"),
+            )
+            .field("alias_confirmed", &self.alias_confirmed)
             .field("category", &self.category)
             .field("duration_seconds", &self.duration_seconds)
             .field("percentage", &self.percentage)
@@ -959,6 +1064,58 @@ pub struct QueuedEventSummary {
     pub occurred_at: DateTime<Utc>,
 }
 
+/// One persisted personal rule. Local labels are redacted from Debug output
+/// and never enter any cloud DTO.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClassificationCorrectionSummary {
+    pub stable_id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_label: Option<String>,
+    pub category: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorrectionHistoryPage {
+    pub items: Vec<ClassificationCorrectionSummary>,
+    pub offset: u32,
+    pub page_size: u32,
+    pub total_count: u64,
+    pub has_more: bool,
+}
+
+impl std::fmt::Debug for CorrectionHistoryPage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CorrectionHistoryPage")
+            .field("item_count", &self.items.len())
+            .field("offset", &self.offset)
+            .field("page_size", &self.page_size)
+            .field("total_count", &self.total_count)
+            .field("has_more", &self.has_more)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ClassificationCorrectionSummary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClassificationCorrectionSummary")
+            .field("stable_id", &"[local_identifier]")
+            .field("label", &self.label)
+            .field(
+                "local_label",
+                &self.local_label.as_ref().map(|_| "[redacted]"),
+            )
+            .field("category", &self.category)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
 /// Settings snapshot for the menu popover.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -974,6 +1131,7 @@ pub struct MenuStatus {
     pub rejected_upload_batch_count: u64,
     pub queued_event_count: u64,
     pub queued_events: Vec<QueuedEventSummary>,
+    pub correction_history: Vec<ClassificationCorrectionSummary>,
 }
 
 /// Sent when Swift requested a payload that is not yet in the cache.

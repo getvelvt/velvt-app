@@ -1,5 +1,24 @@
 use std::{collections::HashMap, sync::Mutex};
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct PersonalOverride {
+    pub category: String,
+    pub local_activity_name: Option<String>,
+}
+
+impl std::fmt::Debug for PersonalOverride {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PersonalOverride")
+            .field("category", &self.category)
+            .field(
+                "local_activity_name",
+                &self.local_activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
+}
+
 /// Stable-ID persistence boundary. R3 will provide the SQLite implementation.
 pub struct MappingResolution<'a> {
     pub stable_key: &'a str,
@@ -16,7 +35,7 @@ pub struct MappingResolution<'a> {
 
 pub trait AbstractionMappingStore: Send + Sync {
     /// Returns a user-selected category for the exact local app/title key.
-    fn personal_override(&self, stable_key: &str) -> Result<Option<String>, StoreError>;
+    fn personal_override(&self, stable_key: &str) -> Result<Option<PersonalOverride>, StoreError>;
 
     /// Returns the existing ID for a key or atomically persists the fresh mapping.
     fn resolve_id(&self, mapping: MappingResolution<'_>) -> Result<String, StoreError>;
@@ -33,11 +52,11 @@ pub trait AbstractionMappingStore: Send + Sync {
 #[derive(Debug, Default)]
 pub struct InMemoryMappingStore {
     mappings: Mutex<HashMap<String, String>>,
-    overrides: Mutex<HashMap<String, String>>,
+    overrides: Mutex<HashMap<String, PersonalOverride>>,
 }
 
 impl AbstractionMappingStore for InMemoryMappingStore {
-    fn personal_override(&self, stable_key: &str) -> Result<Option<String>, StoreError> {
+    fn personal_override(&self, stable_key: &str) -> Result<Option<PersonalOverride>, StoreError> {
         Ok(self
             .overrides
             .lock()

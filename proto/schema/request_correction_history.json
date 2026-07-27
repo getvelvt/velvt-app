@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Local IPC only. Search text can contain a user-created alias and must never be logged or sent to cloud services.",
+  "title": "RequestCorrectionHistory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["offset", "page_size"],
+  "properties": {
+    "query": { "type": ["string", "null"], "maxLength": 64 },
+    "offset": { "type": "integer", "minimum": 0 },
+    "page_size": { "type": "integer", "minimum": 1, "maximum": 20 }
+  }
+}

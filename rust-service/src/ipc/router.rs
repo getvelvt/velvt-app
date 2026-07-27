@@ -8,9 +8,9 @@ use std::{
 use chrono::Utc;
 use uuid::Uuid;
 use velvt_shared_types::{
-    CacheEmpty, ClassificationConfidence, ClassificationSource, ClassificationStatus,
-    ClientMessage, MenuStatus, QueuedEventSummary, RawEventAck, RawEventStatus,
-    RequestLocalDashboard, ServerMessage,
+    CacheEmpty, ClassificationConfidence, ClassificationCorrectionSummary, ClassificationSource,
+    ClassificationStatus, ClientMessage, CorrectionHistoryPage, MenuStatus, QueuedEventSummary,
+    RawEventAck, RawEventStatus, RequestLocalDashboard, ServerMessage,
 };
 
 use crate::abstraction::AbstractionEngine;
@@ -50,6 +50,7 @@ pub struct MenuStatusProvider {
     token_store: Arc<dyn TokenStore>,
     batches: Arc<dyn UploadBatchRepo>,
     raw_events: Arc<dyn RawEventRepo>,
+    abstraction_map: Arc<dyn AbstractionMapRepo>,
     readiness: Mutex<Option<(Instant, bool)>>,
 }
 
@@ -59,12 +60,14 @@ impl MenuStatusProvider {
         token_store: Arc<dyn TokenStore>,
         batches: Arc<dyn UploadBatchRepo>,
         raw_events: Arc<dyn RawEventRepo>,
+        abstraction_map: Arc<dyn AbstractionMapRepo>,
     ) -> Self {
         Self {
             http,
             token_store,
             batches,
             raw_events,
+            abstraction_map,
             readiness: Mutex::new(None),
         }
     }
@@ -174,6 +177,19 @@ impl MenuStatusProviding for MenuStatusProvider {
                 }
             });
             let upload_status = upload_status_for(cloud_ready, &diagnostics).to_owned();
+            let correction_history = self
+                .abstraction_map
+                .personal_overrides(25)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|correction| ClassificationCorrectionSummary {
+                    stable_id: correction.stable_id,
+                    label: correction.label,
+                    local_label: correction.local_activity_name,
+                    category: correction.category,
+                    updated_at: correction.updated_at,
+                })
+                .collect();
             MenuStatus {
                 device_id: self.token_store.load_device_id().unwrap_or_default(),
                 cloud_ready,
@@ -186,6 +202,7 @@ impl MenuStatusProviding for MenuStatusProvider {
                 rejected_upload_batch_count: diagnostics.rejected_batch_count,
                 queued_event_count,
                 queued_events,
+                correction_history,
             }
         })
     }
@@ -207,6 +224,7 @@ impl MenuStatusProviding for EmptyMenuStatusProvider {
                 rejected_upload_batch_count: 0,
                 queued_event_count: 0,
                 queued_events: vec![],
+                correction_history: vec![],
             }
         })
     }
@@ -222,6 +240,36 @@ fn upload_status_for(cloud_ready: bool, diagnostics: &UploadQueueDiagnostics) ->
         _ if diagnostics.pending_batch_count > 0 => "pending",
         _ if diagnostics.rejected_batch_count > 0 => "privacy_rejected",
         _ => "ready",
+    }
+}
+
+fn normalized_local_activity_name(value: Option<&str>) -> Result<Option<String>, ()> {
+    let Some(value) = value else { return Ok(None) };
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 48 || trimmed.chars().any(char::is_control) {
+        return Err(());
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
+fn normalized_correction_query(value: Option<&str>) -> Result<Option<String>, ()> {
+    let Some(value) = value else { return Ok(None) };
+    let trimmed = value.trim();
+    if trimmed.chars().count() > 64 || trimmed.chars().any(char::is_control) {
+        return Err(());
+    }
+    Ok((!trimmed.is_empty()).then(|| trimmed.to_owned()))
+}
+
+fn correction_summary(
+    correction: crate::persistence::PersonalOverrideRecord,
+) -> ClassificationCorrectionSummary {
+    ClassificationCorrectionSummary {
+        stable_id: correction.stable_id,
+        label: correction.label,
+        local_label: correction.local_activity_name,
+        category: correction.category,
+        updated_at: correction.updated_at,
     }
 }
 
@@ -263,6 +311,7 @@ mod tests {
             Arc::clone(&token_store) as Arc<dyn TokenStore>,
             persistence.upload_batch_repo(),
             persistence.raw_event_repo(),
+            persistence.abstraction_map_repo(),
         );
 
         token_store.store_device_id("device-1").unwrap();
@@ -270,6 +319,18 @@ mod tests {
         let status = provider.snapshot().await;
 
         assert_eq!(status.device_id.as_deref(), Some("device-1"));
+    }
+
+    #[test]
+    fn local_activity_names_are_trimmed_and_privacy_bounded() {
+        assert_eq!(
+            normalized_local_activity_name(Some("  Research reading  ")),
+            Ok(Some("Research reading".into()))
+        );
+        assert_eq!(normalized_local_activity_name(None), Ok(None));
+        assert!(normalized_local_activity_name(Some("")).is_err());
+        assert!(normalized_local_activity_name(Some("private\nwindow")).is_err());
+        assert!(normalized_local_activity_name(Some(&"x".repeat(49))).is_err());
     }
 }
 
@@ -427,6 +488,45 @@ impl MessageRouter for R7Router {
                 self.menu_status.snapshot().await,
             ))),
 
+            ClientMessage::RequestCorrectionHistory(request) => {
+                let Some(abstraction_map) = &self.abstraction_map else {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_unavailable",
+                    )));
+                };
+                let query = match normalized_correction_query(request.query.as_deref()) {
+                    Ok(value) => value,
+                    Err(()) => {
+                        return Ok(Some(classification_correction_error(
+                            "invalid_correction_history_query",
+                        )));
+                    }
+                };
+                let page_size = request.page_size.clamp(1, 20);
+                let (items, total_count) = match abstraction_map.search_personal_overrides(
+                    query.as_deref(),
+                    request.offset as usize,
+                    page_size as usize,
+                ) {
+                    Ok(result) => result,
+                    Err(_) => {
+                        return Ok(Some(classification_correction_error(
+                            "classification_correction_history_failed",
+                        )));
+                    }
+                };
+                let returned = items.len() as u64;
+                Ok(Some(ServerMessage::CorrectionHistoryPage(
+                    CorrectionHistoryPage {
+                        items: items.into_iter().map(correction_summary).collect(),
+                        offset: request.offset,
+                        page_size,
+                        total_count,
+                        has_more: u64::from(request.offset) + returned < total_count,
+                    },
+                )))
+            }
+
             ClientMessage::FlushUploadQueue(_) => {
                 if self.ingestor.flush_now().await.is_err() {
                     tracing::error!(
@@ -463,13 +563,28 @@ impl MessageRouter for R7Router {
                         "classification_correction_unavailable",
                     )));
                 };
+                let local_activity_name =
+                    match normalized_local_activity_name(correction.local_activity_name.as_deref())
+                    {
+                        Ok(value) => value,
+                        Err(()) => {
+                            return Ok(Some(classification_correction_error(
+                                "invalid_local_activity_name",
+                            )));
+                        }
+                    };
                 if abstraction_map
-                    .save_personal_override(&correction.stable_id, &correction.category)
+                    .save_personal_override(
+                        &correction.stable_id,
+                        &correction.category,
+                        local_activity_name.as_deref(),
+                    )
                     .and_then(|_| {
                         self.raw_event_repo.update_classification(
                             &correction.event_id.to_string(),
                             label,
                             &correction.category,
+                            local_activity_name.as_deref(),
                         )
                     })
                     .and_then(|_| {
@@ -504,6 +619,44 @@ impl MessageRouter for R7Router {
                         error_code = "classification_correction_sync_failed",
                         "local classification correction saved but cloud sync was deferred"
                     ),
+                }
+                Ok(Some(ServerMessage::MenuStatus(
+                    self.menu_status.snapshot().await,
+                )))
+            }
+
+            ClientMessage::UpdateClassificationOverride(correction) => {
+                if crate::abstraction::override_label_for_category(&correction.category).is_none() {
+                    return Ok(Some(classification_correction_error(
+                        "invalid_classification_category",
+                    )));
+                }
+                let Some(abstraction_map) = &self.abstraction_map else {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_unavailable",
+                    )));
+                };
+                let local_activity_name =
+                    match normalized_local_activity_name(correction.local_activity_name.as_deref())
+                    {
+                        Ok(value) => value,
+                        Err(()) => {
+                            return Ok(Some(classification_correction_error(
+                                "invalid_local_activity_name",
+                            )));
+                        }
+                    };
+                if abstraction_map
+                    .save_personal_override(
+                        &correction.stable_id,
+                        &correction.category,
+                        local_activity_name.as_deref(),
+                    )
+                    .is_err()
+                {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_persistence_failed",
+                    )));
                 }
                 Ok(Some(ServerMessage::MenuStatus(
                     self.menu_status.snapshot().await,
@@ -766,6 +919,7 @@ impl R7Router {
                     stable_id: abstracted.stable_id().to_owned(),
                     label: abstracted.label().to_owned(),
                     local_display_label: abstracted.local_display_label().map(str::to_owned),
+                    local_name_suggestion: abstracted.local_name_suggestion().map(str::to_owned),
                     category: abstracted.category().to_owned(),
                     taxonomy_version: abstracted.taxonomy_version().to_owned(),
                     classification_tier: abstracted.classification_tier().as_str().to_owned(),

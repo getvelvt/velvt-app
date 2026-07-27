@@ -281,7 +281,13 @@ public final class PermissionManager: PermissionManagerProtocol {
             return statuses
         }
         if let updated {
-            statusSubject.send(updated)
+            if Thread.isMainThread {
+                statusSubject.send(updated)
+            } else {
+                DispatchQueue.main.sync {
+                    statusSubject.send(updated)
+                }
+            }
         }
     }
 

@@ -345,6 +345,90 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertEqual(sut.latestReadyDay?.id, "2026-07-17")
   }
 
+  // MARK: - Week-over-week coaching
+
+  func testWeekOverWeekInsightComparesTwoSevenDayWindows() throws {
+    let sut = HistoryViewModel()
+    sut.update(from: makeTwoWeekHistory())
+
+    let insight = try XCTUnwrap(sut.progressiveInsight)
+    XCTAssertEqual(insight.tier, .weekOverWeek)
+    XCTAssertEqual(insight.recentObservedDays, 7)
+    XCTAssertEqual(insight.priorObservedDays, 7)
+    XCTAssertTrue(insight.observation.contains("60%"))
+    XCTAssertTrue(insight.comparison.contains("27 points higher"))
+    XCTAssertTrue(insight.comparison.contains("2.0 per hour lower"))
+    XCTAssertEqual(insight.evidenceSummary, "7/7 recent days compared with 7/7 prior days")
+  }
+
+  func testPartialCoverageNeverMasqueradesAsWeekOverWeek() throws {
+    let summaries = makeTwoWeekHistory().summaries.enumerated().map { index, summary in
+      index < 5
+        ? DailySummary(
+            date: summary.date, status: .noData, eventCount: 0,
+            focusScore: nil, fragmentationScore: nil,
+            confidenceLevel: .none, activeSeconds: 0)
+        : summary
+    }
+    let sut = HistoryViewModel()
+    sut.update(from: HistoryPayload(days: 14, summaries: summaries))
+
+    let insight = try XCTUnwrap(sut.progressiveInsight)
+    XCTAssertEqual(insight.tier, .thisWeekSoFar)
+    XCTAssertTrue(insight.comparison.contains("not week over week"))
+  }
+
+  func testOneObservedDayProducesTodaySoFarInsight() throws {
+    let sut = HistoryViewModel()
+    sut.update(from: HistoryPayload(days: 7, summaries: [
+      DailySummary(
+        date: "2026-07-26", status: .ready, eventCount: 12,
+        focusScore: 60, fragmentationScore: 20,
+        confidenceLevel: .low, activeSeconds: 3600, focusedSeconds: 1800,
+        meaningfulSwitchCount: 3)
+    ]))
+
+    let insight = try XCTUnwrap(sut.progressiveInsight)
+    XCTAssertEqual(insight.tier, .todaySoFar)
+    XCTAssertTrue(insight.observation.contains("50%"))
+    XCTAssertEqual(insight.confidenceSummary, "Early confidence")
+    XCTAssertTrue(insight.evidenceSummary.contains("current day may be incomplete"))
+  }
+
+  func testTwoObservedDaysProducePartialWeekInsight() throws {
+    let sut = HistoryViewModel()
+    sut.update(from: HistoryPayload(days: 7, summaries: [
+      DailySummary(
+        date: "2026-07-25", status: .ready, eventCount: 12,
+        focusScore: 60, fragmentationScore: 20,
+        confidenceLevel: .medium, activeSeconds: 3600, focusedSeconds: 1800),
+      DailySummary(
+        date: "2026-07-26", status: .ready, eventCount: 16,
+        focusScore: 70, fragmentationScore: 15,
+        confidenceLevel: .medium, activeSeconds: 3600, focusedSeconds: 2700),
+    ]))
+
+    let insight = try XCTUnwrap(sut.progressiveInsight)
+    XCTAssertEqual(insight.tier, .thisWeekSoFar)
+    XCTAssertEqual(insight.recentObservedDays, 2)
+    XCTAssertTrue(insight.evidenceSummary.contains("partial window"))
+  }
+
+  func testZeroActivityDayProducesGroundedNonComparativeInsight() throws {
+    let sut = HistoryViewModel()
+    sut.update(from: HistoryPayload(days: 7, summaries: [
+      DailySummary(
+        date: "2026-07-26", status: .ready, eventCount: 0,
+        focusScore: nil, fragmentationScore: nil,
+        confidenceLevel: .none, activeSeconds: 0)
+    ]))
+
+    let insight = try XCTUnwrap(sut.progressiveInsight)
+    XCTAssertEqual(insight.tier, .todaySoFar)
+    XCTAssertTrue(insight.observation.contains("No qualifying activity"))
+    XCTAssertTrue(insight.comparison.contains("not enough active time"))
+  }
+
   // MARK: - Helpers
 
   private func noDataSummary(date: String = "2026-06-09") -> DailySummary {
@@ -387,5 +471,25 @@ final class HistoryViewModelTests: XCTestCase {
         confidenceLevel: .low, activeSeconds: 0)
     }
     return HistoryPayload(days: 7, summaries: summaries)
+  }
+
+  private func makeTwoWeekHistory() -> HistoryPayload {
+    let dates = (1 ... 14).map { String(format: "2026-07-%02d", $0) }
+    let summaries = dates.enumerated().map { index, date in
+      let isRecent = index >= 7
+      return DailySummary(
+        date: date,
+        status: .ready,
+        eventCount: 40,
+        focusScore: isRecent ? 72 : 58,
+        fragmentationScore: isRecent ? 18 : 30,
+        confidenceLevel: .high,
+        activeSeconds: 3_600,
+        focusedSeconds: isRecent ? 2_160 : 1_200,
+        meaningfulSwitchCount: isRecent ? 2 : 4,
+        longestUninterruptedSeconds: isRecent ? 1_800 : 900
+      )
+    }
+    return HistoryPayload(days: 14, summaries: summaries)
   }
 }

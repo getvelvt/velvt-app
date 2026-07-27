@@ -17,7 +17,8 @@
         "failed_upload_batch_count",
         "rejected_upload_batch_count",
         "queued_event_count",
-        "queued_events"
+        "queued_events",
+        "correction_history"
       ],
       "properties": {
         "device_id": { "type": ["string", "null"] },
@@ -74,6 +75,26 @@
                 "enum": ["seed", "heuristic", "embedding", "user_rule", "fallback"]
               },
               "occurred_at": { "type": "string", "format": "date-time" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "correction_history": {
+          "type": "array",
+          "maxItems": 25,
+          "description": "Device-local persisted personal rules. Local labels must never be forwarded outside the device.",
+          "items": {
+            "type": "object",
+            "required": ["stable_id", "label", "category", "updated_at"],
+            "properties": {
+              "stable_id": { "type": "string" },
+              "label": { "type": "string" },
+              "local_label": {
+                "type": "string",
+                "description": "Device-local display label; must never be forwarded outside the device."
+              },
+              "category": { "type": "string" },
+              "updated_at": { "type": "string", "format": "date-time" }
             },
             "additionalProperties": false
           }

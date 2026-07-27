@@ -87,10 +87,14 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["id", "label", "category", "duration_seconds", "percentage", "confidence", "explanation"],
+              "required": ["id", "label", "representative_event_id", "stable_id", "suggested_name", "alias_confirmed", "category", "duration_seconds", "percentage", "confidence", "explanation"],
               "properties": {
                 "id": { "type": "string" },
                 "label": { "type": "string" },
+                "representative_event_id": { "type": ["string", "null"], "format": "uuid" },
+                "stable_id": { "type": ["string", "null"] },
+                "suggested_name": { "type": ["string", "null"], "maxLength": 48 },
+                "alias_confirmed": { "type": "boolean" },
                 "category": { "type": "string" },
                 "duration_seconds": { "type": "integer", "minimum": 0 },
                 "percentage": { "type": "integer", "minimum": 0, "maximum": 100 },

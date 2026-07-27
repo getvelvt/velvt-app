@@ -6,8 +6,9 @@ mod traits;
 
 pub use models::{
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, LocalDisplayAggregate,
-    LocalEventMetadata, NewUploadBatch, RawEventEntry, UploadBatch, UploadBatchStatus,
-    UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockObservation, WorkBlockRecord,
+    LocalEventMetadata, NewUploadBatch, PersonalOverrideRecord, RawEventEntry, UploadBatch,
+    UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockObservation,
+    WorkBlockRecord,
 };
 pub use sqlite::{PersistenceError, SqlitePersistence};
 pub use traits::{

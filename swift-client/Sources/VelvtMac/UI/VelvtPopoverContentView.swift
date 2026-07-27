@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 extension View {
@@ -801,11 +802,16 @@ public struct FocusFragmentationView: View {
 
 public struct DailyActivityView: View {
   let snapshot: LocalDashboardSnapshot?
+  var onCorrectActivity: (LocalDailyActivitySegment, String, String?) -> Void = { _, _, _ in }
+  var onUndoActivity: (LocalDailyActivitySegment) -> Void = { _ in }
   @State private var hoveredDetail: String?
+  @State private var selectedDetail: String?
+  @State private var selectedSegmentID: String?
+  @State private var editingSegmentID: String?
   @FocusState private var focusedSegmentID: String?
 
   public var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 4) {
       HStack {
         Text("Daily Activity").font(.headline)
         Spacer()
@@ -819,20 +825,74 @@ public struct DailyActivityView: View {
         ForEach(0..<7, id: \.self) { _ in
           RoundedRectangle(cornerRadius: 3)
             .fill(Color.white.opacity(0.06))
-            .frame(height: 28)
+            .frame(height: 22)
         }
         Text("Still building the seven local day rows.")
           .font(.caption2).foregroundStyle(Color.velvtMuted)
       }
-      if let hoveredDetail {
-        Text(hoveredDetail)
+      Divider().opacity(0.18)
+      HStack(spacing: 5) {
+        Image(systemName: "sparkles")
+        Text("Selected activity evidence")
+      }
+      .font(.caption2.bold())
+      .foregroundStyle(Color.velvtPink)
+      Text(displayedDetail)
           .font(.caption2)
           .foregroundStyle(Color.velvtMuted)
           .fixedSize(horizontal: false, vertical: true)
-          .accessibilityLabel(hoveredDetail)
+          .lineLimit(2)
+          .help(displayedDetail)
+          .accessibilityLabel(displayedDetail)
+      if let segment = selectedSegment, segment.stableID != nil {
+        HStack(spacing: 7) {
+          ActivityContextIcon(name: segment.suggestedName ?? segment.label)
+          VStack(alignment: .leading, spacing: 1) {
+            Text(segment.suggestedName ?? segment.label)
+              .font(.caption.bold())
+              .lineLimit(1)
+            Label(
+              segment.suggestedName == nil ? "Local only" : "Local-only suggestion",
+              systemImage: "lock.fill"
+            )
+            .font(.caption2)
+            .foregroundStyle(Color.velvtMuted)
+          }
+          Spacer(minLength: 4)
+          if let suggestion = segment.suggestedName, !segment.aliasConfirmed {
+            Button("Use suggestion") {
+              onCorrectActivity(segment, correctionCategory(segment.category), suggestion)
+            }
+            .controlSize(.small)
+            .accessibilityHint("Confirms this device-local name for future matching activity")
+          }
+          Button(segment.label == "Unclassified" ? "Name & categorize" : "Rename / Categorize") {
+            editingSegmentID = segment.id
+          }
+          .controlSize(.small)
+          .buttonStyle(.borderedProminent)
+          .accessibilityHint("Opens local-only activity naming and category controls")
+        }
+        if editingSegmentID == segment.id {
+          InlineActivityCorrectionEditor(
+            segment: segment,
+            onSave: { category, name in
+              onCorrectActivity(segment, category, name)
+              editingSegmentID = nil
+            },
+            onCancel: { editingSegmentID = nil },
+            onUndo: segment.aliasConfirmed
+              ? {
+                  onUndoActivity(segment)
+                  editingSegmentID = nil
+                }
+              : nil
+          )
+          .id(segment.id)
+        }
       }
     }
-    .padding(12)
+    .padding(10)
     .background(Color.velvtPanel)
     .clipShape(RoundedRectangle(cornerRadius: 8))
     .onChange(of: focusedSegmentID) { _ in updateFocusedDetail() }
@@ -858,7 +918,8 @@ public struct DailyActivityView: View {
             ForEach(Array(day.segments.enumerated()), id: \.element.id) { index, segment in
               let detail = segmentDetail(segment, day: day)
               Button {
-                hoveredDetail = detail
+                selectedDetail = detail
+                selectedSegmentID = segment.id
               } label: {
                 let width = max(6, proxy.size.width * CGFloat(segment.percentage) / 100)
                 ZStack {
@@ -891,7 +952,7 @@ public struct DailyActivityView: View {
         .foregroundStyle(Color.velvtMuted)
         .frame(width: 46, alignment: .trailing)
     }
-    .frame(height: 31)
+    .frame(height: 24)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(
       "\(dayLabel(day.date)), \(stateLabel(day)), \(duration(day.activeSeconds)) recorded")
@@ -904,7 +965,30 @@ public struct DailyActivityView: View {
       }),
       let segment = day.segments.first(where: { $0.id == id })
     else { return }
-    hoveredDetail = segmentDetail(segment, day: day)
+    selectedDetail = segmentDetail(segment, day: day)
+    selectedSegmentID = segment.id
+  }
+
+  private var selectedSegment: LocalDailyActivitySegment? {
+    guard let selectedSegmentID else { return nil }
+    return snapshot?.dailyActivity
+      .lazy
+      .flatMap(\.segments)
+      .first(where: { $0.id == selectedSegmentID })
+  }
+
+  private var displayedDetail: String {
+    if let hoveredDetail { return hoveredDetail }
+    if let selectedDetail { return selectedDetail }
+    guard let days = snapshot?.dailyActivity else {
+      return "Waiting for the local privacy service to build this seven-day view."
+    }
+    for day in days.reversed() {
+      if let segment = day.segments.first(where: { $0.explanation != nil }) {
+        return segmentDetail(segment, day: day)
+      }
+    }
+    return "No grounded activity insight yet. Keep Velvt running while you work."
   }
 
   private func segmentDetail(_ segment: LocalDailyActivitySegment, day: LocalDailyActivityDay)
@@ -926,6 +1010,10 @@ public struct DailyActivityView: View {
     }
   }
 
+  private func correctionCategory(_ value: String) -> String {
+    InlineActivityCorrectionEditor.categories.contains(value) ? value : "UNLOGGED"
+  }
+
   private func dayLabel(_ value: String) -> String {
     let parser = DateFormatter()
     parser.dateFormat = "yyyy-MM-dd"
@@ -942,6 +1030,113 @@ public struct DailyActivityView: View {
     return [
       Color.velvtGreen, .velvtPink, .velvtBlue, .orange.opacity(0.85), .purple.opacity(0.85),
     ][index % 5]
+  }
+}
+
+private struct ActivityContextIcon: View {
+  let name: String
+
+  var body: some View {
+    Group {
+      if let image = appImage {
+        Image(nsImage: image)
+          .resizable()
+          .scaledToFit()
+      } else {
+        Image(systemName: "app.dashed")
+          .resizable()
+          .scaledToFit()
+          .padding(3)
+          .foregroundStyle(Color.velvtMuted)
+      }
+    }
+    .frame(width: 22, height: 22)
+    .accessibilityHidden(true)
+  }
+
+  private var appImage: NSImage? {
+    guard
+      let url = NSWorkspace.shared.runningApplications.first(where: {
+        $0.localizedName?.localizedCaseInsensitiveCompare(name) == .orderedSame
+      })?.bundleURL
+    else { return nil }
+    return NSWorkspace.shared.icon(forFile: url.path)
+  }
+}
+
+struct InlineActivityCorrectionEditor: View {
+  static let categories = [
+    "FOCUS_WORK", "PASSIVE_CONSUMPTION", "SOCIAL_FEED", "COMMUNICATION",
+    "TASK_MANAGEMENT", "REFERENCE", "SYSTEM", "UNLOGGED",
+  ]
+
+  let segment: LocalDailyActivitySegment
+  let onSave: (String, String?) -> Void
+  let onCancel: () -> Void
+  let onUndo: (() -> Void)?
+  @State private var name: String
+  @State private var category: String
+
+  init(
+    segment: LocalDailyActivitySegment,
+    onSave: @escaping (String, String?) -> Void,
+    onCancel: @escaping () -> Void,
+    onUndo: (() -> Void)?
+  ) {
+    self.segment = segment
+    self.onSave = onSave
+    self.onCancel = onCancel
+    self.onUndo = onUndo
+    _name = State(initialValue: segment.suggestedName ?? (segment.label == "Unclassified" ? "" : segment.label))
+    _category = State(
+      initialValue: Self.categories.contains(segment.category) ? segment.category : "UNLOGGED")
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      TextField("Local activity name", text: $name)
+        .textFieldStyle(.roundedBorder)
+        .onChange(of: name) { value in
+          if value.count > 48 { name = String(value.prefix(48)) }
+        }
+        .accessibilityLabel("Local-only activity name")
+        .accessibilityHint("This name stays on this Mac")
+      HStack(spacing: 6) {
+        Picker("Category", selection: $category) {
+          ForEach(Self.categories, id: \.self) { value in
+            Text(categoryLabel(value)).tag(value)
+          }
+        }
+        .pickerStyle(.menu)
+        .controlSize(.small)
+        Button("Save") { onSave(category, normalizedName) }
+          .keyboardShortcut(.return, modifiers: .command)
+          .disabled(normalizedName == nil)
+        Button("Cancel", action: onCancel)
+          .keyboardShortcut(.cancelAction)
+        if let onUndo {
+          Button("Undo saved correction", role: .destructive, action: onUndo)
+        }
+      }
+      Label("Names, suggestions, and icons stay on this Mac.", systemImage: "lock.fill")
+        .font(.caption2)
+        .foregroundStyle(Color.velvtMuted)
+    }
+    .padding(8)
+    .background(Color.velvtSurface.opacity(0.75))
+    .clipShape(RoundedRectangle(cornerRadius: 7))
+  }
+
+  private var normalizedName: String? {
+    let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty ? nil : value
+  }
+
+  private func categoryLabel(_ value: String) -> String {
+    value
+      .replacingOccurrences(of: "_", with: " ")
+      .lowercased()
+      .capitalized
   }
 }
 

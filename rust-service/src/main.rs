@@ -434,6 +434,7 @@ async fn main() {
                 Arc::clone(&token_store) as Arc<dyn TokenStore>,
                 Arc::clone(&upload_batch_repo),
                 Arc::clone(&raw_event_repo),
+                persistence.abstraction_map_repo(),
             ))),
         )
         .with_auth_state(auth_state.subscribe())

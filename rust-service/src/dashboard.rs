@@ -417,6 +417,10 @@ fn daily_activity(
 #[derive(Clone)]
 struct DisplayBucket {
     label: String,
+    representative_event_id: Option<String>,
+    stable_id: Option<String>,
+    suggested_name: Option<String>,
+    alias_confirmed: bool,
     category: String,
     seconds: u64,
     confidence: ClassificationConfidence,
@@ -492,9 +496,13 @@ fn aggregate_day(
         };
         let confidence = parse_confidence(&event.classification_confidence);
         let bucket = by_label
-            .entry((label.clone(), category.clone()))
+            .entry((event.stable_id.clone(), category.clone()))
             .or_insert(DisplayBucket {
                 label,
+                representative_event_id: Some(event.event_id.clone()),
+                stable_id: Some(event.stable_id.clone()),
+                suggested_name: event.local_name_suggestion.clone(),
+                alias_confirmed: event.classification_source == "user_rule",
                 category,
                 seconds: 0,
                 confidence,
@@ -524,6 +532,10 @@ fn aggregate_day(
     if other_seconds > 0 {
         selected.push(DisplayBucket {
             label: "Other".to_owned(),
+            representative_event_id: None,
+            stable_id: None,
+            suggested_name: None,
+            alias_confirmed: false,
             category: "OTHER".to_owned(),
             seconds: other_seconds,
             confidence: ClassificationConfidence::None,
@@ -566,6 +578,13 @@ fn aggregate_day(
             LocalDailyActivitySegment {
                 id: format!("{date}-segment-{index}-{}", bucket.category.to_ascii_lowercase()),
                 label: bucket.label,
+                representative_event_id: bucket
+                    .representative_event_id
+                    .as_deref()
+                    .and_then(|value| uuid::Uuid::parse_str(value).ok()),
+                stable_id: bucket.stable_id,
+                suggested_name: bucket.suggested_name,
+                alias_confirmed: bucket.alias_confirmed,
                 category: bucket.category,
                 duration_seconds: bucket.seconds,
                 percentage,
@@ -865,6 +884,7 @@ mod tests {
             stable_id: format!("stable-{at}"),
             label: category.to_owned(),
             local_display_label: None,
+            local_name_suggestion: None,
             category: category.to_owned(),
             taxonomy_version: "test".to_owned(),
             classification_tier: "exact_match".to_owned(),

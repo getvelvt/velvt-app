@@ -65,6 +65,7 @@ fn classification_correction_round_trips_without_raw_app_data() {
         event_id: event_id(),
         stable_id: "abs_safe".into(),
         category: "COMMUNICATION".into(),
+        local_activity_name: None,
     });
 
     assert_eq!(
@@ -79,6 +80,101 @@ fn classification_correction_round_trips_without_raw_app_data() {
         })
     );
     assert_round_trip(message);
+}
+
+#[test]
+fn local_activity_name_round_trips_only_on_local_ipc_and_is_redacted_from_debug() {
+    let correction = CorrectEventClassification {
+        event_id: event_id(),
+        stable_id: "abs_private_rule".into(),
+        category: "REFERENCE".into(),
+        local_activity_name: Some("Research reading".into()),
+    };
+    let message = ClientMessage::CorrectEventClassification(correction.clone());
+
+    assert_eq!(
+        serde_json::to_value(&message).unwrap(),
+        json!({
+            "type": "correct_event_classification",
+            "payload": {
+                "event_id": event_id(),
+                "stable_id": "abs_private_rule",
+                "category": "REFERENCE",
+                "local_activity_name": "Research reading"
+            }
+        })
+    );
+    let debug = format!("{correction:?}");
+    assert!(!debug.contains("Research reading"));
+    assert!(!debug.contains("abs_private_rule"));
+    assert_round_trip(message);
+}
+
+#[test]
+fn raw_activity_fields_are_redacted_from_debug_and_error_safe_surfaces() {
+    let event = RawEvent {
+        event_id: event_id(),
+        occurred_at: timestamp(),
+        app_name: "PRIVATE_APP_SENTINEL".into(),
+        window_title: "PRIVATE_WINDOW_SENTINEL".into(),
+        bundle_id: Some("private.bundle.sentinel".into()),
+        duration_seconds: 30,
+    };
+    let debug = format!("{event:?}");
+
+    for forbidden in [
+        "PRIVATE_APP_SENTINEL",
+        "PRIVATE_WINDOW_SENTINEL",
+        "private.bundle.sentinel",
+    ] {
+        assert!(!debug.contains(forbidden));
+    }
+}
+
+#[test]
+fn correction_history_messages_are_bounded_typed_and_redacted() {
+    let request = RequestCorrectionHistory {
+        query: Some("PRIVATE_ALIAS_QUERY".into()),
+        offset: 20,
+        page_size: 20,
+    };
+    let update = UpdateClassificationOverride {
+        stable_id: "abs_PRIVATE_LOCAL_ID".into(),
+        category: "REFERENCE".into(),
+        local_activity_name: Some("PRIVATE_ALIAS_VALUE".into()),
+    };
+    let page = CorrectionHistoryPage {
+        items: vec![ClassificationCorrectionSummary {
+            stable_id: "abs_PRIVATE_LOCAL_ID".into(),
+            label: "reference:inferred".into(),
+            local_label: Some("PRIVATE_ALIAS_VALUE".into()),
+            category: "REFERENCE".into(),
+            updated_at: timestamp(),
+        }],
+        offset: 0,
+        page_size: 20,
+        total_count: 45,
+        has_more: true,
+    };
+
+    assert_round_trip(ClientMessage::RequestCorrectionHistory(request.clone()));
+    assert_round_trip(ClientMessage::UpdateClassificationOverride(update.clone()));
+    assert_round_trip(ServerMessage::CorrectionHistoryPage(page.clone()));
+    for debug in [
+        format!("{request:?}"),
+        format!("{update:?}"),
+        format!("{page:?}"),
+    ] {
+        for forbidden in [
+            "PRIVATE_ALIAS_QUERY",
+            "PRIVATE_ALIAS_VALUE",
+            "abs_PRIVATE_LOCAL_ID",
+        ] {
+            assert!(!debug.contains(forbidden));
+        }
+    }
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.page_size, 20);
 }
 
 #[test]

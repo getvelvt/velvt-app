@@ -16,6 +16,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case requestMenuStatus
     case flushUploadQueue
     case correctEventClassification(CorrectEventClassification)
+    case updateClassificationOverride(UpdateClassificationOverride)
+    case requestCorrectionHistory(RequestCorrectionHistory)
     case removeClassificationOverride(RemoveClassificationOverride)
     case resetClassificationOverrides
     case startWorkBlock(StartWorkBlock)
@@ -59,6 +61,10 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .flushUploadQueue
         case "correct_event_classification":
             self = .correctEventClassification(try CorrectEventClassification(from: payload))
+        case "update_classification_override":
+            self = .updateClassificationOverride(try UpdateClassificationOverride(from: payload))
+        case "request_correction_history":
+            self = .requestCorrectionHistory(try RequestCorrectionHistory(from: payload))
         case "remove_classification_override":
             self = .removeClassificationOverride(try RemoveClassificationOverride(from: payload))
         case "reset_classification_overrides":
@@ -129,6 +135,12 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case let .correctEventClassification(value):
             try envelope.encode("correct_event_classification", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .updateClassificationOverride(value):
+            try envelope.encode("update_classification_override", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .requestCorrectionHistory(value):
+            try envelope.encode("request_correction_history", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .removeClassificationOverride(value):
             try envelope.encode("remove_classification_override", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
@@ -190,6 +202,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     // Notification push (S7)
     case notificationPayload(NotificationPayload)
     case menuStatus(MenuStatus)
+    case correctionHistoryPage(CorrectionHistoryPage)
     case workBlockState(WorkBlockSnapshot)
     case localDashboard(LocalDashboardSnapshot)
     /// Extension point for a future server discriminator. Unknown payload fields
@@ -241,6 +254,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .notificationPayload(try NotificationPayload(from: payload))
         case "menu_status":
             self = .menuStatus(try MenuStatus(from: payload))
+        case "correction_history_page":
+            self = .correctionHistoryPage(try CorrectionHistoryPage(from: payload))
         case "work_block_state":
             self = .workBlockState(try WorkBlockSnapshot(from: payload))
         case "local_dashboard":
@@ -313,6 +328,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case let .menuStatus(value):
             try envelope.encode("menu_status", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .correctionHistoryPage(value):
+            try envelope.encode("correction_history_page", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .workBlockState(value):
             try envelope.encode("work_block_state", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
@@ -349,6 +367,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case .deviceRevoked: "device_revoked"
         case .notificationPayload: "notification_payload"
         case .menuStatus: "menu_status"
+        case .correctionHistoryPage: "correction_history_page"
         case .workBlockState: "work_block_state"
         case .localDashboard: "local_dashboard"
         case .unknown: "unknown"
@@ -1021,17 +1040,60 @@ public struct CorrectEventClassification: Codable, Equatable, Sendable {
     public let eventID: UUID
     public let stableID: String
     public let category: String
+    public let localActivityName: String?
 
     private enum CodingKeys: String, CodingKey {
         case eventID = "event_id"
         case stableID = "stable_id"
         case category
+        case localActivityName = "local_activity_name"
     }
 
-    public init(eventID: UUID, stableID: String, category: String) {
+    public init(
+        eventID: UUID,
+        stableID: String,
+        category: String,
+        localActivityName: String? = nil
+    ) {
         self.eventID = eventID
         self.stableID = stableID
         self.category = category
+        self.localActivityName = localActivityName
+    }
+}
+
+public struct UpdateClassificationOverride: Codable, Equatable, Sendable {
+    public let stableID: String
+    public let category: String
+    public let localActivityName: String?
+
+    public init(stableID: String, category: String, localActivityName: String?) {
+        self.stableID = stableID
+        self.category = category
+        self.localActivityName = localActivityName
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case category
+        case stableID = "stable_id"
+        case localActivityName = "local_activity_name"
+    }
+}
+
+public struct RequestCorrectionHistory: Codable, Equatable, Sendable {
+    public let query: String?
+    public let offset: Int
+    public let pageSize: Int
+
+    public init(query: String?, offset: Int, pageSize: Int = 20) {
+        self.query = query
+        self.offset = max(0, offset)
+        self.pageSize = min(max(1, pageSize), 20)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case query, offset
+        case pageSize = "page_size"
     }
 }
 
@@ -1044,6 +1106,52 @@ public struct RemoveClassificationOverride: Codable, Equatable, Sendable {
 
     public init(stableID: String) {
         self.stableID = stableID
+    }
+}
+
+public struct ClassificationCorrectionSummary: Codable, Equatable, Sendable, Identifiable {
+    public let stableID: String
+    public let label: String
+    public let localLabel: String?
+    public let category: String
+    public let updatedAt: Date
+
+    public var id: String { stableID }
+
+    private enum CodingKeys: String, CodingKey {
+        case label, category
+        case stableID = "stable_id"
+        case localLabel = "local_label"
+        case updatedAt = "updated_at"
+    }
+}
+
+public struct CorrectionHistoryPage: Codable, Equatable, Sendable {
+    public let items: [ClassificationCorrectionSummary]
+    public let offset: Int
+    public let pageSize: Int
+    public let totalCount: Int
+    public let hasMore: Bool
+
+    public init(
+        items: [ClassificationCorrectionSummary],
+        offset: Int,
+        pageSize: Int,
+        totalCount: Int,
+        hasMore: Bool
+    ) {
+        self.items = items
+        self.offset = offset
+        self.pageSize = pageSize
+        self.totalCount = totalCount
+        self.hasMore = hasMore
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case items, offset
+        case pageSize = "page_size"
+        case totalCount = "total_count"
+        case hasMore = "has_more"
     }
 }
 
@@ -1060,6 +1168,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
     public let rejectedUploadBatchCount: Int
     public let queuedEventCount: Int
     public let queuedEvents: [QueuedEventSummary]
+    public let correctionHistory: [ClassificationCorrectionSummary]
 
     private enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
@@ -1073,6 +1182,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         case rejectedUploadBatchCount = "rejected_upload_batch_count"
         case queuedEventCount = "queued_event_count"
         case queuedEvents = "queued_events"
+        case correctionHistory = "correction_history"
     }
 
     public init(
@@ -1086,7 +1196,8 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         failedUploadBatchCount: Int,
         rejectedUploadBatchCount: Int,
         queuedEventCount: Int,
-        queuedEvents: [QueuedEventSummary]
+        queuedEvents: [QueuedEventSummary],
+        correctionHistory: [ClassificationCorrectionSummary] = []
     ) {
         self.deviceID = deviceID
         self.cloudReady = cloudReady
@@ -1099,6 +1210,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         self.rejectedUploadBatchCount = rejectedUploadBatchCount
         self.queuedEventCount = queuedEventCount
         self.queuedEvents = queuedEvents
+        self.correctionHistory = correctionHistory
     }
 
     public init(from decoder: Decoder) throws {
@@ -1119,10 +1231,15 @@ public struct MenuStatus: Codable, Equatable, Sendable {
       try container.decodeIfPresent(Int.self, forKey: .rejectedUploadBatchCount) ?? 0
         queuedEventCount = try container.decode(Int.self, forKey: .queuedEventCount)
         queuedEvents = try container.decode([QueuedEventSummary].self, forKey: .queuedEvents)
+        correctionHistory =
+            try container.decodeIfPresent(
+                [ClassificationCorrectionSummary].self,
+                forKey: .correctionHistory
+            ) ?? []
     }
 }
 
-// MARK: - Device-local Focus/Activity and meaningful-work DTOs (proto v20)
+// MARK: - Device-local Focus/Activity and meaningful-work DTOs (proto v22)
 
 public struct RequestLocalDashboard: Codable, Equatable, Sendable {
     public let windowSeconds: Int
@@ -1257,14 +1374,48 @@ public enum LocalDailyActivityState: String, Codable, Equatable, Sendable {
 public struct LocalDailyActivitySegment: Codable, Equatable, Sendable, Identifiable {
   public let id: String
   public let label: String
+  public let representativeEventID: UUID?
+  public let stableID: String?
+  public let suggestedName: String?
+  public let aliasConfirmed: Bool
   public let category: String
   public let durationSeconds: Int
   public let percentage: Int
   public let confidence: ClassificationConfidence
   public let explanation: String?
 
+  public init(
+    id: String,
+    label: String,
+    representativeEventID: UUID? = nil,
+    stableID: String? = nil,
+    suggestedName: String? = nil,
+    aliasConfirmed: Bool = false,
+    category: String,
+    durationSeconds: Int,
+    percentage: Int,
+    confidence: ClassificationConfidence,
+    explanation: String?
+  ) {
+    self.id = id
+    self.label = label
+    self.representativeEventID = representativeEventID
+    self.stableID = stableID
+    self.suggestedName = suggestedName
+    self.aliasConfirmed = aliasConfirmed
+    self.category = category
+    self.durationSeconds = durationSeconds
+    self.percentage = percentage
+    self.confidence = confidence
+    self.explanation = explanation
+  }
+
   private enum CodingKeys: String, CodingKey {
     case id, label, category, percentage, confidence, explanation
+    case representativeEventID = "representative_event_id"
+    case stableID = "stable_id"
+    case suggestedName = "suggested_name"
+    case aliasConfirmed = "alias_confirmed"
     case durationSeconds = "duration_seconds"
   }
 }

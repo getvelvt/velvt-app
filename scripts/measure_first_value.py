@@ -178,6 +178,29 @@ def main() -> int:
                 time.monotonic() - started, 3
             )
 
+            # Raw activity is acknowledged independently. The dashboard is a
+            # request/response surface (not an unsolicited push), so explicitly
+            # request it after the event has crossed the Rust privacy boundary.
+            while time.monotonic() < deadline:
+                message = receive(stream)
+                if message.get("type") != "raw_event_ack":
+                    continue
+                if message["payload"].get("status") != "accepted":
+                    raise RuntimeError("synthetic activity was not accepted locally")
+                break
+            else:
+                raise TimeoutError("raw activity was not acknowledged before the deadline")
+
+            send(
+                stream,
+                {
+                    "type": "request_local_dashboard",
+                    "payload": {
+                        "window_seconds": 3600,
+                        "utc_offset_seconds": 0,
+                    },
+                },
+            )
             ready_payload = None
             while time.monotonic() < deadline:
                 message = receive(stream)
@@ -202,7 +225,10 @@ def main() -> int:
                 stream,
                 {
                     "type": "request_local_dashboard",
-                    "payload": {"window_seconds": 3600},
+                    "payload": {
+                        "window_seconds": 3600,
+                        "utc_offset_seconds": 0,
+                    },
                 },
             )
             while time.monotonic() < deadline:

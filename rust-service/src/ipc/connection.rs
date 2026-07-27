@@ -313,6 +313,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::DeviceRevoked(_) => "device_revoked",
         ServerMessage::NotificationPayload(_) => "notification_payload",
         ServerMessage::MenuStatus(_) => "menu_status",
+        ServerMessage::CorrectionHistoryPage(_) => "correction_history_page",
         ServerMessage::WorkBlockState(_) => "work_block_state",
         ServerMessage::LocalDashboard(_) => "local_dashboard",
     }

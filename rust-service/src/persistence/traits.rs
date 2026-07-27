@@ -1,7 +1,8 @@
 use super::{
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, LocalDisplayAggregate,
-    LocalEventMetadata, NewUploadBatch, PersistenceError, RawEventEntry, UploadBatch,
-    UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockObservation, WorkBlockRecord,
+    LocalEventMetadata, NewUploadBatch, PersistenceError, PersonalOverrideRecord, RawEventEntry,
+    UploadBatch, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockObservation,
+    WorkBlockRecord,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -15,7 +16,18 @@ pub trait AbstractionMapRepo: Send + Sync {
         &self,
         stable_id: &str,
         category: &str,
+        local_activity_name: Option<&str>,
     ) -> Result<(), PersistenceError>;
+    fn personal_overrides(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PersonalOverrideRecord>, PersistenceError>;
+    fn search_personal_overrides(
+        &self,
+        query: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<PersonalOverrideRecord>, u64), PersistenceError>;
     fn remove_personal_override(&self, stable_id: &str) -> Result<bool, PersistenceError>;
     fn reset_personal_overrides(&self) -> Result<u64, PersistenceError>;
     fn personal_override_count(&self) -> Result<u64, PersistenceError>;
@@ -148,6 +160,7 @@ pub trait RawEventRepo: Send + Sync {
         event_id: &str,
         label: &str,
         category: &str,
+        local_activity_name: Option<&str>,
     ) -> Result<(), PersistenceError>;
     fn delete_before(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError>;
     /// Deletes at most `limit` rows whose `created_at` is before `cutoff`.

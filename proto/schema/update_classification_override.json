@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Local IPC only. The local activity name and stable identifier must never be logged or sent to cloud services.",
+  "title": "UpdateClassificationOverride",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stable_id", "category"],
+  "properties": {
+    "stable_id": { "type": "string" },
+    "category": {
+      "enum": ["FOCUS_WORK", "PASSIVE_CONSUMPTION", "SOCIAL_FEED", "COMMUNICATION", "TASK_MANAGEMENT", "REFERENCE", "SYSTEM", "UNLOGGED"]
+    },
+    "local_activity_name": { "type": ["string", "null"], "minLength": 1, "maxLength": 48 }
+  }
+}

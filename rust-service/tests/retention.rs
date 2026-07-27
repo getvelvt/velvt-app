@@ -26,6 +26,7 @@ fn make_event(n: u64) -> RawEventEntry {
         stable_id: format!("abs_{n}"),
         label: "document:edit".into(),
         local_display_label: None,
+        local_name_suggestion: None,
         category: "FOCUS_WORK".into(),
         taxonomy_version: "mvp-1".into(),
         classification_tier: "exact_match".into(),

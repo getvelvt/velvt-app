@@ -16,7 +16,7 @@ use super::{
 };
 
 /// Privacy-safe result. Raw fields cannot be constructed into or read from this type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct AbstractedEvent {
     stable_id: String,
     label: String,
@@ -30,6 +30,33 @@ pub struct AbstractedEvent {
     classification_source: ClassificationSource,
     #[serde(skip)]
     local_display_label: Option<String>,
+    #[serde(skip)]
+    local_name_suggestion: Option<String>,
+}
+
+impl std::fmt::Debug for AbstractedEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AbstractedEvent")
+            .field("stable_id", &self.stable_id)
+            .field("label", &self.label)
+            .field("category", &self.category)
+            .field("taxonomy_version", &self.taxonomy_version)
+            .field("occurred_at", &self.occurred_at)
+            .field("classification_tier", &self.classification_tier)
+            .field("classification_status", &self.classification_status)
+            .field("classification_confidence", &self.classification_confidence)
+            .field("classification_source", &self.classification_source)
+            .field(
+                "local_display_label",
+                &self.local_display_label.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "local_name_suggestion",
+                &self.local_name_suggestion.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 impl AbstractedEvent {
@@ -62,6 +89,9 @@ impl AbstractedEvent {
     }
     pub fn local_display_label(&self) -> Option<&str> {
         self.local_display_label.as_deref()
+    }
+    pub fn local_name_suggestion(&self) -> Option<&str> {
+        self.local_name_suggestion.as_deref()
     }
 }
 
@@ -104,11 +134,12 @@ impl AbstractionEngine {
         let raw_key = RawKey::new(app_name, window_title);
         let abstracted_title = self.title_abstractor.abstract_title(raw_key.window_title());
         let stable_key = raw_key.stable_key();
-        let classification = match self.store.personal_override(&stable_key)? {
-            Some(category) => ClassificationResult::with_quality(
-                override_label_for_category(&category)
+        let personal_override = self.store.personal_override(&stable_key)?;
+        let classification = match &personal_override {
+            Some(personal_override) => ClassificationResult::with_quality(
+                override_label_for_category(&personal_override.category)
                     .ok_or(AbstractionError::InvalidPluginResult)?,
-                category,
+                personal_override.category.clone(),
                 self.taxonomy.version(),
                 ClassificationTier::ExactMatch,
                 ClassificationStatus::Classified,
@@ -129,11 +160,20 @@ impl AbstractionEngine {
             return Err(AbstractionError::InvalidPluginResult);
         }
         let fresh_id = format!("abs_{}", Uuid::new_v4().simple());
-        let local_display_label = curated_display_label(
-            raw_key.app_name(),
-            raw_key.window_title(),
-            classification.label(),
-        );
+        let local_display_label = personal_override
+            .as_ref()
+            .and_then(|personal_override| personal_override.local_activity_name.clone())
+            .or_else(|| {
+                curated_display_label(
+                    raw_key.app_name(),
+                    raw_key.window_title(),
+                    classification.label(),
+                )
+            });
+        let local_name_suggestion = personal_override
+            .is_none()
+            .then(|| responsible_local_name_suggestion(raw_key.app_name(), classification.source()))
+            .flatten();
         let stable_id = self.store.resolve_id(MappingResolution {
             stable_key: &stable_key,
             fresh_id: &fresh_id,
@@ -161,8 +201,37 @@ impl AbstractionEngine {
             classification_confidence: classification.confidence(),
             classification_source: classification.source(),
             local_display_label,
+            local_name_suggestion,
         })
     }
+}
+
+fn responsible_local_name_suggestion(
+    app_name: &str,
+    source: ClassificationSource,
+) -> Option<String> {
+    if source == ClassificationSource::Seed || source == ClassificationSource::UserRule {
+        return None;
+    }
+    let trimmed = app_name.trim();
+    let generic = [
+        "unknown",
+        "unknown app",
+        "application",
+        "app",
+        "browser",
+        "unclassifiable",
+    ];
+    if trimmed.is_empty()
+        || trimmed.chars().count() > 48
+        || trimmed.chars().any(char::is_control)
+        || generic
+            .iter()
+            .any(|value| trimmed.eq_ignore_ascii_case(value))
+    {
+        return None;
+    }
+    Some(trimmed.to_owned())
 }
 
 pub(crate) fn override_label_for_category(category: &str) -> Option<&'static str> {
@@ -189,15 +258,66 @@ fn curated_display_label(app_name: &str, window_title: &str, label: &str) -> Opt
     let title = window_title.to_ascii_lowercase();
     let curated = match label {
         "communication:slack" => "Slack",
+        "communication:gmail" => "Gmail",
+        "communication:outlook" => "Outlook",
+        "communication:calendar" => "Calendar",
+        "communication:email" => "Email",
+        "communication:chat" => "Chat",
+        "meeting:meet" => "Google Meet",
+        "meeting:zoom" => "Zoom",
+        "meeting:teams" => "Microsoft Teams",
+        "meeting:video" => "Video meeting",
         "reference:github" => "GitHub",
-        "document:docs" | "document:write" if title.contains("docs") => "Docs",
+        "reference:gitlab" => "GitLab",
+        "reference:stack_overflow" => "Stack Overflow",
+        "reference:wikipedia" => "Wikipedia",
+        "reference:mdn" => "MDN",
+        "reference:read" => "Reading",
         "reference:ai_assistant" => "AI Assistant",
         "reference:browser" => "Browser",
+        "document:docs" => "Docs",
+        "document:sheets" | "document:spreadsheet" => "Spreadsheet",
+        "document:slides" | "document:presentation" => "Presentation",
+        "document:drive" => "Drive",
+        "document:notion" => "Notion",
+        "document:obsidian" => "Obsidian",
+        "document:overleaf" => "Overleaf",
+        "document:word" => "Word",
+        "document:excel" => "Excel",
+        "document:powerpoint" => "PowerPoint",
+        "document:pages" => "Pages",
+        "document:numbers" => "Numbers",
+        "document:keynote" => "Keynote",
+        "document:write" if title.contains("docs") => "Docs",
+        "document:write" => "Writing",
         "document:edit" | "document:code"
             if app.contains("vs code") || app.contains("visual studio code") =>
         {
             "VS Code"
         }
+        "document:edit" => "Document editing",
+        "document:code" => "Coding",
+        "video:youtube" => "YouTube",
+        "video:netflix" => "Netflix",
+        "video:tiktok" => "TikTok",
+        "video:twitch" => "Twitch",
+        "video:streaming" => "Streaming video",
+        "audio:spotify" => "Spotify",
+        "audio:music" | "audio:listen" => "Audio",
+        "social:reddit" => "Reddit",
+        "social:twitter" | "social:x" => "X",
+        "social:instagram" => "Instagram",
+        "social:facebook" => "Facebook",
+        "social:threads" => "Threads",
+        "social:linkedin" => "LinkedIn",
+        "social:feed" => "Social feed",
+        "task:manage" => "Task management",
+        "task:finance" => "Finance task",
+        "design:cad" => "CAD",
+        "design:3d" => "3D design",
+        "design:visual" => "Visual design",
+        "creative:edit" => "Creative editing",
+        "system:manage" => "System management",
         _ => return None,
     };
     Some(curated.to_owned())

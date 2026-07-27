@@ -1,9 +1,9 @@
 use super::{
     AbstractionMapRepo, AbstractionMapping, BatchEvent, HistoryCacheEntry, HistoryCacheRepo,
     InsightCacheEntry, InsightCacheRepo, LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch,
-    RawEventEntry, RawEventRepo, UploadBatch, UploadBatchRepo, UploadBatchStatus,
-    UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockObservation, WorkBlockRecord,
-    WorkBlockRepo,
+    PersonalOverrideRecord, RawEventEntry, RawEventRepo, UploadBatch, UploadBatchRepo,
+    UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockObservation,
+    WorkBlockRecord, WorkBlockRepo,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -259,13 +259,18 @@ impl crate::abstraction::AbstractionMappingStore for SqliteAbstractionMapRepo {
     fn personal_override(
         &self,
         stable_key: &str,
-    ) -> Result<Option<String>, crate::abstraction::StoreError> {
+    ) -> Result<Option<crate::abstraction::PersonalOverride>, crate::abstraction::StoreError> {
         let connection = self.0.connection()?;
         connection
             .query_row(
-                "SELECT category FROM personal_override WHERE key_hash = ?1",
+                "SELECT category, activity_name FROM personal_override WHERE key_hash = ?1",
                 [stable_key],
-                |row| row.get(0),
+                |row| {
+                    Ok(crate::abstraction::PersonalOverride {
+                        category: row.get(0)?,
+                        local_activity_name: row.get(1)?,
+                    })
+                },
             )
             .optional()
             .map_err(PersistenceError::from)
@@ -397,13 +402,17 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         &self,
         stable_id: &str,
         category: &str,
+        local_activity_name: Option<&str>,
     ) -> Result<(), PersistenceError> {
         let connection = self.0.connection()?;
         let changed = connection.execute(
-            "INSERT INTO personal_override(key_hash, category)
-             SELECT key_hash, ?2 FROM abstraction_map WHERE stable_id = ?1
-             ON CONFLICT(key_hash) DO UPDATE SET category = excluded.category, updated_at = unixepoch()",
-            params![stable_id, category],
+            "INSERT INTO personal_override(key_hash, category, activity_name)
+             SELECT key_hash, ?2, ?3 FROM abstraction_map WHERE stable_id = ?1
+             ON CONFLICT(key_hash) DO UPDATE SET
+                category = excluded.category,
+                activity_name = COALESCE(excluded.activity_name, personal_override.activity_name),
+                updated_at = unixepoch()",
+            params![stable_id, category, local_activity_name],
         )?;
         if changed == 0 {
             return Err(PersistenceError::NotFound {
@@ -411,6 +420,65 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
             });
         }
         Ok(())
+    }
+
+    fn personal_overrides(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PersonalOverrideRecord>, PersistenceError> {
+        self.search_personal_overrides(None, 0, limit)
+            .map(|(records, _)| records)
+    }
+
+    fn search_personal_overrides(
+        &self,
+        query: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<PersonalOverrideRecord>, u64), PersistenceError> {
+        let limit = limit.min(20);
+        if limit == 0 {
+            return Ok((Vec::new(), 0));
+        }
+        let query = query.map(str::trim).filter(|value| !value.is_empty());
+        let connection = self.0.connection()?;
+        let total = connection.query_row(
+            "SELECT COUNT(*)
+             FROM personal_override
+             JOIN abstraction_map ON abstraction_map.key_hash = personal_override.key_hash
+             WHERE ?1 IS NULL
+                OR instr(lower(COALESCE(personal_override.activity_name, abstraction_map.display_name, '')), lower(?1)) > 0
+                OR instr(lower(abstraction_map.label), lower(?1)) > 0
+                OR instr(lower(personal_override.category), lower(?1)) > 0",
+            [query],
+            |row| row.get::<_, u64>(0),
+        )?;
+        let mut statement = connection.prepare(
+            "SELECT abstraction_map.stable_id, abstraction_map.label,
+                    COALESCE(personal_override.activity_name, abstraction_map.display_name),
+                    personal_override.category, personal_override.updated_at
+             FROM personal_override
+             JOIN abstraction_map ON abstraction_map.key_hash = personal_override.key_hash
+             WHERE ?1 IS NULL
+                OR instr(lower(COALESCE(personal_override.activity_name, abstraction_map.display_name, '')), lower(?1)) > 0
+                OR instr(lower(abstraction_map.label), lower(?1)) > 0
+                OR instr(lower(personal_override.category), lower(?1)) > 0
+             ORDER BY personal_override.updated_at DESC, abstraction_map.stable_id ASC
+             LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = statement
+            .query_map(params![query, limit as i64, offset as i64], |row| {
+                Ok(PersonalOverrideRecord {
+                    stable_id: row.get(0)?,
+                    label: row.get(1)?,
+                    local_activity_name: row.get(2)?,
+                    category: row.get(3)?,
+                    updated_at: timestamp_from_row(row, 4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(PersistenceError::from)?;
+        Ok((rows, total))
     }
 
     fn remove_personal_override(&self, stable_id: &str) -> Result<bool, PersistenceError> {
@@ -461,13 +529,14 @@ impl RawEventRepo for SqliteRawEventRepo {
         let connection = self.0.connection()?;
         connection.execute(
             "INSERT INTO raw_event_buffer(
-                event_id, stable_id, label, local_display_label, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 event.event_id,
                 event.stable_id,
                 event.label,
                 event.local_display_label,
+                event.local_name_suggestion,
                 event.category,
                 event.taxonomy_version,
                 event.classification_tier,
@@ -484,7 +553,7 @@ impl RawEventRepo for SqliteRawEventRepo {
     fn unbatched_events(&self, limit: usize) -> Result<Vec<RawEventEntry>, PersistenceError> {
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
-            "SELECT event_id, stable_id, label, local_display_label, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
+            "SELECT event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
              FROM raw_event_buffer
              WHERE NOT EXISTS (SELECT 1 FROM batch_event WHERE batch_event.event_id = raw_event_buffer.event_id)
              ORDER BY occurred_at DESC LIMIT ?1",
@@ -499,7 +568,7 @@ impl RawEventRepo for SqliteRawEventRepo {
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError> {
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
-            "SELECT event_id, stable_id, label, local_display_label, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
+            "SELECT event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
              FROM raw_event_buffer WHERE occurred_at < ?1 ORDER BY occurred_at",
         )?;
         let rows = statement.query_map([cutoff.timestamp()], raw_event_from_row)?;
@@ -518,7 +587,7 @@ impl RawEventRepo for SqliteRawEventRepo {
         }
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
-            "SELECT event_id, stable_id, label, local_display_label, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
+            "SELECT event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
              FROM raw_event_buffer
              WHERE occurred_at >= ?1 AND occurred_at <= ?2
              ORDER BY occurred_at ASC LIMIT ?3",
@@ -612,15 +681,17 @@ impl RawEventRepo for SqliteRawEventRepo {
         event_id: &str,
         label: &str,
         category: &str,
+        local_activity_name: Option<&str>,
     ) -> Result<(), PersistenceError> {
         let connection = self.0.connection()?;
         connection.execute(
             "UPDATE raw_event_buffer
              SET label = ?2, category = ?3, classification_tier = 'exact_match',
                  classification_status = 'classified', classification_confidence = 'high',
-                 classification_source = 'user_rule'
+                 classification_source = 'user_rule',
+                 local_display_label = COALESCE(?4, local_display_label)
              WHERE event_id = ?1",
-            params![event_id, label, category],
+            params![event_id, label, category, local_activity_name],
         )?;
         Ok(())
     }
@@ -1347,14 +1418,15 @@ fn raw_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEventEntry
         stable_id: row.get(1)?,
         label: row.get(2)?,
         local_display_label: row.get(3)?,
-        category: row.get(4)?,
-        taxonomy_version: row.get(5)?,
-        classification_tier: row.get(6)?,
-        classification_status: row.get(7)?,
-        classification_confidence: row.get(8)?,
-        classification_source: row.get(9)?,
-        occurred_at: timestamp_from_row(row, 10)?,
-        duration_seconds: row.get(11)?,
+        local_name_suggestion: row.get(4)?,
+        category: row.get(5)?,
+        taxonomy_version: row.get(6)?,
+        classification_tier: row.get(7)?,
+        classification_status: row.get(8)?,
+        classification_confidence: row.get(9)?,
+        classification_source: row.get(10)?,
+        occurred_at: timestamp_from_row(row, 11)?,
+        duration_seconds: row.get(12)?,
     })
 }
 
@@ -1682,5 +1754,101 @@ mod tests {
             .expect("negative entry not found");
         assert!(entry.is_negative, "is_negative flag not set");
         assert_eq!(entry.date, "2026-01-01");
+    }
+
+    #[test]
+    fn migration_0011_preserves_existing_aliases_and_adds_local_suggestion_storage() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        let migrations = [
+            (
+                1,
+                include_str!("../../migrations/0001_initial_persistence.sql"),
+            ),
+            (
+                2,
+                include_str!("../../migrations/0002_harden_indexes_and_probe.sql"),
+            ),
+            (
+                3,
+                include_str!("../../migrations/0003_upload_retry_state.sql"),
+            ),
+            (
+                4,
+                include_str!("../../migrations/0004_insight_cache_negative.sql"),
+            ),
+            (
+                5,
+                include_str!("../../migrations/0005_local_queue_display_label.sql"),
+            ),
+            (
+                6,
+                include_str!("../../migrations/0006_classification_provenance.sql"),
+            ),
+            (
+                7,
+                include_str!("../../migrations/0007_personal_overrides.sql"),
+            ),
+            (
+                8,
+                include_str!("../../migrations/0008_classification_contract.sql"),
+            ),
+            (9, include_str!("../../migrations/0009_work_blocks.sql")),
+            (
+                10,
+                include_str!("../../migrations/0010_personal_override_activity_name.sql"),
+            ),
+        ];
+        for (version, sql) in migrations {
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                    (version, format!("migration-{version}")),
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO abstraction_map(
+                    key_hash, stable_id, label, category, taxonomy_version
+                 ) VALUES (?1, 'abs_existing', 'reference:inferred', 'REFERENCE', 'mvp-1')",
+                ["a".repeat(64)],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO personal_override(key_hash, category, activity_name)
+                 VALUES (?1, 'REFERENCE', 'Existing local alias')",
+                ["a".repeat(64)],
+            )
+            .unwrap();
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+
+        database.run_migrations().unwrap();
+
+        let connection = database.connection().unwrap();
+        let alias: String = connection
+            .query_row(
+                "SELECT activity_name FROM personal_override WHERE key_hash = ?1",
+                ["a".repeat(64)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(alias, "Existing local alias");
+        assert!(connection
+            .prepare("SELECT local_name_suggestion FROM raw_event_buffer")
+            .is_ok());
     }
 }

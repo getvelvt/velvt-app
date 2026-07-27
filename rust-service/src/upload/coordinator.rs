@@ -159,7 +159,7 @@ where
                 self.backoff.lock().unwrap().reset(&self.host);
                 self.repository.clear_host_backoff(&self.host)?;
             }
-            UploadOutcome::RawFieldRejected { message } => {
+            UploadOutcome::RawFieldRejected { message: _ } => {
                 // SECURITY: raw_field_rejected is a hard privacy signal. It is
                 // permanently terminal and must never enter retry scheduling.
                 self.repository
@@ -167,10 +167,11 @@ where
                 tracing::error!(
                     error_code = "raw_field_rejected",
                     batch_id = batch.batch_id,
-                    rejection_message = message,
                     "cloud rejected a batch for a privacy violation"
                 );
-                self.alerts.alert(&message).await;
+                self.alerts
+                    .alert("Sensitive activity details were blocked before upload.")
+                    .await;
             }
             UploadOutcome::RateLimited { retry_after } => {
                 let attempt = self.repository.host_backoff_attempt(&self.host)?;

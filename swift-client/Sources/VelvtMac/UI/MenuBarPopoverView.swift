@@ -10,39 +10,132 @@ public enum MenuBarAccountAction: Equatable {
 
 private struct HistoryWorkspaceView: View {
     @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
-    let accountStateManager: AccountStateManager?
+    @ObservedObject var localDashboardCoordinator: LocalDashboardCoordinator
+    let menuStatusViewModel: MenuStatusViewModel?
 
     var body: some View {
-        if let accountStateManager {
-            AccountGatedHistoryWorkspaceView(
-                coordinator: coordinator,
-                accountStateManager: accountStateManager
-            )
-        } else {
-            VelvtPopoverContentView(coordinator: coordinator)
+        YourWeekContentView(
+            snapshot: localDashboardCoordinator.snapshot,
+            historyAvailability: coordinator.historyAvailability,
+            historyViewModel: coordinator.historyViewModel,
+            onCorrectActivity: { segment, category, localName in
+                guard
+                    let eventID = segment.representativeEventID,
+                    let stableID = segment.stableID
+                else { return }
+                menuStatusViewModel?.correct(
+                    eventID: eventID,
+                    stableID: stableID,
+                    category: category,
+                    localActivityName: localName
+                )
+                localDashboardCoordinator.refresh()
+            },
+            onUndoActivity: { segment in
+                guard let stableID = segment.stableID else { return }
+                menuStatusViewModel?.undoCorrection(stableID: stableID)
+                localDashboardCoordinator.refresh()
+            }
+        )
+        .onAppear { localDashboardCoordinator.refresh() }
+    }
+}
+
+struct YourWeekContentView: View {
+    let snapshot: LocalDashboardSnapshot?
+    let historyAvailability: DeliveryAvailability
+    @ObservedObject var historyViewModel: HistoryViewModel
+    var onCorrectActivity: (LocalDailyActivitySegment, String, String?) -> Void = { _, _, _ in }
+    var onUndoActivity: (LocalDailyActivitySegment) -> Void = { _ in }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                DailyActivityView(
+                    snapshot: snapshot,
+                    onCorrectActivity: onCorrectActivity,
+                    onUndoActivity: onUndoActivity
+                )
+                WeekOverWeekCoachingView(
+                    availability: historyAvailability,
+                    viewModel: historyViewModel
+                )
+            }
+            .padding(12)
         }
     }
 }
 
-private struct AccountGatedHistoryWorkspaceView: View {
-    @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
-    @ObservedObject var accountStateManager: AccountStateManager
+struct WeekOverWeekCoachingView: View {
+    let availability: DeliveryAvailability
+    @ObservedObject var viewModel: HistoryViewModel
 
     var body: some View {
-        switch accountStateManager.accountState {
-        case .loggedIn:
-            VelvtPopoverContentView(coordinator: coordinator)
-        case .loggedOut, .loggingIn, .loggingOut, .pendingErasure:
-            EmptyDeliveryState(
-                text: "Sign in to view your 7-day history",
-                systemImage: "person.crop.circle.badge.exclamationmark"
-            )
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel("Sign in to view 7-Day History")
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Label(
+                    viewModel.progressiveInsight?.tier.label ?? "Progressive insights",
+                    systemImage: "chart.line.uptrend.xyaxis"
+                )
+                    .font(.caption.bold())
+                    .foregroundStyle(Color.velvtPink)
+                Spacer()
+                if let insight = viewModel.progressiveInsight {
+                    Text(insight.confidenceSummary)
+                        .font(.caption2)
+                        .foregroundStyle(Color.velvtMuted)
+                }
+            }
+
+            if let insight = viewModel.progressiveInsight {
+                coachingLine("Observation", insight.observation)
+                coachingLine("Comparison", insight.comparison)
+                coachingLine("Try next", insight.suggestedAction)
+                Text(insight.evidenceSummary)
+                    .font(.caption2)
+                    .foregroundStyle(Color.velvtMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if availability == .notGenerated {
+                coachingPlaceholder(
+                    "No observed day is ready yet. Keep Velvt running during a normal work block."
+                )
+            } else if availability == .loading || viewModel.isLoading {
+                coachingPlaceholder(
+                    "Loading privacy-safe daily coverage."
+                )
+            } else {
+                coachingPlaceholder(
+                    "No qualifying activity is available yet."
+                )
+            }
+        }
+        .padding(10)
+        .background(Color.velvtPanel)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(viewModel.progressiveInsight?.tier.label ?? "Progressive insights")
+    }
+
+    private func coachingLine(_ label: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(.caption2.bold())
+                .foregroundStyle(Color.velvtText)
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(Color.velvtMuted)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
+
+    private func coachingPlaceholder(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2)
+            .foregroundStyle(Color.velvtMuted)
+            .fixedSize(horizontal: false, vertical: true)
+    }
 }
+
 public enum MenuBarAccountActionResolver {
     public static func actions(for accountState: AccountState) -> [MenuBarAccountAction] {
         switch accountState {
@@ -273,6 +366,293 @@ public final class CurrentActivityModel: ObservableObject, EventSink {
     }
 }
 
+enum QueuedEventPresentation {
+    static func activity(_ event: QueuedEventSummary) -> String {
+        if let localLabel = event.localLabel?.nilIfBlank {
+            return localLabel
+        }
+        guard event.label != "unlogged" else {
+            return "Unclassified activity"
+        }
+        let component = event.label.split(separator: ":", maxSplits: 1).last.map(String.init)
+            ?? event.label
+        return component
+            .replacingOccurrences(of: "_", with: " ")
+            .lowercased()
+            .capitalized
+    }
+
+    static func category(_ event: QueuedEventSummary) -> String {
+        category(event.category)
+    }
+
+    static func activity(_ correction: ClassificationCorrectionSummary) -> String {
+        if let localLabel = correction.localLabel?.nilIfBlank {
+            return localLabel
+        }
+        let component = correction.label.split(separator: ":", maxSplits: 1).last.map(String.init)
+            ?? correction.label
+        return component
+            .replacingOccurrences(of: "_", with: " ")
+            .lowercased()
+            .capitalized
+    }
+
+    static func category(_ correction: ClassificationCorrectionSummary) -> String {
+        category(correction.category)
+    }
+
+    static func category(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "_", with: " ")
+            .lowercased()
+            .capitalized
+    }
+}
+
+private struct QueuedEventCorrectionRow: View {
+    let event: QueuedEventSummary
+    let onSave: (String, String?) -> Void
+    let onUndo: () -> Void
+    @State private var activityName: String
+    @State private var category: String
+
+    init(
+        event: QueuedEventSummary,
+        onSave: @escaping (String, String?) -> Void,
+        onUndo: @escaping () -> Void
+    ) {
+        self.event = event
+        self.onSave = onSave
+        self.onUndo = onUndo
+        _activityName = State(initialValue: QueuedEventPresentation.activity(event))
+        _category = State(initialValue: event.category)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Activity: \(QueuedEventPresentation.activity(event))")
+                .font(.subheadline)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text(
+                "Category: \(QueuedEventPresentation.category(event)) · Queued \(event.occurredAt.formatted(date: .omitted, time: .shortened))"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            TextField("Local activity name", text: $activityName)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .onChange(of: activityName) { value in
+                    if value.count > 48 {
+                        activityName = String(value.prefix(48))
+                    }
+                }
+                .accessibilityHint(
+                    "This name stays on this Mac and is never included in cloud activity data."
+                )
+            HStack(spacing: 6) {
+                Picker("Category", selection: $category) {
+                    ForEach(Self.categories, id: \.self) { value in
+                        Text(QueuedEventPresentation.category(value)).tag(value)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+                Button("Save") {
+                    onSave(category, normalizedName)
+                }
+                .controlSize(.small)
+                if event.classificationSource == .userRule {
+                    Button("Undo", action: onUndo)
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+    }
+
+    private var normalizedName: String? {
+        let trimmed = activityName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    fileprivate static let categories = [
+        "FOCUS_WORK",
+        "PASSIVE_CONSUMPTION",
+        "SOCIAL_FEED",
+        "COMMUNICATION",
+        "TASK_MANAGEMENT",
+        "REFERENCE",
+        "SYSTEM",
+        "UNLOGGED",
+    ]
+}
+
+private struct ClassificationCorrectionHistoryRow: View {
+    let correction: ClassificationCorrectionSummary
+    let onSave: (String, String?) -> Void
+    let onUndo: () -> Void
+    @State private var isEditing = false
+    @State private var activityName: String
+    @State private var category: String
+
+    init(
+        correction: ClassificationCorrectionSummary,
+        onSave: @escaping (String, String?) -> Void,
+        onUndo: @escaping () -> Void
+    ) {
+        self.correction = correction
+        self.onSave = onSave
+        self.onUndo = onUndo
+        _activityName = State(initialValue: QueuedEventPresentation.activity(correction))
+        _category = State(initialValue: correction.category)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(QueuedEventPresentation.activity(correction))
+                        .font(.caption.bold())
+                        .lineLimit(1)
+                    Text(
+                        "\(QueuedEventPresentation.category(correction.category)) · Saved \(correction.updatedAt.formatted(date: .abbreviated, time: .omitted)) · Local only"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                Button(isEditing ? "Cancel" : "Edit") { isEditing.toggle() }
+                    .buttonStyle(.plain)
+                    .font(.caption2)
+                Button("Undo", action: onUndo)
+                    .buttonStyle(.plain)
+                    .font(.caption2)
+            }
+            if isEditing {
+                TextField("Local activity name", text: $activityName)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .onChange(of: activityName) { value in
+                        if value.count > 48 { activityName = String(value.prefix(48)) }
+                    }
+                    .accessibilityHint("This name stays on this Mac")
+                HStack(spacing: 6) {
+                    Picker("Category", selection: $category) {
+                        ForEach(QueuedEventCorrectionRow.categories, id: \.self) { value in
+                            Text(QueuedEventPresentation.category(value)).tag(value)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .controlSize(.small)
+                    Button("Save changes") {
+                        onSave(category, normalizedName)
+                        isEditing = false
+                    }
+                    .controlSize(.small)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(normalizedName == nil)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 5)
+    }
+
+    private var normalizedName: String? {
+        let value = activityName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+}
+
+struct CorrectionHistoryBrowser: View {
+    @ObservedObject var model: MenuStatusViewModel
+    @State private var query = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                TextField("Search saved corrections", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .onSubmit { search() }
+                    .accessibilityLabel("Search local correction history")
+                Button("Search", action: search)
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 16)
+
+            if let page = model.correctionHistoryPage {
+                if page.items.isEmpty {
+                    Text(query.isEmpty ? "No saved corrections yet" : "No matching corrections")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(page.items) { correction in
+                                ClassificationCorrectionHistoryRow(
+                                    correction: correction,
+                                    onSave: { category, name in
+                                        model.updateCorrection(
+                                            correction,
+                                            category: category,
+                                            localActivityName: name
+                                        )
+                                    },
+                                    onUndo: {
+                                        model.undoCorrection(stableID: correction.stableID)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    .frame(minHeight: 80, maxHeight: 140)
+                }
+                HStack {
+                    Button("Previous") { model.previousCorrectionHistoryPage() }
+                        .disabled(page.offset == 0)
+                    Spacer()
+                    Text(pageDescription(page))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Next") { model.nextCorrectionHistoryPage() }
+                        .disabled(!page.hasMore)
+                }
+                .controlSize(.small)
+                .padding(.horizontal, 16)
+            } else {
+                ProgressView("Loading saved corrections…")
+                    .controlSize(.small)
+                    .font(.caption2)
+                    .padding(.horizontal, 16)
+            }
+        }
+        .onAppear { model.refreshCorrectionHistory(query: query, offset: 0) }
+    }
+
+    private func search() {
+        model.refreshCorrectionHistory(query: query, offset: 0)
+    }
+
+    private func pageDescription(_ page: CorrectionHistoryPage) -> String {
+        guard page.totalCount > 0 else { return "0 results" }
+        let first = page.offset + 1
+        let last = min(page.totalCount, page.offset + page.items.count)
+        return "\(first)–\(last) of \(page.totalCount)"
+    }
+}
+
 public struct PopoverConnectionPresentation {
     public let label: String
     public let color: Color
@@ -316,7 +696,7 @@ public struct PopoverConnectionPresentation {
 
 public enum MenuBarPopoverLayout {
     public static let preferredContentSize = CGSize(width: 660, height: 450)
-    public static let walkthroughContentSize = CGSize(width: 660, height: 560)
+    public static let walkthroughContentSize = CGSize(width: 660, height: 600)
     public static let screenInset: CGFloat = 24
 
     public static func contentSize(
@@ -352,7 +732,7 @@ enum SettingsSubmenu: CaseIterable, Equatable {
     var title: String {
         switch self {
         case .appInfo: return "App Info"
-        case .queuedEvents: return "Queued Events"
+        case .queuedEvents: return "Activity & Corrections"
         case .collectionSettings: return "Collection Settings"
         case .onboarding: return "Onboarding & Tour"
         #if DEBUG
@@ -364,7 +744,7 @@ enum SettingsSubmenu: CaseIterable, Equatable {
     var preferredHeight: CGFloat {
         switch self {
         case .appInfo: return 420
-        case .queuedEvents: return 400
+        case .queuedEvents: return 520
         case .collectionSettings: return 140
         case .onboarding: return 210
         #if DEBUG
@@ -516,6 +896,8 @@ public struct MenuBarPopoverView: View {
             if guidedTour.isPresented {
                 Divider().opacity(0.2)
                 GuidedTourBar(model: guidedTour)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(2)
                     .transition(.opacity)
             }
         }
@@ -760,7 +1142,8 @@ public struct MenuBarPopoverView: View {
             case .history:
                 HistoryWorkspaceView(
                     coordinator: coordinator,
-                    accountStateManager: accountStateManager
+                    localDashboardCoordinator: localDashboardCoordinator,
+                    menuStatusViewModel: menuStatusViewModel
                 )
                 .tourHighlight(guidedTour.isPresented && guidedTour.step == .dailyActivity)
 
@@ -937,7 +1320,9 @@ public struct MenuBarPopoverView: View {
 
         case .queuedEvents:
             VStack(spacing: 0) {
-                submenuTitle("\(submenu.title) (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))")
+                submenuTitle(
+                    "\(submenu.title) (\(menuStatusViewModel?.status?.queuedEventCount ?? 0) queued)"
+                )
                 classificationExplanation
                 let queuedEvents = Array((menuStatusViewModel?.status?.queuedEvents ?? []).prefix(10))
                 if queuedEvents.isEmpty {
@@ -951,11 +1336,38 @@ public struct MenuBarPopoverView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
                             ForEach(queuedEvents) { event in
-                                queuedEventRow(event)
+                                QueuedEventCorrectionRow(
+                                    event: event,
+                                    onSave: { category, activityName in
+                                        menuStatusViewModel?.correct(
+                                            event,
+                                            category: category,
+                                            localActivityName: activityName
+                                        )
+                                    },
+                                    onUndo: {
+                                        menuStatusViewModel?.undoCorrection(event)
+                                    }
+                                )
                             }
                         }
                     }
-                    .frame(height: 150)
+                    .frame(height: 190)
+                }
+                Divider().padding(.vertical, 6)
+                Text("Saved corrections")
+                    .font(.caption.bold())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                if let menuStatusViewModel {
+                    CorrectionHistoryBrowser(model: menuStatusViewModel)
+                } else {
+                    Text("No saved corrections yet")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
                 }
                 if let sendError = menuStatusViewModel?.sendError {
                     Text(sendError)
@@ -970,7 +1382,7 @@ public struct MenuBarPopoverView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
-                Button("Reset Local Category Corrections", role: .destructive) {
+                Button("Reset Local Activity Corrections", role: .destructive) {
                     confirmsClassificationReset = true
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -979,11 +1391,11 @@ public struct MenuBarPopoverView: View {
             }
             .onAppear { menuStatusViewModel?.refresh() }
             .confirmationDialog(
-                "Reset all local category corrections on this Mac?",
+                "Reset all local activity and category corrections on this Mac?",
                 isPresented: $confirmsClassificationReset,
                 titleVisibility: .visible
             ) {
-                Button("Reset Learning", role: .destructive) {
+                Button("Reset Corrections", role: .destructive) {
                     menuStatusViewModel?.resetClassificationLearning()
                 }
                 Button("Cancel", role: .cancel) {}
@@ -1364,55 +1776,12 @@ public struct MenuBarPopoverView: View {
         }
         .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
     }
-    private func queuedEventRow(_ event: QueuedEventSummary) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(event.localLabel?.nilIfBlank ?? event.label)
-                .font(.subheadline)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Text(
-                "\(friendlyClassification(event.category)) · Queued \(event.occurredAt.formatted(date: .omitted, time: .shortened))"
-            )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            if event.classificationSource == .userRule {
-                Button("Undo correction") {
-                    menuStatusViewModel?.undoCorrection(event)
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-      } else if event.category == "UNLOGGED"
-        || event.classificationStatus != .classified || event.classificationConfidence == .low
-      {
-                Picker(
-                    "Correct category",
-                    selection: Binding(
-                        get: { event.category },
-                        set: { menuStatusViewModel?.correct(event, category: $0) }
-                    )
-                ) {
-                    ForEach(Self.classificationCategories, id: \.self) { category in
-                        Text(category.replacingOccurrences(of: "_", with: " ").capitalized)
-                            .tag(category)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .controlSize(.small)
-            }
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-    }
-
     private var classificationExplanation: some View {
         Text(
             "Velvt categorizes activity on this Mac. Unclassified means it is not sure. "
-                + "Correct category saves a local correction for similar activity; "
-                + "raw app and window details stay on this Mac."
+                + "Give an activity a local name and category to teach similar activity. "
+                + "Saved corrections remain available after upload; raw app and window details "
+                + "stay on this Mac."
         )
         .font(.caption2)
         .foregroundStyle(.secondary)
@@ -1422,25 +1791,11 @@ public struct MenuBarPopoverView: View {
         .padding(.bottom, 8)
         .accessibilityLabel(
             "How categories work. Velvt categorizes activity on this Mac. "
-                + "Unclassified means it is not sure. Correct category saves a local correction "
-                + "for similar activity. Raw app and window details stay on this Mac."
+                + "Unclassified means it is not sure. Local names and categories teach similar "
+                + "activity and remain after upload. Raw app and window details stay on this Mac."
         )
     }
 
-    private static let classificationCategories = [
-        "FOCUS_WORK",
-        "PASSIVE_CONSUMPTION",
-        "SOCIAL_FEED",
-        "COMMUNICATION",
-        "TASK_MANAGEMENT",
-        "REFERENCE",
-        "SYSTEM",
-        "UNLOGGED",
-    ]
-
-    private func friendlyClassification(_ category: String) -> String {
-        category.replacingOccurrences(of: "_", with: " ").lowercased().capitalized
-    }
   private func statusRow(
     _ title: String, presentation: PopoverConnectionPresentation, refresh: @escaping () -> Void
   ) -> some View {

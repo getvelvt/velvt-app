@@ -1,5 +1,22 @@
 # IPC Protocol Changelog
 
+## Version 22 - 2026-07-26
+
+- Added searchable, offset-paginated device-local correction history with a
+  maximum page size of 20 so the popover never loads the full local rule set.
+- Added local-only editing of persisted activity aliases and categories after
+  the associated upload event is no longer present.
+- Added bounded local activity-row context for inline corrections. Stable local
+  identifiers, suggested names, and bundle identifiers remain local IPC only.
+
+## Version 21 - 2026-07-25
+
+- Added a bounded device-local correction history to `menu_status`, backed by
+  persisted personal overrides rather than the transient upload queue.
+- `correct_event_classification` can carry an optional local activity name.
+  The name stays in the local override/mapping path and is excluded from cloud
+  correction requests, upload DTOs, telemetry, logs, and crash diagnostics.
+
 ## Version 20 - 2026-07-20
 
 - Replaced the local dashboard contract with exactly two analytical DTO branches:

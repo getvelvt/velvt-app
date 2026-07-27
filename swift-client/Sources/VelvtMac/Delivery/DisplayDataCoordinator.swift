@@ -4,10 +4,14 @@ import Foundation
 @MainActor
 public final class MenuStatusViewModel: ObservableObject {
     @Published public private(set) var status: MenuStatus?
+    @Published public private(set) var correctionHistoryPage: CorrectionHistoryPage?
+    @Published public private(set) var correctionHistoryQuery = ""
     @Published public private(set) var sendError: String?
     private let ipcClient: any IPCClientProtocol
     private var cancellables = Set<AnyCancellable>()
     private var timer: AnyCancellable?
+    private var classificationCommand: Task<Void, Never>?
+    private var correctionHistoryRequest: Task<Void, Never>?
 
     public init(ipcClient: any IPCClientProtocol, messages: some Publisher<ServerMessage, Never>) {
         self.ipcClient = ipcClient
@@ -15,6 +19,9 @@ public final class MenuStatusViewModel: ObservableObject {
             switch message {
             case .menuStatus(let status):
                 self?.status = status
+                self?.sendError = nil
+            case .correctionHistoryPage(let page):
+                self?.correctionHistoryPage = page
                 self?.sendError = nil
             case .errorResponse(let error) where error.code == "upload_flush_failed":
                 self?.sendError = error.message
@@ -33,6 +40,24 @@ public final class MenuStatusViewModel: ObservableObject {
 
     public func refresh() { Task { try? await ipcClient.send(.requestMenuStatus) } }
 
+    public func refreshCorrectionHistory(query: String? = nil, offset: Int? = nil) {
+        if let query {
+            correctionHistoryQuery = String(query.prefix(64))
+        }
+        let targetOffset = max(0, offset ?? correctionHistoryPage?.offset ?? 0)
+        requestCorrectionHistory(offset: targetOffset)
+    }
+
+    public func nextCorrectionHistoryPage() {
+        guard let page = correctionHistoryPage, page.hasMore else { return }
+        requestCorrectionHistory(offset: page.offset + page.pageSize)
+    }
+
+    public func previousCorrectionHistoryPage() {
+        guard let page = correctionHistoryPage, page.offset > 0 else { return }
+        requestCorrectionHistory(offset: max(0, page.offset - page.pageSize))
+    }
+
     public func sendAllNow() {
         Task {
             do {
@@ -43,42 +68,104 @@ public final class MenuStatusViewModel: ObservableObject {
         }
     }
 
-    public func correct(_ event: QueuedEventSummary, category: String) {
-        Task {
-            do {
-                try await ipcClient.send(
-                    .correctEventClassification(
-                        .init(
-                            eventID: event.eventID,
-                            stableID: event.stableID,
-                            category: category
-                        )
-                    )
+    public func correct(
+        _ event: QueuedEventSummary,
+        category: String,
+        localActivityName: String? = nil
+    ) {
+        correct(
+            eventID: event.eventID,
+            stableID: event.stableID,
+            category: category,
+            localActivityName: localActivityName
+        )
+    }
+
+    public func correct(
+        eventID: UUID,
+        stableID: String,
+        category: String,
+        localActivityName: String? = nil
+    ) {
+        enqueueClassificationCommand(
+            .correctEventClassification(
+                .init(
+                    eventID: eventID,
+                    stableID: stableID,
+                    category: category,
+                    localActivityName: localActivityName
                 )
-            } catch {
-                sendError = "Unable to save this classification. Try again later."
-            }
-        }
+            ),
+            failureMessage: "Unable to save this classification. Try again later."
+        )
     }
 
     public func undoCorrection(_ event: QueuedEventSummary) {
-        Task {
-            do {
-                try await ipcClient.send(
-                    .removeClassificationOverride(.init(stableID: event.stableID))
+        undoCorrection(stableID: event.stableID)
+    }
+
+    public func undoCorrection(stableID: String) {
+        enqueueClassificationCommand(
+            .removeClassificationOverride(.init(stableID: stableID)),
+            failureMessage: "Unable to remove this correction. Try again later."
+        )
+    }
+
+    public func updateCorrection(
+        _ correction: ClassificationCorrectionSummary,
+        category: String,
+        localActivityName: String?
+    ) {
+        enqueueClassificationCommand(
+            .updateClassificationOverride(
+                .init(
+                    stableID: correction.stableID,
+                    category: category,
+                    localActivityName: localActivityName
                 )
+            ),
+            failureMessage: "Unable to update this correction. Try again later."
+        )
+    }
+
+    public func resetClassificationLearning() {
+        enqueueClassificationCommand(
+            .resetClassificationOverrides,
+            failureMessage: "Unable to reset classification learning. Try again later."
+        )
+    }
+
+    private func enqueueClassificationCommand(
+        _ message: ClientMessage,
+        failureMessage: String
+    ) {
+        let previous = classificationCommand
+        classificationCommand = Task { [weak self] in
+            _ = await previous?.value
+            guard let self else { return }
+            do {
+                try await ipcClient.send(message)
+                requestCorrectionHistory(offset: correctionHistoryPage?.offset ?? 0)
             } catch {
-                sendError = "Unable to remove this correction. Try again later."
+                sendError = failureMessage
             }
         }
     }
 
-    public func resetClassificationLearning() {
-        Task {
+    private func requestCorrectionHistory(offset: Int) {
+        let query = correctionHistoryQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previous = correctionHistoryRequest
+        correctionHistoryRequest = Task { [weak self] in
+            _ = await previous?.value
+            guard let self else { return }
             do {
-                try await ipcClient.send(.resetClassificationOverrides)
+                try await ipcClient.send(
+                    .requestCorrectionHistory(
+                        .init(query: query.isEmpty ? nil : query, offset: offset)
+                    )
+                )
             } catch {
-                sendError = "Unable to reset classification learning. Try again later."
+                sendError = "Unable to load saved corrections. Try again later."
             }
         }
     }
@@ -143,7 +230,7 @@ final class MenuBarDataLoader {
         Task { [weak self, ipcClient, currentLocalInsightDate] in
             do {
                 try await ipcClient.send(.requestLatestInsight(.init(date: currentLocalInsightDate())))
-                try await ipcClient.send(.requestLatestHistory(.init(days: 7)))
+                try await ipcClient.send(.requestLatestHistory(.init(days: 14)))
                 await MainActor.run {
                     guard let self else { return }
                     self.requestedForConnection = self.canRequest

@@ -64,7 +64,10 @@ mv "$output_tmp" "$dmg_path"
 
 hdiutil verify "$dmg_path"
 if [[ "$mode" == "local" ]]; then
-  shasum -a 256 "$dmg_path" > "$dmg_path.sha256"
+  (
+    cd "$dmg_dir"
+    shasum -a 256 "$(basename "$dmg_path")" > "$(basename "$dmg_path").sha256"
+  )
 fi
 
 echo "Created $dmg_path"

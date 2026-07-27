@@ -14,8 +14,27 @@ guard let logo = NSImage(contentsOf: logoURL) else {
 }
 
 let canvasSize = NSSize(width: 660, height: 420)
-let image = NSImage(size: canvasSize)
-image.lockFocus()
+guard
+    let bitmap = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: Int(canvasSize.width),
+        pixelsHigh: Int(canvasSize.height),
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ),
+    let context = NSGraphicsContext(bitmapImageRep: bitmap)
+else {
+    fputs("error: unable to create DMG background bitmap\n", stderr)
+    exit(1)
+}
+bitmap.size = canvasSize
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = context
 
 let canvas = NSRect(origin: .zero, size: canvasSize)
 let gradient = NSGradient(
@@ -68,12 +87,8 @@ arrowHead.line(to: NSPoint(x: 346, y: 181))
 arrowHead.close()
 arrowHead.fill()
 
-image.unlockFocus()
-guard
-    let tiff = image.tiffRepresentation,
-    let bitmap = NSBitmapImageRep(data: tiff),
-    let png = bitmap.representation(using: .png, properties: [:])
-else {
+NSGraphicsContext.restoreGraphicsState()
+guard let png = bitmap.representation(using: .png, properties: [:]) else {
     fputs("error: unable to encode DMG background\n", stderr)
     exit(1)
 }

@@ -161,7 +161,10 @@ fi
 if [[ -n "$dmg_path" ]]; then
   [[ -f "$dmg_path" ]] || { echo "ERROR: DMG not found at '$dmg_path'." >&2; exit 1; }
   [[ -f "$dmg_path.sha256" ]] || { echo "ERROR: DMG checksum not found at '$dmg_path.sha256'." >&2; exit 1; }
-  shasum -a 256 -c "$dmg_path.sha256"
+  (
+    cd "$(dirname "$dmg_path")"
+    shasum -a 256 -c "$(basename "$dmg_path").sha256"
+  )
   hdiutil verify "$dmg_path"
   mount_point="$(mktemp -d "${TMPDIR:-/tmp}/velvt-verify.XXXXXX")"
   cleanup_mount() {

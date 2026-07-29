@@ -158,8 +158,11 @@ Category changes remain data-only in the runtime classification pipeline:
 3. In the offline model-artifact pipeline, run the approved centroid
    computation script against reviewed representative names. The script must
    mean-pool and normalize embeddings using the exact shipped model/tokenizer.
-4. Package the resulting vector into `centroids.bin` using the `VELVTC01`
-   format documented in `README.md`.
+4. Package reviewed representative vectors into
+   `abstraction-prototypes.bin` using the `VELVTP02` format documented in
+   `README.md`. Assign a new classifier artifact version for every changed
+   prototype set. A category may have multiple prototypes; the canonical
+   category set remains controlled by the taxonomy.
 5. Keep the centroid category key, dimensions, and taxonomy version aligned
    with the taxonomy file. Increment the taxonomy version for category-set
    changes.
@@ -167,9 +170,11 @@ Category changes remain data-only in the runtime classification pipeline:
 7. Run `cargo test --all-features`, `cargo clippy --all-targets --all-features
    -- -D warnings`, and `cargo fmt --check`.
 
-Centroid computation is offline artifact production, not service behavior.
-Never add runtime centroid recomputation, training, fine-tuning, or online
-learning. New classification strategies implement `ClassificationPlugin` and
+Prototype computation is offline artifact production, not service behavior.
+Never add unattended runtime taxonomy mutation, centroid recomputation,
+training, or fine-tuning. Explicit user corrections may update only the
+bounded, resettable device-local semantic prototype store. New classification
+strategies implement `ClassificationPlugin` and
 are added only at the registry call site documented in `README.md`; the engine
 core and existing plugins must remain unchanged.
 

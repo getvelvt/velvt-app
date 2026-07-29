@@ -607,7 +607,7 @@ public struct AccessibilityPermissionExperienceView: View {
 
     @ViewBuilder private var actionButtons: some View {
         if model.canContinue {
-            Button("Continue to Notification Permissions") { model.continueToWalkthrough() }
+            Button("Start Local Collection") { model.continueToWalkthrough() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
         } else {
@@ -924,10 +924,10 @@ public struct OnboardingAccountExperienceView: View {
 
 public enum OnboardingSequencePolicy {
     public static func needsAccountStep(firstRun: Bool, accountState: AccountState) -> Bool {
-        guard firstRun else { return false }
-        if case .loggedOut = accountState {
-            return true
-        }
+        // Accounts are offered after local first value and never gate initial
+        // Accessibility permission or local collection.
+        _ = firstRun
+        _ = accountState
         return false
     }
 }
@@ -954,7 +954,6 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private var accessibilityModel: AccessibilityPromptModel?
     private var notificationModel: NotificationPromptModel?
     private var launchStage: LaunchStage = .manual
-    private var isFirstRunSequence = false
 
     var hasPresentedWindow: Bool {
         windowController != nil
@@ -986,7 +985,6 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     /// replay action remains available through `presentReplay()`.
     public func presentOnLaunch() {
         guard presentation.showsOnboarding else { return }
-        isFirstRunSequence = true
         launchStage = .intro
         presentIntro(replay: false)
     }
@@ -1150,14 +1148,6 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private func advanceFromIntro() {
         guard launchStage == .intro else { return }
         dismissWindow()
-        if OnboardingSequencePolicy.needsAccountStep(
-            firstRun: isFirstRunSequence,
-            accountState: accountStateManager.accountState
-        ) {
-            launchStage = .account
-            presentAccountStage()
-            return
-        }
         launchStage = .accessibility
         presentAccessibilityStage()
     }
@@ -1172,9 +1162,10 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     private func finishAccessibilityStage() {
         guard launchStage == .accessibility else { return }
+        presentation.completeOnboarding()
         dismissWindow()
-        launchStage = .notifications
-        presentNotificationStage()
+        launchStage = .manual
+        onStartUsing()
     }
 
     private func finishNotificationStage() {

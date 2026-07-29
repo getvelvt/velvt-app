@@ -494,6 +494,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
     public let appName: String
     public let windowTitle: String
     public let bundleID: String?
+    public let focusedDocumentURL: String?
 
     public init(
         eventID: UUID,
@@ -501,7 +502,8 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         durationSeconds: Int = 0,
         appName: String,
         windowTitle: String,
-        bundleID: String?
+        bundleID: String?,
+        focusedDocumentURL: String? = nil
     ) {
         self.eventID = eventID
         self.occurredAt = occurredAt
@@ -509,6 +511,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         self.appName = appName
         self.windowTitle = windowTitle
         self.bundleID = bundleID
+        self.focusedDocumentURL = focusedDocumentURL
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -518,6 +521,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         case appName = "app_name"
         case windowTitle = "window_title"
         case bundleID = "bundle_id"
+        case focusedDocumentURL = "focused_document_url"
     }
 
     public init(from decoder: Decoder) throws {
@@ -528,6 +532,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         appName = try container.decode(String.self, forKey: .appName)
         windowTitle = try container.decode(String.self, forKey: .windowTitle)
         bundleID = try container.decodeIfPresent(String.self, forKey: .bundleID)
+        focusedDocumentURL = try container.decodeIfPresent(String.self, forKey: .focusedDocumentURL)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -538,6 +543,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         try container.encode(appName, forKey: .appName)
         try container.encode(windowTitle, forKey: .windowTitle)
         try container.encode(bundleID, forKey: .bundleID)
+        try container.encodeIfPresent(focusedDocumentURL, forKey: .focusedDocumentURL)
     }
 }
 

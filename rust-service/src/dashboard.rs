@@ -873,6 +873,7 @@ mod tests {
             classification_source: "seed".to_owned(),
             occurred_at: DateTime::from_timestamp(at, 0).unwrap(),
             duration_seconds: 0,
+            upload_eligible: true,
         }
     }
 

@@ -1,5 +1,16 @@
 # IPC Protocol Changelog
 
+## Version 21 - 2026-07-29
+
+- Added optional `focused_document_url` to the sole raw-event IPC message so
+  event-driven browser tab changes can be distinguished when Accessibility
+  exposes the focused document.
+- The URL is local-only raw input. Rust reduces it to a validated hostname for
+  classification and stable local identity, then discards it before SQLite,
+  upload, telemetry, logging, dashboard, or delivery DTO construction.
+- Events collected before authentication are retained for local first value
+  with `upload_eligible = false` and never enter the cloud upload queue.
+
 ## Version 20 - 2026-07-20
 
 - Replaced the local dashboard contract with exactly two analytical DTO branches:

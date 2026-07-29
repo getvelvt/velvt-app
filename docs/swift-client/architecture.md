@@ -88,7 +88,9 @@ EventRelay          -> IPC raw_event
 CurrentActivityModel -> immediate local popover display
 ```
 
-`EventRelay` is the only component that sends captured events to Rust. While disconnected, it buffers in memory and drops oldest events once capacity is exceeded. It does not write raw events to disk.
+`EventRelay` is the only component that sends captured events to Rust. Collection starts as soon as the local service is connected and Accessibility is granted; an account is not required. While disconnected, the relay buffers in memory and drops oldest events once capacity is exceeded. It does not write raw events to disk. Rust persists pre-auth observations as local-only rows that are permanently ineligible for upload.
+
+For supported browsers, the Accessibility agent also reads the focused document URL and sends it over the same local IPC boundary. Rust reduces it immediately to a validated hostname for classification and never persists or uploads the raw URL.
 
 `CurrentActivityModel` is local UI state. Because it can contain raw app/window text, it must remain local and must not be logged or uploaded.
 
@@ -114,7 +116,7 @@ Tests use `FakeIPCClient` to drive state and messages without a real Unix socket
 
 `ConcreteDisplayDataCoordinator` updates `InsightViewModel` and `HistoryViewModel` from `insight_payload`, `history_payload`, and `cache_empty`.
 
-`MenuBarDataLoader` requests today's insight and seven days of history once the account is logged in and the socket is connected.
+`MenuBarDataLoader` requests today's insight and seven days of history once the socket is connected. Local history and early signals remain available without an account; synchronized history and cloud-delivered insights require authentication.
 
 `NotificationDeliveryCoordinator` listens for `notification_payload` and schedules a user notification through `NotificationScheduling`. Swift does not create notification copy; the service payload is already ready to display.
 

@@ -16,7 +16,8 @@ final class IPCModuleTests: XCTestCase {
                     durationSeconds: 120,
                     appName: "local-only",
                     windowTitle: "local-only",
-                    bundleID: nil
+                    bundleID: nil,
+                    focusedDocumentURL: "https://local-only.example/private"
                 )
             ),
       .errorResponse(ErrorResponse(code: "safe_error", message: "safe", relatedEventID: nil)),

@@ -34,6 +34,7 @@ fn make_event(n: u64) -> RawEventEntry {
         classification_source: "seed".into(),
         occurred_at: Utc::now(),
         duration_seconds: 30,
+        upload_eligible: true,
     }
 }
 

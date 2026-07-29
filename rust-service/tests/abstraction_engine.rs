@@ -20,6 +20,7 @@ fn raw_event(app_name: &str, window_title: &str) -> RawEvent {
         app_name: app_name.to_owned(),
         window_title: window_title.to_owned(),
         bundle_id: None,
+        focused_document_url: None,
         duration_seconds: 0,
     }
 }
@@ -293,6 +294,38 @@ fn browser_context_routes_specific_tabs_before_generic_browser_seed() {
             ClassificationTier::LocalPurposeHeuristic
         );
     }
+}
+
+#[test]
+fn focused_document_url_classifies_generic_titles_and_keys_identity_by_site() {
+    let engine = engine();
+    let mut first = raw_event("Safari", "Inbox");
+    first.focused_document_url = Some("https://mail.google.com/mail/u/0/#inbox".into());
+    let mut second = raw_event("Safari", "A different private subject");
+    second.focused_document_url = Some("https://mail.google.com/mail/u/1/thread/private".into());
+
+    let first = engine.process(first).unwrap();
+    let second = engine.process(second).unwrap();
+
+    assert_eq!(first.label(), "communication:gmail");
+    assert_eq!(first.category(), "COMMUNICATION");
+    assert_eq!(first.stable_id(), second.stable_id());
+}
+
+#[test]
+fn different_focused_websites_receive_distinct_local_identities() {
+    let engine = engine();
+    let mut github = raw_event("Google Chrome", "Work");
+    github.focused_document_url = Some("https://github.com/velvt/private".into());
+    let mut youtube = raw_event("Google Chrome", "Work");
+    youtube.focused_document_url = Some("https://youtube.com/watch?v=private".into());
+
+    let github = engine.process(github).unwrap();
+    let youtube = engine.process(youtube).unwrap();
+
+    assert_eq!(github.label(), "reference:github");
+    assert_eq!(youtube.label(), "video:youtube");
+    assert_ne!(github.stable_id(), youtube.stable_id());
 }
 
 #[test]

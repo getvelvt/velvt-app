@@ -19,6 +19,8 @@ pub trait AbstractionMapRepo: Send + Sync {
     fn remove_personal_override(&self, stable_id: &str) -> Result<bool, PersistenceError>;
     fn reset_personal_overrides(&self) -> Result<u64, PersistenceError>;
     fn personal_override_count(&self) -> Result<u64, PersistenceError>;
+    fn personal_semantic_prototype_count(&self) -> Result<u64, PersistenceError>;
+    fn classifier_artifact_count(&self, artifact_version: &str) -> Result<u64, PersistenceError>;
     fn display_name_for_label(&self, label: &str) -> Result<Option<String>, PersistenceError>;
 }
 

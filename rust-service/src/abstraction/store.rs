@@ -1,5 +1,31 @@
 use std::{collections::HashMap, sync::Mutex};
 
+#[derive(Clone, PartialEq)]
+pub struct PersonalSemanticPrototype {
+    pub category: String,
+    pub embedding: Vec<f32>,
+    pub weight: f32,
+}
+
+impl std::fmt::Debug for PersonalSemanticPrototype {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PersonalSemanticPrototype")
+            .field("category", &self.category)
+            .field("embedding", &"[local_embedding]")
+            .field("weight", &self.weight)
+            .finish()
+    }
+}
+
+/// Local-only semantic memory. Implementations must never expose embeddings to upload code.
+pub trait SemanticLearningStore: Send + Sync {
+    fn record_embedding(&self, key_hash: &str, embedding: &[f32]) -> Result<(), StoreError>;
+    fn embedding(&self, key_hash: &str) -> Result<Option<Vec<f32>>, StoreError>;
+    fn personal_prototypes(&self) -> Result<Vec<PersonalSemanticPrototype>, StoreError>;
+    fn record_classifier_use(&self, artifact_version: &str) -> Result<(), StoreError>;
+}
+
 /// Stable-ID persistence boundary. R3 will provide the SQLite implementation.
 pub struct MappingResolution<'a> {
     pub stable_key: &'a str,
@@ -63,6 +89,22 @@ impl AbstractionMappingStore for InMemoryMappingStore {
     }
 }
 
+impl SemanticLearningStore for InMemoryMappingStore {
+    fn record_embedding(&self, _key_hash: &str, _embedding: &[f32]) -> Result<(), StoreError> {
+        Ok(())
+    }
+    fn embedding(&self, _key_hash: &str) -> Result<Option<Vec<f32>>, StoreError> {
+        Ok(None)
+    }
+
+    fn personal_prototypes(&self) -> Result<Vec<PersonalSemanticPrototype>, StoreError> {
+        Ok(Vec::new())
+    }
+    fn record_classifier_use(&self, _artifact_version: &str) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
 /// Privacy-safe mapping-store failures.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -73,6 +115,12 @@ pub enum StoreError {
 
 impl From<crate::persistence::PersistenceError> for StoreError {
     fn from(_: crate::persistence::PersistenceError) -> Self {
+        Self::Unavailable
+    }
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(_: rusqlite::Error) -> Self {
         Self::Unavailable
     }
 }

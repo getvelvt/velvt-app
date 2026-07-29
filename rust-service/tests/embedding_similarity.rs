@@ -7,7 +7,25 @@ use std::{
 use velvt_service::abstraction::{
     ClassificationConfidence, ClassificationPlugin, ClassificationStatus, ClassificationTier,
     EmbeddingError, EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
+    HashedEmbeddingModel, PersonalSemanticPrototype, SemanticLearningStore, StoreError,
 };
+
+struct PersonalStore(Vec<PersonalSemanticPrototype>);
+
+impl SemanticLearningStore for PersonalStore {
+    fn record_embedding(&self, _key_hash: &str, _embedding: &[f32]) -> Result<(), StoreError> {
+        Ok(())
+    }
+    fn embedding(&self, _key_hash: &str) -> Result<Option<Vec<f32>>, StoreError> {
+        Ok(None)
+    }
+    fn personal_prototypes(&self) -> Result<Vec<PersonalSemanticPrototype>, StoreError> {
+        Ok(self.0.clone())
+    }
+    fn record_classifier_use(&self, _artifact_version: &str) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
 
 struct FakeEmbeddingModel {
     embedding: Vec<f32>,
@@ -135,6 +153,112 @@ fn inferred_label_preserves_the_selected_category() {
 
     assert_eq!(result.category(), "PASSIVE_CONSUMPTION");
     assert_eq!(result.label(), "video:inferred");
+}
+
+#[test]
+fn multiple_prototypes_preserve_distinct_category_modes() {
+    let plugin = EmbeddingSimilarityPlugin::new_with_prototypes(
+        Arc::new(FakeEmbeddingModel {
+            embedding: vec![0.0, 1.0],
+            delay: Duration::ZERO,
+        }),
+        HashMap::from([
+            (
+                "FOCUS_WORK".to_owned(),
+                vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+            ),
+            ("REFERENCE".to_owned(), vec![vec![0.8, 0.6]]),
+        ]),
+        "mvp-1",
+        0.72,
+        Duration::from_millis(20),
+        Arc::new(EmbeddingMetrics::default()),
+    )
+    .unwrap();
+
+    let result = plugin.classify("Unknown", "Private title").unwrap();
+    assert_eq!(result.category(), "FOCUS_WORK");
+}
+
+#[test]
+fn one_correction_cannot_drift_beyond_the_personal_similarity_radius() {
+    let input = vec![0.89, 0.455_96];
+    let plugin = EmbeddingSimilarityPlugin::new(
+        Arc::new(FakeEmbeddingModel {
+            embedding: input.clone(),
+            delay: Duration::ZERO,
+        }),
+        HashMap::from([("REFERENCE".to_owned(), input)]),
+        "mvp-1",
+        0.72,
+        Duration::from_millis(20),
+        Arc::new(EmbeddingMetrics::default()),
+    )
+    .unwrap()
+    .with_learning_store(Arc::new(PersonalStore(vec![PersonalSemanticPrototype {
+        category: "COMMUNICATION".into(),
+        embedding: vec![1.0, 0.0],
+        weight: 1.0,
+    }])));
+
+    let result = plugin.classify("Unknown", "unseen context").unwrap();
+    assert_eq!(result.category(), "REFERENCE");
+    assert_ne!(result.source().as_str(), "user_rule");
+}
+
+#[test]
+fn conflicting_personal_prototypes_abstain_instead_of_drifting() {
+    let plugin = EmbeddingSimilarityPlugin::new(
+        Arc::new(FakeEmbeddingModel {
+            embedding: vec![1.0, 0.0],
+            delay: Duration::ZERO,
+        }),
+        centroids(),
+        "mvp-1",
+        0.72,
+        Duration::from_millis(20),
+        Arc::new(EmbeddingMetrics::default()),
+    )
+    .unwrap()
+    .with_learning_store(Arc::new(PersonalStore(vec![
+        PersonalSemanticPrototype {
+            category: "COMMUNICATION".into(),
+            embedding: vec![1.0, 0.0],
+            weight: 1.0,
+        },
+        PersonalSemanticPrototype {
+            category: "REFERENCE".into(),
+            embedding: vec![1.0, 0.0],
+            weight: 1.0,
+        },
+    ])));
+
+    let result = plugin.classify("Unknown", "ambiguous context").unwrap();
+    assert_eq!(result.status(), ClassificationStatus::Ambiguous);
+    assert_eq!(result.category(), "UNLOGGED");
+}
+
+#[test]
+fn builtin_classifier_handles_unknown_tools_with_semantic_context() {
+    let plugin = EmbeddingSimilarityPlugin::builtin("mvp-1").unwrap();
+    let focus = plugin
+        .classify("Nova", "programming workspace code editor")
+        .unwrap();
+    assert_eq!(focus.category(), "FOCUS_WORK");
+    let communication = plugin
+        .classify("Relay", "team chat messaging conversation")
+        .unwrap();
+    assert_eq!(communication.category(), "COMMUNICATION");
+}
+
+#[test]
+fn builtin_embedding_bounds_input_and_latency() {
+    let input = "programming ".repeat(10_000);
+    let started = Instant::now();
+    let embedding = HashedEmbeddingModel.embed(&input).unwrap();
+    assert_eq!(embedding.len(), 256);
+    assert!(embedding.iter().all(|value| value.is_finite()));
+    assert!(started.elapsed() < Duration::from_millis(25));
 }
 
 #[test]

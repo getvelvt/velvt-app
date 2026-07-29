@@ -97,6 +97,7 @@ fn raw_event(seconds: i64, app_name: &str, window_title: &str) -> RawEvent {
         app_name: app_name.into(),
         window_title: window_title.into(),
         bundle_id: None,
+        focused_document_url: None,
         duration_seconds: 0,
     }
 }
@@ -128,6 +129,7 @@ fn build_router(
 
 #[derive(Default)]
 struct RecordingIngestor {
+    ingest_calls: AtomicUsize,
     flush_now_calls: AtomicUsize,
 }
 
@@ -176,6 +178,7 @@ impl EventIngestor for RecordingIngestor {
         _duration_seconds: u64,
         _now: chrono::DateTime<Utc>,
     ) -> Pin<Box<dyn Future<Output = Result<(), CoordinatorError>> + Send + 'a>> {
+        self.ingest_calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(()) })
     }
 
@@ -284,6 +287,50 @@ async fn flush_upload_queue_uses_shared_ingestor_and_returns_menu_status() {
 
     assert!(matches!(response, Some(ServerMessage::MenuStatus(_))));
     assert_eq!(ingestor.flush_now_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn unauthenticated_raw_events_remain_local_only_and_never_enter_upload_queue() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let ingestor = Arc::new(RecordingIngestor::default());
+    let (_auth_sender, auth_state) = tokio::sync::watch::channel(AuthState::Unauthenticated);
+    let router = build_router(
+        Arc::new(FakeCacheManager::new()),
+        &persistence,
+        Arc::clone(&ingestor) as Arc<dyn EventIngestor>,
+        Arc::new(FakeHttp::default()),
+        Arc::new(FakeHttp::default()),
+    )
+    .with_auth_state(auth_state);
+
+    let response = router
+        .route(ClientMessage::RawEvent(raw_event(
+            10,
+            "Visual Studio Code",
+            "local first value",
+        )))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        response,
+        Some(ServerMessage::RawEventAck(RawEventAck {
+            status: RawEventStatus::Accepted,
+            ..
+        }))
+    ));
+    assert_eq!(ingestor.ingest_calls.load(Ordering::SeqCst), 0);
+    let entries = persistence
+        .raw_event_repo()
+        .events_before(Utc::now() + ChronoDuration::days(1))
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(!entries[0].upload_eligible);
+    assert!(persistence
+        .raw_event_repo()
+        .unbatched_events(10)
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

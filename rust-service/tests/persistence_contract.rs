@@ -1,8 +1,12 @@
 use chrono::{Duration, TimeZone, Utc};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 use uuid::Uuid;
-use velvt_service::abstraction::{AbstractionEngine, Taxonomy};
+use velvt_service::abstraction::{
+    AbstractionEngine, EmbeddingError, EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
+    Taxonomy,
+};
 use velvt_service::dashboard;
 use velvt_service::delivery::{parse_insight_with_rehydrator, LocalInsightRehydrator};
 use velvt_service::persistence::{
@@ -36,6 +40,7 @@ fn bounded_seven_day_dashboard_query_is_indexed_and_measured() {
                 classification_source: "seed".into(),
                 occurred_at: now - Duration::seconds(index * 300),
                 duration_seconds: 240,
+                upload_eligible: true,
             })
             .unwrap();
     }
@@ -148,6 +153,7 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
         classification_source: "seed".into(),
         occurred_at: timestamp(10),
         duration_seconds: 0,
+        upload_eligible: true,
     };
 
     repository.insert(&event).unwrap();
@@ -191,6 +197,7 @@ fn local_display_aggregation_is_bounded_to_five_labels_plus_other() {
                 classification_source: "seed".into(),
                 occurred_at: timestamp(10 + index as i64),
                 duration_seconds: 70 - (index as u64 * 10),
+                upload_eligible: true,
             })
             .unwrap();
     }
@@ -342,6 +349,7 @@ fn abstraction_engine_uses_sqlite_mapping_store_across_recreation() {
         app_name: "VS Code".into(),
         window_title: "private title".into(),
         bundle_id: None,
+        focused_document_url: None,
         duration_seconds: 0,
     };
     let first = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
@@ -368,6 +376,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
         app_name: "Unknown Local App".into(),
         window_title: "private title".into(),
         bundle_id: None,
+        focused_document_url: None,
         duration_seconds: 0,
     };
     let initial = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
@@ -412,6 +421,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
                 app_name: "Unknown Local App".into(),
                 window_title: "different private title".into(),
                 bundle_id: None,
+                focused_document_url: None,
             })
             .unwrap();
     assert_eq!(different_title.classification_source().as_str(), "fallback");
@@ -428,6 +438,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
             app_name: "Unknown Local App".into(),
             window_title: "private title".into(),
             bundle_id: None,
+            focused_document_url: None,
         })
         .unwrap();
     assert_eq!(reverted.classification_source().as_str(), "fallback");
@@ -441,6 +452,120 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
 }
 
 #[test]
+fn explicit_correction_generalizes_locally_and_remove_forgets_semantic_prototype() {
+    struct ConstantModel;
+    impl EmbeddingModel for ConstantModel {
+        fn embed(&self, _input: &str) -> Result<Vec<f32>, EmbeddingError> {
+            Ok(vec![0.0, 1.0])
+        }
+    }
+
+    let database = database();
+    let repository = database.abstraction_map_repo();
+    let build_engine = || {
+        let plugin = EmbeddingSimilarityPlugin::new(
+            Arc::new(ConstantModel),
+            HashMap::from([("FOCUS_WORK".to_owned(), vec![1.0, 0.0])]),
+            "mvp-1",
+            0.72,
+            std::time::Duration::from_millis(20),
+            Arc::new(EmbeddingMetrics::default()),
+        )
+        .unwrap()
+        .with_learning_store(database.semantic_learning_store());
+        AbstractionEngine::builder(
+            database.abstraction_mapping_store(),
+            Taxonomy::from_builtin().unwrap(),
+        )
+        .register_builtin_plugins_with_embedding(Some(plugin))
+        .build()
+        .unwrap()
+    };
+    let event = |title: &str| RawEvent {
+        event_id: Uuid::new_v4(),
+        occurred_at: timestamp(10),
+        app_name: "Novel Local Tool".into(),
+        window_title: title.into(),
+        bundle_id: None,
+        focused_document_url: None,
+        duration_seconds: 0,
+    };
+
+    let original = build_engine()
+        .process(event("first private context"))
+        .unwrap();
+    repository
+        .save_personal_override(original.stable_id(), "COMMUNICATION")
+        .unwrap();
+    assert_eq!(repository.personal_semantic_prototype_count().unwrap(), 1);
+
+    let generalized = build_engine()
+        .process(event("unseen related context"))
+        .unwrap();
+    assert_eq!(generalized.category(), "COMMUNICATION");
+    assert_eq!(generalized.classification_source().as_str(), "user_rule");
+
+    assert!(repository
+        .remove_personal_override(original.stable_id())
+        .unwrap());
+    assert_eq!(repository.personal_semantic_prototype_count().unwrap(), 0);
+    let forgotten = build_engine()
+        .process(event("third related context"))
+        .unwrap();
+    assert_ne!(forgotten.category(), "COMMUNICATION");
+}
+
+#[test]
+fn personal_semantic_memory_is_bounded_and_reset_with_exact_overrides() {
+    let database = database();
+    let repository = database.abstraction_map_repo();
+    let semantic = database.semantic_learning_store();
+    for index in 0..20 {
+        let key_hash = format!("{index:064x}");
+        let stable_id = format!("semantic-id-{index}");
+        repository
+            .upsert(&AbstractionMapping {
+                key_hash: key_hash.clone(),
+                stable_id: stable_id.clone(),
+                label: "unlogged".into(),
+                category: "UNLOGGED".into(),
+                taxonomy_version: "mvp-1".into(),
+                classification_tier: "fallback".into(),
+                classification_status: "ambiguous".into(),
+                classification_confidence: "low".into(),
+                classification_source: "fallback".into(),
+                display_name: None,
+            })
+            .unwrap();
+        semantic
+            .record_embedding(&key_hash, &[1.0, index as f32 / 100.0])
+            .unwrap();
+        repository
+            .save_personal_override(&stable_id, "COMMUNICATION")
+            .unwrap();
+    }
+    assert_eq!(repository.personal_override_count().unwrap(), 20);
+    assert_eq!(repository.personal_semantic_prototype_count().unwrap(), 12);
+    assert_eq!(repository.reset_personal_overrides().unwrap(), 20);
+    assert_eq!(repository.personal_semantic_prototype_count().unwrap(), 0);
+}
+
+#[test]
+fn classifier_artifact_version_is_counted_only_in_local_telemetry() {
+    let database = database();
+    let semantic = database.semantic_learning_store();
+    semantic.record_classifier_use("builtin-hash-v1").unwrap();
+    semantic.record_classifier_use("builtin-hash-v1").unwrap();
+    assert_eq!(
+        database
+            .abstraction_map_repo()
+            .classifier_artifact_count("builtin-hash-v1")
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
 fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_locally() {
     let database = database();
     let raw = RawEvent {
@@ -449,6 +574,7 @@ fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_local
         app_name: "Slack".into(),
         window_title: "Private team conversation".into(),
         bundle_id: None,
+        focused_document_url: None,
         duration_seconds: 0,
     };
     let abstracted = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
@@ -500,6 +626,7 @@ fn raw_title_never_becomes_a_local_display_label_or_ready_insight() {
             app_name: "Unknown Local App".into(),
             window_title: raw_title.into(),
             bundle_id: None,
+            focused_document_url: None,
         })
         .unwrap();
 

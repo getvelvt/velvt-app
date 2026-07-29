@@ -179,7 +179,7 @@ final class CollectionModuleTests: XCTestCase {
         XCTAssertEqual(accessibility.maximumActiveObserverCount, 1)
     }
 
-    func testNilAndEmptyTitleNotificationsEmitEmptyRawEvents() throws {
+    func testNilAndEmptyTitleNotificationsAreDeduplicated() throws {
         let sink = RecordingEventSink()
         let workspace = FakeWorkspaceObserver()
         let accessibility = FakeAccessibilityObserver()
@@ -210,15 +210,113 @@ final class CollectionModuleTests: XCTestCase {
                     windowTitle: "Initial",
                     occurredAt: Date(timeIntervalSince1970: 1),
                     durationSeconds: 1
-                ),
-                RawEvent(
-                    appName: "One",
-                    windowTitle: "",
-                    occurredAt: Date(timeIntervalSince1970: 2),
-                    durationSeconds: 1
                 )
             ]
         )
+    }
+
+    func testFocusedDocumentChangeClosesPreviousBrowserDwellEvenWhenTitleIsUnchanged() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "Dashboard"]
+        accessibility.initialDocumentURLs = [10: "https://first.example/path"]
+        let dates = DateQueue([
+            Date(timeIntervalSince1970: 10),
+            Date(timeIntervalSince1970: 25),
+            Date(timeIntervalSince1970: 30)
+        ])
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            now: dates.next
+        )
+
+        try agent.start()
+        workspace.activate(
+            .init(processIdentifier: 10, appName: "Browser", bundleIdentifier: "com.apple.Safari")
+        )
+        accessibility.emitActivity(title: "Dashboard", documentURL: "https://second.example/other")
+
+        XCTAssertEqual(
+            sink.events,
+            [
+                RawEvent(
+                    appName: "Browser",
+                    bundleIdentifier: "com.apple.Safari",
+                    windowTitle: "Dashboard",
+                    focusedDocumentURL: "https://first.example/path",
+                    occurredAt: Date(timeIntervalSince1970: 10),
+                    durationSeconds: 15
+                )
+            ]
+        )
+    }
+
+    func testBrowserCapabilityRegistryCoversSupportedFamiliesAndReleaseChannels() {
+        let supported = [
+            "com.apple.Safari",
+            "com.google.Chrome",
+            "com.google.Chrome.beta",
+            "com.google.Chrome.dev",
+            "com.google.Chrome.canary",
+            "org.chromium.Chromium",
+            "com.microsoft.edgemac",
+            "com.microsoft.edgemac.Beta",
+            "com.microsoft.edgemac.Dev",
+            "com.microsoft.edgemac.Canary",
+            "com.brave.Browser",
+            "com.brave.Browser.beta",
+            "com.brave.Browser.nightly",
+            "company.thebrowser.Browser",
+            "company.thebrowser.dia",
+            "org.mozilla.firefox",
+            "org.mozilla.firefox.developer",
+            "com.operasoftware.Opera",
+            "com.operasoftware.OperaGX",
+            "com.vivaldi.Vivaldi",
+            "com.kagi.kagimacOS"
+        ]
+
+        for bundleIdentifier in supported {
+            XCTAssertTrue(
+                AXApplicationObserver.isSupportedBrowser(
+                    bundleIdentifier: bundleIdentifier),
+                bundleIdentifier
+            )
+        }
+        XCTAssertFalse(
+            AXApplicationObserver.isSupportedBrowser(bundleIdentifier: "com.apple.TextEdit")
+        )
+        XCTAssertFalse(AXApplicationObserver.isSupportedBrowser(bundleIdentifier: nil))
+    }
+
+    func testDuplicateActivityNotificationDoesNotSplitDwell() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "Same"]
+        let dates = DateQueue([
+            Date(timeIntervalSince1970: 10),
+            Date(timeIntervalSince1970: 20),
+            Date(timeIntervalSince1970: 30),
+            Date(timeIntervalSince1970: 40)
+        ])
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            now: dates.next
+        )
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Browser"))
+        accessibility.emitActivity(title: "Same", documentURL: nil)
+        accessibility.emitActivity(title: "Changed", documentURL: nil)
+
+        XCTAssertEqual(sink.events.first?.occurredAt, Date(timeIntervalSince1970: 10))
+        XCTAssertEqual(sink.events.first?.durationSeconds, 20)
     }
 
     func testRapidAppSwitchesKeepOneObserverAndSuppressDuplicateActivation() throws {
@@ -462,6 +560,7 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
     }
 
     var initialTitles: [pid_t: String] = [:]
+    var initialDocumentURLs: [pid_t: String] = [:]
     var startError: CollectionError?
     var startErrors: [pid_t: CollectionError] = [:]
     private(set) var operations: [Operation] = []
@@ -469,14 +568,14 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
     private(set) var startCallCount = 0
     private(set) var activeObserverCount = 0
     private(set) var maximumActiveObserverCount = 0
-    private var titleHandler: ((String?) -> Void)?
+    private var activityHandler: ((FocusedActivity) -> Void)?
     private var errorHandler: ((CollectionError) -> Void)?
 
     func start(
         observing application: RunningApplication,
-        titleHandler: @escaping (String?) -> Void,
+        activityHandler: @escaping (FocusedActivity) -> Void,
         errorHandler: @escaping (CollectionError) -> Void
-    ) throws -> String? {
+    ) throws -> FocusedActivity {
         operations.append(.start(application.processIdentifier))
         startCallCount += 1
         if let startError = startErrors[application.processIdentifier] {
@@ -487,23 +586,30 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
         }
         activeObserverCount += 1
         maximumActiveObserverCount = max(maximumActiveObserverCount, activeObserverCount)
-        self.titleHandler = titleHandler
+        self.activityHandler = activityHandler
         self.errorHandler = errorHandler
-        return initialTitles[application.processIdentifier]
+        return FocusedActivity(
+            windowTitle: initialTitles[application.processIdentifier],
+            focusedDocumentURL: initialDocumentURLs[application.processIdentifier]
+        )
     }
 
     func stop() {
         operations.append(.stop)
         stopCallCount += 1
-        if titleHandler != nil {
+        if activityHandler != nil {
             activeObserverCount -= 1
         }
-        titleHandler = nil
+        activityHandler = nil
         errorHandler = nil
     }
 
     func emitTitle(_ title: String?) {
-        titleHandler?(title)
+        activityHandler?(FocusedActivity(windowTitle: title))
+    }
+
+    func emitActivity(title: String?, documentURL: String?) {
+        activityHandler?(FocusedActivity(windowTitle: title, focusedDocumentURL: documentURL))
     }
 
     func emitError(_ error: CollectionError) {

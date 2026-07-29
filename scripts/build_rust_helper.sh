@@ -30,6 +30,9 @@ if [[ "$distributable" == "NO" ]]; then
     cargo build --release
   fi
   cp target/release/velvt-service "$output_path"
+  for artifact in abstraction-model.onnx tokenizer.json abstraction-prototypes.bin; do
+    [[ ! -f "resources/$artifact" ]] || cp "resources/$artifact" "$(dirname "$output_path")/$artifact"
+  done
   exit 0
 fi
 
@@ -49,6 +52,10 @@ lipo -create \
   target/aarch64-apple-darwin/release/velvt-service \
   target/x86_64-apple-darwin/release/velvt-service \
   -output "$output_path"
+
+for artifact in abstraction-model.onnx tokenizer.json abstraction-prototypes.bin; do
+  [[ ! -f "resources/$artifact" ]] || cp "resources/$artifact" "$(dirname "$output_path")/$artifact"
+done
 
 actual_archs="$(lipo -archs "$output_path")"
 for required_arch in arm64 x86_64; do

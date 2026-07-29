@@ -5,23 +5,29 @@
 The collection layer is local-only and event-driven. Its only output is:
 
 ```swift
-RawEvent(appName: String, windowTitle: String, occurredAt: Date, durationSeconds: Int)
+RawEvent(appName: String, bundleIdentifier: String?, windowTitle: String,
+         focusedDocumentURL: String?, occurredAt: Date, durationSeconds: Int)
 ```
 
 It sends events only through `EventSink.receive(_:)`. It has no IPC, database,
 batching, abstraction, upload, or network responsibilities. Raw application
-names and window titles must never be logged.
+names, window titles, and focused document URLs must never be logged. The URL is
+captured only for recognized browsers and remains inside the Swift-to-Rust local
+privacy boundary.
 
 ## Registered Observations
 
-The collection layer registers exactly these three observation types:
+The collection layer always registers these observation types:
 
 1. `NSWorkspace.didActivateApplicationNotification`
 2. `kAXFocusedWindowChangedNotification`
 3. `kAXTitleChangedNotification`
 
-The two AX notifications are registered on the active application's main-window
-element. Adding another observation type requires explicit approval.
+The AX notifications are registered against the active application and focused
+window as supported by that process. For recognized browsers, the adapter also
+registers focused-element and value/selection changes so same-title navigation
+is observed without polling. These optional notifications feed the same bounded
+activity callback and do not add persistence or network access.
 
 ## AXObserver Lifecycle
 
@@ -33,7 +39,8 @@ On application activation:
 1. Ignore a duplicate activation for the currently observed PID.
 2. Stop and release the previous per-process AX observer.
 3. Create an AX observer for the new PID.
-4. Register the two approved AX notifications.
+4. Register focused-window/title notifications and the browser adapter's
+   optional document-change notifications when applicable.
 5. Start a local dwell interval for the new application's initial raw event.
 
 Only one AX observer is active at a time. `stop()` is idempotent and removes the
@@ -43,9 +50,11 @@ safe `CollectionStatus.error` value, the invalid AX observer is removed, and
 the NSWorkspace subscription remains active for recovery on the next app
 activation.
 
-AX elements are callback-local values. The collection layer does not cache an
-`AXUIElement` across callbacks or application switches. A missing or empty AX
-title starts an interval with an empty `windowTitle`; it is not skipped.
+The adapter retains only the active application's element and its current
+focused-window element for the lifetime of that per-process observer. Both are
+discarded on application switches and observer teardown. No AX element crosses
+into the collection agent's serial event queue. A missing or empty AX title
+starts an interval with an empty `windowTitle`; it is not skipped.
 
 ## Dwell Time
 
@@ -62,9 +71,10 @@ only the resulting duration follows the existing IPC path.
 ## Threading Model
 
 The AX observer source runs on a private `CFRunLoop`. The AX callback reads the
-title while still on that run-loop thread, converts it to a Swift optional
-string or safe error code, and dispatches that value to a private serial queue.
-No `AXUIElement` crosses the callback boundary.
+title and, for recognized browsers, the focused document URL while still on
+that run-loop thread. It converts them to Swift optional strings or a safe error
+code and dispatches only those values to a private serial queue. No
+`AXUIElement` crosses the adapter boundary.
 
 The agent checks that callback values still belong to the active PID before
 emitting them. This suppresses stale events from an observer that was removed
@@ -90,8 +100,8 @@ The core AX collection loop and `CollectionAgentProtocol` do not change.
 
 The collection layer must not contain `Timer`, `DispatchSourceTimer`, sleep
 calls, `while true`, or repeated `DispatchQueue.asyncAfter` scheduling.
-Permission and activity changes are handled only through the three approved
-notifications, explicit start/stop calls, and AX errors.
+Permission and activity changes are handled only through registered workspace
+and AX notifications, explicit start/stop calls, and AX errors.
 
 Audit commands:
 
@@ -106,4 +116,5 @@ rg -n "addObserver|AXObserverAddNotification|didActivateApplicationNotification|
 ```
 
 The first two commands must return no call sites. The observation audit must
-show only the three approved observation types.
+show only the documented activation, window/title, and optional browser
+document-change notification types.

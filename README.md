@@ -304,7 +304,9 @@ The Rust abstraction engine applies a privacy-preserving three-tier pipeline:
 1. **Exact match:** the versioned taxonomy seed dictionary matches exact or
    glob application-name patterns.
 2. **Embedding similarity:** an optional local ONNX sentence-embedding model
-   compares an app-name/window-title embedding with static category centroids.
+   compares an app-name/window-title embedding with versioned category
+   prototypes. Multiple prototypes may represent distinct semantic modes of
+   the same canonical category.
 3. **Fallback:** unmatched or unavailable Tier 2 requests become
    `unlogged` / `UNLOGGED`.
 
@@ -328,37 +330,55 @@ must be accompanied by its `tokenizer.json` and a version-matched centroid
 file. Model training, fine-tuning, and artifact generation happen offline and
 are intentionally not part of the service.
 
-The bundled macOS service is built with ONNX support. Inference remains
-disabled until an approved, matching artifact bundle is configured; the service
-never downloads a model or sends raw activity to a remote embedding API.
+The service always includes the portable, deterministic `builtin-hash-v1`
+token/subword embedder and reviewed multi-prototype phrases, so Tier 2 remains
+available without downloads or architecture-specific native libraries. The
+bundled macOS service additionally prefers ONNX when an approved artifact set
+named `abstraction-model.onnx`, `tokenizer.json`, and
+`abstraction-prototypes.bin` is copied from `rust-service/resources/` into the
+app bundle when present and discovered beside the configured taxonomy at
+runtime. Environment variables may select a reviewed development artifact set.
+Absent or invalid ONNX artifacts fall back to the built-in classifier. The
+service never downloads a model or sends raw activity to a remote embedding API.
+
+Explicit corrections also create high-threshold device-local semantic
+prototypes. They are limited to 12 per category and 64 total, decay over 90
+days, and require both a 0.90 similarity radius and a 0.08 winning margin.
+Remove and reset controls delete these prototypes with their exact rules.
+Only embeddings and irreversible context hashes are persisted; raw classifier
+input is never stored in the semantic-learning tables.
 
 Install an approved model artifact bundle by placing its files together and
 configuring:
 
 ```sh
 export VELVT_ABSTRACTION_MODEL_PATH=/path/to/model.onnx
-export VELVT_ABSTRACTION_CENTROIDS_PATH=/path/to/centroids.bin
+export VELVT_ABSTRACTION_CENTROIDS_PATH=/path/to/abstraction-prototypes.bin
 export VELVT_ABSTRACTION_INFERENCE_TIMEOUT_MS=20
 export VELVT_ABSTRACTION_SIMILARITY_THRESHOLD=0.72
 ```
 
 Do not configure arbitrary downloaded models. The tokenizer, model output
 shape, centroid dimension, taxonomy version, and model license must be reviewed
-together. If the model or centroids are unavailable or invalid, Tier 2 is
-disabled with a structured warning and Tier 1/Tier 3 continue.
+together. If the ONNX model or prototypes are unavailable or invalid, that
+adapter is disabled with a structured warning; the built-in Tier 2 classifier
+remains active alongside Tier 1 and Tier 3.
 
-### Centroid File
+### Classifier Prototype File
 
-Centroids are static companion data and are never recomputed at runtime. The
-binary format is:
+Classifier prototypes are static companion data and are never recomputed at
+runtime. `VELVTC01` remains supported for one-centroid-per-category artifacts.
+New artifacts use this format:
 
 ```text
-"VELVTC01"
+"VELVTP02"
 taxonomy_version_length: u32 little-endian
 taxonomy_version: UTF-8 bytes
+artifact_version_length: u32 little-endian
+artifact_version: UTF-8 bytes
 embedding_dimensions: u32 little-endian
-centroid_count: u32 little-endian
-repeated centroid_count times:
+prototype_count: u32 little-endian
+repeated prototype_count times (category identifiers may repeat):
   category_length: u32 little-endian
   category: UTF-8 bytes
   embedding_dimensions float32 little-endian values

@@ -651,8 +651,8 @@ final class PermissionModuleTests: XCTestCase {
     }
 
     @MainActor
-    func testAccountOnboardingAppearsOnlyForSignedOutFirstRun() {
-        XCTAssertTrue(
+    func testAccountOnboardingNeverGatesLocalFirstValue() {
+        XCTAssertFalse(
             OnboardingSequencePolicy.needsAccountStep(
                 firstRun: true,
                 accountState: .loggedOut
@@ -748,7 +748,7 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(presentation.statuses[.notifications], .denied)
     }
 
-    func testFirstRunResolverCoversValuePermissionsAuthenticationAndCollection() {
+    func testFirstRunResolverCoversValuePermissionServiceAndCollectionWithoutCloudGates() {
         let progress = BaselineProgress(collectedDays: 2)
         let base = FirstRunOnboardingState.resolve(
             hasSeenValueProposition: false,
@@ -800,18 +800,7 @@ final class PermissionModuleTests: XCTestCase {
                 collectionIsRunning: false,
                 progress: progress
             ),
-            .notificationsExplanation
-        )
-        XCTAssertEqual(
-            resolvedFirstRun(
-                notificationsStatus: .denied,
-                hasRequestedNotifications: true,
-                isAuthenticated: false,
-                servicePhase: .starting,
-                collectionIsRunning: false,
-                progress: progress
-            ),
-            .authenticationRequired
+            .serviceStarting
         )
         XCTAssertEqual(
             resolvedFirstRun(

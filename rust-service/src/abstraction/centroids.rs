@@ -1,11 +1,14 @@
 use std::{collections::HashMap, path::Path};
 
-const MAGIC: &[u8; 8] = b"VELVTC01";
+const LEGACY_MAGIC: &[u8; 8] = b"VELVTC01";
+const PROTOTYPE_MAGIC: &[u8; 8] = b"VELVTP02";
+const LEGACY_ARTIFACT_VERSION: &str = "centroids-v1";
 
-/// Validated, versioned category centroid set loaded beside the ONNX model.
+/// Validated, versioned category prototype set loaded beside the ONNX model.
 pub struct CategoryCentroids {
     taxonomy_version: String,
-    vectors: HashMap<String, Vec<f32>>,
+    artifact_version: String,
+    prototypes: HashMap<String, Vec<Vec<f32>>>,
 }
 
 impl CategoryCentroids {
@@ -16,16 +19,30 @@ impl CategoryCentroids {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, CentroidError> {
         let mut cursor = Cursor::new(bytes);
-        if cursor.take(8)? != MAGIC {
+        let magic = cursor.take(8)?;
+        let has_artifact_version = if magic == LEGACY_MAGIC {
+            false
+        } else if magic == PROTOTYPE_MAGIC {
+            true
+        } else {
             return Err(CentroidError::Invalid);
-        }
+        };
         let taxonomy_version = cursor.string()?;
+        let artifact_version = if has_artifact_version {
+            cursor.string()?
+        } else {
+            LEGACY_ARTIFACT_VERSION.to_owned()
+        };
         let dimensions = cursor.u32()? as usize;
         let count = cursor.u32()? as usize;
-        if taxonomy_version.is_empty() || dimensions == 0 || count == 0 {
+        if taxonomy_version.is_empty()
+            || artifact_version.is_empty()
+            || dimensions == 0
+            || count == 0
+        {
             return Err(CentroidError::Invalid);
         }
-        let mut vectors = HashMap::with_capacity(count);
+        let mut prototypes = HashMap::<String, Vec<Vec<f32>>>::new();
         for _ in 0..count {
             let category = cursor.string()?;
             let mut vector = Vec::with_capacity(dimensions);
@@ -37,19 +54,24 @@ impl CategoryCentroids {
                         .map_err(|_| CentroidError::Invalid)?,
                 ));
             }
-            if category.is_empty()
-                || vector.iter().any(|value| !value.is_finite())
-                || vectors.insert(category, vector).is_some()
-            {
+            if category.is_empty() || vector.iter().any(|value| !value.is_finite()) {
                 return Err(CentroidError::Invalid);
             }
+            let category_prototypes = prototypes.entry(category).or_default();
+            // V1 was defined as exactly one centroid per category. V2 records
+            // may repeat a category to represent distinct semantic modes.
+            if !has_artifact_version && !category_prototypes.is_empty() {
+                return Err(CentroidError::Invalid);
+            }
+            category_prototypes.push(vector);
         }
         if !cursor.remaining().is_empty() {
             return Err(CentroidError::Invalid);
         }
         Ok(Self {
             taxonomy_version,
-            vectors,
+            artifact_version,
+            prototypes,
         })
     }
 
@@ -57,12 +79,27 @@ impl CategoryCentroids {
         &self.taxonomy_version
     }
 
-    pub fn categories(&self) -> impl Iterator<Item = &str> {
-        self.vectors.keys().map(String::as_str)
+    pub fn artifact_version(&self) -> &str {
+        &self.artifact_version
     }
 
+    pub fn categories(&self) -> impl Iterator<Item = &str> {
+        self.prototypes.keys().map(String::as_str)
+    }
+
+    /// Compatibility accessor for legacy callers. V2 callers should preserve
+    /// every category mode with [`Self::into_prototypes`].
     pub fn into_vectors(self) -> HashMap<String, Vec<f32>> {
-        self.vectors
+        self.prototypes
+            .into_iter()
+            .filter_map(|(category, mut prototypes)| {
+                prototypes.drain(..).next().map(|vector| (category, vector))
+            })
+            .collect()
+    }
+
+    pub fn into_prototypes(self) -> HashMap<String, Vec<Vec<f32>>> {
+        self.prototypes
     }
 }
 

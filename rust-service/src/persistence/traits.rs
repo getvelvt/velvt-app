@@ -1,8 +1,8 @@
 use super::{
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, LocalDisplayAggregate,
     LocalEventMetadata, NewUploadBatch, PersistenceError, PersonalOverrideRecord, RawEventEntry,
-    UploadBatch, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockObservation,
-    WorkBlockRecord,
+    UploadBatch, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockIntervention,
+    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -207,6 +207,25 @@ pub trait WorkBlockRepo: Send + Sync {
         completion: &WorkBlockCompletion,
     ) -> Result<WorkBlockResult, PersistenceError>;
     fn result(&self, block_id: &str) -> Result<Option<WorkBlockResult>, PersistenceError>;
+    /// Records an intervention offer. The caller must treat a duplicate as a
+    /// no-op: the table's primary key enforces one offer per block.
+    fn record_intervention(
+        &self,
+        block_id: &str,
+        intervention: &WorkBlockIntervention,
+    ) -> Result<(), PersistenceError>;
+    fn intervention(
+        &self,
+        block_id: &str,
+    ) -> Result<Option<WorkBlockIntervention>, PersistenceError>;
+    /// Transitions an offer to a terminal outcome. Only an `offered` row is
+    /// updated, so a recorded return is never overwritten by block expiry.
+    fn resolve_intervention(
+        &self,
+        block_id: &str,
+        outcome: WorkBlockInterventionOutcome,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError>;
     fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError>;
     fn clear_all(&self) -> Result<u64, PersistenceError>;
 }

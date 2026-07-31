@@ -76,6 +76,26 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         XCTAssertEqual(scheduler.scheduledPayloads, [payload])
     }
 
+    /// The launch sequence reaches first value directly from Accessibility and
+    /// never asks about notifications, so a fresh install sits at
+    /// `notDetermined`. Checking without requesting would drop every real
+    /// delivery in silence -- the daily insight included.
+    func testHandleRequestsNotificationPermissionWhenUndetermined() async {
+        let scheduler = FakeNotificationScheduler()
+        let permissions = RequestGrantingPermissionManager()
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler,
+            permissionManager: permissions,
+            debounceInterval: .milliseconds(5)
+        )
+
+        let payload = makePayload()
+        await sut.handle(payload).value
+
+        XCTAssertEqual(permissions.requestedPermissions, [.notifications])
+        XCTAssertEqual(scheduler.scheduledPayloads, [payload])
+    }
+
     func testSuccessfulScheduleIsDeduplicatedAcrossCoordinatorInstances() async {
         let tracker = InMemoryScheduledNotificationTracker()
         let scheduler = FakeNotificationScheduler()

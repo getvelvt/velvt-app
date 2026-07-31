@@ -986,9 +986,22 @@ impl R7Router {
                         abstracted.classification_confidence(),
                         occurred_at,
                     ) {
-                        Ok(Some(snapshot)) => {
+                        Ok(Some(outcome)) => {
                             if let Some(push) = &self.work_block_push {
-                                push.push_work_block_state(snapshot).await;
+                                push.push_work_block_state(outcome.snapshot).await;
+                                // Delivered on the same local path as the daily
+                                // insight, but authored entirely on-device: an
+                                // in-session offer never waits on the cloud or
+                                // on a mature baseline.
+                                if let Some(intervention) = outcome.intervention {
+                                    push.push_notification(
+                                        Uuid::new_v4(),
+                                        &intervention.title,
+                                        &intervention.body,
+                                        occurred_at.date_naive(),
+                                    )
+                                    .await;
+                                }
                             }
                         }
                         Ok(None) => {}

@@ -18,7 +18,8 @@ use velvt_shared_types::{
 use crate::{
     delivery::PushAdapter,
     persistence::{
-        PersistenceError, WorkBlockCompletion, WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
+        PersistenceError, WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome,
+        WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
     },
 };
 
@@ -26,6 +27,35 @@ const MIN_DURATION_SECONDS: u32 = 5 * 60;
 const MAX_DURATION_SECONDS: u32 = 180 * 60;
 const RECOVERY_DURATION_SECONDS: u32 = 10 * 60;
 const INTENTION_RETENTION_HOURS: i64 = 24;
+
+/// In-session drift gates. These are deterministic evidence thresholds, not a
+/// learned policy: an offer is made only when the observed switching is
+/// unambiguous, the block has run long enough to have an anchor, and there is
+/// still enough time left for a return to mean anything.
+const DRIFT_WINDOW_SECONDS: i64 = 10 * 60;
+const DRIFT_MIN_SWITCHES: u32 = 4;
+const DRIFT_MIN_ELAPSED_SECONDS: u32 = 5 * 60;
+const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
+const DRIFT_ACTION_ID: &str = "return_to_anchor";
+const DRIFT_PROTECT_MINUTES: u32 = 10;
+
+/// A single approved, device-local intervention offer. Copy is authored here,
+/// beside the evidence that justifies it; Swift renders it verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriftIntervention {
+    pub block_id: Uuid,
+    pub action_id: &'static str,
+    pub title: String,
+    pub body: String,
+}
+
+/// Result of a safe category observation: the state Swift renders, plus at most
+/// one intervention to deliver.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObservationOutcome {
+    pub snapshot: WorkBlockSnapshot,
+    pub intervention: Option<DriftIntervention>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkBlockError {
@@ -249,7 +279,7 @@ impl WorkBlockManager {
         status: ClassificationStatus,
         confidence: ClassificationConfidence,
         occurred_at: DateTime<Utc>,
-    ) -> Result<Option<WorkBlockSnapshot>, WorkBlockError> {
+    ) -> Result<Option<ObservationOutcome>, WorkBlockError> {
         let Some(record) = self.repo.latest()? else {
             return Ok(None);
         };
@@ -263,7 +293,12 @@ impl WorkBlockManager {
                     WorkBlockPhase::Completed,
                     planned_deadline(&record),
                 )
-                .map(Some);
+                .map(|snapshot| {
+                    Some(ObservationOutcome {
+                        snapshot,
+                        intervention: None,
+                    })
+                });
         }
         let at = effective_now(&record, occurred_at).min(planned_deadline(&record));
         if self
@@ -289,7 +324,95 @@ impl WorkBlockManager {
                 classification_confidence: confidence,
             },
         )?;
-        self.snapshot_for(record, at).map(Some)
+        // Observing the return closes the loop: an offer is only worth making
+        // if its outcome is recorded.
+        self.record_return_if_pending(&record, category, at)?;
+        let intervention = self.evaluate_drift(&record, at)?;
+        let snapshot = self.snapshot_for(record, at)?;
+        Ok(Some(ObservationOutcome {
+            snapshot,
+            intervention,
+        }))
+    }
+
+    /// Marks a pending offer as returned once the anchor category is observed
+    /// again. Only an `offered` row transitions, so this is idempotent.
+    fn record_return_if_pending(
+        &self,
+        record: &WorkBlockRecord,
+        category: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), WorkBlockError> {
+        let Some(pending) = self.repo.intervention(&record.block_id)? else {
+            return Ok(());
+        };
+        if pending.outcome != WorkBlockInterventionOutcome::Offered {
+            return Ok(());
+        }
+        if !pending.anchor_category.eq_ignore_ascii_case(category) {
+            return Ok(());
+        }
+        self.repo.resolve_intervention(
+            &record.block_id,
+            WorkBlockInterventionOutcome::Returned,
+            at,
+        )?;
+        Ok(())
+    }
+
+    /// Deterministic drift gate. Returns an offer at most once per block, and
+    /// abstains whenever the evidence is thin rather than guessing.
+    fn evaluate_drift(
+        &self,
+        record: &WorkBlockRecord,
+        now: DateTime<Utc>,
+    ) -> Result<Option<DriftIntervention>, WorkBlockError> {
+        let elapsed = elapsed_seconds(record, now);
+        if elapsed < DRIFT_MIN_ELAPSED_SECONDS {
+            return Ok(None);
+        }
+        if record.planned_duration_seconds.saturating_sub(elapsed) < DRIFT_MIN_REMAINING_SECONDS {
+            return Ok(None);
+        }
+        // Hard cap. One offer per block, enforced by the row's existence
+        // regardless of how it was resolved.
+        if self.repo.intervention(&record.block_id)?.is_some() {
+            return Ok(None);
+        }
+        let observations = self.repo.observations(&record.block_id)?;
+        let Some(anchor) = dominant_category(&observations) else {
+            return Ok(None);
+        };
+        let window_start = now - Duration::seconds(DRIFT_WINDOW_SECONDS);
+        let switch_count = observations
+            .iter()
+            .filter(|observation| observation.occurred_at >= window_start)
+            .filter(|observation| is_confident_evidence(observation))
+            .filter(|observation| !observation.category.eq_ignore_ascii_case(&anchor))
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX);
+        if switch_count < DRIFT_MIN_SWITCHES {
+            return Ok(None);
+        }
+        self.repo.record_intervention(
+            &record.block_id,
+            &WorkBlockIntervention {
+                offered_at: now,
+                action_id: DRIFT_ACTION_ID.to_owned(),
+                anchor_category: anchor.clone(),
+                switch_count,
+                window_seconds: DRIFT_WINDOW_SECONDS.try_into().unwrap_or(u32::MAX),
+                outcome: WorkBlockInterventionOutcome::Offered,
+                outcome_at: None,
+            },
+        )?;
+        Ok(Some(DriftIntervention {
+            block_id: Uuid::parse_str(&record.block_id).unwrap_or_default(),
+            action_id: DRIFT_ACTION_ID,
+            title: "Your work block is still running".to_owned(),
+            body: drift_body(switch_count, &anchor),
+        }))
     }
 
     pub fn accept_recovery(
@@ -372,6 +495,12 @@ impl WorkBlockManager {
         }
         self.repo
             .close_open_observation(&record.block_id, ended_at)?;
+        // An offer the user never returned from is a real outcome, not a gap.
+        self.repo.resolve_intervention(
+            &record.block_id,
+            WorkBlockInterventionOutcome::Expired,
+            ended_at,
+        )?;
         let observations = self.repo.observations(&record.block_id)?;
         let elapsed = elapsed_seconds(record, ended_at);
         let result = aggregate_result(record, elapsed, &observations);
@@ -539,6 +668,56 @@ fn current_evidence(
         is_safe.then(|| observation.category.clone()),
         observation.classification_status,
         observation.classification_confidence,
+    )
+}
+
+/// True when an observation is strong enough to count as evidence. Mirrors the
+/// filter `aggregate_result` applies, so a switch that would not appear in the
+/// end-of-block result cannot trigger an offer either.
+fn is_confident_evidence(observation: &WorkBlockObservation) -> bool {
+    observation.classification_status == ClassificationStatus::Classified
+        && matches!(
+            observation.classification_confidence,
+            ClassificationConfidence::High | ClassificationConfidence::Medium
+        )
+        && !matches!(
+            observation.category.to_ascii_lowercase().as_str(),
+            "system" | "unclassified" | "unlogged"
+        )
+}
+
+/// The category holding the most confidently observed time so far. Ties break
+/// on category name so the anchor cannot oscillate between equal candidates.
+fn dominant_category(observations: &[WorkBlockObservation]) -> Option<String> {
+    let mut category_seconds = HashMap::<String, u32>::new();
+    for observation in observations.iter().filter(|o| is_confident_evidence(o)) {
+        let Some(ended_at) = observation.ended_at else {
+            continue;
+        };
+        let seconds = positive_seconds(ended_at - observation.occurred_at);
+        if seconds == 0 {
+            continue;
+        }
+        let entry = category_seconds
+            .entry(observation.category.clone())
+            .or_default();
+        *entry = entry.saturating_add(seconds);
+    }
+    category_seconds
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
+        .map(|(category, _)| category)
+}
+
+/// Describes only what was observed. No intent, cause, diagnosis, or judgement.
+fn drift_body(switch_count: u32, anchor: &str) -> String {
+    let minutes = DRIFT_WINDOW_SECONDS / 60;
+    // `friendly_category` capitalises for sentence-initial use; this category
+    // sits mid-sentence.
+    let anchor = anchor.replace('_', " ").to_ascii_lowercase();
+    format!(
+        "Velvt observed {switch_count} switches away from {anchor} in the last {minutes} minutes. \
+         Protect the next {DRIFT_PROTECT_MINUTES} minutes for the work you chose."
     )
 }
 
@@ -782,6 +961,175 @@ mod tests {
             planned_duration_seconds: seconds,
             purpose: Some(WorkBlockPurpose::DeepWork),
             intensity: WorkBlockIntensity::Medium,
+        }
+    }
+
+    /// Manager plus the repo behind it, so a test can assert the recorded
+    /// outcome and not just the returned offer.
+    fn manager_with_repo() -> (WorkBlockManager, Arc<dyn WorkBlockRepo>) {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let repo = db.work_block_repo();
+        (WorkBlockManager::new(repo.clone()), repo)
+    }
+
+    fn observe(
+        manager: &WorkBlockManager,
+        category: &str,
+        seconds: i64,
+    ) -> Option<ObservationOutcome> {
+        manager
+            .observe_safe_category(
+                category,
+                ClassificationStatus::Classified,
+                ClassificationConfidence::High,
+                at(seconds),
+            )
+            .unwrap()
+    }
+
+    /// Establishes DEEP_WORK as the anchor, then switches away four times
+    /// inside the ten-minute window.
+    fn drift_into_offer(manager: &WorkBlockManager) -> Option<ObservationOutcome> {
+        observe(manager, "DEEP_WORK", 10);
+        observe(manager, "COMMUNICATION", 400);
+        observe(manager, "DEEP_WORK", 420);
+        observe(manager, "COMMUNICATION", 440);
+        observe(manager, "DEEP_WORK", 460);
+        observe(manager, "COMMUNICATION", 480);
+        observe(manager, "DEEP_WORK", 500);
+        observe(manager, "COMMUNICATION", 520)
+    }
+
+    #[test]
+    fn sustained_switching_offers_one_grounded_recovery_action() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+
+        let outcome = drift_into_offer(&manager).expect("observation returns state");
+        let intervention = outcome
+            .intervention
+            .expect("four confident switches should clear the gate");
+
+        assert_eq!(intervention.action_id, DRIFT_ACTION_ID);
+        assert_eq!(intervention.block_id, block_id);
+        // Copy reports observation only: no intent, cause, or judgement.
+        assert!(intervention.body.contains("4 switches away from deep work"));
+        assert!(intervention.body.contains("last 10 minutes"));
+
+        let recorded = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the offer is persisted so its outcome can be observed");
+        assert_eq!(recorded.anchor_category, "DEEP_WORK");
+        assert_eq!(recorded.switch_count, 4);
+        assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Offered);
+    }
+
+    #[test]
+    fn at_most_one_offer_is_made_per_block() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3600), at(0)).unwrap();
+        assert!(drift_into_offer(&manager).unwrap().intervention.is_some());
+
+        // Keep drifting well past the gate; the cap holds.
+        for (index, seconds) in [560, 580, 600, 620, 640].iter().enumerate() {
+            let category = if index % 2 == 0 {
+                "DEEP_WORK"
+            } else {
+                "COMMUNICATION"
+            };
+            let outcome = observe(&manager, category, *seconds).unwrap();
+            assert!(
+                outcome.intervention.is_none(),
+                "a second offer was made at t={seconds}"
+            );
+        }
+    }
+
+    #[test]
+    fn returning_to_the_anchor_records_the_outcome() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap().to_string();
+        drift_into_offer(&manager);
+
+        observe(&manager, "DEEP_WORK", 560);
+
+        let recorded = repo.intervention(&block_id).unwrap().unwrap();
+        assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Returned);
+        assert_eq!(recorded.outcome_at, Some(at(560)));
+    }
+
+    #[test]
+    fn an_offer_without_a_return_expires_when_the_block_ends() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+
+        manager.end(block_id, at(900)).unwrap();
+
+        let recorded = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Expired);
+    }
+
+    #[test]
+    fn a_recorded_return_is_not_overwritten_by_block_expiry() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+        observe(&manager, "DEEP_WORK", 560);
+
+        manager.end(block_id, at(900)).unwrap();
+
+        let recorded = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Returned);
+        assert_eq!(recorded.outcome_at, Some(at(560)));
+    }
+
+    #[test]
+    fn no_offer_is_made_before_the_block_has_an_anchor() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3600), at(0)).unwrap();
+        // Same switching shape, but inside the first five minutes.
+        observe(&manager, "DEEP_WORK", 10);
+        for (index, seconds) in [40, 60, 80, 100, 120, 140, 160].iter().enumerate() {
+            let category = if index % 2 == 0 {
+                "COMMUNICATION"
+            } else {
+                "DEEP_WORK"
+            };
+            let outcome = observe(&manager, category, *seconds).unwrap();
+            assert!(outcome.intervention.is_none());
+        }
+    }
+
+    #[test]
+    fn no_offer_is_made_when_too_little_of_the_block_remains() {
+        let (manager, _repo) = manager_with_repo();
+        // 600s block: by t=520 only 80s remain, under the two-minute floor.
+        manager.start(request(600), at(0)).unwrap();
+        assert!(drift_into_offer(&manager).unwrap().intervention.is_none());
+    }
+
+    #[test]
+    fn weak_evidence_abstains_rather_than_guessing() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+        // Ambiguous, low-confidence switches are not evidence of anything.
+        for seconds in [400, 440, 480, 520] {
+            let outcome = manager
+                .observe_safe_category(
+                    "COMMUNICATION",
+                    ClassificationStatus::Ambiguous,
+                    ClassificationConfidence::Low,
+                    at(seconds),
+                )
+                .unwrap();
+            assert!(outcome.map_or(true, |o| o.intervention.is_none()));
         }
     }
 

@@ -5,6 +5,25 @@ import XCTest
 final class PermissionModuleTests: XCTestCase {
     private var cancellables: Set<AnyCancellable> = []
 
+    /// Waits for a status refresh that runs on a detached Task.
+    ///
+    /// A fixed `Task.yield()` budget is a race rather than a wait: yielding
+    /// does not guarantee the detached work progresses, so a loaded machine
+    /// can exhaust the budget before the status lands. CI observed exactly
+    /// that. Bound the wait by wall clock instead, and sleep rather than spin
+    /// so the awaited task actually gets scheduled.
+    private func waitForStatus(
+        _ expected: PermissionStatus,
+        of permission: PermissionType,
+        in latest: () -> [PermissionType: PermissionStatus]?,
+        timeout: TimeInterval = 5
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while latest()?[permission] != expected, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+
     func testPermissionTypeContainsExactlyTheApprovedPermissions() {
         XCTAssertEqual(Set(PermissionType.allCases), [.accessibility, .notifications])
     }
@@ -213,11 +232,9 @@ final class PermissionModuleTests: XCTestCase {
 
         manager.startMonitoring()
 
-        // The immediate re-check runs on a detached Task; give it a chance
-        // to complete without relying on the (never-fired) periodic timer.
-        for _ in 0..<50 where statuses.last?[.accessibility] != .granted {
-            await Task.yield()
-        }
+        // The immediate re-check runs on a detached Task; wait for it without
+        // relying on the (never-fired) periodic timer.
+        await waitForStatus(.granted, of: .accessibility, in: { statuses.last })
 
         XCTAssertEqual(statuses.last?[.accessibility], .granted)
         XCTAssertEqual(scheduler.startCallCount, 1, "periodic monitoring should still be scheduled")
@@ -245,9 +262,7 @@ final class PermissionModuleTests: XCTestCase {
             )
         }
 
-        for _ in 0..<50 where statuses.last?[.notifications] != .granted {
-            await Task.yield()
-        }
+        await waitForStatus(.granted, of: .notifications, in: { statuses.last })
 
         XCTAssertEqual(statuses.last?[.notifications], .granted)
     }

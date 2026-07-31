@@ -36,6 +36,8 @@ private struct HistoryDashboardView: View {
         .accessibilityLabel("Daily insight history")
     }
 
+    private var activityPalette: [String: Color] { ActivityPalette.assign(for: days) }
+
     private var dailyActivity: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
@@ -56,10 +58,16 @@ private struct HistoryDashboardView: View {
 
             VStack(spacing: 3) {
                 ForEach(days) { day in
-                    DailyActivityRow(day: day) { detail in
+                    DailyActivityRow(day: day, palette: activityPalette) { detail in
                         hoveredActivityDetail = detail
                     }
                 }
+            }
+
+            let legend = ActivityPalette.ordered(for: days)
+            if !legend.isEmpty {
+                ActivityLegend(entries: legend)
+                    .padding(.top, 2)
             }
         }
         .padding(10)
@@ -70,6 +78,7 @@ private struct HistoryDashboardView: View {
 
 private struct DailyActivityRow: View {
     let day: DaySummaryViewModel
+    let palette: [String: Color]
     let onActivityHover: (String?) -> Void
 
     var body: some View {
@@ -81,7 +90,7 @@ private struct DailyActivityRow: View {
                 .truncationMode(.tail)
                 .frame(width: 62, alignment: .leading)
 
-            SplitActivityBar(day: day, onHover: onActivityHover)
+            SplitActivityBar(day: day, palette: palette, onHover: onActivityHover)
                 .frame(height: 9)
                 .frame(maxWidth: .infinity)
 
@@ -101,6 +110,7 @@ private struct DailyActivityRow: View {
 
 private struct SplitActivityBar: View {
     let day: DaySummaryViewModel
+    let palette: [String: Color]
     let onHover: (String?) -> Void
 
     private var segments: [ActivityProportion] {
@@ -150,10 +160,89 @@ private struct SplitActivityBar: View {
     }
 
     private func color(for category: String, index: Int) -> Color {
-    let palette: [Color] = [
-      .velvtPink, .velvtGreen, .velvtBlue, .purple.opacity(0.85), .orange.opacity(0.85),
+        // Colour follows the category, never the segment's position in the row.
+        // Falling back to the index would repaint a category from day to day.
+        palette[category] ?? ActivityPalette.unmatched
+    }
+}
+
+/// Window-wide category colouring. Bars are only readable if a colour means the
+/// same thing on every row, so the assignment is computed once across all seven
+/// days and passed down rather than derived per row.
+enum ActivityPalette {
+    static let colors: [Color] = [
+        .velvtPink, .velvtGreen, .velvtBlue, .purple.opacity(0.85), .orange.opacity(0.85),
     ]
-        return palette[index % palette.count]
+    static let unmatched = Color.white.opacity(0.25)
+
+    /// Ranks categories by observed time across the window, breaking ties on
+    /// name so the mapping is stable between renders.
+    static func assign(for days: [DaySummaryViewModel]) -> [String: Color] {
+        let totals = days
+            .flatMap(\.typeProportions)
+            .filter { $0.proportion > 0 }
+            .reduce(into: [String: Int]()) { totals, proportion in
+                totals[proportion.category, default: 0] += proportion.seconds
+            }
+        let ordered = totals.sorted { left, right in
+            left.value == right.value ? left.key < right.key : left.value > right.value
+        }
+        return Dictionary(
+            uniqueKeysWithValues: ordered.enumerated().map { index, entry in
+                (entry.key, colors[index % colors.count])
+            }
+        )
+    }
+
+    static func ordered(for days: [DaySummaryViewModel]) -> [(category: String, color: Color)] {
+        let assigned = assign(for: days)
+        let totals = days
+            .flatMap(\.typeProportions)
+            .filter { $0.proportion > 0 }
+            .reduce(into: [String: Int]()) { totals, proportion in
+                totals[proportion.category, default: 0] += proportion.seconds
+            }
+        return totals
+            .sorted { left, right in
+                left.value == right.value ? left.key < right.key : left.value > right.value
+            }
+            .compactMap { entry in
+                assigned[entry.key].map { (category: entry.key, color: $0) }
+            }
+    }
+}
+
+/// Names the colours in the bars. Without it the chart is decoration.
+private struct ActivityLegend: View {
+    let entries: [(category: String, color: Color)]
+
+    var body: some View {
+        FlowingLegend(entries: entries)
+            .accessibilityLabel(
+                "Activity legend: "
+                    + entries.map { categoryLabel($0.category) }.joined(separator: ", ")
+            )
+    }
+}
+
+private struct FlowingLegend: View {
+    let entries: [(category: String, color: Color)]
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ForEach(entries, id: \.category) { entry in
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(entry.color)
+                        .frame(width: 8, height: 8)
+                    Text(categoryLabel(entry.category))
+                        .font(.caption2)
+                        .foregroundStyle(Color.velvtMuted)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
     }
 }
 

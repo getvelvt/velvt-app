@@ -278,3 +278,47 @@ pub struct WorkBlockCompletion {
     pub ended_at: DateTime<Utc>,
     pub result: WorkBlockResult,
 }
+
+/// Outcome of an offered in-session drift intervention. `Offered` becomes
+/// terminal only when the block ends without a return, at which point it is
+/// rewritten as `Expired`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkBlockInterventionOutcome {
+    Offered,
+    Returned,
+    Expired,
+}
+
+impl WorkBlockInterventionOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Offered => "offered",
+            Self::Returned => "returned",
+            Self::Expired => "expired",
+        }
+    }
+
+    /// Not `FromStr`: the input is a closed database enum, not user text, and
+    /// an unknown value is a schema mismatch rather than a parse failure.
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "offered" => Some(Self::Offered),
+            "returned" => Some(Self::Returned),
+            "expired" => Some(Self::Expired),
+            _ => None,
+        }
+    }
+}
+
+/// A device-local intervention offer and its observed outcome. `anchor_category`
+/// is a broad taxonomy category and carries no raw context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkBlockIntervention {
+    pub offered_at: DateTime<Utc>,
+    pub action_id: String,
+    pub anchor_category: String,
+    pub switch_count: u32,
+    pub window_seconds: u32,
+    pub outcome: WorkBlockInterventionOutcome,
+    pub outcome_at: Option<DateTime<Utc>>,
+}

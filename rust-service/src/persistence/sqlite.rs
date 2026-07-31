@@ -2,8 +2,8 @@ use super::{
     AbstractionMapRepo, AbstractionMapping, BatchEvent, HistoryCacheEntry, HistoryCacheRepo,
     InsightCacheEntry, InsightCacheRepo, LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch,
     PersonalOverrideRecord, RawEventEntry, RawEventRepo, UploadBatch, UploadBatchRepo,
-    UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockObservation,
-    WorkBlockRecord, WorkBlockRepo,
+    UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockIntervention,
+    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1559,6 +1559,85 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         payload
             .map(|value| serde_json::from_str(&value).map_err(PersistenceError::from))
             .transpose()
+    }
+
+    fn record_intervention(
+        &self,
+        block_id: &str,
+        intervention: &WorkBlockIntervention,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        // A second offer for the same block is a no-op rather than an error:
+        // the cap is a property of the schema, not of the caller.
+        connection.execute(
+            "INSERT INTO work_block_intervention(
+                block_id, offered_at, action_id, anchor_category,
+                switch_count, window_seconds, outcome, outcome_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(block_id) DO NOTHING",
+            params![
+                block_id,
+                intervention.offered_at.timestamp(),
+                intervention.action_id,
+                intervention.anchor_category,
+                intervention.switch_count,
+                intervention.window_seconds,
+                intervention.outcome.as_str(),
+                intervention.outcome_at.map(|at| at.timestamp()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn intervention(
+        &self,
+        block_id: &str,
+    ) -> Result<Option<WorkBlockIntervention>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT offered_at, action_id, anchor_category, switch_count,
+                        window_seconds, outcome, outcome_at
+                 FROM work_block_intervention WHERE block_id = ?1",
+                [block_id],
+                |row| {
+                    Ok(WorkBlockIntervention {
+                        offered_at: timestamp_from_row(row, 0)?,
+                        action_id: row.get(1)?,
+                        anchor_category: row.get(2)?,
+                        switch_count: row.get(3)?,
+                        window_seconds: row.get(4)?,
+                        outcome: WorkBlockInterventionOutcome::from_db_value(
+                            &row.get::<_, String>(5)?,
+                        )
+                        .ok_or_else(invalid_enum)?,
+                        outcome_at: row
+                            .get::<_, Option<i64>>(6)?
+                            .map(|value| timestamp_to_datetime(value, 6))
+                            .transpose()?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+    }
+
+    fn resolve_intervention(
+        &self,
+        block_id: &str,
+        outcome: WorkBlockInterventionOutcome,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Guarding on `outcome = 'offered'` keeps a recorded return from being
+        // overwritten when the block later ends.
+        let changed = connection.execute(
+            "UPDATE work_block_intervention
+             SET outcome = ?2, outcome_at = ?3
+             WHERE block_id = ?1 AND outcome = 'offered'",
+            params![block_id, outcome.as_str(), at.timestamp()],
+        )?;
+        Ok(changed > 0)
     }
 
     fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError> {

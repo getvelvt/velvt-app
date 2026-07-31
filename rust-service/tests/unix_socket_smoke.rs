@@ -2,6 +2,7 @@
 
 use std::{io, path::PathBuf, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use uuid::Uuid;
 use velvt_service::ipc::transport::{IpcTransport, TokioUnixTransport};
 use velvt_shared_types::{
     ClientHello, ClientMessage, ErrorResponse, ServerMessage, PROTOCOL_VERSION,
@@ -54,14 +55,18 @@ async fn connect_and_handshake(socket_path: &std::path::Path) -> tokio::net::uni
     write
 }
 
+// Paths stay relative so they remain well under the 104-byte `sun_path` limit
+// macOS imposes on `sockaddr_un`; an absolute temp-dir path can exceed it.
+//
+// Uniqueness comes from a UUID rather than a timestamp. `SystemTime::now()` is
+// only microsecond-granular on macOS, so `as_nanos()` repeats across calls made
+// close together — concurrent tests in this binary share a PID and would derive
+// the same path, leaving one of them to fail its bind with `EEXIST`.
 fn socket_path(name: &str) -> PathBuf {
     PathBuf::from(format!(
         "velvt-ipc-tests/{name}-{}-{}.sock",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        Uuid::new_v4().simple()
     ))
 }
 
@@ -69,10 +74,7 @@ fn filesystem_sockets_available() -> bool {
     let path = PathBuf::from(format!(
         "velvt-ipc-preflight-{}-{}.sock",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        Uuid::new_v4().simple()
     ));
     match std::os::unix::net::UnixListener::bind(&path) {
         Ok(listener) => {

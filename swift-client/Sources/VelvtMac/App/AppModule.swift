@@ -38,8 +38,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuStatusViewModel: MenuStatusViewModel?
     private var workBlockCoordinator: WorkBlockCoordinator?
     private var localDashboardCoordinator: LocalDashboardCoordinator?
-    private var collectionAuthCancellable: AnyCancellable?
-    private var authGatedCollectionController: AuthGatedCollectionController?
+    private var accountMetricsCancellable: AnyCancellable?
     private let metricsStore = AppMetricsStore()
     private let serviceProcessLauncher = ServiceProcessLauncher()
 
@@ -210,26 +209,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().delegate = responseRouter
         notificationResponseRouter = responseRouter
 
-        let collectionController = AuthGatedCollectionController(
-            startCollection: {
-                Task { @MainActor in
-                    await relay.start()
-                    coordinator.start()
-                }
-            },
-            stopCollection: {
-                coordinator.stop()
-                Task { await relay.stop() }
-            }
-        )
-        authGatedCollectionController = collectionController
+        // Local collection is permission- and service-gated, not account-gated.
+        // The Rust service remains responsible for keeping unauthenticated data
+        // local and for enabling cloud synchronization only after authentication.
+        Task { await relay.start() }
+        coordinator.start()
         metricsStore.setAuthenticated(Self.isLoggedIn(accountStateManager.accountState))
-        collectionController.apply(accountState: accountStateManager.accountState)
-        collectionAuthCancellable = accountStateManager.$accountState
+        accountMetricsCancellable = accountStateManager.$accountState
             .dropFirst()
-            .sink { [weak collectionController, metricsStore] state in
+            .sink { [metricsStore] state in
                 metricsStore.setAuthenticated(Self.isLoggedIn(state))
-                collectionController?.apply(accountState: state)
             }
 
         Task.detached {
@@ -258,8 +247,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationWillTerminate(_ notification: Notification) {
         permissionManager.stopMonitoring()
-        authGatedCollectionController?.stop()
-        collectionAuthCancellable?.cancel()
+        permissionCoordinator?.stop()
+        accountMetricsCancellable?.cancel()
         accountStateManager.stopListening()
         menuBarController?.remove()
         onboardingWindowController?.close()

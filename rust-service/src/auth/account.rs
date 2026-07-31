@@ -293,10 +293,23 @@ impl AccountAuthService {
     /// revocation. Failures are not surfaced — the client has already
     /// cleared its local session by the time this is called.
     pub async fn log_out(&self) {
-        let _ = self
-            .authenticated_http
-            .send(HttpRequest::post("/v1/auth/logout"))
-            .await;
+        // Snapshot the credential first, then fail closed immediately for
+        // local collection. The authenticated transport deliberately rejects
+        // requests once state is unauthenticated, so issue this one explicit
+        // best-effort revocation through the raw transport instead.
+        let device_access_token = self
+            .token_store
+            .load_tokens()
+            .ok()
+            .flatten()
+            .map(|tokens| tokens.access_token().clone());
+        let _ = self.auth_state.transition(AuthState::Unauthenticated);
+        if let Some(access_token) = device_access_token {
+            let mut request = HttpRequest::post("/v1/auth/logout");
+            request.authorization = Some(access_token);
+            let _ = self.raw_http.send(request).await;
+        }
+        self.clear_local_session(false);
     }
 
     pub async fn delete_account(&self) -> ServerMessage {
@@ -306,6 +319,7 @@ impl AccountAuthService {
             .await
         {
             Ok(response) if response.status == 202 => {
+                self.clear_local_session(true);
                 ServerMessage::AccountDeletionAccepted(AccountDeletionAccepted {})
             }
             _ => ServerMessage::ErrorResponse(ErrorResponse {
@@ -314,6 +328,33 @@ impl AccountAuthService {
                 related_event_id: None,
             }),
         }
+    }
+
+    fn clear_local_session(&self, clear_device_id: bool) {
+        if let Err(error) = self.token_store.clear_tokens() {
+            tracing::error!(
+                error_code = "device_tokens_clear_failed",
+                error = %error,
+                "failed to clear local device tokens"
+            );
+        }
+        if let Err(error) = self.token_store.clear_user_tokens() {
+            tracing::error!(
+                error_code = "user_tokens_clear_failed",
+                error = %error,
+                "failed to clear local user tokens"
+            );
+        }
+        if clear_device_id {
+            if let Err(error) = self.token_store.clear_device_id() {
+                tracing::error!(
+                    error_code = "device_id_clear_failed",
+                    error = %error,
+                    "failed to clear deleted account device identifier"
+                );
+            }
+        }
+        let _ = self.auth_state.transition(AuthState::Unauthenticated);
     }
 
     async fn credential_flow(
@@ -672,5 +713,103 @@ mod tests {
             panic!("expected AuthFailure, got {outcome:?}");
         };
         assert_eq!(failure.message, "Something went wrong. Please try again.");
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_with_snapshotted_token_then_clears_local_session() {
+        let raw_http = Arc::new(FakeHttpClient::with_responses(vec![HttpResponse {
+            status: 204,
+            tokens: None,
+            device_id: None,
+            ..device_response()
+        }]));
+        let token_store = Arc::new(FakeTokenStore::default());
+        let auth_state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+            device_id: "device-1".into(),
+        }));
+        token_store
+            .store_pair(TokenPair::new(
+                RedactedString::new("device-access"),
+                RedactedString::new("device-refresh"),
+                Utc::now() + Duration::hours(1),
+            ))
+            .unwrap();
+        token_store
+            .store_user_pair(TokenPair::new(
+                RedactedString::new("user-access"),
+                RedactedString::new("user-refresh"),
+                Utc::now() + Duration::hours(1),
+            ))
+            .unwrap();
+        token_store.store_device_id("device-1").unwrap();
+        let service = AccountAuthService::new(
+            Arc::clone(&raw_http) as Arc<dyn HttpClient>,
+            Arc::new(FakeHttpClient::default()),
+            Arc::clone(&token_store) as Arc<dyn TokenStore>,
+            Arc::clone(&auth_state),
+        );
+
+        service.log_out().await;
+
+        let requests = raw_http.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/v1/auth/logout");
+        assert_eq!(
+            requests[0]
+                .authorization
+                .as_ref()
+                .map(|token| token.expose()),
+            Some("device-access")
+        );
+        assert!(token_store.load_tokens().unwrap().is_none());
+        assert!(token_store.load_user_tokens().unwrap().is_none());
+        assert_eq!(
+            token_store.load_device_id().unwrap().as_deref(),
+            Some("device-1")
+        );
+        assert_eq!(auth_state.current(), AuthState::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn accepted_account_deletion_clears_all_local_credentials() {
+        let authenticated_http = Arc::new(FakeHttpClient::with_responses(vec![HttpResponse {
+            status: 202,
+            tokens: None,
+            device_id: None,
+            ..device_response()
+        }]));
+        let token_store = Arc::new(FakeTokenStore::default());
+        let auth_state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+            device_id: "device-1".into(),
+        }));
+        token_store
+            .store_pair(TokenPair::new(
+                RedactedString::new("device-access"),
+                RedactedString::new("device-refresh"),
+                Utc::now() + Duration::hours(1),
+            ))
+            .unwrap();
+        token_store
+            .store_user_pair(TokenPair::new(
+                RedactedString::new("user-access"),
+                RedactedString::new("user-refresh"),
+                Utc::now() + Duration::hours(1),
+            ))
+            .unwrap();
+        token_store.store_device_id("device-1").unwrap();
+        let service = AccountAuthService::new(
+            Arc::new(FakeHttpClient::default()),
+            authenticated_http,
+            Arc::clone(&token_store) as Arc<dyn TokenStore>,
+            Arc::clone(&auth_state),
+        );
+
+        let outcome = service.delete_account().await;
+
+        assert!(matches!(outcome, ServerMessage::AccountDeletionAccepted(_)));
+        assert!(token_store.load_tokens().unwrap().is_none());
+        assert!(token_store.load_user_tokens().unwrap().is_none());
+        assert!(token_store.load_device_id().unwrap().is_none());
+        assert_eq!(auth_state.current(), AuthState::Unauthenticated);
     }
 }

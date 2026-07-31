@@ -39,6 +39,8 @@ pub enum PersistenceError {
     NotFound { entity: &'static str },
     #[error("SQLite persistence contains invalid safe JSON")]
     InvalidJson(#[from] serde_json::Error),
+    #[error("SQLite persistence contains an invalid local semantic embedding")]
+    InvalidSemanticEmbedding,
 }
 
 #[derive(Clone)]
@@ -116,6 +118,10 @@ impl SqlitePersistence {
     pub fn abstraction_mapping_store(
         &self,
     ) -> Arc<dyn crate::abstraction::AbstractionMappingStore> {
+        Arc::new(SqliteAbstractionMapRepo(self.clone()))
+    }
+
+    pub fn semantic_learning_store(&self) -> Arc<dyn crate::abstraction::SemanticLearningStore> {
         Arc::new(SqliteAbstractionMapRepo(self.clone()))
     }
 
@@ -326,6 +332,132 @@ impl crate::abstraction::AbstractionMappingStore for SqliteAbstractionMapRepo {
     }
 }
 
+impl crate::abstraction::SemanticLearningStore for SqliteAbstractionMapRepo {
+    fn record_embedding(
+        &self,
+        key_hash: &str,
+        embedding: &[f32],
+    ) -> Result<(), crate::abstraction::StoreError> {
+        let bytes =
+            encode_embedding(embedding).ok_or(crate::abstraction::StoreError::Unavailable)?;
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO semantic_embedding_cache(key_hash, embedding, dimensions)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(key_hash) DO UPDATE SET embedding = excluded.embedding,
+                dimensions = excluded.dimensions, updated_at = unixepoch()",
+            params![key_hash, bytes, embedding.len() as i64],
+        )?;
+        transaction.execute(
+            "DELETE FROM semantic_embedding_cache WHERE key_hash IN (
+                SELECT key_hash FROM semantic_embedding_cache
+                ORDER BY updated_at DESC, key_hash ASC LIMIT -1 OFFSET 512
+             )",
+            [],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn embedding(
+        &self,
+        key_hash: &str,
+    ) -> Result<Option<Vec<f32>>, crate::abstraction::StoreError> {
+        let connection = self.0.connection()?;
+        let value = connection
+            .query_row(
+                "SELECT embedding, dimensions FROM semantic_embedding_cache WHERE key_hash = ?1",
+                [key_hash],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, usize>(1)?)),
+            )
+            .optional()?;
+        value
+            .map(|(bytes, dimensions)| decode_embedding(&bytes, dimensions))
+            .transpose()
+            .map_err(|_| crate::abstraction::StoreError::Unavailable)
+    }
+
+    fn personal_prototypes(
+        &self,
+    ) -> Result<Vec<crate::abstraction::PersonalSemanticPrototype>, crate::abstraction::StoreError>
+    {
+        let connection = self.0.connection()?;
+        let now = Utc::now().timestamp();
+        let mut statement = connection.prepare(
+            "SELECT category, embedding, dimensions, updated_at
+             FROM personal_semantic_prototype
+             WHERE updated_at >= ?1
+             ORDER BY updated_at DESC, key_hash ASC LIMIT 64",
+        )?;
+        let rows = statement.query_map([now - 90 * 86_400], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, usize>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut prototypes = Vec::new();
+        for row in rows {
+            let (category, bytes, dimensions, updated_at) = row?;
+            let age = (now - updated_at).max(0) as f32 / (90.0 * 86_400.0);
+            prototypes.push(crate::abstraction::PersonalSemanticPrototype {
+                category,
+                embedding: decode_embedding(&bytes, dimensions)
+                    .map_err(|_| crate::abstraction::StoreError::Unavailable)?,
+                weight: 1.0 - age.min(1.0) * 0.10,
+            });
+        }
+        Ok(prototypes)
+    }
+
+    fn record_classifier_use(
+        &self,
+        artifact_version: &str,
+    ) -> Result<(), crate::abstraction::StoreError> {
+        if artifact_version.is_empty() || artifact_version.len() > 128 {
+            return Err(crate::abstraction::StoreError::Unavailable);
+        }
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO classifier_artifact_telemetry(artifact_version, classification_count)
+             VALUES (?1, 1) ON CONFLICT(artifact_version) DO UPDATE SET
+                classification_count = classification_count + 1, updated_at = unixepoch()",
+            [artifact_version],
+        )?;
+        Ok(())
+    }
+}
+
+fn encode_embedding(embedding: &[f32]) -> Option<Vec<u8>> {
+    if embedding.is_empty() || embedding.len() > 1024 || embedding.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    Some(
+        embedding
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect(),
+    )
+}
+
+fn decode_embedding(bytes: &[u8], dimensions: usize) -> Result<Vec<f32>, PersistenceError> {
+    if dimensions == 0 || dimensions > 1024 || bytes.len() != dimensions * 4 {
+        return Err(PersistenceError::InvalidSemanticEmbedding);
+    }
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| {
+            let value = f32::from_le_bytes(chunk.try_into().expect("four-byte chunk"));
+            value
+                .is_finite()
+                .then_some(value)
+                .ok_or(PersistenceError::InvalidSemanticEmbedding)
+        })
+        .collect()
+}
+
 impl AbstractionMapRepo for SqliteAbstractionMapRepo {
     fn upsert(&self, mapping: &AbstractionMapping) -> Result<(), PersistenceError> {
         let connection = self.0.connection()?;
@@ -404,8 +536,9 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         category: &str,
         local_activity_name: Option<&str>,
     ) -> Result<(), PersistenceError> {
-        let connection = self.0.connection()?;
-        let changed = connection.execute(
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute(
             "INSERT INTO personal_override(key_hash, category, activity_name)
              SELECT key_hash, ?2, ?3 FROM abstraction_map WHERE stable_id = ?1
              ON CONFLICT(key_hash) DO UPDATE SET
@@ -419,6 +552,31 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
                 entity: "abstraction_map",
             });
         }
+        transaction.execute(
+            "INSERT INTO personal_semantic_prototype(key_hash, category, embedding, dimensions)
+             SELECT map.key_hash, ?2, cache.embedding, cache.dimensions
+             FROM abstraction_map map JOIN semantic_embedding_cache cache ON cache.key_hash = map.key_hash
+             WHERE map.stable_id = ?1
+             ON CONFLICT(key_hash) DO UPDATE SET category = excluded.category,
+                embedding = excluded.embedding, dimensions = excluded.dimensions,
+                correction_count = correction_count + 1, updated_at = unixepoch()",
+            params![stable_id, category],
+        )?;
+        transaction.execute(
+            "DELETE FROM personal_semantic_prototype WHERE key_hash IN (
+                SELECT key_hash FROM personal_semantic_prototype WHERE category = ?1
+                ORDER BY correction_count DESC, updated_at DESC, key_hash ASC LIMIT -1 OFFSET 12
+             )",
+            [category],
+        )?;
+        transaction.execute(
+            "DELETE FROM personal_semantic_prototype WHERE key_hash IN (
+                SELECT key_hash FROM personal_semantic_prototype
+                ORDER BY correction_count DESC, updated_at DESC, key_hash ASC LIMIT -1 OFFSET 64
+             )",
+            [],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -482,19 +640,31 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
     }
 
     fn remove_personal_override(&self, stable_id: &str) -> Result<bool, PersistenceError> {
-        let connection = self.0.connection()?;
-        let changed = connection.execute(
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute(
             "DELETE FROM personal_override WHERE key_hash = (
                 SELECT key_hash FROM abstraction_map WHERE stable_id = ?1
              )",
             [stable_id],
         )?;
+        transaction.execute(
+            "DELETE FROM personal_semantic_prototype WHERE key_hash = (
+                SELECT key_hash FROM abstraction_map WHERE stable_id = ?1
+             )",
+            [stable_id],
+        )?;
+        transaction.commit()?;
         Ok(changed > 0)
     }
 
     fn reset_personal_overrides(&self) -> Result<u64, PersistenceError> {
-        let connection = self.0.connection()?;
-        Ok(connection.execute("DELETE FROM personal_override", [])? as u64)
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute("DELETE FROM personal_override", [])? as u64;
+        transaction.execute("DELETE FROM personal_semantic_prototype", [])?;
+        transaction.commit()?;
+        Ok(changed)
     }
 
     fn personal_override_count(&self) -> Result<u64, PersistenceError> {
@@ -503,6 +673,30 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
             .query_row("SELECT COUNT(*) FROM personal_override", [], |row| {
                 row.get(0)
             })
+            .map_err(Into::into)
+    }
+
+    fn personal_semantic_prototype_count(&self) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM personal_semantic_prototype",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    fn classifier_artifact_count(&self, artifact_version: &str) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT classification_count FROM classifier_artifact_telemetry WHERE artifact_version = ?1",
+                [artifact_version],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|count| count.unwrap_or(0))
             .map_err(Into::into)
     }
 
@@ -529,8 +723,8 @@ impl RawEventRepo for SqliteRawEventRepo {
         let connection = self.0.connection()?;
         connection.execute(
             "INSERT INTO raw_event_buffer(
-                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 event.event_id,
                 event.stable_id,
@@ -544,7 +738,8 @@ impl RawEventRepo for SqliteRawEventRepo {
                 event.classification_confidence,
                 event.classification_source,
                 event.occurred_at.timestamp(),
-                event.duration_seconds
+                event.duration_seconds,
+                event.upload_eligible
             ],
         )?;
         Ok(())
@@ -553,9 +748,10 @@ impl RawEventRepo for SqliteRawEventRepo {
     fn unbatched_events(&self, limit: usize) -> Result<Vec<RawEventEntry>, PersistenceError> {
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
-            "SELECT event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
+            "SELECT event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible
              FROM raw_event_buffer
-             WHERE NOT EXISTS (SELECT 1 FROM batch_event WHERE batch_event.event_id = raw_event_buffer.event_id)
+             WHERE upload_eligible = 1
+               AND NOT EXISTS (SELECT 1 FROM batch_event WHERE batch_event.event_id = raw_event_buffer.event_id)
              ORDER BY occurred_at DESC LIMIT ?1",
         )?;
         let events = statement
@@ -568,7 +764,7 @@ impl RawEventRepo for SqliteRawEventRepo {
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError> {
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
-            "SELECT event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
+            "SELECT event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible
              FROM raw_event_buffer WHERE occurred_at < ?1 ORDER BY occurred_at",
         )?;
         let rows = statement.query_map([cutoff.timestamp()], raw_event_from_row)?;
@@ -587,7 +783,7 @@ impl RawEventRepo for SqliteRawEventRepo {
         }
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
-            "SELECT event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds
+            "SELECT event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible
              FROM raw_event_buffer
              WHERE occurred_at >= ?1 AND occurred_at <= ?2
              ORDER BY occurred_at ASC LIMIT ?3",
@@ -1427,6 +1623,7 @@ fn raw_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEventEntry
         classification_source: row.get(10)?,
         occurred_at: timestamp_from_row(row, 11)?,
         duration_seconds: row.get(12)?,
+        upload_eligible: row.get(13)?,
     })
 }
 

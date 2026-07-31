@@ -5,6 +5,7 @@ use uuid::Uuid;
 use velvt_shared_types::RawEvent;
 
 use super::{
+    browser::focused_site_context,
     plugin::{
         BrowserContextPlugin, GenericBrowserPriorPlugin, LocalPurposeHeuristicPlugin,
         SeedDictionaryPlugin, UnloggedFallbackPlugin,
@@ -100,6 +101,7 @@ pub struct AbstractionEngine {
     taxonomy: Taxonomy,
     title_abstractor: Arc<dyn TitleAbstractor>,
     plugins: Vec<Box<dyn ClassificationPlugin>>,
+    semantic_observer: Option<Arc<super::EmbeddingSimilarityPlugin>>,
 }
 
 impl AbstractionEngine {
@@ -121,6 +123,7 @@ impl AbstractionEngine {
             taxonomy,
             title_abstractor: Arc::new(super::DefaultTitleAbstractor),
             plugins: Vec::new(),
+            semantic_observer: None,
         }
     }
 
@@ -129,11 +132,22 @@ impl AbstractionEngine {
             occurred_at,
             app_name,
             window_title,
+            focused_document_url,
             ..
         } = raw_event;
-        let raw_key = RawKey::new(app_name, window_title);
-        let abstracted_title = self.title_abstractor.abstract_title(raw_key.window_title());
+        let focused_site = focused_site_context(focused_document_url.as_deref());
+        let stable_context = focused_site.as_deref().unwrap_or(&window_title).to_owned();
+        let raw_key = RawKey::new(app_name, stable_context);
+        let abstracted_title = self.title_abstractor.abstract_title(&window_title);
+        let classifier_context = match (focused_site.as_deref(), abstracted_title.is_empty()) {
+            (Some(site), false) => format!("{site} {abstracted_title}"),
+            (Some(site), true) => site.to_owned(),
+            (None, _) => abstracted_title.into_owned(),
+        };
         let stable_key = raw_key.stable_key();
+        if let Some(observer) = &self.semantic_observer {
+            observer.observe(&stable_key, raw_key.app_name(), &classifier_context);
+        }
         let personal_override = self.store.personal_override(&stable_key)?;
         let classification = match &personal_override {
             Some(personal_override) => ClassificationResult::with_quality(
@@ -149,13 +163,13 @@ impl AbstractionEngine {
             None => self
                 .plugins
                 .iter()
-                .find_map(|plugin| plugin.classify(raw_key.app_name(), abstracted_title.as_ref()))
+                .find_map(|plugin| plugin.classify(raw_key.app_name(), &classifier_context))
                 .ok_or(AbstractionError::NoPluginMatch)?,
         };
         if !is_valid_label(classification.label())
             || !self.taxonomy.contains_category(classification.category())
             || classification.taxonomy_version() != self.taxonomy.version()
-            || matches_raw_input(classification.label(), &raw_key)
+            || matches_raw_input(classification.label(), &raw_key, &window_title)
         {
             return Err(AbstractionError::InvalidPluginResult);
         }
@@ -164,11 +178,7 @@ impl AbstractionEngine {
             .as_ref()
             .and_then(|personal_override| personal_override.local_activity_name.clone())
             .or_else(|| {
-                curated_display_label(
-                    raw_key.app_name(),
-                    raw_key.window_title(),
-                    classification.label(),
-                )
+                curated_display_label(raw_key.app_name(), &window_title, classification.label())
             });
         let local_name_suggestion = personal_override
             .is_none()
@@ -248,9 +258,10 @@ pub(crate) fn override_label_for_category(category: &str) -> Option<&'static str
     }
 }
 
-fn matches_raw_input(label: &str, raw_key: &RawKey) -> bool {
+fn matches_raw_input(label: &str, raw_key: &RawKey, original_window_title: &str) -> bool {
     label.eq_ignore_ascii_case(raw_key.app_name())
         || label.eq_ignore_ascii_case(raw_key.window_title())
+        || label.eq_ignore_ascii_case(original_window_title)
 }
 
 fn curated_display_label(app_name: &str, window_title: &str, label: &str) -> Option<String> {
@@ -328,6 +339,7 @@ pub struct AbstractionEngineBuilder {
     taxonomy: Taxonomy,
     title_abstractor: Arc<dyn TitleAbstractor>,
     plugins: Vec<Box<dyn ClassificationPlugin>>,
+    semantic_observer: Option<Arc<super::EmbeddingSimilarityPlugin>>,
 }
 
 impl AbstractionEngineBuilder {
@@ -356,7 +368,12 @@ impl AbstractionEngineBuilder {
         let builder = builder.register_plugin(SeedDictionaryPlugin::new(entries, version.clone()));
         let builder = builder.register_plugin(LocalPurposeHeuristicPlugin::new(version.clone()));
         let builder = match embedding {
-            Some(plugin) => builder.register_plugin(plugin),
+            Some(plugin) => {
+                let plugin = Arc::new(plugin);
+                let mut builder = builder.register_plugin(Arc::clone(&plugin));
+                builder.semantic_observer = Some(plugin);
+                builder
+            }
             None => builder,
         };
         builder
@@ -373,6 +390,7 @@ impl AbstractionEngineBuilder {
             taxonomy: self.taxonomy,
             title_abstractor: self.title_abstractor,
             plugins: self.plugins,
+            semantic_observer: self.semantic_observer,
         })
     }
 }

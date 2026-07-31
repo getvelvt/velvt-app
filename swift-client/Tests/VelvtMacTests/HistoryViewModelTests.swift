@@ -60,16 +60,26 @@ final class HistoryViewModelTests: XCTestCase {
     sut.update(from: makeHistoryPayload(readyCount: 2))
 
     XCTAssertEqual(sut.baselineProgress.collectedDays, 2)
-    XCTAssertEqual(sut.baselineProgress.label, "Collecting your baseline — Day 2 of 7")
+    XCTAssertEqual(sut.baselineProgress.label, "Learning from your recent sessions")
     XCTAssertFalse(sut.baselineProgress.isComplete)
   }
 
-  func testBaselineProgressCompletesAtSevenRealDays() {
+  func testSevenVisibleDaysDoNotClaimMatureBaselineEarly() {
     let sut = HistoryViewModel()
     sut.update(from: makeHistoryPayload(readyCount: 7))
 
+    XCTAssertFalse(sut.baselineProgress.isComplete)
+    XCTAssertEqual(
+      sut.baselineProgress.label,
+      "Your personal baseline is becoming more reliable")
+  }
+
+  func testBackendMaturityStatusCompletesBaseline() {
+    let sut = HistoryViewModel()
+    sut.update(from: makeHistoryPayload(readyCount: 7, baselineStatus: "mature"))
+
     XCTAssertTrue(sut.baselineProgress.isComplete)
-    XCTAssertEqual(sut.baselineProgress.label, "Your seven-day baseline is ready")
+    XCTAssertEqual(sut.baselineProgress.label, "Your personal baseline is ready")
   }
 
   func testTodayMetricsComeDirectlyFromSummaryFields() {
@@ -450,7 +460,10 @@ final class HistoryViewModelTests: XCTestCase {
       confidenceLevel: .medium, activeSeconds: activeSeconds)
   }
 
-  private func makeHistoryPayload(readyCount: Int = 4) -> HistoryPayload {
+  private func makeHistoryPayload(
+    readyCount: Int = 4,
+    baselineStatus: String? = nil
+  ) -> HistoryPayload {
     let dates = [
       "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12",
       "2026-06-13", "2026-06-14", "2026-06-15",
@@ -463,7 +476,8 @@ final class HistoryViewModelTests: XCTestCase {
           focusScore: 55.0 + Double(i * 5),
           fragmentationScore: 30.0 - Double(i * 2),
           confidenceLevel: .medium,
-          activeSeconds: 3600 + i * 900)
+          activeSeconds: 3600 + i * 900,
+          baselineStatus: baselineStatus ?? (readyCount >= 7 ? "emerging" : "provisional"))
       }
       return DailySummary(
         date: date, status: .noData, eventCount: 0,

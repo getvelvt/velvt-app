@@ -317,7 +317,8 @@ public actor EventRelay: EventRelayProtocol {
             durationSeconds: event.durationSeconds,
             appName: event.appName,
             windowTitle: event.windowTitle,
-            bundleID: nil
+            bundleID: event.bundleIdentifier,
+            focusedDocumentURL: event.focusedDocumentURL
         )
     }
 }

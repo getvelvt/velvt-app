@@ -57,10 +57,12 @@ To recover:
 
 ## Notification Denial
 
-Notification status checks use `getNotificationSettings()`. Authorization is
-requested only during the explicit onboarding action. Once a request returns
-denied, `PermissionManager` guards against calling `requestAuthorization`
-again. The app remains functional and displays insights in the menu bar.
+Notification status checks use `getNotificationSettings()`. First-run
+onboarding does not request notification authorization; the optional request is
+deferred until the user enables notifications from the live product flow.
+Once a request returns denied, `PermissionManager` guards against calling
+`requestAuthorization` again. The app remains functional and displays insights
+in the menu bar.
 
 ## Adding A Permission
 

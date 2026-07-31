@@ -16,14 +16,17 @@ fn transition_is_valid(from: &AuthState, to: &AuthState) -> bool {
     matches!(
         (from, to),
         (AuthState::Unauthenticated, AuthState::Authenticated { .. })
+            | (AuthState::Authenticated { .. }, AuthState::Unauthenticated)
             | (AuthState::Authenticated { .. }, AuthState::RefreshInFlight)
             | (AuthState::Authenticated { .. }, AuthState::NeedsReauth)
             | (AuthState::Authenticated { .. }, AuthState::DeviceRevoked)
             | (AuthState::RefreshInFlight, AuthState::Authenticated { .. })
             | (AuthState::RefreshInFlight, AuthState::NeedsReauth)
             | (AuthState::RefreshInFlight, AuthState::DeviceRevoked)
+            | (AuthState::RefreshInFlight, AuthState::Unauthenticated)
             | (AuthState::NeedsReauth, AuthState::Authenticated { .. })
             | (AuthState::NeedsReauth, AuthState::Unauthenticated)
+            | (AuthState::DeviceRevoked, AuthState::Unauthenticated)
     ) || from == to
 }
 

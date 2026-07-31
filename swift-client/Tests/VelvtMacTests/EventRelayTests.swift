@@ -109,6 +109,31 @@ final class EventRelayTests: XCTestCase {
         XCTAssertEqual(sent.first?.appName, "App1")
     }
 
+    func testFocusedDocumentURLIsRelayedOnlyThroughRawEventIPC() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+
+        relay.receive(
+            RawEvent(
+                appName: "Browser",
+                bundleIdentifier: "com.apple.Safari",
+                windowTitle: "Private title",
+                focusedDocumentURL: "https://example.test/private/path?token=local",
+                occurredAt: Date(timeIntervalSince1970: 1)
+            )
+        )
+        await drain()
+
+        XCTAssertEqual(
+            sentRawEvents(client).first?.focusedDocumentURL,
+            "https://example.test/private/path?token=local"
+        )
+        XCTAssertEqual(sentRawEvents(client).first?.bundleID, "com.apple.Safari")
+    }
+
     func testReceivingEventIncrementsActionsLoggedMetric() async throws {
         let client = FakeIPCClient()
         let metrics = AppMetricsStore(defaults: UserDefaults(suiteName: "EventRelayTests.\(UUID().uuidString)")!)

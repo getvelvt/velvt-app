@@ -15,7 +15,7 @@ use velvt_shared_types::{
 
 use crate::abstraction::AbstractionEngine;
 use crate::auth::{
-    AccountAuthService, AuthError, HttpClient, HttpRequest, SessionValidator, TokenStore,
+    AccountAuthService, AuthError, AuthState, HttpClient, HttpRequest, SessionValidator, TokenStore,
 };
 use crate::delivery::{shaper, CacheManager, PushAdapter};
 use crate::persistence::{
@@ -367,6 +367,7 @@ pub struct R7Router {
     upload_batches: Option<Arc<dyn UploadBatchRepo>>,
     work_blocks: Option<Arc<WorkBlockManager>>,
     work_block_push: Option<Arc<PushAdapter>>,
+    auth_state: Option<tokio::sync::watch::Receiver<AuthState>>,
 }
 
 impl R7Router {
@@ -390,6 +391,7 @@ impl R7Router {
             upload_batches: None,
             work_blocks: None,
             work_block_push: None,
+            auth_state: None,
         }
     }
 
@@ -423,6 +425,17 @@ impl R7Router {
         self.work_blocks = Some(work_blocks);
         self.work_block_push = Some(push);
         self
+    }
+
+    pub fn with_auth_state(mut self, auth_state: tokio::sync::watch::Receiver<AuthState>) -> Self {
+        self.auth_state = Some(auth_state);
+        self
+    }
+
+    fn upload_eligible(&self) -> bool {
+        self.auth_state
+            .as_ref()
+            .is_some_and(|state| matches!(*state.borrow(), AuthState::Authenticated { .. }))
     }
 }
 
@@ -601,24 +614,26 @@ impl MessageRouter for R7Router {
                     )));
                 }
 
-                match correction_http
-                    .send(HttpRequest::patch(
-                        format!("/v1/events/{}/classification", correction.event_id),
-                        serde_json::json!({ "category": correction.category }),
-                    ))
-                    .await
-                {
-                    Ok(response) if response.status / 100 == 2 || response.status == 404 => {}
-                    Ok(response) => tracing::warn!(
-                        status = response.status,
-                        error_code = "classification_correction_sync_failed",
-                        "local classification correction saved but cloud sync failed"
-                    ),
-                    Err(error) => tracing::warn!(
-                        error = %error,
-                        error_code = "classification_correction_sync_failed",
-                        "local classification correction saved but cloud sync was deferred"
-                    ),
+                if self.upload_eligible() {
+                    match correction_http
+                        .send(HttpRequest::patch(
+                            format!("/v1/events/{}/classification", correction.event_id),
+                            serde_json::json!({ "category": correction.category }),
+                        ))
+                        .await
+                    {
+                        Ok(response) if response.status / 100 == 2 || response.status == 404 => {}
+                        Ok(response) => tracing::warn!(
+                            status = response.status,
+                            error_code = "classification_correction_sync_failed",
+                            "local classification correction saved but cloud sync failed"
+                        ),
+                        Err(error) => tracing::warn!(
+                            error = %error,
+                            error_code = "classification_correction_sync_failed",
+                            "local classification correction saved but cloud sync was deferred"
+                        ),
+                    }
                 }
                 Ok(Some(ServerMessage::MenuStatus(
                     self.menu_status.snapshot().await,
@@ -912,6 +927,7 @@ impl R7Router {
         let event_id = event.event_id;
         let occurred_at = event.occurred_at;
         let duration_seconds = event.duration_seconds.min(30 * 60);
+        let upload_eligible = self.upload_eligible();
         match self.abstraction_engine.process(event) {
             Ok(abstracted) => {
                 let entry = RawEventEntry {
@@ -931,6 +947,7 @@ impl R7Router {
                     classification_source: abstracted.classification_source().as_str().to_owned(),
                     occurred_at,
                     duration_seconds,
+                    upload_eligible,
                 };
                 if let Err(err) = self.raw_event_repo.insert(&entry) {
                     tracing::error!(
@@ -944,21 +961,23 @@ impl R7Router {
                         drop_reason: Some("persistence_failed".into()),
                     });
                 }
-                if let Err(err) = self
-                    .ingestor
-                    .ingest(
-                        event_id.to_string(),
-                        &abstracted,
-                        duration_seconds,
-                        Utc::now(),
-                    )
-                    .await
-                {
-                    tracing::error!(
-                        error_code = "raw_event_ingest_failed",
-                        error = %err,
-                        "failed to enqueue abstracted event for upload"
-                    );
+                if upload_eligible {
+                    if let Err(err) = self
+                        .ingestor
+                        .ingest(
+                            event_id.to_string(),
+                            &abstracted,
+                            duration_seconds,
+                            Utc::now(),
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            error_code = "raw_event_ingest_failed",
+                            error = %err,
+                            "failed to enqueue abstracted event for upload"
+                        );
+                    }
                 }
                 if let Some(work_blocks) = &self.work_blocks {
                     match work_blocks.observe_safe_category(

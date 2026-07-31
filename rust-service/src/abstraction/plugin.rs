@@ -3,7 +3,7 @@ use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc::{self, SyncSender},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -284,6 +284,7 @@ fn is_browser_app(app_name: &str) -> bool {
         "safari",
         "google chrome",
         "chrome",
+        "chromium",
         "arc",
         "firefox",
         "brave browser",
@@ -872,11 +873,14 @@ enum InferenceOutcome {
 /// Tier 2 classifier backed by a dedicated Tokio blocking worker.
 pub struct EmbeddingSimilarityPlugin {
     requests: SyncSender<InferenceRequest>,
-    centroids: HashMap<String, Vec<f32>>,
+    prototypes: HashMap<String, Vec<Vec<f32>>>,
     taxonomy_version: String,
     threshold: f32,
     timeout: Duration,
     metrics: Arc<EmbeddingMetrics>,
+    learning_store: Option<Arc<dyn super::SemanticLearningStore>>,
+    observed: Mutex<HashMap<String, Vec<f32>>>,
+    artifact_version: String,
 }
 
 impl EmbeddingSimilarityPlugin {
@@ -888,7 +892,31 @@ impl EmbeddingSimilarityPlugin {
         timeout: Duration,
         metrics: Arc<EmbeddingMetrics>,
     ) -> Result<Self, EmbeddingError> {
-        if centroids.is_empty() || !(0.0..=1.0).contains(&threshold) {
+        Self::new_with_prototypes(
+            model,
+            centroids
+                .into_iter()
+                .map(|(category, centroid)| (category, vec![centroid]))
+                .collect(),
+            taxonomy_version,
+            threshold,
+            timeout,
+            metrics,
+        )
+    }
+
+    pub fn new_with_prototypes(
+        model: Arc<dyn EmbeddingModel>,
+        prototypes: HashMap<String, Vec<Vec<f32>>>,
+        taxonomy_version: impl Into<String>,
+        threshold: f32,
+        timeout: Duration,
+        metrics: Arc<EmbeddingMetrics>,
+    ) -> Result<Self, EmbeddingError> {
+        if prototypes.is_empty()
+            || prototypes.values().any(Vec::is_empty)
+            || !(0.0..=1.0).contains(&threshold)
+        {
             return Err(EmbeddingError::Unavailable);
         }
         let (requests, receiver) = mpsc::sync_channel::<InferenceRequest>(1);
@@ -926,48 +954,178 @@ impl EmbeddingSimilarityPlugin {
             .map_err(|_| EmbeddingError::Unavailable)?;
         Ok(Self {
             requests,
-            centroids,
+            prototypes,
             taxonomy_version: taxonomy_version.into(),
             threshold,
             timeout,
             metrics,
+            learning_store: None,
+            observed: Mutex::new(HashMap::new()),
+            artifact_version: "unversioned".into(),
         })
     }
-}
 
-impl ClassificationPlugin for EmbeddingSimilarityPlugin {
-    fn classify(&self, app_name: &str, window_title: &str) -> Option<ClassificationResult> {
-        let app_name = normalize_classifier_text(app_name);
-        let window_title = normalize_classifier_text(window_title);
-        let input = if window_title.is_empty() {
-            app_name
-        } else {
-            format!("{app_name} [SEP] {window_title}")
-        };
-        let (response, receiver) = mpsc::sync_channel(1);
-        if self
-            .requests
-            .try_send(InferenceRequest { input, response })
-            .is_err()
-        {
-            return None;
+    pub fn with_artifact_version(mut self, version: impl Into<String>) -> Self {
+        self.artifact_version = version.into();
+        self
+    }
+
+    pub fn builtin(taxonomy_version: impl Into<String>) -> Result<Self, EmbeddingError> {
+        const ARTIFACT: &str = "builtin-hash-v1";
+        let model = Arc::new(HashedEmbeddingModel);
+        let phrases: [(&str, &[&str]); 7] = [
+            (
+                "FOCUS_WORK",
+                &[
+                    "programming code editor",
+                    "developer terminal",
+                    "writing document",
+                    "design cad modeling",
+                    "spreadsheet analysis",
+                ],
+            ),
+            (
+                "PASSIVE_CONSUMPTION",
+                &[
+                    "video streaming entertainment",
+                    "music media player",
+                    "television movies",
+                ],
+            ),
+            (
+                "SOCIAL_FEED",
+                &["social feed community", "forum posts network"],
+            ),
+            (
+                "COMMUNICATION",
+                &[
+                    "chat messaging conversation",
+                    "email inbox mail",
+                    "meeting video call",
+                ],
+            ),
+            (
+                "TASK_MANAGEMENT",
+                &[
+                    "task project planning",
+                    "issue ticket tracker",
+                    "calendar schedule",
+                ],
+            ),
+            (
+                "REFERENCE",
+                &[
+                    "documentation reference guide",
+                    "search research encyclopedia",
+                    "browser web article",
+                    "ai assistant question",
+                ],
+            ),
+            (
+                "SYSTEM",
+                &[
+                    "system settings preferences",
+                    "installer software update",
+                    "file manager monitor",
+                ],
+            ),
+        ];
+        let mut prototypes = HashMap::new();
+        for (category, examples) in phrases {
+            let vectors = examples
+                .iter()
+                .map(|phrase| model.embed(phrase))
+                .collect::<Result<Vec<_>, _>>()?;
+            prototypes.insert(category.to_owned(), vectors);
         }
-        let embedding = match receiver.recv_timeout(self.timeout) {
-            Ok(InferenceOutcome::Embedding(embedding)) => embedding,
-            Ok(InferenceOutcome::Failed) => return None,
+        Self::new_with_prototypes(
+            model,
+            prototypes,
+            taxonomy_version,
+            0.42,
+            Duration::from_millis(20),
+            Arc::new(EmbeddingMetrics::default()),
+        )
+        .map(|plugin| plugin.with_artifact_version(ARTIFACT))
+    }
+
+    pub fn with_learning_store(mut self, store: Arc<dyn super::SemanticLearningStore>) -> Self {
+        self.learning_store = Some(store);
+        self
+    }
+
+    pub fn observe(&self, key_hash: &str, app_name: &str, window_title: &str) {
+        let input = embedding_input(app_name, window_title);
+        let cached = self
+            .learning_store
+            .as_ref()
+            .and_then(|store| store.embedding(key_hash).ok().flatten());
+        let Some(embedding) = cached.or_else(|| self.infer(&input)) else {
+            return;
+        };
+        if let Ok(mut observed) = self.observed.lock() {
+            if observed.len() >= 64 {
+                observed.clear();
+            }
+            observed.insert(input_hash(&input), embedding.clone());
+        }
+        if let Some(store) = &self.learning_store {
+            let _ = store.record_embedding(key_hash, &embedding);
+        }
+    }
+
+    fn infer(&self, input: &str) -> Option<Vec<f32>> {
+        let (response, receiver) = mpsc::sync_channel(1);
+        self.requests
+            .try_send(InferenceRequest {
+                input: input.to_owned(),
+                response,
+            })
+            .ok()?;
+        match receiver.recv_timeout(self.timeout) {
+            Ok(InferenceOutcome::Embedding(embedding)) => Some(embedding),
+            Ok(InferenceOutcome::Failed) => None,
             Ok(InferenceOutcome::TimedOut) | Err(_) => {
                 self.metrics
                     .tier2_timeout_count
                     .fetch_add(1, Ordering::Relaxed);
                 tracing::warn!(metric = "tier2_timeout_count", increment = 1_u64);
-                return None;
+                None
             }
-        };
+        }
+    }
+}
+
+impl<T: ClassificationPlugin + ?Sized> ClassificationPlugin for Arc<T> {
+    fn classify(&self, app_name: &str, window_title: &str) -> Option<ClassificationResult> {
+        (**self).classify(app_name, window_title)
+    }
+}
+
+impl ClassificationPlugin for EmbeddingSimilarityPlugin {
+    fn classify(&self, app_name: &str, window_title: &str) -> Option<ClassificationResult> {
+        let input = embedding_input(app_name, window_title);
+        let embedding = self
+            .observed
+            .lock()
+            .ok()
+            .and_then(|mut values| values.remove(&input_hash(&input)))
+            .or_else(|| self.infer(&input))?;
+        if let Some(store) = &self.learning_store {
+            let _ = store.record_classifier_use(&self.artifact_version);
+        }
+        if let Some(result) = self.classify_personal(&embedding) {
+            return Some(result);
+        }
         let mut ranked = self
-            .centroids
+            .prototypes
             .iter()
-            .filter_map(|(category, centroid)| {
-                cosine_similarity(&embedding, centroid).map(|score| (category, score))
+            .filter_map(|(category, prototypes)| {
+                prototypes
+                    .iter()
+                    .filter_map(|prototype| cosine_similarity(&embedding, prototype))
+                    .max_by(f32::total_cmp)
+                    .map(|score| (category, score))
             })
             .collect::<Vec<_>>();
         ranked.sort_by(|(left_category, left), (right_category, right)| {
@@ -1009,6 +1167,98 @@ impl ClassificationPlugin for EmbeddingSimilarityPlugin {
             },
             ClassificationSource::Embedding,
         ))
+    }
+}
+
+impl EmbeddingSimilarityPlugin {
+    fn classify_personal(&self, embedding: &[f32]) -> Option<ClassificationResult> {
+        let store = self.learning_store.as_ref()?;
+        let mut ranked = store
+            .personal_prototypes()
+            .ok()?
+            .into_iter()
+            .filter_map(|prototype| {
+                cosine_similarity(embedding, &prototype.embedding)
+                    .map(|score| (prototype.category, score * prototype.weight))
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let (category, score) = ranked.first()?;
+        if *score < 0.90 {
+            return None;
+        }
+        if ranked
+            .get(1)
+            .is_some_and(|runner| runner.0 != *category && *score - runner.1 < 0.08)
+        {
+            return Some(ClassificationResult::with_quality(
+                "unlogged",
+                "UNLOGGED",
+                &self.taxonomy_version,
+                ClassificationTier::EmbeddingSimilarity,
+                ClassificationStatus::Ambiguous,
+                ClassificationConfidence::Low,
+                ClassificationSource::UserRule,
+            ));
+        }
+        Some(ClassificationResult::with_quality(
+            inferred_label_for_category(category)?,
+            category,
+            &self.taxonomy_version,
+            ClassificationTier::EmbeddingSimilarity,
+            ClassificationStatus::Classified,
+            ClassificationConfidence::High,
+            ClassificationSource::UserRule,
+        ))
+    }
+}
+
+fn embedding_input(app_name: &str, window_title: &str) -> String {
+    let app_name = normalize_classifier_text(app_name);
+    let window_title = normalize_classifier_text(window_title);
+    if window_title.is_empty() {
+        app_name
+    } else {
+        format!("{app_name} [SEP] {window_title}")
+    }
+}
+
+fn input_hash(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(input.as_bytes()))
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct HashedEmbeddingModel;
+
+impl EmbeddingModel for HashedEmbeddingModel {
+    fn embed(&self, input: &str) -> Result<Vec<f32>, EmbeddingError> {
+        use sha2::{Digest, Sha256};
+        const DIMENSIONS: usize = 256;
+        let bounded = input.chars().take(4096).collect::<String>();
+        let normalized = normalize_classifier_text(&bounded);
+        let mut vector = vec![0.0_f32; DIMENSIONS];
+        for token in normalized.split_whitespace().take(128) {
+            add_hashed_feature(&mut vector, token.as_bytes(), 1.0);
+            let padded = format!("^{token}$");
+            for trigram in padded.as_bytes().windows(3).take(32) {
+                add_hashed_feature(&mut vector, trigram, 0.25);
+            }
+        }
+        let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if norm == 0.0 {
+            return Err(EmbeddingError::Unavailable);
+        }
+        for value in &mut vector {
+            *value /= norm;
+        }
+        fn add_hashed_feature(vector: &mut [f32], feature: &[u8], weight: f32) {
+            let digest = Sha256::digest(feature);
+            let index = u16::from_le_bytes([digest[0], digest[1]]) as usize % vector.len();
+            let sign = if digest[2] & 1 == 0 { 1.0 } else { -1.0 };
+            vector[index] += sign * weight;
+        }
+        Ok(vector)
     }
 }
 
@@ -1221,6 +1471,12 @@ mod tests {
                 "youtube.com/watch?v=private",
                 "video:youtube",
                 "PASSIVE_CONSUMPTION",
+            ),
+            (
+                "Chromium",
+                "docs.google.com/document/d/abc",
+                "document:docs",
+                "FOCUS_WORK",
             ),
         ];
 

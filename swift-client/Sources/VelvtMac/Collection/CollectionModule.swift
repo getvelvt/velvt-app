@@ -10,18 +10,24 @@ import Foundation
 /// The collection layer's only output type.
 public struct RawEvent: Equatable, Sendable {
     public let appName: String
+    public let bundleIdentifier: String?
     public let windowTitle: String
+    public let focusedDocumentURL: String?
     public let occurredAt: Date
     public let durationSeconds: Int
 
     public init(
         appName: String,
+        bundleIdentifier: String? = nil,
         windowTitle: String,
+        focusedDocumentURL: String? = nil,
         occurredAt: Date,
         durationSeconds: Int = 0
     ) {
         self.appName = appName
+        self.bundleIdentifier = bundleIdentifier
         self.windowTitle = windowTitle
+        self.focusedDocumentURL = focusedDocumentURL
         self.occurredAt = occurredAt
         self.durationSeconds = durationSeconds
     }
@@ -29,7 +35,9 @@ public struct RawEvent: Equatable, Sendable {
     func withDuration(seconds: Int) -> RawEvent {
         RawEvent(
             appName: appName,
+            bundleIdentifier: bundleIdentifier,
             windowTitle: windowTitle,
+            focusedDocumentURL: focusedDocumentURL,
             occurredAt: occurredAt,
             durationSeconds: seconds
         )
@@ -70,10 +78,22 @@ public protocol CollectionAgentProtocol: AnyObject {
 public struct RunningApplication: Equatable, Sendable {
     public let processIdentifier: pid_t
     public let appName: String
+    public let bundleIdentifier: String?
 
-    public init(processIdentifier: pid_t, appName: String) {
+    public init(processIdentifier: pid_t, appName: String, bundleIdentifier: String? = nil) {
         self.processIdentifier = processIdentifier
         self.appName = appName
+        self.bundleIdentifier = bundleIdentifier
+    }
+}
+
+public struct FocusedActivity: Equatable, Sendable {
+    public let windowTitle: String?
+    public let focusedDocumentURL: String?
+
+    public init(windowTitle: String?, focusedDocumentURL: String? = nil) {
+        self.windowTitle = windowTitle
+        self.focusedDocumentURL = focusedDocumentURL
     }
 }
 
@@ -89,9 +109,9 @@ public protocol WorkspaceActivationObserving: AnyObject {
 public protocol AccessibilityObserving: AnyObject {
     func start(
         observing application: RunningApplication,
-        titleHandler: @escaping (String?) -> Void,
+        activityHandler: @escaping (FocusedActivity) -> Void,
         errorHandler: @escaping (CollectionError) -> Void
-    ) throws -> String?
+    ) throws -> FocusedActivity
     func stop()
 }
 
@@ -233,15 +253,16 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         lock.withLock {
             activeProcessIdentifier = application.processIdentifier
         }
-        let initialTitle: String?
+        let initialActivity: FocusedActivity
         do {
-            initialTitle = try accessibilityObserver.start(
+            initialActivity = try accessibilityObserver.start(
                 observing: application,
-                titleHandler: { [weak self] title in
+                activityHandler: { [weak self] activity in
                     self?.emit(
                         processIdentifier: application.processIdentifier,
                         appName: application.appName,
-                        windowTitle: title ?? ""
+                        bundleIdentifier: application.bundleIdentifier,
+                        activity: activity
                     )
                 },
                 errorHandler: { [weak self] error in
@@ -262,24 +283,44 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         emit(
             processIdentifier: application.processIdentifier,
             appName: application.appName,
-            windowTitle: initialTitle ?? ""
+            bundleIdentifier: application.bundleIdentifier,
+            activity: initialActivity
         )
     }
 
-    private func emit(processIdentifier: pid_t, appName: String, windowTitle: String) {
+    private func emit(
+        processIdentifier: pid_t,
+        appName: String,
+        bundleIdentifier: String?,
+        activity: FocusedActivity
+    ) {
         guard permissionChecker.hasPermission() else {
             stopAfterPermissionRevocation()
             return
         }
-        let nextEvent = RawEvent(appName: appName, windowTitle: windowTitle, occurredAt: now())
+        let nextEvent = RawEvent(
+            appName: appName,
+            bundleIdentifier: bundleIdentifier,
+            windowTitle: activity.windowTitle ?? "",
+            focusedDocumentURL: activity.focusedDocumentURL,
+            occurredAt: now()
+        )
         let completedEvent = lock.withLock { () -> RawEvent? in
             guard isRunning && activeProcessIdentifier == processIdentifier else {
                 return nil
             }
-            defer { pendingDwellEvent = nextEvent }
             guard let previousEvent = pendingDwellEvent else {
+                pendingDwellEvent = nextEvent
                 return nil
             }
+            guard previousEvent.appName != nextEvent.appName
+                || previousEvent.bundleIdentifier != nextEvent.bundleIdentifier
+                || previousEvent.windowTitle != nextEvent.windowTitle
+                || previousEvent.focusedDocumentURL != nextEvent.focusedDocumentURL
+            else {
+                return nil
+            }
+            pendingDwellEvent = nextEvent
             return previousEvent.withDuration(seconds: dwellSeconds(
                 from: previousEvent.occurredAt,
                 through: nextEvent.occurredAt
@@ -429,7 +470,11 @@ public final class NSWorkspaceActivationObserver: WorkspaceActivationObserving {
         guard let application, let appName = application.localizedName else {
             return nil
         }
-        return RunningApplication(processIdentifier: application.processIdentifier, appName: appName)
+        return RunningApplication(
+            processIdentifier: application.processIdentifier,
+            appName: appName,
+            bundleIdentifier: application.bundleIdentifier
+        )
     }
 }
 
@@ -439,8 +484,11 @@ public final class AXApplicationObserver: AccessibilityObserving {
     private var observer: AXObserver?
     private var runLoop: CFRunLoop?
     private var runLoopSource: CFRunLoopSource?
-    private var titleHandler: ((String?) -> Void)?
+    private var activityHandler: ((FocusedActivity) -> Void)?
     private var errorHandler: ((CollectionError) -> Void)?
+    private var applicationElement: AXUIElement?
+    private var focusedWindow: AXUIElement?
+    private var observesBrowserDocument = false
 
     public init(callbackQueue: DispatchQueue = DispatchQueue(label: "com.velvt.collection.events")) {
         self.callbackQueue = callbackQueue
@@ -448,9 +496,9 @@ public final class AXApplicationObserver: AccessibilityObserving {
 
     public func start(
         observing application: RunningApplication,
-        titleHandler: @escaping (String?) -> Void,
+        activityHandler: @escaping (FocusedActivity) -> Void,
         errorHandler: @escaping (CollectionError) -> Void
-    ) throws -> String? {
+    ) throws -> FocusedActivity {
         stop()
         var createdObserver: AXObserver?
         let result = AXObserverCreate(application.processIdentifier, Self.callback, &createdObserver)
@@ -462,13 +510,18 @@ public final class AXApplicationObserver: AccessibilityObserving {
         }
 
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
-        guard let mainWindow = copyElement(attribute: kAXMainWindowAttribute, from: applicationElement) else {
+        guard let initialWindow = copyElement(attribute: kAXFocusedWindowAttribute, from: applicationElement)
+            ?? copyElement(attribute: kAXMainWindowAttribute, from: applicationElement)
+        else {
             throw CollectionError.observerRegistrationFailed(code: AXError.noValue.rawValue)
         }
-        for notification in [kAXFocusedWindowChangedNotification, kAXTitleChangedNotification] {
+        for (element, notification) in [
+            (applicationElement, kAXFocusedWindowChangedNotification),
+            (initialWindow, kAXTitleChangedNotification)
+        ] {
             let registration = AXObserverAddNotification(
                 createdObserver,
-                mainWindow,
+                element,
                 notification as CFString,
                 Unmanaged.passUnretained(self).toOpaque()
             )
@@ -479,6 +532,12 @@ public final class AXApplicationObserver: AccessibilityObserving {
                 throw CollectionError.observerRegistrationFailed(code: registration.rawValue)
             }
         }
+        addOptionalBrowserNotifications(
+            observer: createdObserver,
+            applicationElement: applicationElement,
+            window: initialWindow,
+            bundleIdentifier: application.bundleIdentifier
+        )
 
         let source = AXObserverGetRunLoopSource(createdObserver)
         let started = DispatchSemaphore(value: 0)
@@ -498,13 +557,17 @@ public final class AXApplicationObserver: AccessibilityObserving {
         lock.withLock {
             observer = createdObserver
             runLoopSource = source
-            self.titleHandler = titleHandler
+            self.activityHandler = activityHandler
             self.errorHandler = errorHandler
+            self.applicationElement = applicationElement
+            focusedWindow = initialWindow
+            observesBrowserDocument = Self.isSupportedBrowser(
+                bundleIdentifier: application.bundleIdentifier)
         }
         thread.name = "com.velvt.collection.ax-run-loop"
         thread.start()
         started.wait()
-        return copyTitle(from: mainWindow)
+        return snapshot(applicationElement: applicationElement, window: initialWindow)
     }
 
     public func stop() {
@@ -513,8 +576,11 @@ public final class AXApplicationObserver: AccessibilityObserving {
             observer = nil
             runLoop = nil
             runLoopSource = nil
-            titleHandler = nil
+            activityHandler = nil
             errorHandler = nil
+            applicationElement = nil
+            focusedWindow = nil
+            observesBrowserDocument = false
             return resources
         }
         guard let runLoop = resources.0, let source = resources.1 else {
@@ -528,30 +594,162 @@ public final class AXApplicationObserver: AccessibilityObserving {
         stop()
     }
 
-    private static let callback: AXObserverCallback = { _, element, _, context in
+    private static let callback: AXObserverCallback = { _, element, notification, context in
         guard let context else {
             return
         }
         // The context is safe because AXApplicationObserver owns the AXObserver
         // and removes its run-loop source before the controller can deallocate.
         let controller = Unmanaged<AXApplicationObserver>.fromOpaque(context).takeUnretainedValue()
-        controller.handle(element)
+        controller.handle(element, notification: notification as String)
     }
 
-    private func handle(_ element: AXUIElement) {
+    private func handle(_ element: AXUIElement, notification: String) {
         // AX callbacks run on a private CFRunLoop. Delivery crosses explicitly
         // onto a serial dispatch queue; no AXUIElement leaves the callback.
-        switch copyTitleResult(from: element) {
-        case let .success(title):
-            let handler = lock.withLock { titleHandler }
-            callbackQueue.async {
-                handler?(title)
-            }
-        case let .failure(error):
+        do {
+            let activity = try refreshSnapshot(notification: notification, notifiedElement: element)
+            let handler = lock.withLock { activityHandler }
+            callbackQueue.async { handler?(activity) }
+        } catch let error as CollectionError {
             let handler = lock.withLock { errorHandler }
-            callbackQueue.async {
-                handler?(error)
+            callbackQueue.async { handler?(error) }
+        } catch {
+            let handler = lock.withLock { errorHandler }
+            callbackQueue.async { handler?(.observerRegistrationFailed(code: AXError.failure.rawValue)) }
+        }
+    }
+
+    private func refreshSnapshot(notification: String, notifiedElement: AXUIElement) throws -> FocusedActivity {
+        let resources = lock.withLock { (observer, applicationElement, focusedWindow) }
+        guard let applicationElement = resources.1 else {
+            throw CollectionError.observerRegistrationFailed(code: AXError.invalidUIElement.rawValue)
+        }
+        var window = resources.2 ?? notifiedElement
+        if notification == kAXFocusedWindowChangedNotification,
+            let nextWindow = copyElement(attribute: kAXFocusedWindowAttribute, from: applicationElement)
+        {
+            window = nextWindow
+            if let observer = resources.0 {
+                if let previousWindow = resources.2 {
+                    AXObserverRemoveNotification(observer, previousWindow, kAXTitleChangedNotification as CFString)
+                    for optionalNotification in Self.optionalWindowNotifications {
+                        AXObserverRemoveNotification(observer, previousWindow, optionalNotification as CFString)
+                    }
+                }
+                let registration = AXObserverAddNotification(
+                    observer,
+                    nextWindow,
+                    kAXTitleChangedNotification as CFString,
+                    Unmanaged.passUnretained(self).toOpaque()
+                )
+                guard registration != .apiDisabled else { throw CollectionError.permissionRevoked }
+                guard registration == .success || registration == .notificationAlreadyRegistered else {
+                    throw CollectionError.observerRegistrationFailed(code: registration.rawValue)
+                }
+                if lock.withLock({ observesBrowserDocument }) {
+                    for optionalNotification in Self.optionalWindowNotifications {
+                        _ = AXObserverAddNotification(
+                            observer,
+                            nextWindow,
+                            optionalNotification as CFString,
+                            Unmanaged.passUnretained(self).toOpaque()
+                        )
+                    }
+                }
             }
+            lock.withLock { focusedWindow = nextWindow }
+        }
+        return snapshot(applicationElement: applicationElement, window: window)
+    }
+
+    private func snapshot(applicationElement: AXUIElement, window: AXUIElement) -> FocusedActivity {
+        FocusedActivity(
+            windowTitle: copyTitle(from: window),
+            focusedDocumentURL: lock.withLock { observesBrowserDocument }
+                ? copyFocusedDocumentURL(applicationElement: applicationElement, window: window)
+                : nil
+        )
+    }
+
+    private func copyFocusedDocumentURL(applicationElement: AXUIElement, window: AXUIElement) -> String? {
+        for element in [window, copyElement(attribute: kAXFocusedUIElementAttribute, from: applicationElement)].compactMap({ $0 }) {
+            var candidate: AXUIElement? = element
+            for _ in 0 ..< 5 {
+                guard let current = candidate else { break }
+                for attribute in [kAXDocumentAttribute, kAXURLAttribute] {
+                    if let value = copyString(attribute: attribute, from: current), !value.isEmpty {
+                        return value
+                    }
+                }
+                candidate = copyElement(attribute: kAXParentAttribute, from: current)
+            }
+        }
+        return nil
+    }
+
+    private func copyString(attribute: String, from element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
+            return nil
+        }
+        if let value = value as? String { return value }
+        if let value = value as? URL { return value.absoluteString }
+        return nil
+    }
+
+    private static let browserBundleIdentifiers: Set<String> = [
+        "com.apple.Safari",
+        "com.google.Chrome",
+        "org.chromium.Chromium",
+        "com.microsoft.edgemac",
+        "com.brave.Browser",
+        "company.thebrowser.Browser",
+        "company.thebrowser.dia",
+        "org.mozilla.firefox",
+        "com.operasoftware.Opera",
+        "com.operasoftware.OperaGX",
+        "com.vivaldi.Vivaldi",
+        "com.kagi.kagimacOS"
+    ]
+
+    static func isSupportedBrowser(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        if browserBundleIdentifiers.contains(bundleIdentifier) { return true }
+        return [
+            "com.google.Chrome.",
+            "com.microsoft.edgemac.",
+            "com.brave.Browser.",
+            "org.mozilla.firefox."
+        ].contains { bundleIdentifier.hasPrefix($0) }
+    }
+
+    private static let optionalWindowNotifications = [
+        kAXValueChangedNotification,
+        kAXSelectedChildrenChangedNotification,
+        kAXSelectedRowsChangedNotification
+    ]
+
+    private func addOptionalBrowserNotifications(
+        observer: AXObserver,
+        applicationElement: AXUIElement,
+        window: AXUIElement,
+        bundleIdentifier: String?
+    ) {
+        guard Self.isSupportedBrowser(bundleIdentifier: bundleIdentifier) else { return }
+        _ = AXObserverAddNotification(
+            observer,
+            applicationElement,
+            kAXFocusedUIElementChangedNotification as CFString,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        for notification in Self.optionalWindowNotifications {
+            _ = AXObserverAddNotification(
+                observer,
+                window,
+                notification as CFString,
+                Unmanaged.passUnretained(self).toOpaque()
+            )
         }
     }
 

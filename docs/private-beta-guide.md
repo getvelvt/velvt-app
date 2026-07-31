@@ -7,10 +7,11 @@ Velvt supports macOS 13 Ventura and later. Use only the build and SHA-256 checks
 1. Confirm the downloaded app matches the supplied checksum, move **velvt-mac.app** to `/Applications`, and open it from Finder.
 2. Read the optional intro, or choose **Skip intro** for the 30-second summary. Established launches continue from the intro into the live guided tour. Both also remain available under **Settings → Onboarding & Tour**.
 3. On the privacy step, choose **Allow Accessibility** only when ready. macOS opens its permission flow only after that action. If access is denied, use **Open Accessibility Settings** in Velvt to recover.
-4. Notifications are optional. **Allow Notifications** requests access; declining does not prevent local collection, work blocks, Today, Activity, or Your Week.
-5. Sign in or create the private-beta account supplied for the cohort. In **Today**, enter an optional local intention and choose **Start Work Block**. End it from the same control.
-6. Keep Velvt running in the menu bar. Today shows observation progress immediately and replaces it with an early local signal when enough qualifying evidence is available. Its observation window and freshness explain what the signal covers.
-7. **Your Week** starts with **Today so far** after one observed day, advances to **This week so far** for a partial window, and uses **Week-over-week coaching** only when both weeks have sufficient coverage. Each card states its observed-day coverage and confidence.
+4. Velvt begins local collection after Accessibility is granted. Open **Today**, enter an optional local intention, and choose **Start Work Block**; no account or notification permission is required for this first value. End the block from the same control.
+5. Sign in later with the private-beta account supplied for the cohort when you want synchronized history and cloud-delivered insights. Pre-sign-in observations stay local and are not uploaded retroactively.
+6. Notifications are optional and can be enabled from Settings. Declining does not prevent local collection, work blocks, Today, Activity, or Your Week.
+7. Keep Velvt running in the menu bar. Today shows observation progress immediately and progressively strengthens its signal as qualifying evidence accumulates. Its maturity label, observation window, and freshness explain how reliable it is.
+8. **Your Week** starts with **Today so far** after one observed day, advances to **This week so far** for a partial window, and uses **Week-over-week coaching** only when both weeks have sufficient coverage. Each card states its observed-day coverage and confidence.
 
 ## Correct local activity
 

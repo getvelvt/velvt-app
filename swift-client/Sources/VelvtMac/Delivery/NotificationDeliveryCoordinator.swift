@@ -121,7 +121,16 @@ public final class NotificationDeliveryCoordinator {
                 self?.pendingTasksByDate.removeValue(forKey: payload.insightDate)
                 return
             }
-            let status = await permissionManager.checkStatus(for: .notifications)
+            // `notDetermined` maps to `.unknown`. The launch sequence reaches
+            // first value straight from Accessibility and never asks about
+            // notifications, so checking alone would drop every delivery in
+            // silence on a fresh install. Ask once, at the moment there is
+            // something worth showing, exactly as the debug path does.
+            let checked = await permissionManager.checkStatus(for: .notifications)
+            guard !Task.isCancelled else { return }
+            let status = checked == .unknown
+                ? await permissionManager.requestPermission(for: .notifications)
+                : checked
             guard status == .granted, !Task.isCancelled else { return }
             if await scheduler.schedule(payload) {
                 scheduledNotifications.record(payload.notificationID)

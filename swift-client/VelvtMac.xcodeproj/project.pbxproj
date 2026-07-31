@@ -12,7 +12,6 @@
 		07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */; };
 		119E08E3913F45F0933336D7 /* InsightViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04D5396399374660825D54B5 /* InsightViewModel.swift */; };
 		143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */; };
-		1534D2B7C62A4F8FA882C19A /* AuthGatedCollectionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23D27C781D7B4200B0CA4AB7 /* AuthGatedCollectionController.swift */; };
 		1597C5865C34465AA105915D /* AppMetricsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E6FE1D6377F4F7ABF7EFD43 /* AppMetricsStore.swift */; };
 		16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */; };
 		18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30FB3399A5C45808376ACF1 /* EventRelay.swift */; };
@@ -57,7 +56,6 @@
 		04D5396399374660825D54B5 /* InsightViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightViewModel.swift; path = UI/InsightViewModel.swift; sourceTree = "<group>"; };
 		08FF548B5CFC292896112B45 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UnixSocketIPCClient.swift; path = IPC/UnixSocketIPCClient.swift; sourceTree = "<group>"; };
-		23D27C781D7B4200B0CA4AB7 /* AuthGatedCollectionController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AuthGatedCollectionController.swift; path = App/AuthGatedCollectionController.swift; sourceTree = "<group>"; };
 		28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionCollectionCoordinator.swift; path = App/PermissionCollectionCoordinator.swift; sourceTree = "<group>"; };
 		2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarController.swift; path = App/MenuBarController.swift; sourceTree = "<group>"; };
 		31C752D40A995E1401F41A8E /* AppModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppModule.swift; path = App/AppModule.swift; sourceTree = "<group>"; };
@@ -143,7 +141,6 @@
 			isa = PBXGroup;
 			children = (
 				31C752D40A995E1401F41A8E /* AppModule.swift */,
-				23D27C781D7B4200B0CA4AB7 /* AuthGatedCollectionController.swift */,
 				6E6FE1D6377F4F7ABF7EFD43 /* AppMetricsStore.swift */,
 				28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */,
 				D4A0C4A9A65047B88055A102 /* UpdateController.swift */,
@@ -333,7 +330,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */,
-				1534D2B7C62A4F8FA882C19A /* AuthGatedCollectionController.swift in Sources */,
 				1597C5865C34465AA105915D /* AppMetricsStore.swift in Sources */,
 				143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */,
 				D4A0C4A9A65047B88055A101 /* UpdateController.swift in Sources */,

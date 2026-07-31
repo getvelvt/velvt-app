@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -196,6 +196,10 @@ pub struct RawEvent {
     pub window_title: String,
     /// Optional raw application bundle identifier; local-only.
     pub bundle_id: Option<String>,
+    /// Optional raw focused browser URL; local-only and consumed at the Rust
+    /// privacy boundary before any event persistence or upload construction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused_document_url: Option<String>,
 }
 
 impl std::fmt::Debug for RawEvent {

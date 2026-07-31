@@ -134,9 +134,9 @@ keys; they do not alter TCC, Keychain, accounts, permissions, caches, SQLite, or
 Replays do not clear completion.
 
 Permission status is always checked independently. The intro never calls either system permission
-API on appearance or Continue; **Allow Accessibility** and **Allow Notifications** are the only
-request actions. Skipping therefore cannot mark either permission granted. Denial stays recoverable
-from the live popover.
+API on appearance or Continue. **Allow Accessibility** is the only first-run permission request;
+notification authorization is deferred to an explicit opt-in from the live product. Skipping
+therefore cannot mark either permission granted. Denial stays recoverable from the live popover.
 
 The six-step guided tour renders below the real menu-bar content, selects actual Today, Your Week,
 Activity, status/recovery, and Settings destinations, and reserves enough non-compressible space

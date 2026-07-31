@@ -34,6 +34,7 @@ fn client_message_variants_round_trip() {
             app_name: "local-only".into(),
             window_title: "local-only".into(),
             bundle_id: None,
+            focused_document_url: None,
             duration_seconds: 0,
         }),
         ClientMessage::ErrorResponse(ErrorResponse {

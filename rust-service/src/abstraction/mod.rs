@@ -1,5 +1,6 @@
 //! On-device raw-event abstraction and privacy boundary.
 
+mod browser;
 mod centroids;
 mod engine;
 mod key;
@@ -16,10 +17,11 @@ pub use key::RawKey;
 pub use onnx::OrtEmbeddingModel;
 pub use plugin::{
     ClassificationPlugin, ClassificationResult, ClassificationTier, EmbeddingError,
-    EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
+    EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin, HashedEmbeddingModel,
 };
 pub use store::{
-    AbstractionMappingStore, InMemoryMappingStore, MappingResolution, PersonalOverride, StoreError,
+    AbstractionMappingStore, InMemoryMappingStore, MappingResolution, PersonalOverride,
+    PersonalSemanticPrototype, SemanticLearningStore, StoreError,
 };
 pub use taxonomy::{SeedApplication, Taxonomy, TaxonomyError, API_EXPECTED_TAXONOMY_VERSION};
 pub use velvt_shared_types::{

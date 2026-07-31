@@ -374,10 +374,12 @@ public enum FirstRunOnboardingState: Equatable, Sendable {
         guard accessibilityStatus == .granted else {
             return hasRequestedAccessibility ? .accessibilityDenied : .accessibilityExplanation
         }
-        if notificationsStatus == .unknown, !hasRequestedNotifications {
-            return .notificationsExplanation
-        }
-        guard isAuthenticated else { return .authenticationRequired }
+        // Notifications and an account are optional until after local first
+        // value. Keep these inputs for source compatibility with existing UI
+        // callers while resolving first run solely from local readiness.
+        _ = notificationsStatus
+        _ = hasRequestedNotifications
+        _ = isAuthenticated
         switch servicePhase {
         case .starting, .waking:
             return .serviceStarting
@@ -485,9 +487,9 @@ public struct FirstRunOnboardingView: View {
             }
 
         case .authenticationRequired:
-            Label("Sign in to continue", systemImage: "person.crop.circle")
+            Label("Cloud features are optional", systemImage: "person.crop.circle")
                 .font(.headline)
-            Text("Velvt requires an account for private history and insight delivery. Use the sign-in control below; local collection starts after authentication.")
+            Text("Local collection works without an account. Sign in later if you want synchronized history and cloud insight delivery.")
             .font(.caption)
             .foregroundStyle(.secondary)
 

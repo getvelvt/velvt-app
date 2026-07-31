@@ -157,15 +157,27 @@ impl ServiceConfig {
             return Err(ConfigError::Invalid);
         }
 
+        let abstraction_taxonomy_path = taxonomy_path()?;
+        let abstraction_model_path = artifact_path(
+            "VELVT_ABSTRACTION_MODEL_PATH",
+            &abstraction_taxonomy_path,
+            "abstraction-model.onnx",
+        )?;
+        let abstraction_centroids_path = artifact_path(
+            "VELVT_ABSTRACTION_CENTROIDS_PATH",
+            &abstraction_taxonomy_path,
+            "abstraction-prototypes.bin",
+        )?;
+
         Ok(Self {
             socket_path: expand_home(&socket_path)?,
             database_path: database_path()?,
             protocol_version: PROTOCOL_VERSION,
             ipc_max_errors,
             log_level: std::env::var("VELVT_LOG_LEVEL").unwrap_or_else(|_| "info".to_owned()),
-            abstraction_taxonomy_path: taxonomy_path()?,
-            abstraction_model_path: optional_path("VELVT_ABSTRACTION_MODEL_PATH")?,
-            abstraction_centroids_path: optional_path("VELVT_ABSTRACTION_CENTROIDS_PATH")?,
+            abstraction_taxonomy_path,
+            abstraction_model_path,
+            abstraction_centroids_path,
             abstraction_inference_timeout: Duration::from_millis(parse_env(
                 "VELVT_ABSTRACTION_INFERENCE_TIMEOUT_MS",
                 20_u64,
@@ -226,6 +238,21 @@ fn optional_path(name: &str) -> Result<Option<PathBuf>, ConfigError> {
     }
 }
 
+fn artifact_path(
+    environment_name: &str,
+    taxonomy_path: &std::path::Path,
+    bundled_name: &str,
+) -> Result<Option<PathBuf>, ConfigError> {
+    if let Some(configured) = optional_path(environment_name)? {
+        return Ok(Some(configured));
+    }
+    let Some(parent) = taxonomy_path.parent() else {
+        return Ok(None);
+    };
+    let bundled = parent.join(bundled_name);
+    Ok(bundled.is_file().then_some(bundled))
+}
+
 fn parse_threshold() -> Result<f32, ConfigError> {
     let threshold = parse_env("VELVT_ABSTRACTION_SIMILARITY_THRESHOLD", 0.72_f32)?;
     if (0.0..=1.0).contains(&threshold) {
@@ -283,6 +310,9 @@ pub enum ConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn compile_time_api_url_is_non_empty() {
@@ -315,6 +345,7 @@ mod tests {
 
     #[test]
     fn service_config_loads_without_api_base_url_env_var() {
+        let _guard = ENVIRONMENT_LOCK.lock().unwrap();
         // Ensure ServiceConfig::load() succeeds even when VELVT_API_BASE_URL is
         // absent from the runtime environment — the compile-time constant applies.
         std::env::remove_var("VELVT_API_BASE_URL");
@@ -329,6 +360,7 @@ mod tests {
 
     #[test]
     fn service_config_uses_expected_compiled_api_base_url_when_requested() {
+        let _guard = ENVIRONMENT_LOCK.lock().unwrap();
         let Ok(expected_url) = std::env::var("VELVT_EXPECT_COMPILED_API_BASE_URL") else {
             return;
         };
@@ -341,10 +373,36 @@ mod tests {
 
     #[test]
     fn service_config_uses_runtime_api_base_url_override() {
+        let _guard = ENVIRONMENT_LOCK.lock().unwrap();
         std::env::set_var("VELVT_API_BASE_URL", "http://localhost:8000");
         let config = ServiceConfig::load().unwrap();
         std::env::remove_var("VELVT_API_BASE_URL");
 
         assert_eq!(config.upload_api_base_url, "http://localhost:8000");
+    }
+
+    #[test]
+    fn bundled_classifier_artifact_is_discovered_beside_taxonomy() {
+        let directory =
+            std::env::temp_dir().join(format!("velvt-artifact-discovery-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let taxonomy = directory.join("taxonomy.json");
+        let model = directory.join("abstraction-model.onnx");
+        std::fs::write(&taxonomy, b"{}").unwrap();
+        std::fs::write(&model, b"model").unwrap();
+
+        assert_eq!(
+            artifact_path(
+                "VELVT_TEST_MISSING_ARTIFACT_PATH",
+                &taxonomy,
+                "abstraction-model.onnx"
+            )
+            .unwrap(),
+            Some(model.clone())
+        );
+
+        std::fs::remove_file(model).unwrap();
+        std::fs::remove_file(taxonomy).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 }

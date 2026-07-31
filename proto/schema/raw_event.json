@@ -17,7 +17,11 @@
         "duration_seconds": { "type": "integer", "minimum": 0, "maximum": 1800 },
         "app_name": { "type": "string" },
         "window_title": { "type": "string" },
-        "bundle_id": { "type": ["string", "null"] }
+        "bundle_id": { "type": ["string", "null"] },
+        "focused_document_url": {
+          "type": ["string", "null"],
+          "description": "Raw focused browser document URL. Local IPC only; Rust must normalize and discard it before persistence."
+        }
       }
     }
   }

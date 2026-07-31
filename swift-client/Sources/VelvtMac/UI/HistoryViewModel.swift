@@ -123,7 +123,11 @@ public final class HistoryViewModel: ObservableObject {
     }
 
     public var baselineProgress: BaselineProgress {
-        BaselineProgress(collectedDays: days.filter { !$0.isNoData }.count)
+        let collected = days.filter { !$0.isNoData }
+        return BaselineProgress(
+            collectedDays: collected.count,
+            maturityStatus: collected.last?.baselineStatus
+        )
     }
 
     public var progressiveInsight: ProgressiveInsight? {
@@ -378,17 +382,26 @@ public struct ProgressiveInsight: Equatable, Sendable {
 }
 
 public struct BaselineProgress: Equatable, Sendable {
-    public static let targetDays = 7
+    public static let targetDays = 14
     public let collectedDays: Int
+    public let maturityStatus: String?
 
-    public init(collectedDays: Int) {
+    public init(collectedDays: Int, maturityStatus: String? = nil) {
         self.collectedDays = min(max(collectedDays, 0), Self.targetDays)
+        self.maturityStatus = maturityStatus
     }
 
-    public var isComplete: Bool { collectedDays >= Self.targetDays }
+    public var isComplete: Bool { maturityStatus == "mature" }
     public var label: String {
-        isComplete
-            ? "Your seven-day baseline is ready"
-            : "Collecting your baseline — Day \(collectedDays) of \(Self.targetDays)"
+        switch maturityStatus {
+        case "mature":
+            "Your personal baseline is ready"
+        case "emerging":
+            "Your personal baseline is becoming more reliable"
+        case "provisional":
+            "Learning from your recent sessions"
+        default:
+            "Collecting a neutral baseline — \(collectedDays) observed day\(collectedDays == 1 ? "" : "s")"
+        }
     }
 }

@@ -71,7 +71,11 @@ async fn main() {
             "configured taxonomy version differs from API expected value"
         );
     }
-    let embedding_plugin = load_embedding_plugin(&config, &taxonomy);
+    let embedding_plugin = load_embedding_plugin(&config, &taxonomy)
+        .or_else(|| {
+            velvt_service::abstraction::EmbeddingSimilarityPlugin::builtin(taxonomy.version()).ok()
+        })
+        .map(|plugin| plugin.with_learning_store(persistence.semantic_learning_store()));
     // Tracked before the plugin is consumed below: true only when an operator
     // explicitly configured a Tier 2 model and it failed to load — not when
     // Tier 2 was never configured at all (that is expected MVP-default Tier
@@ -429,6 +433,7 @@ async fn main() {
                 Arc::clone(&authenticated_http) as Arc<dyn HttpClient>,
             )
             .with_work_blocks(Arc::clone(&work_blocks), Arc::clone(&push_adapter))
+            .with_auth_state(auth_state.subscribe())
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,
                 Arc::clone(&token_store) as Arc<dyn TokenStore>,
@@ -538,14 +543,16 @@ fn load_embedding_plugin(
         );
         return None;
     }
-    EmbeddingSimilarityPlugin::new(
+    let artifact_version = centroids.artifact_version().to_owned();
+    EmbeddingSimilarityPlugin::new_with_prototypes(
         Arc::new(model),
-        centroids.into_vectors(),
+        centroids.into_prototypes(),
         taxonomy.version(),
         config.abstraction_similarity_threshold,
         config.abstraction_inference_timeout,
         Arc::new(EmbeddingMetrics::default()),
     )
+    .map(|plugin| plugin.with_artifact_version(artifact_version))
     .map_err(|_| {
         tracing::warn!(
             error_code = "tier2_initialization_failed",

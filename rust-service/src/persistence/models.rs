@@ -55,6 +55,9 @@ pub struct RawEventEntry {
     pub classification_source: String,
     pub occurred_at: DateTime<Utc>,
     pub duration_seconds: u64,
+    /// Whether this locally retained event may enter the cloud upload queue.
+    /// Events collected before authentication remain permanently local-only.
+    pub upload_eligible: bool,
 }
 
 impl std::fmt::Debug for RawEventEntry {
@@ -80,6 +83,7 @@ impl std::fmt::Debug for RawEventEntry {
             .field("classification_source", &self.classification_source)
             .field("occurred_at", &self.occurred_at)
             .field("duration_seconds", &self.duration_seconds)
+            .field("upload_eligible", &self.upload_eligible)
             .finish()
     }
 }

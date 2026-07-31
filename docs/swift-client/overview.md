@@ -9,7 +9,7 @@ It does not perform abstraction, upload to the cloud, run analytics, or generate
 | Area | Responsibility |
 |---|---|
 | App lifecycle | Start/stop app-owned services, install menu bar item, launch bundled Rust helper in packaged app builds |
-| Collection | Observe app activation and focused-window title changes through macOS APIs |
+| Collection | Observe app activation, focused-window changes, and focused browser-document changes through macOS APIs |
 | Relay | Buffer raw events in memory while IPC is unavailable and send them to Rust when connected |
 | IPC | Unix socket client, handshake, reconnect behavior, typed messages |
 | UI | Menu bar popover, insight/history display, settings, permission recovery, auth sheets |
@@ -43,9 +43,9 @@ Those responsibilities belong to `rust-service/`.
 
 ## Event Capture
 
-The collection layer observes macOS events rather than polling. It uses application activation and Accessibility window/title notifications to produce `RawEvent` values.
+The collection layer observes macOS events rather than polling. It uses application activation and Accessibility window/title notifications to produce `RawEvent` values. A browser capability registry enables focused-document notifications for supported browser families and release channels, allowing same-title website switches to form distinct activity boundaries.
 
-Raw values may include app name, bundle ID, and focused-window title. They are sent only to the local Rust service and must not be logged or stored by Swift.
+Raw values may include app name, bundle ID, focused-window title, and a focused document URL. They are sent only to the local Rust service and must not be logged or stored by Swift; Rust immediately reduces URLs to validated hostnames for local classification and never persists or uploads the raw URL.
 
 ## User Interface
 

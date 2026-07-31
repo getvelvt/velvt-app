@@ -614,7 +614,7 @@ public struct AccessibilityPermissionExperienceView: View {
 
     @ViewBuilder private var actionButtons: some View {
         if model.canContinue {
-            Button("Continue to Notification Permissions") { model.continueToWalkthrough() }
+            Button("Start Local Collection") { model.continueToWalkthrough() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
         } else {
@@ -931,10 +931,10 @@ public struct OnboardingAccountExperienceView: View {
 
 public enum OnboardingSequencePolicy {
     public static func needsAccountStep(firstRun: Bool, accountState: AccountState) -> Bool {
-        guard firstRun else { return false }
-        if case .loggedOut = accountState {
-            return true
-        }
+        // Accounts are offered after local first value and never gate initial
+        // Accessibility permission or local collection.
+        _ = firstRun
+        _ = accountState
         return false
     }
 }
@@ -1165,6 +1165,8 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
             onStartTour()
             return
         }
+        // Accounts never gate first value; `needsAccountStep` returns false so the
+        // account stage stays reachable plumbing rather than an onboarding blocker.
         if OnboardingSequencePolicy.needsAccountStep(
             firstRun: isFirstRunSequence,
             accountState: accountStateManager.accountState
@@ -1187,9 +1189,10 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     private func finishAccessibilityStage() {
         guard launchStage == .accessibility else { return }
+        presentation.completeOnboarding()
         dismissWindow()
-        launchStage = .notifications
-        presentNotificationStage()
+        launchStage = .manual
+        onStartUsing()
     }
 
     private func finishNotificationStage() {

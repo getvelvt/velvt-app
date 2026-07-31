@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain prepare-dmg-tool build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app package-release dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release verify-release verify-release-production build-app-local-core clean
+.PHONY: check-rust-toolchain check-swift-toolchain prepare-dmg-tool build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release verify-release verify-release-production build-app-local-core clean
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -118,6 +118,40 @@ dmg: package-release prepare-dmg-tool
 	./scripts/create_dmg.sh $(VELVT_APP_PATH) $(VELVT_DMG_PATH) local
 	VELVT_RELEASE_ARCHS="$(VELVT_RELEASE_ARCHS)" ./scripts/verify_release.sh --mode local --app $(VELVT_APP_PATH) --dmg $(VELVT_DMG_PATH)
 
+# Signed, notarized, stapled DMG that installs on a Mac which has never built
+# Velvt. `make dmg` cannot do this: it is ad-hoc signed, so under quarantine
+# library validation kills the nested helper and Sparkle at load and the user
+# sees a crash dialog rather than a Gatekeeper prompt.
+#
+# This is the gap between `dmg` and `release`. It deliberately omits Sparkle
+# appcast and archive generation -- whether a tester can install the app at all
+# is a separate question from whether it can update itself -- so it needs two
+# credentials instead of the seventeen variables `release` demands.
+#
+#   make alpha-dmg \
+#     VELVT_CODESIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \
+#     VELVT_NOTARY_PROFILE=VELVT_NOTARY \
+#     VELVT_DMG_PATH=dist/Velvt-0.1.0-alpha1.dmg
+#
+# See docs/shipping-a-testable-dmg.md for obtaining both.
+alpha-dmg: check-swift-toolchain
+	@$(MAKE) prepare-dmg-tool
+	@test -n "$(VELVT_CODESIGN_IDENTITY)" || (echo "ERROR: set VELVT_CODESIGN_IDENTITY to a 'Developer ID Application: NAME (TEAMID)' identity. See docs/shipping-a-testable-dmg.md." >&2; exit 1)
+	@test -n "$(VELVT_NOTARY_PROFILE)" || (echo "ERROR: set VELVT_NOTARY_PROFILE to a notarytool Keychain profile. See docs/shipping-a-testable-dmg.md." >&2; exit 1)
+	@test ! -e "$(VELVT_DMG_PATH)" && test ! -e "$(VELVT_DMG_PATH).sha256" || (echo "ERROR: $(VELVT_DMG_PATH) already exists; choose a new versioned VELVT_DMG_PATH." >&2; exit 1)
+	$(MAKE) package-release
+	./scripts/sign_release.sh production $(VELVT_APP_PATH)
+	./scripts/notarize_app.sh $(VELVT_APP_PATH)
+	./scripts/create_dmg.sh $(VELVT_APP_PATH) $(VELVT_DMG_PATH) production
+	codesign --force --sign "$(VELVT_CODESIGN_IDENTITY)" --timestamp $(VELVT_DMG_PATH)
+	./scripts/notarize_release.sh $(VELVT_DMG_PATH)
+	shasum -a 256 $(VELVT_DMG_PATH) > $(VELVT_DMG_PATH).sha256
+	$(MAKE) verify-release-production
+	@echo ""
+	@echo "Notarized alpha DMG ready: $(VELVT_DMG_PATH)"
+	@echo "Verify on a Mac that has never built Velvt, downloaded via a browser"
+	@echo "so it carries a real quarantine flag. Do not run xattr on it."
+
 # Production is intentionally credential-gated. It never falls back to ad-hoc
 # signing and only succeeds after Apple accepts and the DMG is stapled.
 release: check-swift-toolchain
@@ -206,9 +240,21 @@ build-app-local-core: check-swift-toolchain
 		build
 	ditto dist/.derivedData-local/Build/Products/Debug/Velvt.app dist/Velvt.app
 	rm -rf dist/.derivedData-local
+	@# Silently downgrading to ad-hoc produced an artifact that ran on the build
+	@# machine and crashed everywhere else. Ad-hoc is now opt-in: pass
+	@# VELVT_ALLOW_ADHOC=1 (or VELVT_CODESIGN_IDENTITY=-) to accept a
+	@# build-machine-only bundle.
 	if ! codesign --force --deep --sign "$(VELVT_CODESIGN_IDENTITY)" dist/Velvt.app; then \
-		echo "Configured signing identity unavailable; falling back to ad-hoc signing."; \
-		codesign --force --deep --sign - dist/Velvt.app; \
+		if [ "$(VELVT_ALLOW_ADHOC)" = "1" ]; then \
+			echo "Signing identity unavailable; ad-hoc signing because VELVT_ALLOW_ADHOC=1."; \
+			echo "This bundle runs on this machine only and must never be distributed."; \
+			codesign --force --deep --sign - dist/Velvt.app; \
+		else \
+			echo "ERROR: signing identity '$(VELVT_CODESIGN_IDENTITY)' is unavailable." >&2; \
+			echo "Set VELVT_ALLOW_ADHOC=1 to accept a build-machine-only ad-hoc bundle," >&2; \
+			echo "or use 'make alpha-dmg' for something a tester can install." >&2; \
+			exit 1; \
+		fi; \
 	fi
 	@echo "Built dist/Velvt.app with VELVT_API_BASE_URL=$(VELVT_LOCAL_API_BASE_URL)"
 

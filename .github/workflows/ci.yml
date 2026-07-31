@@ -5,12 +5,80 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Superseded runs on the same ref are wasted spend. macOS runners bill at ten
+# times the Linux rate, so cancelling them is worth more here than usual.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  rust:
+    name: Rust lint and test
+    # rust-service carries no `target_os = "macos"` cfg and no Apple-only
+    # crates, so its tests are portable. The Apple targets are only needed to
+    # link the universal binary, which happens in `package` below.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Install pinned Rust toolchain
+        working-directory: rust-service
+        run: rustup show active-toolchain
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust-service
+
+      - name: Lint Rust
+        run: make lint-rust
+
+      - name: Test Rust
+        run: make test-rust
+
+  swift:
+    name: Swift lint, test, and release policy
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Cache SwiftPM build directory
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: swift-client/.build
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('swift-client/Package.resolved') }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-
+
+      - name: Lint Swift
+        run: make lint-swift
+
+      - name: Test Swift
+        run: make test-swift
+
+      # Cheap (~7s) and guards the signing and update policy that gates
+      # distribution, so it belongs on the pull-request path.
+      - name: Test updater release gate
+        run: make test-update-release
+
+  package:
+    name: Package universal DMG
+    # Packaging a universal Release DMG does not inform code review and is the
+    # most expensive step in this workflow. Run it on main, before a release,
+    # and on demand -- not on every pull request.
+    if: github.event_name != 'pull_request'
+    needs: [rust, swift]
     runs-on: macos-15
     timeout-minutes: 60
 
@@ -24,20 +92,10 @@ jobs:
           rustup show active-toolchain
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      - name: Lint Rust
-        run: make lint-rust
-
-      - name: Test Rust
-        run: make test-rust
-
-      - name: Lint Swift
-        run: make lint-swift
-
-      - name: Test Swift
-        run: make test-swift
-
-      - name: Test updater release gate
-        run: make test-update-release
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust-service
 
       - name: Build and verify packaged local-core app
         run: |

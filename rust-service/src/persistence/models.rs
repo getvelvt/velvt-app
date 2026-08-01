@@ -284,17 +284,36 @@ pub struct WorkBlockCompletion {
 /// rewritten as `Expired`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkBlockInterventionOutcome {
+    /// The only non-terminal state.
     Offered,
+    /// The user took the offered action.
+    AcceptedAction,
+    /// Observed return to the anchor category, whether or not the action was
+    /// explicitly accepted.
     Returned,
-    Expired,
+    /// The user said the offer did not help. Distinct from disagreeing that
+    /// drift occurred.
+    NotHelpful,
+    /// The user said the underlying classification was wrong. This is evidence
+    /// against the detector, not against the user.
+    WrongClassification,
+    /// The user explicitly dismissed the offer.
+    Dismissed,
+    /// The block ended with no response of any kind. Never inferred from a
+    /// notification disappearing.
+    NoResponse,
 }
 
 impl WorkBlockInterventionOutcome {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Offered => "offered",
+            Self::AcceptedAction => "accepted_action",
             Self::Returned => "returned",
-            Self::Expired => "expired",
+            Self::NotHelpful => "not_helpful",
+            Self::WrongClassification => "wrong_classification",
+            Self::Dismissed => "dismissed",
+            Self::NoResponse => "no_response",
         }
     }
 
@@ -303,10 +322,20 @@ impl WorkBlockInterventionOutcome {
     pub fn from_db_value(value: &str) -> Option<Self> {
         match value {
             "offered" => Some(Self::Offered),
+            "accepted_action" => Some(Self::AcceptedAction),
             "returned" => Some(Self::Returned),
-            "expired" => Some(Self::Expired),
+            "not_helpful" => Some(Self::NotHelpful),
+            "wrong_classification" => Some(Self::WrongClassification),
+            "dismissed" => Some(Self::Dismissed),
+            "no_response" => Some(Self::NoResponse),
             _ => None,
         }
+    }
+
+    /// True once the outcome can no longer change. An explicit user response
+    /// outranks the block later ending.
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Offered)
     }
 }
 

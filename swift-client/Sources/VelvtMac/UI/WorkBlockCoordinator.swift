@@ -104,6 +104,17 @@ public final class WorkBlockCoordinator: ObservableObject {
     send(.acceptWorkBlockRecovery(.init(blockID: blockID, actionID: actionID)))
   }
 
+  /// Sends the user's explicit reply to a live drift offer.
+  ///
+  /// Guarded on an unanswered offer being present so a stale view cannot report
+  /// against a card the service has already resolved.
+  public func respondToIntervention(_ response: InterventionResponse) {
+    guard let blockID = snapshot?.blockID,
+      snapshot?.activeIntervention != nil
+    else { return }
+    send(.reportInterventionOutcome(.init(blockID: blockID, response: response)))
+  }
+
   public func clearLocalData() {
     send(.clearWorkBlockData)
   }

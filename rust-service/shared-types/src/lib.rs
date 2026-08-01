@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -60,6 +60,8 @@ pub enum ClientMessage {
     RequestLocalDashboard(RequestLocalDashboard),
     /// Accepts the one bounded recovery action offered by a terminal result.
     AcceptWorkBlockRecovery(AcceptWorkBlockRecovery),
+    /// Reports the user's explicit response to an in-session drift offer.
+    ReportInterventionOutcome(ReportInterventionOutcome),
     /// Reports an OS lifecycle boundary relevant to honest elapsed time.
     WorkBlockLifecycle(WorkBlockLifecycle),
     /// Clears local work-block state, observations, results, and intention text.
@@ -733,6 +735,49 @@ pub struct AcceptWorkBlockRecovery {
     pub action_id: String,
 }
 
+/// The user's explicit response to an in-session drift offer.
+///
+/// Only responses a person can actually give are representable. Silence is not
+/// in this set: it is recorded by the service when the block ends, never
+/// inferred from a notification disappearing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterventionResponse {
+    /// Took the offered action.
+    AcceptedAction,
+    /// Did not help. The user is not disputing that drift occurred.
+    NotHelpful,
+    /// The underlying classification was wrong. Evidence against the detector.
+    WrongClassification,
+    /// Explicitly dismissed.
+    Dismissed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportInterventionOutcome {
+    pub block_id: Uuid,
+    pub response: InterventionResponse,
+}
+
+/// A live drift offer, rendered in-app. Present only while unanswered.
+///
+/// The in-app surface is the primary path: it always renders, whereas an OS
+/// notification depends on authorization and is suppressed by Focus.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActiveIntervention {
+    pub action_id: String,
+    /// Rust-authored display copy. Swift renders it verbatim.
+    pub title: String,
+    pub body: String,
+    /// Broad taxonomy category. Never app identity, a title, or a URL.
+    pub anchor_category: String,
+    pub switch_count: u32,
+    pub window_seconds: u32,
+    pub offered_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkBlockLifecycleEvent {
@@ -811,6 +856,9 @@ pub struct WorkBlockSnapshot {
     pub confidence: ClassificationConfidence,
     pub status_line: String,
     pub result: Option<WorkBlockResult>,
+    /// Set only while a drift offer is awaiting a response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_intervention: Option<ActiveIntervention>,
 }
 
 /// Coverage state for the local live dashboard window.

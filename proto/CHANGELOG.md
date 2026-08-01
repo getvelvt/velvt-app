@@ -1,5 +1,17 @@
 # IPC Protocol Changelog
 
+## Version 24 - 2026-07-31
+
+- Added `ReportInterventionOutcome` so the user's explicit response to an
+  in-session drift offer reaches the service. Silence is deliberately not
+  representable: it is recorded when the block ends, never inferred from a
+  notification disappearing.
+- Added optional `active_intervention` to the work-block snapshot so an offer
+  renders in-app. The in-app surface is the primary path; an OS notification
+  depends on authorization and is suppressed by Focus.
+- Aligned the intervention action registry with 0.1.5 Scope 4:
+  `return_to_anchor` is now `protect_next_10`.
+
 ## Version 23 - 2026-07-29
 
 - Added optional `focused_document_url` to the sole raw-event IPC message so

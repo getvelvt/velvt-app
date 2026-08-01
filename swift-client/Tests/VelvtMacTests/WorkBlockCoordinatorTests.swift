@@ -147,7 +147,66 @@ final class WorkBlockCoordinatorTests: XCTestCase {
     XCTAssertTrue(coordinator.commandError?.contains("offline") == true)
   }
 
-  private func activeSnapshot() -> WorkBlockSnapshot {
+  func testEachInterventionResponseIsSentToTheService() async throws {
+    for response in [
+      InterventionResponse.acceptedAction,
+      .notHelpful,
+      .wrongClassification,
+      .dismissed,
+    ] {
+      let client = FakeIPCClient()
+      let messages = PassthroughSubject<ServerMessage, Never>()
+      let coordinator = WorkBlockCoordinator(ipcClient: client)
+      coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+      client.setConnectionStatus(.connected)
+      messages.send(.workBlockState(activeSnapshot(activeIntervention: offer())))
+      try await waitUntil { coordinator.snapshot?.activeIntervention != nil }
+
+      coordinator.respondToIntervention(response)
+
+      try await waitUntil {
+        client.sentMessages.contains { message in
+          guard case .reportInterventionOutcome(let report) = message else { return false }
+          return report.response == response
+        }
+      }
+    }
+  }
+
+  /// A stale view must not report against an offer the service already
+  /// resolved, or silence and disagreement stop being distinguishable.
+  func testNoResponseIsSentWhenThereIsNoLiveOffer() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let coordinator = WorkBlockCoordinator(ipcClient: client)
+    coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+    client.setConnectionStatus(.connected)
+    messages.send(.workBlockState(activeSnapshot()))
+    try await waitUntil { coordinator.snapshot != nil }
+
+    coordinator.respondToIntervention(.dismissed)
+    try await Task.sleep(for: .milliseconds(50))
+
+    XCTAssertFalse(
+      client.sentMessages.contains { message in
+        if case .reportInterventionOutcome = message { return true }
+        return false
+      })
+  }
+
+  func testActiveInterventionSurvivesAnEncodeDecodeRoundTrip() throws {
+    let snapshot = activeSnapshot(activeIntervention: offer())
+    let encoded = try JSONEncoder().encode(snapshot)
+    let decoded = try JSONDecoder().decode(WorkBlockSnapshot.self, from: encoded)
+
+    XCTAssertEqual(decoded.activeIntervention, snapshot.activeIntervention)
+    XCTAssertEqual(decoded.activeIntervention?.actionID, "protect_next_10")
+    XCTAssertEqual(decoded.activeIntervention?.switchCount, 4)
+  }
+
+  private func activeSnapshot(
+    activeIntervention: ActiveIntervention? = nil
+  ) -> WorkBlockSnapshot {
     WorkBlockSnapshot(
       stateVersion: 1,
       phase: .active,
@@ -166,7 +225,22 @@ final class WorkBlockCoordinatorTests: XCTestCase {
       classificationStatus: .classified,
       confidence: .high,
       statusLine: "Current category: Focus work.",
-      result: nil
+      result: nil,
+      activeIntervention: activeIntervention
+    )
+  }
+
+  private func offer() -> ActiveIntervention {
+    ActiveIntervention(
+      actionID: "protect_next_10",
+      title: "Your work block is still running",
+      body:
+        "Velvt observed 4 switches away from deep work in the last 10 minutes. "
+        + "Protect the next 10 minutes for the work you chose.",
+      anchorCategory: "DEEP_WORK",
+      switchCount: 4,
+      windowSeconds: 600,
+      offeredAt: Date(timeIntervalSince1970: 1_800_000_300)
     )
   }
 

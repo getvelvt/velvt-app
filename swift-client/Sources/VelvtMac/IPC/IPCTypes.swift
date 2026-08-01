@@ -27,6 +27,7 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case requestWorkBlockState
     case requestLocalDashboard(RequestLocalDashboard)
     case acceptWorkBlockRecovery(AcceptWorkBlockRecovery)
+    case reportInterventionOutcome(ReportInterventionOutcome)
     case workBlockLifecycle(WorkBlockLifecycle)
     case clearWorkBlockData
 
@@ -83,6 +84,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .requestLocalDashboard(try RequestLocalDashboard(from: payload))
         case "accept_work_block_recovery":
             self = .acceptWorkBlockRecovery(try AcceptWorkBlockRecovery(from: payload))
+        case "report_intervention_outcome":
+            self = .reportInterventionOutcome(try ReportInterventionOutcome(from: payload))
         case "work_block_lifecycle":
             self = .workBlockLifecycle(try WorkBlockLifecycle(from: payload))
         case "clear_work_block_data":
@@ -167,6 +170,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .acceptWorkBlockRecovery(value):
             try envelope.encode("accept_work_block_recovery", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .reportInterventionOutcome(value):
+            try envelope.encode("report_intervention_outcome", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .workBlockLifecycle(value):
             try envelope.encode("work_block_lifecycle", forKey: .type)
@@ -1601,6 +1607,72 @@ public struct AcceptWorkBlockRecovery: Codable, Equatable, Sendable {
     }
 }
 
+/// The user's explicit reply to an in-session drift offer.
+///
+/// Only replies a person can actually give are representable. Silence is not in
+/// this set: the service records it when the block ends, and it is never
+/// inferred from a card or notification disappearing.
+public enum InterventionResponse: String, Codable, Equatable, Sendable {
+    case acceptedAction = "accepted_action"
+    case notHelpful = "not_helpful"
+    case wrongClassification = "wrong_classification"
+    case dismissed
+}
+
+public struct ReportInterventionOutcome: Codable, Equatable, Sendable {
+    public let blockID: UUID
+    public let response: InterventionResponse
+
+    public init(blockID: UUID, response: InterventionResponse) {
+        self.blockID = blockID
+        self.response = response
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case blockID = "block_id"
+        case response
+    }
+}
+
+/// A live drift offer awaiting a reply. Rust authors the copy; Swift renders it
+/// verbatim and never reinterprets the evidence.
+public struct ActiveIntervention: Codable, Equatable, Sendable {
+    public let actionID: String
+    public let title: String
+    public let body: String
+    public let anchorCategory: String
+    public let switchCount: Int
+    public let windowSeconds: Int
+    public let offeredAt: Date
+
+    public init(
+        actionID: String,
+        title: String,
+        body: String,
+        anchorCategory: String,
+        switchCount: Int,
+        windowSeconds: Int,
+        offeredAt: Date
+    ) {
+        self.actionID = actionID
+        self.title = title
+        self.body = body
+        self.anchorCategory = anchorCategory
+        self.switchCount = switchCount
+        self.windowSeconds = windowSeconds
+        self.offeredAt = offeredAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title, body
+        case actionID = "action_id"
+        case anchorCategory = "anchor_category"
+        case switchCount = "switch_count"
+        case windowSeconds = "window_seconds"
+        case offeredAt = "offered_at"
+    }
+}
+
 public enum WorkBlockLifecycleEvent: String, Codable, Equatable, Sendable {
     case sleep
     case wake
@@ -1676,6 +1748,8 @@ public struct WorkBlockSnapshot: Codable, Equatable, Sendable {
     public let confidence: ClassificationConfidence
     public let statusLine: String
     public let result: WorkBlockResult?
+    /// Present only while a drift offer is unanswered.
+    public let activeIntervention: ActiveIntervention?
 
     private enum CodingKeys: String, CodingKey {
         case phase, intention, purpose, intensity, confidence, result
@@ -1691,6 +1765,7 @@ public struct WorkBlockSnapshot: Codable, Equatable, Sendable {
         case currentCategory = "current_category"
         case classificationStatus = "classification_status"
         case statusLine = "status_line"
+        case activeIntervention = "active_intervention"
     }
 }
 

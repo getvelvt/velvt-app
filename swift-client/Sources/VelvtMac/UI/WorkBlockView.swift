@@ -143,6 +143,64 @@ public struct WorkBlockView: View {
     .padding(16)
   }
 
+  /// The in-app surface for a live drift offer.
+  ///
+  /// This is the primary path, not a fallback for the notification: it always
+  /// renders, whereas an OS notification depends on authorization and is
+  /// suppressed by Focus. Every reply is recorded, so silence stays
+  /// distinguishable from disagreement.
+  ///
+  /// Copy comes from Rust verbatim. Swift does not reinterpret the evidence or
+  /// offer an action outside the registry.
+  private func interventionCard(_ intervention: ActiveIntervention) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(intervention.title)
+        .font(.subheadline.bold())
+
+      Text(intervention.body)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      HStack(spacing: 8) {
+        Button("Back to work") {
+          coordinator.respondToIntervention(.acceptedAction)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+
+        Button("Not helpful") {
+          coordinator.respondToIntervention(.notHelpful)
+        }
+        .controlSize(.small)
+
+        // Disagreement with the classification is evidence against the
+        // detector, so it is a first-class reply rather than a shrug.
+        Button("Wrong category") {
+          coordinator.respondToIntervention(.wrongClassification)
+        }
+        .controlSize(.small)
+
+        Spacer(minLength: 0)
+
+        Button {
+          coordinator.respondToIntervention(.dismissed)
+        } label: {
+          Image(systemName: "xmark")
+        }
+        .buttonStyle(.plain)
+        .controlSize(.small)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Dismiss this suggestion")
+      }
+    }
+    .padding(10)
+    .background(Color.primary.opacity(0.06))
+    .clipShape(RoundedRectangle(cornerRadius: 8))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("\(intervention.title). \(intervention.body)")
+  }
+
   private func activeBlock(_ snapshot: WorkBlockSnapshot) -> some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .firstTextBaseline) {
@@ -183,6 +241,10 @@ public struct WorkBlockView: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
+
+      if let intervention = snapshot.activeIntervention {
+        interventionCard(intervention)
+      }
 
       if let error = coordinator.commandError {
         Text(error).font(.caption).foregroundStyle(.red)

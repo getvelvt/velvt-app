@@ -10,9 +10,10 @@ use chrono::{DateTime, Duration, Utc};
 use tokio::sync::watch;
 use uuid::Uuid;
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, ConfidenceLevel, StartWorkBlock,
-    WorkBlockCoverage, WorkBlockIntensity, WorkBlockLifecycleEvent, WorkBlockNextAction,
-    WorkBlockPhase, WorkBlockPurpose, WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
+    ActiveIntervention, ClassificationConfidence, ClassificationStatus, ConfidenceLevel,
+    InterventionResponse, StartWorkBlock, WorkBlockCoverage, WorkBlockIntensity,
+    WorkBlockLifecycleEvent, WorkBlockNextAction, WorkBlockPhase, WorkBlockPurpose,
+    WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
 };
 
 use crate::{
@@ -36,8 +37,11 @@ const DRIFT_WINDOW_SECONDS: i64 = 10 * 60;
 const DRIFT_MIN_SWITCHES: u32 = 4;
 const DRIFT_MIN_ELAPSED_SECONDS: u32 = 5 * 60;
 const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
-const DRIFT_ACTION_ID: &str = "return_to_anchor";
+/// The only action in the registry today. Closed by construction: the schema
+/// constrains `action_id`, so an unregistered action cannot be persisted.
+const DRIFT_ACTION_ID: &str = "protect_next_10";
 const DRIFT_PROTECT_MINUTES: u32 = 10;
+const DRIFT_TITLE: &str = "Your work block is still running";
 
 /// A single approved, device-local intervention offer. Copy is authored here,
 /// beside the evidence that justifies it; Swift renders it verbatim.
@@ -335,6 +339,31 @@ impl WorkBlockManager {
         }))
     }
 
+    /// Records the user's explicit response to a live offer.
+    ///
+    /// An explicit response is the strongest evidence available about whether
+    /// the detector was right, so it is recorded even if the block has already
+    /// ended. Only an unanswered offer transitions: a response cannot be
+    /// overwritten, and a second tap is a no-op rather than an error.
+    pub fn report_intervention_outcome(
+        &self,
+        block_id: Uuid,
+        response: InterventionResponse,
+        now: DateTime<Utc>,
+    ) -> Result<WorkBlockSnapshot, WorkBlockError> {
+        let record = self.repo.get(&block_id.to_string())?;
+        let Some(existing) = self.repo.intervention(&record.block_id)? else {
+            return Err(WorkBlockError::InvalidRequest);
+        };
+        if existing.outcome.is_terminal() {
+            // Already answered. Report current state rather than failing.
+            return self.snapshot_for(record, now);
+        }
+        self.repo
+            .resolve_intervention(&record.block_id, outcome_for(response), now)?;
+        self.snapshot_for(record, now)
+    }
+
     /// Marks a pending offer as returned once the anchor category is observed
     /// again. Only an `offered` row transitions, so this is idempotent.
     fn record_return_if_pending(
@@ -410,7 +439,7 @@ impl WorkBlockManager {
         Ok(Some(DriftIntervention {
             block_id: Uuid::parse_str(&record.block_id).unwrap_or_default(),
             action_id: DRIFT_ACTION_ID,
-            title: "Your work block is still running".to_owned(),
+            title: DRIFT_TITLE.to_owned(),
             body: drift_body(switch_count, &anchor),
         }))
     }
@@ -495,10 +524,12 @@ impl WorkBlockManager {
         }
         self.repo
             .close_open_observation(&record.block_id, ended_at)?;
-        // An offer the user never returned from is a real outcome, not a gap.
+        // Silence is a real outcome, not a gap. `resolve_intervention` only
+        // moves an unanswered offer, so an explicit response already given
+        // survives the block ending.
         self.repo.resolve_intervention(
             &record.block_id,
-            WorkBlockInterventionOutcome::Expired,
+            WorkBlockInterventionOutcome::NoResponse,
             ended_at,
         )?;
         let observations = self.repo.observations(&record.block_id)?;
@@ -556,7 +587,31 @@ impl WorkBlockManager {
             confidence,
             status_line: status_line(record.phase, record.intensity, category.as_deref(), status),
             result,
+            active_intervention: self.active_intervention(&record.block_id)?,
         })
+    }
+
+    /// The live offer, if one is still awaiting a response. Answered offers are
+    /// not surfaced: the card disappears once the user has replied.
+    fn active_intervention(
+        &self,
+        block_id: &str,
+    ) -> Result<Option<ActiveIntervention>, WorkBlockError> {
+        let Some(intervention) = self.repo.intervention(block_id)? else {
+            return Ok(None);
+        };
+        if intervention.outcome.is_terminal() {
+            return Ok(None);
+        }
+        Ok(Some(ActiveIntervention {
+            action_id: intervention.action_id.clone(),
+            title: DRIFT_TITLE.to_owned(),
+            body: drift_body(intervention.switch_count, &intervention.anchor_category),
+            anchor_category: intervention.anchor_category,
+            switch_count: intervention.switch_count,
+            window_seconds: intervention.window_seconds,
+            offered_at: intervention.offered_at,
+        }))
     }
 
     fn publish_deadline(&self, deadline: Option<DateTime<Utc>>) {
@@ -707,6 +762,19 @@ fn dominant_category(observations: &[WorkBlockObservation]) -> Option<String> {
         .into_iter()
         .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
         .map(|(category, _)| category)
+}
+
+/// Maps a user's reply onto the stored vocabulary. Total by construction, so a
+/// new reply cannot silently fall through to a default.
+fn outcome_for(response: InterventionResponse) -> WorkBlockInterventionOutcome {
+    match response {
+        InterventionResponse::AcceptedAction => WorkBlockInterventionOutcome::AcceptedAction,
+        InterventionResponse::NotHelpful => WorkBlockInterventionOutcome::NotHelpful,
+        InterventionResponse::WrongClassification => {
+            WorkBlockInterventionOutcome::WrongClassification
+        }
+        InterventionResponse::Dismissed => WorkBlockInterventionOutcome::Dismissed,
+    }
 }
 
 /// Describes only what was observed. No intent, cause, diagnosis, or judgement.
@@ -938,6 +1006,7 @@ fn idle_snapshot() -> WorkBlockSnapshot {
         confidence: ClassificationConfidence::None,
         status_line: "Choose one bounded block to begin.".into(),
         result: None,
+        active_intervention: None,
     }
 }
 
@@ -1062,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn an_offer_without_a_return_expires_when_the_block_ends() {
+    fn an_offer_without_a_response_records_silence_when_the_block_ends() {
         let (manager, repo) = manager_with_repo();
         let active = manager.start(request(3600), at(0)).unwrap();
         let block_id = active.block_id.unwrap();
@@ -1071,7 +1140,7 @@ mod tests {
         manager.end(block_id, at(900)).unwrap();
 
         let recorded = repo.intervention(&block_id.to_string()).unwrap().unwrap();
-        assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Expired);
+        assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::NoResponse);
     }
 
     #[test]
@@ -1087,6 +1156,117 @@ mod tests {
         let recorded = repo.intervention(&block_id.to_string()).unwrap().unwrap();
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Returned);
         assert_eq!(recorded.outcome_at, Some(at(560)));
+    }
+
+    /// The measurement this whole slice exists for: silence and disagreement
+    /// must not land in the same bucket.
+    #[test]
+    fn each_user_response_is_recorded_distinctly() {
+        for (response, expected) in [
+            (
+                InterventionResponse::AcceptedAction,
+                WorkBlockInterventionOutcome::AcceptedAction,
+            ),
+            (
+                InterventionResponse::NotHelpful,
+                WorkBlockInterventionOutcome::NotHelpful,
+            ),
+            (
+                InterventionResponse::WrongClassification,
+                WorkBlockInterventionOutcome::WrongClassification,
+            ),
+            (
+                InterventionResponse::Dismissed,
+                WorkBlockInterventionOutcome::Dismissed,
+            ),
+        ] {
+            let (manager, repo) = manager_with_repo();
+            let active = manager.start(request(3600), at(0)).unwrap();
+            let block_id = active.block_id.unwrap();
+            drift_into_offer(&manager);
+
+            manager
+                .report_intervention_outcome(block_id, response, at(540))
+                .unwrap();
+
+            let recorded = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+            assert_eq!(recorded.outcome, expected, "for response {response:?}");
+            assert_eq!(recorded.outcome_at, Some(at(540)));
+        }
+    }
+
+    #[test]
+    fn an_explicit_response_survives_the_block_ending() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::NotHelpful, at(540))
+            .unwrap();
+
+        manager.end(block_id, at(900)).unwrap();
+
+        let recorded = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::NotHelpful);
+        assert_eq!(recorded.outcome_at, Some(at(540)));
+    }
+
+    #[test]
+    fn a_second_response_does_not_overwrite_the_first() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::AcceptedAction, at(540))
+            .unwrap();
+
+        // A double tap is a no-op, not an error.
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(560))
+            .unwrap();
+
+        let recorded = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(
+            recorded.outcome,
+            WorkBlockInterventionOutcome::AcceptedAction
+        );
+        assert_eq!(recorded.outcome_at, Some(at(540)));
+    }
+
+    #[test]
+    fn reporting_without_an_offer_is_rejected() {
+        let (manager, _repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+
+        assert!(manager
+            .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(60))
+            .is_err());
+    }
+
+    /// The in-app card is the primary surface, so the snapshot must carry the
+    /// offer while it is unanswered and drop it once answered.
+    #[test]
+    fn the_snapshot_carries_the_offer_only_while_it_is_unanswered() {
+        let (manager, _repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+
+        let offered = drift_into_offer(&manager).unwrap().snapshot;
+        let card = offered
+            .active_intervention
+            .expect("an unanswered offer renders in-app");
+        assert_eq!(card.action_id, DRIFT_ACTION_ID);
+        assert_eq!(card.anchor_category, "DEEP_WORK");
+        assert_eq!(card.switch_count, 4);
+        assert!(card.body.contains("4 switches away from deep work"));
+
+        let answered = manager
+            .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(540))
+            .unwrap();
+        assert!(answered.active_intervention.is_none());
     }
 
     #[test]

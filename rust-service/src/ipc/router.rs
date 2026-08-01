@@ -741,6 +741,16 @@ impl MessageRouter for R7Router {
                 })
             }
 
+            ClientMessage::ReportInterventionOutcome(request) => {
+                self.work_block_response(|manager| {
+                    manager.report_intervention_outcome(
+                        request.block_id,
+                        request.response,
+                        Utc::now(),
+                    )
+                })
+            }
+
             ClientMessage::WorkBlockLifecycle(request) => {
                 self.work_block_response(|manager| manager.lifecycle(request.event, Utc::now()))
             }

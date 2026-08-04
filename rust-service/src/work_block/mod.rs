@@ -217,11 +217,19 @@ impl WorkBlockManager {
                 planned_deadline(&record),
             );
         }
-        self.finish(
-            &record,
-            WorkBlockPhase::Abandoned,
-            effective_now(&record, now),
-        )
+        // A paused block's work logically ended when the pause began, the
+        // same way a completed block ends at its planned deadline rather
+        // than at the wall-clock moment the finish was observed. Using the
+        // command's wall time here would fold the final pause span into
+        // every later terminal `elapsed_seconds` read, contradicting the
+        // frozen elapsed value captured in the persisted result.
+        let ended_at = match record.phase {
+            WorkBlockPhase::Paused => record
+                .paused_at
+                .unwrap_or_else(|| effective_now(&record, now)),
+            _ => effective_now(&record, now),
+        };
+        self.finish(&record, WorkBlockPhase::Abandoned, ended_at)
     }
 
     pub fn request_state(&self, now: DateTime<Utc>) -> Result<WorkBlockSnapshot, WorkBlockError> {
@@ -413,14 +421,32 @@ impl WorkBlockManager {
             return Ok(None);
         };
         let window_start = now - Duration::seconds(DRIFT_WINDOW_SECONDS);
-        let switch_count = observations
+        // A "switch" is a departure: a confident non-anchor observation whose
+        // previous confident observation was the anchor. Counting rows
+        // instead would let classifier noise clear the gate — confidence or
+        // status flapping on one non-anchor app appends a new row per flap
+        // while the user switched away once — and would disagree with the
+        // switch_away_count the end-of-block result reports for the same
+        // evidence. Seed from the last confident observation before the
+        // window so an away period that merely straddles the boundary is not
+        // recounted as a fresh departure.
+        let mut previous_was_anchor = observations
+            .iter()
+            .filter(|observation| observation.occurred_at < window_start)
+            .rfind(|observation| is_confident_evidence(observation))
+            .map(|observation| observation.category.eq_ignore_ascii_case(&anchor));
+        let mut switch_count = 0_u32;
+        for observation in observations
             .iter()
             .filter(|observation| observation.occurred_at >= window_start)
             .filter(|observation| is_confident_evidence(observation))
-            .filter(|observation| !observation.category.eq_ignore_ascii_case(&anchor))
-            .count()
-            .try_into()
-            .unwrap_or(u32::MAX);
+        {
+            let is_anchor = observation.category.eq_ignore_ascii_case(&anchor);
+            if !is_anchor && previous_was_anchor == Some(true) {
+                switch_count = switch_count.saturating_add(1);
+            }
+            previous_was_anchor = Some(is_anchor);
+        }
         if switch_count < DRIFT_MIN_SWITCHES {
             return Ok(None);
         }
@@ -634,8 +660,18 @@ pub async fn run_deadline_scheduler(
                 let wait = (deadline - Utc::now()).to_std().unwrap_or_default();
                 tokio::select! {
                     _ = tokio::time::sleep(wait) => {
-                        if let Ok(snapshot) = manager.request_state(Utc::now()) {
-                            push.push_work_block_state(snapshot).await;
+                        match manager.request_state(Utc::now()) {
+                            Ok(snapshot) => push.push_work_block_state(snapshot).await,
+                            // Only a successful finish clears the deadline
+                            // from the watch channel, so after an error the
+                            // next pass re-reads the same past deadline with
+                            // a zero wait — a 100%-CPU spin against whatever
+                            // made the store fail. Back off before retrying;
+                            // a deadline change still interrupts immediately
+                            // on the next loop pass.
+                            Err(_) => {
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            }
                         }
                     }
                     changed = deadlines.changed() => {
@@ -1534,6 +1570,60 @@ mod tests {
         assert!(manager.pause(id, at(5)).is_err());
         assert!(manager.resume(id, at(5)).is_err());
         assert_eq!(manager.end(id, at(5)).unwrap().result, abandoned.result);
+    }
+
+    #[test]
+    fn confidence_flapping_on_one_departure_is_not_four_switches() {
+        let manager = manager();
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+
+        // One real departure after the warm-up gate. The classifier then
+        // flaps confidence on the same category; every flap appends a new
+        // confident observation row, but the user switched away once.
+        let confidences = [
+            (ClassificationConfidence::High, 400),
+            (ClassificationConfidence::Medium, 420),
+            (ClassificationConfidence::High, 440),
+            (ClassificationConfidence::Medium, 460),
+            (ClassificationConfidence::High, 480),
+        ];
+        for (confidence, seconds) in confidences {
+            let outcome = manager
+                .observe_safe_category(
+                    "COMMUNICATION",
+                    ClassificationStatus::Classified,
+                    confidence,
+                    at(seconds),
+                )
+                .unwrap()
+                .expect("changed evidence returns state");
+            assert!(
+                outcome.intervention.is_none(),
+                "one departure must not clear the four-switch gate"
+            );
+        }
+    }
+
+    #[test]
+    fn ending_a_paused_block_does_not_count_the_final_pause_as_elapsed_work() {
+        let manager = manager();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let id = active.block_id.unwrap();
+        manager.pause(id, at(60)).unwrap();
+
+        // The user walks away paused and only ends the block hours later.
+        // The pause span is not work time: the terminal snapshot, its
+        // result, and every later re-read must agree on 60 seconds.
+        let ended = manager.end(id, at(28_800)).unwrap();
+        let result = ended.result.clone().unwrap();
+        assert_eq!(result.elapsed_duration_seconds, 60);
+        assert_eq!(ended.elapsed_duration_seconds, 60);
+        assert_eq!(ended.remaining_duration_seconds, 3_540);
+
+        let reread = manager.end(id, at(28_900)).unwrap();
+        assert_eq!(reread.elapsed_duration_seconds, 60);
+        assert_eq!(reread.result.unwrap().elapsed_duration_seconds, 60);
     }
 
     #[test]

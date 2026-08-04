@@ -87,15 +87,18 @@ where
         Ok(false)
     }
 
-    async fn submit(&self, batch: super::BatchPayload) -> Result<(), CoordinatorError> {
-        Self::submit_with(&self.coordinator, batch).await
-    }
-
-    async fn submit_with(
-        coordinator: &UploadCoordinator<U, A>,
-        batch: super::BatchPayload,
-    ) -> Result<(), CoordinatorError> {
-        if let Err(error) = coordinator.submit_batch(batch).await {
+    async fn submit(&mut self, batch: super::BatchPayload) -> Result<(), CoordinatorError> {
+        // Persist before upload, and requeue on persist failure: the batch
+        // was already taken out of the assembler, so dropping it here would
+        // lose events the client has been acked for. Once persisted the
+        // batch is durable — an upload failure lands in the pending-retry
+        // path and is resumed later, so no requeue is needed there.
+        if let Err(error) = self.coordinator.persist_batch(&batch) {
+            Self::log_submit_failure(&error);
+            self.assembler.requeue(batch);
+            return Err(error);
+        }
+        if let Err(error) = self.coordinator.upload_batch(batch).await {
             Self::log_submit_failure(&error);
             return Err(error);
         }

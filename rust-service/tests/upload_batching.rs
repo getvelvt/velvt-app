@@ -1151,6 +1151,96 @@ async fn manual_flush_uploads_a_batch_even_while_its_host_is_backed_off() {
 }
 
 #[tokio::test]
+async fn threshold_flush_requeues_events_after_a_persistence_failure() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository: Arc<dyn UploadBatchRepo> =
+        Arc::new(FailFirstInsertRepo::new(database.upload_batch_repo()));
+    let uploader = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]);
+    let inspection = uploader.clone();
+    let coordinator = UploadCoordinator::new(repository, uploader, FakePrivacyAlertSink::default());
+    // Batch limit 1: the first ingest triggers a threshold flush directly.
+    let mut batcher = UploadBatcher::new(
+        BatchAssembler::new("device-1", 1, Duration::from_secs(180)),
+        coordinator,
+    );
+    let abstraction =
+        AbstractionEngine::from_builtin_taxonomy(Arc::new(InMemoryMappingStore::default()))
+            .unwrap()
+            .process(RawEvent {
+                event_id: uuid::Uuid::new_v4(),
+                occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+                app_name: "VS Code".into(),
+                window_title: "private title".into(),
+                bundle_id: None,
+                focused_document_url: None,
+                duration_seconds: 0,
+            })
+            .unwrap();
+
+    // Persist fails on the threshold flush; the batch must return to the
+    // assembler instead of being dropped by value.
+    assert!(batcher
+        .ingest_abstracted(
+            "event-threshold",
+            &abstraction,
+            5,
+            Utc.timestamp_opt(10, 0).unwrap(),
+        )
+        .await
+        .is_err());
+
+    // The requeued events are still there: the next flush persists and
+    // uploads them.
+    assert!(batcher.flush_now().await.unwrap());
+    assert_eq!(inspection.upload_count(), 1);
+}
+
+#[tokio::test]
+async fn flush_due_requeues_events_after_a_persistence_failure() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository: Arc<dyn UploadBatchRepo> =
+        Arc::new(FailFirstInsertRepo::new(database.upload_batch_repo()));
+    let uploader = FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]);
+    let inspection = uploader.clone();
+    let coordinator = UploadCoordinator::new(repository, uploader, FakePrivacyAlertSink::default());
+    let mut batcher = UploadBatcher::new(
+        BatchAssembler::new("device-1", 100, Duration::from_secs(180)),
+        coordinator,
+    );
+    let abstraction =
+        AbstractionEngine::from_builtin_taxonomy(Arc::new(InMemoryMappingStore::default()))
+            .unwrap()
+            .process(RawEvent {
+                event_id: uuid::Uuid::new_v4(),
+                occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+                app_name: "VS Code".into(),
+                window_title: "private title".into(),
+                bundle_id: None,
+                focused_document_url: None,
+                duration_seconds: 0,
+            })
+            .unwrap();
+
+    batcher
+        .ingest_abstracted(
+            "event-due",
+            &abstraction,
+            5,
+            Utc.timestamp_opt(10, 0).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // The interval elapses, persist fails: the batch must be requeued, not
+    // dropped by value.
+    let later = Utc.timestamp_opt(10, 0).unwrap() + chrono::Duration::seconds(300);
+    assert!(batcher.flush_due(later).await.is_err());
+
+    assert!(batcher.flush_now().await.unwrap());
+    assert_eq!(inspection.upload_count(), 1);
+}
+
+#[tokio::test]
 async fn flush_now_requeues_events_after_a_persistence_failure() {
     let database = SqlitePersistence::open_in_memory().unwrap();
     let repository: Arc<dyn UploadBatchRepo> =

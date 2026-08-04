@@ -255,11 +255,11 @@ must confirm, in the PR description:
 
 **In scope:**
 - `swift-client/`: passive event capture, IPC relay, menu bar UI, onboarding, notification display, 7-day insight history, local retention controls
-- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, insight payload delivery
+- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, insight payload delivery, work-block state and drift-intervention evidence (`work_block`), the two approved 0.1.5 display surfaces (`dashboard`)
 
 **Deferred — do not build in this repo:**
-- Local analytics engine or local LLM inference (`rust-service/src/analytics/` stub only)
-- Dashboard, graphs, streak counters
+- Local analytics engine or local LLM inference (no `rust-service/src/analytics/` module exists; see `DEFERRED.md`)
+- Charts or streak counters beyond the two restrained 0.1.5 surfaces (Focus Fragmentation and Daily Activity)
 - Unabstracted cloud personalization
 - Cross-platform Swift client
 - Advanced automations

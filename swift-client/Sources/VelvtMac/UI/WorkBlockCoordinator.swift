@@ -21,6 +21,17 @@ public final class WorkBlockCoordinator: ObservableObject {
   /// The Rust-owned invitation opt-out state, mirrored for the settings
   /// toggle. Swift never assumes it; it renders what the service reports.
   @Published public private(set) var invitationsEnabled = true
+  /// The Rust-owned auto-demotion state, mirrored for the disclosure card.
+  /// Swift renders the reported counts and copy verbatim; the state machine,
+  /// its versioned threshold, and re-promotion live entirely in Rust.
+  @Published public private(set) var demotionState: DemotionState?
+  /// The Rust-generated weekly receipts digest, present until acknowledged.
+  /// Swift renders the stored counts verbatim and never recomputes one.
+  @Published public private(set) var weeklyDigest: WeeklyDigest?
+  /// The one grounded explanation sentence for the live intervention.
+  /// Present only while that intervention's card is showing; there is no
+  /// input, reply, or thread anywhere on this surface.
+  @Published public private(set) var explanation: InterventionExplanation?
 
   private let ipcClient: any IPCClientProtocol
   private var cancellables = Set<AnyCancellable>()
@@ -53,6 +64,10 @@ public final class WorkBlockCoordinator: ObservableObject {
           if snapshot.phase == .active || snapshot.phase == .paused {
             self?.invitation = nil
           }
+          // The sentence explains exactly one shown card: it leaves with it.
+          if snapshot.activeIntervention == nil {
+            self?.explanation = nil
+          }
         case .quietHoursOffer(let offer):
           self?.quietHoursOffer = offer
         case .initiationInvitation(let invitation):
@@ -61,6 +76,14 @@ public final class WorkBlockCoordinator: ObservableObject {
           self?.invitationsEnabled = settings.invitationsEnabled
           if !settings.invitationsEnabled {
             self?.invitation = nil
+          }
+        case .demotionState(let state):
+          self?.demotionState = state
+        case .weeklyDigest(let digest):
+          self?.weeklyDigest = digest
+        case .interventionExplanation(let explanation):
+          if self?.snapshot?.blockID == explanation.blockID {
+            self?.explanation = explanation
           }
         case .errorResponse(let error)
         where error.code.hasPrefix("work_block_")
@@ -80,6 +103,8 @@ public final class WorkBlockCoordinator: ObservableObject {
         self?.send(.requestWorkBlockState)
         self?.send(.requestInitiationSettings)
         self?.refreshInvitation()
+        self?.refreshDemotionState()
+        self?.refreshWeeklyDigest()
       }
       .store(in: &cancellables)
 
@@ -90,6 +115,7 @@ public final class WorkBlockCoordinator: ObservableObject {
       .sink { [weak self] _ in
         self?.reportLifecycle(.wake)
         self?.refreshInvitation()
+        self?.refreshWeeklyDigest()
       }
       .store(in: &cancellables)
     systemNotifications.publisher(for: .NSSystemClockDidChange)
@@ -164,6 +190,46 @@ public final class WorkBlockCoordinator: ObservableObject {
     send(.requestInitiationInvitation(.init(utcOffsetSeconds: utcOffsetSeconds())))
   }
 
+  /// Reads the current Rust-owned demotion state for the disclosure card.
+  public func refreshDemotionState() {
+    send(.requestDemotionState)
+  }
+
+  /// The user's explicit one-tap resume from the demoted state. The service
+  /// restarts its evaluation window and replies with the new state.
+  public func resetDemotion() {
+    guard demotionState?.state == .demoted else { return }
+    send(.resetInterventionDemotion)
+  }
+
+  /// Asks the service whether the weekly receipts digest is ready. The
+  /// service owns generation, count sourcing, and the quiet-hours/Focus
+  /// holds; asking is always safe.
+  public func refreshWeeklyDigest() {
+    send(.requestWeeklyDigest(.init(utcOffsetSeconds: utcOffsetSeconds())))
+  }
+
+  /// The one-tap close on the digest card. Bookkeeping only.
+  public func acknowledgeWeeklyDigest() {
+    guard let weeklyDigest else { return }
+    self.weeklyDigest = nil
+    send(
+      .acknowledgeWeeklyDigest(
+        .init(weekStartLocalDate: weeklyDigest.weekStartLocalDate)))
+  }
+
+  /// The one-tap "explain this nudge". Guarded on a live card so a stale
+  /// view cannot ask about an intervention the service has resolved; the
+  /// request carries no user text and there is no follow-up.
+  public func requestExplanation() {
+    guard let blockID = snapshot?.blockID,
+      snapshot?.activeIntervention != nil
+    else { return }
+    send(
+      .requestInterventionExplanation(
+        .init(blockID: blockID, utcOffsetSeconds: utcOffsetSeconds())))
+  }
+
   /// One tap on the invitation starts the declared block through the
   /// existing start command, carrying the invitation id so the service can
   /// record the content-free origin marker.
@@ -201,7 +267,12 @@ public final class WorkBlockCoordinator: ObservableObject {
   public func clearLocalData() {
     quietHoursOffer = nil
     invitation = nil
+    weeklyDigest = nil
+    explanation = nil
+    demotionState = nil
     send(.clearWorkBlockData)
+    // The cleared record derives a fresh (active) demotion state.
+    refreshDemotionState()
   }
 
   #if DEBUG
@@ -218,6 +289,43 @@ public final class WorkBlockCoordinator: ObservableObject {
         body: "You usually focus well around now — want a 25-minute soft start?",
         durationSeconds: 1_500,
         policyVersion: 1
+      )
+    }
+
+    /// Debug-only synthetic demoted state so the packaged debug build can
+    /// demonstrate the disclosure without a real wrong-intervention stream.
+    /// Resuming sends the real reset command, which the service answers
+    /// with its true (active) state.
+    public func simulateDebugDemotion() {
+      demotionState = DemotionState(
+        state: .demoted,
+        wrongCount: 4,
+        deliveredCount: 16,
+        thresholdPercent: 15,
+        minimumSample: 10,
+        windowDays: 14,
+        thresholdPolicyVersion: 1,
+        repromotionPolicyVersion: 1,
+        demotedAt: Date(),
+        disclosure:
+          "Velvt is getting these nudges wrong too often, so it has gone quiet: no nudges will be sent for now, and you can resume them at any time."
+      )
+    }
+
+    /// Debug-only synthetic weekly digest so the packaged debug build can
+    /// demonstrate the receipts surface. Acknowledging sends the real
+    /// command; the service ignores an unknown week.
+    public func simulateDebugWeeklyDigest() {
+      weeklyDigest = WeeklyDigest(
+        weekStartLocalDate: "2026-07-27",
+        blocksDeclared: 5,
+        blocksCompleted: 3,
+        recoveries: 4,
+        wrongInterventions: 1,
+        invitationsAccepted: 2,
+        withheld: 1,
+        headline: "You returned 4 times and completed 3 of 5 blocks this week.",
+        digestVersion: 1
       )
     }
   #endif

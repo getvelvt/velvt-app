@@ -345,6 +345,16 @@ impl WorkBlockInterventionOutcome {
     }
 }
 
+/// A block-scoped classification correction: for this block, `category`
+/// counts as `counts_as_category`. Broad taxonomy categories only; the
+/// correction dies with the block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkBlockCategoryCorrection {
+    pub category: String,
+    pub counts_as_category: String,
+    pub corrected_at: DateTime<Utc>,
+}
+
 /// A device-local intervention offer and its observed outcome. `anchor_category`
 /// is a broad taxonomy category and carries no raw context.
 #[derive(Debug, Clone, PartialEq, Eq)]

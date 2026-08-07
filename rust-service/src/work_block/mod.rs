@@ -19,8 +19,8 @@ use velvt_shared_types::{
 use crate::{
     delivery::PushAdapter,
     persistence::{
-        PersistenceError, WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome,
-        WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
+        PersistenceError, WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
+        WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
     },
 };
 
@@ -388,7 +388,46 @@ impl WorkBlockManager {
         }
         self.repo
             .resolve_intervention(&record.block_id, outcome_for(response), now)?;
+        if response == InterventionResponse::WrongClassification {
+            self.record_block_category_correction(&record, &existing, now)?;
+        }
         self.snapshot_for(record, now)
+    }
+
+    /// Believes a wrong-classification reply instantly (roadmap invariant 3):
+    /// the most recent confidently observed non-anchor category counts as the
+    /// block's focus work for this block, and the snapshot acknowledges it in
+    /// copy until the block ends. Durable per-activity training stays in the
+    /// existing personal-override correction path.
+    fn record_block_category_correction(
+        &self,
+        record: &WorkBlockRecord,
+        intervention: &WorkBlockIntervention,
+        now: DateTime<Utc>,
+    ) -> Result<(), WorkBlockError> {
+        let observations = self.repo.observations(&record.block_id)?;
+        let Some(disputed) = observations
+            .iter()
+            .filter(|observation| is_confident_evidence(observation))
+            .rfind(|observation| {
+                !observation
+                    .category
+                    .eq_ignore_ascii_case(&intervention.anchor_category)
+            })
+        else {
+            // Nothing confidently observed to reclassify; the reply itself is
+            // already recorded.
+            return Ok(());
+        };
+        self.repo.record_category_correction(
+            &record.block_id,
+            &WorkBlockCategoryCorrection {
+                category: disputed.category.clone(),
+                counts_as_category: intervention.anchor_category.clone(),
+                corrected_at: now,
+            },
+        )?;
+        Ok(())
     }
 
     /// Marks a pending offer as returned once the anchor category is observed
@@ -405,7 +444,13 @@ impl WorkBlockManager {
         if pending.outcome != WorkBlockInterventionOutcome::Offered {
             return Ok(());
         }
-        if !pending.anchor_category.eq_ignore_ascii_case(category) {
+        let corrections = self.repo.category_corrections(&record.block_id)?;
+        let effective = corrections
+            .iter()
+            .find(|correction| correction.category.eq_ignore_ascii_case(category))
+            .map(|correction| correction.counts_as_category.as_str())
+            .unwrap_or(category);
+        if !pending.anchor_category.eq_ignore_ascii_case(effective) {
             return Ok(());
         }
         self.repo.resolve_intervention(
@@ -452,7 +497,8 @@ impl WorkBlockManager {
             }
         }
         let observations = self.repo.observations(&record.block_id)?;
-        let Some(anchor) = dominant_category(&observations) else {
+        let corrections = self.repo.category_corrections(&record.block_id)?;
+        let Some(anchor) = dominant_category(&observations, &corrections) else {
             return Ok(None);
         };
         let mut window_start = now - Duration::seconds(DRIFT_WINDOW_SECONDS);
@@ -474,14 +520,17 @@ impl WorkBlockManager {
             .iter()
             .filter(|observation| observation.occurred_at < window_start)
             .rfind(|observation| is_confident_evidence(observation))
-            .map(|observation| observation.category.eq_ignore_ascii_case(&anchor));
+            .map(|observation| {
+                effective_category(observation, &corrections).eq_ignore_ascii_case(&anchor)
+            });
         let mut switch_count = 0_u32;
         for observation in observations
             .iter()
             .filter(|observation| observation.occurred_at >= window_start)
             .filter(|observation| is_confident_evidence(observation))
         {
-            let is_anchor = observation.category.eq_ignore_ascii_case(&anchor);
+            let is_anchor =
+                effective_category(observation, &corrections).eq_ignore_ascii_case(&anchor);
             if !is_anchor && previous_was_anchor == Some(true) {
                 switch_count = switch_count.saturating_add(1);
             }
@@ -609,8 +658,9 @@ impl WorkBlockManager {
             ended_at,
         )?;
         let observations = self.repo.observations(&record.block_id)?;
+        let corrections = self.repo.category_corrections(&record.block_id)?;
         let elapsed = elapsed_seconds(record, ended_at);
-        let result = aggregate_result(record, elapsed, &observations);
+        let result = aggregate_result(record, elapsed, &observations, &corrections);
         let result = self.repo.finalize(
             &record.block_id,
             &WorkBlockCompletion {
@@ -643,6 +693,7 @@ impl WorkBlockManager {
         let latest = self.repo.latest_observation(&record.block_id)?;
         let (category, status, confidence) = current_evidence(latest.as_ref());
         let ends_at = (record.phase == WorkBlockPhase::Active).then(|| planned_deadline(&record));
+        let correction_acknowledgment = self.correction_acknowledgment(&record)?;
         Ok(WorkBlockSnapshot {
             state_version: WORK_BLOCK_STATE_VERSION,
             phase: record.phase,
@@ -664,8 +715,27 @@ impl WorkBlockManager {
             status_line: status_line(record.phase, record.intensity, category.as_deref(), status),
             result,
             active_intervention: self.active_intervention(&record.block_id)?,
-            correction_acknowledgment: None,
+            correction_acknowledgment,
         })
+    }
+
+    /// A believed correction is acknowledged immediately and for the rest of
+    /// the block, then the acknowledgment ends with the block.
+    fn correction_acknowledgment(
+        &self,
+        record: &WorkBlockRecord,
+    ) -> Result<Option<String>, WorkBlockError> {
+        if !matches!(
+            record.phase,
+            WorkBlockPhase::Active | WorkBlockPhase::Paused
+        ) {
+            return Ok(None);
+        }
+        Ok(self
+            .repo
+            .category_corrections(&record.block_id)?
+            .last()
+            .map(correction_acknowledgment_copy))
     }
 
     /// The live offer, if one is still awaiting a response. Answered offers are
@@ -828,9 +898,33 @@ fn is_confident_evidence(observation: &WorkBlockObservation) -> bool {
         )
 }
 
+/// The category an observation counts as after block-scoped corrections. A
+/// believed correction covers the whole block: the user said the category
+/// *is* their focus work for this block, not that it became so mid-way.
+fn effective_category<'a>(
+    observation: &'a WorkBlockObservation,
+    corrections: &'a [WorkBlockCategoryCorrection],
+) -> &'a str {
+    corrections
+        .iter()
+        .find(|correction| correction.category.eq_ignore_ascii_case(&observation.category))
+        .map(|correction| correction.counts_as_category.as_str())
+        .unwrap_or(&observation.category)
+}
+
+/// Immediate, visible acknowledgment of a believed correction. Analyst voice:
+/// it states the new rule and references no history.
+fn correction_acknowledgment_copy(correction: &WorkBlockCategoryCorrection) -> String {
+    let category = correction.category.replace('_', " ").to_ascii_lowercase();
+    format!("Got it — {category} counts as focus work for this block.")
+}
+
 /// The category holding the most confidently observed time so far. Ties break
 /// on category name so the anchor cannot oscillate between equal candidates.
-fn dominant_category(observations: &[WorkBlockObservation]) -> Option<String> {
+fn dominant_category(
+    observations: &[WorkBlockObservation],
+    corrections: &[WorkBlockCategoryCorrection],
+) -> Option<String> {
     let mut category_seconds = HashMap::<String, u32>::new();
     for observation in observations.iter().filter(|o| is_confident_evidence(o)) {
         let Some(ended_at) = observation.ended_at else {
@@ -841,7 +935,7 @@ fn dominant_category(observations: &[WorkBlockObservation]) -> Option<String> {
             continue;
         }
         let entry = category_seconds
-            .entry(observation.category.clone())
+            .entry(effective_category(observation, corrections).to_owned())
             .or_default();
         *entry = entry.saturating_add(seconds);
     }
@@ -932,6 +1026,7 @@ fn aggregate_result(
     record: &WorkBlockRecord,
     elapsed: u32,
     observations: &[WorkBlockObservation],
+    corrections: &[WorkBlockCategoryCorrection],
 ) -> WorkBlockResult {
     let valid = observations
         .iter()
@@ -947,7 +1042,8 @@ fn aggregate_result(
                     observation.category.to_ascii_lowercase().as_str(),
                     "system" | "unclassified" | "unlogged"
                 );
-            (classified && seconds > 0).then(|| (observation.category.clone(), seconds))
+            (classified && seconds > 0)
+                .then(|| (effective_category(observation, corrections).to_owned(), seconds))
         })
         .collect::<Vec<_>>();
     let observed_seconds = valid
@@ -1599,6 +1695,103 @@ mod tests {
             .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(540))
             .unwrap();
         assert!(answered.active_intervention.is_none());
+    }
+
+    /// Roadmap invariant 3: a correction is believed instantly, acknowledged
+    /// visibly, and applied for the remainder of the block.
+    #[test]
+    fn wrong_classification_is_believed_instantly_and_acknowledged() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+
+        let acknowledged = manager
+            .report_intervention_outcome(block_id, InterventionResponse::WrongClassification, at(540))
+            .unwrap();
+
+        // Acknowledged immediately and visibly, in analyst voice.
+        assert_eq!(
+            acknowledged.correction_acknowledgment.as_deref(),
+            Some("Got it — communication counts as focus work for this block.")
+        );
+        assert!(acknowledged.active_intervention.is_none());
+        let recorded = repo
+            .category_corrections(&block_id.to_string())
+            .unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].category, "COMMUNICATION");
+        assert_eq!(recorded[0].counts_as_category, "DEEP_WORK");
+
+        // Still acknowledged later in the same block.
+        let later = manager.request_state(at(600)).unwrap();
+        assert!(later.correction_acknowledgment.is_some());
+
+        // The result honors the correction: the disputed category counts as
+        // the block's focus work, so no switch-away is claimed against it.
+        let ended = manager.end(block_id, at(900)).unwrap();
+        assert!(ended.correction_acknowledgment.is_none());
+        let result = ended.result.unwrap();
+        assert_eq!(result.switch_away_count, 0);
+        assert_eq!(result.safe_evidence_category.as_deref(), Some("DEEP_WORK"));
+        assert!(result.observation.contains("one sustained category pattern"));
+    }
+
+    #[test]
+    fn a_corrected_category_cannot_retrigger_the_gate() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(10_800), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::WrongClassification, at(540))
+            .unwrap();
+
+        // Heavy switching into the corrected category, well past every
+        // cooldown. Corrected observations count as the anchor, so there is
+        // no departure evidence to offer against.
+        for (index, seconds) in
+            (0..40).map(|step| (step, 2_500 + i64::from(step) * 30))
+        {
+            let category = if index % 2 == 0 {
+                "COMMUNICATION"
+            } else {
+                "DEEP_WORK"
+            };
+            let outcome = observe(&manager, category, seconds);
+            assert!(
+                outcome.map_or(true, |o| o.intervention.is_none()),
+                "an offer against the corrected category at t={seconds}"
+            );
+        }
+        assert_eq!(repo.interventions(&block_id.to_string()).unwrap().len(), 1);
+    }
+
+    /// The correction is scoped to its block: a new block starts from the
+    /// device's ordinary classification.
+    #[test]
+    fn a_correction_ends_with_its_block() {
+        let (manager, _repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::WrongClassification, at(540))
+            .unwrap();
+        manager.end(block_id, at(900)).unwrap();
+
+        let next = manager.start(request(3600), at(1_000)).unwrap();
+        assert!(next.correction_acknowledgment.is_none());
+        // The same drift shape in the new block clears the gate again.
+        observe(&manager, "DEEP_WORK", 1_010);
+        observe(&manager, "COMMUNICATION", 1_400);
+        observe(&manager, "DEEP_WORK", 1_420);
+        observe(&manager, "COMMUNICATION", 1_440);
+        observe(&manager, "DEEP_WORK", 1_460);
+        observe(&manager, "COMMUNICATION", 1_480);
+        observe(&manager, "DEEP_WORK", 1_500);
+        let outcome = observe(&manager, "COMMUNICATION", 1_520).unwrap();
+        assert!(outcome.intervention.is_some());
     }
 
     #[test]

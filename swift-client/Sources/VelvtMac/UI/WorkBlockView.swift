@@ -252,6 +252,16 @@ public struct WorkBlockView: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
+      // A believed correction is acknowledged immediately and stays visible
+      // for the remainder of the block. Copy comes from Rust verbatim.
+      if let acknowledgment = snapshot.correctionAcknowledgment {
+        Label(acknowledgment, systemImage: "checkmark.circle")
+          .font(.caption)
+          .foregroundStyle(Color.velvtPink)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel("Correction applied. \(acknowledgment)")
+      }
+
       if let intervention = snapshot.activeIntervention {
         interventionCard(intervention)
       }

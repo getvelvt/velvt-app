@@ -2,8 +2,9 @@ use super::{
     AbstractionMapRepo, AbstractionMapping, BatchEvent, HistoryCacheEntry, HistoryCacheRepo,
     InsightCacheEntry, InsightCacheRepo, LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch,
     PersonalOverrideRecord, RawEventEntry, RawEventRepo, UploadBatch, UploadBatchRepo,
-    UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockIntervention,
-    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
+    UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCategoryCorrection, WorkBlockCompletion,
+    WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
+    WorkBlockRepo,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1649,6 +1650,53 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             params![block_id, outcome.as_str(), at.timestamp()],
         )?;
         Ok(changed > 0)
+    }
+
+    fn record_category_correction(
+        &self,
+        block_id: &str,
+        correction: &WorkBlockCategoryCorrection,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        // First correction for a category wins: believing the user twice
+        // changes nothing, and the original correction time stays honest.
+        connection.execute(
+            "INSERT INTO work_block_category_correction(
+                block_id, category, counts_as_category, corrected_at
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(block_id, category) DO NOTHING",
+            params![
+                block_id,
+                correction.category,
+                correction.counts_as_category,
+                correction.corrected_at.timestamp(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn category_corrections(
+        &self,
+        block_id: &str,
+    ) -> Result<Vec<WorkBlockCategoryCorrection>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT category, counts_as_category, corrected_at
+             FROM work_block_category_correction WHERE block_id = ?1
+             ORDER BY corrected_at ASC, category ASC",
+        )?;
+        let rows = statement.query_map([block_id], |row| {
+            Ok(WorkBlockCategoryCorrection {
+                category: row.get(0)?,
+                counts_as_category: row.get(1)?,
+                corrected_at: timestamp_from_row(row, 2)?,
+            })
+        })?;
+        let mut corrections = Vec::new();
+        for row in rows {
+            corrections.push(row?);
+        }
+        Ok(corrections)
     }
 
     fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError> {

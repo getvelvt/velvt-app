@@ -165,6 +165,52 @@ only inside the local database. The invitation payload is schedule-free by
 construction, and no field derived by this policy reaches upload,
 telemetry, or log paths.
 
+## Auto-Demotion, Weekly Receipts, and the Explain Probe (0.1.6 Scope 4)
+
+Auto-demotion (roadmap invariant 4; D5) is a deterministic, versioned rule
+over the 0.1.5 wrong-intervention counter, owned by `WorkBlockManager`.
+Over the rolling 14-day window — restarted at the last manual reset —
+Velvt is `demoted` exactly while at least 10 interventions were delivered
+(`demotion_threshold_v1` minimum sample) and strictly more than 15% of them
+were answered "I was focused". While demoted, the drift gate records every
+decision it would have made as a terminal `withheld_demotion` row instead
+of offering: no card, no notification, no catch-up after re-promotion, and
+the row still consumes the per-block cap and cooldown. Withheld rows are
+excluded from the delivered denominator, so withholding cannot move the
+precision metric. Evidence collection, blocks, session results, and
+corrections continue unchanged, and initiation invitations remain governed
+solely by their own Scope 3 policy — they are initiation help, not
+interventions. The state is disclosed in the popover as a feature (exact
+counts, threshold, window, and both policy versions are inspectable), and
+one tap resumes nudges by restarting the evaluation window; nothing edits
+the outcome record. Re-promotion (`demotion_repromotion_v1`) is the same
+evaluation ceasing to hold. Demotion state survives restart and logout and
+dies with clear-all-data.
+
+The weekly receipts digest (D6) freezes one row per completed local week
+(Monday-keyed) in `weekly_digest`, generated lazily by `ReceiptsManager`
+on the first request after the week ends. Every count reads the stored
+aggregates the metrics use — block rows, stored session results, the
+shared delivered/wrong SQL body, invitation rows — never a parallel
+counter. Delivery is pull-based like an invitation and held (never
+rerouted) during quiet hours, Focus/DND, and live blocks; recoveries and
+completions lead, the wrong-intervention count appears exactly once, and a
+week with nothing to report produces silence. Digest rows never cross the
+upload path.
+
+"Explain this nudge" (D7) is a one-tap affordance on the intervention
+card. Rust selects the claim and evidence from the stored intervention row
+(`drift_switches_observed`: anchor, switch count, window) and phrases
+exactly one grounded sentence with a deterministic template. The
+`ExplanationPhraser` seam allows a future provider to rephrase the same
+selection, gated by `validate_explanation` (one sentence, no invented
+numbers, no banned vocabulary) with deterministic fallback; no provider is
+wired, and the template is the v1 explanation. There is no input field,
+reply, or thread anywhere. Taps are counted as one coarse local integer
+per week (`explain_probe_week`) — the pre-registered R4 gate metric — and
+the delivered denominator is derived from the same stored predicate the
+counter uses. No upload path for these counts exists in this release.
+
 ## Failure Behavior
 
 - Offline Swift sends fail without creating optimistic local state. Persisted

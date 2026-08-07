@@ -333,6 +333,88 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertNil(value["intention"])
     }
 
+    func testFocusAndQuietHoursMessagesRoundTripOnTheWire() throws {
+        let focus = ClientMessage.focusStateChanged(
+            .init(
+                active: true,
+                occurredAt: Date(timeIntervalSince1970: 1_800_000_000),
+                utcOffsetSeconds: 3_600
+            )
+        )
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: encoder.encode(focus)), focus)
+
+        let reply = ClientMessage.respondQuietHoursOffer(.init(accepted: true))
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: encoder.encode(reply)), reply)
+
+        let offer = ServerMessage.quietHoursOffer(
+            QuietHoursOffer(
+                ruleVersion: 1,
+                lateNightDays: 3,
+                startLocalMinutes: 1_320,
+                endLocalMinutes: 420,
+                body: "Velvt can hold its own notifications overnight."
+            )
+        )
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: encoder.encode(offer)), offer)
+        XCTAssertEqual(offer.safeLogDescription, "quiet_hours_offer")
+    }
+
+    /// Compatibility across the v26 bump: a result without the new DND
+    /// fields decodes to an empty outcome list, and DND outcomes round-trip
+    /// with the exact Rust wire vocabulary.
+    func testWorkBlockResultDndFieldsAreOptionalAndRoundTrip() throws {
+        let v25Payload = Data(
+            """
+            {
+                "planned_duration_seconds": 1500,
+                "elapsed_duration_seconds": 1500,
+                "longest_uninterrupted_seconds": 900,
+                "switch_away_count": 1,
+                "recovery_count": 1,
+                "confidence": "high",
+                "coverage": "good",
+                "coverage_ratio": 0.9,
+                "safe_evidence_category": null,
+                "observation": "Velvt observed one sustained category pattern.",
+                "next_action": {
+                    "action_id": "protect_next_10",
+                    "label": "Protect the next 10 minutes.",
+                    "duration_seconds": 600
+                }
+            }
+            """.utf8)
+        let decoded = try decoder.decode(WorkBlockResult.self, from: v25Payload)
+        XCTAssertTrue(decoded.dndOutcomes.isEmpty)
+        XCTAssertNil(decoded.reconciliation)
+
+        let withOutcomes = WorkBlockResult(
+            plannedDurationSeconds: 1_500,
+            elapsedDurationSeconds: 1_500,
+            longestUninterruptedSeconds: 900,
+            switchAwayCount: 1,
+            recoveryCount: 1,
+            confidence: .high,
+            coverage: .good,
+            coverageRatio: 0.9,
+            safeEvidenceCategory: nil,
+            observation: "Velvt observed one sustained category pattern.",
+            nextAction: .init(
+                actionID: "protect_next_10",
+                label: "Protect the next 10 minutes.",
+                durationSeconds: 600
+            ),
+            dndOutcomes: [.completedUnderDnd, .deliverySuppressedDnd],
+            reconciliation: "Do Not Disturb was on and the block completed as planned."
+        )
+        let data = try encoder.encode(withOutcomes)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(
+            object["dnd_outcomes"] as? [String],
+            ["completed_under_dnd", "delivery_suppressed_dnd"]
+        )
+        XCTAssertEqual(try decoder.decode(WorkBlockResult.self, from: data), withOutcomes)
+    }
+
     func testEarlyLocalSignalContainsNoRawActivityFields() throws {
         let signal = LocalEarlySignal(
             status: .ready,

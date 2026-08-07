@@ -745,7 +745,7 @@ enum SettingsSubmenu: CaseIterable, Equatable {
         switch self {
         case .appInfo: return 420
         case .queuedEvents: return 520
-        case .collectionSettings: return 140
+        case .collectionSettings: return 180
         case .onboarding: return 210
         #if DEBUG
         case .debug: return 150
@@ -1409,6 +1409,22 @@ public struct MenuBarPopoverView: View {
                 .font(.caption)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
+                // The single invitation opt-out. The Rust service owns and
+                // enforces the setting; this toggle renders the reported
+                // state and sends the change. Off means silence — nothing
+                // else about the product changes.
+                Toggle(
+                    "Initiation Invitations",
+                    isOn: Binding(
+                        get: { workBlockCoordinator.invitationsEnabled },
+                        set: { workBlockCoordinator.setInvitationsEnabled($0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .font(.caption)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+                .accessibilityHint("Off silences soft-start invitations entirely")
                 Button("Clear Local Work Blocks", role: .destructive) {
                     confirmsWorkBlockClear = true
                 }

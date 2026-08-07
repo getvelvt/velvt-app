@@ -545,6 +545,16 @@ impl WorkBlockManager {
         if switch_count < DRIFT_MIN_SWITCHES {
             return Ok(None);
         }
+        // Never offer while the latest confident evidence is the anchor: the
+        // user is back at the block, so a drift offer at this instant would be
+        // untruthful, would immediately self-resolve as `returned`, and would
+        // invite an honest `dismissed_was_focused` reply that pollutes the
+        // wrong-intervention metric. The accumulated departure evidence is not
+        // discarded — the offer fires on the next confident non-anchor
+        // observation instead.
+        if previous_was_anchor == Some(true) {
+            return Ok(None);
+        }
         self.repo.record_intervention(
             &record.block_id,
             &WorkBlockIntervention {
@@ -1386,10 +1396,16 @@ mod tests {
             );
         }
 
-        // Past 520 + 2 * 900 the same evidence shape is offer-worthy again
-        // at the very next evaluation, but only at reduced salience: the
+        // Past 520 + 2 * 900 the same evidence shape is offer-worthy again,
+        // but never on the observation that returns to the anchor — only on
+        // the next confident departure, and only at reduced salience: the
         // in-app card without the notification.
-        let reoffer = observe(&manager, "DEEP_WORK", 2330)
+        let returned = observe(&manager, "DEEP_WORK", 2330).unwrap();
+        assert!(
+            returned.intervention.is_none(),
+            "an offer fired on the observation that returned to the anchor"
+        );
+        let reoffer = observe(&manager, "COMMUNICATION", 2350)
             .unwrap()
             .intervention
             .expect("fresh evidence past the doubled cooldown offers again");
@@ -1580,6 +1596,56 @@ mod tests {
         let recorded = repo.intervention(&block_id).unwrap().unwrap();
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Returned);
         assert_eq!(recorded.outcome_at, Some(at(560)));
+    }
+
+    /// A re-offer never fires on the observation that returns to the anchor:
+    /// the user is back, so the offer waits for the next confident departure.
+    /// The departure evidence is deferred, not discarded.
+    #[test]
+    fn no_offer_fires_on_the_observation_that_returns_to_the_anchor() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(10_800), at(0)).unwrap();
+        let block_id = active.block_id.unwrap().to_string();
+        // First offer at t=520; explicit return resolves it at t=540.
+        drift_into_offer(&manager);
+        observe(&manager, "DEEP_WORK", 540);
+
+        // Four fresh departures inside the ten-minute window, all silent while
+        // the base 900-second re-offer cooldown (until t=1420) holds.
+        for (category, seconds) in [
+            ("COMMUNICATION", 900),
+            ("DEEP_WORK", 920),
+            ("COMMUNICATION", 940),
+            ("DEEP_WORK", 960),
+            ("COMMUNICATION", 980),
+            ("DEEP_WORK", 1_000),
+            ("COMMUNICATION", 1_020),
+        ] {
+            let outcome = observe(&manager, category, seconds);
+            assert!(
+                outcome.is_none_or(|o| o.intervention.is_none()),
+                "an offer inside the re-offer cooldown at t={seconds}"
+            );
+        }
+
+        // Cooldown expired and the switch threshold is met, but this
+        // observation is the return to the anchor: no offer.
+        let returned = observe(&manager, "DEEP_WORK", 1_430).unwrap();
+        assert!(
+            returned.intervention.is_none(),
+            "an offer fired on the observation that returned to the anchor"
+        );
+        assert_eq!(repo.interventions(&block_id).unwrap().len(), 1);
+
+        // The very next confident departure spends that evidence instead.
+        let departed = observe(&manager, "COMMUNICATION", 1_440).unwrap();
+        let reoffer = departed
+            .intervention
+            .expect("the deferred offer fires on the next confident departure");
+        assert_eq!(reoffer.salience, DriftSalience::Standard);
+        let recorded = repo.interventions(&block_id).unwrap();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded.last().unwrap().offered_at, at(1_440));
     }
 
     #[test]

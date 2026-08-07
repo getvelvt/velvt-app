@@ -37,11 +37,29 @@ const DRIFT_WINDOW_SECONDS: i64 = 10 * 60;
 const DRIFT_MIN_SWITCHES: u32 = 4;
 const DRIFT_MIN_ELAPSED_SECONDS: u32 = 5 * 60;
 const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
+/// Versioned backoff policy (`plan/05-unified-roadmap.md` invariant 2).
+/// A re-offer inside the same block waits out a cooldown that every negative
+/// reply multiplies, and delivery salience only ever decreases after a
+/// negative reply. Escalation in salience, frequency, or emotional charge in
+/// response to non-compliance is a policy violation, not a tuning option.
+const DRIFT_BACKOFF_POLICY_VERSION: u32 = 1;
+const DRIFT_REOFFER_BASE_COOLDOWN_SECONDS: i64 = 15 * 60;
+const DRIFT_BACKOFF_COOLDOWN_MULTIPLIER: u32 = 2;
+const DRIFT_MAX_OFFERS_PER_BLOCK: usize = 3;
 /// The only action in the registry today. Closed by construction: the schema
 /// constrains `action_id`, so an unregistered action cannot be persisted.
 const DRIFT_ACTION_ID: &str = "protect_next_10";
 const DRIFT_PROTECT_MINUTES: u32 = 10;
 const DRIFT_TITLE: &str = "Your work block is still running";
+
+/// How prominently an offer may be delivered. `Standard` permits the optional
+/// OS notification; `Reduced` is the in-app card only. Salience never
+/// increases in response to non-compliance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriftSalience {
+    Standard,
+    Reduced,
+}
 
 /// A single approved, device-local intervention offer. Copy is authored here,
 /// beside the evidence that justifies it; Swift renders it verbatim.
@@ -51,6 +69,7 @@ pub struct DriftIntervention {
     pub action_id: &'static str,
     pub title: String,
     pub body: String,
+    pub salience: DriftSalience,
 }
 
 /// Result of a safe category observation: the state Swift renders, plus at most
@@ -411,16 +430,37 @@ impl WorkBlockManager {
         if record.planned_duration_seconds.saturating_sub(elapsed) < DRIFT_MIN_REMAINING_SECONDS {
             return Ok(None);
         }
-        // Hard cap. One offer per block, enforced by the row's existence
-        // regardless of how it was resolved.
-        if self.repo.intervention(&record.block_id)?.is_some() {
+        let prior = self.repo.interventions(&record.block_id)?;
+        // A live offer must be answered, observed, or outlived by the block
+        // before anything else is considered; offers never overlap.
+        if prior.iter().any(|offer| !offer.outcome.is_terminal()) {
             return Ok(None);
+        }
+        if prior.len() >= DRIFT_MAX_OFFERS_PER_BLOCK {
+            return Ok(None);
+        }
+        let negative_replies = count_negative_replies(&prior);
+        if let Some(last) = prior.last() {
+            // Backoff, never escalation: each negative reply multiplies the
+            // remaining cooldown by the versioned constant. Nothing in this
+            // policy can shorten a wait in response to non-compliance.
+            let cooldown = DRIFT_REOFFER_BASE_COOLDOWN_SECONDS.saturating_mul(i64::from(
+                DRIFT_BACKOFF_COOLDOWN_MULTIPLIER.saturating_pow(negative_replies),
+            ));
+            if now < last.offered_at + Duration::seconds(cooldown) {
+                return Ok(None);
+            }
         }
         let observations = self.repo.observations(&record.block_id)?;
         let Some(anchor) = dominant_category(&observations) else {
             return Ok(None);
         };
-        let window_start = now - Duration::seconds(DRIFT_WINDOW_SECONDS);
+        let mut window_start = now - Duration::seconds(DRIFT_WINDOW_SECONDS);
+        if let Some(last) = prior.last() {
+            // Materially new evidence only: switches that predate the previous
+            // offer were already spent on it.
+            window_start = window_start.max(last.offered_at);
+        }
         // A "switch" is a departure: a confident non-anchor observation whose
         // previous confident observation was the anchor. Counting rows
         // instead would let classifier noise clear the gate — confidence or
@@ -458,15 +498,25 @@ impl WorkBlockManager {
                 anchor_category: anchor.clone(),
                 switch_count,
                 window_seconds: DRIFT_WINDOW_SECONDS.try_into().unwrap_or(u32::MAX),
+                backoff_policy_version: DRIFT_BACKOFF_POLICY_VERSION,
                 outcome: WorkBlockInterventionOutcome::Offered,
                 outcome_at: None,
             },
         )?;
+        // Reduced salience after any negative reply in this block, and only
+        // ever in that direction. Copy is untouched: the same registered
+        // template renders every offer, however the previous one was received.
+        let salience = if negative_replies > 0 {
+            DriftSalience::Reduced
+        } else {
+            DriftSalience::Standard
+        };
         Ok(Some(DriftIntervention {
             block_id: Uuid::parse_str(&record.block_id).unwrap_or_default(),
             action_id: DRIFT_ACTION_ID,
             title: DRIFT_TITLE.to_owned(),
             body: drift_body(switch_count, &anchor),
+            salience,
         }))
     }
 
@@ -799,6 +849,23 @@ fn dominant_category(observations: &[WorkBlockObservation]) -> Option<String> {
         .into_iter()
         .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(&left.0)))
         .map(|(category, _)| category)
+}
+
+/// Negative replies drive backoff. A return, an acceptance, silence, or a
+/// category dispute is not "leave me alone" evidence and does not multiply
+/// the cooldown.
+fn count_negative_replies(prior: &[WorkBlockIntervention]) -> u32 {
+    prior
+        .iter()
+        .filter(|offer| {
+            matches!(
+                offer.outcome,
+                WorkBlockInterventionOutcome::Dismissed
+                    | WorkBlockInterventionOutcome::DismissedWasFocused
+                    | WorkBlockInterventionOutcome::NotHelpful
+            )
+        })
+        .count() as u32
 }
 
 /// Maps a user's reply onto the stored vocabulary. Total by construction, so a
@@ -1134,15 +1201,20 @@ mod tests {
         assert_eq!(recorded.anchor_category, "DEEP_WORK");
         assert_eq!(recorded.switch_count, 4);
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Offered);
+        assert_eq!(
+            recorded.backoff_policy_version,
+            DRIFT_BACKOFF_POLICY_VERSION
+        );
+        assert_eq!(intervention.salience, DriftSalience::Standard);
     }
 
     #[test]
-    fn at_most_one_offer_is_made_per_block() {
+    fn a_recent_offer_gates_reoffers_for_the_base_cooldown() {
         let (manager, _repo) = manager_with_repo();
         manager.start(request(3600), at(0)).unwrap();
         assert!(drift_into_offer(&manager).unwrap().intervention.is_some());
 
-        // Keep drifting well past the gate; the cap holds.
+        // Keep drifting right after the offer; the cooldown holds.
         for (index, seconds) in [560, 580, 600, 620, 640].iter().enumerate() {
             let category = if index % 2 == 0 {
                 "DEEP_WORK"
@@ -1155,6 +1227,221 @@ mod tests {
                 "a second offer was made at t={seconds}"
             );
         }
+    }
+
+    /// Roadmap invariant 2, half one: a dismissal multiplies the remaining
+    /// cooldown by the versioned constant. Gate-clearing evidence after the
+    /// base cooldown but inside the doubled one must stay silent.
+    #[test]
+    fn a_dismissal_doubles_the_reoffer_cooldown_and_reduces_salience() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(10_800), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).unwrap().intervention.unwrap();
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(540))
+            .unwrap();
+
+        // Anchor holds, then fresh gate-clearing switching resumes. The base
+        // cooldown (900s from t=520) has long passed by t=1920; only the
+        // doubled cooldown (until t=2320) explains continued silence.
+        observe(&manager, "DEEP_WORK", 560);
+        for (category, seconds) in [
+            ("COMMUNICATION", 1920),
+            ("DEEP_WORK", 1940),
+            ("COMMUNICATION", 1960),
+            ("DEEP_WORK", 1980),
+            ("COMMUNICATION", 2000),
+            ("DEEP_WORK", 2020),
+            ("COMMUNICATION", 2040),
+            ("DEEP_WORK", 2260),
+            ("COMMUNICATION", 2300),
+        ] {
+            let outcome = observe(&manager, category, seconds).unwrap();
+            assert!(
+                outcome.intervention.is_none(),
+                "an offer inside the doubled cooldown at t={seconds}"
+            );
+        }
+
+        // Past 520 + 2 * 900 the same evidence shape is offer-worthy again
+        // at the very next evaluation, but only at reduced salience: the
+        // in-app card without the notification.
+        let reoffer = observe(&manager, "DEEP_WORK", 2330)
+            .unwrap()
+            .intervention
+            .expect("fresh evidence past the doubled cooldown offers again");
+        assert_eq!(reoffer.salience, DriftSalience::Reduced);
+        assert_eq!(repo.interventions(&block_id.to_string()).unwrap().len(), 2);
+    }
+
+    /// Two negative replies quadruple the cooldown: silence between the
+    /// doubled and quadrupled marks is what distinguishes 2^2 from 2^1.
+    #[test]
+    fn each_negative_reply_multiplies_the_cooldown_again() {
+        let (manager, _repo) = manager_with_repo();
+        let active = manager.start(request(10_800), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(540))
+            .unwrap();
+        observe(&manager, "DEEP_WORK", 560);
+        observe(&manager, "DEEP_WORK", 2330);
+        observe(&manager, "COMMUNICATION", 2340);
+        observe(&manager, "DEEP_WORK", 2350);
+        observe(&manager, "COMMUNICATION", 2355);
+        observe(&manager, "DEEP_WORK", 2358);
+        for (category, seconds) in
+            [("COMMUNICATION", 2359), ("DEEP_WORK", 2360), ("COMMUNICATION", 2361)]
+        {
+            observe(&manager, category, seconds);
+        }
+        // Second offer exists by now; answer it not-helpful.
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::NotHelpful, at(2380))
+            .unwrap();
+
+        // Fresh switching after the doubled cooldown from the second offer
+        // would have cleared a 2x policy, but two negatives mean 4x.
+        observe(&manager, "DEEP_WORK", 2400);
+        for (category, seconds) in [
+            ("COMMUNICATION", 5620),
+            ("DEEP_WORK", 5640),
+            ("COMMUNICATION", 5660),
+            ("DEEP_WORK", 5680),
+            ("COMMUNICATION", 5700),
+            ("DEEP_WORK", 5720),
+            ("COMMUNICATION", 5740),
+        ] {
+            let outcome = observe(&manager, category, seconds).unwrap();
+            assert!(
+                outcome.intervention.is_none(),
+                "an offer inside the quadrupled cooldown at t={seconds}"
+            );
+        }
+        observe(&manager, "DEEP_WORK", 5960);
+        let third = observe(&manager, "COMMUNICATION", 6000)
+            .unwrap()
+            .intervention
+            .expect("fresh evidence past the quadrupled cooldown offers again");
+        assert_eq!(third.salience, DriftSalience::Reduced);
+    }
+
+    /// Roadmap invariant 2, half two: nothing about how an offer renders may
+    /// escalate after a dismissal. Same registered template, same title, no
+    /// reference to the dismissal.
+    #[test]
+    fn copy_does_not_escalate_after_a_dismissal() {
+        let (manager, _repo) = manager_with_repo();
+        let active = manager.start(request(10_800), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        let first = drift_into_offer(&manager).unwrap().intervention.unwrap();
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(540))
+            .unwrap();
+        observe(&manager, "DEEP_WORK", 560);
+        for (category, seconds) in [
+            ("COMMUNICATION", 2340),
+            ("DEEP_WORK", 2350),
+            ("COMMUNICATION", 2355),
+            ("DEEP_WORK", 2358),
+            ("COMMUNICATION", 2359),
+            ("DEEP_WORK", 2360),
+        ] {
+            observe(&manager, category, seconds);
+        }
+        let second = observe(&manager, "COMMUNICATION", 2361)
+            .unwrap()
+            .intervention
+            .expect("post-dismissal reoffer");
+
+        assert_eq!(second.title, first.title);
+        assert_eq!(second.action_id, first.action_id);
+        assert!(second.body.contains("switches away from deep work"));
+        assert!(second.body.contains("Protect the next 10 minutes"));
+        for copy in [&second.title, &second.body] {
+            let lowered = copy.to_ascii_lowercase();
+            for forbidden in ["dismiss", "again", "ignored", "last time", "failed"] {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "escalating or history-referencing copy {forbidden:?} in {copy:?}"
+                );
+            }
+        }
+    }
+
+    /// Backoff is driven by negative replies only. A user who returned is not
+    /// told off with a quieter card: the next offer keeps standard salience
+    /// and the base cooldown.
+    #[test]
+    fn a_positive_outcome_keeps_standard_salience_and_base_cooldown() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3600), at(0)).unwrap();
+        let first = drift_into_offer(&manager).unwrap().intervention.unwrap();
+        assert_eq!(first.salience, DriftSalience::Standard);
+        // Observed return resolves the offer without a negative reply.
+        observe(&manager, "DEEP_WORK", 560);
+
+        for (category, seconds) in [
+            ("COMMUNICATION", 1430),
+            ("DEEP_WORK", 1450),
+            ("COMMUNICATION", 1470),
+            ("DEEP_WORK", 1490),
+            ("COMMUNICATION", 1510),
+            ("DEEP_WORK", 1530),
+        ] {
+            observe(&manager, category, seconds);
+        }
+        let second = observe(&manager, "COMMUNICATION", 1550)
+            .unwrap()
+            .intervention
+            .expect("base cooldown plus fresh evidence offers again");
+        // t=1550 is far inside the doubled window (520 + 1800), so a negative
+        // multiplier was not applied; and salience stays standard.
+        assert_eq!(second.salience, DriftSalience::Standard);
+    }
+
+    #[test]
+    fn no_more_than_three_offers_are_made_per_block() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(10_800), at(0)).unwrap();
+        let block_id = active.block_id.unwrap().to_string();
+        drift_into_offer(&manager);
+        observe(&manager, "DEEP_WORK", 560);
+
+        let mut base = 1_430_i64;
+        for _ in 0..2 {
+            for (category, offset) in [
+                ("COMMUNICATION", 0),
+                ("DEEP_WORK", 20),
+                ("COMMUNICATION", 40),
+                ("DEEP_WORK", 60),
+                ("COMMUNICATION", 80),
+                ("DEEP_WORK", 100),
+                ("COMMUNICATION", 120),
+            ] {
+                observe(&manager, category, base + offset);
+            }
+            observe(&manager, "DEEP_WORK", base + 140);
+            base += 1_000;
+        }
+        assert_eq!(repo.interventions(&block_id).unwrap().len(), 3);
+
+        // The cap holds against any further gate-clearing evidence.
+        for (category, offset) in [
+            ("COMMUNICATION", 0),
+            ("DEEP_WORK", 20),
+            ("COMMUNICATION", 40),
+            ("DEEP_WORK", 60),
+            ("COMMUNICATION", 80),
+            ("DEEP_WORK", 100),
+            ("COMMUNICATION", 120),
+        ] {
+            let outcome = observe(&manager, category, base + offset);
+            assert!(outcome.map_or(true, |o| o.intervention.is_none()));
+        }
+        assert_eq!(repo.interventions(&block_id).unwrap().len(), 3);
     }
 
     #[test]

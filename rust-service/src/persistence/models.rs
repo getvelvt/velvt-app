@@ -354,6 +354,9 @@ pub struct WorkBlockIntervention {
     pub anchor_category: String,
     pub switch_count: u32,
     pub window_seconds: u32,
+    /// The versioned backoff policy that produced this offer. 0 marks offers
+    /// recorded before the policy existed.
+    pub backoff_policy_version: u32,
     pub outcome: WorkBlockInterventionOutcome,
     pub outcome_at: Option<DateTime<Utc>>,
 }

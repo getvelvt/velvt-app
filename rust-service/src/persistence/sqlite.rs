@@ -1567,14 +1567,20 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         intervention: &WorkBlockIntervention,
     ) -> Result<(), PersistenceError> {
         let connection = self.0.connection()?;
-        // A second offer for the same block is a no-op rather than an error:
-        // the cap is a property of the schema, not of the caller.
+        // Offers append: the gate that decides whether a re-offer is allowed
+        // is the versioned backoff policy in the work-block manager.
         connection.execute(
             "INSERT INTO work_block_intervention(
-                block_id, offered_at, action_id, anchor_category,
-                switch_count, window_seconds, outcome, outcome_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(block_id) DO NOTHING",
+                block_id, offer_seq, offered_at, action_id, anchor_category,
+                switch_count, window_seconds, backoff_policy_version, outcome, outcome_at
+             ) VALUES (
+                ?1,
+                COALESCE(
+                    (SELECT MAX(offer_seq) FROM work_block_intervention WHERE block_id = ?1),
+                    0
+                ) + 1,
+                ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+             )",
             params![
                 block_id,
                 intervention.offered_at.timestamp(),
@@ -1582,6 +1588,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                 intervention.anchor_category,
                 intervention.switch_count,
                 intervention.window_seconds,
+                intervention.backoff_policy_version,
                 intervention.outcome.as_str(),
                 intervention.outcome_at.map(|at| at.timestamp()),
             ],
@@ -1597,29 +1604,33 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         connection
             .query_row(
                 "SELECT offered_at, action_id, anchor_category, switch_count,
-                        window_seconds, outcome, outcome_at
-                 FROM work_block_intervention WHERE block_id = ?1",
+                        window_seconds, backoff_policy_version, outcome, outcome_at
+                 FROM work_block_intervention WHERE block_id = ?1
+                 ORDER BY offer_seq DESC LIMIT 1",
                 [block_id],
-                |row| {
-                    Ok(WorkBlockIntervention {
-                        offered_at: timestamp_from_row(row, 0)?,
-                        action_id: row.get(1)?,
-                        anchor_category: row.get(2)?,
-                        switch_count: row.get(3)?,
-                        window_seconds: row.get(4)?,
-                        outcome: WorkBlockInterventionOutcome::from_db_value(
-                            &row.get::<_, String>(5)?,
-                        )
-                        .ok_or_else(invalid_enum)?,
-                        outcome_at: row
-                            .get::<_, Option<i64>>(6)?
-                            .map(|value| timestamp_to_datetime(value, 6))
-                            .transpose()?,
-                    })
-                },
+                intervention_from_row,
             )
             .optional()
             .map_err(PersistenceError::from)
+    }
+
+    fn interventions(
+        &self,
+        block_id: &str,
+    ) -> Result<Vec<WorkBlockIntervention>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT offered_at, action_id, anchor_category, switch_count,
+                    window_seconds, backoff_policy_version, outcome, outcome_at
+             FROM work_block_intervention WHERE block_id = ?1
+             ORDER BY offer_seq ASC",
+        )?;
+        let rows = statement.query_map([block_id], intervention_from_row)?;
+        let mut interventions = Vec::new();
+        for row in rows {
+            interventions.push(row?);
+        }
+        Ok(interventions)
     }
 
     fn resolve_intervention(
@@ -1653,6 +1664,23 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         let connection = self.0.connection()?;
         Ok(connection.execute("DELETE FROM work_block", [])? as u64)
     }
+}
+
+fn intervention_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkBlockIntervention> {
+    Ok(WorkBlockIntervention {
+        offered_at: timestamp_from_row(row, 0)?,
+        action_id: row.get(1)?,
+        anchor_category: row.get(2)?,
+        switch_count: row.get(3)?,
+        window_seconds: row.get(4)?,
+        backoff_policy_version: row.get(5)?,
+        outcome: WorkBlockInterventionOutcome::from_db_value(&row.get::<_, String>(6)?)
+            .ok_or_else(invalid_enum)?,
+        outcome_at: row
+            .get::<_, Option<i64>>(7)?
+            .map(|value| timestamp_to_datetime(value, 7))
+            .transpose()?,
+    })
 }
 
 fn insert_batch(connection: &Connection, batch: &NewUploadBatch) -> Result<(), PersistenceError> {

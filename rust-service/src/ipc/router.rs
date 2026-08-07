@@ -1003,14 +1003,21 @@ impl R7Router {
                                 // insight, but authored entirely on-device: an
                                 // in-session offer never waits on the cloud or
                                 // on a mature baseline.
+                                // Reduced salience means the in-app card only:
+                                // after a negative reply in this block, the
+                                // offer never regains the OS notification.
                                 if let Some(intervention) = outcome.intervention {
-                                    push.push_notification(
-                                        Uuid::new_v4(),
-                                        &intervention.title,
-                                        &intervention.body,
-                                        occurred_at.date_naive(),
-                                    )
-                                    .await;
+                                    if intervention.salience
+                                        == crate::work_block::DriftSalience::Standard
+                                    {
+                                        push.push_notification(
+                                            Uuid::new_v4(),
+                                            &intervention.title,
+                                            &intervention.body,
+                                            occurred_at.date_naive(),
+                                        )
+                                        .await;
+                                    }
                                 }
                             }
                         }

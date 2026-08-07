@@ -207,17 +207,24 @@ pub trait WorkBlockRepo: Send + Sync {
         completion: &WorkBlockCompletion,
     ) -> Result<WorkBlockResult, PersistenceError>;
     fn result(&self, block_id: &str) -> Result<Option<WorkBlockResult>, PersistenceError>;
-    /// Records an intervention offer. The caller must treat a duplicate as a
-    /// no-op: the table's primary key enforces one offer per block.
+    /// Appends an intervention offer for the block. The caller owns the gate:
+    /// offer frequency is a property of the versioned backoff policy, not of
+    /// this store.
     fn record_intervention(
         &self,
         block_id: &str,
         intervention: &WorkBlockIntervention,
     ) -> Result<(), PersistenceError>;
+    /// The most recent offer for the block, if any.
     fn intervention(
         &self,
         block_id: &str,
     ) -> Result<Option<WorkBlockIntervention>, PersistenceError>;
+    /// Every offer for the block, oldest first.
+    fn interventions(
+        &self,
+        block_id: &str,
+    ) -> Result<Vec<WorkBlockIntervention>, PersistenceError>;
     /// Transitions an offer to a terminal outcome. Only an `offered` row is
     /// updated, so a recorded return is never overwritten by block expiry.
     fn resolve_intervention(

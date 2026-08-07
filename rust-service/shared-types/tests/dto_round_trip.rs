@@ -210,6 +210,7 @@ fn work_block_contract_round_trips_and_redacts_intention_from_debug() {
         planned_duration_seconds: 1_500,
         purpose: Some(WorkBlockPurpose::DeepWork),
         intensity: WorkBlockIntensity::Medium,
+        invitation_id: None,
     });
     assert_round_trip(start.clone());
     assert!(!format!("{start:?}").contains(sentinel));

@@ -163,6 +163,7 @@ async fn dnd_suppression_delivers_nothing_and_reconciles_after_the_block() {
             planned_duration_seconds: 3_600,
             purpose: Some(WorkBlockPurpose::DeepWork),
             intensity: WorkBlockIntensity::Medium,
+            invitation_id: None,
         }))
         .await
         .unwrap();

@@ -1385,6 +1385,7 @@ mod tests {
             planned_duration_seconds: seconds,
             purpose: Some(WorkBlockPurpose::DeepWork),
             intensity: WorkBlockIntensity::Medium,
+            invitation_id: None,
         }
     }
 

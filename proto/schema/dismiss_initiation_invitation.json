@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. The one-tap dismissal of a live initiation invitation. Dismissal only ever reduces future invitations: it multiplies the next invitation's cooldown under the versioned backoff policy, and repeated dismissal silences invitations entirely for a versioned interval. Nothing increases in response to it.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "dismiss_initiation_invitation" },
+    "payload": {
+      "type": "object",
+      "required": ["invitation_id"],
+      "properties": {
+        "invitation_id": { "type": "string", "format": "uuid" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Reads the current initiation-invitation setting so the settings surface renders the Rust-owned state instead of assuming one.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "request_initiation_settings" },
+    "payload": { "type": "object", "maxProperties": 0, "additionalProperties": false }
+  },
+  "additionalProperties": false
+}

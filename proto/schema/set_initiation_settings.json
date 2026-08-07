@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. The single opt-out setting for initiation invitations. Turning invitations off silences them entirely and changes nothing else about the product; Rust owns and enforces the setting.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "set_initiation_settings" },
+    "payload": {
+      "type": "object",
+      "required": ["invitations_enabled"],
+      "properties": {
+        "invitations_enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

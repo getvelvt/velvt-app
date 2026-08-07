@@ -1,5 +1,37 @@
 # IPC Protocol Changelog
 
+## Version 27 - 2026-08-07
+
+- Added `request_initiation_invitation` (Swift to Rust): asks the
+  deterministic, versioned initiation policy whether one invitation is
+  pending. The request carries only the client's UTC offset; every gate
+  (good hours, minimum samples, daily cap, quiet hours, Focus/DND, active
+  block, opt-out, backoff) is owned and enforced in Rust, and below any
+  minimum-sample gate the answer is silence — never a default window.
+- Added `initiation_invitation` (Rust to Swift): at most one daily
+  invitation to a 25-minute soft start. The payload is schedule-free by
+  construction — no good-hours window, weekday, hour bucket, or timing
+  evidence is representable — and carries only an opaque invitation id, the
+  registered `soft_start_25` action, registered copy, the block duration,
+  and the policy version.
+- Added `dismiss_initiation_invitation` (Swift to Rust): the one-tap
+  dismissal. Dismissal only ever reduces future invitations under the
+  versioned backoff policy; repeated dismissal silences invitations
+  entirely for a versioned interval.
+- Added optional `invitation_id` to `start_work_block`: one tap on an
+  invitation starts a declared block through the existing declaration path.
+  Rust validates the id and records a content-free origin marker locally;
+  the marker never appears in any IPC, cloud, log, or telemetry payload.
+- Added `set_initiation_settings` / `request_initiation_settings` (Swift to
+  Rust) and `initiation_settings` (Rust to Swift): the single Rust-owned
+  opt-out for invitations. Opting out silences invitations and changes
+  nothing else.
+- Registered `soft_restart_10` as the second closed-registry action:
+  `accept_work_block_recovery.action_id` and the work-block result's
+  `next_action.action_id` now admit `protect_next_10` or `soft_restart_10`.
+  The in-block drift offer (`active_intervention`) still only ever carries
+  `protect_next_10`.
+
 ## Version 26 - 2026-08-07
 
 - Added `focus_state_changed` (Swift to Rust): a coarse system Focus/DND

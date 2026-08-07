@@ -10,6 +10,7 @@ pub mod initiation;
 pub mod ipc;
 pub mod lifecycle;
 pub mod persistence;
+pub mod receipts;
 pub mod retention;
 pub mod upload;
 pub mod work_block;

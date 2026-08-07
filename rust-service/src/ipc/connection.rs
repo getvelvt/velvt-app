@@ -316,6 +316,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::CorrectionHistoryPage(_) => "correction_history_page",
         ServerMessage::WorkBlockState(_) => "work_block_state",
         ServerMessage::LocalDashboard(_) => "local_dashboard",
+        ServerMessage::QuietHoursOffer(_) => "quiet_hours_offer",
     }
 }
 

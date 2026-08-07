@@ -748,7 +748,7 @@ enum SettingsSubmenu: CaseIterable, Equatable {
         case .collectionSettings: return 180
         case .onboarding: return 210
         #if DEBUG
-        case .debug: return 150
+        case .debug: return 190
         #endif
         }
     }
@@ -1499,6 +1499,21 @@ public struct MenuBarPopoverView: View {
                             .padding(.horizontal, 16)
                             .padding(.bottom, 12)
                     }
+                    Button {
+                        workBlockCoordinator.simulateDebugInvitation()
+                        dismissSettingsSubmenus()
+                    } label: {
+                        HStack {
+                            Image(systemName: "sunrise")
+                            Text("Simulate Invitation")
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
                 }
         #endif
         }

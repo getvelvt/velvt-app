@@ -204,6 +204,24 @@ public final class WorkBlockCoordinator: ObservableObject {
     send(.clearWorkBlockData)
   }
 
+  #if DEBUG
+    /// Debug-only synthetic invitation so the packaged debug build can
+    /// demonstrate the surface without touching the local database. Mirrors
+    /// `NotificationDeliveryCoordinator.simulateDebugInsightReceipt`: the
+    /// one deliberate place a debug harness authors a payload. Accepting
+    /// sends a real start command; the service does not recognize the
+    /// synthetic id and records a plain manual start.
+    public func simulateDebugInvitation() {
+      invitation = InitiationInvitation(
+        invitationID: UUID(),
+        actionID: "soft_start_25",
+        body: "You usually focus well around now — want a 25-minute soft start?",
+        durationSeconds: 1_500,
+        policyVersion: 1
+      )
+    }
+  #endif
+
   public func reportLifecycle(_ event: WorkBlockLifecycleEvent) {
     send(.workBlockLifecycle(.init(event: event)))
   }

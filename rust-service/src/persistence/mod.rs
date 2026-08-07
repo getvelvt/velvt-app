@@ -9,6 +9,7 @@ pub use models::{
     LocalEventMetadata, NewUploadBatch, PersonalOverrideRecord, RawEventEntry, UploadBatch,
     UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCategoryCorrection, WorkBlockCompletion,
     WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
+    WrongInterventionCounts,
 };
 pub use sqlite::{PersistenceError, SqlitePersistence};
 pub use traits::{

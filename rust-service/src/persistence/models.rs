@@ -345,6 +345,15 @@ impl WorkBlockInterventionOutcome {
     }
 }
 
+/// Content-free rolling precision counts for the intervention detector:
+/// `dismissed_was_focused` replies over interventions delivered. Two bounded
+/// integers — no categories, copy, identifiers, or raw timing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WrongInterventionCounts {
+    pub delivered: u32,
+    pub was_focused: u32,
+}
+
 /// A block-scoped classification correction: for this block, `category`
 /// counts as `counts_as_category`. Broad taxonomy categories only; the
 /// correction dies with the block.

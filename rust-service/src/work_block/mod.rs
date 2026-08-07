@@ -21,6 +21,7 @@ use crate::{
     persistence::{
         PersistenceError, WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
         WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
+        WrongInterventionCounts,
     },
 };
 
@@ -46,6 +47,11 @@ const DRIFT_BACKOFF_POLICY_VERSION: u32 = 1;
 const DRIFT_REOFFER_BASE_COOLDOWN_SECONDS: i64 = 15 * 60;
 const DRIFT_BACKOFF_COOLDOWN_MULTIPLIER: u32 = 2;
 const DRIFT_MAX_OFFERS_PER_BLOCK: usize = 3;
+/// Rolling window for the local wrong-intervention counter
+/// (`dismissed_was_focused` replies / interventions delivered). 0.1.6
+/// attaches auto-demotion (roadmap invariant 4) to this stream; 0.1.5 only
+/// keeps the number honest.
+const WRONG_INTERVENTION_ROLLING_DAYS: i64 = 14;
 /// The only action in the registry today. Closed by construction: the schema
 /// constrains `action_id`, so an unregistered action cannot be persisted.
 const DRIFT_ACTION_ID: &str = "protect_next_10";
@@ -613,6 +619,18 @@ impl WorkBlockManager {
         self.repo.create(&record)?;
         self.publish_deadline(Some(planned_deadline(&record)));
         self.snapshot_for(record, now)
+    }
+
+    /// Local, content-free wrong-intervention counter over the rolling
+    /// window. Two bounded integers, computed on demand from stored outcome
+    /// enums; never uploaded and absent from every IPC payload.
+    pub fn wrong_intervention_counts(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<WrongInterventionCounts, WorkBlockError> {
+        Ok(self
+            .repo
+            .wrong_intervention_counts(now - Duration::days(WRONG_INTERVENTION_ROLLING_DAYS))?)
     }
 
     pub fn clear_data(&self) -> Result<WorkBlockSnapshot, WorkBlockError> {
@@ -1695,6 +1713,64 @@ mod tests {
             .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(540))
             .unwrap();
         assert!(answered.active_intervention.is_none());
+    }
+
+    /// Requirement 14: the counter is `dismissed_was_focused` over delivered,
+    /// rolls across blocks, ages out, and dies with clear-all-data. It feeds
+    /// 0.1.6 auto-demotion; nothing in 0.1.5 reads it into IPC or uploads.
+    #[test]
+    fn wrong_intervention_counter_rolls_across_blocks_and_clears() {
+        let (manager, _repo) = manager_with_repo();
+
+        // Block one: the interruption itself was wrong.
+        let first = manager.start(request(3600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        manager
+            .report_intervention_outcome(
+                first.block_id.unwrap(),
+                InterventionResponse::DismissedWasFocused,
+                at(540),
+            )
+            .unwrap();
+        manager.end(first.block_id.unwrap(), at(900)).unwrap();
+
+        // Block two: a plain dismissal, which must not count as wrong.
+        let second = manager.start(request(3600), at(2_000)).unwrap();
+        observe(&manager, "DEEP_WORK", 2_010);
+        observe(&manager, "COMMUNICATION", 2_400);
+        observe(&manager, "DEEP_WORK", 2_420);
+        observe(&manager, "COMMUNICATION", 2_440);
+        observe(&manager, "DEEP_WORK", 2_460);
+        observe(&manager, "COMMUNICATION", 2_480);
+        observe(&manager, "DEEP_WORK", 2_500);
+        assert!(observe(&manager, "COMMUNICATION", 2_520)
+            .unwrap()
+            .intervention
+            .is_some());
+        manager
+            .report_intervention_outcome(
+                second.block_id.unwrap(),
+                InterventionResponse::Dismissed,
+                at(2_540),
+            )
+            .unwrap();
+        manager.end(second.block_id.unwrap(), at(3_000)).unwrap();
+
+        let counts = manager.wrong_intervention_counts(at(3_100)).unwrap();
+        assert_eq!(counts.delivered, 2);
+        assert_eq!(counts.was_focused, 1);
+
+        // Rolling: offers age out of the window.
+        let fifteen_days = 15 * 24 * 60 * 60;
+        let aged = manager.wrong_intervention_counts(at(fifteen_days)).unwrap();
+        assert_eq!(aged.delivered, 0);
+        assert_eq!(aged.was_focused, 0);
+
+        // Clear-all-data removes the stream entirely.
+        manager.clear_data().unwrap();
+        let cleared = manager.wrong_intervention_counts(at(3_100)).unwrap();
+        assert_eq!(cleared.delivered, 0);
+        assert_eq!(cleared.was_focused, 0);
     }
 
     /// Roadmap invariant 3: a correction is believed instantly, acknowledged

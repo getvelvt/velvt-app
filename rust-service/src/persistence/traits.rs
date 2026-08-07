@@ -3,6 +3,7 @@ use super::{
     LocalEventMetadata, NewUploadBatch, PersistenceError, PersonalOverrideRecord, RawEventEntry,
     UploadBatch, UploadQueueDiagnostics, WorkBlockCategoryCorrection, WorkBlockCompletion,
     WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
+    WrongInterventionCounts,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -237,6 +238,12 @@ pub trait WorkBlockRepo: Send + Sync {
         &self,
         block_id: &str,
     ) -> Result<Vec<WorkBlockCategoryCorrection>, PersistenceError>;
+    /// Rolling wrong-intervention counts across blocks: offers made since
+    /// `since`, and how many were answered `dismissed_was_focused`.
+    fn wrong_intervention_counts(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<WrongInterventionCounts, PersistenceError>;
     /// Transitions an offer to a terminal outcome. Only an `offered` row is
     /// updated, so a recorded return is never overwritten by block expiry.
     fn resolve_intervention(

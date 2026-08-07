@@ -4,7 +4,7 @@ use super::{
     PersonalOverrideRecord, RawEventEntry, RawEventRepo, UploadBatch, UploadBatchRepo,
     UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCategoryCorrection, WorkBlockCompletion,
     WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
-    WorkBlockRepo,
+    WorkBlockRepo, WrongInterventionCounts,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1697,6 +1697,28 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             corrections.push(row?);
         }
         Ok(corrections)
+    }
+
+    fn wrong_intervention_counts(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<WrongInterventionCounts, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT
+                    COUNT(*),
+                    COALESCE(SUM(outcome = 'dismissed_was_focused'), 0)
+                 FROM work_block_intervention WHERE offered_at >= ?1",
+                [since.timestamp()],
+                |row| {
+                    Ok(WrongInterventionCounts {
+                        delivered: row.get(0)?,
+                        was_focused: row.get(1)?,
+                    })
+                },
+            )
+            .map_err(PersistenceError::from)
     }
 
     fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError> {

@@ -304,14 +304,30 @@ public struct WorkBlockView: View {
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
 
+        // The headline personal stat: an accumulating count the user cannot
+        // lose, never a failure count or streak (roadmap invariant 6).
+        Text(RecoveryFraming.headline(count: result.recoveryCount))
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(Color.velvtGreen)
+          .fixedSize(horizontal: false, vertical: true)
+          .help(RecoveryFraming.explanation)
+          .accessibilityLabel(RecoveryFraming.accessibilityLabel(count: result.recoveryCount))
+
         HStack(spacing: 14) {
           resultMetric("Elapsed", result.elapsedDurationSeconds)
           resultMetric("Longest stretch", result.longestUninterruptedSeconds)
           VStack(alignment: .leading, spacing: 2) {
-            Text("Switch-aways / returns").font(.caption2).foregroundStyle(.secondary)
-            Text("\(result.switchAwayCount) / \(result.recoveryCount)")
+            Text("Switches").font(.caption2).foregroundStyle(.secondary)
+            Text("\(result.switchAwayCount)")
               .font(.caption.bold().monospacedDigit())
           }
+          .help(
+            "Observed category switches away from the block; observed movement, not proof of distraction."
+          )
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel(
+            "Switches, \(result.switchAwayCount). Observed category switches away from the block; observed movement, not proof of distraction."
+          )
         }
 
         Text(coverageLabel(result))

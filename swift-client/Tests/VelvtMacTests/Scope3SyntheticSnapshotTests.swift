@@ -198,6 +198,33 @@ final class Scope3SyntheticSnapshotTests: XCTestCase {
       named: "scope3-focus-fragmentation-synthetic.png",
       outputDirectory: output
     )
+    // Zero-recovery variant: the headline must stay forward-looking and
+    // positive, never a failure count (roadmap invariant 6).
+    let steadyFocus = LocalFocusFragmentation(
+      blockID: UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!,
+      phase: .active,
+      windowLabel: "Most recent 60 work-block minutes",
+      windowStartedAt: base,
+      windowEndedAt: base.addingTimeInterval(3_600),
+      plannedDurationSeconds: 3_000,
+      elapsedDurationSeconds: 2_340,
+      longestUninterruptedSeconds: 2_340,
+      observedSwitchCount: 0,
+      recoveryCount: 0,
+      coverage: .good,
+      coverageRatio: 0.94,
+      comparison: nil,
+      observation: "One classified category covered this work-block window.",
+      nextAction: "Protect the next 10 minutes for the work you chose.",
+      segments: [segment("focus-steady", base, 2_340, "FOCUS_WORK", .high)],
+      transitions: [],
+      clusters: []
+    )
+    try render(
+      FocusFragmentationView(focus: steadyFocus, errorMessage: nil, onStartWorkBlock: {}),
+      named: "scope3-focus-fragmentation-zero-recoveries-synthetic.png",
+      outputDirectory: output
+    )
     try render(
       YourWeekContentView(
         snapshot: dashboard,

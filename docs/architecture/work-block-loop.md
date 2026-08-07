@@ -92,6 +92,32 @@ results. The in-app “Clear Local Work Blocks” command deletes blocks,
 observations, and results. The existing full local-data procedure also removes
 the database.
 
+## Focus/DND Citizenship (0.1.6 Scope 1)
+
+Swift observes the system Focus/DND state through `INFocusStatusCenter` — a
+single authorized boolean sampled at app activations, wake, and IPC
+reconnects — and reports coarse edge transitions over `focus_state_changed`.
+Rust owns the evidence record: transition times are floored to five-minute
+buckets, reduced to local hour/date buckets, pruned after 14 days, and the
+schema has no column that could hold a Focus mode's name, configuration, or
+schedule.
+
+Decisions derived from that record, all in Rust:
+
+- A drift offer whose gate clears while DND is active is recorded as
+  `delivery_suppressed_dnd` (terminal at creation), delivered on no channel,
+  and never retried mid-block. It starts the normal re-offer cooldown,
+  counts toward the per-block offer cap, is excluded from
+  delivered-intervention metrics, and reconciles after the block as a count
+  inside at most one calm result line (`result.reconciliation`).
+- A block that completes while DND is active records `completed_under_dnd`
+  in `result.dnd_outcomes` and stays a completed block everywhere.
+- Late-night DND on three or more distinct local days within seven days
+  (pattern rule v1) produces one next-morning `quiet_hours_offer`. One tap
+  configures Velvt's own quiet hours (22:00-07:00 local, OS-notification
+  suppression only); a decline is remembered for 30 days. Velvt never edits
+  the macOS Focus configuration.
+
 ## Failure Behavior
 
 - Offline Swift sends fail without creating optimistic local state. Persisted

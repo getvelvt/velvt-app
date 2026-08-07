@@ -181,6 +181,16 @@ public struct WorkBlockView: View {
         }
         .controlSize(.small)
 
+        // The ground-truth false-positive reply: the interruption itself was
+        // wrong, regardless of classification. Distinct from the plain
+        // dismiss so the detector's precision stays measurable.
+        Button("I was focused") {
+          coordinator.respondToIntervention(.dismissedWasFocused)
+        }
+        .controlSize(.small)
+        .accessibilityLabel("I was focused")
+        .accessibilityHint("Reports that this interruption was unnecessary")
+
         Spacer(minLength: 0)
 
         Button {

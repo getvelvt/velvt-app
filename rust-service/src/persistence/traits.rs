@@ -222,10 +222,8 @@ pub trait WorkBlockRepo: Send + Sync {
         block_id: &str,
     ) -> Result<Option<WorkBlockIntervention>, PersistenceError>;
     /// Every offer for the block, oldest first.
-    fn interventions(
-        &self,
-        block_id: &str,
-    ) -> Result<Vec<WorkBlockIntervention>, PersistenceError>;
+    fn interventions(&self, block_id: &str)
+        -> Result<Vec<WorkBlockIntervention>, PersistenceError>;
     /// Records a block-scoped classification correction. The first correction
     /// for a category wins; recording it again is a no-op.
     fn record_category_correction(

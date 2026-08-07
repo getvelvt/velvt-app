@@ -925,7 +925,11 @@ fn effective_category<'a>(
 ) -> &'a str {
     corrections
         .iter()
-        .find(|correction| correction.category.eq_ignore_ascii_case(&observation.category))
+        .find(|correction| {
+            correction
+                .category
+                .eq_ignore_ascii_case(&observation.category)
+        })
         .map(|correction| correction.counts_as_category.as_str())
         .unwrap_or(&observation.category)
 }
@@ -1060,8 +1064,12 @@ fn aggregate_result(
                     observation.category.to_ascii_lowercase().as_str(),
                     "system" | "unclassified" | "unlogged"
                 );
-            (classified && seconds > 0)
-                .then(|| (effective_category(observation, corrections).to_owned(), seconds))
+            (classified && seconds > 0).then(|| {
+                (
+                    effective_category(observation, corrections).to_owned(),
+                    seconds,
+                )
+            })
         })
         .collect::<Vec<_>>();
     let observed_seconds = valid
@@ -1406,9 +1414,11 @@ mod tests {
         observe(&manager, "DEEP_WORK", 2350);
         observe(&manager, "COMMUNICATION", 2355);
         observe(&manager, "DEEP_WORK", 2358);
-        for (category, seconds) in
-            [("COMMUNICATION", 2359), ("DEEP_WORK", 2360), ("COMMUNICATION", 2361)]
-        {
+        for (category, seconds) in [
+            ("COMMUNICATION", 2359),
+            ("DEEP_WORK", 2360),
+            ("COMMUNICATION", 2361),
+        ] {
             observe(&manager, category, seconds);
         }
         // Second offer exists by now; answer it not-helpful.
@@ -1553,7 +1563,7 @@ mod tests {
             ("COMMUNICATION", 120),
         ] {
             let outcome = observe(&manager, category, base + offset);
-            assert!(outcome.map_or(true, |o| o.intervention.is_none()));
+            assert!(outcome.is_none_or(|o| o.intervention.is_none()));
         }
         assert_eq!(repo.interventions(&block_id).unwrap().len(), 3);
     }
@@ -1783,7 +1793,11 @@ mod tests {
         drift_into_offer(&manager);
 
         let acknowledged = manager
-            .report_intervention_outcome(block_id, InterventionResponse::WrongClassification, at(540))
+            .report_intervention_outcome(
+                block_id,
+                InterventionResponse::WrongClassification,
+                at(540),
+            )
             .unwrap();
 
         // Acknowledged immediately and visibly, in analyst voice.
@@ -1792,9 +1806,7 @@ mod tests {
             Some("Got it — communication counts as focus work for this block.")
         );
         assert!(acknowledged.active_intervention.is_none());
-        let recorded = repo
-            .category_corrections(&block_id.to_string())
-            .unwrap();
+        let recorded = repo.category_corrections(&block_id.to_string()).unwrap();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].category, "COMMUNICATION");
         assert_eq!(recorded[0].counts_as_category, "DEEP_WORK");
@@ -1810,7 +1822,9 @@ mod tests {
         let result = ended.result.unwrap();
         assert_eq!(result.switch_away_count, 0);
         assert_eq!(result.safe_evidence_category.as_deref(), Some("DEEP_WORK"));
-        assert!(result.observation.contains("one sustained category pattern"));
+        assert!(result
+            .observation
+            .contains("one sustained category pattern"));
     }
 
     #[test]
@@ -1820,15 +1834,17 @@ mod tests {
         let block_id = active.block_id.unwrap();
         drift_into_offer(&manager);
         manager
-            .report_intervention_outcome(block_id, InterventionResponse::WrongClassification, at(540))
+            .report_intervention_outcome(
+                block_id,
+                InterventionResponse::WrongClassification,
+                at(540),
+            )
             .unwrap();
 
         // Heavy switching into the corrected category, well past every
         // cooldown. Corrected observations count as the anchor, so there is
         // no departure evidence to offer against.
-        for (index, seconds) in
-            (0..40).map(|step| (step, 2_500 + i64::from(step) * 30))
-        {
+        for (index, seconds) in (0..40).map(|step| (step, 2_500 + i64::from(step) * 30)) {
             let category = if index % 2 == 0 {
                 "COMMUNICATION"
             } else {
@@ -1836,7 +1852,7 @@ mod tests {
             };
             let outcome = observe(&manager, category, seconds);
             assert!(
-                outcome.map_or(true, |o| o.intervention.is_none()),
+                outcome.is_none_or(|o| o.intervention.is_none()),
                 "an offer against the corrected category at t={seconds}"
             );
         }
@@ -1852,7 +1868,11 @@ mod tests {
         let block_id = active.block_id.unwrap();
         drift_into_offer(&manager);
         manager
-            .report_intervention_outcome(block_id, InterventionResponse::WrongClassification, at(540))
+            .report_intervention_outcome(
+                block_id,
+                InterventionResponse::WrongClassification,
+                at(540),
+            )
             .unwrap();
         manager.end(block_id, at(900)).unwrap();
 
@@ -1910,7 +1930,7 @@ mod tests {
                     at(seconds),
                 )
                 .unwrap();
-            assert!(outcome.map_or(true, |o| o.intervention.is_none()));
+            assert!(outcome.is_none_or(|o| o.intervention.is_none()));
         }
     }
 

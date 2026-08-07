@@ -259,7 +259,10 @@ fn intervention_replies_round_trip_under_stable_wire_names() {
     for (response, wire) in [
         (InterventionResponse::AcceptedAction, "accepted_action"),
         (InterventionResponse::NotHelpful, "not_helpful"),
-        (InterventionResponse::WrongClassification, "wrong_classification"),
+        (
+            InterventionResponse::WrongClassification,
+            "wrong_classification",
+        ),
         (InterventionResponse::Dismissed, "dismissed"),
         (
             InterventionResponse::DismissedWasFocused,

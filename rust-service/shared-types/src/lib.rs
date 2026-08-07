@@ -1104,7 +1104,10 @@ impl std::fmt::Debug for WorkBlockSnapshot {
             .field("status_line", &"[reviewed_copy]")
             .field(
                 "correction_acknowledgment",
-                &self.correction_acknowledgment.as_ref().map(|_| "[reviewed_copy]"),
+                &self
+                    .correction_acknowledgment
+                    .as_ref()
+                    .map(|_| "[reviewed_copy]"),
             )
             .field("result", &self.result)
             .finish()

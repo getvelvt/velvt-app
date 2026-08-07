@@ -254,7 +254,7 @@ public struct TodayWorkspaceView: View {
         case "backend_unavailable":
             "Working offline. Your local progress remains available while cloud synchronization retries."
         case "insufficient_evidence":
-            "No cloud observation was generated because evidence is still limited; the local signal will appear first."
+            "No cloud observation was generated because evidence is limited so far; the local signal will appear first."
         default:
             "A local observation will replace this progress state once enough evidence is available."
         }
@@ -360,7 +360,7 @@ private struct EarlyLocalSignalView: View {
                     .font(.caption2)
                     .foregroundStyle(Color.velvtMuted)
             }
-            Text(signal.observation ?? "Your activity is still settling.")
+            Text(signal.observation ?? "Your activity is settling.")
                 .font(.body.weight(.medium))
                 .foregroundStyle(Color.velvtText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -539,6 +539,7 @@ public struct FocusFragmentationView: View {
             .help(focusHelp(focus))
         }
         focusTimeline(focus)
+        recoveryHeadline(focus)
         metrics(focus)
         Text(focus.observation)
           .font(.caption)
@@ -690,6 +691,17 @@ public struct FocusFragmentationView: View {
     )
   }
 
+  /// The headline personal stat for this window: an accumulating count the
+  /// user cannot lose, never a failure count or streak (roadmap invariant 6).
+  private func recoveryHeadline(_ focus: LocalFocusFragmentation) -> some View {
+    Text(RecoveryFraming.headline(count: focus.recoveryCount))
+      .font(.caption.bold())
+      .foregroundStyle(Color.velvtGreen)
+      .lineLimit(1)
+      .help(RecoveryFraming.explanation)
+      .accessibilityLabel(RecoveryFraming.accessibilityLabel(count: focus.recoveryCount))
+  }
+
   private func metrics(_ focus: LocalFocusFragmentation) -> some View {
     LazyVGrid(
       columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
@@ -709,7 +721,7 @@ public struct FocusFragmentationView: View {
       )
     }
     .help(
-      "\(focus.recoveryCount) recoveries · \(focus.clusters.count) switching clusters · \(coverageLabel(focus)) coverage"
+      "\(RecoveryFraming.headline(count: focus.recoveryCount)) \(focus.clusters.count) switching clusters · \(coverageLabel(focus)) coverage."
     )
   }
 
@@ -741,7 +753,7 @@ public struct FocusFragmentationView: View {
   private func focusHelp(_ focus: LocalFocusFragmentation) -> String {
     let comparison = focus.comparison.map { "\($0.label): \($0.explanation)" }
       ?? "Not enough comparable activity."
-    return "Most recent explicit work-block window. \(comparison) \(focus.recoveryCount) recoveries, \(focus.clusters.count) clusters, \(coverageLabel(focus)) coverage."
+    return "Most recent explicit work-block window. \(comparison) \(RecoveryFraming.headline(count: focus.recoveryCount)) \(focus.clusters.count) clusters, \(coverageLabel(focus)) coverage."
   }
 
   private func segmentDetail(_ segment: LocalTimelineSegment) -> String {

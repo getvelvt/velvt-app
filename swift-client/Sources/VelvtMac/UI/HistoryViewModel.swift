@@ -313,7 +313,7 @@ public struct ProgressiveInsight: Equatable, Sendable {
                 "\(day.meaningfulSwitchCount) meaningful switches were observed; no complete weekly comparison is available yet."
             suggestedAction = day.meaningfulSwitchCount > 4
                 ? "Protect one 20-minute lane and see whether switching settles."
-                : "Repeat one steady block from today while the context is still fresh."
+                : "Repeat one steady block from today while the context is fresh."
         }
         return ProgressiveInsight(
             tier: .todaySoFar,

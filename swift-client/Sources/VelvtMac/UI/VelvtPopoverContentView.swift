@@ -254,7 +254,7 @@ public struct TodayWorkspaceView: View {
         case "backend_unavailable":
             "Working offline. Your local progress remains available while cloud synchronization retries."
         case "insufficient_evidence":
-            "No cloud observation was generated because evidence is still limited; the local signal will appear first."
+            "No cloud observation was generated because evidence is limited so far; the local signal will appear first."
         default:
             "A local observation will replace this progress state once enough evidence is available."
         }
@@ -360,7 +360,7 @@ private struct EarlyLocalSignalView: View {
                     .font(.caption2)
                     .foregroundStyle(Color.velvtMuted)
             }
-            Text(signal.observation ?? "Your activity is still settling.")
+            Text(signal.observation ?? "Your activity is settling.")
                 .font(.body.weight(.medium))
                 .foregroundStyle(Color.velvtText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -827,7 +827,7 @@ public struct DailyActivityView: View {
             .fill(Color.white.opacity(0.06))
             .frame(height: 22)
         }
-        Text("Still building the seven local day rows.")
+        Text("Building the seven local day rows.")
           .font(.caption2).foregroundStyle(Color.velvtMuted)
       }
       Divider().opacity(0.18)
@@ -1003,7 +1003,7 @@ public struct DailyActivityView: View {
     switch day.state {
     case .noData: return "No data"
     case .lowConfidence: return "Low confidence"
-    case .stillBuilding: return "Still building"
+    case .stillBuilding: return "Building"
     case .ready:
       return day.segments.contains(where: { $0.label == "Unclassified" })
         ? "Includes Unclassified" : "Recorded"

@@ -56,7 +56,7 @@ const WRONG_INTERVENTION_ROLLING_DAYS: i64 = 14;
 /// constrains `action_id`, so an unregistered action cannot be persisted.
 const DRIFT_ACTION_ID: &str = "protect_next_10";
 const DRIFT_PROTECT_MINUTES: u32 = 10;
-const DRIFT_TITLE: &str = "Your work block is still running";
+const DRIFT_TITLE: &str = "Your work block is running";
 
 /// How prominently an offer may be delivered. `Standard` permits the optional
 /// OS notification; `Reduced` is the in-app card only. Salience never
@@ -1911,6 +1911,77 @@ mod tests {
                 )
                 .unwrap();
             assert!(outcome.map_or(true, |o| o.intervention.is_none()));
+        }
+    }
+
+    /// Analyst voice (roadmap invariant 7): registered copy reports evidence.
+    /// No "still", no moralizing, and no reference to the user's dismissal or
+    /// failure history anywhere in the registry.
+    #[test]
+    fn registered_copy_is_analyst_voice_with_no_history_references() {
+        let mut registry: Vec<String> = vec![
+            DRIFT_TITLE.to_owned(),
+            drift_body(4, "DEEP_WORK"),
+            correction_acknowledgment_copy(&WorkBlockCategoryCorrection {
+                category: "COMMUNICATION".into(),
+                counts_as_category: "DEEP_WORK".into(),
+                corrected_at: at(0),
+            }),
+        ];
+        for purpose in [
+            None,
+            Some(WorkBlockPurpose::DeepWork),
+            Some(WorkBlockPurpose::Study),
+            Some(WorkBlockPurpose::CreativePractice),
+            Some(WorkBlockPurpose::HealthyTechUse),
+            Some(WorkBlockPurpose::WorkLifeBoundary),
+        ] {
+            registry.push(recovery_label(purpose));
+        }
+        for phase in [
+            WorkBlockPhase::Idle,
+            WorkBlockPhase::Active,
+            WorkBlockPhase::Paused,
+            WorkBlockPhase::Completed,
+            WorkBlockPhase::Abandoned,
+            WorkBlockPhase::Expired,
+        ] {
+            for intensity in [
+                WorkBlockIntensity::Light,
+                WorkBlockIntensity::Medium,
+                WorkBlockIntensity::Intense,
+            ] {
+                registry.push(status_line(
+                    phase,
+                    intensity,
+                    Some("DEEP_WORK"),
+                    ClassificationStatus::Classified,
+                ));
+                registry.push(status_line(
+                    phase,
+                    intensity,
+                    None,
+                    ClassificationStatus::Ambiguous,
+                ));
+            }
+        }
+
+        for copy in &registry {
+            let lowered = copy.to_ascii_lowercase();
+            for forbidden in [
+                "still",
+                "dismiss",
+                "failed",
+                "failure",
+                "ignored",
+                "last time",
+                "again",
+            ] {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "{forbidden:?} in registered copy {copy:?}"
+                );
+            }
         }
     }
 

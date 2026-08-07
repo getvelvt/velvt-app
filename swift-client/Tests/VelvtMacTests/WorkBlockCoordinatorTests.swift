@@ -268,7 +268,7 @@ final class WorkBlockCoordinatorTests: XCTestCase {
   private func offer() -> ActiveIntervention {
     ActiveIntervention(
       actionID: "protect_next_10",
-      title: "Your work block is still running",
+      title: "Your work block is running",
       body:
         "Velvt observed 4 switches away from deep work in the last 10 minutes. "
         + "Protect the next 10 minutes for the work you chose.",

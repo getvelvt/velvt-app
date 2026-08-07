@@ -296,7 +296,7 @@ fn focus_fragmentation(
     let comparison =
         earlier_today_comparison(repo, &aggregate, analysis_start, analysis_end, offset)?;
     let observation = if aggregate.coverage != LocalDashboardCoverage::Good {
-        "Coverage is still building, so Velvt is not making a confident switching comparison."
+        "Coverage is limited so far, so Velvt is not making a confident switching comparison."
             .to_owned()
     } else if aggregate.clusters.is_empty() {
         format!(

@@ -153,6 +153,7 @@ final class WorkBlockCoordinatorTests: XCTestCase {
       .notHelpful,
       .wrongClassification,
       .dismissed,
+      .dismissedWasFocused,
     ] {
       let client = FakeIPCClient()
       let messages = PassthroughSubject<ServerMessage, Never>()
@@ -204,8 +205,41 @@ final class WorkBlockCoordinatorTests: XCTestCase {
     XCTAssertEqual(decoded.activeIntervention?.switchCount, 4)
   }
 
+  /// The false-positive reply must keep its own wire name; a collapsed
+  /// encoding would silently merge it back into a plain dismissal.
+  func testDismissedWasFocusedEncodesDistinctlyFromDismissed() throws {
+    let report = ClientMessage.reportInterventionOutcome(
+      .init(
+        blockID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
+        response: .dismissedWasFocused
+      ))
+    let encoded = String(
+      decoding: try IPCMessageCodec.makeEncoder().encode(report), as: UTF8.self)
+
+    XCTAssertTrue(encoded.contains("\"dismissed_was_focused\""))
+    XCTAssertNotEqual(
+      InterventionResponse.dismissedWasFocused.rawValue,
+      InterventionResponse.dismissed.rawValue)
+  }
+
+  /// The acknowledgment is Rust-authored copy; a snapshot that omits it (or a
+  /// version-24 service) must still decode.
+  func testCorrectionAcknowledgmentRoundTripsAndStaysOptional() throws {
+    let acknowledged = activeSnapshot(
+      correctionAcknowledgment: "Got it — communication counts as focus work for this block.")
+    let encoded = try JSONEncoder().encode(acknowledged)
+    let decoded = try JSONDecoder().decode(WorkBlockSnapshot.self, from: encoded)
+    XCTAssertEqual(decoded.correctionAcknowledgment, acknowledged.correctionAcknowledgment)
+
+    let withoutField = try JSONDecoder().decode(
+      WorkBlockSnapshot.self,
+      from: try JSONEncoder().encode(activeSnapshot()))
+    XCTAssertNil(withoutField.correctionAcknowledgment)
+  }
+
   private func activeSnapshot(
-    activeIntervention: ActiveIntervention? = nil
+    activeIntervention: ActiveIntervention? = nil,
+    correctionAcknowledgment: String? = nil
   ) -> WorkBlockSnapshot {
     WorkBlockSnapshot(
       stateVersion: 1,
@@ -226,7 +260,8 @@ final class WorkBlockCoordinatorTests: XCTestCase {
       confidence: .high,
       statusLine: "Current category: Focus work.",
       result: nil,
-      activeIntervention: activeIntervention
+      activeIntervention: activeIntervention,
+      correctionAcknowledgment: correctionAcknowledgment
     )
   }
 

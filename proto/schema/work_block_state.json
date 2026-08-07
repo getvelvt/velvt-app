@@ -70,6 +70,30 @@
               "additionalProperties": false
             }
           ]
+        },
+        "active_intervention": {
+          "$comment": "Present only while a drift offer awaits a reply. Rust-authored copy; Swift renders it verbatim. `anchor_category` is a broad taxonomy category, never app identity, a title, or a URL.",
+          "type": "object",
+          "required": [
+            "action_id", "title", "body", "anchor_category",
+            "switch_count", "window_seconds", "offered_at"
+          ],
+          "properties": {
+            "action_id": { "const": "protect_next_10" },
+            "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+            "body": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "anchor_category": { "type": "string", "minLength": 1 },
+            "switch_count": { "type": "integer", "minimum": 0 },
+            "window_seconds": { "type": "integer", "minimum": 1 },
+            "offered_at": { "type": "string", "format": "date-time" }
+          },
+          "additionalProperties": false
+        },
+        "correction_acknowledgment": {
+          "$comment": "Rust-authored acknowledgment shown after a wrong-classification correction, for the remainder of the block. Contains a broad taxonomy category only.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
         }
       },
       "additionalProperties": false

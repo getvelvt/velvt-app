@@ -1617,6 +1617,10 @@ public enum InterventionResponse: String, Codable, Equatable, Sendable {
     case notHelpful = "not_helpful"
     case wrongClassification = "wrong_classification"
     case dismissed
+    /// The interruption itself was wrong, regardless of classification: the
+    /// user was focused. Ground-truth false-positive signal, distinct from a
+    /// plain dismissal and from a category dispute.
+    case dismissedWasFocused = "dismissed_was_focused"
 }
 
 public struct ReportInterventionOutcome: Codable, Equatable, Sendable {
@@ -1750,6 +1754,9 @@ public struct WorkBlockSnapshot: Codable, Equatable, Sendable {
     public let result: WorkBlockResult?
     /// Present only while a drift offer is unanswered.
     public let activeIntervention: ActiveIntervention?
+    /// Rust-authored acknowledgment of a wrong-classification correction,
+    /// present for the remainder of the corrected block. Rendered verbatim.
+    public let correctionAcknowledgment: String?
 
     private enum CodingKeys: String, CodingKey {
         case phase, intention, purpose, intensity, confidence, result
@@ -1766,6 +1773,7 @@ public struct WorkBlockSnapshot: Codable, Equatable, Sendable {
         case classificationStatus = "classification_status"
         case statusLine = "status_line"
         case activeIntervention = "active_intervention"
+        case correctionAcknowledgment = "correction_acknowledgment"
     }
 }
 

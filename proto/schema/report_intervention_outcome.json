@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. The user's explicit reply to a live drift offer. Silence is deliberately not representable: it is recorded by the service when the block ends, never inferred from a notification disappearing. `dismissed_was_focused` is the ground-truth false-positive signal and stays distinct from both `dismissed` and `wrong_classification`.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "report_intervention_outcome" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id", "response"],
+      "properties": {
+        "block_id": { "type": "string", "format": "uuid" },
+        "response": {
+          "enum": [
+            "accepted_action",
+            "not_helpful",
+            "wrong_classification",
+            "dismissed",
+            "dismissed_was_focused"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -751,6 +751,10 @@ pub enum InterventionResponse {
     WrongClassification,
     /// Explicitly dismissed.
     Dismissed,
+    /// The interruption itself was wrong, regardless of classification: the
+    /// user reports they were focused. Ground-truth false-positive signal,
+    /// distinct from both `Dismissed` and `WrongClassification`.
+    DismissedWasFocused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -859,6 +863,11 @@ pub struct WorkBlockSnapshot {
     /// Set only while a drift offer is awaiting a response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_intervention: Option<ActiveIntervention>,
+    /// Rust-authored acknowledgment of a wrong-classification correction.
+    /// Present for the remainder of the corrected block. Broad taxonomy
+    /// category only; never app identity, a title, or a URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correction_acknowledgment: Option<String>,
 }
 
 /// Coverage state for the local live dashboard window.
@@ -1093,6 +1102,10 @@ impl std::fmt::Debug for WorkBlockSnapshot {
             .field("classification_status", &self.classification_status)
             .field("confidence", &self.confidence)
             .field("status_line", &"[reviewed_copy]")
+            .field(
+                "correction_acknowledgment",
+                &self.correction_acknowledgment.as_ref().map(|_| "[reviewed_copy]"),
+            )
             .field("result", &self.result)
             .finish()
     }

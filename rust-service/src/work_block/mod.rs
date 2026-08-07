@@ -614,6 +614,7 @@ impl WorkBlockManager {
             status_line: status_line(record.phase, record.intensity, category.as_deref(), status),
             result,
             active_intervention: self.active_intervention(&record.block_id)?,
+            correction_acknowledgment: None,
         })
     }
 
@@ -810,6 +811,9 @@ fn outcome_for(response: InterventionResponse) -> WorkBlockInterventionOutcome {
             WorkBlockInterventionOutcome::WrongClassification
         }
         InterventionResponse::Dismissed => WorkBlockInterventionOutcome::Dismissed,
+        InterventionResponse::DismissedWasFocused => {
+            WorkBlockInterventionOutcome::DismissedWasFocused
+        }
     }
 }
 
@@ -1043,6 +1047,7 @@ fn idle_snapshot() -> WorkBlockSnapshot {
         status_line: "Choose one bounded block to begin.".into(),
         result: None,
         active_intervention: None,
+        correction_acknowledgment: None,
     }
 }
 
@@ -1214,6 +1219,10 @@ mod tests {
             (
                 InterventionResponse::Dismissed,
                 WorkBlockInterventionOutcome::Dismissed,
+            ),
+            (
+                InterventionResponse::DismissedWasFocused,
+                WorkBlockInterventionOutcome::DismissedWasFocused,
             ),
         ] {
             let (manager, repo) = manager_with_repo();

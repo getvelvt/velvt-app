@@ -1,5 +1,20 @@
 # IPC Protocol Changelog
 
+## Version 25 - 2026-08-07
+
+- Added `dismissed_was_focused` to the intervention reply vocabulary. It is the
+  ground-truth false-positive signal — "the interruption itself was wrong,
+  regardless of classification" — and stays distinct from both `dismissed`
+  (a plain swipe-away) and `wrong_classification` (a category dispute) in
+  storage and metrics.
+- Added optional `correction_acknowledgment` to the work-block snapshot:
+  Rust-authored copy acknowledging a wrong-classification correction
+  immediately and visibly, present for the remainder of the corrected block.
+  It contains a broad taxonomy category only.
+- Backfilled the schema artifacts that version 24 introduced without schema
+  files: `report_intervention_outcome.json` and the `active_intervention`
+  branch of `work_block_state.json`.
+
 ## Version 24 - 2026-07-31
 
 - Added `ReportInterventionOutcome` so the user's explicit response to an

@@ -242,10 +242,76 @@ fn work_block_contract_round_trips_and_redacts_intention_from_debug() {
             window_seconds: 600,
             offered_at: timestamp(),
         }),
+        correction_acknowledgment: Some(
+            "Got it — communication counts as focus work for this block.".into(),
+        ),
         result: None,
     };
     assert_round_trip(ServerMessage::WorkBlockState(snapshot.clone()));
     assert!(!format!("{snapshot:?}").contains(sentinel));
+}
+
+/// The reply vocabulary is a closed IPC enum: every reply a person can give
+/// must round-trip under its exact wire name, and the ground-truth
+/// false-positive reply must stay distinct from a plain dismissal.
+#[test]
+fn intervention_replies_round_trip_under_stable_wire_names() {
+    for (response, wire) in [
+        (InterventionResponse::AcceptedAction, "accepted_action"),
+        (InterventionResponse::NotHelpful, "not_helpful"),
+        (InterventionResponse::WrongClassification, "wrong_classification"),
+        (InterventionResponse::Dismissed, "dismissed"),
+        (
+            InterventionResponse::DismissedWasFocused,
+            "dismissed_was_focused",
+        ),
+    ] {
+        let message = ClientMessage::ReportInterventionOutcome(ReportInterventionOutcome {
+            block_id: event_id(),
+            response,
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert!(encoded.contains(wire), "missing wire name {wire}");
+        assert_round_trip(message);
+    }
+    let focused = serde_json::to_string(&InterventionResponse::DismissedWasFocused).unwrap();
+    let dismissed = serde_json::to_string(&InterventionResponse::Dismissed).unwrap();
+    assert_ne!(focused, dismissed);
+}
+
+/// A version-24 snapshot without the new optional field must still decode, so
+/// the acknowledgment stays a compatible addition rather than a hard break.
+#[test]
+fn snapshot_without_correction_acknowledgment_still_decodes() {
+    let snapshot = WorkBlockSnapshot {
+        state_version: WORK_BLOCK_STATE_VERSION,
+        phase: WorkBlockPhase::Idle,
+        block_id: None,
+        intention: None,
+        purpose: None,
+        intensity: None,
+        planned_duration_seconds: 0,
+        elapsed_duration_seconds: 0,
+        remaining_duration_seconds: 0,
+        started_at: None,
+        analysis_ended_at: None,
+        ends_at: None,
+        paused_at: None,
+        recovered_after_restart: false,
+        current_category: None,
+        classification_status: ClassificationStatus::Unclassified,
+        confidence: ClassificationConfidence::None,
+        status_line: "Choose one bounded block to begin.".into(),
+        active_intervention: None,
+        correction_acknowledgment: None,
+        result: None,
+    };
+    let mut value = serde_json::to_value(&snapshot).unwrap();
+    let object = value.as_object_mut().unwrap();
+    assert!(object.get("correction_acknowledgment").is_none());
+    object.remove("active_intervention");
+    let decoded: WorkBlockSnapshot = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded, snapshot);
 }
 
 #[test]

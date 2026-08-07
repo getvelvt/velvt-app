@@ -299,6 +299,10 @@ pub enum WorkBlockInterventionOutcome {
     WrongClassification,
     /// The user explicitly dismissed the offer.
     Dismissed,
+    /// The user reports the interruption itself was wrong, regardless of
+    /// classification: they were focused. Ground-truth false-positive signal,
+    /// kept distinct from both `Dismissed` and `WrongClassification`.
+    DismissedWasFocused,
     /// The block ended with no response of any kind. Never inferred from a
     /// notification disappearing.
     NoResponse,
@@ -313,6 +317,7 @@ impl WorkBlockInterventionOutcome {
             Self::NotHelpful => "not_helpful",
             Self::WrongClassification => "wrong_classification",
             Self::Dismissed => "dismissed",
+            Self::DismissedWasFocused => "dismissed_was_focused",
             Self::NoResponse => "no_response",
         }
     }
@@ -327,6 +332,7 @@ impl WorkBlockInterventionOutcome {
             "not_helpful" => Some(Self::NotHelpful),
             "wrong_classification" => Some(Self::WrongClassification),
             "dismissed" => Some(Self::Dismissed),
+            "dismissed_was_focused" => Some(Self::DismissedWasFocused),
             "no_response" => Some(Self::NoResponse),
             _ => None,
         }

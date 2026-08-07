@@ -433,6 +433,104 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertNil(request.invitationID)
     }
 
+    /// v28: the demotion, weekly-digest, and explanation surfaces round-trip
+    /// on the wire, and the explanation request carries no user text field.
+    func testDemotionReceiptsAndExplanationMessagesRoundTripOnTheWire() throws {
+        let blockID = try XCTUnwrap(UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"))
+
+        let stateRequest = ClientMessage.requestDemotionState
+        XCTAssertEqual(
+            try decoder.decode(ClientMessage.self, from: encoder.encode(stateRequest)),
+            stateRequest)
+
+        let reset = ClientMessage.resetInterventionDemotion
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: encoder.encode(reset)), reset)
+
+        let demoted = ServerMessage.demotionState(
+            DemotionState(
+                state: .demoted,
+                wrongCount: 3,
+                deliveredCount: 12,
+                thresholdPercent: 15,
+                minimumSample: 10,
+                windowDays: 14,
+                thresholdPolicyVersion: 1,
+                repromotionPolicyVersion: 1,
+                demotedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                disclosure: "Velvt has been wrong too often, so it has gone quiet."
+            )
+        )
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: encoder.encode(demoted)), demoted)
+        XCTAssertEqual(demoted.safeLogDescription, "demotion_state")
+
+        let digestRequest = ClientMessage.requestWeeklyDigest(.init(utcOffsetSeconds: -28_800))
+        XCTAssertEqual(
+            try decoder.decode(ClientMessage.self, from: encoder.encode(digestRequest)),
+            digestRequest)
+
+        let digest = ServerMessage.weeklyDigest(
+            WeeklyDigest(
+                weekStartLocalDate: "2026-07-27",
+                blocksDeclared: 5,
+                blocksCompleted: 3,
+                recoveries: 4,
+                wrongInterventions: 1,
+                invitationsAccepted: 2,
+                withheld: 1,
+                headline: "You returned 4 times and completed 3 of 5 blocks.",
+                digestVersion: 1
+            )
+        )
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: encoder.encode(digest)), digest)
+        XCTAssertEqual(digest.safeLogDescription, "weekly_digest")
+
+        let acknowledge = ClientMessage.acknowledgeWeeklyDigest(
+            .init(weekStartLocalDate: "2026-07-27"))
+        XCTAssertEqual(
+            try decoder.decode(ClientMessage.self, from: encoder.encode(acknowledge)),
+            acknowledge)
+
+        let explain = ClientMessage.requestInterventionExplanation(
+            .init(blockID: blockID, utcOffsetSeconds: 3_600))
+        let explainData = try encoder.encode(explain)
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: explainData), explain)
+        // The chat gate (D7): the request is structurally content-free — no
+        // text, message, or reply field exists on the wire.
+        let explainWire = try XCTUnwrap(String(data: explainData, encoding: .utf8))
+        for conversational in ["text", "message", "reply", "thread"] {
+            XCTAssertFalse(
+                explainWire.contains(conversational),
+                "conversational field \(conversational) in explanation request")
+        }
+
+        let sentence = ServerMessage.interventionExplanation(
+            InterventionExplanation(
+                blockID: blockID,
+                sentence:
+                    "Velvt offered this nudge because it observed 5 switches away from focus work in the 10 minutes before the offer."
+            )
+        )
+        XCTAssertEqual(
+            try decoder.decode(ServerMessage.self, from: encoder.encode(sentence)), sentence)
+        XCTAssertEqual(sentence.safeLogDescription, "intervention_explanation")
+    }
+
+    /// Compatibility across the v28 bump: an active demotion state without
+    /// the demoted-only fields decodes with both optionals nil.
+    func testDemotionStateOptionalFieldsAreOptionalOnTheWire() throws {
+        let active = Data(
+            """
+            {"type":"demotion_state","payload":{"state":"active","wrong_count":0,"delivered_count":4,"threshold_percent":15,"minimum_sample":10,"window_days":14,"threshold_policy_version":1,"repromotion_policy_version":1}}
+            """.utf8)
+        let decoded = try decoder.decode(ServerMessage.self, from: active)
+        guard case let .demotionState(state) = decoded else {
+            return XCTFail("expected demotion_state")
+        }
+        XCTAssertEqual(state.state, .active)
+        XCTAssertNil(state.demotedAt)
+        XCTAssertNil(state.disclosure)
+    }
+
     /// Compatibility across the v26 bump: a result without the new DND
     /// fields decodes to an empty outcome list, and DND outcomes round-trip
     /// with the exact Rust wire vocabulary.

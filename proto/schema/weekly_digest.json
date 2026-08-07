@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Rust to Swift. The weekly receipts digest for one completed local week: exact bounded counts read from the same stored aggregates the local metrics use, plus one Rust-authored recovery-led headline. One digest, not a dashboard: recoveries and completions lead, the wrong-intervention count appears exactly once, and no streak, chain, or failure tally is representable. Local IPC surface only — never uploaded.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "weekly_digest" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "week_start_local_date",
+        "blocks_declared",
+        "blocks_completed",
+        "recoveries",
+        "wrong_interventions",
+        "invitations_accepted",
+        "withheld",
+        "headline",
+        "digest_version"
+      ],
+      "properties": {
+        "week_start_local_date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "blocks_declared": { "type": "integer", "minimum": 0 },
+        "blocks_completed": { "type": "integer", "minimum": 0 },
+        "recoveries": { "type": "integer", "minimum": 0 },
+        "wrong_interventions": { "type": "integer", "minimum": 0 },
+        "invitations_accepted": { "type": "integer", "minimum": 0 },
+        "withheld": { "type": "integer", "minimum": 0 },
+        "headline": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "digest_version": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

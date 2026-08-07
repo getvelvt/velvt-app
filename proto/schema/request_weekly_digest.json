@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Asks whether the weekly receipts digest for the most recent completed local week is ready to show. Carries only the client's UTC offset so Rust can bound the local week; generation, count sourcing, quiet-hours and Focus holds, and the acknowledged flag are all owned and enforced in Rust. Inside quiet hours or while Focus/DND is active the answer is silence and the digest is delivered after.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "request_weekly_digest" },
+    "payload": {
+      "type": "object",
+      "required": ["utc_offset_seconds"],
+      "properties": {
+        "utc_offset_seconds": {
+          "type": "integer",
+          "minimum": -64800,
+          "maximum": 64800
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

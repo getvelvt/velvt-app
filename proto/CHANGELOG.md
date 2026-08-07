@@ -1,5 +1,38 @@
 # IPC Protocol Changelog
 
+## Version 28 - 2026-08-07
+
+- Added `request_demotion_state` (Swift to Rust) and `demotion_state` (Rust
+  to Swift): the deterministic, versioned auto-demotion policy over the
+  rolling wrong-intervention counter, disclosed as a feature and inspectable
+  on demand. The payload carries only the two bounded counts the rate is
+  computed from, the versioned policy constants (threshold percent, minimum
+  sample, window days, threshold and re-promotion policy versions), the
+  current state, the demotion instant when demoted, and Rust-authored
+  disclosure copy. No transition history or timeline is representable, and
+  the payload exists on the local IPC surface only — it is never uploaded.
+- Added `reset_intervention_demotion` (Swift to Rust): the user's explicit
+  one-tap resume from the demoted state. Resetting restarts the demotion
+  evaluation window from the reset instant; it never edits or discards the
+  underlying outcome record, and the wrong-intervention counter itself is
+  untouched.
+- Added `request_weekly_digest` / `acknowledge_weekly_digest` (Swift to
+  Rust) and `weekly_digest` (Rust to Swift): the weekly receipts digest for
+  the most recent completed local week, pull-delivered like invitations and
+  held during quiet hours and Focus/DND. Every count is read from the same
+  stored aggregates the local metrics use; recoveries and completions lead,
+  the wrong-intervention count appears exactly once, and no streak, chain,
+  or failure tally is representable. Local IPC surface only — never
+  uploaded.
+- Added `request_intervention_explanation` (Swift to Rust) and
+  `intervention_explanation` (Rust to Swift): the one-tap "explain this
+  nudge" affordance. Deterministic code selects the claim, evidence, and
+  tone from the stored intervention record; the response is exactly one
+  grounded sentence that cannot exceed that evidence. The request accepts no
+  user text, and no reply, follow-up, or thread exists anywhere on this
+  surface (D7). The tap is counted locally as a coarse, content-free weekly
+  bucket only.
+
 ## Version 27 - 2026-08-07
 
 - Added `request_initiation_invitation` (Swift to Rust): asks the

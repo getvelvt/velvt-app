@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. The one-tap acknowledgment that closes a shown weekly digest. Acknowledging is bookkeeping only: it stops the card re-rendering and changes nothing else. There is no reply, follow-up, or thread.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "acknowledge_weekly_digest" },
+    "payload": {
+      "type": "object",
+      "required": ["week_start_local_date"],
+      "properties": {
+        "week_start_local_date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

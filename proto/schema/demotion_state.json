@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Rust to Swift. The current state of the deterministic, versioned auto-demotion policy over the rolling wrong-intervention counter, disclosed as a feature and inspectable on demand. Carries only the two bounded counts the rate is computed from, the versioned policy constants, the current state, and Rust-authored disclosure copy. No transition history, timeline, category, or copy evidence is representable, and this payload exists on the local IPC surface only — it is never uploaded.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "demotion_state" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "state",
+        "wrong_count",
+        "delivered_count",
+        "threshold_percent",
+        "minimum_sample",
+        "window_days",
+        "threshold_policy_version",
+        "repromotion_policy_version"
+      ],
+      "properties": {
+        "state": { "enum": ["active", "demoted"] },
+        "wrong_count": { "type": "integer", "minimum": 0 },
+        "delivered_count": { "type": "integer", "minimum": 0 },
+        "threshold_percent": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "minimum_sample": { "type": "integer", "minimum": 1 },
+        "window_days": { "type": "integer", "minimum": 1 },
+        "threshold_policy_version": { "type": "integer", "minimum": 1 },
+        "repromotion_policy_version": { "type": "integer", "minimum": 1 },
+        "demoted_at": { "type": "string", "format": "date-time" },
+        "disclosure": { "type": "string", "minLength": 1, "maxLength": 360 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

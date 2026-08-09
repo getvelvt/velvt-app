@@ -239,11 +239,11 @@ Cross-workspace changes (anything touching `proto/`) require updating both works
 
 **In scope:**
 - `swift-client/`: passive event capture, IPC relay, menu bar UI, onboarding, permissions, notification display, 7-day history display, daily insight display, local retention controls
-- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, cloud sync, insight payload delivery
+- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, cloud sync, insight payload delivery, work-block state and drift-intervention evidence (`work_block`), the two approved 0.1.5 display surfaces (`dashboard`)
 
 **Explicitly deferred — do not build:**
-- Local analytics engine or local LLM inference (`rust-service/src/analytics/` is a stub only)
-- Dashboard, graphs, or streak counters
+- Local analytics engine or local LLM inference (no `rust-service/src/analytics/` module exists; see `DEFERRED.md`)
+- Charts or streak counters beyond the two restrained 0.1.5 surfaces (Focus Fragmentation and Daily Activity) already served by `rust-service/src/dashboard.rs`
 - Unabstracted cloud personalization
 - Cross-platform Swift client (Windows/Linux)
 - Advanced automations

@@ -57,7 +57,7 @@ build-rust: check-rust-toolchain
 	cd rust-service && cargo build --release $(CARGO_ONNX_FEATURES)
 
 test-rust: check-rust-toolchain
-	cd rust-service && cargo test
+	cd rust-service && cargo test --workspace
 
 lint-rust: check-rust-toolchain
 	cd rust-service && cargo clippy -- -D warnings

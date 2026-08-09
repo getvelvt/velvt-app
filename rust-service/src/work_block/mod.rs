@@ -11,9 +11,9 @@ use tokio::sync::watch;
 use uuid::Uuid;
 use velvt_shared_types::{
     ActiveIntervention, ClassificationConfidence, ClassificationStatus, ConfidenceLevel,
-    InterventionResponse, StartWorkBlock, WorkBlockCoverage, WorkBlockIntensity,
-    WorkBlockLifecycleEvent, WorkBlockNextAction, WorkBlockPhase, WorkBlockPurpose,
-    WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
+    InterventionResponse, InterventionSalience, StartWorkBlock, WorkBlockCoverage,
+    WorkBlockIntensity, WorkBlockLifecycleEvent, WorkBlockNextAction, WorkBlockPhase,
+    WorkBlockPurpose, WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
 };
 
 use crate::{
@@ -43,6 +43,20 @@ const DRIFT_ACTION_ID: &str = "protect_next_10";
 const DRIFT_PROTECT_MINUTES: u32 = 10;
 const DRIFT_TITLE: &str = "Your work block is still running";
 
+/// Backoff after a pushed-away offer.
+///
+/// A dismissal is negative training signal, so the only permitted response is
+/// to ask less often and more quietly. Each additional consecutive negative
+/// outcome doubles the cooldown; a helpful outcome — accepting the action or
+/// returning to the anchor — clears the streak in one step. Emotional charge
+/// never rises, and nothing here reads how *often* the user drifted: only how
+/// they answered.
+const BACKOFF_BASE_SECONDS: i64 = 2 * 60 * 60;
+const BACKOFF_MAX_SECONDS: i64 = 24 * 60 * 60;
+/// How far back the streak is counted. Larger than any plausible streak, so the
+/// bound is a query limit rather than a policy.
+const BACKOFF_HISTORY_LIMIT: usize = 20;
+
 /// A single approved, device-local intervention offer. Copy is authored here,
 /// beside the evidence that justifies it; Swift renders it verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +65,16 @@ pub struct DriftIntervention {
     pub action_id: &'static str,
     pub title: String,
     pub body: String,
+    /// `Quiet` suppresses the OS notification and leaves only the in-app card.
+    pub salience: InterventionSalience,
+}
+
+/// How the last offers were answered, expressed as the two levers backoff is
+/// allowed to pull: ask later, and ask more quietly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BackoffState {
+    suppressed: bool,
+    salience: InterventionSalience,
 }
 
 /// Result of a safe category observation: the state Swift renders, plus at most
@@ -217,11 +241,19 @@ impl WorkBlockManager {
                 planned_deadline(&record),
             );
         }
-        self.finish(
-            &record,
-            WorkBlockPhase::Abandoned,
-            effective_now(&record, now),
-        )
+        // A paused block's work logically ended when the pause began, the
+        // same way a completed block ends at its planned deadline rather
+        // than at the wall-clock moment the finish was observed. Using the
+        // command's wall time here would fold the final pause span into
+        // every later terminal `elapsed_seconds` read, contradicting the
+        // frozen elapsed value captured in the persisted result.
+        let ended_at = match record.phase {
+            WorkBlockPhase::Paused => record
+                .paused_at
+                .unwrap_or_else(|| effective_now(&record, now)),
+            _ => effective_now(&record, now),
+        };
+        self.finish(&record, WorkBlockPhase::Abandoned, ended_at)
     }
 
     pub fn request_state(&self, now: DateTime<Utc>) -> Result<WorkBlockSnapshot, WorkBlockError> {
@@ -408,19 +440,41 @@ impl WorkBlockManager {
         if self.repo.intervention(&record.block_id)?.is_some() {
             return Ok(None);
         }
+        let backoff = self.backoff_state(now)?;
+        if backoff.suppressed {
+            return Ok(None);
+        }
         let observations = self.repo.observations(&record.block_id)?;
         let Some(anchor) = dominant_category(&observations) else {
             return Ok(None);
         };
         let window_start = now - Duration::seconds(DRIFT_WINDOW_SECONDS);
-        let switch_count = observations
+        // A "switch" is a departure: a confident non-anchor observation whose
+        // previous confident observation was the anchor. Counting rows
+        // instead would let classifier noise clear the gate — confidence or
+        // status flapping on one non-anchor app appends a new row per flap
+        // while the user switched away once — and would disagree with the
+        // switch_away_count the end-of-block result reports for the same
+        // evidence. Seed from the last confident observation before the
+        // window so an away period that merely straddles the boundary is not
+        // recounted as a fresh departure.
+        let mut previous_was_anchor = observations
+            .iter()
+            .filter(|observation| observation.occurred_at < window_start)
+            .rfind(|observation| is_confident_evidence(observation))
+            .map(|observation| observation.category.eq_ignore_ascii_case(&anchor));
+        let mut switch_count = 0_u32;
+        for observation in observations
             .iter()
             .filter(|observation| observation.occurred_at >= window_start)
             .filter(|observation| is_confident_evidence(observation))
-            .filter(|observation| !observation.category.eq_ignore_ascii_case(&anchor))
-            .count()
-            .try_into()
-            .unwrap_or(u32::MAX);
+        {
+            let is_anchor = observation.category.eq_ignore_ascii_case(&anchor);
+            if !is_anchor && previous_was_anchor == Some(true) {
+                switch_count = switch_count.saturating_add(1);
+            }
+            previous_was_anchor = Some(is_anchor);
+        }
         if switch_count < DRIFT_MIN_SWITCHES {
             return Ok(None);
         }
@@ -434,6 +488,7 @@ impl WorkBlockManager {
                 window_seconds: DRIFT_WINDOW_SECONDS.try_into().unwrap_or(u32::MAX),
                 outcome: WorkBlockInterventionOutcome::Offered,
                 outcome_at: None,
+                salience: backoff.salience,
             },
         )?;
         Ok(Some(DriftIntervention {
@@ -441,7 +496,45 @@ impl WorkBlockManager {
             action_id: DRIFT_ACTION_ID,
             title: DRIFT_TITLE.to_owned(),
             body: drift_body(switch_count, &anchor),
+            salience: backoff.salience,
         }))
+    }
+
+    /// Derives the current backoff from how the last offers were answered.
+    ///
+    /// Derived rather than stored: the intervention rows already are the
+    /// evidence, and a separate counter could disagree with them after a
+    /// crash, a clear, or a manual edit.
+    fn backoff_state(&self, now: DateTime<Utc>) -> Result<BackoffState, WorkBlockError> {
+        let recent = self.repo.recent_interventions(BACKOFF_HISTORY_LIMIT)?;
+        let mut streak: u32 = 0;
+        let mut last_negative_at: Option<DateTime<Utc>> = None;
+        for intervention in recent.iter().filter(|row| row.outcome.is_terminal()) {
+            if !intervention.outcome.is_negative() {
+                break;
+            }
+            if streak == 0 {
+                last_negative_at = intervention.outcome_at.or(Some(intervention.offered_at));
+            }
+            streak = streak.saturating_add(1);
+        }
+        let Some(since) = last_negative_at else {
+            return Ok(BackoffState {
+                suppressed: false,
+                salience: InterventionSalience::Normal,
+            });
+        };
+        let cooldown = Duration::seconds(
+            BACKOFF_BASE_SECONDS
+                .saturating_mul(1_i64 << streak.saturating_sub(1).min(16))
+                .min(BACKOFF_MAX_SECONDS),
+        );
+        Ok(BackoffState {
+            suppressed: now < since + cooldown,
+            // The first offer after a cooldown returns quietly. Full salience
+            // is earned back by an offer that lands, never by time alone.
+            salience: InterventionSalience::Quiet,
+        })
     }
 
     pub fn accept_recovery(
@@ -488,6 +581,17 @@ impl WorkBlockManager {
         self.repo.create(&record)?;
         self.publish_deadline(Some(planned_deadline(&record)));
         self.snapshot_for(record, now)
+    }
+
+    /// Whether a block is running right now.
+    ///
+    /// Read-only on purpose: a correction asks this to phrase its confirmation,
+    /// and must never end or transition a block as a side effect of asking.
+    pub fn has_active_block(&self) -> Result<bool, WorkBlockError> {
+        Ok(self
+            .repo
+            .latest()?
+            .is_some_and(|record| record.phase == WorkBlockPhase::Active))
     }
 
     pub fn clear_data(&self) -> Result<WorkBlockSnapshot, WorkBlockError> {
@@ -611,6 +715,7 @@ impl WorkBlockManager {
             switch_count: intervention.switch_count,
             window_seconds: intervention.window_seconds,
             offered_at: intervention.offered_at,
+            salience: intervention.salience,
         }))
     }
 
@@ -634,8 +739,18 @@ pub async fn run_deadline_scheduler(
                 let wait = (deadline - Utc::now()).to_std().unwrap_or_default();
                 tokio::select! {
                     _ = tokio::time::sleep(wait) => {
-                        if let Ok(snapshot) = manager.request_state(Utc::now()) {
-                            push.push_work_block_state(snapshot).await;
+                        match manager.request_state(Utc::now()) {
+                            Ok(snapshot) => push.push_work_block_state(snapshot).await,
+                            // Only a successful finish clears the deadline
+                            // from the watch channel, so after an error the
+                            // next pass re-reads the same past deadline with
+                            // a zero wait — a 100%-CPU spin against whatever
+                            // made the store fail. Back off before retrying;
+                            // a deadline change still interrupts immediately
+                            // on the next loop pass.
+                            Err(_) => {
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            }
                         }
                     }
                     changed = deadlines.changed() => {
@@ -773,6 +888,7 @@ fn outcome_for(response: InterventionResponse) -> WorkBlockInterventionOutcome {
         InterventionResponse::WrongClassification => {
             WorkBlockInterventionOutcome::WrongClassification
         }
+        InterventionResponse::WasFocused => WorkBlockInterventionOutcome::WasFocused,
         InterventionResponse::Dismissed => WorkBlockInterventionOutcome::Dismissed,
     }
 }
@@ -1069,6 +1185,122 @@ mod tests {
         observe(manager, "COMMUNICATION", 520)
     }
 
+    /// Runs one complete block that drifts, optionally answers the offer, and
+    /// ends. Returns the offer if one was delivered.
+    ///
+    /// Backoff is only observable across blocks — the gate allows one offer per
+    /// block — so every backoff test needs a prior block with a real outcome.
+    fn drift_block(
+        manager: &WorkBlockManager,
+        start: i64,
+        response: Option<InterventionResponse>,
+    ) -> Option<DriftIntervention> {
+        let active = manager.start(request(3600), at(start)).unwrap();
+        let block_id = active.block_id.unwrap();
+        let mut offer = None;
+        for (offset, category) in [
+            (10, "DEEP_WORK"),
+            (400, "COMMUNICATION"),
+            (420, "DEEP_WORK"),
+            (440, "COMMUNICATION"),
+            (460, "DEEP_WORK"),
+            (480, "COMMUNICATION"),
+            (500, "DEEP_WORK"),
+            (520, "COMMUNICATION"),
+        ] {
+            if let Some(outcome) = manager
+                .observe_safe_category(
+                    category,
+                    ClassificationStatus::Classified,
+                    ClassificationConfidence::High,
+                    at(start + offset),
+                )
+                .unwrap()
+            {
+                offer = offer.or(outcome.intervention);
+            }
+        }
+        if let Some(response) = response {
+            manager
+                .report_intervention_outcome(block_id, response, at(start + 540))
+                .unwrap();
+        }
+        manager.end(block_id, at(start + 560)).unwrap();
+        offer
+    }
+
+    #[test]
+    fn a_pushed_away_offer_suppresses_the_next_one() {
+        let manager = manager();
+        assert!(drift_block(&manager, 0, Some(InterventionResponse::Dismissed)).is_some());
+
+        // One hour later, inside the two-hour cooldown.
+        let offer = drift_block(&manager, 3_600, None);
+
+        assert!(
+            offer.is_none(),
+            "a dismissal must buy quiet, not a second attempt"
+        );
+    }
+
+    /// Invariant 2: backoff, never escalation. The offer that eventually
+    /// returns is quieter than the one that was pushed away — never louder,
+    /// and never more emotionally charged.
+    #[test]
+    fn the_offer_after_a_cooldown_returns_quietly() {
+        let (manager, repo) = manager_with_repo();
+        drift_block(&manager, 0, Some(InterventionResponse::WasFocused));
+
+        let offer = drift_block(&manager, 8_000, None).expect("the cooldown has elapsed");
+
+        assert_eq!(offer.salience, InterventionSalience::Quiet);
+        assert_eq!(offer.title, DRIFT_TITLE, "copy is unchanged by backoff");
+        let recorded = repo.recent_interventions(1).unwrap();
+        assert_eq!(
+            recorded[0].salience,
+            InterventionSalience::Quiet,
+            "how the offer was delivered is part of its record"
+        );
+    }
+
+    #[test]
+    fn each_further_dismissal_doubles_the_cooldown() {
+        let manager = manager();
+        drift_block(&manager, 0, Some(InterventionResponse::Dismissed));
+        drift_block(&manager, 8_000, Some(InterventionResponse::Dismissed));
+
+        // Two dismissals: the cooldown is now four hours, so an attempt three
+        // hours later is still too soon.
+        assert!(drift_block(&manager, 18_000, None).is_none());
+        assert!(drift_block(&manager, 24_000, None).is_some());
+    }
+
+    /// The streak resets on evidence the offer helped, so a user who returns to
+    /// work is not permanently down-weighted for one bad day.
+    #[test]
+    fn an_accepted_offer_restores_normal_salience() {
+        let manager = manager();
+        drift_block(&manager, 0, Some(InterventionResponse::Dismissed));
+        drift_block(&manager, 8_000, Some(InterventionResponse::AcceptedAction));
+
+        let offer = drift_block(&manager, 16_000, None).expect("the streak was cleared");
+
+        assert_eq!(offer.salience, InterventionSalience::Normal);
+    }
+
+    /// Silence is not refusal. An offer delivered while the Mac was untouched
+    /// must not suppress the next one — otherwise a user who never saw the
+    /// first offer is quietly opted out of the feature.
+    #[test]
+    fn an_unanswered_offer_does_not_trigger_backoff() {
+        let manager = manager();
+        assert!(drift_block(&manager, 0, None).is_some());
+
+        let offer = drift_block(&manager, 3_600, None).expect("silence is not a refusal");
+
+        assert_eq!(offer.salience, InterventionSalience::Normal);
+    }
+
     #[test]
     fn sustained_switching_offers_one_grounded_recovery_action() {
         let (manager, repo) = manager_with_repo();
@@ -1174,6 +1406,10 @@ mod tests {
             (
                 InterventionResponse::WrongClassification,
                 WorkBlockInterventionOutcome::WrongClassification,
+            ),
+            (
+                InterventionResponse::WasFocused,
+                WorkBlockInterventionOutcome::WasFocused,
             ),
             (
                 InterventionResponse::Dismissed,
@@ -1534,6 +1770,60 @@ mod tests {
         assert!(manager.pause(id, at(5)).is_err());
         assert!(manager.resume(id, at(5)).is_err());
         assert_eq!(manager.end(id, at(5)).unwrap().result, abandoned.result);
+    }
+
+    #[test]
+    fn confidence_flapping_on_one_departure_is_not_four_switches() {
+        let manager = manager();
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+
+        // One real departure after the warm-up gate. The classifier then
+        // flaps confidence on the same category; every flap appends a new
+        // confident observation row, but the user switched away once.
+        let confidences = [
+            (ClassificationConfidence::High, 400),
+            (ClassificationConfidence::Medium, 420),
+            (ClassificationConfidence::High, 440),
+            (ClassificationConfidence::Medium, 460),
+            (ClassificationConfidence::High, 480),
+        ];
+        for (confidence, seconds) in confidences {
+            let outcome = manager
+                .observe_safe_category(
+                    "COMMUNICATION",
+                    ClassificationStatus::Classified,
+                    confidence,
+                    at(seconds),
+                )
+                .unwrap()
+                .expect("changed evidence returns state");
+            assert!(
+                outcome.intervention.is_none(),
+                "one departure must not clear the four-switch gate"
+            );
+        }
+    }
+
+    #[test]
+    fn ending_a_paused_block_does_not_count_the_final_pause_as_elapsed_work() {
+        let manager = manager();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let id = active.block_id.unwrap();
+        manager.pause(id, at(60)).unwrap();
+
+        // The user walks away paused and only ends the block hours later.
+        // The pause span is not work time: the terminal snapshot, its
+        // result, and every later re-read must agree on 60 seconds.
+        let ended = manager.end(id, at(28_800)).unwrap();
+        let result = ended.result.clone().unwrap();
+        assert_eq!(result.elapsed_duration_seconds, 60);
+        assert_eq!(ended.elapsed_duration_seconds, 60);
+        assert_eq!(ended.remaining_duration_seconds, 3_540);
+
+        let reread = manager.end(id, at(28_900)).unwrap();
+        assert_eq!(reread.elapsed_duration_seconds, 60);
+        assert_eq!(reread.result.unwrap().elapsed_duration_seconds, 60);
     }
 
     #[test]

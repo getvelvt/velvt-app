@@ -98,7 +98,8 @@ the only output type, and it structurally cannot carry a raw field.
 Newline-delimited JSON over a Unix domain socket at the path in
 `proto/ipc_socket_path`. Every message is a tagged
 `{"type": "...", "payload": {...}}` envelope. The current breaking-change
-version is in `proto/version` (currently 12); a version bump requires
+version is in `proto/version` (authoritative — do not trust prose copies of
+the number); a version bump requires
 coordinated updates to `proto/schema/`, `rust-service/shared-types`,
 `swift-client/Sources/VelvtMac/IPC/IPCTypes.swift`, and
 `swift-client/Configs/{Debug,Release}.xcconfig` in the same commit (see

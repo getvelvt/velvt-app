@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -749,8 +749,39 @@ pub enum InterventionResponse {
     NotHelpful,
     /// The underlying classification was wrong. Evidence against the detector.
     WrongClassification,
+    /// The offer itself was wrong: the user was working the whole time.
+    ///
+    /// Distinct from every other reply. `Dismissed` says "not now",
+    /// `NotHelpful` concedes the drift, and `WrongClassification` disputes a
+    /// label. Only this one says the intervention should never have fired, so
+    /// it is the ground-truth false-positive stream behind the
+    /// wrong-intervention rate.
+    WasFocused,
     /// Explicitly dismissed.
     Dismissed,
+}
+
+/// How loudly an offer is delivered.
+///
+/// Salience only ever decreases. A user who has waved Velvt off recently gets
+/// the in-app card and no notification; salience returns to normal only after
+/// an offer lands well, never in response to continued drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterventionSalience {
+    /// In-app card plus a local notification.
+    Normal,
+    /// In-app card only.
+    Quiet,
+}
+
+impl InterventionSalience {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Quiet => "quiet",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -776,6 +807,7 @@ pub struct ActiveIntervention {
     pub switch_count: u32,
     pub window_seconds: u32,
     pub offered_at: DateTime<Utc>,
+    pub salience: InterventionSalience,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1184,6 +1216,15 @@ pub struct MenuStatus {
     pub queued_event_count: u64,
     pub queued_events: Vec<QueuedEventSummary>,
     pub correction_history: Vec<ClassificationCorrectionSummary>,
+    /// One-shot confirmation that a correction was taken, authored by Rust
+    /// beside the change it describes.
+    ///
+    /// Present only on the status returned by a correction command; a polled
+    /// status always carries `None`, so the message cannot linger or reappear.
+    /// A correction the user cannot see land is indistinguishable from one that
+    /// was ignored, which is what makes people stop correcting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correction_acknowledgment: Option<String>,
 }
 
 /// Sent when Swift requested a payload that is not yet in the cache.

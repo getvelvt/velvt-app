@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Local IPC only. Only responses a person can actually give are representable — silence is recorded by the service when the block ends, never inferred from a notification disappearing.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "report_intervention_outcome" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id", "response"],
+      "properties": {
+        "block_id": { "type": "string", "format": "uuid" },
+        "response": {
+          "$comment": "was_focused is the false-positive stream: the offer should never have fired. Distinct from dismissed ('not now'), not_helpful (concedes the drift), and wrong_classification (disputes a label).",
+          "enum": [
+            "accepted_action",
+            "not_helpful",
+            "wrong_classification",
+            "was_focused",
+            "dismissed"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

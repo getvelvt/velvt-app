@@ -71,13 +71,23 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
     }
 }
 
+/// A queued message plus whether it may be evicted to make room.
+///
+/// Urgency is carried on the entry rather than inferred from the message type:
+/// the same `ServerMessage` variant can be routine or urgent depending on which
+/// `push_*` method produced it.
+struct QueuedMessage {
+    message: ServerMessage,
+    urgent: bool,
+}
+
 /// Bounded in-memory push queue.
 ///
 /// Write access (`enqueue` / `enqueue_urgent`) is `pub(super)` so only
 /// `PushAdapter` (in this module) can inject messages.  The IPC connection
 /// layer receives only read access (`try_pop`, `notify`).
 pub struct PushQueue {
-    inner: Mutex<VecDeque<ServerMessage>>,
+    inner: Mutex<VecDeque<QueuedMessage>>,
     capacity: usize,
     /// Notified on every enqueue so the connection drain loop can wake up.
     notify: Arc<Notify>,
@@ -92,19 +102,43 @@ impl PushQueue {
         })
     }
 
-    /// Appends `msg` to the back. Drops the oldest message when at capacity.
+    /// Appends `msg` to the back, evicting the oldest evictable message when at
+    /// capacity.
+    ///
+    /// Urgent entries are never evicted. Popping the front unconditionally
+    /// discarded exactly what `enqueue_urgent` had just prepended, so one
+    /// routine push against a full queue could delete a privacy alert,
+    /// `NeedsReauth`, or `DeviceRevoked`. When every entry is urgent the
+    /// incoming routine message is dropped instead — losing a history refresh
+    /// is recoverable, losing a privacy alert is not.
     pub(super) async fn enqueue(&self, msg: ServerMessage) {
         let mut guard = self.inner.lock().await;
         if guard.len() >= self.capacity {
-            if let Some(dropped) = guard.pop_front() {
-                tracing::warn!(
-                    message_type = server_message_type_name(&dropped),
-                    error_code = "push_queue_full",
-                    "push queue at capacity; oldest message dropped"
-                );
+            let evictable = guard.iter().position(|entry| !entry.urgent);
+            match evictable {
+                Some(index) => {
+                    if let Some(dropped) = guard.remove(index) {
+                        tracing::warn!(
+                            message_type = server_message_type_name(&dropped.message),
+                            error_code = "push_queue_full",
+                            "push queue at capacity; oldest evictable message dropped"
+                        );
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        message_type = server_message_type_name(&msg),
+                        error_code = "push_queue_full_urgent",
+                        "push queue at capacity with only urgent messages; incoming message dropped"
+                    );
+                    return;
+                }
             }
         }
-        guard.push_back(msg);
+        guard.push_back(QueuedMessage {
+            message: msg,
+            urgent: false,
+        });
         drop(guard);
         self.notify.notify_one();
     }
@@ -114,14 +148,21 @@ impl PushQueue {
     /// is too important to lose.
     pub(super) async fn enqueue_urgent(&self, msg: ServerMessage) {
         let mut guard = self.inner.lock().await;
-        guard.push_front(msg);
+        guard.push_front(QueuedMessage {
+            message: msg,
+            urgent: true,
+        });
         drop(guard);
         self.notify.notify_one();
     }
 
     /// Removes and returns the front message, or `None` when the queue is empty.
     pub async fn try_pop(&self) -> Option<ServerMessage> {
-        self.inner.lock().await.pop_front()
+        self.inner
+            .lock()
+            .await
+            .pop_front()
+            .map(|entry| entry.message)
     }
 
     /// Returns the `Notify` handle so the connection loop can `notified().await`.
@@ -537,6 +578,86 @@ mod tests {
         match q.try_pop().await.unwrap() {
             ServerMessage::PrivacyViolationAlert(_) => {}
             other => panic!("expected PrivacyViolationAlert, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_evicts_a_routine_message_rather_than_the_privacy_alert() {
+        // The alert sits at the front, which is precisely where the old
+        // eviction popped from: one routine push deleted it.
+        let q = PushQueue::new(2);
+        q.enqueue(ServerMessage::HistoryPayload(make_history(1)))
+            .await;
+        q.enqueue_urgent(ServerMessage::PrivacyViolationAlert(
+            PrivacyViolationAlert {
+                code: "raw_field_rejected".into(),
+                message: "test".into(),
+            },
+        ))
+        .await;
+
+        q.enqueue(ServerMessage::HistoryPayload(make_history(2)))
+            .await;
+
+        assert_eq!(q.len().await, 2);
+        match q.try_pop().await.unwrap() {
+            ServerMessage::PrivacyViolationAlert(_) => {}
+            other => panic!("the privacy alert must survive a full queue, got {other:?}"),
+        }
+        match q.try_pop().await.unwrap() {
+            ServerMessage::HistoryPayload(h) => assert_eq!(h.days, 2),
+            other => panic!("expected the newest history payload, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_all_urgent_queue_drops_the_incoming_routine_message() {
+        let q = PushQueue::new(2);
+        q.enqueue_urgent(ServerMessage::NeedsReauth(
+            velvt_shared_types::NeedsReauth {
+                reason: "expired".into(),
+            },
+        ))
+        .await;
+        q.enqueue_urgent(ServerMessage::DeviceRevoked(
+            velvt_shared_types::DeviceRevoked {
+                message: "revoked".into(),
+            },
+        ))
+        .await;
+
+        q.enqueue(ServerMessage::HistoryPayload(make_history(3)))
+            .await;
+
+        assert_eq!(q.len().await, 2);
+        for _ in 0..2 {
+            match q.try_pop().await.unwrap() {
+                ServerMessage::NeedsReauth(_) | ServerMessage::DeviceRevoked(_) => {}
+                other => panic!("an urgent message was evicted: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn urgent_messages_are_not_evicted_by_a_long_run_of_routine_pushes() {
+        let q = PushQueue::new(3);
+        q.enqueue_urgent(ServerMessage::PrivacyViolationAlert(
+            PrivacyViolationAlert {
+                code: "raw_field_rejected".into(),
+                message: "test".into(),
+            },
+        ))
+        .await;
+
+        for days in 0u32..20 {
+            q.enqueue(ServerMessage::HistoryPayload(make_history(days)))
+                .await;
+        }
+
+        assert_eq!(q.len().await, 3);
+        match q.try_pop().await.unwrap() {
+            ServerMessage::PrivacyViolationAlert(_) => {}
+            other => panic!("expected the privacy alert to still be queued, got {other:?}"),
         }
     }
 

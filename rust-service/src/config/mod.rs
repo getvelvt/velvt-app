@@ -136,7 +136,12 @@ impl ServiceConfig {
             return Err(ConfigError::Invalid);
         }
 
-        let raw_event_ttl_hours = parse_env("VELVT_RAW_EVENT_TTL_HOURS", 72_u64)?;
+        // 7 days, not 72 hours: the local daily-activity chart reads this same
+        // table for a 7-day window, so a shorter TTL made days 4-7 permanently
+        // empty on every real install. This is still the tightest retention in
+        // PRIVACY.md — the same safe events live 30 days in `upload_batch` —
+        // and the rows are local-only, abstracted metadata.
+        let raw_event_ttl_hours = parse_env("VELVT_RAW_EVENT_TTL_HOURS", 168_u64)?;
         let raw_event_expiry_interval_minutes =
             parse_env("VELVT_RAW_EVENT_EXPIRY_INTERVAL_MINUTES", 30_u64)?;
         let retention_batch_size = parse_env("VELVT_RETENTION_BATCH_SIZE", 500_usize)?;
@@ -379,6 +384,27 @@ mod tests {
         std::env::remove_var("VELVT_API_BASE_URL");
 
         assert_eq!(config.upload_api_base_url, "http://localhost:8000");
+    }
+
+    #[test]
+    fn raw_event_retention_covers_daily_activity() {
+        // The local daily-activity chart reads `raw_event_buffer`. When the TTL
+        // is shorter than the rendered window, the oldest days are not "no
+        // activity" — they are deleted evidence drawn as zeroes, which no test
+        // could see because retention never runs in the persistence fixtures.
+        let _guard = ENVIRONMENT_LOCK.lock().unwrap();
+        std::env::remove_var("VELVT_RAW_EVENT_TTL_HOURS");
+        let config = ServiceConfig::load().unwrap();
+
+        let window = std::time::Duration::from_secs(
+            crate::dashboard::DAILY_ACTIVITY_DAYS as u64 * 24 * 3600,
+        );
+        assert!(
+            config.raw_event_ttl >= window,
+            "raw-event TTL {:?} must cover the {}-day daily-activity window",
+            config.raw_event_ttl,
+            crate::dashboard::DAILY_ACTIVITY_DAYS
+        );
     }
 
     #[test]

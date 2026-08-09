@@ -40,6 +40,55 @@ where
         Ok(())
     }
 
+    /// Re-ingests upload-eligible rows that never reached a batch.
+    ///
+    /// Between an ack and the next flush, an event lives only in the in-memory
+    /// assembler; `resume_pending` reads `upload_batch`, so nothing re-batched
+    /// these after a hard kill and raw-event retention eventually deleted them.
+    /// Called once at startup, before live ingestion begins.
+    ///
+    /// The assembler is the only writer of batch identity, so re-pushing an
+    /// event that a concurrent flush had already persisted would duplicate it —
+    /// which is why this runs before the router and flush task are wired up.
+    ///
+    /// Recovers at most `limit` events per start, newest first, so a pathological
+    /// backlog cannot stall startup. Anything beyond that stays queued and is
+    /// picked up by the next start rather than being dropped: raw-event
+    /// retention spares unbatched eligible rows for the same reason.
+    pub async fn recover_unbatched(
+        &mut self,
+        raw_events: &dyn crate::persistence::RawEventRepo,
+        limit: usize,
+        now: DateTime<Utc>,
+    ) -> Result<usize, CoordinatorError> {
+        let pending = raw_events.unbatched_events(limit)?;
+        if pending.is_empty() {
+            return Ok(0);
+        }
+        let recovered = pending.len();
+        // Oldest first, so a partial recovery still uploads in event order.
+        for entry in pending.into_iter().rev() {
+            let event = BatchEventPayload {
+                event_id: entry.event_id,
+                stable_id: entry.stable_id,
+                label: entry.label,
+                category: entry.category,
+                taxonomy_version: entry.taxonomy_version,
+                classification_tier: entry.classification_tier,
+                occurred_at: entry.occurred_at,
+                duration_seconds: entry.duration_seconds,
+            };
+            if let Some(batch) = self.assembler.push(event, now) {
+                self.submit(batch).await?;
+            }
+        }
+        tracing::info!(
+            recovered_events = recovered,
+            "re-ingested upload-eligible events that were never batched"
+        );
+        Ok(recovered)
+    }
+
     pub async fn flush_due(&mut self, now: DateTime<Utc>) -> Result<bool, CoordinatorError> {
         let Some(batch) = self.assembler.flush_due(now) else {
             return Ok(false);
@@ -87,15 +136,18 @@ where
         Ok(false)
     }
 
-    async fn submit(&self, batch: super::BatchPayload) -> Result<(), CoordinatorError> {
-        Self::submit_with(&self.coordinator, batch).await
-    }
-
-    async fn submit_with(
-        coordinator: &UploadCoordinator<U, A>,
-        batch: super::BatchPayload,
-    ) -> Result<(), CoordinatorError> {
-        if let Err(error) = coordinator.submit_batch(batch).await {
+    async fn submit(&mut self, batch: super::BatchPayload) -> Result<(), CoordinatorError> {
+        // Persist before upload, and requeue on persist failure: the batch
+        // was already taken out of the assembler, so dropping it here would
+        // lose events the client has been acked for. Once persisted the
+        // batch is durable — an upload failure lands in the pending-retry
+        // path and is resumed later, so no requeue is needed there.
+        if let Err(error) = self.coordinator.persist_batch(&batch) {
+            Self::log_submit_failure(&error);
+            self.assembler.requeue(batch);
+            return Err(error);
+        }
+        if let Err(error) = self.coordinator.upload_batch(batch).await {
             Self::log_submit_failure(&error);
             return Err(error);
         }

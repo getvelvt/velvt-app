@@ -335,6 +335,53 @@ async fn unauthenticated_raw_events_remain_local_only_and_never_enter_upload_que
         .is_empty());
 }
 
+/// The eligibility flag is stamped once at ingest and never reconsidered, so a
+/// state that is merely transient still decides an event's fate forever. The
+/// auth manager publishes `RefreshInFlight` for the whole refresh roundtrip —
+/// a logged-in device holding a valid refresh token — and treating that as
+/// signed-out silently excluded every event collected during it.
+#[tokio::test]
+async fn raw_events_during_a_token_refresh_stay_upload_eligible() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let ingestor = Arc::new(RecordingIngestor::default());
+    let (_auth_sender, auth_state) = tokio::sync::watch::channel(AuthState::RefreshInFlight);
+    let router = build_router(
+        Arc::new(FakeCacheManager::new()),
+        &persistence,
+        Arc::clone(&ingestor) as Arc<dyn EventIngestor>,
+        Arc::new(FakeHttp::default()),
+        Arc::new(FakeHttp::default()),
+    )
+    .with_auth_state(auth_state);
+
+    let response = router
+        .route(ClientMessage::RawEvent(raw_event(
+            10,
+            "Visual Studio Code",
+            "mid-refresh",
+        )))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        response,
+        Some(ServerMessage::RawEventAck(RawEventAck {
+            status: RawEventStatus::Accepted,
+            ..
+        }))
+    ));
+    let entries = persistence
+        .raw_event_repo()
+        .events_before(Utc::now() + ChronoDuration::days(1))
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(
+        entries[0].upload_eligible,
+        "an event collected mid-refresh must still be uploadable"
+    );
+    assert_eq!(ingestor.ingest_calls.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test]
 async fn flush_upload_queue_returns_a_safe_error_when_uploading_fails() {
     let persistence = SqlitePersistence::open_in_memory().unwrap();
@@ -490,6 +537,13 @@ async fn local_activity_name_stays_off_cloud_and_remains_in_correction_history()
         Some("Research reading")
     );
     assert_eq!(status.correction_history[0].category, "REFERENCE");
+    // Invariant 3: the correction is believed instantly *and visibly*. Without
+    // a confirmation, a correction that worked looks exactly like one that was
+    // ignored, and users stop making them.
+    assert_eq!(
+        status.correction_acknowledgment.as_deref(),
+        Some("Got it — Research reading counts as reference from now on.")
+    );
 
     let requests = correction_http.requests();
     assert_eq!(requests.len(), 1);

@@ -1181,6 +1181,10 @@ public struct MenuStatus: Codable, Equatable, Sendable {
     public let queuedEventCount: Int
     public let queuedEvents: [QueuedEventSummary]
     public let correctionHistory: [ClassificationCorrectionSummary]
+    /// One-shot confirmation authored by the service, present only on the
+    /// status returned by a correction command. A polled status carries `nil`,
+    /// so the confirmation cannot linger or reappear.
+    public let correctionAcknowledgment: String?
 
     private enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
@@ -1195,6 +1199,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         case queuedEventCount = "queued_event_count"
         case queuedEvents = "queued_events"
         case correctionHistory = "correction_history"
+        case correctionAcknowledgment = "correction_acknowledgment"
     }
 
     public init(
@@ -1209,7 +1214,8 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         rejectedUploadBatchCount: Int,
         queuedEventCount: Int,
         queuedEvents: [QueuedEventSummary],
-        correctionHistory: [ClassificationCorrectionSummary] = []
+        correctionHistory: [ClassificationCorrectionSummary] = [],
+        correctionAcknowledgment: String? = nil
     ) {
         self.deviceID = deviceID
         self.cloudReady = cloudReady
@@ -1223,6 +1229,7 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         self.queuedEventCount = queuedEventCount
         self.queuedEvents = queuedEvents
         self.correctionHistory = correctionHistory
+        self.correctionAcknowledgment = correctionAcknowledgment
     }
 
     public init(from decoder: Decoder) throws {
@@ -1248,6 +1255,8 @@ public struct MenuStatus: Codable, Equatable, Sendable {
                 [ClassificationCorrectionSummary].self,
                 forKey: .correctionHistory
             ) ?? []
+        correctionAcknowledgment =
+            try container.decodeIfPresent(String.self, forKey: .correctionAcknowledgment)
     }
 }
 
@@ -1612,11 +1621,27 @@ public struct AcceptWorkBlockRecovery: Codable, Equatable, Sendable {
 /// Only replies a person can actually give are representable. Silence is not in
 /// this set: the service records it when the block ends, and it is never
 /// inferred from a card or notification disappearing.
-public enum InterventionResponse: String, Codable, Equatable, Sendable {
+public enum InterventionResponse: String, Codable, Equatable, Sendable, CaseIterable {
     case acceptedAction = "accepted_action"
     case notHelpful = "not_helpful"
     case wrongClassification = "wrong_classification"
+    /// The offer itself was wrong: the user was working the whole time.
+    ///
+    /// Kept distinct from every other reply. `dismissed` says "not now",
+    /// `notHelpful` concedes the drift, and `wrongClassification` disputes a
+    /// label. Only this one says the intervention should never have fired,
+    /// which is what makes it measurable as a false positive.
+    case wasFocused = "was_focused"
     case dismissed
+}
+
+/// How loudly an offer was delivered.
+///
+/// Salience only ever decreases. `quiet` means the in-app card rendered and no
+/// notification was sent, because the user pushed a recent offer away.
+public enum InterventionSalience: String, Codable, Equatable, Sendable {
+    case normal
+    case quiet
 }
 
 public struct ReportInterventionOutcome: Codable, Equatable, Sendable {
@@ -1644,6 +1669,7 @@ public struct ActiveIntervention: Codable, Equatable, Sendable {
     public let switchCount: Int
     public let windowSeconds: Int
     public let offeredAt: Date
+    public let salience: InterventionSalience
 
     public init(
         actionID: String,
@@ -1652,7 +1678,8 @@ public struct ActiveIntervention: Codable, Equatable, Sendable {
         anchorCategory: String,
         switchCount: Int,
         windowSeconds: Int,
-        offeredAt: Date
+        offeredAt: Date,
+        salience: InterventionSalience = .normal
     ) {
         self.actionID = actionID
         self.title = title
@@ -1661,10 +1688,11 @@ public struct ActiveIntervention: Codable, Equatable, Sendable {
         self.switchCount = switchCount
         self.windowSeconds = windowSeconds
         self.offeredAt = offeredAt
+        self.salience = salience
     }
 
     private enum CodingKeys: String, CodingKey {
-        case title, body
+        case title, body, salience
         case actionID = "action_id"
         case anchorCategory = "anchor_category"
         case switchCount = "switch_count"

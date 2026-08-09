@@ -1,5 +1,25 @@
 # IPC Protocol Changelog
 
+## Version 25 - 2026-08-08
+
+- Added `was_focused` to `ReportInterventionOutcome.response`. The existing
+  vocabulary could not express a false positive: `dismissed` means "not now",
+  `not_helpful` concedes the drift happened, and `wrong_classification`
+  disputes a label rather than the judgment. Only `was_focused` says the offer
+  should never have fired, which makes it the ground-truth input to the
+  wrong-intervention rate.
+- Added `salience` (`normal` | `quiet`) to `active_intervention`. A quiet offer
+  renders the in-app card without sending a notification. Salience only ever
+  decreases: it drops after the user pushes an offer away and is restored by an
+  offer that lands, never by continued drift.
+- Added optional `correction_acknowledgment` to `MenuStatus`. It is set only on
+  the status returned by a correction command, never on a polled one, so a
+  correction is visibly believed without the confirmation reappearing every
+  refresh.
+- Documented `active_intervention` in `schema/work_block_state.json` and added
+  the missing `schema/report_intervention_outcome.json`; both shipped in 24
+  without a schema entry.
+
 ## Version 24 - 2026-07-31
 
 - Added `ReportInterventionOutcome` so the user's explicit response to an

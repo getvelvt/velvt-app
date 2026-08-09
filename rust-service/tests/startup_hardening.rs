@@ -311,7 +311,12 @@ fn filesystem_sockets_available() -> bool {
     let directory = TestDirectory::new();
     match UnixListener::bind(directory.path("preflight.sock")) {
         Ok(_) => true,
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+            ) =>
+        {
             eprintln!("skipping startup subprocess assertion: filesystem sockets are unavailable");
             false
         }
@@ -518,7 +523,12 @@ async fn detects_a_live_listener_but_not_a_stale_or_absent_socket_path() {
 
     let listener = match tokio::net::UnixListener::bind(&socket) {
         Ok(listener) => listener,
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+            ) =>
+        {
             eprintln!("skipping live-listener assertion: filesystem sockets are unavailable");
             return;
         }

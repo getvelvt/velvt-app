@@ -9,8 +9,8 @@ use chrono::Utc;
 use uuid::Uuid;
 use velvt_shared_types::{
     CacheEmpty, ClassificationConfidence, ClassificationCorrectionSummary, ClassificationSource,
-    ClassificationStatus, ClientMessage, CorrectionHistoryPage, MenuStatus, QueuedEventSummary,
-    RawEventAck, RawEventStatus, RequestLocalDashboard, ServerMessage,
+    ClassificationStatus, ClientMessage, CorrectionHistoryPage, InterventionSalience, MenuStatus,
+    QueuedEventSummary, RawEventAck, RawEventStatus, RequestLocalDashboard, ServerMessage,
 };
 
 use crate::abstraction::AbstractionEngine;
@@ -203,6 +203,7 @@ impl MenuStatusProviding for MenuStatusProvider {
                 queued_event_count,
                 queued_events,
                 correction_history,
+                correction_acknowledgment: None,
             }
         })
     }
@@ -225,6 +226,7 @@ impl MenuStatusProviding for EmptyMenuStatusProvider {
                 queued_event_count: 0,
                 queued_events: vec![],
                 correction_history: vec![],
+                correction_acknowledgment: None,
             }
         })
     }
@@ -319,6 +321,54 @@ mod tests {
         let status = provider.snapshot().await;
 
         assert_eq!(status.device_id.as_deref(), Some("device-1"));
+    }
+
+    /// A polled status must not repeat a confirmation the user already read —
+    /// a "Got it" that reappears every minute reads as a bug, not a reply.
+    #[tokio::test]
+    async fn a_polled_status_carries_no_correction_acknowledgment() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let provider = MenuStatusProvider::new(
+            Arc::new(ReadyHttp) as Arc<dyn HttpClient>,
+            Arc::new(FakeTokenStore::default()) as Arc<dyn TokenStore>,
+            persistence.upload_batch_repo(),
+            persistence.raw_event_repo(),
+            persistence.abstraction_map_repo(),
+        );
+
+        let status = provider.snapshot().await;
+
+        assert_eq!(status.correction_acknowledgment, None);
+    }
+
+    #[test]
+    fn a_correction_during_a_block_says_how_long_it_holds() {
+        assert_eq!(
+            correction_acknowledgment(Some("Research reading"), "REFERENCE", true),
+            "Got it — Research reading counts as reference for the rest of this block."
+        );
+        assert_eq!(
+            correction_acknowledgment(Some("Research reading"), "REFERENCE", false),
+            "Got it — Research reading counts as reference from now on."
+        );
+    }
+
+    /// The confirmation never argues with the correction and never mentions
+    /// what Velvt thought before: the user is right by definition here.
+    #[test]
+    fn the_confirmation_is_plain_even_without_a_local_name() {
+        let copy = correction_acknowledgment(None, "FOCUS_WORK", true);
+
+        assert_eq!(
+            copy,
+            "Got it — This activity counts as focus work for the rest of this block."
+        );
+        for forbidden in ["still", "actually", "instead", "wrong", "but"] {
+            assert!(
+                !copy.to_ascii_lowercase().contains(forbidden),
+                "acknowledgment must not push back: {copy}"
+            );
+        }
     }
 
     #[test]
@@ -432,10 +482,46 @@ impl R7Router {
         self
     }
 
-    fn upload_eligible(&self) -> bool {
-        self.auth_state
+    /// Whether an event ingested right now may ever be uploaded.
+    ///
+    /// `RefreshInFlight` is a logged-in state: the device holds a valid refresh
+    /// token and is mid-roundtrip. The flag is stamped once at ingest and never
+    /// reconsidered, so treating the refresh window as ineligible permanently
+    /// excluded every event collected during it — acked to Swift as `Accepted`,
+    /// never batched, and invisible in the queued count.
+    /// The menu status a correction command returns, carrying a one-shot
+    /// confirmation that the correction was taken.
+    ///
+    /// Invariant 3: corrections are believed instantly *and visibly*. A user who
+    /// cannot see their correction land has no reason to make another one, and
+    /// the local classifier stops learning.
+    async fn menu_status_acknowledging(
+        &self,
+        activity: Option<&str>,
+        category: &str,
+    ) -> MenuStatus {
+        let during_block = self
+            .work_blocks
             .as_ref()
-            .is_some_and(|state| matches!(*state.borrow(), AuthState::Authenticated { .. }))
+            .and_then(|manager| manager.has_active_block().ok())
+            .unwrap_or(false);
+        MenuStatus {
+            correction_acknowledgment: Some(correction_acknowledgment(
+                activity,
+                category,
+                during_block,
+            )),
+            ..self.menu_status.snapshot().await
+        }
+    }
+
+    fn upload_eligible(&self) -> bool {
+        self.auth_state.as_ref().is_some_and(|state| {
+            matches!(
+                *state.borrow(),
+                AuthState::Authenticated { .. } | AuthState::RefreshInFlight
+            )
+        })
     }
 }
 
@@ -636,7 +722,11 @@ impl MessageRouter for R7Router {
                     }
                 }
                 Ok(Some(ServerMessage::MenuStatus(
-                    self.menu_status.snapshot().await,
+                    self.menu_status_acknowledging(
+                        local_activity_name.as_deref(),
+                        &correction.category,
+                    )
+                    .await,
                 )))
             }
 
@@ -674,7 +764,11 @@ impl MessageRouter for R7Router {
                     )));
                 }
                 Ok(Some(ServerMessage::MenuStatus(
-                    self.menu_status.snapshot().await,
+                    self.menu_status_acknowledging(
+                        local_activity_name.as_deref(),
+                        &correction.category,
+                    )
+                    .await,
                 )))
             }
 
@@ -827,6 +921,26 @@ fn classification_correction_error(code: &str) -> ServerMessage {
         message: "Unable to save this classification. Try again later.".into(),
         related_event_id: None,
     })
+}
+
+/// Confirms a correction in the user's own terms.
+///
+/// Says what changed and how long it holds, and never argues: the correction is
+/// already saved by the time this is written. The activity name is local-only
+/// display text that never leaves the device, and the sentence is authored here
+/// rather than in Swift so copy stays beside the change it describes.
+fn correction_acknowledgment(
+    activity: Option<&str>,
+    category: &str,
+    during_active_block: bool,
+) -> String {
+    let subject = activity.unwrap_or("This activity");
+    let category = category.replace('_', " ").to_ascii_lowercase();
+    if during_active_block {
+        format!("Got it — {subject} counts as {category} for the rest of this block.")
+    } else {
+        format!("Got it — {subject} counts as {category} from now on.")
+    }
 }
 
 fn parse_classification_status(value: Option<&str>) -> ClassificationStatus {
@@ -1003,14 +1117,22 @@ impl R7Router {
                                 // insight, but authored entirely on-device: an
                                 // in-session offer never waits on the cloud or
                                 // on a mature baseline.
+                                //
+                                // A quiet offer is card-only. The user pushed
+                                // the last one away, so this one does not ring;
+                                // the in-app surface still renders it, because
+                                // backing off means asking less loudly, not
+                                // hiding what was observed.
                                 if let Some(intervention) = outcome.intervention {
-                                    push.push_notification(
-                                        Uuid::new_v4(),
-                                        &intervention.title,
-                                        &intervention.body,
-                                        occurred_at.date_naive(),
-                                    )
-                                    .await;
+                                    if intervention.salience == InterventionSalience::Normal {
+                                        push.push_notification(
+                                            Uuid::new_v4(),
+                                            &intervention.title,
+                                            &intervention.body,
+                                            occurred_at.date_naive(),
+                                        )
+                                        .await;
+                                    }
                                 }
                             }
                         }

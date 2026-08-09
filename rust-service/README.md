@@ -234,7 +234,7 @@ are eligible.
 
 | Env var | Default | Description |
 |---|---|---|
-| `VELVT_RAW_EVENT_TTL_HOURS` | `72` | Raw events older than this are eligible for expiry |
+| `VELVT_RAW_EVENT_TTL_HOURS` | `168` | Raw events older than this are eligible for expiry. Must cover the local dashboard's 7-day window, or the oldest days render empty |
 | `VELVT_RAW_EVENT_EXPIRY_INTERVAL_MINUTES` | `30` | How often the expiry scheduler runs |
 | `VELVT_RETENTION_BATCH_SIZE` | `500` | Max rows deleted per target per cycle |
 | `VELVT_SENT_BATCH_RETENTION_DAYS` | `30` | How long sent upload batches are kept |

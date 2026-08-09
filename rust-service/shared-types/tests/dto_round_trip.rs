@@ -119,6 +119,7 @@ fn raw_activity_fields_are_redacted_from_debug_and_error_safe_surfaces() {
         app_name: "PRIVATE_APP_SENTINEL".into(),
         window_title: "PRIVATE_WINDOW_SENTINEL".into(),
         bundle_id: Some("private.bundle.sentinel".into()),
+        focused_document_url: Some("https://PRIVATE_URL_SENTINEL.example".into()),
         duration_seconds: 30,
     };
     let debug = format!("{event:?}");
@@ -127,6 +128,7 @@ fn raw_activity_fields_are_redacted_from_debug_and_error_safe_surfaces() {
         "PRIVATE_APP_SENTINEL",
         "PRIVATE_WINDOW_SENTINEL",
         "private.bundle.sentinel",
+        "PRIVATE_URL_SENTINEL",
     ] {
         assert!(!debug.contains(forbidden));
     }
@@ -231,6 +233,16 @@ fn work_block_contract_round_trips_and_redacts_intention_from_debug() {
         classification_status: ClassificationStatus::Classified,
         confidence: ClassificationConfidence::High,
         status_line: "Current category: Focus work.".into(),
+        active_intervention: Some(ActiveIntervention {
+            action_id: "protect_block".into(),
+            title: "Protect this block".into(),
+            body: "Velvt observed 4 switches away from deep work.".into(),
+            anchor_category: "FOCUS_WORK".into(),
+            switch_count: 4,
+            window_seconds: 600,
+            offered_at: timestamp(),
+            salience: velvt_shared_types::InterventionSalience::Quiet,
+        }),
         result: None,
     };
     assert_round_trip(ServerMessage::WorkBlockState(snapshot.clone()));

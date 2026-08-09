@@ -55,8 +55,16 @@ async fn connect_and_handshake(socket_path: &std::path::Path) -> tokio::net::uni
     write
 }
 
-// Paths stay relative so they remain well under the 104-byte `sun_path` limit
-// macOS imposes on `sockaddr_un`; an absolute temp-dir path can exceed it.
+// Sockets live under literal `/tmp`, not the working directory or
+// `std::env::temp_dir()`: the checkout may sit on a filesystem that cannot
+// host Unix sockets at all (exFAT returns `ENOTSUP` on bind), and macOS's
+// per-user temp dir (`/var/folders/...`) is long enough that a joined path
+// can exceed the 104-byte `sun_path` limit of `sockaddr_un`. Short absolute
+// `/tmp` paths satisfy both constraints.
+//
+// Each socket gets its own subdirectory because the transport's `bind()`
+// creates the socket's parent and chmods it to 0700 — pointing it at `/tmp`
+// itself would make that chmod fail (and must not succeed).
 //
 // Uniqueness comes from a UUID rather than a timestamp. `SystemTime::now()` is
 // only microsecond-granular on macOS, so `as_nanos()` repeats across calls made
@@ -64,7 +72,7 @@ async fn connect_and_handshake(socket_path: &std::path::Path) -> tokio::net::uni
 // the same path, leaving one of them to fail its bind with `EEXIST`.
 fn socket_path(name: &str) -> PathBuf {
     PathBuf::from(format!(
-        "velvt-ipc-tests/{name}-{}-{}.sock",
+        "/tmp/velvt-ipc-{}-{}/{name}.sock",
         std::process::id(),
         Uuid::new_v4().simple()
     ))
@@ -72,7 +80,7 @@ fn socket_path(name: &str) -> PathBuf {
 
 fn filesystem_sockets_available() -> bool {
     let path = PathBuf::from(format!(
-        "velvt-ipc-preflight-{}-{}.sock",
+        "/tmp/velvt-ipc-preflight-{}-{}.sock",
         std::process::id(),
         Uuid::new_v4().simple()
     ));
@@ -82,7 +90,12 @@ fn filesystem_sockets_available() -> bool {
             let _ = std::fs::remove_file(path);
             true
         }
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+            ) =>
+        {
             eprintln!("skipping Unix socket smoke test: filesystem sockets are unavailable");
             false
         }

@@ -13,8 +13,8 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, WorkBlockIntensity, WorkBlockPhase,
-    WorkBlockPurpose, WorkBlockResult,
+    ClassificationConfidence, ClassificationStatus, InterventionSalience, WorkBlockIntensity,
+    WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
 };
 
 struct Migration {
@@ -906,10 +906,24 @@ impl RawEventRepo for SqliteRawEventRepo {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<u64, PersistenceError> {
+        // Rows the upload pipeline still owes the backend are spared, mirroring
+        // upload-batch retention, which deliberately never deletes pending or
+        // failed batches. An eligible row with no `batch_event` has been acked
+        // to Swift but not yet persisted into a batch; expiring it on the TTL
+        // deleted an accepted event that nothing could ever re-send.
         let connection = self.0.connection()?;
         let deleted = connection.execute(
             "DELETE FROM raw_event_buffer WHERE id IN (
-                 SELECT id FROM raw_event_buffer WHERE created_at < ?1 LIMIT ?2
+                 SELECT id FROM raw_event_buffer
+                 WHERE created_at < ?1
+                   AND NOT (
+                       upload_eligible = 1
+                       AND NOT EXISTS (
+                           SELECT 1 FROM batch_event
+                           WHERE batch_event.event_id = raw_event_buffer.event_id
+                       )
+                   )
+                 LIMIT ?2
              )",
             params![cutoff.timestamp(), limit as i64],
         )?;
@@ -1572,8 +1586,8 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         connection.execute(
             "INSERT INTO work_block_intervention(
                 block_id, offered_at, action_id, anchor_category,
-                switch_count, window_seconds, outcome, outcome_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                switch_count, window_seconds, outcome, outcome_at, salience
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(block_id) DO NOTHING",
             params![
                 block_id,
@@ -1584,6 +1598,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                 intervention.window_seconds,
                 intervention.outcome.as_str(),
                 intervention.outcome_at.map(|at| at.timestamp()),
+                intervention.salience.as_str(),
             ],
         )?;
         Ok(())
@@ -1597,7 +1612,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         connection
             .query_row(
                 "SELECT offered_at, action_id, anchor_category, switch_count,
-                        window_seconds, outcome, outcome_at
+                        window_seconds, outcome, outcome_at, salience
                  FROM work_block_intervention WHERE block_id = ?1",
                 [block_id],
                 |row| {
@@ -1615,11 +1630,43 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                             .get::<_, Option<i64>>(6)?
                             .map(|value| timestamp_to_datetime(value, 6))
                             .transpose()?,
+                        salience: parse_intervention_salience(&row.get::<_, String>(7)?)?,
                     })
                 },
             )
             .optional()
             .map_err(PersistenceError::from)
+    }
+
+    fn recent_interventions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<WorkBlockIntervention>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT offered_at, action_id, anchor_category, switch_count,
+                    window_seconds, outcome, outcome_at, salience
+             FROM work_block_intervention
+             ORDER BY offered_at DESC LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit as i64], |row| {
+            Ok(WorkBlockIntervention {
+                offered_at: timestamp_from_row(row, 0)?,
+                action_id: row.get(1)?,
+                anchor_category: row.get(2)?,
+                switch_count: row.get(3)?,
+                window_seconds: row.get(4)?,
+                outcome: WorkBlockInterventionOutcome::from_db_value(&row.get::<_, String>(5)?)
+                    .ok_or_else(invalid_enum)?,
+                outcome_at: row
+                    .get::<_, Option<i64>>(6)?
+                    .map(|value| timestamp_to_datetime(value, 6))
+                    .transpose()?,
+                salience: parse_intervention_salience(&row.get::<_, String>(7)?)?,
+            })
+        })?;
+        rows.map(|row| row.map_err(PersistenceError::from))
+            .collect()
     }
 
     fn resolve_intervention(
@@ -1765,6 +1812,14 @@ fn parse_work_block_phase(value: &str) -> rusqlite::Result<WorkBlockPhase> {
         "completed" => Ok(WorkBlockPhase::Completed),
         "abandoned" => Ok(WorkBlockPhase::Abandoned),
         "expired" => Ok(WorkBlockPhase::Expired),
+        _ => Err(invalid_enum()),
+    }
+}
+
+fn parse_intervention_salience(value: &str) -> rusqlite::Result<InterventionSalience> {
+    match value {
+        "normal" => Ok(InterventionSalience::Normal),
+        "quiet" => Ok(InterventionSalience::Quiet),
         _ => Err(invalid_enum()),
     }
 }
@@ -2030,6 +2085,141 @@ mod tests {
             .expect("negative entry not found");
         assert!(entry.is_negative, "is_negative flag not set");
         assert_eq!(entry.date, "2026-01-01");
+    }
+
+    /// Migration 0016 rebuilds `work_block_intervention` to widen a CHECK
+    /// constraint, which SQLite cannot alter in place. Alpha installs already
+    /// hold answered offers, and losing them would erase the only record of
+    /// whether the detector was ever right.
+    #[test]
+    fn migration_0016_preserves_recorded_offers_and_defaults_them_to_full_salience() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        for (version, sql) in [
+            (
+                1,
+                include_str!("../../migrations/0001_initial_persistence.sql"),
+            ),
+            (
+                2,
+                include_str!("../../migrations/0002_harden_indexes_and_probe.sql"),
+            ),
+            (
+                3,
+                include_str!("../../migrations/0003_upload_retry_state.sql"),
+            ),
+            (
+                4,
+                include_str!("../../migrations/0004_insight_cache_negative.sql"),
+            ),
+            (
+                5,
+                include_str!("../../migrations/0005_local_queue_display_label.sql"),
+            ),
+            (
+                6,
+                include_str!("../../migrations/0006_classification_provenance.sql"),
+            ),
+            (
+                7,
+                include_str!("../../migrations/0007_personal_overrides.sql"),
+            ),
+            (
+                8,
+                include_str!("../../migrations/0008_classification_contract.sql"),
+            ),
+            (9, include_str!("../../migrations/0009_work_blocks.sql")),
+            (
+                10,
+                include_str!("../../migrations/0010_personal_override_activity_name.sql"),
+            ),
+            (
+                11,
+                include_str!("../../migrations/0011_local_activity_suggestions.sql"),
+            ),
+            (
+                12,
+                include_str!("../../migrations/0012_local_only_events.sql"),
+            ),
+            (
+                13,
+                include_str!("../../migrations/0013_personal_semantic_learning.sql"),
+            ),
+            (
+                14,
+                include_str!("../../migrations/0014_work_block_intervention.sql"),
+            ),
+            (
+                15,
+                include_str!("../../migrations/0015_intervention_outcome_vocabulary.sql"),
+            ),
+        ] {
+            connection.execute_batch(sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                    (version, format!("migration-{version}")),
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO work_block(
+                    block_id, phase, intensity, planned_duration_seconds, started_at,
+                    total_paused_seconds, recovered_after_restart,
+                    intention_expires_at, updated_at
+                 ) VALUES ('block-1', 'completed', 'medium', 1800, 0, 0, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO work_block_intervention(
+                    block_id, offered_at, action_id, anchor_category,
+                    switch_count, window_seconds, outcome, outcome_at
+                 ) VALUES ('block-1', 100, 'protect_next_10', 'DEEP_WORK', 4, 600, 'dismissed', 120)",
+                [],
+            )
+            .unwrap();
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+
+        database.run_migrations().unwrap();
+
+        let recorded = database
+            .work_block_repo()
+            .intervention("block-1")
+            .unwrap()
+            .expect("the answered offer must survive the table rebuild");
+        assert_eq!(
+            recorded.outcome,
+            crate::persistence::WorkBlockInterventionOutcome::Dismissed
+        );
+        assert_eq!(recorded.switch_count, 4);
+        assert_eq!(
+            recorded.salience,
+            velvt_shared_types::InterventionSalience::Normal,
+            "offers made before salience existed were all delivered at full salience"
+        );
+
+        // The point of the rebuild: the widened vocabulary is now accepted.
+        let connection = database.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE work_block_intervention SET outcome = 'was_focused' WHERE block_id = ?1",
+                ["block-1"],
+            )
+            .unwrap();
     }
 
     #[test]

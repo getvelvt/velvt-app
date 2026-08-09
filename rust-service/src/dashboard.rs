@@ -22,6 +22,13 @@ const MAX_WINDOW_SECONDS: u32 = 60 * 60;
 const MAX_WINDOW_EVENTS: usize = 512;
 const MAX_DAY_EVENTS: usize = 2_048;
 const MAX_EVENT_DURATION_SECONDS: i64 = 30 * 60;
+/// Days rendered by the local daily-activity chart.
+///
+/// Read from `raw_event_buffer`, so raw-event retention must cover at least
+/// this window: a shorter TTL renders the oldest days as permanent zeroes
+/// rather than as missing data. `raw_event_retention_covers_daily_activity`
+/// in `config` pins the relationship.
+pub const DAILY_ACTIVITY_DAYS: i64 = 7;
 const EARLY_SIGNAL_REQUIRED_SECONDS: u64 = 60;
 const EARLY_SIGNAL_ACTION_MINUTES: u32 = 10;
 pub const SWITCHING_CLUSTER_RULE_VERSION: u32 = 1;
@@ -394,8 +401,8 @@ fn daily_activity(
     offset: FixedOffset,
 ) -> Result<Vec<LocalDailyActivityDay>, PersistenceError> {
     let today = now.with_timezone(&offset).date_naive();
-    let mut days = Vec::with_capacity(7);
-    for days_ago in (0..7).rev() {
+    let mut days = Vec::with_capacity(DAILY_ACTIVITY_DAYS as usize);
+    for days_ago in (0..DAILY_ACTIVITY_DAYS).rev() {
         let date = today - Duration::days(days_ago);
         let (start, end) = local_day_bounds(date, offset);
         let events = repo.events_between(

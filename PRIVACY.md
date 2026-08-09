@@ -53,7 +53,7 @@ All persistence lives in a SQLite database at
 | Table | Contents | Default retention |
 |---|---|---|
 | `abstraction_map` | stable-key hash → stable ID, label, category, taxonomy version | indefinite (no raw content to expire) |
-| `raw_event_buffer` | privacy-safe abstracted event metadata, used for short-lived audit/replay | 72 hours (`VELVT_RAW_EVENT_TTL_HOURS`) |
+| `raw_event_buffer` | privacy-safe abstracted event metadata, used for short-lived audit/replay and the local 7-day activity chart | 7 days (`VELVT_RAW_EVENT_TTL_HOURS`) |
 | `upload_batch` / `batch_event` | privacy-safe events grouped into upload batches | sent batches: 30 days; rejected batches: 7 days (audit window) |
 | `history_cache` / `insight_cache` | ready-to-display summaries fetched from the cloud | minutes to tens of minutes, per `VELVT_HISTORY_TTL_SECONDS`/`VELVT_INSIGHT_TTL_SECONDS` |
 | `work_block` | local state and optional free-form intention | intention: 24 hours; safe state retained until clear |

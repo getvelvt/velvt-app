@@ -345,10 +345,27 @@ async fn main() {
             PushAdapterAlertSink::new(Arc::clone(&push_adapter)),
         )
         .with_host(upload_host);
-        let upload_batcher = UploadBatcher::new(
+        let mut upload_batcher = UploadBatcher::new(
             BatchAssembler::from_config(device_id_for_batching, &config),
             ingestion_coordinator,
         );
+        // Before any live ingestion: events acked to Swift but killed before a
+        // flush persisted their batch exist only as unbatched `raw_event_buffer`
+        // rows. `resume_pending` reads `upload_batch` and cannot see them.
+        if let Err(error) = upload_batcher
+            .recover_unbatched(
+                raw_event_repo.as_ref(),
+                config.retention_batch_size,
+                chrono::Utc::now(),
+            )
+            .await
+        {
+            tracing::error!(
+                error_code = "unbatched_event_recovery_failed",
+                error = %error,
+                "failed to re-ingest unbatched upload-eligible events"
+            );
+        }
         let shared_batcher: Arc<dyn EventIngestor> =
             Arc::new(SharedUploadBatcher::new(upload_batcher));
 

@@ -148,12 +148,9 @@ final class WorkBlockCoordinatorTests: XCTestCase {
   }
 
   func testEachInterventionResponseIsSentToTheService() async throws {
-    for response in [
-      InterventionResponse.acceptedAction,
-      .notHelpful,
-      .wrongClassification,
-      .dismissed,
-    ] {
+    // Exhaustive by construction: a reply added to the protocol without a
+    // path to the service would fail here rather than be silently unreportable.
+    for response in InterventionResponse.allCases {
       let client = FakeIPCClient()
       let messages = PassthroughSubject<ServerMessage, Never>()
       let coordinator = WorkBlockCoordinator(ipcClient: client)
@@ -202,6 +199,32 @@ final class WorkBlockCoordinatorTests: XCTestCase {
     XCTAssertEqual(decoded.activeIntervention, snapshot.activeIntervention)
     XCTAssertEqual(decoded.activeIntervention?.actionID, "protect_next_10")
     XCTAssertEqual(decoded.activeIntervention?.switchCount, 4)
+    XCTAssertEqual(decoded.activeIntervention?.salience, .quiet)
+  }
+
+  /// Salience is carried on the wire rather than inferred locally: Rust decides
+  /// how loudly to ask, and a quiet offer means the notification was never sent.
+  func testSalienceDecodesFromTheServicePayload() throws {
+    let payload = Data(
+      """
+      {
+        "action_id": "protect_next_10",
+        "title": "Your work block is still running",
+        "body": "Velvt observed 4 switches away from deep work.",
+        "anchor_category": "DEEP_WORK",
+        "switch_count": 4,
+        "window_seconds": 600,
+        "offered_at": "2027-01-15T10:05:00Z",
+        "salience": "quiet"
+      }
+      """.utf8
+    )
+
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try decoder.decode(ActiveIntervention.self, from: payload)
+
+    XCTAssertEqual(decoded.salience, .quiet)
   }
 
   private func activeSnapshot(
@@ -240,7 +263,8 @@ final class WorkBlockCoordinatorTests: XCTestCase {
       anchorCategory: "DEEP_WORK",
       switchCount: 4,
       windowSeconds: 600,
-      offeredAt: Date(timeIntervalSince1970: 1_800_000_300)
+      offeredAt: Date(timeIntervalSince1970: 1_800_000_300),
+      salience: .quiet
     )
   }
 

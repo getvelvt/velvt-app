@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, WorkBlockIntensity, WorkBlockPhase,
-    WorkBlockPurpose, WorkBlockResult,
+    ClassificationConfidence, ClassificationStatus, InterventionSalience, WorkBlockIntensity,
+    WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
 };
 
 #[derive(Clone, PartialEq, Eq)]
@@ -297,6 +297,9 @@ pub enum WorkBlockInterventionOutcome {
     /// The user said the underlying classification was wrong. This is evidence
     /// against the detector, not against the user.
     WrongClassification,
+    /// The user said they were working the whole time: the offer should never
+    /// have fired. The strongest evidence a false positive occurred.
+    WasFocused,
     /// The user explicitly dismissed the offer.
     Dismissed,
     /// The block ended with no response of any kind. Never inferred from a
@@ -312,6 +315,7 @@ impl WorkBlockInterventionOutcome {
             Self::Returned => "returned",
             Self::NotHelpful => "not_helpful",
             Self::WrongClassification => "wrong_classification",
+            Self::WasFocused => "was_focused",
             Self::Dismissed => "dismissed",
             Self::NoResponse => "no_response",
         }
@@ -326,6 +330,7 @@ impl WorkBlockInterventionOutcome {
             "returned" => Some(Self::Returned),
             "not_helpful" => Some(Self::NotHelpful),
             "wrong_classification" => Some(Self::WrongClassification),
+            "was_focused" => Some(Self::WasFocused),
             "dismissed" => Some(Self::Dismissed),
             "no_response" => Some(Self::NoResponse),
             _ => None,
@@ -336,6 +341,21 @@ impl WorkBlockInterventionOutcome {
     /// outranks the block later ending.
     pub fn is_terminal(self) -> bool {
         !matches!(self, Self::Offered)
+    }
+
+    /// True when the user pushed the offer away.
+    ///
+    /// This is negative training signal, and the only allowed response to it is
+    /// to back off — a longer cooldown and a quieter offer next time. Nothing
+    /// in the system may raise emotional charge because of it. `NoResponse` is
+    /// excluded on purpose: silence is not a refusal, and treating an
+    /// undelivered offer as one would suppress the next offer for a user who
+    /// never saw the first.
+    pub fn is_negative(self) -> bool {
+        matches!(
+            self,
+            Self::NotHelpful | Self::WrongClassification | Self::WasFocused | Self::Dismissed
+        )
     }
 }
 
@@ -350,4 +370,7 @@ pub struct WorkBlockIntervention {
     pub window_seconds: u32,
     pub outcome: WorkBlockInterventionOutcome,
     pub outcome_at: Option<DateTime<Utc>>,
+    /// How the offer was delivered. Recorded because an outcome cannot be read
+    /// without it: an ignored quiet offer never rang.
+    pub salience: InterventionSalience,
 }

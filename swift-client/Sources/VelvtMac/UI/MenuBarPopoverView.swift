@@ -1377,6 +1377,18 @@ public struct MenuBarPopoverView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 8)
                 }
+                // The correction is already saved by the time this appears.
+                // Copy comes from the service verbatim so the confirmation says
+                // exactly what changed and for how long.
+                if let acknowledgment = menuStatusViewModel?.correctionAcknowledgment {
+                    Label(acknowledgment, systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .accessibilityLabel(acknowledgment)
+                }
                 Divider().padding(.top, 8)
                 Button("Retry Cloud Synchronization") { menuStatusViewModel?.sendAllNow() }
                     .frame(maxWidth: .infinity, alignment: .leading)

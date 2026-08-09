@@ -241,6 +241,7 @@ fn work_block_contract_round_trips_and_redacts_intention_from_debug() {
             switch_count: 4,
             window_seconds: 600,
             offered_at: timestamp(),
+            salience: velvt_shared_types::InterventionSalience::Quiet,
         }),
         result: None,
     };

@@ -7,11 +7,18 @@ public final class MenuStatusViewModel: ObservableObject {
     @Published public private(set) var correctionHistoryPage: CorrectionHistoryPage?
     @Published public private(set) var correctionHistoryQuery = ""
     @Published public private(set) var sendError: String?
+    /// Service-authored confirmation that a correction was taken.
+    ///
+    /// Latched here rather than read off `status`, because the status is
+    /// refreshed on a timer and the confirmation would otherwise disappear
+    /// within seconds of the correction that earned it.
+    @Published public private(set) var correctionAcknowledgment: String?
     private let ipcClient: any IPCClientProtocol
     private var cancellables = Set<AnyCancellable>()
     private var timer: AnyCancellable?
     private var classificationCommand: Task<Void, Never>?
     private var correctionHistoryRequest: Task<Void, Never>?
+    private var acknowledgmentDismissal: Task<Void, Never>?
 
     public init(ipcClient: any IPCClientProtocol, messages: some Publisher<ServerMessage, Never>) {
         self.ipcClient = ipcClient
@@ -20,6 +27,9 @@ public final class MenuStatusViewModel: ObservableObject {
             case .menuStatus(let status):
                 self?.status = status
                 self?.sendError = nil
+                if let acknowledgment = status.correctionAcknowledgment {
+                    self?.acknowledgeCorrection(acknowledgment)
+                }
             case .correctionHistoryPage(let page):
                 self?.correctionHistoryPage = page
                 self?.sendError = nil
@@ -133,6 +143,20 @@ public final class MenuStatusViewModel: ObservableObject {
             .resetClassificationOverrides,
             failureMessage: "Unable to reset classification learning. Try again later."
         )
+    }
+
+    /// Shows the service's confirmation, then clears it.
+    ///
+    /// Held long enough to read and no longer: a confirmation that stays on
+    /// screen stops reading as a response to what the user just did.
+    private func acknowledgeCorrection(_ acknowledgment: String) {
+        correctionAcknowledgment = acknowledgment
+        acknowledgmentDismissal?.cancel()
+        acknowledgmentDismissal = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            self?.correctionAcknowledgment = nil
+        }
     }
 
     private func enqueueClassificationCommand(

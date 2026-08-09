@@ -11,7 +11,7 @@
         "state_version", "phase", "block_id", "intention", "purpose", "intensity",
         "planned_duration_seconds", "elapsed_duration_seconds", "remaining_duration_seconds",
         "started_at", "analysis_ended_at", "ends_at", "paused_at", "recovered_after_restart", "current_category",
-        "classification_status", "confidence", "status_line", "result"
+        "classification_status", "confidence", "status_line", "result", "active_intervention"
       ],
       "properties": {
         "state_version": { "const": 1 },
@@ -35,6 +35,30 @@
         "classification_status": { "enum": ["classified", "ambiguous", "unclassified"] },
         "confidence": { "enum": ["high", "medium", "low", "none"] },
         "status_line": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "active_intervention": {
+          "$comment": "Present only while an offer is unanswered. Rust authors the copy; Swift renders it verbatim. `salience` is quiet when the user pushed a recent offer away — the card still renders, the notification is not sent.",
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": [
+                "action_id", "title", "body", "anchor_category",
+                "switch_count", "window_seconds", "offered_at", "salience"
+              ],
+              "properties": {
+                "action_id": { "const": "protect_next_10" },
+                "title": { "type": "string", "minLength": 1, "maxLength": 100 },
+                "body": { "type": "string", "minLength": 1, "maxLength": 300 },
+                "anchor_category": { "type": "string", "minLength": 1 },
+                "switch_count": { "type": "integer", "minimum": 0 },
+                "window_seconds": { "type": "integer", "minimum": 1 },
+                "offered_at": { "type": "string", "format": "date-time" },
+                "salience": { "enum": ["normal", "quiet"] }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
         "result": {
           "oneOf": [
             { "type": "null" },

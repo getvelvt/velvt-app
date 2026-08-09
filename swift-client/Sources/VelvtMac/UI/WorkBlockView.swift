@@ -169,18 +169,6 @@ public struct WorkBlockView: View {
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
 
-        Button("Not helpful") {
-          coordinator.respondToIntervention(.notHelpful)
-        }
-        .controlSize(.small)
-
-        // Disagreement with the classification is evidence against the
-        // detector, so it is a first-class reply rather than a shrug.
-        Button("Wrong category") {
-          coordinator.respondToIntervention(.wrongClassification)
-        }
-        .controlSize(.small)
-
         Spacer(minLength: 0)
 
         Button {
@@ -193,6 +181,31 @@ public struct WorkBlockView: View {
         .foregroundStyle(.secondary)
         .accessibilityLabel("Dismiss this suggestion")
       }
+
+      // Disagreement is evidence against the detector, so each kind of "you
+      // were wrong" is a first-class reply rather than a shrug. "I was
+      // focused" leads: it is the only reply that says the offer should never
+      // have fired, and a false positive Velvt cannot see is one it cannot
+      // stop making.
+      HStack(spacing: 12) {
+        Button("I was focused") {
+          coordinator.respondToIntervention(.wasFocused)
+        }
+        .accessibilityHint("Tells Velvt this suggestion was wrong — you were working")
+
+        Button("Wrong category") {
+          coordinator.respondToIntervention(.wrongClassification)
+        }
+
+        Button("Not helpful") {
+          coordinator.respondToIntervention(.notHelpful)
+        }
+
+        Spacer(minLength: 0)
+      }
+      .buttonStyle(.plain)
+      .font(.caption)
+      .foregroundStyle(.secondary)
     }
     .padding(10)
     .background(Color.primary.opacity(0.06))
@@ -284,15 +297,29 @@ public struct WorkBlockView: View {
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
 
+        // Recoveries lead, and are counted rather than rated. A number that
+        // can only go up cannot be lost, which is what a streak gets wrong:
+        // coming back four times is the achievement, not going unbroken.
+        // Switch-aways stay visible as the denominator, never as a score.
         HStack(spacing: 14) {
-          resultMetric("Elapsed", result.elapsedDurationSeconds)
-          resultMetric("Longest stretch", result.longestUninterruptedSeconds)
           VStack(alignment: .leading, spacing: 2) {
-            Text("Switch-aways / returns").font(.caption2).foregroundStyle(.secondary)
-            Text("\(result.switchAwayCount) / \(result.recoveryCount)")
+            Text("Recoveries").font(.caption2).foregroundStyle(.secondary)
+            Text("\(result.recoveryCount)")
               .font(.caption.bold().monospacedDigit())
           }
+          resultMetric("Longest stretch", result.longestUninterruptedSeconds)
+          resultMetric("Elapsed", result.elapsedDurationSeconds)
+          VStack(alignment: .leading, spacing: 2) {
+            Text("Switch-aways").font(.caption2).foregroundStyle(.secondary)
+            Text("\(result.switchAwayCount)")
+              .font(.caption.monospacedDigit())
+              .foregroundStyle(.secondary)
+          }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+          "Came back \(result.recoveryCount) times after \(result.switchAwayCount) switch-aways"
+        )
 
         Text(coverageLabel(result))
           .font(.caption2)

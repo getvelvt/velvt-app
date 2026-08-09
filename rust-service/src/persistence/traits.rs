@@ -218,6 +218,15 @@ pub trait WorkBlockRepo: Send + Sync {
         &self,
         block_id: &str,
     ) -> Result<Option<WorkBlockIntervention>, PersistenceError>;
+    /// Returns the most recent offers across every block, newest first.
+    ///
+    /// Backoff spans blocks: the one-offer-per-block cap means a dismissal can
+    /// only ever affect the *next* block, so the decision needs the offers that
+    /// came before this one.
+    fn recent_interventions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<WorkBlockIntervention>, PersistenceError>;
     /// Transitions an offer to a terminal outcome. Only an `offered` row is
     /// updated, so a recorded return is never overwritten by block expiry.
     fn resolve_intervention(

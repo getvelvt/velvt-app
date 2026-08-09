@@ -1474,3 +1474,112 @@ async fn shared_flush_now_does_not_block_ingestion_during_persisted_replay() {
     assert!(ingestion.is_ok());
     assert!(ingestion.unwrap().is_ok());
 }
+
+fn raw_entry(id: &str, eligible: bool) -> velvt_service::persistence::RawEventEntry {
+    velvt_service::persistence::RawEventEntry {
+        event_id: id.into(),
+        stable_id: format!("stable-{id}"),
+        label: "document:edit".into(),
+        local_display_label: None,
+        local_name_suggestion: None,
+        category: "FOCUS_WORK".into(),
+        taxonomy_version: "mvp-1".into(),
+        classification_tier: "exact_match".into(),
+        classification_status: "classified".into(),
+        classification_confidence: "high".into(),
+        classification_source: "seed".into(),
+        occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+        duration_seconds: 5,
+        upload_eligible: eligible,
+    }
+}
+
+/// Events acked to Swift live only in the in-memory assembler until a flush
+/// persists their batch. A hard kill in that window left them as unbatched
+/// `raw_event_buffer` rows that `resume_pending` (which reads `upload_batch`)
+/// could never see, so they were uploaded by nothing and deleted by retention.
+#[tokio::test]
+async fn startup_recovery_rebatches_acked_events_that_never_reached_a_batch() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let raw_events = database.raw_event_repo();
+    let repository = database.upload_batch_repo();
+    raw_events
+        .insert(&raw_entry("event-lost-one", true))
+        .unwrap();
+    raw_events
+        .insert(&raw_entry("event-lost-two", true))
+        .unwrap();
+
+    let coordinator = UploadCoordinator::new(
+        repository.clone(),
+        FakeBatchUploader::with_outcomes(vec![UploadOutcome::Accepted]),
+        FakePrivacyAlertSink::default(),
+    );
+    let mut batcher = UploadBatcher::new(
+        // Batch size 2: recovery alone must be enough to assemble and submit.
+        BatchAssembler::new("device-1", 2, Duration::from_secs(180)),
+        coordinator,
+    );
+
+    let recovered = batcher
+        .recover_unbatched(raw_events.as_ref(), 100, Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(recovered, 2);
+    assert!(
+        raw_events.unbatched_events(10).unwrap().is_empty(),
+        "recovered events must now belong to a persisted batch"
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_ignores_local_only_events() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let raw_events = database.raw_event_repo();
+    let repository = database.upload_batch_repo();
+    raw_events.insert(&raw_entry("event-local", false)).unwrap();
+
+    let coordinator = UploadCoordinator::new(
+        repository.clone(),
+        FakeBatchUploader::with_outcomes(vec![]),
+        FakePrivacyAlertSink::default(),
+    );
+    let mut batcher = UploadBatcher::new(
+        BatchAssembler::new("device-1", 1, Duration::from_secs(180)),
+        coordinator,
+    );
+
+    let recovered = batcher
+        .recover_unbatched(raw_events.as_ref(), 100, Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(recovered, 0, "signed-out events must never enter the queue");
+    assert!(repository.pending_batches().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn startup_recovery_is_a_no_op_on_a_clean_shutdown() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let raw_events = database.raw_event_repo();
+    let repository = database.upload_batch_repo();
+
+    let coordinator = UploadCoordinator::new(
+        repository.clone(),
+        FakeBatchUploader::with_outcomes(vec![]),
+        FakePrivacyAlertSink::default(),
+    );
+    let mut batcher = UploadBatcher::new(
+        BatchAssembler::new("device-1", 1, Duration::from_secs(180)),
+        coordinator,
+    );
+
+    assert_eq!(
+        batcher
+            .recover_unbatched(raw_events.as_ref(), 100, Utc::now())
+            .await
+            .unwrap(),
+        0
+    );
+}

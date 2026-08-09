@@ -10,7 +10,7 @@ use std::{
 };
 
 use chrono::Utc;
-use velvt_service::persistence::{NewUploadBatch, RawEventEntry, SqlitePersistence};
+use velvt_service::persistence::{BatchEvent, NewUploadBatch, RawEventEntry, SqlitePersistence};
 use velvt_service::retention::{
     CleanupReport, RawEventRetentionTarget, RetentionError, RetentionScheduler, RetentionTarget,
     UploadBatchRetentionTarget,
@@ -39,6 +39,38 @@ fn make_event(n: u64) -> RawEventEntry {
     }
 }
 
+/// Assembles `count` events into one persisted upload batch.
+///
+/// This is the normal state of an aged row. Retention deliberately spares rows
+/// the upload pipeline still owes the backend — an upload-eligible row with no
+/// `batch_event` was acked to Swift but never made it into a batch — so a TTL
+/// test has to batch its fixtures to be testing the TTL at all.
+fn batch_events(db: &SqlitePersistence, batch_id: &str, ids: std::ops::Range<u64>) {
+    let repo = db.upload_batch_repo();
+    let events: Vec<BatchEvent> = ids
+        .map(|n| {
+            let event = make_event(n);
+            BatchEvent {
+                event_id: event.event_id,
+                stable_id: event.stable_id,
+                label: event.label,
+                category: event.category,
+                taxonomy_version: event.taxonomy_version,
+                classification_tier: event.classification_tier,
+                occurred_at: event.occurred_at,
+                duration_seconds: event.duration_seconds,
+            }
+        })
+        .collect();
+    repo.insert_batch_with_events(
+        &NewUploadBatch {
+            batch_id: batch_id.to_owned(),
+        },
+        &events,
+    )
+    .unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // Test 1 — Only expired rows are deleted; rows within TTL survive
 // ---------------------------------------------------------------------------
@@ -55,6 +87,7 @@ fn only_expired_rows_deleted_fresh_rows_survive() {
     for n in 0..3u64 {
         repo.insert(&make_event(n)).unwrap();
     }
+    batch_events(&db, "batch-aged", 0..3);
     let old_ts = (Utc::now() - chrono::Duration::hours(100)).timestamp();
     db.set_all_raw_event_created_at_for_test(old_ts).unwrap();
 
@@ -62,6 +95,7 @@ fn only_expired_rows_deleted_fresh_rows_survive() {
     for n in 3..5u64 {
         repo.insert(&make_event(n)).unwrap();
     }
+    batch_events(&db, "batch-fresh", 3..5);
 
     assert_eq!(db.count_raw_events_for_test().unwrap(), 5);
 
@@ -95,6 +129,7 @@ fn batched_delete_requires_three_cycles_for_1200_rows_at_batch_size_500() {
     for n in 0..1200u64 {
         repo.insert(&make_event(n)).unwrap();
     }
+    batch_events(&db, "batch-aged", 0..1200);
     // Back-date all 1200 rows to 100 hours ago so the 72h TTL marks them expired.
     let old_ts = (Utc::now() - chrono::Duration::hours(100)).timestamp();
     db.set_all_raw_event_created_at_for_test(old_ts).unwrap();
@@ -152,6 +187,64 @@ fn run_cleanup_returns_zero_when_no_expired_rows_exist() {
         "no rows should be deleted when all are within TTL"
     );
     assert_eq!(db.count_raw_events_for_test().unwrap(), 5);
+}
+
+// ---------------------------------------------------------------------------
+// Test 3b — Expiry never deletes an accepted event the backend has not seen
+// ---------------------------------------------------------------------------
+
+/// An upload-eligible row with no `batch_event` was acked to Swift as
+/// `Accepted` but never persisted into a batch — the crash window between an
+/// ack and the next flush. Nothing re-batches it except the startup recovery
+/// pass, so expiring it at the TTL destroyed the only copy. Upload-batch
+/// retention already spares pending and failed batches for exactly this reason.
+#[test]
+fn expiry_spares_eligible_events_that_never_reached_a_batch() {
+    let db = open_db();
+    let repo = db.raw_event_repo();
+
+    for n in 0..4u64 {
+        repo.insert(&make_event(n)).unwrap();
+    }
+    // Only the first two ever made it into a batch.
+    batch_events(&db, "batch-aged", 0..2);
+    let old_ts = (Utc::now() - chrono::Duration::hours(100)).timestamp();
+    db.set_all_raw_event_created_at_for_test(old_ts).unwrap();
+
+    let target =
+        RawEventRetentionTarget::new(Arc::clone(&repo), Duration::from_secs(72 * 3600), 500);
+    let report = target.run_cleanup().unwrap();
+
+    assert_eq!(report.deleted, 2, "only the batched rows may be deleted");
+    assert_eq!(
+        repo.unbatched_events(10).unwrap().len(),
+        2,
+        "events still owed to the backend must survive the TTL"
+    );
+}
+
+/// The spare applies only to rows the upload pipeline actually owes. Local-only
+/// events — collected while signed out — are never uploaded, so nothing is
+/// waiting on them and the TTL is their only bound.
+#[test]
+fn expiry_still_deletes_local_only_events_at_the_ttl() {
+    let db = open_db();
+    let repo = db.raw_event_repo();
+
+    for n in 0..3u64 {
+        let mut event = make_event(n);
+        event.upload_eligible = false;
+        repo.insert(&event).unwrap();
+    }
+    let old_ts = (Utc::now() - chrono::Duration::hours(100)).timestamp();
+    db.set_all_raw_event_created_at_for_test(old_ts).unwrap();
+
+    let target =
+        RawEventRetentionTarget::new(Arc::clone(&repo), Duration::from_secs(72 * 3600), 500);
+    let report = target.run_cleanup().unwrap();
+
+    assert_eq!(report.deleted, 3);
+    assert_eq!(db.count_raw_events_for_test().unwrap(), 0);
 }
 
 // ---------------------------------------------------------------------------

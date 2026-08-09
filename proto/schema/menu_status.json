@@ -21,6 +21,12 @@
         "correction_history"
       ],
       "properties": {
+        "correction_acknowledgment": {
+          "$comment": "One-shot confirmation authored by Rust, present only on the status returned by a correction command. A polled status omits it, so the confirmation cannot linger or reappear.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
         "device_id": { "type": ["string", "null"] },
         "cloud_ready": { "type": "boolean" },
         "upload_status": {

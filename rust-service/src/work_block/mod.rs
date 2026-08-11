@@ -478,6 +478,18 @@ impl WorkBlockManager {
         if switch_count < DRIFT_MIN_SWITCHES {
             return Ok(None);
         }
+        // Never offer while the latest confident evidence is the anchor: the
+        // user is back at the block, so an offer at this instant would be
+        // untruthful, would immediately self-resolve as `returned` without a
+        // fresh departure, and would invite an honest `was_focused` reply that
+        // pollutes the wrong-intervention rate with a policy-caused false
+        // positive. The accumulated departure evidence is not discarded — the
+        // offer fires on the next confident non-anchor observation instead.
+        // Offer frequency can only decrease under this rule, which is the
+        // direction roadmap invariant 2 requires.
+        if previous_was_anchor == Some(true) {
+            return Ok(None);
+        }
         self.repo.record_intervention(
             &record.block_id,
             &WorkBlockIntervention {
@@ -1227,6 +1239,66 @@ mod tests {
         }
         manager.end(block_id, at(start + 560)).unwrap();
         offer
+    }
+
+    /// An offer never fires on the observation that returns to the anchor.
+    ///
+    /// The switch threshold can be crossed while the warm-up still holds the
+    /// gate shut. When the warm-up then expires on a return to the anchor, the
+    /// accumulated evidence is spent at the exact moment the user is back at
+    /// work: the offer would be untruthful, would self-resolve as `returned`
+    /// without a fresh departure, and would invite an honest `was_focused`
+    /// reply that pollutes the wrong-intervention rate with a false positive
+    /// the policy caused. The evidence is deferred, not discarded.
+    #[test]
+    fn no_offer_fires_on_the_observation_that_returns_to_the_anchor() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap().to_string();
+
+        // Four departures, all inside the five-minute warm-up, so the gate
+        // returns early every time and no offer is possible yet. DEEP_WORK
+        // holds the longer dwell throughout and stays the anchor.
+        for (category, seconds) in [
+            ("DEEP_WORK", 10),
+            ("COMMUNICATION", 60),
+            ("DEEP_WORK", 70),
+            ("COMMUNICATION", 120),
+            ("DEEP_WORK", 130),
+            ("COMMUNICATION", 180),
+            ("DEEP_WORK", 190),
+            ("COMMUNICATION", 240),
+        ] {
+            let outcome = observe(&manager, category, seconds);
+            assert!(
+                outcome.is_none_or(|o| o.intervention.is_none()),
+                "an offer cleared the warm-up gate at t={seconds}"
+            );
+        }
+
+        // Warm-up expired and the four switches are still inside the window,
+        // but this observation is the return to the anchor: no offer.
+        let returned = observe(&manager, "DEEP_WORK", 310).unwrap();
+        assert!(
+            returned.intervention.is_none(),
+            "an offer fired on the observation that returned to the anchor"
+        );
+        assert!(
+            repo.intervention(&block_id).unwrap().is_none(),
+            "an offer was recorded for the return to the anchor"
+        );
+
+        // The next confident departure spends the deferred evidence instead.
+        let departed = observe(&manager, "COMMUNICATION", 330).unwrap();
+        let offer = departed
+            .intervention
+            .expect("the deferred offer fires on the next confident departure");
+        assert_eq!(offer.salience, InterventionSalience::Normal);
+        let recorded = repo
+            .intervention(&block_id)
+            .unwrap()
+            .expect("the departure offer is recorded");
+        assert_eq!(recorded.offered_at, at(330));
     }
 
     #[test]

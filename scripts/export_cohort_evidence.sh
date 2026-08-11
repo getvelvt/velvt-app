@@ -61,7 +61,17 @@ if ! sqlite3 -readonly "$WORK/snapshot.sqlite" \
   exit 1
 fi
 
-sqlite3 -readonly -header -csv "$WORK/snapshot.sqlite" > "$OUT" <<'SQL'
+# The header is written here rather than by sqlite3's -header, which emits
+# nothing at all when the result set is empty. A participant who used Velvt
+# but never triggered an offer is a real and wanted data point — the gate
+# never firing is one of the outcomes this cohort exists to detect — so their
+# export must be a valid CSV with a header and zero rows, not an empty file
+# that reads as a broken script. Keep this list in step with the aliases below.
+printf '%s\n' \
+    'block_id,purpose,intensity,planned_duration_seconds,block_phase,offered_at,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention' \
+    > "$OUT"
+
+sqlite3 -readonly -noheader -csv "$WORK/snapshot.sqlite" >> "$OUT" <<'SQL'
 SELECT
     i.block_id                                   AS block_id,
     b.purpose                                    AS purpose,
@@ -106,6 +116,20 @@ cat <<SUMMARY
 
 Wrote $ROWS intervention record(s) to:
   $OUT
+SUMMARY
+
+if (( ROWS == 0 )); then
+  cat <<'EMPTY'
+
+No offer ever fired on this Mac. That is a result, not a failure: it says the
+detector's thresholds were never met here, which is exactly the kind of thing
+this cohort is meant to find out. Please send the file anyway — an export with
+zero rows still counts, and leaving it out would quietly bias the numbers
+toward the people who did get interrupted.
+EMPTY
+fi
+
+cat <<SUMMARY
 
 Contains: block id, purpose, intensity, planned duration, offer time, anchor
 category, switch count, salience, outcome, and outcome time.

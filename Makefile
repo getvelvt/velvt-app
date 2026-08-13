@@ -145,7 +145,11 @@ alpha-dmg: check-swift-toolchain
 	./scripts/create_dmg.sh $(VELVT_APP_PATH) $(VELVT_DMG_PATH) production
 	codesign --force --sign "$(VELVT_CODESIGN_IDENTITY)" --timestamp $(VELVT_DMG_PATH)
 	./scripts/notarize_release.sh $(VELVT_DMG_PATH)
-	shasum -a 256 $(VELVT_DMG_PATH) > $(VELVT_DMG_PATH).sha256
+	# Recorded as a bare basename, matching create_dmg.sh's local-mode
+	# checksum and what verify_release.sh expects: the verifier cd's into
+	# the DMG's directory before running `shasum -c`, so a path-qualified
+	# entry here resolves to dist/dist/... and fails to open.
+	cd $(dir $(VELVT_DMG_PATH)) && shasum -a 256 $(notdir $(VELVT_DMG_PATH)) > $(notdir $(VELVT_DMG_PATH)).sha256
 	$(MAKE) verify-release-production
 	@echo ""
 	@echo "Notarized alpha DMG ready: $(VELVT_DMG_PATH)"
@@ -180,7 +184,11 @@ release: check-swift-toolchain
 	./scripts/create_dmg.sh $(VELVT_APP_PATH) $(VELVT_DMG_PATH) production
 	codesign --force --sign "$(VELVT_CODESIGN_IDENTITY)" --timestamp $(VELVT_DMG_PATH)
 	./scripts/notarize_release.sh $(VELVT_DMG_PATH)
-	shasum -a 256 $(VELVT_DMG_PATH) > $(VELVT_DMG_PATH).sha256
+	# Recorded as a bare basename, matching create_dmg.sh's local-mode
+	# checksum and what verify_release.sh expects: the verifier cd's into
+	# the DMG's directory before running `shasum -c`, so a path-qualified
+	# entry here resolves to dist/dist/... and fails to open.
+	cd $(dir $(VELVT_DMG_PATH)) && shasum -a 256 $(notdir $(VELVT_DMG_PATH)) > $(notdir $(VELVT_DMG_PATH)).sha256
 	$(MAKE) verify-release-production
 	$(MAKE) update-archive
 	$(MAKE) update-appcast

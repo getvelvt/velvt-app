@@ -84,6 +84,11 @@ private func makeManager(
         return u
     }()
 
+    // Write a fake bundled taxonomy — the helper resolves it beside its own
+    // executable, so install() must carry it into the support directory.
+    let taxonomyURL = tempDir.appendingPathComponent("abstraction-taxonomy-mvp-1.json")
+    try #"{"version":"test"}"#.write(to: taxonomyURL, atomically: true, encoding: .utf8)
+
     return ServiceManager(
         fileManager: .default,
         supportDir: support,
@@ -91,7 +96,8 @@ private func makeManager(
         registrar: registrar,
         bundledBinaryProvider: { binaryURL },
         bundledVersionProvider: { bundledVersionURL },
-        bundledTemplateProvider: { templateURL }
+        bundledTemplateProvider: { templateURL },
+        bundledTaxonomyProvider: { taxonomyURL }
     )
 }
 
@@ -235,6 +241,29 @@ final class ServiceManagerTests: XCTestCase {
         } else {
             XCTFail("state must be .failed when register() throws, got \(manager.state)")
         }
+    }
+
+    // MARK: 5b — Taxonomy travels with the binary
+
+    func testInstallCopiesTaxonomyBesideBinary() async throws {
+        let registrar = MockServiceRegistrar()
+        let manager = try makeManager(tempDir: tempDir, registrar: registrar)
+
+        await manager.ensureInstalled()
+
+        // The helper resolves its taxonomy as a sibling of its own executable
+        // and has no environment variable to fall back on under launchd. If
+        // this copy is missing it silently exits at startup, which takes
+        // sign-in down with it.
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: manager.taxonomyDest.path),
+            "install() must copy the taxonomy into the support directory"
+        )
+        XCTAssertEqual(
+            manager.taxonomyDest.deletingLastPathComponent(),
+            manager.binaryDest.deletingLastPathComponent(),
+            "taxonomy must be installed beside the binary, not merely somewhere"
+        )
     }
 
     // MARK: 6 — Plist template substitution and no EnvironmentVariables key

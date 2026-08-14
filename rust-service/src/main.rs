@@ -24,8 +24,18 @@ async fn main() {
     use velvt_service::config::ServiceConfig;
     use velvt_service::persistence::SqlitePersistence;
 
-    let Ok(config) = ServiceConfig::load() else {
-        return;
+    let config = match ServiceConfig::load() {
+        Ok(config) => config,
+        Err(error) => {
+            // Tracing cannot be used here: its filter comes from the config
+            // that just failed to load. Writing straight to stderr is the only
+            // way this surfaces at all — the LaunchAgent captures stderr to
+            // /tmp/velvt-service.err, and the Swift launcher sees the non-zero
+            // status. A silent `return` here made a mis-resolved socket path
+            // indistinguishable from a healthy start.
+            eprintln!("velvt-service: startup halted: {error}");
+            std::process::exit(78); // EX_CONFIG
+        }
     };
     let Ok(filter) =
         EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(&config.log_level))

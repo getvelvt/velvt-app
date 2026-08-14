@@ -141,6 +141,14 @@ public final class ServiceProcessLauncher {
         ) {
             serviceEnvironment["VELVT_ABSTRACTION_TAXONOMY_PATH"] = taxonomyURL.path
         }
+        // Pass the socket path the client will actually dial rather than
+        // trusting the helper's own default to agree with ours. Both sides
+        // derive from proto/ipc_socket_path, but a silent disagreement here
+        // presents as a service that never connects, so make it explicit.
+        if let socketPath = Bundle.main.object(forInfoDictionaryKey: "VelvtSocketPath") as? String,
+            !socketPath.isEmpty {
+            serviceEnvironment["VELVT_IPC_SOCKET_PATH"] = socketPath
+        }
 
         do {
             process = try processStarter(serviceURL, serviceEnvironment) { [weak self] status in

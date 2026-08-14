@@ -7,6 +7,14 @@ unexpectedly" immediately on launch.
 Related: [`macos-distribution.md`](macos-distribution.md),
 [`macos-signing-and-accessibility.md`](macos-signing-and-accessibility.md).
 
+> **Two distinct failures share this "works here, not there" shape.** This
+> document covers the launch crash, which is a *signing* problem. If the app
+> launches but sign-in and sign-up never complete, that is a different bug —
+> see [Sign-in fails on every Mac but the build
+> machine](#sign-in-fails-on-every-mac-but-the-build-machine) below. Both were
+> live at the same time in the 0.1.x alphas, so fixing one did not make the
+> other visible.
+
 ## Diagnosis
 
 The DMG contains an ad-hoc signed, un-notarized app. Verified on
@@ -177,15 +185,69 @@ Before sending the DMG to anyone:
 Test on both an Apple Silicon and an Intel Mac if you intend to support both —
 the universal binary makes that meaningful.
 
+## Sign-in fails on every Mac but the build machine
+
+Different symptom, different cause: the app launches and the menu bar works,
+but sign-up and sign-in never complete. Nothing is logged and there is no
+crash report.
+
+Swift makes no HTTP request in the auth flow — `velvt-service` performs cloud
+auth and device registration over IPC (see
+[`swift-client/auth.md`](swift-client/auth.md)). If the helper is not running,
+authentication cannot work, and the app looks otherwise healthy.
+
+The helper resolved two paths through `CARGO_MANIFEST_DIR`, which is baked in
+at compile time and points at the *build machine's* checkout:
+
+- `canonical_socket_path()` did a **runtime** `read_to_string` of
+  `<manifest>/../proto/ipc_socket_path`. On any machine without the checkout
+  this failed, so `ServiceConfig::load()` returned `Err`.
+- `taxonomy_path()` fell back to `<manifest>/resources/…json`, which the
+  LaunchAgent path had no environment variable to override.
+
+`main` then returned *before* tracing was initialised — the log filter comes
+from the config that just failed — so the process exited silently with no
+diagnostics at all.
+
+Fixed by making both resolve without the source tree:
+
+- The socket path is embedded with `include_str!` at compile time, so
+  `proto/ipc_socket_path` stays the single source of truth without a shipped
+  binary depending on that file existing.
+- The taxonomy resolves beside the running executable first. Inside
+  `Velvt.app` the helper and the taxonomy are siblings in `Contents/Resources`,
+  and `ServiceManager.install()` copies the taxonomy next to the binary so the
+  launchd path resolves the same way. No `EnvironmentVariables` key is
+  involved — Release builds still read no runtime environment variables.
+- A config-load failure now writes the offending setting to stderr and exits
+  `78` (`EX_CONFIG`) instead of returning silently.
+
+### Confirm the mechanism
+
+On the affected Mac, run the bundled helper directly:
+
+```bash
+/Applications/Velvt.app/Contents/Resources/velvt-service
+```
+
+Silence and an immediate exit means a config-load failure. After this fix the
+binary names the setting it could not resolve.
+
 ## Hardening follow-ups
 
 Worth doing so this cannot recur silently:
 
-- Make the ad-hoc fallback at `Makefile:209-211` opt-in via an explicit flag
-  (e.g. `VELVT_ALLOW_ADHOC=1`) instead of a silent `echo`, so an unavailable
-  identity fails the build.
+- ~~Make the ad-hoc fallback opt-in via an explicit flag instead of a silent
+  `echo`.~~ Done — `build-app` now fails unless `VELVT_ALLOW_ADHOC=1` is set.
 - Never publish an artifact from `make dmg`. Reserve `dist/Velvt.dmg` for local
   verification and use versioned filenames from `make release` for anything that
   leaves the machine.
 - Add the four verification commands in Step 4 to whatever checklist gates a
   release announcement.
+- Treat any `env!("CARGO_MANIFEST_DIR")` in a *runtime* path as a release
+  blocker. It is invisible on the build machine by construction. `include_str!`
+  and `std::env::current_exe()` are the two safe alternatives; see the
+  regression tests in `rust-service/src/config/mod.rs`.
+- Never let a startup path fail before logging is initialised. Prefer a
+  `eprintln!` + non-zero exit over a bare `return`, or the failure mode is
+  indistinguishable from a healthy start.

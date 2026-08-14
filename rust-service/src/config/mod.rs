@@ -86,7 +86,11 @@ impl ServiceConfig {
         let socket_path = match std::env::var("VELVT_IPC_SOCKET_PATH") {
             Ok(value) => value,
             Err(std::env::VarError::NotPresent) => canonical_socket_path()?,
-            Err(std::env::VarError::NotUnicode(_)) => return Err(ConfigError::Invalid),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError::Detail(
+                    "VELVT_IPC_SOCKET_PATH is not valid Unicode",
+                ))
+            }
         };
         let ipc_max_errors = parse_env("VELVT_IPC_MAX_ERRORS", 3)?;
         if ipc_max_errors == 0 {
@@ -267,20 +271,60 @@ fn parse_threshold() -> Result<f32, ConfigError> {
     }
 }
 
+const TAXONOMY_FILE_NAME: &str = "abstraction-taxonomy-mvp-1.json";
+
 fn taxonomy_path() -> Result<PathBuf, ConfigError> {
     match std::env::var("VELVT_ABSTRACTION_TAXONOMY_PATH") {
         Ok(value) => expand_home(&value),
-        Err(std::env::VarError::NotPresent) => Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources/abstraction-taxonomy-mvp-1.json")),
-        Err(std::env::VarError::NotUnicode(_)) => Err(ConfigError::Invalid),
+        Err(std::env::VarError::NotPresent) => Ok(default_taxonomy_path()),
+        Err(std::env::VarError::NotUnicode(_)) => Err(ConfigError::Detail(
+            "VELVT_ABSTRACTION_TAXONOMY_PATH is not valid Unicode",
+        )),
     }
 }
 
+/// Prefers the copy shipped beside the executable over the source tree.
+///
+/// Inside `Velvt.app` the helper and the taxonomy are siblings in
+/// `Contents/Resources`, so a distributed build resolves this without the
+/// launcher having to inject an environment variable. `CARGO_MANIFEST_DIR`
+/// remains only as a `cargo run` convenience and must never be the path a
+/// shipped binary depends on — it points at the build machine's checkout.
+fn default_taxonomy_path() -> PathBuf {
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            let beside_executable = directory.join(TAXONOMY_FILE_NAME);
+            if beside_executable.is_file() {
+                return beside_executable;
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join(TAXONOMY_FILE_NAME)
+}
+
+/// The canonical socket path, embedded at compile time from
+/// `proto/ipc_socket_path`.
+///
+/// This has to be `include_str!` and not a runtime read. The shipped binary
+/// lives in `Velvt.app` on machines with no checkout, so resolving
+/// `CARGO_MANIFEST_DIR` at runtime pointed at the build machine's source
+/// tree: `ServiceConfig::load()` failed on every Mac except the one that
+/// produced the build, and the service exited before it could log why.
+/// Embedding keeps `proto/ipc_socket_path` the single source of truth
+/// without making a distributed binary depend on that file existing.
+const CANONICAL_SOCKET_PATH: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../proto/ipc_socket_path"
+));
+
 fn canonical_socket_path() -> Result<String, ConfigError> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../proto/ipc_socket_path");
-    std::fs::read_to_string(path)
-        .map(|value| value.trim().to_owned())
-        .map_err(|_| ConfigError::Invalid)
+    let path = CANONICAL_SOCKET_PATH.trim();
+    if path.is_empty() {
+        return Err(ConfigError::Detail("proto/ipc_socket_path is empty"));
+    }
+    Ok(path.to_owned())
 }
 
 fn parse_env<T>(name: &str, default: T) -> Result<T, ConfigError>
@@ -300,7 +344,7 @@ fn expand_home(path: &str) -> Result<PathBuf, ConfigError> {
     };
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
-        .ok_or(ConfigError::Invalid)?;
+        .ok_or(ConfigError::Detail("neither HOME nor USERPROFILE is set"))?;
     Ok(PathBuf::from(home).join(relative))
 }
 
@@ -310,6 +354,12 @@ pub enum ConfigError {
     /// A required setting is missing or invalid.
     #[error("invalid service configuration")]
     Invalid,
+    /// A required setting is missing or invalid, naming the offending setting.
+    ///
+    /// Load failures are otherwise invisible: `main` returns before tracing is
+    /// initialised, because the log filter comes from the config that failed.
+    #[error("invalid service configuration: {0}")]
+    Detail(&'static str),
 }
 
 #[cfg(test)]
@@ -336,6 +386,36 @@ mod tests {
         assert_ne!(
             url, "https://api.velvt.test",
             "VELVT_API_BASE_URL_COMPILED must not be the old misconfiguration sentinel"
+        );
+    }
+
+    #[test]
+    fn canonical_socket_path_is_embedded_not_read_from_disk() {
+        // Regression: this used to `read_to_string` a path derived from
+        // CARGO_MANIFEST_DIR at runtime, so a shipped binary depended on the
+        // build machine's checkout still existing. Every other Mac failed
+        // ServiceConfig::load() and the service exited silently, which took
+        // sign-in and sign-up down with it. The value must resolve with no
+        // filesystem access at all.
+        let path = canonical_socket_path().expect("embedded socket path must resolve");
+        assert!(!path.is_empty(), "embedded socket path must not be empty");
+        assert!(
+            !path.contains(env!("CARGO_MANIFEST_DIR")),
+            "socket path must not leak the build machine's source tree: {path}"
+        );
+    }
+
+    #[test]
+    fn default_taxonomy_path_prefers_sibling_of_executable() {
+        // Inside Velvt.app the helper and the taxonomy are siblings in
+        // Contents/Resources. The current test binary has no such sibling, so
+        // this exercises the documented fallback ordering rather than asserting
+        // a bundle layout the test harness does not have.
+        let path = default_taxonomy_path();
+        assert!(
+            path.ends_with(TAXONOMY_FILE_NAME),
+            "taxonomy fallback must resolve to {TAXONOMY_FILE_NAME}, got {}",
+            path.display()
         );
     }
 

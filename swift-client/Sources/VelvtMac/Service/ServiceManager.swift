@@ -78,6 +78,7 @@ public final class ServiceManager: ObservableObject {
     let supportDir: URL      // internal for testing
     let binaryDest: URL      // internal for testing
     let versionSidecar: URL  // internal for testing
+    let taxonomyDest: URL    // internal for testing
     private let launchAgentsDir: URL
     let registrar: any ServiceRegistrar  // internal for testing
 
@@ -85,6 +86,8 @@ public final class ServiceManager: ObservableObject {
     var bundledBinaryProvider: () throws -> URL
     var bundledVersionProvider: () throws -> URL
     var bundledTemplateProvider: () throws -> URL
+    /// Optional so existing callers and tests need no bundled taxonomy fixture.
+    var bundledTaxonomyProvider: () throws -> URL?
 
     private static let log = Logger(subsystem: "com.velvt.mac", category: "ServiceManager")
 
@@ -117,6 +120,9 @@ public final class ServiceManager: ObservableObject {
                 guard let url = bundle.url(forResource: "com.velvt.service", withExtension: "plist.template")
                 else { throw ServiceManagerError.templateNotFoundInBundle }
                 return url
+            },
+            bundledTaxonomyProvider: {
+                bundle.url(forResource: "abstraction-taxonomy-mvp-1", withExtension: "json")
             }
         )
     }
@@ -129,18 +135,21 @@ public final class ServiceManager: ObservableObject {
         registrar: any ServiceRegistrar,
         bundledBinaryProvider: @escaping () throws -> URL,
         bundledVersionProvider: @escaping () throws -> URL,
-        bundledTemplateProvider: @escaping () throws -> URL
+        bundledTemplateProvider: @escaping () throws -> URL,
+        bundledTaxonomyProvider: @escaping () throws -> URL? = { nil }
     ) {
         self.fileManager = fileManager
         self.supportDir = supportDir
         self.binaryDest = supportDir.appendingPathComponent("velvt-service")
         self.versionSidecar = supportDir.appendingPathComponent("velvt-service.version")
+        self.taxonomyDest = supportDir.appendingPathComponent("abstraction-taxonomy-mvp-1.json")
         self.launchAgentsDir = launchAgentsDir
         self.plistName = "com.velvt.service.plist"
         self.registrar = registrar
         self.bundledBinaryProvider = bundledBinaryProvider
         self.bundledVersionProvider = bundledVersionProvider
         self.bundledTemplateProvider = bundledTemplateProvider
+        self.bundledTaxonomyProvider = bundledTaxonomyProvider
     }
 
     // MARK: - Public API (non-throwing; errors set state = .failed)
@@ -209,6 +218,16 @@ public final class ServiceManager: ObservableObject {
             try fileManager.removeItem(at: versionSidecar)
         }
         try fileManager.copyItem(at: bundledSidecar, to: versionSidecar)
+
+        // The helper resolves its taxonomy next to its own executable, so the
+        // copy has to travel with the binary. Without it a launchd-started
+        // service falls back to the build machine's source tree and exits.
+        if let bundledTaxonomy = try bundledTaxonomyProvider() {
+            if fileManager.fileExists(atPath: taxonomyDest.path) {
+                try fileManager.removeItem(at: taxonomyDest)
+            }
+            try fileManager.copyItem(at: bundledTaxonomy, to: taxonomyDest)
+        }
 
         try writeLaunchAgentPlist()
         try registrar.register()

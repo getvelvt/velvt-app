@@ -33,6 +33,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
     private var onboardingWindowController: OnboardingWindowController?
     private var notificationDeliveryCoordinator: NotificationDeliveryCoordinator?
+    private var interventionNotifier: InterventionNotifier?
     private var notificationResponseRouter: NotificationResponseRouter?
     private var menuBarDataLoader: MenuBarDataLoader?
     private var menuStatusViewModel: MenuStatusViewModel?
@@ -141,6 +142,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         notificationCoordinator.start(serverMessages: accountStateManager.serverMessages)
         notificationDeliveryCoordinator = notificationCoordinator
+
+        // A drift offer renders as an in-app card, which is a surface the
+        // person is not looking at when they have drifted. This carries the
+        // same offer to the notification centre.
+        let interventionNotifier = InterventionNotifier(
+            scheduler: scheduler,
+            permissionManager: permissionManager
+        )
+        interventionNotifier.start(snapshots: workBlocks.$snapshot)
+        self.interventionNotifier = interventionNotifier
 
         let menuBar = MenuBarController(
             presentation: permissionPresentation,

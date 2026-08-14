@@ -219,6 +219,13 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
     }
 
     func handle(userInfo: [AnyHashable: Any]) {
+        // A drift offer has no insight date. Opening the popover is the whole
+        // job: that is where the reply buttons live, and a reply is the only
+        // outcome the wrong-intervention rate can be computed from.
+        if userInfo[interventionNotificationUserInfoKey] as? Bool == true {
+            openPopover()
+            return
+        }
         guard let date = userInfo["insight_date"] as? String else { return }
         openPopover()
         scrollToDate(date)

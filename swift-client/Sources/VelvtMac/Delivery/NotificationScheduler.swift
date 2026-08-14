@@ -12,6 +12,28 @@ public protocol NotificationSchedulerProtocol: AnyObject {
     func cancelAll()
 }
 
+// MARK: - InterventionNotificationScheduling
+
+/// Delivers a live drift offer as an OS notification.
+///
+/// Deliberately separate from `NotificationSchedulerProtocol`: an insight
+/// notification carries an `insightDate` and a do-not-disturb window, and a
+/// drift offer has neither. Keeping the two seams apart means an intervention
+/// cannot accidentally be scheduled with insight semantics, and existing
+/// conformers of the insight protocol are untouched.
+///
+/// The copy is authored in Rust and passed through verbatim. Implementations
+/// must not retain or log `title`/`body` beyond building the request.
+public protocol InterventionNotificationScheduling: AnyObject {
+    @discardableResult
+    func scheduleIntervention(id: String, title: String, body: String) async -> Bool
+}
+
+/// `userInfo` marker identifying a notification as a drift offer, so the
+/// delegate opens the popover where the reply buttons live instead of trying
+/// to scroll to an insight date that does not exist.
+public let interventionNotificationUserInfoKey = "velvt_intervention"
+
 // MARK: - UNUserNotificationCenterProtocol
 
 /// Narrow seam over `UNUserNotificationCenter` so scheduling can be tested
@@ -84,6 +106,33 @@ public final class UNNotificationScheduler: NotificationSchedulerProtocol {
     }
 }
 
+extension UNNotificationScheduler: InterventionNotificationScheduling {
+    /// Delivers immediately: a drift offer is only true at the moment the
+    /// evidence was gathered, so a trigger that fired it later would be a
+    /// claim about a moment that has passed.
+    @discardableResult
+    public func scheduleIntervention(id: String, title: String, body: String) async -> Bool {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.userInfo = [interventionNotificationUserInfoKey: true]
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: id,
+            content: content,
+            trigger: nil
+        )
+        do {
+            try await center.add(request)
+            metrics?.incrementInterventions()
+            return true
+        } catch {
+            return false
+        }
+    }
+}
+
 // MARK: - FakeNotificationScheduler
 
 /// Test double recording scheduled payloads without touching
@@ -91,7 +140,8 @@ public final class UNNotificationScheduler: NotificationSchedulerProtocol {
 public final class FakeNotificationScheduler: NotificationSchedulerProtocol, @unchecked Sendable {
     public private(set) var scheduledPayloads: [NotificationPayload] = []
     public private(set) var cancelAllCallCount = 0
-    private let lock = NSLock()
+    fileprivate var scheduledInterventionsStorage: [ScheduledIntervention] = []
+    fileprivate let lock = NSLock()
 
     public init() {}
 
@@ -103,6 +153,27 @@ public final class FakeNotificationScheduler: NotificationSchedulerProtocol, @un
 
     public func cancelAll() {
         lock.withLock { cancelAllCallCount += 1 }
+    }
+}
+
+extension FakeNotificationScheduler: InterventionNotificationScheduling {
+    public struct ScheduledIntervention: Equatable, Sendable {
+        public let id: String
+        public let title: String
+        public let body: String
+    }
+
+    @discardableResult
+    public func scheduleIntervention(id: String, title: String, body: String) async -> Bool {
+        lock.withLock {
+            scheduledInterventionsStorage.append(
+                ScheduledIntervention(id: id, title: title, body: body))
+        }
+        return true
+    }
+
+    public var scheduledInterventions: [ScheduledIntervention] {
+        lock.withLock { scheduledInterventionsStorage }
     }
 }
 

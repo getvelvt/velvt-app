@@ -947,6 +947,11 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         case account
         case accessibility
         case notifications
+        /// Immediately after the notifications grant, because that grant alone
+        /// is not enough: macOS silences an `.active` notification under any
+        /// Focus mode, and the person doing deep work is the likeliest to have
+        /// one on. Asked once, and skipping changes nothing else.
+        case focusAllowance
         case tourInvitation
     }
 
@@ -960,6 +965,7 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private var flowModel: IntroFlowModel?
     private var accessibilityModel: AccessibilityPromptModel?
     private var notificationModel: NotificationPromptModel?
+    private var focusAllowanceModel: FocusAllowancePromptModel?
     private var launchStage: LaunchStage = .manual
     private var isFirstRunSequence = false
 
@@ -1028,6 +1034,8 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
             finishAccessibilityStage()
         case .notifications:
             finishNotificationStage()
+        case .focusAllowance:
+            finishFocusAllowanceStage()
         case .tourInvitation:
             finishWithoutTour()
         case .manual:
@@ -1197,6 +1205,32 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     private func finishNotificationStage() {
         guard launchStage == .notifications else { return }
+        dismissWindow()
+        // Only worth asking once ever. A returning user who already answered
+        // continues straight to the tour.
+        guard !FocusAllowancePromptModel().hasBeenAsked else {
+            launchStage = .tourInvitation
+            presentTourInvitationStage()
+            return
+        }
+        launchStage = .focusAllowance
+        presentFocusAllowanceStage()
+    }
+
+    private func presentFocusAllowanceStage() {
+        let model = FocusAllowancePromptModel()
+        focusAllowanceModel = model
+        presentWindow(
+            FocusAllowanceView(
+                model: model,
+                onContinue: { [weak self] in self?.finishFocusAllowanceStage() }
+            ),
+            title: "Let Velvt through your Focus"
+        )
+    }
+
+    private func finishFocusAllowanceStage() {
+        guard launchStage == .focusAllowance else { return }
         dismissWindow()
         launchStage = .tourInvitation
         presentTourInvitationStage()

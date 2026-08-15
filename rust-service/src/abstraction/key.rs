@@ -1,6 +1,9 @@
 use sha2::{Digest, Sha256};
 
 const KEY_DOMAIN: &[u8] = b"velvt:abstraction-key:v1";
+/// Separate domain so an app-scoped key can never collide with a
+/// (app, title) key, even for an app whose title is empty.
+const APP_KEY_DOMAIN: &[u8] = b"velvt:abstraction-app-key:v1";
 
 /// Local-only raw fields made available to abstraction plugins.
 pub struct RawKey {
@@ -38,6 +41,23 @@ impl RawKey {
         update_length_prefixed(&mut hasher, self.window_title.as_bytes());
         encode_hex(&hasher.finalize())
     }
+
+    /// Identity of the application alone, ignoring the window title.
+    ///
+    /// `stable_key` binds a correction to one exact (app, title) pair, so
+    /// correcting "Cursor — main.rs" teaches Velvt nothing about
+    /// "Cursor — lib.rs": the title changes, the hash changes, and the next
+    /// file is unclassified again. This key is what lets one correction cover
+    /// every window of an app.
+    ///
+    /// The title is deliberately excluded rather than normalized away — the
+    /// point is to be title-independent, not title-tolerant.
+    pub(crate) fn app_stable_key(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(APP_KEY_DOMAIN);
+        update_length_prefixed(&mut hasher, self.app_name.as_bytes());
+        encode_hex(&hasher.finalize())
+    }
 }
 
 fn update_length_prefixed(hasher: &mut Sha256, value: &[u8]) {
@@ -65,5 +85,33 @@ mod tests {
         let second = RawKey::new("ab".into(), "c".into()).stable_key();
 
         assert_ne!(first, second);
+    }
+
+    /// The whole point of the app key: one correction has to cover every
+    /// window of the app, not just the file that happened to be open.
+    #[test]
+    fn the_app_key_ignores_the_window_title() {
+        let editing = RawKey::new("Cursor".into(), "main.rs — velvt".into()).app_stable_key();
+        let reviewing = RawKey::new("Cursor".into(), "lib.rs — velvt".into()).app_stable_key();
+
+        assert_eq!(editing, reviewing);
+    }
+
+    #[test]
+    fn the_app_key_still_separates_different_apps() {
+        let editor = RawKey::new("Cursor".into(), String::new()).app_stable_key();
+        let chat = RawKey::new("Slack".into(), String::new()).app_stable_key();
+
+        assert_ne!(editor, chat);
+    }
+
+    /// A correction scoped to one window and a correction scoped to the whole
+    /// app are different facts, so their keys must never collide — including
+    /// for an app that reports no title at all.
+    #[test]
+    fn the_app_key_never_collides_with_the_pair_key() {
+        let titled = RawKey::new("Cursor".into(), String::new());
+
+        assert_ne!(titled.stable_key(), titled.app_stable_key());
     }
 }

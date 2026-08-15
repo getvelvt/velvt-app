@@ -1491,6 +1491,8 @@ fn raw_entry(id: &str, eligible: bool) -> velvt_service::persistence::RawEventEn
         occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
         duration_seconds: 5,
         upload_eligible: eligible,
+        app_stable_id: None,
+        app_scope_eligible: true,
     }
 }
 

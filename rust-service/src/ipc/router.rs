@@ -672,6 +672,29 @@ impl MessageRouter for R7Router {
                             )));
                         }
                     };
+                // Generalize the same correction to every window of the app.
+                // Without this the correction binds to one (app, title) hash
+                // and the next file opened in the same editor is unclassified
+                // again, so correcting never converges. Best-effort and
+                // deliberately not part of the failure chain below: a
+                // correction that took effect for the window the user was
+                // looking at must not be reported as failed because it could
+                // not also be generalized. Returns false for events that
+                // predate app-scoped corrections or are browser windows.
+                match abstraction_map.save_personal_app_override(
+                    &correction.event_id.to_string(),
+                    &correction.category,
+                    local_activity_name.as_deref(),
+                ) {
+                    Ok(generalized) => {
+                        tracing::debug!(generalized, "classification correction app-scope outcome")
+                    }
+                    Err(err) => tracing::warn!(
+                        error_code = "app_scoped_correction_failed",
+                        error = %err,
+                        "correction applied to the window but not generalized to the app"
+                    ),
+                }
                 if abstraction_map
                     .save_personal_override(
                         &correction.stable_id,
@@ -1072,6 +1095,8 @@ impl R7Router {
                     occurred_at,
                     duration_seconds,
                     upload_eligible,
+                    app_stable_id: Some(abstracted.app_stable_id().to_owned()),
+                    app_scope_eligible: abstracted.app_scope_eligible(),
                 };
                 if let Err(err) = self.raw_event_repo.insert(&entry) {
                     tracing::error!(

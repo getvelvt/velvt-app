@@ -36,6 +36,8 @@ fn make_event(n: u64) -> RawEventEntry {
         occurred_at: Utc::now(),
         duration_seconds: 30,
         upload_eligible: true,
+        app_stable_id: None,
+        app_scope_eligible: true,
     }
 }
 

@@ -42,6 +42,8 @@ fn bounded_seven_day_dashboard_query_is_indexed_and_measured() {
                 occurred_at: now - Duration::seconds(index * 300),
                 duration_seconds: 240,
                 upload_eligible: true,
+                app_stable_id: None,
+                app_scope_eligible: true,
             })
             .unwrap();
     }
@@ -156,6 +158,8 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
         occurred_at: timestamp(10),
         duration_seconds: 0,
         upload_eligible: true,
+        app_stable_id: None,
+        app_scope_eligible: true,
     };
 
     repository.insert(&event).unwrap();
@@ -201,6 +205,8 @@ fn local_display_aggregation_is_bounded_to_five_labels_plus_other() {
                 occurred_at: timestamp(10 + index as i64),
                 duration_seconds: 70 - (index as u64 * 10),
                 upload_eligible: true,
+                app_stable_id: None,
+                app_scope_eligible: true,
             })
             .unwrap();
     }
@@ -950,5 +956,129 @@ fn host_backoff_attempt_survives_repository_recreation() {
             .host_backoff_attempt("dev-api.getvelvt.com")
             .unwrap(),
         0
+    );
+}
+
+fn event_for_app(event_id: &str, app_stable_id: Option<&str>, eligible: bool) -> RawEventEntry {
+    RawEventEntry {
+        event_id: event_id.into(),
+        stable_id: format!("stable-{event_id}"),
+        label: "document:edit".into(),
+        local_display_label: None,
+        local_name_suggestion: None,
+        category: "UNLOGGED".into(),
+        taxonomy_version: "mvp-1".into(),
+        classification_tier: "fallback".into(),
+        classification_status: "unclassified".into(),
+        classification_confidence: "low".into(),
+        classification_source: "fallback".into(),
+        occurred_at: Utc::now(),
+        duration_seconds: 120,
+        upload_eligible: true,
+        app_stable_id: app_stable_id.map(str::to_owned),
+        app_scope_eligible: eligible,
+    }
+}
+
+/// A correction has to generalize to the app, so the next window of the same
+/// app is already classified rather than unclassified again.
+#[test]
+fn a_correction_generalizes_to_every_window_of_the_app() {
+    let database = database();
+    let events = database.raw_event_repo();
+    let app_key = "a".repeat(64);
+    events
+        .insert(&event_for_app("evt-1", Some(&app_key), true))
+        .unwrap();
+
+    let generalized = database
+        .abstraction_map_repo()
+        .save_personal_app_override("evt-1", "FOCUS_WORK", Some("Editing"))
+        .unwrap();
+
+    assert!(generalized, "an eligible event must generalize");
+    let stored = database
+        .abstraction_mapping_store()
+        .personal_app_override(&app_key)
+        .unwrap()
+        .expect("the app-scoped override is readable by the engine");
+    assert_eq!(stored.category, "FOCUS_WORK");
+    assert_eq!(stored.local_activity_name.as_deref(), Some("Editing"));
+}
+
+/// One browser tab being focus work says nothing about the next, so a
+/// correction there stays bound to the window it was made on.
+#[test]
+fn a_browser_window_correction_is_not_generalized_to_the_whole_browser() {
+    let database = database();
+    let app_key = "b".repeat(64);
+    database
+        .raw_event_repo()
+        .insert(&event_for_app("evt-2", Some(&app_key), false))
+        .unwrap();
+
+    let generalized = database
+        .abstraction_map_repo()
+        .save_personal_app_override("evt-2", "FOCUS_WORK", None)
+        .unwrap();
+
+    assert!(
+        !generalized,
+        "a site-scoped window must not recolour the app"
+    );
+    assert!(database
+        .abstraction_mapping_store()
+        .personal_app_override(&app_key)
+        .unwrap()
+        .is_none());
+}
+
+/// Events recorded before app-scoped corrections existed carry no app
+/// identity and cannot be generalized retroactively.
+#[test]
+fn an_event_without_an_app_identity_cannot_be_generalized() {
+    let database = database();
+    database
+        .raw_event_repo()
+        .insert(&event_for_app("evt-3", None, true))
+        .unwrap();
+
+    assert!(!database
+        .abstraction_map_repo()
+        .save_personal_app_override("evt-3", "FOCUS_WORK", None)
+        .unwrap());
+}
+
+/// Correcting the same app twice sharpens the existing rule rather than
+/// failing on the primary key, and counts the corrections.
+#[test]
+fn correcting_the_same_app_twice_updates_the_rule() {
+    let database = database();
+    let app_key = "c".repeat(64);
+    let events = database.raw_event_repo();
+    events
+        .insert(&event_for_app("evt-4", Some(&app_key), true))
+        .unwrap();
+    events
+        .insert(&event_for_app("evt-5", Some(&app_key), true))
+        .unwrap();
+    let maps = database.abstraction_map_repo();
+
+    assert!(maps
+        .save_personal_app_override("evt-4", "COMMUNICATION", None)
+        .unwrap());
+    assert!(maps
+        .save_personal_app_override("evt-5", "FOCUS_WORK", None)
+        .unwrap());
+
+    assert_eq!(
+        database
+            .abstraction_mapping_store()
+            .personal_app_override(&app_key)
+            .unwrap()
+            .unwrap()
+            .category,
+        "FOCUS_WORK",
+        "the most recent correction wins"
     );
 }

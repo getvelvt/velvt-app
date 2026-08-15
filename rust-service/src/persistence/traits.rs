@@ -28,6 +28,20 @@ pub trait AbstractionMapRepo: Send + Sync {
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<PersonalOverrideRecord>, u64), PersistenceError>;
+    /// Generalizes a correction to every window of the application the event
+    /// was classified under.
+    ///
+    /// A no-op returning `Ok(false)` when the event predates app-scoped
+    /// corrections (null `app_stable_id`) or is not eligible for them — a
+    /// browser window whose identity came from the site, where one tab says
+    /// nothing about the next.
+    fn save_personal_app_override(
+        &self,
+        event_id: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<bool, PersistenceError>;
+
     fn remove_personal_override(&self, stable_id: &str) -> Result<bool, PersistenceError>;
     fn reset_personal_overrides(&self) -> Result<u64, PersistenceError>;
     fn personal_override_count(&self) -> Result<u64, PersistenceError>;

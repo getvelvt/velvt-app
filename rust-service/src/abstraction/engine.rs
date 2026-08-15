@@ -33,6 +33,16 @@ pub struct AbstractedEvent {
     local_display_label: Option<String>,
     #[serde(skip)]
     local_name_suggestion: Option<String>,
+    /// Identity of the application this event was classified under, so a later
+    /// correction can be generalized to the app. The raw application name is
+    /// discarded after abstraction and is not recoverable at correction time.
+    #[serde(skip)]
+    app_stable_id: String,
+    /// Whether generalizing a correction to the whole app is meaningful. False
+    /// for a browser window carrying a site context: one tab being focus work
+    /// says nothing about the next.
+    #[serde(skip)]
+    app_scope_eligible: bool,
 }
 
 impl std::fmt::Debug for AbstractedEvent {
@@ -93,6 +103,12 @@ impl AbstractedEvent {
     }
     pub fn local_name_suggestion(&self) -> Option<&str> {
         self.local_name_suggestion.as_deref()
+    }
+    pub fn app_stable_id(&self) -> &str {
+        &self.app_stable_id
+    }
+    pub fn app_scope_eligible(&self) -> bool {
+        self.app_scope_eligible
     }
 }
 
@@ -227,6 +243,10 @@ impl AbstractionEngine {
             classification_source: classification.source(),
             local_display_label,
             local_name_suggestion,
+            app_stable_id: app_stable_key,
+            // A site context means the window's identity came from the page,
+            // not the app, so the app tells us nothing about the next window.
+            app_scope_eligible: focused_site.is_none(),
         })
     }
 }

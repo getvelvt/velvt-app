@@ -901,6 +901,8 @@ mod tests {
             occurred_at: DateTime::from_timestamp(at, 0).unwrap(),
             duration_seconds: 0,
             upload_eligible: true,
+            app_stable_id: None,
+            app_scope_eligible: true,
         }
     }
 

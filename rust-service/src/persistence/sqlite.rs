@@ -552,6 +552,32 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
             .map_err(Into::into)
     }
 
+    fn save_personal_app_override(
+        &self,
+        event_id: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Sourced from the event rather than a caller-supplied key: the raw
+        // application name is discarded after abstraction, so the event row is
+        // the only place the app identity survives. The eligibility gate keeps
+        // a single browser tab from recolouring an entire browsing session.
+        let changed = connection.execute(
+            "INSERT INTO personal_app_override(app_key_hash, category, activity_name)
+             SELECT app_stable_id, ?2, ?3 FROM raw_event_buffer
+             WHERE event_id = ?1 AND app_stable_id IS NOT NULL AND app_scope_eligible = 1
+             ON CONFLICT(app_key_hash) DO UPDATE SET
+                category = excluded.category,
+                activity_name =
+                    COALESCE(excluded.activity_name, personal_app_override.activity_name),
+                correction_count = personal_app_override.correction_count + 1,
+                updated_at = unixepoch()",
+            params![event_id, category, local_activity_name],
+        )?;
+        Ok(changed > 0)
+    }
+
     fn save_personal_override(
         &self,
         stable_id: &str,
@@ -745,8 +771,8 @@ impl RawEventRepo for SqliteRawEventRepo {
         let connection = self.0.connection()?;
         connection.execute(
             "INSERT INTO raw_event_buffer(
-                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible, app_stable_id, app_scope_eligible
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 event.event_id,
                 event.stable_id,
@@ -761,7 +787,9 @@ impl RawEventRepo for SqliteRawEventRepo {
                 event.classification_source,
                 event.occurred_at.timestamp(),
                 event.duration_seconds,
-                event.upload_eligible
+                event.upload_eligible,
+                event.app_stable_id,
+                event.app_scope_eligible
             ],
         )?;
         Ok(())
@@ -1772,6 +1800,10 @@ fn raw_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEventEntry
         occurred_at: timestamp_from_row(row, 11)?,
         duration_seconds: row.get(12)?,
         upload_eligible: row.get(13)?,
+        // Not selected by the upload-queue reads this mapper serves: the app
+        // identity is used only to generalize a correction, never uploaded.
+        app_stable_id: None,
+        app_scope_eligible: true,
     })
 }
 

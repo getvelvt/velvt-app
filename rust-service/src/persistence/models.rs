@@ -58,6 +58,14 @@ pub struct RawEventEntry {
     /// Whether this locally retained event may enter the cloud upload queue.
     /// Events collected before authentication remain permanently local-only.
     pub upload_eligible: bool,
+    /// Application identity this event was classified under, so a correction
+    /// can be generalized to the app without retaining the raw application
+    /// name. Null for rows written before app-scoped corrections existed;
+    /// those events cannot be generalized retroactively.
+    pub app_stable_id: Option<String>,
+    /// Whether generalizing a correction to the whole app is meaningful.
+    /// False for a browser window carrying a site context.
+    pub app_scope_eligible: bool,
 }
 
 impl std::fmt::Debug for RawEventEntry {

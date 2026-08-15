@@ -471,6 +471,14 @@ private struct QueuedEventCorrectionRow: View {
                         .font(.caption)
                 }
             }
+            // A correction now generalizes to the application, so the next
+            // window of the same app is already classified. Said plainly here
+            // because a label silently changing across windows the user never
+            // touched reads as a malfunction, not as learning.
+            Text(Self.scopeExplanation)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -482,6 +490,17 @@ private struct QueuedEventCorrectionRow: View {
         let trimmed = activityName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    /// States the rule rather than the per-event outcome.
+    ///
+    /// Whether a specific event can generalize is `app_scope_eligible`, which
+    /// lives in Rust and is not on the wire, so the client cannot say which
+    /// case a given row is. The rule itself is deterministic and true in every
+    /// case, which is enough for the user to predict what saving will do — and
+    /// the second sentence is the escape hatch when the guess is wrong.
+    fileprivate static let scopeExplanation =
+        "Applies to every window of this app. Browser windows apply to that site only. "
+        + "Correcting an individual window later overrides it just there."
 
     fileprivate static let categories = [
         "FOCUS_WORK",

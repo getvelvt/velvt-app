@@ -148,7 +148,22 @@ impl AbstractionEngine {
         if let Some(observer) = &self.semantic_observer {
             observer.observe(&stable_key, raw_key.app_name(), &classifier_context);
         }
-        let personal_override = self.store.personal_override(&stable_key)?;
+        // Correction precedence, most specific first:
+        //   1. this exact window        (`personal_override`)
+        //   2. this application         (`personal_app_override`)
+        //   3. classifier plugins
+        //
+        // The app rung is what makes a correction stick. Without it a
+        // correction binds to one (app, title) hash, so the next file opened
+        // in the same editor is unclassified again and no amount of correcting
+        // converges. A window-scoped correction still wins, so "all of Cursor
+        // is work, except this one window" remains expressible.
+        let app_stable_key = raw_key.app_stable_key();
+        let window_override = self.store.personal_override(&stable_key)?;
+        let personal_override = match window_override {
+            Some(found) => Some(found),
+            None => self.store.personal_app_override(&app_stable_key)?,
+        };
         let classification = match &personal_override {
             Some(personal_override) => ClassificationResult::with_quality(
                 override_label_for_category(&personal_override.category)

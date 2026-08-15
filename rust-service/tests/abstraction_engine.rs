@@ -795,3 +795,101 @@ fn invalid_taxonomy_returns_clear_error() {
         "taxonomy has no seed application entries"
     );
 }
+
+/// The correction ladder's whole purpose: one correction has to cover the app,
+/// not the one window that happened to be open when the user made it.
+///
+/// Before app-scoped overrides, a correction bound to the (app, title) hash,
+/// so the next file opened in the same editor produced a different hash and
+/// fell back to the classifier. No amount of correcting converged.
+#[test]
+fn an_app_scoped_correction_survives_a_window_title_change() {
+    let store = Arc::new(InMemoryMappingStore::default());
+    let app_key = velvt_service::abstraction::app_stable_key_for("Obscure Editor");
+    store.set_app_override(
+        &app_key,
+        velvt_service::abstraction::PersonalOverride {
+            category: "FOCUS_WORK".to_owned(),
+            local_activity_name: None,
+        },
+    );
+    let engine = AbstractionEngine::builder(store, Taxonomy::from_builtin().unwrap())
+        .register_builtin_plugins()
+        .build()
+        .unwrap();
+
+    for title in ["main.rs — velvt", "lib.rs — velvt", "an entirely new file"] {
+        let event = engine.process(raw_event("Obscure Editor", title)).unwrap();
+        assert_eq!(
+            event.category(),
+            "FOCUS_WORK",
+            "the correction stopped applying when the window title changed to {title:?}"
+        );
+    }
+}
+
+/// Naming one window is a more specific statement of intent than naming the
+/// app, so "all of Cursor is work, except this one window" stays expressible.
+#[test]
+fn a_window_scoped_correction_outranks_the_app_scoped_one() {
+    let store = Arc::new(InMemoryMappingStore::default());
+    store.set_app_override(
+        &velvt_service::abstraction::app_stable_key_for("Obscure Editor"),
+        velvt_service::abstraction::PersonalOverride {
+            category: "FOCUS_WORK".to_owned(),
+            local_activity_name: None,
+        },
+    );
+    store.set_override(
+        &velvt_service::abstraction::stable_key_for("Obscure Editor", "release notes"),
+        velvt_service::abstraction::PersonalOverride {
+            category: "COMMUNICATION".to_owned(),
+            local_activity_name: None,
+        },
+    );
+    let engine = AbstractionEngine::builder(store, Taxonomy::from_builtin().unwrap())
+        .register_builtin_plugins()
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        engine
+            .process(raw_event("Obscure Editor", "release notes"))
+            .unwrap()
+            .category(),
+        "COMMUNICATION"
+    );
+    assert_eq!(
+        engine
+            .process(raw_event("Obscure Editor", "main.rs"))
+            .unwrap()
+            .category(),
+        "FOCUS_WORK",
+        "the window-scoped correction must not leak onto other windows"
+    );
+}
+
+/// An app-scoped correction for one app must not colour a different app.
+#[test]
+fn an_app_scoped_correction_does_not_leak_across_apps() {
+    let store = Arc::new(InMemoryMappingStore::default());
+    store.set_app_override(
+        &velvt_service::abstraction::app_stable_key_for("Obscure Editor"),
+        velvt_service::abstraction::PersonalOverride {
+            category: "FOCUS_WORK".to_owned(),
+            local_activity_name: None,
+        },
+    );
+    let engine = AbstractionEngine::builder(store, Taxonomy::from_builtin().unwrap())
+        .register_builtin_plugins()
+        .build()
+        .unwrap();
+
+    assert_ne!(
+        engine
+            .process(raw_event("Some Other App", "main.rs"))
+            .unwrap()
+            .category(),
+        "FOCUS_WORK"
+    );
+}

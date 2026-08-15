@@ -63,6 +63,16 @@ pub trait AbstractionMappingStore: Send + Sync {
     /// Returns a user-selected category for the exact local app/title key.
     fn personal_override(&self, stable_key: &str) -> Result<Option<PersonalOverride>, StoreError>;
 
+    /// Returns a user-selected category for the application, whatever window
+    /// is open.
+    ///
+    /// Consulted only when no window-scoped override exists: naming one window
+    /// is a more specific statement of intent than naming the app, so it wins.
+    fn personal_app_override(
+        &self,
+        app_stable_key: &str,
+    ) -> Result<Option<PersonalOverride>, StoreError>;
+
     /// Returns the existing ID for a key or atomically persists the fresh mapping.
     fn resolve_id(&self, mapping: MappingResolution<'_>) -> Result<String, StoreError>;
 
@@ -79,6 +89,23 @@ pub trait AbstractionMappingStore: Send + Sync {
 pub struct InMemoryMappingStore {
     mappings: Mutex<HashMap<String, String>>,
     overrides: Mutex<HashMap<String, PersonalOverride>>,
+    app_overrides: Mutex<HashMap<String, PersonalOverride>>,
+}
+
+impl InMemoryMappingStore {
+    /// Test seam: records a window-scoped correction.
+    pub fn set_override(&self, stable_key: &str, value: PersonalOverride) {
+        if let Ok(mut overrides) = self.overrides.lock() {
+            overrides.insert(stable_key.to_owned(), value);
+        }
+    }
+
+    /// Test seam: records an app-scoped correction.
+    pub fn set_app_override(&self, app_stable_key: &str, value: PersonalOverride) {
+        if let Ok(mut overrides) = self.app_overrides.lock() {
+            overrides.insert(app_stable_key.to_owned(), value);
+        }
+    }
 }
 
 impl AbstractionMappingStore for InMemoryMappingStore {
@@ -88,6 +115,18 @@ impl AbstractionMappingStore for InMemoryMappingStore {
             .lock()
             .map_err(|_| StoreError::Unavailable)?
             .get(stable_key)
+            .cloned())
+    }
+
+    fn personal_app_override(
+        &self,
+        app_stable_key: &str,
+    ) -> Result<Option<PersonalOverride>, StoreError> {
+        Ok(self
+            .app_overrides
+            .lock()
+            .map_err(|_| StoreError::Unavailable)?
+            .get(app_stable_key)
             .cloned())
     }
 

@@ -283,6 +283,28 @@ impl crate::abstraction::AbstractionMappingStore for SqliteAbstractionMapRepo {
             .map_err(Into::into)
     }
 
+    fn personal_app_override(
+        &self,
+        app_stable_key: &str,
+    ) -> Result<Option<crate::abstraction::PersonalOverride>, crate::abstraction::StoreError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT category, activity_name FROM personal_app_override
+                 WHERE app_key_hash = ?1",
+                [app_stable_key],
+                |row| {
+                    Ok(crate::abstraction::PersonalOverride {
+                        category: row.get(0)?,
+                        local_activity_name: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+            .map_err(Into::into)
+    }
+
     fn resolve_id(
         &self,
         request: crate::abstraction::MappingResolution<'_>,

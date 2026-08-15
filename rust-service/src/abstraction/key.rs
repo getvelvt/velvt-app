@@ -60,6 +60,19 @@ impl RawKey {
     }
 }
 
+/// The window-scoped correction key.
+///
+/// `stable_context` is the focused site for a browser window and the raw
+/// window title otherwise — the same value the engine keys on.
+pub fn stable_key_for(app_name: &str, stable_context: &str) -> String {
+    RawKey::new(app_name.to_owned(), stable_context.to_owned()).stable_key()
+}
+
+/// The app-scoped correction key: the identity one correction generalizes to.
+pub fn app_stable_key_for(app_name: &str) -> String {
+    RawKey::new(app_name.to_owned(), String::new()).app_stable_key()
+}
+
 fn update_length_prefixed(hasher: &mut Sha256, value: &[u8]) {
     hasher.update((value.len() as u64).to_be_bytes());
     hasher.update(value);

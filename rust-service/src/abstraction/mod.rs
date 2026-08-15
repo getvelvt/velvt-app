@@ -12,7 +12,7 @@ mod taxonomy;
 
 pub(crate) use engine::override_label_for_category;
 pub use engine::{AbstractedEvent, AbstractionEngine, AbstractionEngineBuilder};
-pub use key::RawKey;
+pub use key::{app_stable_key_for, stable_key_for, RawKey};
 #[cfg(feature = "onnx")]
 pub use onnx::OrtEmbeddingModel;
 pub use plugin::{

@@ -472,7 +472,10 @@ final class PermissionModuleTests: XCTestCase {
     }
 
     @MainActor
-    func testCompletedOnboardingPresentsIntroAndRoutesToTourOnNormalLaunch() {
+    /// An introduction that reappears after it has been read is a modal in
+    /// the way of the app. A completed installation launches straight into
+    /// Velvt; replaying is available from Settings for anyone who wants it.
+    func testCompletedOnboardingPresentsNothingOnLaunch() {
         let permissions = FakePermissionManager()
         let presentation = PermissionPresentationModel(
             permissionManager: permissions,
@@ -490,13 +493,16 @@ final class PermissionModuleTests: XCTestCase {
 
         controller.presentOnLaunch()
 
-        XCTAssertTrue(controller.hasPresentedWindow)
-        XCTAssertTrue(presentation.showsOnboarding)
-
-        XCTAssertTrue(controller.windowShouldClose(NSWindow()))
-        XCTAssertFalse(controller.hasPresentedWindow)
+        XCTAssertFalse(
+            controller.hasPresentedWindow,
+            "a completed installation must launch straight into the app")
         XCTAssertFalse(presentation.showsOnboarding)
-        XCTAssertEqual(tourStartCount, 1)
+        XCTAssertEqual(tourStartCount, 0)
+
+        // Still reachable deliberately, from Settings.
+        controller.presentReplay()
+        XCTAssertTrue(controller.hasPresentedWindow)
+        controller.close()
     }
 
     @MainActor

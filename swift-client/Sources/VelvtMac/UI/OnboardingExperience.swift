@@ -1000,12 +1000,20 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         presentIntro(replay: false)
     }
 
-    /// Every launch replays the short introduction. Established installations
-    /// continue directly into the live guided tour; only a true first run
-    /// includes account and permission setup.
+    /// Presents the first-run sequence, once, on the first launch that has not
+    /// completed it.
+    ///
+    /// This previously called `replayOnboarding()` unconditionally, which
+    /// forced `showsOnboarding` back to true and reintroduced the window on
+    /// every single launch. An introduction that reappears after it has been
+    /// read is not an introduction; it is a modal in the way of the app, and
+    /// the one thing a returning user is certain not to need.
+    ///
+    /// Replaying deliberately is still available from Settings, which is where
+    /// someone who actually wants it will look — see `presentReplay()`.
     public func presentOnLaunch() {
-        isFirstRunSequence = presentation.showsOnboarding
-        presentation.replayOnboarding()
+        guard presentation.showsOnboarding else { return }
+        isFirstRunSequence = true
         launchStage = .intro
         presentIntro(replay: false)
     }

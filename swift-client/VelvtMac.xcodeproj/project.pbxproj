@@ -16,6 +16,7 @@
 		16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */; };
 		18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30FB3399A5C45808376ACF1 /* EventRelay.swift */; };
 		1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945E765C974B4023B7362068 /* NotificationScheduler.swift */; };
+		E5B71D3A9C4F42188A03D7E6 /* NudgePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D9F4C8B60A34E17B5CA3F82 /* NudgePreviewView.swift */; };
 		D4E9A1C60B7F4238A15C6E9B /* FocusAllowancePrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C2A8F5E31D64B0FA98E23C7 /* FocusAllowancePrompt.swift */; };
 		A1C4E7F2B93D4E118C6A5D30 /* InterventionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */; };
 		38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93C055AD72C0443A8CD98C13 /* PermissionManager.swift */; };
@@ -79,6 +80,7 @@
 		928E12E20A85E864E9B7E683 /* ConfigModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfigModule.swift; path = Config/ConfigModule.swift; sourceTree = "<group>"; };
 		93C055AD72C0443A8CD98C13 /* PermissionManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionManager.swift; path = Permissions/PermissionManager.swift; sourceTree = "<group>"; };
 		945E765C974B4023B7362068 /* NotificationScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationScheduler.swift; path = Delivery/NotificationScheduler.swift; sourceTree = "<group>"; };
+		2D9F4C8B60A34E17B5CA3F82 /* NudgePreviewView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NudgePreviewView.swift; path = UI/NudgePreviewView.swift; sourceTree = "<group>"; };
 		7C2A8F5E31D64B0FA98E23C7 /* FocusAllowancePrompt.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FocusAllowancePrompt.swift; path = UI/FocusAllowancePrompt.swift; sourceTree = "<group>"; };
 		3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InterventionNotifier.swift; path = Delivery/InterventionNotifier.swift; sourceTree = "<group>"; };
 		9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceModule.swift; path = Device/DeviceModule.swift; sourceTree = "<group>"; };
@@ -171,6 +173,7 @@
 				E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */,
 				5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */,
 				945E765C974B4023B7362068 /* NotificationScheduler.swift */,
+				2D9F4C8B60A34E17B5CA3F82 /* NudgePreviewView.swift */,
 				7C2A8F5E31D64B0FA98E23C7 /* FocusAllowancePrompt.swift */,
 				3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */,
 				F30FB3399A5C45808376ACF1 /* EventRelay.swift */,
@@ -363,6 +366,7 @@
 				E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */,
 				C6FEFBE12367472398E2ECBC /* NotificationDeliveryCoordinator.swift in Sources */,
 				1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */,
+				E5B71D3A9C4F42188A03D7E6 /* NudgePreviewView.swift in Sources */,
 				D4E9A1C60B7F4238A15C6E9B /* FocusAllowancePrompt.swift in Sources */,
 				A1C4E7F2B93D4E118C6A5D30 /* InterventionNotifier.swift in Sources */,
 				18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */,

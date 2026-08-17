@@ -331,9 +331,9 @@ public struct FirstRunExperienceView: View {
         case .welcome:
             IntroPage(
                 systemImage: "hand.raised.fill",
-                title: "Protect meaningful work from digital drift.",
+                title: "Velvt learns how your attention breaks.",
                 body:
-                    "Velvt is a private focus coach for the Mac. It helps you notice broad patterns, protect a useful stretch of work, and recover without judgment."
+                    "It notices when you have drifted from the work you sat down to do, and offers one way back before the block is lost. Raw work context never leaves your Mac."
             )
         case .privacy:
             VStack(alignment: .leading, spacing: 18) {
@@ -352,8 +352,9 @@ public struct FirstRunExperienceView: View {
             VStack(alignment: .leading, spacing: 18) {
                 IntroPage(
                     systemImage: "sparkles",
-                    title: "A modest loop for meaningful work.",
-                    body: "Velvt supports the work you already do; it does not grade it."
+                    title: "One nudge, at the moment it helps.",
+                    body:
+                        "Velvt interrupts at most once per block, and only when the evidence is unambiguous. It counts the times you came back, never the times you did not."
                 )
                 capability(
                     "timer", "Start a meaningful work block with an optional local intention.")
@@ -952,6 +953,10 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         /// Focus mode, and the person doing deep work is the likeliest to have
         /// one on. Asked once, and skipping changes nothing else.
         case focusAllowance
+        /// Shows the drift offer once before the user has to earn one. The
+        /// offer is gated behind real evidence, so someone can use Velvt for a
+        /// week without seeing the only thing it does.
+        case nudgePreview
         case tourInvitation
     }
 
@@ -1036,6 +1041,8 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
             finishNotificationStage()
         case .focusAllowance:
             finishFocusAllowanceStage()
+        case .nudgePreview:
+            finishNudgePreviewStage()
         case .tourInvitation:
             finishWithoutTour()
         case .manual:
@@ -1231,6 +1238,20 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     private func finishFocusAllowanceStage() {
         guard launchStage == .focusAllowance else { return }
+        dismissWindow()
+        launchStage = .nudgePreview
+        presentNudgePreviewStage()
+    }
+
+    private func presentNudgePreviewStage() {
+        presentWindow(
+            NudgePreviewView(onContinue: { [weak self] in self?.finishNudgePreviewStage() }),
+            title: "What Velvt does"
+        )
+    }
+
+    private func finishNudgePreviewStage() {
+        guard launchStage == .nudgePreview else { return }
         dismissWindow()
         launchStage = .tourInvitation
         presentTourInvitationStage()

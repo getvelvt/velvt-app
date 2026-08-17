@@ -548,6 +548,22 @@ public struct FocusFragmentationView: View {
           .font(.callout.weight(.semibold))
           .fixedSize(horizontal: false, vertical: true)
 
+        // Roadmap invariant 6: recoveries are the headline personal stat,
+        // never streaks. Every other tool can say where the time went; only
+        // Velvt knows the person came back. It is also a number that cannot be
+        // lost — it only ever goes up, so it cannot be used against them.
+        // Stated as a fact, not praise: the analyst voice does not congratulate.
+        if focus.recoveryCount > 0 {
+          Label(
+            focus.recoveryCount == 1
+              ? "You came back once." : "You came back \(focus.recoveryCount) times.",
+            systemImage: "arrow.uturn.backward"
+          )
+          .font(.callout.weight(.semibold))
+          .foregroundStyle(Color.velvtPink)
+          .fixedSize(horizontal: false, vertical: true)
+        }
+
         Divider().opacity(0.15)
 
         HStack(spacing: 6) {

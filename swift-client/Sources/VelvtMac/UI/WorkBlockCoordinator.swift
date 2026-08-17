@@ -11,6 +11,9 @@ import Foundation
 public final class WorkBlockCoordinator: ObservableObject {
   @Published public private(set) var snapshot: WorkBlockSnapshot?
   @Published public private(set) var commandError: String?
+  /// The Rust-authored quiet-hours offer, present until the user replies.
+  /// Swift renders it verbatim and never re-derives the pattern.
+  @Published public private(set) var quietHoursOffer: QuietHoursOffer?
 
   private let ipcClient: any IPCClientProtocol
   private var cancellables = Set<AnyCancellable>()
@@ -33,6 +36,8 @@ public final class WorkBlockCoordinator: ObservableObject {
         case .workBlockState(let snapshot):
           self?.snapshot = snapshot
           self?.commandError = nil
+        case .quietHoursOffer(let offer):
+          self?.quietHoursOffer = offer
         case .errorResponse(let error)
         where error.code.hasPrefix("work_block_")
           || error.code.hasPrefix("invalid_work_block_"):
@@ -115,7 +120,16 @@ public final class WorkBlockCoordinator: ObservableObject {
     send(.reportInterventionOutcome(.init(blockID: blockID, response: response)))
   }
 
+  /// Sends the one-tap reply to a quiet-hours offer and dismisses the card.
+  /// Declining changes nothing else; the service remembers it locally.
+  public func respondToQuietHoursOffer(accepted: Bool) {
+    guard quietHoursOffer != nil else { return }
+    quietHoursOffer = nil
+    send(.respondQuietHoursOffer(.init(accepted: accepted)))
+  }
+
   public func clearLocalData() {
+    quietHoursOffer = nil
     send(.clearWorkBlockData)
   }
 

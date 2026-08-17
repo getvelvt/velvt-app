@@ -12,15 +12,15 @@ use uuid::Uuid;
 use velvt_shared_types::{
     ActiveIntervention, ClassificationConfidence, ClassificationStatus, ConfidenceLevel,
     InterventionResponse, InterventionSalience, StartWorkBlock, WorkBlockCoverage,
-    WorkBlockIntensity, WorkBlockLifecycleEvent, WorkBlockNextAction, WorkBlockPhase,
-    WorkBlockPurpose, WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
+    WorkBlockDndOutcome, WorkBlockIntensity, WorkBlockLifecycleEvent, WorkBlockNextAction,
+    WorkBlockPhase, WorkBlockPurpose, WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
 };
 
 use crate::{
     delivery::PushAdapter,
     persistence::{
         PersistenceError, WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome,
-        WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
+        WorkBlockObservation, WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
     },
 };
 
@@ -41,7 +41,7 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// constrains `action_id`, so an unregistered action cannot be persisted.
 const DRIFT_ACTION_ID: &str = "protect_next_10";
 const DRIFT_PROTECT_MINUTES: u32 = 10;
-const DRIFT_TITLE: &str = "Your work block is still running";
+const DRIFT_TITLE: &str = "Your work block is running";
 
 /// Backoff after a pushed-away offer.
 ///
@@ -56,6 +56,16 @@ const BACKOFF_MAX_SECONDS: i64 = 24 * 60 * 60;
 /// How far back the streak is counted. Larger than any plausible streak, so the
 /// bound is a query limit rather than a policy.
 const BACKOFF_HISTORY_LIMIT: usize = 20;
+
+/// Read-only view of the coarse, device-local Focus/DND evidence record
+/// (roadmap invariant 5; D2). Swift only observes and reports transitions;
+/// Rust owns the record, and this seam is how the work-block manager
+/// consults it for delivery and completion decisions. The answer is a
+/// single coarse boolean — no mode name, schedule, or configuration exists
+/// behind it.
+pub trait FocusStateSource: Send + Sync {
+    fn is_focus_active(&self, at: DateTime<Utc>) -> bool;
+}
 
 /// A single approved, device-local intervention offer. Copy is authored here,
 /// beside the evidence that justifies it; Swift renders it verbatim.
@@ -98,13 +108,31 @@ pub enum WorkBlockError {
 #[derive(Clone)]
 pub struct WorkBlockManager {
     repo: Arc<dyn WorkBlockRepo>,
+    focus: Option<Arc<dyn FocusStateSource>>,
     deadline: watch::Sender<Option<DateTime<Utc>>>,
 }
 
 impl WorkBlockManager {
     pub fn new(repo: Arc<dyn WorkBlockRepo>) -> Self {
         let (deadline, _) = watch::channel(None);
-        Self { repo, deadline }
+        Self {
+            repo,
+            focus: None,
+            deadline,
+        }
+    }
+
+    /// Attaches the Focus/DND evidence source. Without one the manager
+    /// behaves exactly as before: no suppression, no DND outcomes.
+    pub fn with_focus_source(mut self, focus: Arc<dyn FocusStateSource>) -> Self {
+        self.focus = Some(focus);
+        self
+    }
+
+    fn focus_active(&self, at: DateTime<Utc>) -> bool {
+        self.focus
+            .as_ref()
+            .is_some_and(|focus| focus.is_focus_active(at))
     }
 
     pub fn deadline_receiver(&self) -> watch::Receiver<Option<DateTime<Utc>>> {
@@ -490,6 +518,37 @@ impl WorkBlockManager {
         if previous_was_anchor == Some(true) {
             return Ok(None);
         }
+        // DND is data, not defiance (D2; roadmap invariants 1 and 5). When
+        // the gate clears while system Focus/DND is active, the decision is
+        // recorded and held: no OS notification, no in-app takeover, no
+        // fallback channel, no mid-block retry against the user's setting.
+        // The row is terminal at creation — a nudge that was never shown
+        // cannot be answered — and it composes with the backoff policy in
+        // one direction only: it starts the same re-offer cooldown a
+        // delivered offer does and counts toward the per-block cap, so
+        // suppression can never shorten a wait, raise salience, or increase
+        // future frequency. It is excluded from delivered-intervention
+        // metrics and reconciles after the block as a count, never as a
+        // late nudge.
+        if self.focus_active(now) {
+            self.repo.record_intervention(
+                &record.block_id,
+                &WorkBlockIntervention {
+                    offered_at: now,
+                    action_id: DRIFT_ACTION_ID.to_owned(),
+                    anchor_category: anchor,
+                    switch_count,
+                    window_seconds: DRIFT_WINDOW_SECONDS.try_into().unwrap_or(u32::MAX),
+                    outcome: WorkBlockInterventionOutcome::DeliverySuppressedDnd,
+                    outcome_at: Some(now),
+                    // A held decision was never shown, so it carries the
+                    // salience it would have had. It is excluded from the
+                    // delivered count either way.
+                    salience: InterventionSalience::Normal,
+                },
+            )?;
+            return Ok(None);
+        }
         self.repo.record_intervention(
             &record.block_id,
             &WorkBlockIntervention {
@@ -510,6 +569,14 @@ impl WorkBlockManager {
             body: drift_body(switch_count, &anchor),
             salience: backoff.salience,
         }))
+    }
+
+    /// Rolling wrong-intervention counts since `since`, for invariant 4.
+    pub fn wrong_intervention_counts(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<WrongInterventionCounts, WorkBlockError> {
+        Ok(self.repo.wrong_intervention_counts(since)?)
     }
 
     /// Derives the current backoff from how the last offers were answered.
@@ -651,6 +718,18 @@ impl WorkBlockManager {
         let observations = self.repo.observations(&record.block_id)?;
         let elapsed = elapsed_seconds(record, ended_at);
         let result = aggregate_result(record, elapsed, &observations);
+        // DND evidence is decided once, at finalization, and persists with the
+        // result: a block that completes while DND is active is a success, and
+        // a held decision reconciles here as a count — the one calm line below
+        // is the only surface a suppressed nudge ever gets.
+        //
+        // At most one offer exists per block, enforced by the intervention
+        // table's primary key, so the held count is 0 or 1 by construction.
+        let held_count = u32::from(self.repo.intervention(&record.block_id)?.is_some_and(
+            |offer| offer.outcome == WorkBlockInterventionOutcome::DeliverySuppressedDnd,
+        ));
+        let completed_under_dnd = phase == WorkBlockPhase::Completed && self.focus_active(ended_at);
+        let result = with_dnd_evidence(result, completed_under_dnd, held_count);
         let result = self.repo.finalize(
             &record.block_id,
             &WorkBlockCompletion {
@@ -1068,6 +1147,52 @@ fn aggregate_result(
             label: recovery_label(record.purpose),
             duration_seconds: RECOVERY_DURATION_SECONDS,
         },
+        dnd_outcomes: Vec::new(),
+        reconciliation: None,
+    }
+}
+
+/// Applies the Focus/DND evidence to a finalized result. `completed_under_dnd`
+/// appears at most once and first; each held decision appears once.
+fn with_dnd_evidence(
+    mut result: WorkBlockResult,
+    completed_under_dnd: bool,
+    held_count: u32,
+) -> WorkBlockResult {
+    if completed_under_dnd {
+        result
+            .dnd_outcomes
+            .push(WorkBlockDndOutcome::CompletedUnderDnd);
+    }
+    result.dnd_outcomes.extend(std::iter::repeat_n(
+        WorkBlockDndOutcome::DeliverySuppressedDnd,
+        held_count as usize,
+    ));
+    result.reconciliation = dnd_reconciliation_copy(completed_under_dnd, held_count);
+    result
+}
+
+/// The single calm post-block reconciliation line (roadmap invariants 5 and
+/// 7; D2, D8). Analyst voice, evidence only: what completed and what was
+/// held. It never blames the channel, never references what the user
+/// missed, and never turns a held decision into a late nudge.
+fn dnd_reconciliation_copy(completed_under_dnd: bool, held_count: u32) -> Option<String> {
+    let held = match held_count {
+        0 => None,
+        1 => Some("Velvt held 1 nudge and delivered nothing mid-block".to_owned()),
+        count => Some(format!(
+            "Velvt held {count} nudges and delivered nothing mid-block"
+        )),
+    };
+    match (completed_under_dnd, held) {
+        (true, Some(held)) => Some(format!(
+            "Do Not Disturb was on and the block completed as planned; {held}."
+        )),
+        (true, None) => Some("Do Not Disturb was on and the block completed as planned.".into()),
+        (false, Some(held)) => Some(format!(
+            "Do Not Disturb was on for part of this block; {held}."
+        )),
+        (false, None) => None,
     }
 }
 
@@ -1617,7 +1742,75 @@ mod tests {
                     at(seconds),
                 )
                 .unwrap();
-            assert!(outcome.map_or(true, |o| o.intervention.is_none()));
+            assert!(outcome.is_none_or(|o| o.intervention.is_none()));
+        }
+    }
+
+    /// Analyst voice (roadmap invariant 7): registered copy reports evidence.
+    /// No "still", no moralizing, and no reference to the user's dismissal or
+    /// failure history anywhere in the registry.
+    #[test]
+    fn registered_copy_is_analyst_voice_with_no_history_references() {
+        let mut registry: Vec<String> = vec![DRIFT_TITLE.to_owned(), drift_body(4, "DEEP_WORK")];
+        for (completed_under_dnd, held_count) in
+            [(true, 0), (true, 1), (true, 3), (false, 1), (false, 3)]
+        {
+            registry.extend(dnd_reconciliation_copy(completed_under_dnd, held_count));
+        }
+        for purpose in [
+            None,
+            Some(WorkBlockPurpose::DeepWork),
+            Some(WorkBlockPurpose::Study),
+            Some(WorkBlockPurpose::CreativePractice),
+            Some(WorkBlockPurpose::HealthyTechUse),
+            Some(WorkBlockPurpose::WorkLifeBoundary),
+        ] {
+            registry.push(recovery_label(purpose));
+        }
+        for phase in [
+            WorkBlockPhase::Idle,
+            WorkBlockPhase::Active,
+            WorkBlockPhase::Paused,
+            WorkBlockPhase::Completed,
+            WorkBlockPhase::Abandoned,
+            WorkBlockPhase::Expired,
+        ] {
+            for intensity in [
+                WorkBlockIntensity::Light,
+                WorkBlockIntensity::Medium,
+                WorkBlockIntensity::Intense,
+            ] {
+                registry.push(status_line(
+                    phase,
+                    intensity,
+                    Some("DEEP_WORK"),
+                    ClassificationStatus::Classified,
+                ));
+                registry.push(status_line(
+                    phase,
+                    intensity,
+                    None,
+                    ClassificationStatus::Ambiguous,
+                ));
+            }
+        }
+
+        for copy in &registry {
+            let lowered = copy.to_ascii_lowercase();
+            for forbidden in [
+                "still",
+                "dismiss",
+                "failed",
+                "failure",
+                "ignored",
+                "last time",
+                "again",
+            ] {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "{forbidden:?} in registered copy {copy:?}"
+                );
+            }
         }
     }
 
@@ -1896,6 +2089,250 @@ mod tests {
         let reread = manager.end(id, at(28_900)).unwrap();
         assert_eq!(reread.elapsed_duration_seconds, 60);
         assert_eq!(reread.result.unwrap().elapsed_duration_seconds, 60);
+    }
+
+    /// Mutable fake Focus/DND source answering from explicit active ranges,
+    /// so decisions keyed to specific instants (like the planned deadline)
+    /// stay deterministic.
+    struct FakeFocus(std::sync::Mutex<Vec<(DateTime<Utc>, DateTime<Utc>)>>);
+
+    impl FakeFocus {
+        fn new() -> Arc<Self> {
+            Arc::new(Self(std::sync::Mutex::new(Vec::new())))
+        }
+
+        fn set_active(&self, from: DateTime<Utc>, until: DateTime<Utc>) {
+            self.0.lock().unwrap().push((from, until));
+        }
+    }
+
+    impl FocusStateSource for FakeFocus {
+        fn is_focus_active(&self, at: DateTime<Utc>) -> bool {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(from, until)| (*from..*until).contains(&at))
+        }
+    }
+
+    fn manager_with_focus() -> (WorkBlockManager, Arc<dyn WorkBlockRepo>, Arc<FakeFocus>) {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let repo = db.work_block_repo();
+        let focus = FakeFocus::new();
+        let manager = WorkBlockManager::new(repo.clone())
+            .with_focus_source(focus.clone() as Arc<dyn FocusStateSource>);
+        (manager, repo, focus)
+    }
+
+    /// Roadmap invariants 1 and 5, D2: when the drift gate clears while DND
+    /// is active, the decision is recorded and held. Nothing is delivered on
+    /// any channel — no notification, no in-app card — and the row is
+    /// terminal at creation.
+    #[test]
+    fn dnd_suppresses_delivery_and_records_the_held_decision() {
+        let (manager, repo, focus) = manager_with_focus();
+        focus.set_active(at(0), at(3_600));
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+
+        let outcome = drift_into_offer(&manager).expect("observation returns state");
+        assert!(
+            outcome.intervention.is_none(),
+            "a nudge was delivered against active DND"
+        );
+        assert!(
+            outcome.snapshot.active_intervention.is_none(),
+            "a held decision must not surface as an in-app card"
+        );
+
+        let recorded = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the held decision is recorded");
+        assert_eq!(
+            recorded.outcome,
+            WorkBlockInterventionOutcome::DeliverySuppressedDnd
+        );
+        assert!(recorded.outcome.is_terminal());
+        assert!(recorded.outcome_at.is_some());
+
+        // Never delivered means never counted as delivered: the
+        // wrong-intervention precision metric excludes held decisions.
+        let counts = manager.wrong_intervention_counts(at(600)).unwrap();
+        assert_eq!(counts.delivered, 0);
+        assert_eq!(counts.was_focused, 0);
+    }
+
+    /// D2 and D8: a block that completes while DND is active is a success.
+    /// It stays a completed block everywhere, records `completed_under_dnd`,
+    /// and the result carries one positive, non-channel-blaming line.
+    #[test]
+    fn a_block_completing_under_dnd_records_success_with_positive_framing() {
+        let (manager, _repo, focus) = manager_with_focus();
+        focus.set_active(at(0), at(400));
+        manager.start(request(300), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+
+        let completed = manager.request_state(at(301)).unwrap();
+        assert_eq!(completed.phase, WorkBlockPhase::Completed);
+        let result = completed.result.unwrap();
+        assert_eq!(
+            result.dnd_outcomes,
+            vec![WorkBlockDndOutcome::CompletedUnderDnd]
+        );
+        let line = result.reconciliation.expect("one calm line");
+        assert!(line.contains("completed as planned"));
+        assert!(!line.to_ascii_lowercase().contains("missed"));
+    }
+
+    /// Held decisions reconcile after the block as counts inside one calm
+    /// line — never as a late nudge on any surface.
+    #[test]
+    fn held_nudges_reconcile_after_the_block_as_a_count_only() {
+        let (manager, repo, focus) = manager_with_focus();
+        focus.set_active(at(0), at(3_600));
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+
+        let ended = manager.end(block_id, at(700)).unwrap();
+        assert!(
+            ended.active_intervention.is_none(),
+            "reconciliation must never resurrect a held nudge"
+        );
+        let result = ended.result.unwrap();
+        assert_eq!(
+            result.dnd_outcomes,
+            vec![WorkBlockDndOutcome::DeliverySuppressedDnd]
+        );
+        let line = result.reconciliation.expect("one calm line");
+        assert!(line.contains("held 1 nudge"));
+        assert!(line.contains("delivered nothing mid-block"));
+        // The held row stays terminal after the block resolves silence.
+        let rows = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].outcome,
+            WorkBlockInterventionOutcome::DeliverySuppressedDnd
+        );
+    }
+
+    /// Backoff composition (roadmap invariant 2, requirement 9): a
+    /// suppressed decision starts the same base cooldown a delivered offer
+    /// does — DND lifting mid-block never releases the held nudge early —
+    /// and it is not a negative reply, so it neither multiplies the cooldown
+    /// nor reduces the salience of a later offer.
+    #[test]
+    fn dnd_toggled_mid_block_holds_cooldown_without_touching_backoff() {
+        let (manager, repo, focus) = manager_with_focus();
+        focus.set_active(at(0), at(600));
+        let active = manager.start(request(10_800), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+        assert_eq!(
+            repo.intervention(&block_id.to_string())
+                .unwrap()
+                .unwrap()
+                .outcome,
+            WorkBlockInterventionOutcome::DeliverySuppressedDnd
+        );
+
+        // DND turns off at t=600. Gate-clearing switching resumes inside the
+        // base cooldown (until 520 + 900 = 1420): still nothing delivered —
+        // the held decision is not released late when DND lifts.
+        observe(&manager, "DEEP_WORK", 540);
+        for (category, seconds) in [
+            ("COMMUNICATION", 700),
+            ("DEEP_WORK", 720),
+            ("COMMUNICATION", 740),
+            ("DEEP_WORK", 760),
+            ("COMMUNICATION", 780),
+            ("DEEP_WORK", 800),
+            ("COMMUNICATION", 820),
+            ("DEEP_WORK", 840),
+        ] {
+            let outcome = observe(&manager, category, seconds).unwrap();
+            assert!(
+                outcome.intervention.is_none(),
+                "delivery inside the post-suppression cooldown at t={seconds}"
+            );
+        }
+
+        // Past the base cooldown, fresh evidence still earns nothing further in
+        // this block: the gate allows one offer per block, and the held
+        // decision already occupied it.
+        //
+        // The branch this test came from allowed several offers per block and
+        // asserted a second row here. That is not the shipped behaviour — one
+        // offer per block is enforced by the intervention table's primary key,
+        // and the pre-registered primary metric's denominator counts one row
+        // per block. What the test still proves, and what matters, is that
+        // suppression neither shortened a wait nor raised salience, and that
+        // the held decision is never rewritten into a delivery.
+        observe(&manager, "COMMUNICATION", 1_430);
+        observe(&manager, "DEEP_WORK", 1_440);
+        observe(&manager, "COMMUNICATION", 1_450);
+        observe(&manager, "DEEP_WORK", 1_460);
+        observe(&manager, "COMMUNICATION", 1_470);
+        observe(&manager, "DEEP_WORK", 1_480);
+        observe(&manager, "COMMUNICATION", 1_490);
+
+        let held = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the held decision is the block's one intervention row");
+        assert_eq!(
+            held.outcome,
+            WorkBlockInterventionOutcome::DeliverySuppressedDnd,
+            "the held decision is never rewritten into a delivery"
+        );
+    }
+
+    /// Restart while a suppressed decision is on record: the held row and
+    /// its reconciliation survive service restarts unchanged.
+    #[test]
+    fn restart_during_suppression_preserves_the_held_record() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let focus = FakeFocus::new();
+        focus.set_active(at(0), at(600));
+        let first = WorkBlockManager::new(db.work_block_repo())
+            .with_focus_source(focus.clone() as Arc<dyn FocusStateSource>);
+        let active = first.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&first);
+        drop(first);
+
+        let second = WorkBlockManager::new(db.work_block_repo());
+        let recovered = second.recover_after_restart(at(900)).unwrap();
+        assert_eq!(recovered.phase, WorkBlockPhase::Active);
+        assert!(recovered.active_intervention.is_none());
+
+        let result = second.end(block_id, at(1_000)).unwrap().result.unwrap();
+        assert_eq!(
+            result.dnd_outcomes,
+            vec![WorkBlockDndOutcome::DeliverySuppressedDnd]
+        );
+        assert!(result.reconciliation.unwrap().contains("held 1 nudge"));
+    }
+
+    /// Clear-all-data removes held decisions with everything else.
+    #[test]
+    fn clear_data_removes_held_dnd_decisions() {
+        let (manager, repo, focus) = manager_with_focus();
+        focus.set_active(at(0), at(3_600));
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+        assert!(repo.intervention(&block_id.to_string()).unwrap().is_some());
+
+        let cleared = manager.clear_data().unwrap();
+        assert_eq!(cleared.phase, WorkBlockPhase::Idle);
+        assert!(repo.intervention(&block_id.to_string()).unwrap().is_none());
     }
 
     #[test]

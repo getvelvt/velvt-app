@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,6 +66,11 @@ pub enum ClientMessage {
     WorkBlockLifecycle(WorkBlockLifecycle),
     /// Clears local work-block state, observations, results, and intention text.
     ClearWorkBlockData(ClearWorkBlockData),
+    /// A coarse system Focus/DND transition observed by the client. Swift
+    /// observes only; Rust owns the evidence record and every decision.
+    FocusStateChanged(FocusStateChanged),
+    /// The user's one-tap reply to a quiet-hours offer.
+    RespondQuietHoursOffer(RespondQuietHoursOffer),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -130,6 +135,8 @@ pub enum ServerMessage {
     WorkBlockState(WorkBlockSnapshot),
     /// Bounded, local-only live dashboard data.
     LocalDashboard(LocalDashboardSnapshot),
+    /// A next-morning quiet-hours offer from the deterministic pattern rule.
+    QuietHoursOffer(QuietHoursOffer),
 }
 
 /// Server's first message on every connection.
@@ -829,6 +836,79 @@ pub struct WorkBlockLifecycle {
 #[serde(deny_unknown_fields)]
 pub struct ClearWorkBlockData {}
 
+/// A coarse system Focus/DND transition observed by Swift.
+///
+/// PRIVACY: this message can carry only whether some Focus mode is active,
+/// when the transition happened, and the client's UTC offset. The Focus
+/// mode's name, configuration, and schedule are structurally
+/// unrepresentable here and must never be added. Rust buckets the
+/// transition time to the coarse local granularity before storage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FocusStateChanged {
+    /// Whether a system Focus/DND mode is active after the transition.
+    pub active: bool,
+    /// UTC time of the observed transition, as sampled by the client.
+    pub occurred_at: DateTime<Utc>,
+    /// Client's current UTC offset so the pattern rule can bucket to local
+    /// hours without receiving locale or identity.
+    pub utc_offset_seconds: i32,
+}
+
+/// The user's one-tap reply to a quiet-hours offer. Accepting configures
+/// Velvt's own quiet hours; declining is remembered locally for a versioned
+/// interval and changes nothing else.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RespondQuietHoursOffer {
+    pub accepted: bool,
+}
+
+/// A next-morning quiet-hours offer produced by the deterministic,
+/// versioned late-night DND pattern rule. An offer, never a workaround.
+///
+/// PRIVACY: carries only the rule version, a bounded distinct-day count,
+/// the proposed local window, and Rust-authored copy. No Focus mode name,
+/// schedule, or configuration is representable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuietHoursOffer {
+    /// Version of the deterministic pattern rule that produced this offer.
+    pub rule_version: u32,
+    /// Distinct local days with late-night DND evidence inside the rule's
+    /// lookback window.
+    pub late_night_days: u32,
+    /// Proposed quiet-hours start, minutes after local midnight.
+    pub start_local_minutes: u32,
+    /// Proposed quiet-hours end, minutes after local midnight.
+    pub end_local_minutes: u32,
+    /// Rust-authored display copy. Swift renders it verbatim.
+    pub body: String,
+}
+
+/// Focus/DND-derived outcome recorded by the service for one work block.
+///
+/// `CompletedUnderDnd` marks a success: the block completed while DND was
+/// active and counts as a completed block everywhere a completed block
+/// counts. Each `DeliverySuppressedDnd` entry is one mid-block nudge held
+/// because DND was active — delivered by no channel, retried against no
+/// setting, and reconciled after the block as a count only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkBlockDndOutcome {
+    CompletedUnderDnd,
+    DeliverySuppressedDnd,
+}
+
+impl WorkBlockDndOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CompletedUnderDnd => "completed_under_dnd",
+            Self::DeliverySuppressedDnd => "delivery_suppressed_dnd",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkBlockCoverage {
@@ -862,6 +942,14 @@ pub struct WorkBlockResult {
     pub observation: String,
     /// Singular by construction: every result offers exactly one action.
     pub next_action: WorkBlockNextAction,
+    /// Focus/DND outcomes recorded for this block, in the order recorded.
+    /// Omitted when empty so pre-v26 payloads decode unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dnd_outcomes: Vec<WorkBlockDndOutcome>,
+    /// At most one Rust-authored calm post-block line noting what was held
+    /// under DND. Analyst voice; never a late nudge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation: Option<String>,
 }
 
 /// Rust-authored, ready-to-render state. Swift may render and issue direct
@@ -1466,6 +1554,129 @@ mod extensibility_proof {
             encoded,
             r#"{"type":"dummy_extension","payload":{"sequence":1}}"#
         );
+    }
+}
+
+#[cfg(test)]
+mod v26_focus_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_twenty_six() {
+        assert_eq!(PROTOCOL_VERSION, 26);
+    }
+
+    #[test]
+    fn focus_state_changed_round_trips_and_matches_schema_shape() {
+        let message = ClientMessage::FocusStateChanged(FocusStateChanged {
+            active: true,
+            occurred_at: DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+            utc_offset_seconds: -28_800,
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"focus_state_changed","payload":{"active":true,"occurred_at":"2027-01-15T08:00:00Z","utc_offset_seconds":-28800}}"#
+        );
+        let decoded: ClientMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    /// The Focus/DND transition message is structurally coarse: any attempt
+    /// to smuggle a mode name, schedule, or configuration field is rejected
+    /// at decode time.
+    #[test]
+    fn focus_state_changed_rejects_mode_identity_fields() {
+        let smuggled = r#"{"type":"focus_state_changed","payload":{"active":true,"occurred_at":"2027-01-15T08:00:00Z","utc_offset_seconds":0,"mode_name":"Work"}}"#;
+        assert!(serde_json::from_str::<ClientMessage>(smuggled).is_err());
+    }
+
+    #[test]
+    fn respond_quiet_hours_offer_round_trips() {
+        let message =
+            ClientMessage::RespondQuietHoursOffer(RespondQuietHoursOffer { accepted: false });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"respond_quiet_hours_offer","payload":{"accepted":false}}"#
+        );
+        let decoded: ClientMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn quiet_hours_offer_round_trips_and_matches_schema_shape() {
+        let message = ServerMessage::QuietHoursOffer(QuietHoursOffer {
+            rule_version: 1,
+            late_night_days: 3,
+            start_local_minutes: 1_320,
+            end_local_minutes: 420,
+            body: "Velvt can hold its notifications overnight.".into(),
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"quiet_hours_offer","payload":{"rule_version":1,"late_night_days":3,"start_local_minutes":1320,"end_local_minutes":420,"body":"Velvt can hold its notifications overnight."}}"#
+        );
+        let decoded: ServerMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn dnd_outcome_enum_uses_exact_wire_vocabulary() {
+        assert_eq!(
+            serde_json::to_string(&WorkBlockDndOutcome::CompletedUnderDnd).unwrap(),
+            r#""completed_under_dnd""#
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkBlockDndOutcome::DeliverySuppressedDnd).unwrap(),
+            r#""delivery_suppressed_dnd""#
+        );
+    }
+
+    /// Backward compatibility: a v25 result payload without the new fields
+    /// decodes to an empty outcome list and no reconciliation line, and a
+    /// result without DND evidence serializes without the new fields.
+    #[test]
+    fn work_block_result_dnd_fields_are_optional_on_the_wire() {
+        let v25 = r#"{
+            "planned_duration_seconds": 1500,
+            "elapsed_duration_seconds": 1500,
+            "longest_uninterrupted_seconds": 900,
+            "switch_away_count": 1,
+            "recovery_count": 1,
+            "confidence": "high",
+            "coverage": "good",
+            "coverage_ratio": 0.9,
+            "safe_evidence_category": "focus_work",
+            "observation": "Velvt observed one sustained category pattern.",
+            "next_action": {
+                "action_id": "protect_next_10",
+                "label": "Protect the next 10 minutes.",
+                "duration_seconds": 600
+            }
+        }"#;
+        let decoded: WorkBlockResult = serde_json::from_str(v25).unwrap();
+        assert!(decoded.dnd_outcomes.is_empty());
+        assert!(decoded.reconciliation.is_none());
+        let encoded = serde_json::to_string(&decoded).unwrap();
+        assert!(!encoded.contains("dnd_outcomes"));
+        assert!(!encoded.contains("reconciliation"));
+
+        let with_outcomes = WorkBlockResult {
+            dnd_outcomes: vec![
+                WorkBlockDndOutcome::CompletedUnderDnd,
+                WorkBlockDndOutcome::DeliverySuppressedDnd,
+            ],
+            reconciliation: Some("Velvt held 1 nudge while Do Not Disturb was on.".into()),
+            ..decoded
+        };
+        let encoded = serde_json::to_string(&with_outcomes).unwrap();
+        assert!(
+            encoded.contains(r#""dnd_outcomes":["completed_under_dnd","delivery_suppressed_dnd"]"#)
+        );
+        let round_tripped: WorkBlockResult = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(round_tripped, with_outcomes);
     }
 }
 

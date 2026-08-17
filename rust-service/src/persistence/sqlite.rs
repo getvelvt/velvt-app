@@ -1,10 +1,12 @@
 use super::{
-    AbstractionMapRepo, AbstractionMapping, BatchEvent, HistoryCacheEntry, HistoryCacheRepo,
-    InsightCacheEntry, InsightCacheRepo, LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch,
-    PersonalOverrideRecord, RawEventEntry, RawEventRepo, UploadBatch, UploadBatchRepo,
-    UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCategoryCorrection, WorkBlockCompletion,
-    WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
-    WorkBlockRepo, WrongInterventionCounts,
+    AbstractionMapRepo, AbstractionMapping, BatchEvent, FocusRepo, FocusTransition,
+    HistoryCacheEntry, HistoryCacheRepo, InsightCacheEntry, InsightCacheRepo,
+    LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch, PersonalOverrideRecord,
+    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, RawEventRepo, UploadBatch,
+    UploadBatchRepo, UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours,
+    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
+    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
+    WrongInterventionCounts,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -144,6 +146,10 @@ impl SqlitePersistence {
 
     pub fn work_block_repo(&self) -> Arc<dyn WorkBlockRepo> {
         Arc::new(SqliteWorkBlockRepo(self.clone()))
+    }
+
+    pub fn focus_repo(&self) -> Arc<dyn FocusRepo> {
+        Arc::new(SqliteFocusRepo(self.clone()))
     }
 
     fn insert_batch_with_events(
@@ -1799,7 +1805,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         connection
             .query_row(
                 "SELECT
-                    COUNT(*),
+                    COALESCE(SUM(outcome != 'delivery_suppressed_dnd'), 0),
                     COALESCE(SUM(outcome = 'was_focused'), 0)
                  FROM work_block_intervention WHERE offered_at >= ?1",
                 [since.timestamp()],
@@ -1826,6 +1832,266 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         let connection = self.0.connection()?;
         Ok(connection.execute("DELETE FROM work_block", [])? as u64)
     }
+}
+
+struct SqliteFocusRepo(SqlitePersistence);
+
+impl FocusRepo for SqliteFocusRepo {
+    fn record_focus_transition(
+        &self,
+        transition: &FocusTransition,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        let current: Option<i64> = connection
+            .query_row(
+                "SELECT active FROM focus_state_evidence
+                 ORDER BY changed_at_bucket DESC, id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current == Some(i64::from(transition.active)) {
+            return Ok(false);
+        }
+        connection.execute(
+            "INSERT INTO focus_state_evidence(
+                active, changed_at_bucket, local_hour, local_date, recorded_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                transition.active,
+                transition.changed_at_bucket.timestamp(),
+                transition.local_hour,
+                transition.local_date,
+                transition.recorded_at.timestamp(),
+            ],
+        )?;
+        Ok(true)
+    }
+
+    fn latest_focus_transition(&self) -> Result<Option<FocusTransition>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT active, changed_at_bucket, local_hour, local_date, recorded_at
+                 FROM focus_state_evidence
+                 ORDER BY changed_at_bucket DESC, id DESC LIMIT 1",
+                [],
+                focus_transition_from_row,
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+    }
+
+    fn focus_state_at_bucket(
+        &self,
+        bucket: DateTime<Utc>,
+    ) -> Result<Option<bool>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT active FROM focus_state_evidence
+                 WHERE changed_at_bucket <= ?1
+                 ORDER BY changed_at_bucket DESC, id DESC LIMIT 1",
+                [bucket.timestamp()],
+                |row| row.get::<_, i64>(0).map(|value| value != 0),
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+    }
+
+    fn focus_active_dates_in_hours(&self, hours: &[u32]) -> Result<Vec<String>, PersistenceError> {
+        if hours.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.0.connection()?;
+        let placeholders = std::iter::repeat_n("?", hours.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut statement = connection.prepare(&format!(
+            "SELECT DISTINCT local_date FROM focus_state_evidence
+             WHERE active = 1 AND local_hour IN ({placeholders})
+             ORDER BY local_date DESC"
+        ))?;
+        let rows =
+            statement.query_map(rusqlite::params_from_iter(hours.iter()), |row| row.get(0))?;
+        let mut dates = Vec::new();
+        for row in rows {
+            dates.push(row?);
+        }
+        Ok(dates)
+    }
+
+    fn prune_focus_evidence(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        Ok(connection.execute(
+            "DELETE FROM focus_state_evidence WHERE changed_at_bucket < ?1",
+            [cutoff.timestamp()],
+        )? as u64)
+    }
+
+    fn set_utc_offset(&self, seconds: i32, at: DateTime<Utc>) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO focus_observer_state(id, utc_offset_seconds, updated_at)
+             VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE
+             SET utc_offset_seconds = excluded.utc_offset_seconds,
+                 updated_at = excluded.updated_at",
+            params![seconds, at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn utc_offset_seconds(&self) -> Result<Option<i32>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT utc_offset_seconds FROM focus_observer_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+    }
+
+    fn quiet_hours_offer_state(&self) -> Result<Option<QuietHoursOfferState>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT rule_version, triggered_at, offered_at, response, responded_at
+                 FROM quiet_hours_offer_state WHERE id = 1",
+                [],
+                |row| {
+                    Ok(QuietHoursOfferState {
+                        rule_version: row.get(0)?,
+                        triggered_at: row
+                            .get::<_, Option<i64>>(1)?
+                            .map(|value| timestamp_to_datetime(value, 1))
+                            .transpose()?,
+                        offered_at: row
+                            .get::<_, Option<i64>>(2)?
+                            .map(|value| timestamp_to_datetime(value, 2))
+                            .transpose()?,
+                        response: row
+                            .get::<_, Option<String>>(3)?
+                            .as_deref()
+                            .and_then(QuietHoursOfferResponse::from_db_value),
+                        responded_at: row
+                            .get::<_, Option<i64>>(4)?
+                            .map(|value| timestamp_to_datetime(value, 4))
+                            .transpose()?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+    }
+
+    fn record_quiet_hours_trigger(
+        &self,
+        rule_version: u32,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO quiet_hours_offer_state(
+                id, rule_version, triggered_at, offered_at, response, responded_at
+             ) VALUES (1, ?1, ?2, NULL, NULL, NULL)
+             ON CONFLICT(id) DO UPDATE
+             SET rule_version = excluded.rule_version,
+                 triggered_at = excluded.triggered_at,
+                 offered_at = NULL,
+                 response = NULL,
+                 responded_at = NULL",
+            params![rule_version, at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn record_quiet_hours_offered(&self, at: DateTime<Utc>) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "UPDATE quiet_hours_offer_state SET offered_at = COALESCE(offered_at, ?1)
+             WHERE id = 1",
+            [at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn record_quiet_hours_response(
+        &self,
+        response: QuietHoursOfferResponse,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        // Only an unanswered offer transitions: a reply cannot be rewritten.
+        connection.execute(
+            "UPDATE quiet_hours_offer_state
+             SET response = ?1, responded_at = ?2
+             WHERE id = 1 AND response IS NULL",
+            params![response.as_str(), at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn quiet_hours(&self) -> Result<Option<VelvtQuietHours>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT start_local_minutes, end_local_minutes, rule_version, configured_at
+                 FROM velvt_quiet_hours WHERE id = 1",
+                [],
+                |row| {
+                    Ok(VelvtQuietHours {
+                        start_local_minutes: row.get(0)?,
+                        end_local_minutes: row.get(1)?,
+                        rule_version: row.get(2)?,
+                        configured_at: timestamp_from_row(row, 3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+    }
+
+    fn set_quiet_hours(&self, quiet_hours: &VelvtQuietHours) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO velvt_quiet_hours(
+                id, start_local_minutes, end_local_minutes, rule_version, configured_at
+             ) VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE
+             SET start_local_minutes = excluded.start_local_minutes,
+                 end_local_minutes = excluded.end_local_minutes,
+                 rule_version = excluded.rule_version,
+                 configured_at = excluded.configured_at",
+            params![
+                quiet_hours.start_local_minutes,
+                quiet_hours.end_local_minutes,
+                quiet_hours.rule_version,
+                quiet_hours.configured_at.timestamp(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn clear_focus_evidence(&self) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let removed = connection.execute("DELETE FROM focus_state_evidence", [])? as u64;
+        connection.execute("DELETE FROM focus_observer_state", [])?;
+        connection.execute("DELETE FROM quiet_hours_offer_state", [])?;
+        Ok(removed)
+    }
+}
+
+fn focus_transition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FocusTransition> {
+    Ok(FocusTransition {
+        active: row.get::<_, i64>(0)? != 0,
+        changed_at_bucket: timestamp_from_row(row, 1)?,
+        local_hour: row.get(2)?,
+        local_date: row.get(3)?,
+        recorded_at: timestamp_from_row(row, 4)?,
+    })
 }
 
 fn insert_batch(connection: &Connection, batch: &NewUploadBatch) -> Result<(), PersistenceError> {

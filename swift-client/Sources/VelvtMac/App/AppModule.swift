@@ -38,6 +38,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarDataLoader: MenuBarDataLoader?
     private var menuStatusViewModel: MenuStatusViewModel?
     private var workBlockCoordinator: WorkBlockCoordinator?
+    private var focusStateObserver: FocusStateObserver?
     private var localDashboardCoordinator: LocalDashboardCoordinator?
     private var accountMetricsCancellable: AnyCancellable?
     private let metricsStore = AppMetricsStore()
@@ -112,6 +113,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             connectionStatus: client.connectionStatus
         )
         workBlockCoordinator = workBlocks
+        // Swift observes system Focus/DND coarsely and reports transitions;
+        // the Rust service owns the evidence record and every decision.
+        let focusObserver = FocusStateObserver(ipcClient: client)
+        focusObserver.start(connectionStatus: client.connectionStatus)
+        focusStateObserver = focusObserver
         let localDashboard = LocalDashboardCoordinator(ipcClient: client)
         localDashboard.start(
             messages: accountStateManager.serverMessages,

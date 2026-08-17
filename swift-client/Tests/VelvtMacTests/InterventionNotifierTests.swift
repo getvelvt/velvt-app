@@ -32,7 +32,7 @@ final class InterventionNotifierTests: XCTestCase {
             activeIntervention: offeredAt.map {
                 ActiveIntervention(
                     actionID: "protect_next_10",
-                    title: "Your work block is still running",
+                    title: "Your work block is running",
                     body: "Velvt observed 4 switches away from focus work in the last 10 minutes.",
                     anchorCategory: "FOCUS_WORK",
                     switchCount: 4,
@@ -63,7 +63,7 @@ final class InterventionNotifierTests: XCTestCase {
 
         XCTAssertEqual(scheduler.scheduledInterventions.count, 1)
         let delivered = scheduler.scheduledInterventions.first
-        XCTAssertEqual(delivered?.title, "Your work block is still running")
+        XCTAssertEqual(delivered?.title, "Your work block is running")
         XCTAssertEqual(
             delivered?.body,
             "Velvt observed 4 switches away from focus work in the last 10 minutes.",

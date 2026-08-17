@@ -310,6 +310,12 @@ pub enum WorkBlockInterventionOutcome {
     WasFocused,
     /// The user explicitly dismissed the offer.
     Dismissed,
+    /// The delivery path would have fired while system Focus/DND was active,
+    /// so the decision was recorded, held, and delivered by no channel.
+    /// Terminal at creation — a nudge that was never shown cannot be
+    /// answered — and reconciled after the block as a count only. Excluded
+    /// from delivered-intervention metrics.
+    DeliverySuppressedDnd,
     /// The block ended with no response of any kind. Never inferred from a
     /// notification disappearing.
     NoResponse,
@@ -325,6 +331,7 @@ impl WorkBlockInterventionOutcome {
             Self::WrongClassification => "wrong_classification",
             Self::WasFocused => "was_focused",
             Self::Dismissed => "dismissed",
+            Self::DeliverySuppressedDnd => "delivery_suppressed_dnd",
             Self::NoResponse => "no_response",
         }
     }
@@ -340,6 +347,7 @@ impl WorkBlockInterventionOutcome {
             "wrong_classification" => Some(Self::WrongClassification),
             "was_focused" => Some(Self::WasFocused),
             "dismissed" => Some(Self::Dismissed),
+            "delivery_suppressed_dnd" => Some(Self::DeliverySuppressedDnd),
             "no_response" => Some(Self::NoResponse),
             _ => None,
         }
@@ -386,6 +394,67 @@ pub struct WorkBlockCategoryCorrection {
     pub category: String,
     pub counts_as_category: String,
     pub corrected_at: DateTime<Utc>,
+}
+
+/// One coarse system Focus/DND transition, as stored. Deliberately coarse:
+/// active/inactive, the transition time floored to the five-minute bucket,
+/// and local hour/date buckets for the deterministic pattern rule. No field
+/// can hold a Focus mode's name, configuration, or schedule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusTransition {
+    pub active: bool,
+    /// Transition time floored to the coarse five-minute bucket.
+    pub changed_at_bucket: DateTime<Utc>,
+    /// Local hour bucket (0-23) at the transition, from the client's offset.
+    pub local_hour: u32,
+    /// Local calendar date (`YYYY-MM-DD`) at the transition.
+    pub local_date: String,
+    pub recorded_at: DateTime<Utc>,
+}
+
+/// The user's remembered reply to a quiet-hours offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuietHoursOfferResponse {
+    Accepted,
+    Declined,
+}
+
+impl QuietHoursOfferResponse {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Declined => "declined",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "accepted" => Some(Self::Accepted),
+            "declined" => Some(Self::Declined),
+            _ => None,
+        }
+    }
+}
+
+/// Singleton lifecycle record for the quiet-hours offer: when the pattern
+/// rule triggered, when the offer surfaced, and what the user replied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuietHoursOfferState {
+    pub rule_version: u32,
+    pub triggered_at: Option<DateTime<Utc>>,
+    pub offered_at: Option<DateTime<Utc>>,
+    pub response: Option<QuietHoursOfferResponse>,
+    pub responded_at: Option<DateTime<Utc>>,
+}
+
+/// Velvt's own quiet-hours window, configured only by explicit user
+/// acceptance of an offer. Only ever reduces delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VelvtQuietHours {
+    pub start_local_minutes: u32,
+    pub end_local_minutes: u32,
+    pub rule_version: u32,
+    pub configured_at: DateTime<Utc>,
 }
 
 /// A device-local intervention offer and its observed outcome. `anchor_category`

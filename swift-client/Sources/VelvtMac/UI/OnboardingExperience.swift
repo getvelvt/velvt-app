@@ -187,6 +187,80 @@ public final class NotificationPromptModel: ObservableObject {
     }
 }
 
+/// The single Focus-allowance ask (roadmap invariant 8; D2).
+///
+/// Velvt asks once whether the user wants to let it through their work
+/// Focus mode — by adding Velvt in macOS Focus settings themselves — and
+/// requests the coarse Focus-status read so suppressed deliveries can be
+/// reconciled honestly. Velvt never reads or writes the Focus
+/// configuration: the deep link opens the user's own settings and the
+/// change is entirely theirs. Declining changes nothing else, and the ask
+/// is remembered so it never repeats.
+@MainActor
+public final class FocusAllowancePromptModel: ObservableObject {
+    public static let askedDefaultsKey = "focusAllowanceAsked"
+
+    @Published public private(set) var hasRequested = false
+    @Published public private(set) var isRequesting = false
+
+    private let defaults: UserDefaults
+    private let requestFocusAuthorization: (@escaping (Bool) -> Void) -> Void
+    private let openFocusSettings: @MainActor () -> Void
+    private let onContinue: () -> Void
+
+    public init(
+        defaults: UserDefaults = .standard,
+        requestFocusAuthorization: @escaping (@escaping (Bool) -> Void) -> Void =
+            INFocusStatusProvider.requestAuthorization,
+        openFocusSettings: @escaping @MainActor () -> Void =
+            FocusAllowancePromptModel.openSystemFocusSettings,
+        onContinue: @escaping () -> Void
+    ) {
+        self.defaults = defaults
+        self.requestFocusAuthorization = requestFocusAuthorization
+        self.openFocusSettings = openFocusSettings
+        self.onContinue = onContinue
+    }
+
+    /// True once the one ask has been made, on this or any earlier launch.
+    public var hasBeenAsked: Bool {
+        defaults.bool(forKey: Self.askedDefaultsKey)
+    }
+
+    /// The affirmative path: request the coarse Focus-status read once and
+    /// open the user's Focus settings so they can add Velvt themselves.
+    public func allowAndOpenFocusSettings() {
+        guard !isRequesting else { return }
+        defaults.set(true, forKey: Self.askedDefaultsKey)
+        hasRequested = true
+        isRequesting = true
+        requestFocusAuthorization { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isRequesting = false
+                self.openFocusSettings()
+            }
+        }
+    }
+
+    /// Declining is one tap and changes nothing else about the product.
+    public func skip() {
+        defaults.set(true, forKey: Self.askedDefaultsKey)
+        onContinue()
+    }
+
+    public func finish() {
+        defaults.set(true, forKey: Self.askedDefaultsKey)
+        onContinue()
+    }
+
+    public static func openSystemFocusSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Focus-Settings.extension")
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+}
+
 public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
     case today
     case earlySignal
@@ -744,6 +818,104 @@ public struct NotificationPermissionExperienceView: View {
     }
 }
 
+/// The one-time Focus-allowance step. It states the budget promise plainly
+/// and hands the actual change to the user's own macOS Focus settings —
+/// Velvt never alters a Focus configuration programmatically.
+public struct FocusAllowanceExperienceView: View {
+    @ObservedObject private var model: FocusAllowancePromptModel
+
+    public init(model: FocusAllowancePromptModel) {
+        self.model = model
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                Image("VelvtWordmark")
+                    .resizable()
+                    .renderingMode(.template)
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 92, height: 36, alignment: .leading)
+                    .foregroundStyle(.primary)
+                    .accessibilityLabel("Velvt")
+                Spacer()
+                Text("Focus")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+
+            Divider().opacity(0.2)
+
+            VStack(alignment: .leading, spacing: 18) {
+                Image(systemName: "moon.circle")
+                    .font(.system(size: 36, weight: .medium))
+                    .foregroundStyle(Color.velvtPink)
+                    .accessibilityHidden(true)
+                Text("Let Velvt through your work Focus?")
+                    .font(.largeTitle.bold())
+                    .accessibilityAddTraits(.isHeader)
+                Text(
+                    "If you use a Focus mode while you work, you can allow Velvt through it in macOS Focus settings. Velvt spends that privilege sparingly: at most one bounded nudge inside a block you declared, and anything your Focus blocks is simply held and summarized after the block — never resent, never rerouted."
+                )
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    "The change is yours to make in System Settings; Velvt never edits your Focus modes. Velvt only asks macOS whether some Focus is on — never which one, or what it allows. Declining changes nothing else."
+                )
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                if model.hasRequested {
+                    Text(
+                        "In System Settings, open your work Focus, then add Velvt under Allowed Notifications. Return here when you are done."
+                    )
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
+            .padding(36)
+
+            Divider().opacity(0.2)
+
+            HStack(spacing: 12) {
+                Button("Not now") { model.skip() }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Continues without changing anything")
+                Spacer()
+                if model.hasRequested {
+                    Button("Continue") { model.finish() }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Open Focus Settings") { model.allowAndOpenFocusSettings() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.isRequesting)
+                        .keyboardShortcut(.defaultAction)
+                        .accessibilityHint(
+                            "Asks for the coarse Focus-status read and opens your Focus settings")
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+        }
+        .frame(
+            minWidth: OnboardingWindowLayout.minimumContentSize.width,
+            minHeight: OnboardingWindowLayout.minimumContentSize.height
+        )
+        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle(.primary)
+        .tint(Color.velvtPink)
+        .accessibilityElement(children: .contain)
+    }
+}
+
 public struct TourInvitationExperienceView: View {
     private let onContinue: () -> Void
     private let onStartTour: () -> Void
@@ -947,12 +1119,8 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         case intro
         case account
         case accessibility
-        case notifications
-        /// Immediately after the notifications grant, because that grant alone
-        /// is not enough: macOS silences an `.active` notification under any
-        /// Focus mode, and the person doing deep work is the likeliest to have
-        /// one on. Asked once, and skipping changes nothing else.
         case focusAllowance
+        case notifications
         /// Shows the drift offer once before the user has to earn one. The
         /// offer is gated behind real evidence, so someone can use Velvt for a
         /// week without seeing the only thing it does.
@@ -969,8 +1137,8 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private var windowController: NSWindowController?
     private var flowModel: IntroFlowModel?
     private var accessibilityModel: AccessibilityPromptModel?
-    private var notificationModel: NotificationPromptModel?
     private var focusAllowanceModel: FocusAllowancePromptModel?
+    private var notificationModel: NotificationPromptModel?
     private var launchStage: LaunchStage = .manual
     private var isFirstRunSequence = false
 
@@ -1045,6 +1213,14 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
                 return false
             }
             finishAccessibilityStage()
+        case .focusAllowance:
+            // Closing the window is a decline: the ask is recorded and
+            // nothing else changes.
+            if let model = focusAllowanceModel {
+                model.skip()
+            } else {
+                finishFocusAllowanceStage()
+            }
         case .notifications:
             finishNotificationStage()
         case .focusAllowance:
@@ -1134,6 +1310,22 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         )
     }
 
+    private func presentFocusAllowanceStage() {
+        let model = FocusAllowancePromptModel(
+            onContinue: { [weak self] in self?.finishFocusAllowanceStage() }
+        )
+        // One ask, ever: skip the stage entirely if a previous launch asked.
+        guard !model.hasBeenAsked else {
+            finishFocusAllowanceStage()
+            return
+        }
+        focusAllowanceModel = model
+        presentWindow(
+            FocusAllowanceExperienceView(model: model),
+            title: "Velvt and Focus"
+        )
+    }
+
     private func presentNotificationStage() {
         let model = NotificationPromptModel(
             presentation: presentation,
@@ -1212,10 +1404,9 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     private func finishAccessibilityStage() {
         guard launchStage == .accessibility else { return }
-        presentation.completeOnboarding()
         dismissWindow()
-        launchStage = .manual
-        onStartUsing()
+        launchStage = .focusAllowance
+        presentFocusAllowanceStage()
     }
 
     private func finishNotificationStage() {
@@ -1223,25 +1414,17 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         dismissWindow()
         // Only worth asking once ever. A returning user who already answered
         // continues straight to the tour.
-        guard !FocusAllowancePromptModel().hasBeenAsked else {
+        // Read the persisted flag directly: constructing the model here only to
+        // ask whether it has been asked would require an onContinue closure
+        // that can never run.
+        guard !UserDefaults.standard.bool(forKey: FocusAllowancePromptModel.askedDefaultsKey)
+        else {
             launchStage = .tourInvitation
             presentTourInvitationStage()
             return
         }
         launchStage = .focusAllowance
         presentFocusAllowanceStage()
-    }
-
-    private func presentFocusAllowanceStage() {
-        let model = FocusAllowancePromptModel()
-        focusAllowanceModel = model
-        presentWindow(
-            FocusAllowanceView(
-                model: model,
-                onContinue: { [weak self] in self?.finishFocusAllowanceStage() }
-            ),
-            title: "Let Velvt through your Focus"
-        )
     }
 
     private func finishFocusAllowanceStage() {
@@ -1287,6 +1470,7 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         windowController = nil
         flowModel = nil
         accessibilityModel = nil
+        focusAllowanceModel = nil
         notificationModel = nil
     }
 }

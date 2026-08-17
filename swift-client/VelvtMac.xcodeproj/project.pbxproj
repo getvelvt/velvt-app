@@ -10,6 +10,7 @@
 		043E5190EF3742C6AC307569 /* EventRelayProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 523890083299444A9CF45601 /* EventRelayProtocol.swift */; };
 		06C9D8301CC9C73FD56ECEB7 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 08FF548B5CFC292896112B45 /* Cocoa.framework */; };
 		07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */; };
+		C4F0C15D9A0146AAB3E2AB01 /* FocusStateObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4F0C15D9A0146AAB3E2AB02 /* FocusStateObserver.swift */; };
 		119E08E3913F45F0933336D7 /* InsightViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04D5396399374660825D54B5 /* InsightViewModel.swift */; };
 		143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */; };
 		1597C5865C34465AA105915D /* AppMetricsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E6FE1D6377F4F7ABF7EFD43 /* AppMetricsStore.swift */; };
@@ -77,6 +78,7 @@
 		89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPCClientProtocol.swift; path = IPC/IPCClientProtocol.swift; sourceTree = "<group>"; };
 		8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HistoryListView.swift; path = UI/HistoryListView.swift; sourceTree = "<group>"; };
 		8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CollectionModule.swift; path = Collection/CollectionModule.swift; sourceTree = "<group>"; };
+		C4F0C15D9A0146AAB3E2AB02 /* FocusStateObserver.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FocusStateObserver.swift; path = Collection/FocusStateObserver.swift; sourceTree = "<group>"; };
 		928E12E20A85E864E9B7E683 /* ConfigModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfigModule.swift; path = Config/ConfigModule.swift; sourceTree = "<group>"; };
 		93C055AD72C0443A8CD98C13 /* PermissionManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionManager.swift; path = Permissions/PermissionManager.swift; sourceTree = "<group>"; };
 		945E765C974B4023B7362068 /* NotificationScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationScheduler.swift; path = Delivery/NotificationScheduler.swift; sourceTree = "<group>"; };
@@ -152,6 +154,7 @@
 				D4A0C4A9A65047B88055A102 /* UpdateController.swift */,
 				BB45C3A5C6C9AD4C4F62659D /* AuthModule.swift */,
 				8EE2804367E4B0D52AC6A7EB /* CollectionModule.swift */,
+				C4F0C15D9A0146AAB3E2AB02 /* FocusStateObserver.swift */,
 				928E12E20A85E864E9B7E683 /* ConfigModule.swift */,
 				A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */,
 				D7C02BD1C04707361E1B23FF /* DeliveryModule.swift */,
@@ -344,6 +347,7 @@
 				D4A0C4A9A65047B88055A101 /* UpdateController.swift in Sources */,
 				AC9E33391EB7D9B0FDC4E7B5 /* AuthModule.swift in Sources */,
 				07D2274E692D384947F43E35 /* CollectionModule.swift in Sources */,
+				C4F0C15D9A0146AAB3E2AB01 /* FocusStateObserver.swift in Sources */,
 				88D5FC587687DD9AB0300E53 /* ConfigModule.swift in Sources */,
 				A1B2C3D4E5F601234567890A /* BundleConfigLoader.swift in Sources */,
 				A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */,

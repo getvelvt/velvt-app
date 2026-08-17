@@ -182,7 +182,12 @@ async fn main() {
         // Acquire the initial queue so PushAdapter can enqueue proactively.
         let initial_queue = reconnect_tracker.acquire();
         let push_adapter = PushAdapter::new(Arc::clone(&initial_queue));
-        let work_blocks = Arc::new(WorkBlockManager::new(work_block_repo));
+        // Rust owns the Focus/DND evidence record and every decision derived
+        // from it; Swift only observes and reports coarse transitions.
+        let focus = velvt_service::focus::FocusManager::new(persistence.focus_repo());
+        let work_blocks = Arc::new(WorkBlockManager::new(work_block_repo).with_focus_source(
+            Arc::clone(&focus) as Arc<dyn velvt_service::work_block::FocusStateSource>,
+        ));
         match work_blocks.recover_after_restart(chrono::Utc::now()) {
             Ok(snapshot) if snapshot.phase != velvt_shared_types::WorkBlockPhase::Idle => {
                 push_adapter.push_work_block_state(snapshot).await;
@@ -460,6 +465,7 @@ async fn main() {
                 Arc::clone(&authenticated_http) as Arc<dyn HttpClient>,
             )
             .with_work_blocks(Arc::clone(&work_blocks), Arc::clone(&push_adapter))
+            .with_focus(Arc::clone(&focus))
             .with_auth_state(auth_state.subscribe())
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,

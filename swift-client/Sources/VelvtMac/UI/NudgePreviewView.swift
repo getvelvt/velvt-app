@@ -26,7 +26,7 @@ public struct NudgePreviewView: View {
 
     /// Copy mirrors what Rust authors for a real offer: an observed count, a
     /// window, and one bounded action. No praise, no diagnosis, no history.
-    private static let exampleTitle = "Your work block is still running"
+    private static let exampleTitle = "Your work block is running"
     private static let exampleBody =
         "Velvt observed 4 switches away from focus work in the last 10 minutes. "
         + "Protect the next 10 minutes for the work you chose."

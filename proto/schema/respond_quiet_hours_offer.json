@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. The user's one-tap reply to a quiet-hours offer. Accepting configures Velvt's own quiet hours; declining is remembered locally and the offer is not re-asked for a versioned interval. Declining changes nothing else about the product.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "respond_quiet_hours_offer" },
+    "payload": {
+      "type": "object",
+      "required": ["accepted"],
+      "properties": {
+        "accepted": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

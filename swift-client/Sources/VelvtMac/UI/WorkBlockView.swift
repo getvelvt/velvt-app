@@ -23,6 +23,9 @@ public struct WorkBlockView: View {
 
   public var body: some View {
     Group {
+      if let offer = coordinator.quietHoursOffer {
+        quietHoursOfferCard(offer)
+      }
       if plansAnotherSession {
         startForm
       } else if let snapshot = coordinator.snapshot {
@@ -214,6 +217,44 @@ public struct WorkBlockView: View {
     .accessibilityLabel("\(intervention.title). \(intervention.body)")
   }
 
+  /// The next-morning quiet-hours offer. One tap accepts; declining is a
+  /// single calm action the service remembers. Copy comes from Rust
+  /// verbatim, and the card never re-asks on its own.
+  private func quietHoursOfferCard(_ offer: QuietHoursOffer) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label("Quiet hours", systemImage: "moon")
+        .font(.subheadline.bold())
+
+      Text(offer.body)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      HStack(spacing: 8) {
+        Button("Turn on quiet hours") {
+          coordinator.respondToQuietHoursOffer(accepted: true)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .accessibilityHint("Velvt holds its own notifications overnight")
+
+        Button("No thanks") {
+          coordinator.respondToQuietHoursOffer(accepted: false)
+        }
+        .controlSize(.small)
+        .accessibilityHint("Keeps everything exactly as it is")
+
+        Spacer(minLength: 0)
+      }
+    }
+    .padding(10)
+    .background(Color.primary.opacity(0.06))
+    .clipShape(RoundedRectangle(cornerRadius: 8))
+    .padding([.horizontal, .top], 16)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Quiet hours offer. \(offer.body)")
+  }
+
   private func activeBlock(_ snapshot: WorkBlockSnapshot) -> some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .firstTextBaseline) {
@@ -296,6 +337,16 @@ public struct WorkBlockView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
+
+        // The one calm DND reconciliation line, authored in Rust: what
+        // completed and what was held. Positive framing; never a late nudge.
+        if let reconciliation = result.reconciliation {
+          Label(reconciliation, systemImage: "moon")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel("Do Not Disturb summary. \(reconciliation)")
+        }
 
         // Recoveries lead, and are counted rather than rated. A number that
         // can only go up cannot be lost, which is what a streak gets wrong:

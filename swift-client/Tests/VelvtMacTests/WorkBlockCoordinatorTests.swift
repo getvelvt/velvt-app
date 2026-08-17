@@ -38,6 +38,36 @@ final class WorkBlockCoordinatorTests: XCTestCase {
     XCTAssertEqual(client.sentMessages.filter { $0 == .requestWorkBlockState }.count, 1)
   }
 
+  func testQuietHoursOfferIsRenderedVerbatimAndOneTapReplyClearsIt() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let coordinator = WorkBlockCoordinator(ipcClient: client)
+    coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+    let offer = QuietHoursOffer(
+      ruleVersion: 1,
+      lateNightDays: 3,
+      startLocalMinutes: 1_320,
+      endLocalMinutes: 420,
+      body: "Velvt can hold its own notifications overnight."
+    )
+
+    messages.send(.quietHoursOffer(offer))
+    try await waitUntil { coordinator.quietHoursOffer == offer }
+
+    coordinator.respondToQuietHoursOffer(accepted: false)
+    XCTAssertNil(coordinator.quietHoursOffer, "one tap resolves the card")
+    try await waitUntil {
+      client.sentMessages.contains(.respondQuietHoursOffer(.init(accepted: false)))
+    }
+
+    // A second tap with no live offer sends nothing: the decline is
+    // remembered by the service and never re-negotiated from Swift.
+    let sentBefore = client.sentMessages.count
+    coordinator.respondToQuietHoursOffer(accepted: true)
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(client.sentMessages.count, sentBefore)
+  }
+
   func testSnapshotIsRenderedAsReceivedAndCommandsContainNoSwiftEvidence() async throws {
     let client = FakeIPCClient()
     let messages = PassthroughSubject<ServerMessage, Never>()
@@ -209,7 +239,7 @@ final class WorkBlockCoordinatorTests: XCTestCase {
       """
       {
         "action_id": "protect_next_10",
-        "title": "Your work block is still running",
+        "title": "Your work block is running",
         "body": "Velvt observed 4 switches away from deep work.",
         "anchor_category": "DEEP_WORK",
         "switch_count": 4,
@@ -256,7 +286,7 @@ final class WorkBlockCoordinatorTests: XCTestCase {
   private func offer() -> ActiveIntervention {
     ActiveIntervention(
       actionID: "protect_next_10",
-      title: "Your work block is still running",
+      title: "Your work block is running",
       body:
         "Velvt observed 4 switches away from deep work in the last 10 minutes. "
         + "Protect the next 10 minutes for the work you chose.",

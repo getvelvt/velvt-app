@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Rust to Swift. A next-morning quiet-hours offer produced by the deterministic, versioned late-night DND pattern rule. An offer, never a workaround: declining changes nothing else, and the decline is remembered locally for a versioned interval. Carries no Focus mode name, schedule, or configuration.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "quiet_hours_offer" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "rule_version",
+        "late_night_days",
+        "start_local_minutes",
+        "end_local_minutes",
+        "body"
+      ],
+      "properties": {
+        "rule_version": { "type": "integer", "minimum": 1 },
+        "late_night_days": { "type": "integer", "minimum": 1 },
+        "start_local_minutes": { "type": "integer", "minimum": 0, "maximum": 1439 },
+        "end_local_minutes": { "type": "integer", "minimum": 0, "maximum": 1439 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 240 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

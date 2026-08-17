@@ -115,6 +115,38 @@ for executable in "$app_path/Contents/MacOS/Velvt" "$helper"; do
   done
 done
 
+# Every load path must be relative to the bundle. A build once shipped with an
+# absolute rpath into the build machine's checkout, so on any other Mac dyld
+# looked for Sparkle at a path that did not exist and killed the process before
+# main() — a crash on launch that reads to the recipient as "your app is
+# broken", with no way to tell it from one.
+#
+# The failure is invisible on the machine that produced it, because there the
+# path resolves. It can only be caught here.
+for executable in "$app_path/Contents/MacOS/Velvt" "$helper"; do
+  while read -r rpath; do
+    [[ -n "$rpath" ]] || continue
+    case "$rpath" in
+      @executable_path/* | @loader_path/* | @rpath/*) ;;
+      *)
+        echo "ERROR: $(basename "$executable") carries a non-relative rpath: $rpath" >&2
+        echo "It resolves only on the machine that built it and will crash on launch elsewhere." >&2
+        exit 1
+        ;;
+    esac
+  done < <(otool -l "$executable" | awk '/LC_RPATH/{found=1} found && /^ *path /{print $2; found=0}')
+done
+
+# Belt and braces: a build-machine home directory anywhere in the shipped
+# binaries means something was baked in that cannot exist on a user's Mac.
+for executable in "$app_path/Contents/MacOS/Velvt" "$helper"; do
+  if strings -a "$executable" | grep -q "^/Users/[^/]*/.*velvt"; then
+    echo "ERROR: $(basename "$executable") embeds an absolute build-machine path." >&2
+    strings -a "$executable" | grep "^/Users/[^/]*/.*velvt" | head -3 >&2
+    exit 1
+  fi
+done
+
 if [[ "$mode" == "production" ]]; then
   grep -q '^Authority=Developer ID Application:' <<<"$signature_details" || {
     echo "ERROR: production app is not signed with a Developer ID Application identity." >&2

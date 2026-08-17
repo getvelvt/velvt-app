@@ -62,6 +62,33 @@ xcrun swift "$(dirname "$0")/render_dmg_background.swift" \
   "$volume_name" "$output_tmp"
 mv "$output_tmp" "$dmg_path"
 
+# dmgbuild exits 0 even when its internal `ditto` fails, so a DMG can be
+# produced containing the window layout and nothing else. That happened twice:
+# macOS App Management blocks writing a bundle named `.app` into /Volumes
+# unless the calling process holds that permission, and the resulting empty
+# image then signed, notarized, stapled, and checksummed without complaint.
+# Only the final content check caught it, eight minutes and two notarization
+# round-trips later.
+#
+# Assert the app is present before anything downstream spends time on it.
+verify_mount="$(mktemp -d "${TMPDIR:-/tmp}/velvt-dmg-assert.XXXXXX")"
+assert_cleanup() {
+  hdiutil detach "$verify_mount" -quiet >/dev/null 2>&1 || true
+  rmdir "$verify_mount" >/dev/null 2>&1 || true
+}
+trap 'assert_cleanup; cleanup' EXIT
+hdiutil attach -quiet -readonly -nobrowse -mountpoint "$verify_mount" "$dmg_path"
+if [[ ! -d "$verify_mount/$(basename "$app_path")" ]]; then
+  echo "ERROR: the DMG was created without $(basename "$app_path")." >&2
+  echo "dmgbuild reports success even when its copy fails. The usual cause is" >&2
+  echo "macOS App Management: grant the terminal running this build App" >&2
+  echo "Management in System Settings > Privacy & Security, then retry." >&2
+  rm -f "$dmg_path"
+  exit 1
+fi
+assert_cleanup
+trap cleanup EXIT
+
 hdiutil verify "$dmg_path"
 if [[ "$mode" == "local" ]]; then
   (

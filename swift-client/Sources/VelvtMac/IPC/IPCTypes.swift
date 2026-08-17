@@ -30,6 +30,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case reportInterventionOutcome(ReportInterventionOutcome)
     case workBlockLifecycle(WorkBlockLifecycle)
     case clearWorkBlockData
+    case focusStateChanged(FocusStateChanged)
+    case respondQuietHoursOffer(RespondQuietHoursOffer)
 
     public init(from decoder: Decoder) throws {
         let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
@@ -90,6 +92,10 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .workBlockLifecycle(try WorkBlockLifecycle(from: payload))
         case "clear_work_block_data":
             self = .clearWorkBlockData
+        case "focus_state_changed":
+            self = .focusStateChanged(try FocusStateChanged(from: payload))
+        case "respond_quiet_hours_offer":
+            self = .respondQuietHoursOffer(try RespondQuietHoursOffer(from: payload))
         default:
       throw DecodingError.dataCorrupted(
         .init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
@@ -180,6 +186,12 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .clearWorkBlockData:
             try envelope.encode("clear_work_block_data", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case let .focusStateChanged(value):
+            try envelope.encode("focus_state_changed", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .respondQuietHoursOffer(value):
+            try envelope.encode("respond_quiet_hours_offer", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
 }
@@ -211,6 +223,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case correctionHistoryPage(CorrectionHistoryPage)
     case workBlockState(WorkBlockSnapshot)
     case localDashboard(LocalDashboardSnapshot)
+    /// A deterministic next-morning quiet-hours offer (rule-versioned).
+    case quietHoursOffer(QuietHoursOffer)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
@@ -266,6 +280,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .workBlockState(try WorkBlockSnapshot(from: payload))
         case "local_dashboard":
             self = .localDashboard(try LocalDashboardSnapshot(from: payload))
+        case "quiet_hours_offer":
+            self = .quietHoursOffer(try QuietHoursOffer(from: payload))
         default:
             self = .unknown(type: type)
         }
@@ -343,6 +359,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case let .localDashboard(value):
             try envelope.encode("local_dashboard", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .quietHoursOffer(value):
+            try envelope.encode("quiet_hours_offer", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .unknown(type):
             try envelope.encode(type, forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
@@ -376,6 +395,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case .correctionHistoryPage: "correction_history_page"
         case .workBlockState: "work_block_state"
         case .localDashboard: "local_dashboard"
+        case .quietHoursOffer: "quiet_hours_offer"
         case .unknown: "unknown"
         }
     }
@@ -1701,6 +1721,84 @@ public struct ActiveIntervention: Codable, Equatable, Sendable {
     }
 }
 
+/// A coarse system Focus/DND transition observed by the client.
+///
+/// PRIVACY: only whether some Focus mode is active, when the transition was
+/// observed, and the client's UTC offset are representable here. The Focus
+/// mode's name, configuration, and schedule must never be added. Swift only
+/// observes; the Rust service owns the evidence record and every decision
+/// derived from it.
+public struct FocusStateChanged: Codable, Equatable, Sendable {
+    public let active: Bool
+    public let occurredAt: Date
+    public let utcOffsetSeconds: Int
+
+    public init(active: Bool, occurredAt: Date, utcOffsetSeconds: Int) {
+        self.active = active
+        self.occurredAt = occurredAt
+        self.utcOffsetSeconds = utcOffsetSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case active
+        case occurredAt = "occurred_at"
+        case utcOffsetSeconds = "utc_offset_seconds"
+    }
+}
+
+/// The user's one-tap reply to a quiet-hours offer. Accepting configures
+/// Velvt's own quiet hours; declining is remembered by the service for a
+/// versioned interval and changes nothing else.
+public struct RespondQuietHoursOffer: Codable, Equatable, Sendable {
+    public let accepted: Bool
+
+    public init(accepted: Bool) { self.accepted = accepted }
+}
+
+/// A next-morning quiet-hours offer produced by the Rust service's
+/// deterministic, versioned late-night DND pattern rule. Rust authors the
+/// copy; Swift renders it verbatim. An offer, never a workaround.
+public struct QuietHoursOffer: Codable, Equatable, Sendable {
+    public let ruleVersion: Int
+    public let lateNightDays: Int
+    public let startLocalMinutes: Int
+    public let endLocalMinutes: Int
+    public let body: String
+
+    public init(
+        ruleVersion: Int,
+        lateNightDays: Int,
+        startLocalMinutes: Int,
+        endLocalMinutes: Int,
+        body: String
+    ) {
+        self.ruleVersion = ruleVersion
+        self.lateNightDays = lateNightDays
+        self.startLocalMinutes = startLocalMinutes
+        self.endLocalMinutes = endLocalMinutes
+        self.body = body
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case body
+        case ruleVersion = "rule_version"
+        case lateNightDays = "late_night_days"
+        case startLocalMinutes = "start_local_minutes"
+        case endLocalMinutes = "end_local_minutes"
+    }
+}
+
+/// Focus/DND-derived outcome recorded by the Rust service for one block.
+///
+/// `completedUnderDnd` marks a success: the block completed while DND was
+/// active. Each `deliverySuppressedDnd` entry is one mid-block nudge the
+/// service held because DND was active — delivered by no channel and
+/// reconciled after the block as a count only.
+public enum WorkBlockDndOutcome: String, Codable, Equatable, Sendable {
+    case completedUnderDnd = "completed_under_dnd"
+    case deliverySuppressedDnd = "delivery_suppressed_dnd"
+}
+
 public enum WorkBlockLifecycleEvent: String, Codable, Equatable, Sendable {
     case sleep
     case wake
@@ -1743,9 +1841,45 @@ public struct WorkBlockResult: Codable, Equatable, Sendable {
     public let safeEvidenceCategory: String?
     public let observation: String
     public let nextAction: WorkBlockNextAction
+    /// Focus/DND outcomes recorded by the service, in recorded order. Empty
+    /// on pre-v26 payloads and blocks without DND evidence.
+    public let dndOutcomes: [WorkBlockDndOutcome]
+    /// At most one Rust-authored calm post-block line noting what was held
+    /// under DND. Rendered verbatim; never a late nudge.
+    public let reconciliation: String?
+
+    public init(
+        plannedDurationSeconds: Int,
+        elapsedDurationSeconds: Int,
+        longestUninterruptedSeconds: Int,
+        switchAwayCount: Int,
+        recoveryCount: Int,
+        confidence: ConfidenceLevel,
+        coverage: WorkBlockCoverage,
+        coverageRatio: Double,
+        safeEvidenceCategory: String?,
+        observation: String,
+        nextAction: WorkBlockNextAction,
+        dndOutcomes: [WorkBlockDndOutcome] = [],
+        reconciliation: String? = nil
+    ) {
+        self.plannedDurationSeconds = plannedDurationSeconds
+        self.elapsedDurationSeconds = elapsedDurationSeconds
+        self.longestUninterruptedSeconds = longestUninterruptedSeconds
+        self.switchAwayCount = switchAwayCount
+        self.recoveryCount = recoveryCount
+        self.confidence = confidence
+        self.coverage = coverage
+        self.coverageRatio = coverageRatio
+        self.safeEvidenceCategory = safeEvidenceCategory
+        self.observation = observation
+        self.nextAction = nextAction
+        self.dndOutcomes = dndOutcomes
+        self.reconciliation = reconciliation
+    }
 
     private enum CodingKeys: String, CodingKey {
-        case confidence, coverage, observation
+        case confidence, coverage, observation, reconciliation
         case plannedDurationSeconds = "planned_duration_seconds"
         case elapsedDurationSeconds = "elapsed_duration_seconds"
         case longestUninterruptedSeconds = "longest_uninterrupted_seconds"
@@ -1754,6 +1888,47 @@ public struct WorkBlockResult: Codable, Equatable, Sendable {
         case coverageRatio = "coverage_ratio"
         case safeEvidenceCategory = "safe_evidence_category"
         case nextAction = "next_action"
+        case dndOutcomes = "dnd_outcomes"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        plannedDurationSeconds = try container.decode(Int.self, forKey: .plannedDurationSeconds)
+        elapsedDurationSeconds = try container.decode(Int.self, forKey: .elapsedDurationSeconds)
+        longestUninterruptedSeconds = try container.decode(
+            Int.self, forKey: .longestUninterruptedSeconds)
+        switchAwayCount = try container.decode(Int.self, forKey: .switchAwayCount)
+        recoveryCount = try container.decode(Int.self, forKey: .recoveryCount)
+        confidence = try container.decode(ConfidenceLevel.self, forKey: .confidence)
+        coverage = try container.decode(WorkBlockCoverage.self, forKey: .coverage)
+        coverageRatio = try container.decode(Double.self, forKey: .coverageRatio)
+        safeEvidenceCategory = try container.decodeIfPresent(
+            String.self, forKey: .safeEvidenceCategory)
+        observation = try container.decode(String.self, forKey: .observation)
+        nextAction = try container.decode(WorkBlockNextAction.self, forKey: .nextAction)
+        // Optional on the wire so pre-v26 results decode unchanged.
+        dndOutcomes =
+            try container.decodeIfPresent([WorkBlockDndOutcome].self, forKey: .dndOutcomes) ?? []
+        reconciliation = try container.decodeIfPresent(String.self, forKey: .reconciliation)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(plannedDurationSeconds, forKey: .plannedDurationSeconds)
+        try container.encode(elapsedDurationSeconds, forKey: .elapsedDurationSeconds)
+        try container.encode(longestUninterruptedSeconds, forKey: .longestUninterruptedSeconds)
+        try container.encode(switchAwayCount, forKey: .switchAwayCount)
+        try container.encode(recoveryCount, forKey: .recoveryCount)
+        try container.encode(confidence, forKey: .confidence)
+        try container.encode(coverage, forKey: .coverage)
+        try container.encode(coverageRatio, forKey: .coverageRatio)
+        try container.encode(safeEvidenceCategory, forKey: .safeEvidenceCategory)
+        try container.encode(observation, forKey: .observation)
+        try container.encode(nextAction, forKey: .nextAction)
+        if !dndOutcomes.isEmpty {
+            try container.encode(dndOutcomes, forKey: .dndOutcomes)
+        }
+        try container.encodeIfPresent(reconciliation, forKey: .reconciliation)
     }
 }
 

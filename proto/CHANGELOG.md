@@ -1,5 +1,32 @@
 # IPC Protocol Changelog
 
+## Version 26 - 2026-08-07
+
+- Added `focus_state_changed` (Swift to Rust): a coarse system Focus/DND
+  transition report carrying only `active`, the transition time, and the
+  client's UTC offset. Swift observes; Rust owns the Focus/DND evidence
+  record and every decision derived from it. The Focus mode's name,
+  configuration, and schedule are structurally unrepresentable in this
+  message and never cross IPC.
+- Added the Focus/DND outcome enum values `completed_under_dnd` and
+  `delivery_suppressed_dnd`. They appear in the new optional
+  `dnd_outcomes` array of the work-block result: a block completed while
+  DND was active records `completed_under_dnd` (a success everywhere a
+  completed block counts), and each mid-block nudge held because DND was
+  active records `delivery_suppressed_dnd`. Held nudges are never delivered
+  by another channel, never retried mid-block, and reconcile after the
+  block as counts only.
+- Added optional `reconciliation` to the work-block result: at most one
+  Rust-authored calm post-block line noting what was held. Analyst voice;
+  no reference to what the user missed.
+- Added `quiet_hours_offer` (Rust to Swift): a deterministic, versioned
+  next-morning offer produced by the late-night DND pattern rule. It is an
+  offer, never a workaround, and carries only the rule version, a distinct
+  day count, the proposed local window, and Rust-authored copy.
+- Added `respond_quiet_hours_offer` (Swift to Rust): one-tap acceptance
+  configures Velvt's own quiet hours; a decline is remembered locally and
+  the offer is not re-asked for a versioned interval.
+
 ## Version 25 - 2026-08-08
 
 - Added `was_focused` to `ReportInterventionOutcome.response`. The existing

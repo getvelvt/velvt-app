@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. A coarse system Focus/DND transition observed by the client. Swift observes only; Rust owns the evidence record and every decision derived from it. The Focus mode's name, configuration, and schedule are structurally unrepresentable here and must never be added.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "focus_state_changed" },
+    "payload": {
+      "type": "object",
+      "required": ["active", "occurred_at", "utc_offset_seconds"],
+      "properties": {
+        "active": { "type": "boolean" },
+        "occurred_at": { "type": "string", "format": "date-time" },
+        "utc_offset_seconds": {
+          "type": "integer",
+          "minimum": -64800,
+          "maximum": 64800
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -5,6 +5,7 @@ pub mod auth;
 pub mod config;
 pub mod dashboard;
 pub mod delivery;
+pub mod focus;
 pub mod ipc;
 pub mod lifecycle;
 pub mod persistence;

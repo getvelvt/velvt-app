@@ -1,8 +1,17 @@
 use super::{
+<<<<<<< ours
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, LocalDisplayAggregate,
     LocalEventMetadata, NewUploadBatch, PersistenceError, PersonalOverrideRecord, RawEventEntry,
     UploadBatch, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockIntervention,
     WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
+=======
+    AbstractionMapping, BatchEvent, FocusTransition, HistoryCacheEntry, InsightCacheEntry,
+    LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch, PersistenceError,
+    PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry,
+    UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WorkBlockCategoryCorrection,
+    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
+    WorkBlockRecord, WrongInterventionCounts,
+>>>>>>> theirs
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -188,6 +197,57 @@ pub trait RawEventRepo: Send + Sync {
     ) -> Result<u64, PersistenceError>;
 }
 
+/// Coarse Focus/DND evidence, quiet-hours offer memory, and Velvt's own
+/// quiet-hours setting. Everything behind this trait is device-local and
+/// structurally unable to hold a Focus mode's name, configuration, or
+/// schedule.
+pub trait FocusRepo: Send + Sync {
+    /// Appends an edge transition. Returns `false` (and stores nothing) when
+    /// the stored state already matches `transition.active`, so repeated
+    /// samples of an unchanged state never accumulate rows.
+    fn record_focus_transition(
+        &self,
+        transition: &FocusTransition,
+    ) -> Result<bool, PersistenceError>;
+    /// The most recently stored transition, if any.
+    fn latest_focus_transition(&self) -> Result<Option<FocusTransition>, PersistenceError>;
+    /// The coarse Focus state at the given bucket: the `active` value of the
+    /// latest transition at or before it.
+    fn focus_state_at_bucket(
+        &self,
+        bucket: DateTime<Utc>,
+    ) -> Result<Option<bool>, PersistenceError>;
+    /// Distinct local dates carrying an active transition in any of the given
+    /// local hours, newest first. Bounded by evidence retention.
+    fn focus_active_dates_in_hours(&self, hours: &[u32]) -> Result<Vec<String>, PersistenceError>;
+    /// Deletes evidence rows whose bucket is before `cutoff`.
+    fn prune_focus_evidence(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError>;
+    /// Stores the client's latest UTC offset for local-hour decisions.
+    fn set_utc_offset(&self, seconds: i32, at: DateTime<Utc>) -> Result<(), PersistenceError>;
+    fn utc_offset_seconds(&self) -> Result<Option<i32>, PersistenceError>;
+    fn quiet_hours_offer_state(&self) -> Result<Option<QuietHoursOfferState>, PersistenceError>;
+    /// Records a fresh pattern-rule trigger, replacing any previous offer
+    /// lifecycle. The caller owns the gate on when replacing is allowed.
+    fn record_quiet_hours_trigger(
+        &self,
+        rule_version: u32,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError>;
+    /// Marks the current offer as surfaced.
+    fn record_quiet_hours_offered(&self, at: DateTime<Utc>) -> Result<(), PersistenceError>;
+    /// Records the user's reply to the current offer.
+    fn record_quiet_hours_response(
+        &self,
+        response: QuietHoursOfferResponse,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError>;
+    fn quiet_hours(&self) -> Result<Option<VelvtQuietHours>, PersistenceError>;
+    fn set_quiet_hours(&self, quiet_hours: &VelvtQuietHours) -> Result<(), PersistenceError>;
+    /// Clears Focus evidence, the stored offset, and offer memory. Velvt's
+    /// own quiet-hours setting is a user choice and is cleared separately.
+    fn clear_focus_evidence(&self) -> Result<u64, PersistenceError>;
+}
+
 pub trait WorkBlockRepo: Send + Sync {
     fn create(&self, block: &WorkBlockRecord) -> Result<(), PersistenceError>;
     fn latest(&self) -> Result<Option<WorkBlockRecord>, PersistenceError>;
@@ -239,8 +299,27 @@ pub trait WorkBlockRepo: Send + Sync {
     /// came before this one.
     fn recent_interventions(
         &self,
+<<<<<<< ours
         limit: usize,
     ) -> Result<Vec<WorkBlockIntervention>, PersistenceError>;
+=======
+        block_id: &str,
+        correction: &WorkBlockCategoryCorrection,
+    ) -> Result<(), PersistenceError>;
+    /// Every block-scoped correction, oldest first.
+    fn category_corrections(
+        &self,
+        block_id: &str,
+    ) -> Result<Vec<WorkBlockCategoryCorrection>, PersistenceError>;
+    /// Rolling wrong-intervention counts across blocks: offers delivered
+    /// since `since`, and how many were answered `dismissed_was_focused`.
+    /// DND-suppressed decisions were never delivered and are excluded from
+    /// the delivered count so the precision metric stays honest.
+    fn wrong_intervention_counts(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<WrongInterventionCounts, PersistenceError>;
+>>>>>>> theirs
     /// Transitions an offer to a terminal outcome. Only an `offered` row is
     /// updated, so a recorded return is never overwritten by block expiry.
     fn resolve_intervention(

@@ -18,6 +18,7 @@ use crate::auth::{
     AccountAuthService, AuthError, AuthState, HttpClient, HttpRequest, SessionValidator, TokenStore,
 };
 use crate::delivery::{shaper, CacheManager, PushAdapter};
+use crate::focus::FocusManager;
 use crate::persistence::{
     AbstractionMapRepo, RawEventEntry, RawEventRepo, UploadBatchRepo, UploadQueueDiagnostics,
 };
@@ -417,6 +418,7 @@ pub struct R7Router {
     upload_batches: Option<Arc<dyn UploadBatchRepo>>,
     work_blocks: Option<Arc<WorkBlockManager>>,
     work_block_push: Option<Arc<PushAdapter>>,
+    focus: Option<Arc<FocusManager>>,
     auth_state: Option<tokio::sync::watch::Receiver<AuthState>>,
 }
 
@@ -441,6 +443,7 @@ impl R7Router {
             upload_batches: None,
             work_blocks: None,
             work_block_push: None,
+            focus: None,
             auth_state: None,
         }
     }
@@ -482,6 +485,7 @@ impl R7Router {
         self
     }
 
+<<<<<<< ours
     /// Whether an event ingested right now may ever be uploaded.
     ///
     /// `RefreshInFlight` is a logged-in state: the device holds a valid refresh
@@ -502,6 +506,17 @@ impl R7Router {
     ) -> MenuStatus {
         let during_block = self
             .work_blocks
+=======
+    /// Attaches the Focus/DND evidence owner. Without it, Focus messages are
+    /// acknowledged and dropped and no quiet-hours behavior exists.
+    pub fn with_focus(mut self, focus: Arc<FocusManager>) -> Self {
+        self.focus = Some(focus);
+        self
+    }
+
+    fn upload_eligible(&self) -> bool {
+        self.auth_state
+>>>>>>> theirs
             .as_ref()
             .and_then(|manager| manager.has_active_block().ok())
             .unwrap_or(false);
@@ -847,6 +862,9 @@ impl MessageRouter for R7Router {
             }
 
             ClientMessage::RequestWorkBlockState(_) => {
+                // The popover requesting state is the calm daytime moment the
+                // pattern rule's next-morning offer waits for.
+                self.push_pending_quiet_hours_offer().await;
                 self.work_block_response(|manager| manager.request_state(Utc::now()))
             }
 
@@ -873,7 +891,53 @@ impl MessageRouter for R7Router {
             }
 
             ClientMessage::ClearWorkBlockData(_) => {
+                // Focus evidence and offer memory are part of the local
+                // behavioral record and clear with it.
+                if let Some(focus) = &self.focus {
+                    if focus.clear_evidence().is_err() {
+                        tracing::warn!(
+                            error_code = "focus_evidence_clear_failed",
+                            "focus evidence was not cleared"
+                        );
+                    }
+                }
                 self.work_block_response(WorkBlockManager::clear_data)
+            }
+
+            ClientMessage::FocusStateChanged(transition) => {
+                let Some(focus) = &self.focus else {
+                    return Ok(None);
+                };
+                if focus
+                    .record_transition(
+                        transition.active,
+                        transition.occurred_at,
+                        transition.utc_offset_seconds,
+                        Utc::now(),
+                    )
+                    .is_err()
+                {
+                    tracing::warn!(
+                        error_code = "focus_transition_record_failed",
+                        "coarse focus transition was not recorded"
+                    );
+                    return Ok(None);
+                }
+                self.push_pending_quiet_hours_offer().await;
+                Ok(None)
+            }
+
+            ClientMessage::RespondQuietHoursOffer(reply) => {
+                let Some(focus) = &self.focus else {
+                    return Ok(None);
+                };
+                if focus.respond_to_offer(reply.accepted, Utc::now()).is_err() {
+                    tracing::warn!(
+                        error_code = "quiet_hours_response_record_failed",
+                        "quiet-hours offer response was not recorded"
+                    );
+                }
+                Ok(None)
             }
 
             ClientMessage::RequestLatestInsight(req) => {
@@ -1041,6 +1105,23 @@ impl R7Router {
         }
     }
 
+    /// Pushes the deterministic quiet-hours offer when the pattern rule has
+    /// one waiting for a local morning. Push-only and repeat-safe: the
+    /// manager owns every gate (trigger, morning window, decline memory).
+    async fn push_pending_quiet_hours_offer(&self) {
+        let (Some(focus), Some(push)) = (&self.focus, &self.work_block_push) else {
+            return;
+        };
+        match focus.pending_morning_offer(Utc::now()) {
+            Ok(Some(offer)) => push.push_quiet_hours_offer(offer).await,
+            Ok(None) => {}
+            Err(_) => tracing::warn!(
+                error_code = "quiet_hours_offer_check_failed",
+                "pending quiet-hours offer could not be evaluated"
+            ),
+        }
+    }
+
     fn work_block_response(
         &self,
         operation: impl FnOnce(
@@ -1142,6 +1223,7 @@ impl R7Router {
                                 // insight, but authored entirely on-device: an
                                 // in-session offer never waits on the cloud or
                                 // on a mature baseline.
+<<<<<<< ours
                                 //
                                 // A quiet offer is card-only. The user pushed
                                 // the last one away, so this one does not ring;
@@ -1150,6 +1232,26 @@ impl R7Router {
                                 // hiding what was observed.
                                 if let Some(intervention) = outcome.intervention {
                                     if intervention.salience == InterventionSalience::Normal {
+=======
+                                // Reduced salience means the in-app card only:
+                                // after a negative reply in this block, the
+                                // offer never regains the OS notification.
+                                // Velvt's own quiet hours only ever reduce
+                                // delivery: inside the accepted window the
+                                // offer keeps its in-app card but sends no
+                                // OS notification, exactly like Reduced
+                                // salience. (Active system DND never
+                                // reaches this point — the manager holds
+                                // the whole decision.)
+                                if let Some(intervention) = outcome.intervention {
+                                    let in_quiet_hours = self.focus.as_ref().is_some_and(|focus| {
+                                        focus.in_velvt_quiet_hours(occurred_at)
+                                    });
+                                    if intervention.salience
+                                        == crate::work_block::DriftSalience::Standard
+                                        && !in_quiet_hours
+                                    {
+>>>>>>> theirs
                                         push.push_notification(
                                             Uuid::new_v4(),
                                             &intervention.title,

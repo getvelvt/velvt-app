@@ -68,6 +68,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::CorrectionHistoryPage(_) => "correction_history_page",
         ServerMessage::WorkBlockState(_) => "work_block_state",
         ServerMessage::LocalDashboard(_) => "local_dashboard",
+        ServerMessage::QuietHoursOffer(_) => "quiet_hours_offer",
     }
 }
 
@@ -357,6 +358,14 @@ impl PushAdapter {
                     reason: reason.map(str::to_owned),
                 },
             ))
+            .await;
+    }
+
+    /// Pushes the deterministic next-morning quiet-hours offer. Rust-authored
+    /// copy; carries no Focus mode name, schedule, or configuration.
+    pub async fn push_quiet_hours_offer(&self, offer: velvt_shared_types::QuietHoursOffer) {
+        self.queue
+            .enqueue(ServerMessage::QuietHoursOffer(offer))
             .await;
     }
 

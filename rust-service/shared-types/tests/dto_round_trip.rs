@@ -267,11 +267,15 @@ fn safe_work_block_result_has_one_action_and_no_intention_field() {
             label: "Protect the next 10 minutes.".into(),
             duration_seconds: 600,
         },
+        dnd_outcomes: Vec::new(),
+        reconciliation: None,
     };
     let value = serde_json::to_value(&result).unwrap();
     assert!(value.get("next_action").unwrap().is_object());
     assert!(value.get("next_actions").is_none());
     assert!(value.get("intention").is_none());
+    assert!(value.get("dnd_outcomes").is_none(), "empty list is omitted");
+    assert!(value.get("reconciliation").is_none());
     assert_round_trip(result);
 }
 

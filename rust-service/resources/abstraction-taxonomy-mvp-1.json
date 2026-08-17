@@ -12,115 +12,1030 @@
     "UNLOGGED"
   ],
   "seed_applications": [
-    { "app_name_pattern": "VS Code", "label": "document:edit", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Visual Studio Code", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Code - OSS", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "VSCodium", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Xcode", "label": "document:edit", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Zed", "label": "document:edit", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Cursor", "label": "document:edit", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Windsurf", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Trae", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "IntelliJ IDEA", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "PyCharm", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "WebStorm", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "CLion", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Android Studio", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Notion", "label": "document:notion", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Obsidian", "label": "document:obsidian", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Overleaf", "label": "document:overleaf", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Google Docs", "label": "document:docs", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Docs", "label": "document:docs", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Google Sheets", "label": "document:sheets", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Sheets", "label": "document:sheets", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Google Slides", "label": "document:slides", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Slides", "label": "document:slides", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Google Drive", "label": "document:drive", "category": "REFERENCE" },
-    { "app_name_pattern": "Dropbox", "label": "document:drive", "category": "REFERENCE" },
-    { "app_name_pattern": "Microsoft Word", "label": "document:word", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Microsoft Excel", "label": "document:excel", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Microsoft PowerPoint", "label": "document:powerpoint", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Pages", "label": "document:pages", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Numbers", "label": "document:numbers", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Keynote", "label": "document:keynote", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Linear", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-    { "app_name_pattern": "Jira", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-
-    { "app_name_pattern": "YouTube", "label": "video:youtube", "category": "PASSIVE_CONSUMPTION" },
-    { "app_name_pattern": "Netflix", "label": "video:netflix", "category": "PASSIVE_CONSUMPTION" },
-    { "app_name_pattern": "TikTok", "label": "video:tiktok", "category": "PASSIVE_CONSUMPTION" },
-    { "app_name_pattern": "Twitch", "label": "video:twitch", "category": "PASSIVE_CONSUMPTION" },
-    { "app_name_pattern": "Hulu", "label": "video:hulu", "category": "PASSIVE_CONSUMPTION" },
-    { "app_name_pattern": "Disney+", "label": "video:disney", "category": "PASSIVE_CONSUMPTION" },
-    { "app_name_pattern": "Prime Video", "label": "video:prime", "category": "PASSIVE_CONSUMPTION" },
-    { "app_name_pattern": "Max", "label": "video:max", "category": "PASSIVE_CONSUMPTION" },
-    { "app_name_pattern": "Spotify", "label": "audio:spotify", "category": "PASSIVE_CONSUMPTION" },
-    { "app_name_pattern": "Apple Music", "label": "audio:music", "category": "PASSIVE_CONSUMPTION" },
-
-    { "app_name_pattern": "Reddit", "label": "social:reddit", "category": "SOCIAL_FEED" },
-    { "app_name_pattern": "Twitter*", "label": "social:twitter", "category": "SOCIAL_FEED" },
-    { "app_name_pattern": "X", "label": "social:x", "category": "SOCIAL_FEED" },
-    { "app_name_pattern": "Instagram", "label": "social:instagram", "category": "SOCIAL_FEED" },
-    { "app_name_pattern": "Facebook", "label": "social:facebook", "category": "SOCIAL_FEED" },
-    { "app_name_pattern": "Threads", "label": "social:threads", "category": "SOCIAL_FEED" },
-    { "app_name_pattern": "LinkedIn", "label": "social:linkedin", "category": "SOCIAL_FEED" },
-
-    { "app_name_pattern": "Slack", "label": "communication:slack", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Discord", "label": "communication:discord", "category": "COMMUNICATION" },
-    { "app_name_pattern": "iMessage", "label": "communication:imessage", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Gmail", "label": "communication:gmail", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Outlook", "label": "communication:outlook", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Superhuman", "label": "communication:email", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Mail", "label": "communication:email", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Calendar", "label": "communication:calendar", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Google Calendar", "label": "communication:calendar", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Zoom", "label": "meeting:zoom", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Meet", "label": "meeting:meet", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Google Meet", "label": "meeting:meet", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Microsoft Teams", "label": "meeting:teams", "category": "COMMUNICATION" },
-    { "app_name_pattern": "Telegram", "label": "communication:telegram", "category": "COMMUNICATION" },
-
-    { "app_name_pattern": "Linear (task view)", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-    { "app_name_pattern": "Jira (task view)", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-    { "app_name_pattern": "Todoist", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-    { "app_name_pattern": "Asana", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-    { "app_name_pattern": "Trello", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-    { "app_name_pattern": "ClickUp", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-    { "app_name_pattern": "Monday", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-    { "app_name_pattern": "Notion (task view)", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-    { "app_name_pattern": "Things 3", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-    { "app_name_pattern": "OmniFocus", "label": "task:manage", "category": "TASK_MANAGEMENT" },
-
-    { "app_name_pattern": "Wikipedia", "label": "reference:wikipedia", "category": "REFERENCE" },
-    { "app_name_pattern": "MDN", "label": "reference:mdn", "category": "REFERENCE" },
-    { "app_name_pattern": "Stack Overflow", "label": "reference:stack_overflow", "category": "REFERENCE" },
-    { "app_name_pattern": "GitHub", "label": "reference:github", "category": "REFERENCE" },
-    { "app_name_pattern": "GitLab", "label": "reference:gitlab", "category": "REFERENCE" },
-    { "app_name_pattern": "ChatGPT", "label": "reference:ai_assistant", "category": "REFERENCE" },
-    { "app_name_pattern": "Claude", "label": "reference:ai_assistant", "category": "REFERENCE" },
-    { "app_name_pattern": "Perplexity", "label": "reference:ai_assistant", "category": "REFERENCE" },
-    { "app_name_pattern": "Hacker News", "label": "reference:hacker_news", "category": "REFERENCE" },
-    { "app_name_pattern": "Safari", "label": "reference:browser", "category": "REFERENCE" },
-    { "app_name_pattern": "Google Chrome", "label": "reference:browser", "category": "REFERENCE" },
-    { "app_name_pattern": "Chrome", "label": "reference:browser", "category": "REFERENCE" },
-    { "app_name_pattern": "Arc", "label": "reference:browser", "category": "REFERENCE" },
-    { "app_name_pattern": "Firefox", "label": "reference:browser", "category": "REFERENCE" },
-    { "app_name_pattern": "Brave Browser", "label": "reference:browser", "category": "REFERENCE" },
-    { "app_name_pattern": "Microsoft Edge", "label": "reference:browser", "category": "REFERENCE" },
-    { "app_name_pattern": "Orion", "label": "reference:browser", "category": "REFERENCE" },
-
-    { "app_name_pattern": "Finder", "label": "system:manage", "category": "SYSTEM" },
-    { "app_name_pattern": "System Settings", "label": "system:manage", "category": "SYSTEM" },
-    { "app_name_pattern": "Terminal", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "iTerm2", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Warp", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Ghostty", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Alacritty", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "WezTerm", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Docker Desktop", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Postman", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Insomnia", "label": "document:code", "category": "FOCUS_WORK" },
-    { "app_name_pattern": "Activity Monitor", "label": "system:manage", "category": "SYSTEM" },
-    { "app_name_pattern": "unclassifiable", "label": "system:unknown", "category": "SYSTEM" }
+    {
+      "app_name_pattern": "VS Code",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Visual Studio Code",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Code - OSS",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "VSCodium",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Xcode",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Zed",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Cursor",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Windsurf",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Trae",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "IntelliJ IDEA",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "PyCharm",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "WebStorm",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "CLion",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Android Studio",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Notion",
+      "label": "document:notion",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Obsidian",
+      "label": "document:obsidian",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Overleaf",
+      "label": "document:overleaf",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Google Docs",
+      "label": "document:docs",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Docs",
+      "label": "document:docs",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Google Sheets",
+      "label": "document:sheets",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Sheets",
+      "label": "document:sheets",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Google Slides",
+      "label": "document:slides",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Slides",
+      "label": "document:slides",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Google Drive",
+      "label": "document:drive",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Dropbox",
+      "label": "document:drive",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Microsoft Word",
+      "label": "document:word",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Microsoft Excel",
+      "label": "document:excel",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Microsoft PowerPoint",
+      "label": "document:powerpoint",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Pages",
+      "label": "document:pages",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Numbers",
+      "label": "document:numbers",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Keynote",
+      "label": "document:keynote",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Linear",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Jira",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "YouTube",
+      "label": "video:youtube",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Netflix",
+      "label": "video:netflix",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "TikTok",
+      "label": "video:tiktok",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Twitch",
+      "label": "video:twitch",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Hulu",
+      "label": "video:hulu",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Disney+",
+      "label": "video:disney",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Prime Video",
+      "label": "video:prime",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Max",
+      "label": "video:max",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Spotify",
+      "label": "audio:spotify",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Apple Music",
+      "label": "audio:music",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Reddit",
+      "label": "social:reddit",
+      "category": "SOCIAL_FEED"
+    },
+    {
+      "app_name_pattern": "Twitter*",
+      "label": "social:twitter",
+      "category": "SOCIAL_FEED"
+    },
+    {
+      "app_name_pattern": "X",
+      "label": "social:x",
+      "category": "SOCIAL_FEED"
+    },
+    {
+      "app_name_pattern": "Instagram",
+      "label": "social:instagram",
+      "category": "SOCIAL_FEED"
+    },
+    {
+      "app_name_pattern": "Facebook",
+      "label": "social:facebook",
+      "category": "SOCIAL_FEED"
+    },
+    {
+      "app_name_pattern": "Threads",
+      "label": "social:threads",
+      "category": "SOCIAL_FEED"
+    },
+    {
+      "app_name_pattern": "LinkedIn",
+      "label": "social:linkedin",
+      "category": "SOCIAL_FEED"
+    },
+    {
+      "app_name_pattern": "Slack",
+      "label": "communication:slack",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Discord",
+      "label": "communication:discord",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "iMessage",
+      "label": "communication:imessage",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Gmail",
+      "label": "communication:gmail",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Outlook",
+      "label": "communication:outlook",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Superhuman",
+      "label": "communication:email",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Mail",
+      "label": "communication:email",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Calendar",
+      "label": "communication:calendar",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Google Calendar",
+      "label": "communication:calendar",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Zoom",
+      "label": "meeting:zoom",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Meet",
+      "label": "meeting:meet",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Google Meet",
+      "label": "meeting:meet",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Microsoft Teams",
+      "label": "meeting:teams",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Telegram",
+      "label": "communication:telegram",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Linear (task view)",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Jira (task view)",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Todoist",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Asana",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Trello",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "ClickUp",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Monday",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Notion (task view)",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Things 3",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "OmniFocus",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Wikipedia",
+      "label": "reference:wikipedia",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "MDN",
+      "label": "reference:mdn",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Stack Overflow",
+      "label": "reference:stack_overflow",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "GitHub",
+      "label": "reference:github",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "GitLab",
+      "label": "reference:gitlab",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "ChatGPT",
+      "label": "reference:ai_assistant",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Claude",
+      "label": "reference:ai_assistant",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Perplexity",
+      "label": "reference:ai_assistant",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Hacker News",
+      "label": "reference:hacker_news",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Safari",
+      "label": "reference:browser",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Google Chrome",
+      "label": "reference:browser",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Chrome",
+      "label": "reference:browser",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Arc",
+      "label": "reference:browser",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Firefox",
+      "label": "reference:browser",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Brave Browser",
+      "label": "reference:browser",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Microsoft Edge",
+      "label": "reference:browser",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Orion",
+      "label": "reference:browser",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Finder",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "System Settings",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Terminal",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "iTerm2",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Warp",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Ghostty",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Alacritty",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "WezTerm",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Docker Desktop",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Postman",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Insomnia",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Activity Monitor",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "unclassifiable",
+      "label": "system:unknown",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "iTerm",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "kitty",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Hyper",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Docker",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Ollama",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "GitHub Desktop",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Fork",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Tower",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Sourcetree",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "TablePlus",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Postico",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Sequel Ace",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "RStudio",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "R",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "MATLAB",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Jupyter",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Sublime Text",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Nova",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "BBEdit",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Emacs",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "MacVim",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Neovim",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Fleet",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "GoLand",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "RubyMine",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "PhpStorm",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "DataGrip",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Rider",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Simulator",
+      "label": "document:code",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Figma",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Sketch",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Blender",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Unity",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Godot",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Final Cut Pro",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "DaVinci Resolve",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "iMovie",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Logic Pro",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "GarageBand",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Ableton Live",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "OBS",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Adobe Photoshop",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Adobe Illustrator",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Adobe InDesign",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Adobe Premiere Pro",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Adobe After Effects",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Affinity Photo",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Affinity Designer",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Pixelmator Pro",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Grammarly Desktop",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Scrivener",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Ulysses",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "iA Writer",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Bear",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Craft",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Logseq",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "Roam Research",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "app_name_pattern": "zoom.us",
+      "label": "meeting:zoom",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "WhatsApp",
+      "label": "communication:telegram",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Signal",
+      "label": "communication:telegram",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Webex",
+      "label": "meeting:teams",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Skype",
+      "label": "meeting:teams",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "FaceTime",
+      "label": "meeting:meet",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Thunderbird",
+      "label": "communication:email",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Spark",
+      "label": "communication:email",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Missive",
+      "label": "communication:email",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Fantastical",
+      "label": "communication:calendar",
+      "category": "COMMUNICATION"
+    },
+    {
+      "app_name_pattern": "Preview",
+      "label": "reference:reading",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Dictionary",
+      "label": "reference:wikipedia",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Books",
+      "label": "reference:reading",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Zotero",
+      "label": "reference:research",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Mendeley",
+      "label": "reference:research",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "DEVONthink",
+      "label": "reference:research",
+      "category": "REFERENCE"
+    },
+    {
+      "app_name_pattern": "Things",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Reminders",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "TickTick",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "Height",
+      "label": "task:manage",
+      "category": "TASK_MANAGEMENT"
+    },
+    {
+      "app_name_pattern": "TV",
+      "label": "video:netflix",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Music",
+      "label": "audio:music",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Podcasts",
+      "label": "audio:music",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "VLC",
+      "label": "video:youtube",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "IINA",
+      "label": "video:youtube",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "Plex",
+      "label": "video:netflix",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "QuickTime Player",
+      "label": "video:youtube",
+      "category": "PASSIVE_CONSUMPTION"
+    },
+    {
+      "app_name_pattern": "System Preferences",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Console",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Disk Utility",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Keychain Access",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Installer",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Archive Utility",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Calculator",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Velvt",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "BetterDisplay",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Cloudflare WARP",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "logioptionsplus",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Raycast",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Alfred",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "1Password",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "AppCleaner",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "The Unarchiver",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    },
+    {
+      "app_name_pattern": "Rectangle",
+      "label": "system:manage",
+      "category": "SYSTEM"
+    }
   ]
 }

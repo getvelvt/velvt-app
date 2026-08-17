@@ -335,13 +335,25 @@ private struct EarlySignalProgressView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+    /// Only "qualifying" activity counts toward the signal — an app Velvt
+    /// cannot categorize contributes nothing. So a person using apps outside
+    /// the dictionary sees a countdown that never moves, and waiting is the
+    /// one thing that will not fix it. Distinguishing the two cases turns a
+    /// stuck progress bar into something the user can act on.
     private func progressText(_ signal: LocalEarlySignal) -> String {
-        if signal.requiredSeconds > 0 {
-      return
-        "Velvt needs about \(signal.requiredSeconds) more seconds of qualifying activity before it can show your first local pattern."
+        let sawActivityButCouldNotUseIt =
+            signal.evidenceEventCount > 0 && signal.observedSeconds == 0
+        if sawActivityButCouldNotUseIt {
+            return
+                "Velvt has seen activity but cannot categorize the apps you are using, so none of it counts yet. "
+                + "Set a category for an app in Settings and every window of it will be recognized from then on."
         }
-    return
-      "Velvt is checking that this activity can be summarized without exposing private details."
+        if signal.requiredSeconds > 0 {
+            return
+                "Velvt needs about \(signal.requiredSeconds) more seconds of activity it can categorize before showing your first local pattern."
+        }
+        return
+            "Velvt is checking that this activity can be summarized without exposing private details."
     }
 }
 

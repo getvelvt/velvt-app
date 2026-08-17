@@ -359,6 +359,80 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertEqual(offer.safeLogDescription, "quiet_hours_offer")
     }
 
+    /// v27: the initiation-invitation surface round-trips on the wire, the
+    /// invitation payload stays schedule-free, and an accepted invitation
+    /// travels on the existing start command rather than a second path.
+    func testInitiationInvitationMessagesRoundTripOnTheWire() throws {
+        let invitationID = try XCTUnwrap(UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
+
+        let request = ClientMessage.requestInitiationInvitation(.init(utcOffsetSeconds: -28_800))
+        XCTAssertEqual(
+            try decoder.decode(ClientMessage.self, from: encoder.encode(request)), request)
+
+        let invitation = ServerMessage.initiationInvitation(
+            InitiationInvitation(
+                invitationID: invitationID,
+                actionID: "soft_start_25",
+                body: "You usually focus well around now — want a 25-minute soft start?",
+                durationSeconds: 1_500,
+                policyVersion: 1
+            )
+        )
+        let encoded = try encoder.encode(invitation)
+        XCTAssertEqual(try decoder.decode(ServerMessage.self, from: encoded), invitation)
+        XCTAssertEqual(invitation.safeLogDescription, "initiation_invitation")
+        let wire = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+        for scheduleShaped in ["hour", "weekday", "bucket", "window", "local_"] {
+            XCTAssertFalse(
+                wire.contains(scheduleShaped),
+                "schedule-shaped field \(scheduleShaped) in invitation wire payload")
+        }
+
+        let dismiss = ClientMessage.dismissInitiationInvitation(.init(invitationID: invitationID))
+        XCTAssertEqual(
+            try decoder.decode(ClientMessage.self, from: encoder.encode(dismiss)), dismiss)
+
+        let accept = ClientMessage.startWorkBlock(
+            .init(
+                intention: nil,
+                plannedDurationSeconds: 1_500,
+                purpose: nil,
+                intensity: .medium,
+                invitationID: invitationID
+            )
+        )
+        let acceptData = try encoder.encode(accept)
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: acceptData), accept)
+        let acceptWire = try XCTUnwrap(String(data: acceptData, encoding: .utf8))
+        XCTAssertTrue(
+            acceptWire.contains("\"invitation_id\":\"AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA\""))
+
+        let set = ClientMessage.setInitiationSettings(.init(invitationsEnabled: false))
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: encoder.encode(set)), set)
+
+        let read = ClientMessage.requestInitiationSettings
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: encoder.encode(read)), read)
+
+        let settings = ServerMessage.initiationSettings(.init(invitationsEnabled: true))
+        XCTAssertEqual(
+            try decoder.decode(ServerMessage.self, from: encoder.encode(settings)), settings)
+        XCTAssertEqual(settings.safeLogDescription, "initiation_settings")
+    }
+
+    /// A v26 start command without `invitation_id` still decodes as a plain
+    /// manual start.
+    func testStartWorkBlockInvitationIDIsOptionalOnTheWire() throws {
+        let v26 = Data(
+            """
+            {"type":"start_work_block","payload":{"intention":null,"planned_duration_seconds":1500,"purpose":null,"intensity":"medium"}}
+            """.utf8)
+        let decoded = try decoder.decode(ClientMessage.self, from: v26)
+        guard case let .startWorkBlock(request) = decoded else {
+            return XCTFail("expected start_work_block")
+        }
+        XCTAssertNil(request.invitationID)
+    }
+
     /// Compatibility across the v26 bump: a result without the new DND
     /// fields decodes to an empty outcome list, and DND outcomes round-trip
     /// with the exact Rust wire vocabulary.

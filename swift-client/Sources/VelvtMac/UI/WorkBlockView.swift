@@ -26,6 +26,9 @@ public struct WorkBlockView: View {
       if let offer = coordinator.quietHoursOffer {
         quietHoursOfferCard(offer)
       }
+      if let invitation = coordinator.invitation {
+        invitationCard(invitation)
+      }
       if plansAnotherSession {
         startForm
       } else if let snapshot = coordinator.snapshot {
@@ -49,6 +52,7 @@ public struct WorkBlockView: View {
       }
     }
     .accessibilityElement(children: .contain)
+    .onAppear { coordinator.refreshInvitation() }
   }
 
   private var startForm: some View {
@@ -255,6 +259,45 @@ public struct WorkBlockView: View {
     .accessibilityLabel("Quiet hours offer. \(offer.body)")
   }
 
+  /// The initiation invitation. At most one per day, extended by the
+  /// deterministic Rust policy; Swift renders the body verbatim and can
+  /// only accept (a declared block through the existing start command) or
+  /// dismiss. Declining is calm and costless.
+  private func invitationCard(_ invitation: InitiationInvitation) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label("Soft start", systemImage: "sunrise")
+        .font(.subheadline.bold())
+
+      Text(invitation.body)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      HStack(spacing: 8) {
+        Button("Start now") {
+          coordinator.acceptInvitation()
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .accessibilityHint("Starts a declared soft-start block on the local service")
+
+        Button("Not now") {
+          coordinator.dismissInvitation()
+        }
+        .controlSize(.small)
+        .accessibilityHint("Dismisses this invitation; future invitations only get rarer")
+
+        Spacer(minLength: 0)
+      }
+    }
+    .padding(10)
+    .background(Color.primary.opacity(0.06))
+    .clipShape(RoundedRectangle(cornerRadius: 8))
+    .padding([.horizontal, .top], 16)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Soft start invitation. \(invitation.body)")
+  }
+
   private func activeBlock(_ snapshot: WorkBlockSnapshot) -> some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .firstTextBaseline) {
@@ -376,10 +419,23 @@ public struct WorkBlockView: View {
           .font(.caption2)
           .foregroundStyle(.secondary)
 
-        Button("Plan another session") { plansAnotherSession = true }
-          .buttonStyle(.borderedProminent)
-          .keyboardShortcut(.defaultAction)
-          .accessibilityHint("Choose the next session's work type and duration")
+        // The gentle re-entry action, offered by Rust only on an invited
+        // block that ended early. Label comes from the registry verbatim;
+        // it takes the prominent slot and the default shortcut when shown.
+        if result.nextAction.actionID == "soft_restart_10" {
+          Button(result.nextAction.label) { coordinator.acceptRecovery() }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .accessibilityHint("Starts a ten-minute block on the local service")
+
+          Button("Plan another session") { plansAnotherSession = true }
+            .accessibilityHint("Choose the next session's work type and duration")
+        } else {
+          Button("Plan another session") { plansAnotherSession = true }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .accessibilityHint("Choose the next session's work type and duration")
+        }
       }
 
       if let error = coordinator.commandError {

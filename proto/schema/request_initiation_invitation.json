@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Asks the deterministic, versioned initiation policy whether one invitation is pending right now. Carries only the client's UTC offset so Rust can evaluate local-time gates; every gate (good hours, daily cap, quiet hours, Focus/DND, active block, opt-out, backoff) is owned and enforced in Rust. Below any minimum-sample gate the policy answers with silence, never a default window.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "request_initiation_invitation" },
+    "payload": {
+      "type": "object",
+      "required": ["utc_offset_seconds"],
+      "properties": {
+        "utc_offset_seconds": {
+          "type": "integer",
+          "minimum": -64800,
+          "maximum": 64800
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

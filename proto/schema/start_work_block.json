@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Direction: Swift to Rust. intention is device-local only and forbidden from logs, telemetry, notification IDs, caches, and cloud payloads.",
+  "$comment": "Direction: Swift to Rust. intention is device-local only and forbidden from logs, telemetry, notification IDs, caches, and cloud payloads. invitation_id, when present, claims a live initiation invitation so the accepted start is recorded with a content-free origin marker; Rust validates it and treats stale or unknown values as a plain manual start.",
   "type": "object",
   "required": ["type", "payload"],
   "properties": {
@@ -15,7 +15,8 @@
           "type": ["string", "null"],
           "enum": [null, "deep_work", "study", "creative_practice", "healthy_tech_use", "work_life_boundary"]
         },
-        "intensity": { "enum": ["light", "medium", "intense"] }
+        "intensity": { "enum": ["light", "medium", "intense"] },
+        "invitation_id": { "type": ["string", "null"], "format": "uuid" }
       },
       "additionalProperties": false
     }

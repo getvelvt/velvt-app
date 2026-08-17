@@ -118,6 +118,53 @@ Decisions derived from that record, all in Rust:
   suppression only); a decline is remembered for 30 days. Velvt never edits
   the macOS Focus configuration.
 
+## Initiation Invitations (0.1.6 Scope 3)
+
+Rust derives per-user good-hours windows from the safe local aggregates the
+loop already keeps — completed work blocks and their confident category
+dwell, split across local hour boundaries and bucketed by (weekday, hour).
+The derivation is a deterministic, versioned policy (`good_hours_policy_v1`)
+with explicit minimum-sample gates: at least 6 completed blocks in the
+28-day lookback, and a bucket qualifies only with dwell from at least 3
+distinct completed blocks totalling at least 45 minutes. Below any gate the
+policy answers `insufficient_evidence` and extends nothing — never an
+invented pattern or a generic default window. Nothing is learned or
+adaptive; the learned good-hours model is 0.2.0 and does not exist here.
+
+When the current local hour is a good hour, Rust extends at most one
+invitation per local day (versioned cap, enforced in Rust) as an in-app
+card only — no OS notification, no new delivery channel. The invitation is
+suppressed while any block is active or paused, inside Velvt quiet hours,
+while system Focus/DND is active, and by the single opt-out setting
+(`initiation_settings`, Rust-owned; the explicit choice survives clearing
+behavioral data). One tap starts a 25-minute declared block through the
+existing `start_work_block` command carrying the invitation id; the block
+records a content-free `origin` marker (`manual` | `invitation`) that never
+crosses IPC and cannot reconstruct a schedule. An invited block inherits
+the entire 0.1.5 intervention/outcome machinery unchanged.
+
+Invitation outcomes are a separate bounded enum in the local
+`initiation_invitation` store: `accepted`, `dismissed`, `no_response`
+(the 30-minute response window lapsed silently), and `expired` (state
+invalidated the offer: quiet hours, a block starting, opt-out,
+logout/account switch, clear-all-data, or an incompatible policy version).
+Backoff mirrors the intervention policy (`invitation_backoff_v1`): each
+trailing dismissal doubles the next invitation's 24-hour base spacing, and
+three trailing dismissals silence invitations entirely for 30 days after
+the most recent one. Acceptance resets the count; silence and invalidation
+change nothing. No path increases frequency, salience, or emotional charge.
+
+An invited block that ends early offers the second registered action,
+`soft_restart_10` ("Want back in? 10-minute soft restart."), through the
+same recovery path as `protect_next_10`. The registry stays closed: the
+schema constrains both action ids, and `accept_recovery` honors only the
+action the terminal result actually offered.
+
+Good-hours windows, weekday/hour buckets, and hour-precision timing exist
+only inside the local database. The invitation payload is schedule-free by
+construction, and no field derived by this policy reaches upload,
+telemetry, or log paths.
+
 ## Failure Behavior
 
 - Offline Swift sends fail without creating optimistic local state. Persisted

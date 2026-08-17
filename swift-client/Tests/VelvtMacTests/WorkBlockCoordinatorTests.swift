@@ -146,16 +146,31 @@ final class WorkBlockCoordinatorTests: XCTestCase {
     workspace.post(name: NSWorkspace.didWakeNotification, object: nil)
     system.post(name: .NSSystemClockDidChange, object: nil)
     system.post(name: .NSSystemTimeZoneDidChange, object: nil)
-    try await waitUntil { client.sentMessages.count == 4 }
+    try await waitUntil { client.sentMessages.count == 5 }
 
+    // Each OS boundary maps to exactly one lifecycle command — no polling.
+    // Wake additionally asks the initiation policy once, because a machine
+    // waking is exactly the moment a stored invitation may have gone stale.
+    let lifecycleMessages = client.sentMessages.filter {
+      if case .workBlockLifecycle = $0 { return true }
+      return false
+    }
     XCTAssertEqual(
-      client.sentMessages,
+      lifecycleMessages,
       [
         .workBlockLifecycle(.init(event: .sleep)),
         .workBlockLifecycle(.init(event: .wake)),
         .workBlockLifecycle(.init(event: .clockChanged)),
         .workBlockLifecycle(.init(event: .timeZoneChanged)),
       ])
+    XCTAssertEqual(
+      client.sentMessages.filter {
+        if case .requestInitiationInvitation = $0 { return true }
+        return false
+      }.count,
+      1,
+      "wake refreshes the invitation exactly once"
+    )
   }
 
   func testOfflineServiceDoesNotCreateOptimisticLocalState() async throws {
@@ -255,6 +270,118 @@ final class WorkBlockCoordinatorTests: XCTestCase {
     let decoded = try decoder.decode(ActiveIntervention.self, from: payload)
 
     XCTAssertEqual(decoded.salience, .quiet)
+  }
+
+  /// v27: the invitation renders verbatim, one tap accepts through the
+  /// existing start command carrying the invitation id, and a stale second
+  /// tap sends nothing. Swift never re-derives good hours or backoff.
+  func testInvitationRendersVerbatimAndAcceptStartsDeclaredBlockWithClaim() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let coordinator = WorkBlockCoordinator(ipcClient: client)
+    coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+    let invitation = syntheticInvitation()
+
+    messages.send(.initiationInvitation(invitation))
+    try await waitUntil { coordinator.invitation == invitation }
+
+    coordinator.acceptInvitation()
+    XCTAssertNil(coordinator.invitation, "one tap resolves the card")
+    try await waitUntil {
+      client.sentMessages.contains(
+        .startWorkBlock(
+          .init(
+            intention: nil,
+            plannedDurationSeconds: invitation.durationSeconds,
+            purpose: nil,
+            intensity: .medium,
+            invitationID: invitation.invitationID
+          )))
+    }
+
+    // A second tap with no live invitation sends nothing.
+    let sentBefore = client.sentMessages.count
+    coordinator.acceptInvitation()
+    coordinator.dismissInvitation()
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(client.sentMessages.count, sentBefore)
+  }
+
+  func testInvitationDismissalSendsOneContentFreeRecord() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let coordinator = WorkBlockCoordinator(ipcClient: client)
+    coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+    let invitation = syntheticInvitation()
+
+    messages.send(.initiationInvitation(invitation))
+    try await waitUntil { coordinator.invitation == invitation }
+
+    coordinator.dismissInvitation()
+    XCTAssertNil(coordinator.invitation)
+    try await waitUntil {
+      client.sentMessages.contains(
+        .dismissInitiationInvitation(.init(invitationID: invitation.invitationID)))
+    }
+    // The dismissal carries the opaque id and nothing else.
+    let encoded = String(
+      decoding: try IPCMessageCodec.makeEncoder().encode(client.sentMessages.last!),
+      as: UTF8.self)
+    XCTAssertFalse(encoded.contains(invitation.body))
+    for scheduleShaped in ["hour", "weekday", "bucket", "window"] {
+      XCTAssertFalse(encoded.contains(scheduleShaped))
+    }
+  }
+
+  /// The settings toggle renders the Rust-owned state and a live block
+  /// clears the invitation card.
+  func testInvitationSettingsAndLiveBlockControlTheCard() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let coordinator = WorkBlockCoordinator(ipcClient: client)
+    coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+
+    XCTAssertTrue(coordinator.invitationsEnabled, "renders on until the service reports")
+    messages.send(.initiationSettings(.init(invitationsEnabled: false)))
+    try await waitUntil { !coordinator.invitationsEnabled }
+
+    coordinator.setInvitationsEnabled(true)
+    try await waitUntil {
+      client.sentMessages.contains(.setInitiationSettings(.init(invitationsEnabled: true)))
+    }
+    // The toggle state follows the service reply, not the tap.
+    XCTAssertFalse(coordinator.invitationsEnabled)
+    messages.send(.initiationSettings(.init(invitationsEnabled: true)))
+    try await waitUntil { coordinator.invitationsEnabled }
+
+    messages.send(.initiationInvitation(syntheticInvitation()))
+    try await waitUntil { coordinator.invitation != nil }
+    messages.send(.workBlockState(activeSnapshot()))
+    try await waitUntil { coordinator.invitation == nil }
+  }
+
+  func testConnectRequestsInvitationAndSettingsOnce() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let coordinator = WorkBlockCoordinator(ipcClient: client, utcOffsetSeconds: { -28_800 })
+    coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+
+    client.setConnectionStatus(.connected)
+    try await waitUntil {
+      client.sentMessages.contains(
+        .requestInitiationInvitation(.init(utcOffsetSeconds: -28_800)))
+        && client.sentMessages.contains(.requestInitiationSettings)
+    }
+  }
+
+  private func syntheticInvitation() -> InitiationInvitation {
+    InitiationInvitation(
+      invitationID: UUID(uuidString: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")!,
+      actionID: "soft_start_25",
+      body: "You usually focus well around now — want a 25-minute soft start?",
+      durationSeconds: 1_500,
+      policyVersion: 1
+    )
   }
 
   private func activeSnapshot(

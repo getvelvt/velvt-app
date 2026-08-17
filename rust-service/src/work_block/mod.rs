@@ -20,7 +20,8 @@ use crate::{
     delivery::PushAdapter,
     persistence::{
         PersistenceError, WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome,
-        WorkBlockObservation, WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
+        WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo,
+        WrongInterventionCounts,
     },
 };
 
@@ -37,9 +38,16 @@ const DRIFT_WINDOW_SECONDS: i64 = 10 * 60;
 const DRIFT_MIN_SWITCHES: u32 = 4;
 const DRIFT_MIN_ELAPSED_SECONDS: u32 = 5 * 60;
 const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
-/// The only action in the registry today. Closed by construction: the schema
-/// constrains `action_id`, so an unregistered action cannot be persisted.
+/// The closed action registry. Two actions exist: the in-block drift
+/// recovery and the post-block gentle re-entry. Closed by construction: the
+/// schema constrains `action_id`, so an unregistered action cannot be
+/// persisted, and `accept_recovery` only honors the action the terminal
+/// result actually offered.
 const DRIFT_ACTION_ID: &str = "protect_next_10";
+/// Gentle re-entry after an invited block ended early (0.1.6 Scope 3; D4).
+/// Forward-looking analyst voice: no reference to what went wrong.
+const SOFT_RESTART_ACTION_ID: &str = "soft_restart_10";
+const SOFT_RESTART_LABEL: &str = "Want back in? 10-minute soft restart.";
 const DRIFT_PROTECT_MINUTES: u32 = 10;
 const DRIFT_TITLE: &str = "Your work block is running";
 
@@ -172,6 +180,19 @@ impl WorkBlockManager {
         request: StartWorkBlock,
         now: DateTime<Utc>,
     ) -> Result<WorkBlockSnapshot, WorkBlockError> {
+        self.start_with_origin(request, WorkBlockOrigin::Manual, now)
+    }
+
+    /// Starts a block carrying an explicit origin marker. The marker is
+    /// decided by the caller after validating an invitation claim; this
+    /// module records it and derives nothing else from invitations, so an
+    /// invited block flows through exactly the machinery a manual one does.
+    pub fn start_with_origin(
+        &self,
+        request: StartWorkBlock,
+        origin: WorkBlockOrigin,
+        now: DateTime<Utc>,
+    ) -> Result<WorkBlockSnapshot, WorkBlockError> {
         if let Some(current) = self.repo.latest()? {
             if matches!(
                 current.phase,
@@ -199,6 +220,7 @@ impl WorkBlockManager {
             ended_at: None,
             recovered_after_restart: false,
             recovery_of: None,
+            origin,
             intention_expires_at: now + Duration::hours(INTENTION_RETENTION_HOURS),
             updated_at: now,
         };
@@ -622,16 +644,23 @@ impl WorkBlockManager {
         action_id: &str,
         now: DateTime<Utc>,
     ) -> Result<WorkBlockSnapshot, WorkBlockError> {
-        if action_id != "protect_next_10" {
+        // Closed registry: only a registered action can be accepted, and only
+        // the one the terminal result actually offered.
+        if !matches!(action_id, DRIFT_ACTION_ID | SOFT_RESTART_ACTION_ID) {
             return Err(WorkBlockError::InvalidRequest);
         }
         let source = self.repo.get(&block_id.to_string())?;
+        let Some(result) = self.repo.result(&source.block_id)? else {
+            return Err(WorkBlockError::InvalidTransition);
+        };
         if !matches!(
             source.phase,
             WorkBlockPhase::Completed | WorkBlockPhase::Abandoned | WorkBlockPhase::Expired
-        ) || self.repo.result(&source.block_id)?.is_none()
-        {
+        ) {
             return Err(WorkBlockError::InvalidTransition);
+        }
+        if result.next_action.action_id != action_id {
+            return Err(WorkBlockError::InvalidRequest);
         }
         if let Some(current) = self.repo.latest()? {
             if matches!(
@@ -654,6 +683,10 @@ impl WorkBlockManager {
             ended_at: None,
             recovered_after_restart: false,
             recovery_of: Some(source.block_id),
+            // A recovery start is the user's own tap; `recovery_of` keeps it
+            // separately identifiable so the R2 comparison of invited versus
+            // self-declared blocks can exclude recovery follow-ons.
+            origin: WorkBlockOrigin::Manual,
             intention_expires_at: now + Duration::hours(INTENTION_RETENTION_HOURS),
             updated_at: now,
         };
@@ -717,7 +750,7 @@ impl WorkBlockManager {
         )?;
         let observations = self.repo.observations(&record.block_id)?;
         let elapsed = elapsed_seconds(record, ended_at);
-        let result = aggregate_result(record, elapsed, &observations);
+        let result = aggregate_result(record, phase, elapsed, &observations);
         // DND evidence is decided once, at finalization, and persists with the
         // result: a block that completes while DND is active is a success, and
         // a held decision reconciles here as a count — the one calm line below
@@ -1030,6 +1063,7 @@ fn status_line(
 
 fn aggregate_result(
     record: &WorkBlockRecord,
+    phase: WorkBlockPhase,
     elapsed: u32,
     observations: &[WorkBlockObservation],
 ) -> WorkBlockResult {
@@ -1142,13 +1176,29 @@ fn aggregate_result(
         coverage_ratio,
         safe_evidence_category,
         observation,
-        next_action: WorkBlockNextAction {
-            action_id: "protect_next_10".into(),
-            label: recovery_label(record.purpose),
-            duration_seconds: RECOVERY_DURATION_SECONDS,
-        },
+        next_action: next_action_for(record, phase),
         dnd_outcomes: Vec::new(),
         reconciliation: None,
+    }
+}
+
+/// Selects the one bounded next action from the closed registry. An invited
+/// block that ended early gets the gentle re-entry (`soft_restart_10`, D4);
+/// everything else keeps the 0.1.5 `protect_next_10` behavior unchanged.
+fn next_action_for(record: &WorkBlockRecord, phase: WorkBlockPhase) -> WorkBlockNextAction {
+    if record.origin == WorkBlockOrigin::Invitation
+        && matches!(phase, WorkBlockPhase::Abandoned | WorkBlockPhase::Expired)
+    {
+        return WorkBlockNextAction {
+            action_id: SOFT_RESTART_ACTION_ID.into(),
+            label: SOFT_RESTART_LABEL.into(),
+            duration_seconds: RECOVERY_DURATION_SECONDS,
+        };
+    }
+    WorkBlockNextAction {
+        action_id: DRIFT_ACTION_ID.into(),
+        label: recovery_label(record.purpose),
+        duration_seconds: RECOVERY_DURATION_SECONDS,
     }
 }
 
@@ -1283,7 +1333,142 @@ mod tests {
             planned_duration_seconds: seconds,
             purpose: Some(WorkBlockPurpose::DeepWork),
             intensity: WorkBlockIntensity::Medium,
+            invitation_id: None,
         }
+    }
+
+    /// Origin marker (R2): an invited start records `invitation`, a manual
+    /// start records `manual`, and nothing else about the block differs.
+    #[test]
+    fn origin_marker_distinguishes_invited_from_manual_declarations() {
+        let (manager, repo) = manager_with_repo();
+        let manual = manager.start(request(1_500), at(0)).unwrap();
+        assert_eq!(
+            repo.get(&manual.block_id.unwrap().to_string())
+                .unwrap()
+                .origin,
+            WorkBlockOrigin::Manual
+        );
+        manager.end(manual.block_id.unwrap(), at(60)).unwrap();
+
+        let invited = manager
+            .start_with_origin(request(1_500), WorkBlockOrigin::Invitation, at(120))
+            .unwrap();
+        let invited_record = repo.get(&invited.block_id.unwrap().to_string()).unwrap();
+        assert_eq!(invited_record.origin, WorkBlockOrigin::Invitation);
+        // The marker is the only difference: same state machine, same
+        // snapshot shape, no invitation detail on the record.
+        assert_eq!(invited.phase, WorkBlockPhase::Active);
+        assert_eq!(invited.planned_duration_seconds, 1_500);
+    }
+
+    /// The origin marker never crosses IPC: the snapshot for an invited
+    /// block serializes without any origin or invitation field.
+    #[test]
+    fn snapshot_carries_no_origin_or_invitation_field() {
+        let (manager, _repo) = manager_with_repo();
+        let invited = manager
+            .start_with_origin(request(1_500), WorkBlockOrigin::Invitation, at(0))
+            .unwrap();
+        let encoded = serde_json::to_string(&invited).unwrap();
+        assert!(
+            !encoded.contains("origin"),
+            "origin leaked into IPC: {encoded}"
+        );
+        assert!(
+            !encoded.contains("invitation"),
+            "invitation detail leaked into IPC: {encoded}"
+        );
+    }
+
+    /// Gentle re-entry (D4): an invited block that ends early offers the
+    /// registered `soft_restart_10`; accepting it starts a ten-minute block
+    /// through the same recovery path.
+    #[test]
+    fn invited_block_ending_early_offers_soft_restart_and_accepting_starts_it() {
+        let (manager, repo) = manager_with_repo();
+        let invited = manager
+            .start_with_origin(request(1_500), WorkBlockOrigin::Invitation, at(0))
+            .unwrap();
+        let block_id = invited.block_id.unwrap();
+        let ended = manager.end(block_id, at(300)).unwrap();
+        let result = ended.result.expect("terminal result");
+        assert_eq!(result.next_action.action_id, "soft_restart_10");
+        assert_eq!(result.next_action.label, SOFT_RESTART_LABEL);
+        assert_eq!(result.next_action.duration_seconds, 600);
+
+        // The registered action starts a ten-minute block; the mismatched
+        // one is refused even though it is registered.
+        assert!(matches!(
+            manager.accept_recovery(block_id, "protect_next_10", at(400)),
+            Err(WorkBlockError::InvalidRequest)
+        ));
+        let restarted = manager
+            .accept_recovery(block_id, "soft_restart_10", at(400))
+            .unwrap();
+        assert_eq!(restarted.phase, WorkBlockPhase::Active);
+        assert_eq!(restarted.planned_duration_seconds, 600);
+        let restarted_record = repo.get(&restarted.block_id.unwrap().to_string()).unwrap();
+        assert_eq!(
+            restarted_record.recovery_of.as_deref(),
+            Some(block_id.to_string().as_str())
+        );
+        assert_eq!(
+            restarted_record.origin,
+            WorkBlockOrigin::Manual,
+            "a recovery start is the user's own tap; recovery_of keeps it identifiable"
+        );
+    }
+
+    /// A completed invited block and every manual terminal block keep the
+    /// 0.1.5 `protect_next_10` behavior unchanged.
+    #[test]
+    fn completed_invited_and_manual_blocks_keep_protect_next_10() {
+        let (manager, _repo) = manager_with_repo();
+        let invited = manager
+            .start_with_origin(request(300), WorkBlockOrigin::Invitation, at(0))
+            .unwrap();
+        let block_id = invited.block_id.unwrap();
+        let completed = manager.request_state(at(301)).unwrap();
+        assert_eq!(completed.phase, WorkBlockPhase::Completed);
+        assert_eq!(
+            completed.result.unwrap().next_action.action_id,
+            "protect_next_10"
+        );
+        let _ = block_id;
+
+        let (manager, _repo) = manager_with_repo();
+        let manual = manager.start(request(1_500), at(0)).unwrap();
+        let ended = manager.end(manual.block_id.unwrap(), at(300)).unwrap();
+        assert_eq!(
+            ended.result.unwrap().next_action.action_id,
+            "protect_next_10"
+        );
+
+        // An unregistered action stays refused.
+        assert!(matches!(
+            manager.accept_recovery(manual.block_id.unwrap(), "escalate_now", at(400)),
+            Err(WorkBlockError::InvalidRequest)
+        ));
+    }
+
+    /// An invited block inherits the 0.1.5 intervention machinery
+    /// unchanged: the same drift gate fires the same registered offer.
+    #[test]
+    fn invited_block_flows_the_unchanged_drift_machinery() {
+        let (manager, repo) = manager_with_repo();
+        manager
+            .start_with_origin(request(3_600), WorkBlockOrigin::Invitation, at(0))
+            .unwrap();
+        let outcome = drift_into_offer(&manager).unwrap();
+        let intervention = outcome.intervention.expect("the drift gate is unchanged");
+        assert_eq!(intervention.action_id, "protect_next_10");
+        // One offer per block, so the assertion is that the block has exactly
+        // one — read through the singular accessor the shipped gate uses.
+        let recorded = repo
+            .intervention(&repo.latest().unwrap().unwrap().block_id)
+            .unwrap();
+        assert!(recorded.is_some());
     }
 
     /// Manager plus the repo behind it, so a test can assert the recorded
@@ -1751,7 +1936,11 @@ mod tests {
     /// failure history anywhere in the registry.
     #[test]
     fn registered_copy_is_analyst_voice_with_no_history_references() {
-        let mut registry: Vec<String> = vec![DRIFT_TITLE.to_owned(), drift_body(4, "DEEP_WORK")];
+        let mut registry: Vec<String> = vec![
+            DRIFT_TITLE.to_owned(),
+            SOFT_RESTART_LABEL.to_owned(),
+            drift_body(4, "DEEP_WORK"),
+        ];
         for (completed_under_dnd, held_count) in
             [(true, 0), (true, 1), (true, 3), (false, 1), (false, 3)]
         {
@@ -1805,6 +1994,8 @@ mod tests {
                 "ignored",
                 "last time",
                 "again",
+                "learned",
+                "adaptive",
             ] {
                 assert!(
                     !lowered.contains(forbidden),

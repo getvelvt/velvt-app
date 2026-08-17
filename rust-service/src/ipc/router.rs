@@ -19,6 +19,7 @@ use crate::auth::{
 };
 use crate::delivery::{shaper, CacheManager, PushAdapter};
 use crate::focus::FocusManager;
+use crate::initiation::InitiationManager;
 use crate::persistence::{
     AbstractionMapRepo, RawEventEntry, RawEventRepo, UploadBatchRepo, UploadQueueDiagnostics,
 };
@@ -419,6 +420,7 @@ pub struct R7Router {
     work_blocks: Option<Arc<WorkBlockManager>>,
     work_block_push: Option<Arc<PushAdapter>>,
     focus: Option<Arc<FocusManager>>,
+    initiation: Option<Arc<InitiationManager>>,
     auth_state: Option<tokio::sync::watch::Receiver<AuthState>>,
 }
 
@@ -444,6 +446,7 @@ impl R7Router {
             work_blocks: None,
             work_block_push: None,
             focus: None,
+            initiation: None,
             auth_state: None,
         }
     }
@@ -489,6 +492,14 @@ impl R7Router {
     /// acknowledged and dropped and no quiet-hours behavior exists.
     pub fn with_focus(mut self, focus: Arc<FocusManager>) -> Self {
         self.focus = Some(focus);
+        self
+    }
+
+    /// Attaches the deterministic initiation-invitation policy owner.
+    /// Without it, invitation messages are acknowledged and dropped and no
+    /// invitation behavior exists.
+    pub fn with_initiation(mut self, initiation: Arc<InitiationManager>) -> Self {
+        self.initiation = Some(initiation);
         self
     }
 
@@ -555,6 +566,9 @@ impl MessageRouter for R7Router {
                     message_type = "log_in",
                     "received account credential request"
                 );
+                // An account switch expires any invitation left over from
+                // the previous session.
+                self.expire_open_invitation();
                 Ok(Some(self.account.log_in(req.email, req.password).await))
             }
 
@@ -587,11 +601,18 @@ impl MessageRouter for R7Router {
             }
 
             ClientMessage::LogOut(_) => {
+                // An invitation extended under the departing session must
+                // not outlive it (requirement: logout/account switch
+                // expires invitation state).
+                self.expire_open_invitation();
                 self.account.log_out().await;
                 Ok(None)
             }
 
-            ClientMessage::DeleteAccount(_) => Ok(Some(self.account.delete_account().await)),
+            ClientMessage::DeleteAccount(_) => {
+                self.expire_open_invitation();
+                Ok(Some(self.account.delete_account().await))
+            }
 
             ClientMessage::RequestMenuStatus(_) => Ok(Some(ServerMessage::MenuStatus(
                 self.menu_status.snapshot().await,
@@ -841,7 +862,38 @@ impl MessageRouter for R7Router {
             }
 
             ClientMessage::StartWorkBlock(request) => {
-                self.work_block_response(|manager| manager.start(request, Utc::now()))
+                // The one declaration path. A start command may carry an
+                // invitation id; the initiation manager validates the claim
+                // and the block records only a content-free origin marker.
+                // A manual start expires any live invitation, because an
+                // active block suppresses invitations (invariant 1).
+                let now = Utc::now();
+                let claimed = match (&self.initiation, request.invitation_id) {
+                    (Some(initiation), Some(invitation_id)) => initiation
+                        .claimable(invitation_id, now)
+                        .unwrap_or(false)
+                        .then_some(invitation_id),
+                    _ => None,
+                };
+                let origin = if claimed.is_some() {
+                    crate::persistence::WorkBlockOrigin::Invitation
+                } else {
+                    crate::persistence::WorkBlockOrigin::Manual
+                };
+                let response = self.work_block_response(|manager| {
+                    manager.start_with_origin(request, origin, now)
+                })?;
+                if matches!(response, Some(ServerMessage::WorkBlockState(_))) {
+                    if let Some(initiation) = &self.initiation {
+                        if initiation.record_block_started(claimed, now).is_err() {
+                            tracing::warn!(
+                                error_code = "initiation_accept_record_failed",
+                                "invitation outcome was not recorded"
+                            );
+                        }
+                    }
+                }
+                Ok(response)
             }
 
             ClientMessage::PauseWorkBlock(request) => {
@@ -896,6 +948,16 @@ impl MessageRouter for R7Router {
                         );
                     }
                 }
+                // The invitation record clears too; the opt-out setting is
+                // an explicit user choice and survives.
+                if let Some(initiation) = &self.initiation {
+                    if initiation.clear_data().is_err() {
+                        tracing::warn!(
+                            error_code = "initiation_data_clear_failed",
+                            "invitation record was not cleared"
+                        );
+                    }
+                }
                 self.work_block_response(WorkBlockManager::clear_data)
             }
 
@@ -933,6 +995,75 @@ impl MessageRouter for R7Router {
                     );
                 }
                 Ok(None)
+            }
+
+            ClientMessage::RequestInitiationInvitation(request) => {
+                let Some(initiation) = &self.initiation else {
+                    return Ok(None);
+                };
+                match initiation.pending_invitation(Utc::now(), request.utc_offset_seconds) {
+                    Ok(Some(invitation)) => {
+                        Ok(Some(ServerMessage::InitiationInvitation(invitation)))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(_) => {
+                        tracing::warn!(
+                            error_code = "initiation_invitation_check_failed",
+                            "pending invitation could not be evaluated"
+                        );
+                        Ok(None)
+                    }
+                }
+            }
+
+            ClientMessage::DismissInitiationInvitation(request) => {
+                let Some(initiation) = &self.initiation else {
+                    return Ok(None);
+                };
+                if initiation
+                    .dismiss(request.invitation_id, Utc::now())
+                    .is_err()
+                {
+                    tracing::warn!(
+                        error_code = "initiation_dismiss_record_failed",
+                        "invitation dismissal was not recorded"
+                    );
+                }
+                Ok(None)
+            }
+
+            ClientMessage::SetInitiationSettings(request) => {
+                let Some(initiation) = &self.initiation else {
+                    return Ok(None);
+                };
+                match initiation.set_enabled(request.invitations_enabled, Utc::now()) {
+                    Ok(enabled) => Ok(Some(ServerMessage::InitiationSettings(
+                        velvt_shared_types::InitiationSettings {
+                            invitations_enabled: enabled,
+                        },
+                    ))),
+                    Err(_) => {
+                        tracing::warn!(
+                            error_code = "initiation_settings_write_failed",
+                            "invitation setting was not persisted"
+                        );
+                        Ok(None)
+                    }
+                }
+            }
+
+            ClientMessage::RequestInitiationSettings(_) => {
+                let Some(initiation) = &self.initiation else {
+                    return Ok(None);
+                };
+                match initiation.enabled() {
+                    Ok(enabled) => Ok(Some(ServerMessage::InitiationSettings(
+                        velvt_shared_types::InitiationSettings {
+                            invitations_enabled: enabled,
+                        },
+                    ))),
+                    Err(_) => Ok(None),
+                }
             }
 
             ClientMessage::RequestLatestInsight(req) => {
@@ -1096,6 +1227,19 @@ impl R7Router {
                         related_event_id: None,
                     },
                 )))
+            }
+        }
+    }
+
+    /// Expires the live invitation, if any, at an account boundary. Never
+    /// fails the surrounding auth flow.
+    fn expire_open_invitation(&self) {
+        if let Some(initiation) = &self.initiation {
+            if initiation.expire_open(Utc::now()).is_err() {
+                tracing::warn!(
+                    error_code = "initiation_expire_failed",
+                    "live invitation was not expired"
+                );
             }
         }
     }

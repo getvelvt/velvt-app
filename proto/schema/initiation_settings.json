@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Rust to Swift. The current Rust-owned initiation-invitation setting.",
   "type": "object",
   "required": ["type", "payload"],
   "properties": {
-    "type": { "const": "accept_work_block_recovery" },
+    "type": { "const": "initiation_settings" },
     "payload": {
       "type": "object",
-      "required": ["block_id", "action_id"],
+      "required": ["invitations_enabled"],
       "properties": {
-        "block_id": { "type": "string", "format": "uuid" },
-        "action_id": { "enum": ["protect_next_10", "soft_restart_10"] }
+        "invitations_enabled": { "type": "boolean" }
       },
       "additionalProperties": false
     }

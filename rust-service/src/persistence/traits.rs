@@ -1,5 +1,6 @@
 use super::{
-    AbstractionMapping, BatchEvent, FocusTransition, HistoryCacheEntry, InsightCacheEntry,
+    AbstractionMapping, BatchEvent, CompletedBlockDwellSpan, FocusTransition, HistoryCacheEntry,
+    InitiationInvitationOutcome, InitiationInvitationRecord, InsightCacheEntry,
     LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch, PersistenceError,
     PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry,
     UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WorkBlockCategoryCorrection,
@@ -330,4 +331,52 @@ pub trait WorkBlockRepo: Send + Sync {
     ) -> Result<bool, PersistenceError>;
     fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError>;
     fn clear_all(&self) -> Result<u64, PersistenceError>;
+}
+
+/// Storage seam for the deterministic initiation-invitation policy: the
+/// bounded invitation store, the single opt-out, and the safe local
+/// evidence the good-hours policy aggregates. Everything device-local.
+pub trait InitiationRepo: Send + Sync {
+    fn record_invitation(
+        &self,
+        invitation: &InitiationInvitationRecord,
+    ) -> Result<(), PersistenceError>;
+    fn invitation(
+        &self,
+        invitation_id: &str,
+    ) -> Result<Option<InitiationInvitationRecord>, PersistenceError>;
+    /// The invitation still awaiting a response, if any. At most one exists.
+    fn open_invitation(&self) -> Result<Option<InitiationInvitationRecord>, PersistenceError>;
+    /// Most recent invitations first, bounded by `limit`.
+    fn recent_invitations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<InitiationInvitationRecord>, PersistenceError>;
+    /// Transitions an invitation to a terminal outcome. Only an `offered`
+    /// row is updated, so a recorded answer is never overwritten.
+    fn resolve_invitation(
+        &self,
+        invitation_id: &str,
+        outcome: InitiationInvitationOutcome,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError>;
+    /// Invitations extended on the given local calendar date (daily cap).
+    fn invitations_on_local_date(&self, local_date: &str) -> Result<u64, PersistenceError>;
+    fn invitations_enabled(&self) -> Result<bool, PersistenceError>;
+    fn set_invitations_enabled(
+        &self,
+        enabled: bool,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError>;
+    /// Completed blocks started at or after `since` (cold-start gate input).
+    fn completed_block_count(&self, since: DateTime<Utc>) -> Result<u64, PersistenceError>;
+    /// Confident, closed observation spans inside completed blocks started
+    /// at or after `since`, ordered by span start (good-hours dwell input).
+    fn completed_block_dwell_spans(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<CompletedBlockDwellSpan>, PersistenceError>;
+    /// Deletes every invitation row. The opt-out setting is an explicit user
+    /// choice and survives; the behavioral record does not.
+    fn clear_invitations(&self) -> Result<u64, PersistenceError>;
 }

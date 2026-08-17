@@ -1,12 +1,13 @@
 use super::{
-    AbstractionMapRepo, AbstractionMapping, BatchEvent, FocusRepo, FocusTransition,
-    HistoryCacheEntry, HistoryCacheRepo, InsightCacheEntry, InsightCacheRepo,
+    AbstractionMapRepo, AbstractionMapping, BatchEvent, CompletedBlockDwellSpan, FocusRepo,
+    FocusTransition, HistoryCacheEntry, HistoryCacheRepo, InitiationInvitationOutcome,
+    InitiationInvitationRecord, InitiationRepo, InsightCacheEntry, InsightCacheRepo,
     LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch, PersonalOverrideRecord,
     QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, RawEventRepo, UploadBatch,
     UploadBatchRepo, UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours,
     WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
-    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
-    WrongInterventionCounts,
+    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
+    WorkBlockRepo, WrongInterventionCounts,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -150,6 +151,10 @@ impl SqlitePersistence {
 
     pub fn focus_repo(&self) -> Arc<dyn FocusRepo> {
         Arc::new(SqliteFocusRepo(self.clone()))
+    }
+
+    pub fn initiation_repo(&self) -> Arc<dyn InitiationRepo> {
+        Arc::new(SqliteInitiationRepo(self.clone()))
     }
 
     fn insert_batch_with_events(
@@ -1411,8 +1416,9 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             "INSERT INTO work_block(
                 block_id, state_version, phase, intention, purpose, intensity,
                 planned_duration_seconds, started_at, paused_at, total_paused_seconds,
-                ended_at, recovered_after_restart, recovery_of, intention_expires_at, updated_at
-             ) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                ended_at, recovered_after_restart, recovery_of, origin,
+                intention_expires_at, updated_at
+             ) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 block.block_id,
                 block.phase.as_str(),
@@ -1426,6 +1432,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                 block.ended_at.map(|value| value.timestamp()),
                 i64::from(block.recovered_after_restart),
                 block.recovery_of,
+                block.origin.as_str(),
                 block.intention_expires_at.timestamp(),
                 block.updated_at.timestamp(),
             ],
@@ -1439,7 +1446,8 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             .query_row(
                 "SELECT block_id, phase, intention, purpose, intensity, planned_duration_seconds,
                         started_at, paused_at, total_paused_seconds, ended_at,
-                        recovered_after_restart, recovery_of, intention_expires_at, updated_at
+                        recovered_after_restart, recovery_of, origin,
+                        intention_expires_at, updated_at
                  FROM work_block ORDER BY rowid DESC LIMIT 1",
                 [],
                 work_block_from_row,
@@ -1454,7 +1462,8 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             .query_row(
                 "SELECT block_id, phase, intention, purpose, intensity, planned_duration_seconds,
                         started_at, paused_at, total_paused_seconds, ended_at,
-                        recovered_after_restart, recovery_of, intention_expires_at, updated_at
+                        recovered_after_restart, recovery_of, origin,
+                        intention_expires_at, updated_at
                  FROM work_block WHERE block_id = ?1",
                 [block_id],
                 work_block_from_row,
@@ -2084,6 +2093,203 @@ impl FocusRepo for SqliteFocusRepo {
     }
 }
 
+#[derive(Clone)]
+struct SqliteInitiationRepo(SqlitePersistence);
+
+impl InitiationRepo for SqliteInitiationRepo {
+    fn record_invitation(
+        &self,
+        invitation: &InitiationInvitationRecord,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO initiation_invitation(
+                invitation_id, offered_at, local_date, action_id,
+                policy_version, backoff_policy_version, outcome, outcome_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                invitation.invitation_id,
+                invitation.offered_at.timestamp(),
+                invitation.local_date,
+                invitation.action_id,
+                invitation.policy_version,
+                invitation.backoff_policy_version,
+                invitation.outcome.as_str(),
+                invitation.outcome_at.map(|value| value.timestamp()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn invitation(
+        &self,
+        invitation_id: &str,
+    ) -> Result<Option<InitiationInvitationRecord>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT invitation_id, offered_at, local_date, action_id,
+                        policy_version, backoff_policy_version, outcome, outcome_at
+                 FROM initiation_invitation WHERE invitation_id = ?1",
+                [invitation_id],
+                initiation_invitation_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn open_invitation(&self) -> Result<Option<InitiationInvitationRecord>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT invitation_id, offered_at, local_date, action_id,
+                        policy_version, backoff_policy_version, outcome, outcome_at
+                 FROM initiation_invitation WHERE outcome = 'offered'
+                 ORDER BY offered_at DESC LIMIT 1",
+                [],
+                initiation_invitation_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn recent_invitations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<InitiationInvitationRecord>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT invitation_id, offered_at, local_date, action_id,
+                    policy_version, backoff_policy_version, outcome, outcome_at
+             FROM initiation_invitation ORDER BY offered_at DESC, invitation_id DESC LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([limit as i64], initiation_invitation_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    fn resolve_invitation(
+        &self,
+        invitation_id: &str,
+        outcome: InitiationInvitationOutcome,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        let updated = connection.execute(
+            "UPDATE initiation_invitation SET outcome = ?2, outcome_at = ?3
+             WHERE invitation_id = ?1 AND outcome = 'offered'",
+            params![invitation_id, outcome.as_str(), at.timestamp()],
+        )?;
+        Ok(updated > 0)
+    }
+
+    fn invitations_on_local_date(&self, local_date: &str) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM initiation_invitation WHERE local_date = ?1",
+            [local_date],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    fn invitations_enabled(&self) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        let enabled: Option<i64> = connection
+            .query_row(
+                "SELECT invitations_enabled FROM initiation_settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(enabled.map(|value| value != 0).unwrap_or(true))
+    }
+
+    fn set_invitations_enabled(
+        &self,
+        enabled: bool,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO initiation_settings(id, invitations_enabled, updated_at)
+             VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                invitations_enabled = excluded.invitations_enabled,
+                updated_at = excluded.updated_at",
+            params![i64::from(enabled), at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn completed_block_count(&self, since: DateTime<Utc>) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM work_block
+             WHERE phase = 'completed' AND started_at >= ?1",
+            [since.timestamp()],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    fn completed_block_dwell_spans(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<CompletedBlockDwellSpan>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT observation.block_id, observation.occurred_at, observation.ended_at
+             FROM work_block_observation observation
+             JOIN work_block block ON block.block_id = observation.block_id
+             WHERE block.phase = 'completed'
+               AND block.started_at >= ?1
+               AND observation.ended_at IS NOT NULL
+               AND observation.ended_at > observation.occurred_at
+               AND observation.classification_status = 'classified'
+               AND observation.classification_confidence IN ('high', 'medium')
+               AND lower(observation.category) NOT IN ('system', 'unclassified', 'unlogged')
+             ORDER BY observation.occurred_at, observation.id",
+        )?;
+        let rows = statement
+            .query_map([since.timestamp()], |row| {
+                Ok(CompletedBlockDwellSpan {
+                    block_id: row.get(0)?,
+                    started_at: timestamp_from_row(row, 1)?,
+                    ended_at: timestamp_from_row(row, 2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    fn clear_invitations(&self) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let removed = connection.execute("DELETE FROM initiation_invitation", [])? as u64;
+        Ok(removed)
+    }
+}
+
+fn initiation_invitation_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<InitiationInvitationRecord> {
+    Ok(InitiationInvitationRecord {
+        invitation_id: row.get(0)?,
+        offered_at: timestamp_from_row(row, 1)?,
+        local_date: row.get(2)?,
+        action_id: row.get(3)?,
+        policy_version: row.get(4)?,
+        backoff_policy_version: row.get(5)?,
+        outcome: InitiationInvitationOutcome::from_db_value(&row.get::<_, String>(6)?)
+            .ok_or_else(invalid_enum)?,
+        outcome_at: row
+            .get::<_, Option<i64>>(7)?
+            .map(|value| timestamp_to_datetime(value, 7))
+            .transpose()?,
+    })
+}
+
 fn focus_transition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FocusTransition> {
     Ok(FocusTransition {
         active: row.get::<_, i64>(0)? != 0,
@@ -2175,8 +2381,19 @@ fn work_block_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkBlockRec
             .transpose()?,
         recovered_after_restart: row.get::<_, i64>(10)? != 0,
         recovery_of: row.get(11)?,
-        intention_expires_at: timestamp_from_row(row, 12)?,
-        updated_at: timestamp_from_row(row, 13)?,
+        origin: parse_work_block_origin(&row.get::<_, String>(12)?)?,
+        intention_expires_at: timestamp_from_row(row, 13)?,
+        updated_at: timestamp_from_row(row, 14)?,
+    })
+}
+
+fn parse_work_block_origin(value: &str) -> rusqlite::Result<WorkBlockOrigin> {
+    WorkBlockOrigin::from_db_value(value).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            12,
+            rusqlite::types::Type::Text,
+            format!("unknown work_block origin: {value}").into(),
+        )
     })
 }
 

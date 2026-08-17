@@ -21,6 +21,7 @@ fn start_with_sentinel(manager: &WorkBlockManager, sentinel: &str) {
                 planned_duration_seconds: 1_500,
                 purpose: Some(WorkBlockPurpose::DeepWork),
                 intensity: WorkBlockIntensity::Medium,
+                invitation_id: None,
             },
             now(),
         )
@@ -98,6 +99,7 @@ fn retention_target_clears_only_expired_intention_text() {
                 planned_duration_seconds: 1_500,
                 purpose: None,
                 intensity: WorkBlockIntensity::Light,
+                invitation_id: None,
             },
             Utc::now() - Duration::hours(25),
         )

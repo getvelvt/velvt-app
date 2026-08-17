@@ -300,7 +300,11 @@
                   ],
                   "properties": {
                     "action_id": {
-                      "const": "protect_next_10"
+                      "const": "protect_next_10",
+                      "enum": [
+                        "protect_next_10",
+                        "soft_restart_10"
+                      ]
                     },
                     "label": {
                       "type": "string",

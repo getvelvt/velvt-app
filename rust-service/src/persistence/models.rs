@@ -231,6 +231,37 @@ pub struct InsightCacheEntry {
     pub is_negative: bool,
 }
 
+/// How a block came to be declared. A closed, content-free two-value enum
+/// (R2): it records only that the start followed an invitation, never when
+/// invitations happen, so it cannot reconstruct a schedule. Local records
+/// only — the marker is absent from every IPC, upload, log, and telemetry
+/// payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkBlockOrigin {
+    /// The user declared the block themselves (including recovery starts,
+    /// which stay separately identifiable through `recovery_of`).
+    Manual,
+    /// One tap on an initiation invitation declared the block.
+    Invitation,
+}
+
+impl WorkBlockOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Invitation => "invitation",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "manual" => Some(Self::Manual),
+            "invitation" => Some(Self::Invitation),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct WorkBlockRecord {
     pub block_id: String,
@@ -245,6 +276,7 @@ pub struct WorkBlockRecord {
     pub ended_at: Option<DateTime<Utc>>,
     pub recovered_after_restart: bool,
     pub recovery_of: Option<String>,
+    pub origin: WorkBlockOrigin,
     pub intention_expires_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -265,6 +297,7 @@ impl std::fmt::Debug for WorkBlockRecord {
             .field("ended_at", &self.ended_at)
             .field("recovered_after_restart", &self.recovered_after_restart)
             .field("recovery_of", &self.recovery_of)
+            .field("origin", &self.origin)
             .field("intention_expires_at", &self.intention_expires_at)
             .field("updated_at", &self.updated_at)
             .finish()
@@ -455,6 +488,81 @@ pub struct VelvtQuietHours {
     pub end_local_minutes: u32,
     pub rule_version: u32,
     pub configured_at: DateTime<Utc>,
+}
+
+/// Outcome of an extended initiation invitation. A separate closed enum
+/// from [`WorkBlockInterventionOutcome`]: invitations and interventions
+/// answer different questions and their counts must never mix. Content-free
+/// by construction — no copy, category, or schedule detail is representable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitiationInvitationOutcome {
+    /// The only non-terminal state.
+    Offered,
+    /// One tap declared a block; the block carries the origin marker.
+    Accepted,
+    /// The user explicitly dismissed the invitation. Feeds backoff.
+    Dismissed,
+    /// The response window lapsed with no reply of any kind. Silence is not
+    /// "leave me alone" evidence and does not feed backoff.
+    NoResponse,
+    /// State invalidated the invitation before an answer (quiet hours began,
+    /// a block started, opt-out, logout/account switch, clear-all-data, or
+    /// an incompatible policy version). Not backoff evidence.
+    Expired,
+}
+
+impl InitiationInvitationOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Offered => "offered",
+            Self::Accepted => "accepted",
+            Self::Dismissed => "dismissed",
+            Self::NoResponse => "no_response",
+            Self::Expired => "expired",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "offered" => Some(Self::Offered),
+            "accepted" => Some(Self::Accepted),
+            "dismissed" => Some(Self::Dismissed),
+            "no_response" => Some(Self::NoResponse),
+            "expired" => Some(Self::Expired),
+            _ => None,
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Offered)
+    }
+}
+
+/// One extended initiation invitation, as stored. Bounded and content-free:
+/// an id, when it was extended, the local date for the daily cap, the
+/// registered action, the policy versions that produced it, and the outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitiationInvitationRecord {
+    pub invitation_id: String,
+    pub offered_at: DateTime<Utc>,
+    /// Local calendar date (`YYYY-MM-DD`) at the moment the invitation was
+    /// extended; exists solely to enforce the daily cap deterministically.
+    pub local_date: String,
+    pub action_id: String,
+    pub policy_version: u32,
+    pub backoff_policy_version: u32,
+    pub outcome: InitiationInvitationOutcome,
+    pub outcome_at: Option<DateTime<Utc>>,
+}
+
+/// One confident, closed observation span inside a completed block — the
+/// safe local dwell evidence the good-hours policy aggregates. Broad
+/// category evidence only; the category itself is not even carried here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedBlockDwellSpan {
+    pub block_id: String,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
 }
 
 /// A device-local intervention offer and its observed outcome. `anchor_category`

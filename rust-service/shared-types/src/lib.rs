@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 27;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -71,6 +71,15 @@ pub enum ClientMessage {
     FocusStateChanged(FocusStateChanged),
     /// The user's one-tap reply to a quiet-hours offer.
     RespondQuietHoursOffer(RespondQuietHoursOffer),
+    /// Asks the deterministic initiation policy whether one invitation is
+    /// pending right now. Every gate is owned and enforced in Rust.
+    RequestInitiationInvitation(RequestInitiationInvitation),
+    /// The one-tap dismissal of a live initiation invitation.
+    DismissInitiationInvitation(DismissInitiationInvitation),
+    /// Sets the single Rust-owned opt-out for initiation invitations.
+    SetInitiationSettings(SetInitiationSettings),
+    /// Reads the current Rust-owned initiation-invitation setting.
+    RequestInitiationSettings(RequestInitiationSettings),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -137,6 +146,11 @@ pub enum ServerMessage {
     LocalDashboard(LocalDashboardSnapshot),
     /// A next-morning quiet-hours offer from the deterministic pattern rule.
     QuietHoursOffer(QuietHoursOffer),
+    /// At most one daily invitation to a soft start from the deterministic,
+    /// versioned good-hours policy. Schedule-free by construction.
+    InitiationInvitation(InitiationInvitation),
+    /// The current Rust-owned initiation-invitation setting.
+    InitiationSettings(InitiationSettings),
 }
 
 /// Server's first message on every connection.
@@ -688,6 +702,11 @@ pub struct StartWorkBlock {
     pub planned_duration_seconds: u32,
     pub purpose: Option<WorkBlockPurpose>,
     pub intensity: WorkBlockIntensity,
+    /// When present, claims a live initiation invitation so the accepted
+    /// start is recorded with a content-free origin marker. The service
+    /// validates it; a stale or unknown id is a plain manual start.
+    #[serde(default)]
+    pub invitation_id: Option<Uuid>,
 }
 
 impl std::fmt::Debug for StartWorkBlock {
@@ -698,6 +717,7 @@ impl std::fmt::Debug for StartWorkBlock {
             .field("planned_duration_seconds", &self.planned_duration_seconds)
             .field("purpose", &self.purpose)
             .field("intensity", &self.intensity)
+            .field("invitation_id", &self.invitation_id)
             .finish()
     }
 }
@@ -884,6 +904,65 @@ pub struct QuietHoursOffer {
     pub end_local_minutes: u32,
     /// Rust-authored display copy. Swift renders it verbatim.
     pub body: String,
+}
+
+/// Asks the deterministic initiation policy whether one invitation is
+/// pending right now. Carries only the client's UTC offset so Rust can
+/// evaluate local-time gates; every gate is owned and enforced in Rust.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestInitiationInvitation {
+    /// Client's current UTC offset so the good-hours policy can evaluate
+    /// local-time gates without receiving locale or identity.
+    pub utc_offset_seconds: i32,
+}
+
+/// At most one daily invitation to a soft start, produced by the
+/// deterministic, versioned good-hours policy.
+///
+/// PRIVACY: schedule-free by construction. No good-hours window, weekday,
+/// hour bucket, or timing evidence is representable in this payload, and
+/// the registered copy carries no numbers derived from the user's schedule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitiationInvitation {
+    /// Opaque id used to accept or dismiss this invitation.
+    pub invitation_id: Uuid,
+    /// The registered action. Only `soft_start_25` exists.
+    pub action_id: String,
+    /// Rust-authored display copy. Swift renders it verbatim.
+    pub body: String,
+    /// Planned duration of the block one tap declares.
+    pub duration_seconds: u32,
+    /// Version of the deterministic good-hours policy that produced this.
+    pub policy_version: u32,
+}
+
+/// The one-tap dismissal of a live initiation invitation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DismissInitiationInvitation {
+    pub invitation_id: Uuid,
+}
+
+/// Sets the single Rust-owned opt-out for initiation invitations. Opting
+/// out silences invitations entirely and changes nothing else.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetInitiationSettings {
+    pub invitations_enabled: bool,
+}
+
+/// Reads the current Rust-owned initiation-invitation setting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestInitiationSettings {}
+
+/// The current Rust-owned initiation-invitation setting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitiationSettings {
+    pub invitations_enabled: bool,
 }
 
 /// Focus/DND-derived outcome recorded by the service for one work block.
@@ -1558,12 +1637,171 @@ mod extensibility_proof {
 }
 
 #[cfg(test)]
+mod v27_initiation_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_twenty_seven() {
+        assert_eq!(PROTOCOL_VERSION, 27);
+    }
+
+    #[test]
+    fn request_initiation_invitation_round_trips_and_matches_schema_shape() {
+        let message = ClientMessage::RequestInitiationInvitation(RequestInitiationInvitation {
+            utc_offset_seconds: -28_800,
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"request_initiation_invitation","payload":{"utc_offset_seconds":-28800}}"#
+        );
+        let decoded: ClientMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn initiation_invitation_round_trips_and_matches_schema_shape() {
+        let message = ServerMessage::InitiationInvitation(InitiationInvitation {
+            invitation_id: Uuid::nil(),
+            action_id: "soft_start_25".into(),
+            body: "You usually focus well around now — want a 25-minute soft start?".into(),
+            duration_seconds: 1_500,
+            policy_version: 1,
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"initiation_invitation","payload":{"invitation_id":"00000000-0000-0000-0000-000000000000","action_id":"soft_start_25","body":"You usually focus well around now — want a 25-minute soft start?","duration_seconds":1500,"policy_version":1}}"#
+        );
+        let decoded: ServerMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    /// The invitation payload is schedule-free by construction: any attempt
+    /// to smuggle a window, weekday, or hour-bucket field is rejected at
+    /// decode time, and the encoded payload never contains one.
+    #[test]
+    fn initiation_invitation_rejects_schedule_fields() {
+        let smuggled = r#"{"type":"initiation_invitation","payload":{"invitation_id":"00000000-0000-0000-0000-000000000000","action_id":"soft_start_25","body":"x","duration_seconds":1500,"policy_version":1,"good_hour":9}}"#;
+        assert!(serde_json::from_str::<ServerMessage>(smuggled).is_err());
+        let encoded =
+            serde_json::to_string(&ServerMessage::InitiationInvitation(InitiationInvitation {
+                invitation_id: Uuid::nil(),
+                action_id: "soft_start_25".into(),
+                body: "You usually focus well around now — want a 25-minute soft start?".into(),
+                duration_seconds: 1_500,
+                policy_version: 1,
+            }))
+            .unwrap();
+        for forbidden in ["hour", "weekday", "bucket", "window", "local_"] {
+            assert!(
+                !encoded.contains(forbidden),
+                "schedule-shaped field {forbidden:?} in invitation payload {encoded}"
+            );
+        }
+    }
+
+    #[test]
+    fn dismiss_initiation_invitation_round_trips() {
+        let message = ClientMessage::DismissInitiationInvitation(DismissInitiationInvitation {
+            invitation_id: Uuid::nil(),
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"dismiss_initiation_invitation","payload":{"invitation_id":"00000000-0000-0000-0000-000000000000"}}"#
+        );
+        let decoded: ClientMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn initiation_settings_messages_round_trip() {
+        let set = ClientMessage::SetInitiationSettings(SetInitiationSettings {
+            invitations_enabled: false,
+        });
+        let encoded = serde_json::to_string(&set).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"set_initiation_settings","payload":{"invitations_enabled":false}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            set
+        );
+
+        let request = ClientMessage::RequestInitiationSettings(RequestInitiationSettings {});
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"request_initiation_settings","payload":{}}"#
+        );
+
+        let state = ServerMessage::InitiationSettings(InitiationSettings {
+            invitations_enabled: true,
+        });
+        let encoded = serde_json::to_string(&state).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"initiation_settings","payload":{"invitations_enabled":true}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            state
+        );
+    }
+
+    /// A v26 start command without `invitation_id` still decodes (a plain
+    /// manual start), and an accepted invitation travels on the existing
+    /// start command rather than a second declaration path.
+    #[test]
+    fn start_work_block_invitation_id_is_optional_on_the_wire() {
+        let v26 = r#"{"type":"start_work_block","payload":{"intention":null,"planned_duration_seconds":1500,"purpose":null,"intensity":"medium"}}"#;
+        let decoded: ClientMessage = serde_json::from_str(v26).unwrap();
+        let ClientMessage::StartWorkBlock(request) = &decoded else {
+            panic!("expected start_work_block");
+        };
+        assert_eq!(request.invitation_id, None);
+
+        let accepted = ClientMessage::StartWorkBlock(StartWorkBlock {
+            intention: None,
+            planned_duration_seconds: 1_500,
+            purpose: None,
+            intensity: WorkBlockIntensity::Medium,
+            invitation_id: Some(Uuid::nil()),
+        });
+        let encoded = serde_json::to_string(&accepted).unwrap();
+        assert!(encoded.contains(r#""invitation_id":"00000000-0000-0000-0000-000000000000""#));
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            accepted
+        );
+    }
+
+    /// The registry stays closed on the wire: recovery actions admit exactly
+    /// the two registered ids.
+    #[test]
+    fn recovery_action_vocabulary_is_the_closed_registry() {
+        for action_id in ["protect_next_10", "soft_restart_10"] {
+            let message = ClientMessage::AcceptWorkBlockRecovery(AcceptWorkBlockRecovery {
+                block_id: Uuid::nil(),
+                action_id: action_id.into(),
+            });
+            let encoded = serde_json::to_string(&message).unwrap();
+            let decoded: ClientMessage = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, message);
+        }
+    }
+}
+
+#[cfg(test)]
 mod v26_focus_contract {
     use super::*;
 
     #[test]
-    fn protocol_version_is_twenty_six() {
-        assert_eq!(PROTOCOL_VERSION, 26);
+    fn protocol_version_is_at_least_twenty_six() {
+        let version = PROTOCOL_VERSION;
+        assert!(version >= 26);
     }
 
     #[test]

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Rust to Swift. At most one daily invitation to a soft start, produced by the deterministic, versioned good-hours policy. The payload is deliberately schedule-free: no good-hours window, weekday, hour bucket, or timing evidence is representable here, and the registered copy carries no numbers derived from the user's schedule. Swift renders the body verbatim and may only reply through the registered accept (start_work_block with this invitation_id) or dismiss paths.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "initiation_invitation" },
+    "payload": {
+      "type": "object",
+      "required": [
+        "invitation_id",
+        "action_id",
+        "body",
+        "duration_seconds",
+        "policy_version"
+      ],
+      "properties": {
+        "invitation_id": { "type": "string", "format": "uuid" },
+        "action_id": { "const": "soft_start_25" },
+        "body": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "duration_seconds": { "type": "integer", "minimum": 300, "maximum": 10800 },
+        "policy_version": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

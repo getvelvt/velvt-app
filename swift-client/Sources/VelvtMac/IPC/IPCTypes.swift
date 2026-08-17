@@ -32,6 +32,10 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case clearWorkBlockData
     case focusStateChanged(FocusStateChanged)
     case respondQuietHoursOffer(RespondQuietHoursOffer)
+    case requestInitiationInvitation(RequestInitiationInvitation)
+    case dismissInitiationInvitation(DismissInitiationInvitation)
+    case setInitiationSettings(SetInitiationSettings)
+    case requestInitiationSettings
 
     public init(from decoder: Decoder) throws {
         let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
@@ -96,6 +100,14 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .focusStateChanged(try FocusStateChanged(from: payload))
         case "respond_quiet_hours_offer":
             self = .respondQuietHoursOffer(try RespondQuietHoursOffer(from: payload))
+        case "request_initiation_invitation":
+            self = .requestInitiationInvitation(try RequestInitiationInvitation(from: payload))
+        case "dismiss_initiation_invitation":
+            self = .dismissInitiationInvitation(try DismissInitiationInvitation(from: payload))
+        case "set_initiation_settings":
+            self = .setInitiationSettings(try SetInitiationSettings(from: payload))
+        case "request_initiation_settings":
+            self = .requestInitiationSettings
         default:
       throw DecodingError.dataCorrupted(
         .init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
@@ -192,6 +204,18 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case let .respondQuietHoursOffer(value):
             try envelope.encode("respond_quiet_hours_offer", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .requestInitiationInvitation(value):
+            try envelope.encode("request_initiation_invitation", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .dismissInitiationInvitation(value):
+            try envelope.encode("dismiss_initiation_invitation", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .setInitiationSettings(value):
+            try envelope.encode("set_initiation_settings", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .requestInitiationSettings:
+            try envelope.encode("request_initiation_settings", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
 }
@@ -225,6 +249,10 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case localDashboard(LocalDashboardSnapshot)
     /// A deterministic next-morning quiet-hours offer (rule-versioned).
     case quietHoursOffer(QuietHoursOffer)
+    /// At most one daily invitation to a soft start (policy-versioned).
+    case initiationInvitation(InitiationInvitation)
+    /// The current Rust-owned initiation-invitation setting.
+    case initiationSettings(InitiationSettings)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
@@ -282,6 +310,10 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .localDashboard(try LocalDashboardSnapshot(from: payload))
         case "quiet_hours_offer":
             self = .quietHoursOffer(try QuietHoursOffer(from: payload))
+        case "initiation_invitation":
+            self = .initiationInvitation(try InitiationInvitation(from: payload))
+        case "initiation_settings":
+            self = .initiationSettings(try InitiationSettings(from: payload))
         default:
             self = .unknown(type: type)
         }
@@ -362,6 +394,12 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case let .quietHoursOffer(value):
             try envelope.encode("quiet_hours_offer", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .initiationInvitation(value):
+            try envelope.encode("initiation_invitation", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .initiationSettings(value):
+            try envelope.encode("initiation_settings", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .unknown(type):
             try envelope.encode(type, forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
@@ -396,6 +434,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case .workBlockState: "work_block_state"
         case .localDashboard: "local_dashboard"
         case .quietHoursOffer: "quiet_hours_offer"
+        case .initiationInvitation: "initiation_invitation"
+        case .initiationSettings: "initiation_settings"
         case .unknown: "unknown"
         }
     }
@@ -1594,22 +1634,29 @@ public struct StartWorkBlock: Codable, Equatable, Sendable {
     public let plannedDurationSeconds: Int
     public let purpose: WorkBlockPurpose?
     public let intensity: WorkBlockIntensity
+    /// When present, claims a live initiation invitation so the accepted
+    /// start is recorded with a content-free origin marker. Rust validates
+    /// it; a stale or unknown id is a plain manual start.
+    public let invitationID: UUID?
 
     public init(
         intention: String?,
         plannedDurationSeconds: Int,
         purpose: WorkBlockPurpose?,
-        intensity: WorkBlockIntensity
+        intensity: WorkBlockIntensity,
+        invitationID: UUID? = nil
     ) {
         self.intention = intention
         self.plannedDurationSeconds = plannedDurationSeconds
         self.purpose = purpose
         self.intensity = intensity
+        self.invitationID = invitationID
     }
 
     private enum CodingKeys: String, CodingKey {
         case intention, purpose, intensity
         case plannedDurationSeconds = "planned_duration_seconds"
+        case invitationID = "invitation_id"
     }
 }
 
@@ -1785,6 +1832,87 @@ public struct QuietHoursOffer: Codable, Equatable, Sendable {
         case lateNightDays = "late_night_days"
         case startLocalMinutes = "start_local_minutes"
         case endLocalMinutes = "end_local_minutes"
+    }
+}
+
+/// Asks the deterministic initiation policy whether one invitation is
+/// pending right now. Every gate is owned and enforced in Rust; Swift only
+/// supplies its UTC offset.
+public struct RequestInitiationInvitation: Codable, Equatable, Sendable {
+    public let utcOffsetSeconds: Int
+
+    public init(utcOffsetSeconds: Int) {
+        self.utcOffsetSeconds = utcOffsetSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case utcOffsetSeconds = "utc_offset_seconds"
+    }
+}
+
+/// At most one daily invitation to a soft start, produced by the
+/// deterministic, versioned good-hours policy. The payload is schedule-free
+/// by construction; Swift renders the body verbatim.
+public struct InitiationInvitation: Codable, Equatable, Sendable {
+    public let invitationID: UUID
+    public let actionID: String
+    public let body: String
+    public let durationSeconds: Int
+    public let policyVersion: Int
+
+    public init(
+        invitationID: UUID,
+        actionID: String,
+        body: String,
+        durationSeconds: Int,
+        policyVersion: Int
+    ) {
+        self.invitationID = invitationID
+        self.actionID = actionID
+        self.body = body
+        self.durationSeconds = durationSeconds
+        self.policyVersion = policyVersion
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case body
+        case invitationID = "invitation_id"
+        case actionID = "action_id"
+        case durationSeconds = "duration_seconds"
+        case policyVersion = "policy_version"
+    }
+}
+
+/// The one-tap dismissal of a live initiation invitation.
+public struct DismissInitiationInvitation: Codable, Equatable, Sendable {
+    public let invitationID: UUID
+
+    public init(invitationID: UUID) { self.invitationID = invitationID }
+
+    private enum CodingKeys: String, CodingKey {
+        case invitationID = "invitation_id"
+    }
+}
+
+/// Sets the single Rust-owned opt-out for initiation invitations.
+public struct SetInitiationSettings: Codable, Equatable, Sendable {
+    public let invitationsEnabled: Bool
+
+    public init(invitationsEnabled: Bool) { self.invitationsEnabled = invitationsEnabled }
+
+    private enum CodingKeys: String, CodingKey {
+        case invitationsEnabled = "invitations_enabled"
+    }
+}
+
+/// The current Rust-owned initiation-invitation setting.
+public struct InitiationSettings: Codable, Equatable, Sendable {
+    public let invitationsEnabled: Bool
+
+    public init(invitationsEnabled: Bool) { self.invitationsEnabled = invitationsEnabled }
+
+    private enum CodingKeys: String, CodingKey {
+        case invitationsEnabled = "invitations_enabled"
     }
 }
 

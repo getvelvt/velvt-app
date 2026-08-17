@@ -14,13 +14,25 @@ public final class WorkBlockCoordinator: ObservableObject {
   /// The Rust-authored quiet-hours offer, present until the user replies.
   /// Swift renders it verbatim and never re-derives the pattern.
   @Published public private(set) var quietHoursOffer: QuietHoursOffer?
+  /// The Rust-authored initiation invitation, present until the user
+  /// replies or the service invalidates it. Swift renders the body verbatim
+  /// and never re-derives good hours, caps, or backoff.
+  @Published public private(set) var invitation: InitiationInvitation?
+  /// The Rust-owned invitation opt-out state, mirrored for the settings
+  /// toggle. Swift never assumes it; it renders what the service reports.
+  @Published public private(set) var invitationsEnabled = true
 
   private let ipcClient: any IPCClientProtocol
   private var cancellables = Set<AnyCancellable>()
   private var sendChain: Task<Void, Never>?
+  private let utcOffsetSeconds: () -> Int
 
-  public init(ipcClient: any IPCClientProtocol) {
+  public init(
+    ipcClient: any IPCClientProtocol,
+    utcOffsetSeconds: @escaping () -> Int = { TimeZone.current.secondsFromGMT() }
+  ) {
     self.ipcClient = ipcClient
+    self.utcOffsetSeconds = utcOffsetSeconds
   }
 
   public func start(
@@ -36,8 +48,20 @@ public final class WorkBlockCoordinator: ObservableObject {
         case .workBlockState(let snapshot):
           self?.snapshot = snapshot
           self?.commandError = nil
+          // A live block supersedes any invitation card; the service has
+          // already expired the stored invitation.
+          if snapshot.phase == .active || snapshot.phase == .paused {
+            self?.invitation = nil
+          }
         case .quietHoursOffer(let offer):
           self?.quietHoursOffer = offer
+        case .initiationInvitation(let invitation):
+          self?.invitation = invitation
+        case .initiationSettings(let settings):
+          self?.invitationsEnabled = settings.invitationsEnabled
+          if !settings.invitationsEnabled {
+            self?.invitation = nil
+          }
         case .errorResponse(let error)
         where error.code.hasPrefix("work_block_")
           || error.code.hasPrefix("invalid_work_block_"):
@@ -54,6 +78,8 @@ public final class WorkBlockCoordinator: ObservableObject {
       .sink { [weak self] status in
         guard status == .connected else { return }
         self?.send(.requestWorkBlockState)
+        self?.send(.requestInitiationSettings)
+        self?.refreshInvitation()
       }
       .store(in: &cancellables)
 
@@ -61,7 +87,10 @@ public final class WorkBlockCoordinator: ObservableObject {
       .sink { [weak self] _ in self?.reportLifecycle(.sleep) }
       .store(in: &cancellables)
     workspaceNotifications.publisher(for: NSWorkspace.didWakeNotification)
-      .sink { [weak self] _ in self?.reportLifecycle(.wake) }
+      .sink { [weak self] _ in
+        self?.reportLifecycle(.wake)
+        self?.refreshInvitation()
+      }
       .store(in: &cancellables)
     systemNotifications.publisher(for: .NSSystemClockDidChange)
       .sink { [weak self] _ in self?.reportLifecycle(.clockChanged) }
@@ -128,10 +157,70 @@ public final class WorkBlockCoordinator: ObservableObject {
     send(.respondQuietHoursOffer(.init(accepted: accepted)))
   }
 
+  /// Asks the service whether one invitation is pending right now. The
+  /// service owns every gate; asking is always safe and never doubles a
+  /// live invitation.
+  public func refreshInvitation() {
+    send(.requestInitiationInvitation(.init(utcOffsetSeconds: utcOffsetSeconds())))
+  }
+
+  /// One tap on the invitation starts the declared block through the
+  /// existing start command, carrying the invitation id so the service can
+  /// record the content-free origin marker.
+  public func acceptInvitation() {
+    guard let invitation else { return }
+    self.invitation = nil
+    send(
+      .startWorkBlock(
+        .init(
+          intention: nil,
+          plannedDurationSeconds: invitation.durationSeconds,
+          purpose: nil,
+          intensity: .medium,
+          invitationID: invitation.invitationID
+        )))
+  }
+
+  /// The one-tap dismissal. Recorded by the service; only ever reduces
+  /// future invitations.
+  public func dismissInvitation() {
+    guard let invitation else { return }
+    self.invitation = nil
+    send(.dismissInitiationInvitation(.init(invitationID: invitation.invitationID)))
+  }
+
+  /// The single opt-out. The service owns and enforces the setting; the
+  /// toggle re-renders from the service's reply.
+  public func setInvitationsEnabled(_ enabled: Bool) {
+    if !enabled {
+      invitation = nil
+    }
+    send(.setInitiationSettings(.init(invitationsEnabled: enabled)))
+  }
+
   public func clearLocalData() {
     quietHoursOffer = nil
+    invitation = nil
     send(.clearWorkBlockData)
   }
+
+  #if DEBUG
+    /// Debug-only synthetic invitation so the packaged debug build can
+    /// demonstrate the surface without touching the local database. Mirrors
+    /// `NotificationDeliveryCoordinator.simulateDebugInsightReceipt`: the
+    /// one deliberate place a debug harness authors a payload. Accepting
+    /// sends a real start command; the service does not recognize the
+    /// synthetic id and records a plain manual start.
+    public func simulateDebugInvitation() {
+      invitation = InitiationInvitation(
+        invitationID: UUID(),
+        actionID: "soft_start_25",
+        body: "You usually focus well around now — want a 25-minute soft start?",
+        durationSeconds: 1_500,
+        policyVersion: 1
+      )
+    }
+  #endif
 
   public func reportLifecycle(_ event: WorkBlockLifecycleEvent) {
     send(.workBlockLifecycle(.init(event: event)))

@@ -13,7 +13,7 @@ use velvt_service::persistence::{
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, NewUploadBatch,
     PersistenceError, RawEventEntry, SqlitePersistence, UploadBatchStatus,
     WorkBlockCategoryCorrection, WorkBlockIntervention, WorkBlockInterventionOutcome,
-    WorkBlockRecord,
+    WorkBlockOrigin, WorkBlockRecord,
 };
 use velvt_service::upload::BatchEventPayload;
 use velvt_shared_types::RawEvent;
@@ -37,6 +37,8 @@ fn work_block_record(block_id: &str, started_at: DateTime<Utc>) -> WorkBlockReco
         ended_at: None,
         recovered_after_restart: false,
         recovery_of: None,
+        // These fixtures declare blocks directly, which is what Manual means.
+        origin: WorkBlockOrigin::Manual,
         intention_expires_at: started_at + Duration::hours(24),
         updated_at: started_at,
     }

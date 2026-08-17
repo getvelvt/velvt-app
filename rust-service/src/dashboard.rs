@@ -655,14 +655,31 @@ fn early_signal(
         focused_seconds,
         meaningful_switch_count: transitions.len() as u32,
         longest_uninterrupted_seconds,
+        // Says what was observed, in the user's words and with the count that
+        // makes it checkable. The previous copy — "your recorded activity held
+        // a relatively steady broad category in this observation window" —
+        // used three internal terms in one sentence and hedged the one fact it
+        // had, so it read as a system describing itself rather than telling
+        // someone what they just did. The numbers were already computed and
+        // discarded; a claim the user can verify against their own memory is
+        // both clearer and more honest than a claim they can only take on
+        // trust.
         observation: is_ready.then(|| {
-            if transitions.len() >= 3 {
-                "You moved between broad work categories several times in this observation window.".to_owned()
-            } else {
-                "Your recorded activity held a relatively steady broad category in this observation window.".to_owned()
+            let minutes = observed_seconds / 60;
+            match transitions.len() {
+                0 => format!("You stayed on one kind of work for the last {minutes} minutes."),
+                1 => format!("You changed what you were working on once in the last {minutes} minutes."),
+                count if count < 3 => format!(
+                    "You changed what you were working on {count} times in the last {minutes} minutes."
+                ),
+                count => format!(
+                    "You changed what you were working on {count} times in the last {minutes} minutes — enough that it is worth noticing."
+                ),
             }
         }),
-        suggested_action: is_ready.then(|| "If it would help, protect a short block for the context you want to stay with.".to_owned()),
+        suggested_action: is_ready.then(|| {
+            "Start a block to hold one thing for a while.".to_owned()
+        }),
         action_minutes: if is_ready { EARLY_SIGNAL_ACTION_MINUTES } else { 0 },
     }
 }

@@ -527,27 +527,40 @@ public struct FocusFragmentationView: View {
   public var body: some View {
     VStack(alignment: .leading, spacing: 7) {
       if let focus {
-        HStack(spacing: 6) {
-          Text("Focus Fragmentation").font(.headline)
-          Spacer()
-          Text(focus.windowLabel)
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
+        // Observation first, then the one action, then the evidence behind
+        // them. "Focus Fragmentation" names a metric, not a meaning, and a
+        // chart cannot tell someone what just happened to their attention.
+        // Leading with the chart put the only two sentences that carry meaning
+        // at the bottom of the card in caption text, truncated, with the real
+        // wording reachable only by hovering — which is the roadmap's
+        // "one observation, one bounded action; scores never lead" inverted.
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+          Text(focus.observation)
+            .font(.subheadline)
+            .fixedSize(horizontal: false, vertical: true)
+          Spacer(minLength: 4)
           Image(systemName: "info.circle")
             .font(.caption2)
             .foregroundStyle(Color.velvtMuted)
             .help(focusHelp(focus))
         }
+        Text(focus.nextAction)
+          .font(.callout.weight(.semibold))
+          .fixedSize(horizontal: false, vertical: true)
+
+        Divider().opacity(0.15)
+
+        HStack(spacing: 6) {
+          Text("Focus Fragmentation")
+            .font(.caption2)
+            .foregroundStyle(Color.velvtMuted)
+          Spacer()
+          Text(focus.windowLabel)
+            .font(.caption2)
+            .foregroundStyle(Color.velvtMuted)
+        }
         focusTimeline(focus)
         metrics(focus)
-        Text(focus.observation)
-          .font(.caption)
-          .lineLimit(2)
-          .help(focus.observation)
-        Text(focus.nextAction)
-          .font(.caption.bold())
-          .lineLimit(1)
-          .help(focus.nextAction)
       } else {
         VStack(alignment: .leading, spacing: 8) {
           Text("Focus Fragmentation").font(.headline)

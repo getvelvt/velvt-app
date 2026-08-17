@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. The user's explicit one-tap resume from the demoted (observe-only) state. Resetting restarts the demotion evaluation window from the reset instant; it never edits, reweights, or discards the underlying outcome record, and the wrong-intervention counter itself is untouched.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "reset_intervention_demotion" },
+    "payload": { "type": "object", "maxProperties": 0, "additionalProperties": false }
+  },
+  "additionalProperties": false
+}

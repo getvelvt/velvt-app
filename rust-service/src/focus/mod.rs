@@ -478,17 +478,7 @@ mod tests {
         for count in [1, 3, 7] {
             let copy = quiet_hours_offer_body(count);
             let lowered = copy.to_ascii_lowercase();
-            for forbidden in [
-                "still",
-                "dismiss",
-                "failed",
-                "failure",
-                "ignored",
-                "last time",
-                "again",
-                "learned",
-                "adaptive",
-            ] {
+            for forbidden in crate::work_block::BANNED_COPY_TOKENS {
                 assert!(
                     !lowered.contains(forbidden),
                     "{forbidden:?} in offer copy {copy:?}"

@@ -1151,17 +1151,7 @@ mod tests {
     fn invitation_copy_is_analyst_voice_and_schedule_free() {
         let copy = invitation_body();
         let lowered = copy.to_ascii_lowercase();
-        for forbidden in [
-            "still",
-            "dismiss",
-            "failed",
-            "failure",
-            "ignored",
-            "last time",
-            "again",
-            "learned",
-            "adaptive",
-        ] {
+        for forbidden in crate::work_block::BANNED_COPY_TOKENS {
             assert!(
                 !lowered.contains(forbidden),
                 "{forbidden:?} in invitation copy {copy:?}"

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Reads the current auto-demotion state of the intervention detector so the disclosure surface renders the Rust-owned state instead of assuming one. The state machine, its versioned threshold, and its re-promotion criteria are owned and evaluated entirely in Rust.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "request_demotion_state" },
+    "payload": { "type": "object", "maxProperties": 0, "additionalProperties": false }
+  },
+  "additionalProperties": false
+}

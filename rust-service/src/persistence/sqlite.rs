@@ -1,13 +1,13 @@
 use super::{
-    AbstractionMapRepo, AbstractionMapping, BatchEvent, CompletedBlockDwellSpan, FocusRepo,
-    FocusTransition, HistoryCacheEntry, HistoryCacheRepo, InitiationInvitationOutcome,
-    InitiationInvitationRecord, InitiationRepo, InsightCacheEntry, InsightCacheRepo,
-    LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch, PersonalOverrideRecord,
-    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, RawEventRepo, UploadBatch,
-    UploadBatchRepo, UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours,
-    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
-    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
-    WorkBlockRepo, WrongInterventionCounts,
+    AbstractionMapRepo, AbstractionMapping, BatchEvent, CompletedBlockDwellSpan,
+    DemotionStateRecord, FocusRepo, FocusTransition, HistoryCacheEntry, HistoryCacheRepo,
+    InitiationInvitationOutcome, InitiationInvitationRecord, InitiationRepo, InsightCacheEntry,
+    InsightCacheRepo, InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata,
+    NewUploadBatch, PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState,
+    RawEventEntry, RawEventRepo, ReceiptsRepo, UploadBatch, UploadBatchRepo, UploadBatchStatus,
+    UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection,
+    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
+    WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -151,6 +151,10 @@ impl SqlitePersistence {
 
     pub fn focus_repo(&self) -> Arc<dyn FocusRepo> {
         Arc::new(SqliteFocusRepo(self.clone()))
+    }
+
+    pub fn receipts_repo(&self) -> Arc<dyn ReceiptsRepo> {
+        Arc::new(SqliteReceiptsRepo(self.clone()))
     }
 
     pub fn initiation_repo(&self) -> Arc<dyn InitiationRepo> {
@@ -1807,25 +1811,57 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         since: DateTime<Utc>,
     ) -> Result<WrongInterventionCounts, PersistenceError> {
         let connection = self.0.connection()?;
-        // `was_focused` is main's vocabulary for the reply the trust-patch
-        // branch called `dismissed_was_focused`. Same meaning, and this is the
-        // name already in the shipped protocol 25 and in the database CHECK
-        // constraint, so the counter reads what the product actually records.
+        wrong_intervention_counts_sql(&connection, since.timestamp(), i64::MAX)
+    }
+
+    fn demotion_state(&self) -> Result<Option<DemotionStateRecord>, PersistenceError> {
+        let connection = self.0.connection()?;
         connection
             .query_row(
-                "SELECT
-                    COALESCE(SUM(outcome != 'delivery_suppressed_dnd'), 0),
-                    COALESCE(SUM(outcome = 'was_focused'), 0)
-                 FROM work_block_intervention WHERE offered_at >= ?1",
-                [since.timestamp()],
+                "SELECT state, demoted_at, manual_reset_at, threshold_policy_version,
+                        repromotion_policy_version, updated_at
+                 FROM intervention_demotion_state WHERE id = 1",
+                [],
                 |row| {
-                    Ok(WrongInterventionCounts {
-                        delivered: row.get(0)?,
-                        was_focused: row.get(1)?,
+                    Ok(DemotionStateRecord {
+                        state: InterventionDemotionState::from_db_value(&row.get::<_, String>(0)?)
+                            .ok_or_else(invalid_enum)?,
+                        demoted_at: optional_timestamp_from_row(row, 1)?,
+                        manual_reset_at: optional_timestamp_from_row(row, 2)?,
+                        threshold_policy_version: row.get(3)?,
+                        repromotion_policy_version: row.get(4)?,
+                        updated_at: timestamp_from_row(row, 5)?,
                     })
                 },
             )
+            .optional()
             .map_err(PersistenceError::from)
+    }
+
+    fn set_demotion_state(&self, record: &DemotionStateRecord) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO intervention_demotion_state(
+                id, state, demoted_at, manual_reset_at, threshold_policy_version,
+                repromotion_policy_version, updated_at
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                state = excluded.state,
+                demoted_at = excluded.demoted_at,
+                manual_reset_at = excluded.manual_reset_at,
+                threshold_policy_version = excluded.threshold_policy_version,
+                repromotion_policy_version = excluded.repromotion_policy_version,
+                updated_at = excluded.updated_at",
+            params![
+                record.state.as_str(),
+                record.demoted_at.map(|at| at.timestamp()),
+                record.manual_reset_at.map(|at| at.timestamp()),
+                record.threshold_policy_version,
+                record.repromotion_policy_version,
+                record.updated_at.timestamp(),
+            ],
+        )?;
+        Ok(())
     }
 
     fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError> {
@@ -1839,8 +1875,39 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
 
     fn clear_all(&self) -> Result<u64, PersistenceError> {
         let connection = self.0.connection()?;
-        Ok(connection.execute("DELETE FROM work_block", [])? as u64)
+        let removed = connection.execute("DELETE FROM work_block", [])? as u64;
+        // The demotion state is derived behavioral evidence, not a user
+        // preference: it dies with the record it was derived from.
+        connection.execute("DELETE FROM intervention_demotion_state", [])?;
+        Ok(removed)
     }
+}
+
+/// The one delivered/withheld split, written once. `delivered` counts every
+/// row that was actually shown; DND-suppressed and demotion-withheld rows
+/// were delivered by no channel and are excluded. The rolling counter, the
+/// digest's weekly window, and the probe denominator all read through this
+/// single SQL body, so no consumer can drift from another.
+fn wrong_intervention_counts_sql(
+    connection: &rusqlite::Connection,
+    since: i64,
+    until: i64,
+) -> Result<WrongInterventionCounts, PersistenceError> {
+    connection
+        .query_row(
+            "SELECT
+                COALESCE(SUM(outcome NOT IN ('delivery_suppressed_dnd', 'withheld_demotion')), 0),
+                COALESCE(SUM(outcome = 'was_focused'), 0)
+             FROM work_block_intervention WHERE offered_at >= ?1 AND offered_at < ?2",
+            params![since, until],
+            |row| {
+                Ok(WrongInterventionCounts {
+                    delivered: row.get(0)?,
+                    was_focused: row.get(1)?,
+                })
+            },
+        )
+        .map_err(PersistenceError::from)
 }
 
 struct SqliteFocusRepo(SqlitePersistence);
@@ -2271,6 +2338,255 @@ impl InitiationRepo for SqliteInitiationRepo {
     }
 }
 
+struct SqliteReceiptsRepo(SqlitePersistence);
+
+impl ReceiptsRepo for SqliteReceiptsRepo {
+    fn declared_block_count_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM work_block
+             WHERE started_at >= ?1 AND started_at < ?2",
+            params![since.timestamp(), until.timestamp()],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    fn completed_block_count_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Same predicate as `InitiationRepo::completed_block_count`, bounded:
+        // the digest's completed count cannot drift from the cold-start
+        // gate's definition of a completed block.
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM work_block
+             WHERE phase = 'completed' AND started_at >= ?1 AND started_at < ?2",
+            params![since.timestamp(), until.timestamp()],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    fn result_payloads_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<String>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT result.payload
+             FROM work_block_result result
+             JOIN work_block block ON block.block_id = result.block_id
+             WHERE block.started_at >= ?1 AND block.started_at < ?2
+             ORDER BY block.started_at, block.block_id",
+        )?;
+        let rows = statement
+            .query_map(params![since.timestamp(), until.timestamp()], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    fn accepted_invitation_count_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM initiation_invitation
+             WHERE outcome = 'accepted' AND outcome_at >= ?1 AND outcome_at < ?2",
+            params![since.timestamp(), until.timestamp()],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    fn withheld_count_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM work_block_intervention
+             WHERE outcome IN ('delivery_suppressed_dnd', 'withheld_demotion')
+               AND offered_at >= ?1 AND offered_at < ?2",
+            params![since.timestamp(), until.timestamp()],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    fn wrong_intervention_counts_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<WrongInterventionCounts, PersistenceError> {
+        let connection = self.0.connection()?;
+        wrong_intervention_counts_sql(&connection, since.timestamp(), until.timestamp())
+    }
+
+    fn delivered_intervention_count_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let counts =
+            wrong_intervention_counts_sql(&connection, since.timestamp(), until.timestamp())?;
+        Ok(u64::from(counts.delivered))
+    }
+
+    fn weekly_digest(
+        &self,
+        week_start_local_date: &str,
+    ) -> Result<Option<WeeklyDigestRecord>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT week_start_local_date, generated_at, blocks_declared,
+                        blocks_completed, recoveries, wrong_interventions,
+                        invitations_accepted, withheld, digest_version,
+                        delivered_at, acknowledged_at
+                 FROM weekly_digest WHERE week_start_local_date = ?1",
+                [week_start_local_date],
+                weekly_digest_from_row,
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+    }
+
+    fn store_weekly_digest(&self, record: &WeeklyDigestRecord) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        // Insert-only: a stored digest is frozen. Re-generating a week is a
+        // policy violation, not an upsert.
+        connection.execute(
+            "INSERT INTO weekly_digest(
+                week_start_local_date, generated_at, blocks_declared,
+                blocks_completed, recoveries, wrong_interventions,
+                invitations_accepted, withheld, digest_version,
+                delivered_at, acknowledged_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                record.week_start_local_date,
+                record.generated_at.timestamp(),
+                record.blocks_declared,
+                record.blocks_completed,
+                record.recoveries,
+                record.wrong_interventions,
+                record.invitations_accepted,
+                record.withheld,
+                record.digest_version,
+                record.delivered_at.map(|at| at.timestamp()),
+                record.acknowledged_at.map(|at| at.timestamp()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn mark_digest_delivered(
+        &self,
+        week_start_local_date: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "UPDATE weekly_digest SET delivered_at = ?2
+             WHERE week_start_local_date = ?1 AND delivered_at IS NULL",
+            params![week_start_local_date, at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn acknowledge_digest(
+        &self,
+        week_start_local_date: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "UPDATE weekly_digest SET acknowledged_at = ?2
+             WHERE week_start_local_date = ?1 AND acknowledged_at IS NULL",
+            params![week_start_local_date, at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn record_explain_tap(
+        &self,
+        week_start_local_date: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO explain_probe_week(week_start_local_date, taps, updated_at)
+             VALUES (?1, 1, ?2)
+             ON CONFLICT(week_start_local_date) DO UPDATE SET
+                taps = taps + 1,
+                updated_at = excluded.updated_at",
+            params![week_start_local_date, at.timestamp()],
+        )?;
+        Ok(())
+    }
+
+    fn explain_taps_for_week(&self, week_start_local_date: &str) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let taps: Option<i64> = connection
+            .query_row(
+                "SELECT taps FROM explain_probe_week WHERE week_start_local_date = ?1",
+                [week_start_local_date],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(taps.unwrap_or(0) as u64)
+    }
+
+    fn prune_receipts_before(&self, week_start_local_date: &str) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut removed = connection.execute(
+            "DELETE FROM weekly_digest WHERE week_start_local_date < ?1",
+            [week_start_local_date],
+        )? as u64;
+        removed += connection.execute(
+            "DELETE FROM explain_probe_week WHERE week_start_local_date < ?1",
+            [week_start_local_date],
+        )? as u64;
+        Ok(removed)
+    }
+
+    fn clear_receipts(&self) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut removed = connection.execute("DELETE FROM weekly_digest", [])? as u64;
+        removed += connection.execute("DELETE FROM explain_probe_week", [])? as u64;
+        Ok(removed)
+    }
+}
+
+fn weekly_digest_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WeeklyDigestRecord> {
+    Ok(WeeklyDigestRecord {
+        week_start_local_date: row.get(0)?,
+        generated_at: timestamp_from_row(row, 1)?,
+        blocks_declared: row.get(2)?,
+        blocks_completed: row.get(3)?,
+        recoveries: row.get(4)?,
+        wrong_interventions: row.get(5)?,
+        invitations_accepted: row.get(6)?,
+        withheld: row.get(7)?,
+        digest_version: row.get(8)?,
+        delivered_at: optional_timestamp_from_row(row, 9)?,
+        acknowledged_at: optional_timestamp_from_row(row, 10)?,
+    })
+}
+
 fn initiation_invitation_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<InitiationInvitationRecord> {
@@ -2509,6 +2825,15 @@ fn batch_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BatchEvent>
 fn timestamp_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<DateTime<Utc>> {
     let timestamp = row.get(index)?;
     timestamp_to_datetime(timestamp, index)
+}
+
+fn optional_timestamp_from_row(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<Option<DateTime<Utc>>> {
+    row.get::<_, Option<i64>>(index)?
+        .map(|value| timestamp_to_datetime(value, index))
+        .transpose()
 }
 
 fn timestamp_to_datetime(timestamp: i64, index: usize) -> rusqlite::Result<DateTime<Utc>> {

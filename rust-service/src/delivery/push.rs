@@ -71,6 +71,9 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::QuietHoursOffer(_) => "quiet_hours_offer",
         ServerMessage::InitiationInvitation(_) => "initiation_invitation",
         ServerMessage::InitiationSettings(_) => "initiation_settings",
+        ServerMessage::DemotionState(_) => "demotion_state",
+        ServerMessage::WeeklyDigest(_) => "weekly_digest",
+        ServerMessage::InterventionExplanation(_) => "intervention_explanation",
     }
 }
 

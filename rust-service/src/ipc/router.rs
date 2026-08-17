@@ -23,6 +23,7 @@ use crate::initiation::InitiationManager;
 use crate::persistence::{
     AbstractionMapRepo, RawEventEntry, RawEventRepo, UploadBatchRepo, UploadQueueDiagnostics,
 };
+use crate::receipts::ReceiptsManager;
 use crate::upload::EventIngestor;
 use crate::work_block::{WorkBlockError, WorkBlockManager};
 
@@ -421,6 +422,7 @@ pub struct R7Router {
     work_block_push: Option<Arc<PushAdapter>>,
     focus: Option<Arc<FocusManager>>,
     initiation: Option<Arc<InitiationManager>>,
+    receipts: Option<Arc<ReceiptsManager>>,
     auth_state: Option<tokio::sync::watch::Receiver<AuthState>>,
 }
 
@@ -447,6 +449,7 @@ impl R7Router {
             work_block_push: None,
             focus: None,
             initiation: None,
+            receipts: None,
             auth_state: None,
         }
     }
@@ -500,6 +503,13 @@ impl R7Router {
     /// invitation behavior exists.
     pub fn with_initiation(mut self, initiation: Arc<InitiationManager>) -> Self {
         self.initiation = Some(initiation);
+        self
+    }
+
+    /// Attaches the weekly receipts and probe-bucket owner. Without it,
+    /// digest messages are acknowledged and dropped and no digest exists.
+    pub fn with_receipts(mut self, receipts: Arc<ReceiptsManager>) -> Self {
+        self.receipts = Some(receipts);
         self
     }
 
@@ -958,6 +968,17 @@ impl MessageRouter for R7Router {
                         );
                     }
                 }
+                // Digests and probe buckets are derived from the record
+                // being cleared; the demotion singleton is cleared inside
+                // `WorkBlockManager::clear_data` with the record itself.
+                if let Some(receipts) = &self.receipts {
+                    if receipts.clear_data().is_err() {
+                        tracing::warn!(
+                            error_code = "receipts_data_clear_failed",
+                            "weekly digest record was not cleared"
+                        );
+                    }
+                }
                 self.work_block_response(WorkBlockManager::clear_data)
             }
 
@@ -1063,6 +1084,110 @@ impl MessageRouter for R7Router {
                         },
                     ))),
                     Err(_) => Ok(None),
+                }
+            }
+
+            ClientMessage::RequestDemotionState(_) => {
+                let Some(work_blocks) = &self.work_blocks else {
+                    return Ok(None);
+                };
+                match work_blocks.demotion_state_payload(Utc::now()) {
+                    Ok(state) => Ok(Some(ServerMessage::DemotionState(state))),
+                    Err(_) => {
+                        tracing::warn!(
+                            error_code = "demotion_state_read_failed",
+                            "demotion state could not be evaluated"
+                        );
+                        Ok(None)
+                    }
+                }
+            }
+
+            ClientMessage::ResetInterventionDemotion(_) => {
+                let Some(work_blocks) = &self.work_blocks else {
+                    return Ok(None);
+                };
+                match work_blocks.reset_demotion(Utc::now()) {
+                    Ok(state) => Ok(Some(ServerMessage::DemotionState(state))),
+                    Err(_) => {
+                        tracing::warn!(
+                            error_code = "demotion_reset_failed",
+                            "demotion reset was not recorded"
+                        );
+                        Ok(None)
+                    }
+                }
+            }
+
+            ClientMessage::RequestWeeklyDigest(request) => {
+                let Some(receipts) = &self.receipts else {
+                    return Ok(None);
+                };
+                match receipts.pending_digest(Utc::now(), request.utc_offset_seconds) {
+                    Ok(Some(digest)) => Ok(Some(ServerMessage::WeeklyDigest(digest))),
+                    Ok(None) => Ok(None),
+                    Err(_) => {
+                        tracing::warn!(
+                            error_code = "weekly_digest_check_failed",
+                            "pending weekly digest could not be evaluated"
+                        );
+                        Ok(None)
+                    }
+                }
+            }
+
+            ClientMessage::AcknowledgeWeeklyDigest(request) => {
+                let Some(receipts) = &self.receipts else {
+                    return Ok(None);
+                };
+                if receipts
+                    .acknowledge(&request.week_start_local_date, Utc::now())
+                    .is_err()
+                {
+                    tracing::warn!(
+                        error_code = "weekly_digest_acknowledge_failed",
+                        "weekly digest acknowledgment was not recorded"
+                    );
+                }
+                Ok(None)
+            }
+
+            ClientMessage::RequestInterventionExplanation(request) => {
+                let Some(work_blocks) = &self.work_blocks else {
+                    return Ok(None);
+                };
+                match work_blocks.explain_intervention(request.block_id) {
+                    Ok(Some(sentence)) => {
+                        // The probe metric (D7; roadmap Metrics 5): one
+                        // coarse local weekly counter, incremented only
+                        // when an explanation was actually shown. Nothing
+                        // about which nudge or when within the week.
+                        if let Some(receipts) = &self.receipts {
+                            if receipts
+                                .record_explain_tap(Utc::now(), request.utc_offset_seconds)
+                                .is_err()
+                            {
+                                tracing::warn!(
+                                    error_code = "explain_tap_record_failed",
+                                    "explain-tap bucket was not incremented"
+                                );
+                            }
+                        }
+                        Ok(Some(ServerMessage::InterventionExplanation(
+                            velvt_shared_types::InterventionExplanation {
+                                block_id: request.block_id,
+                                sentence,
+                            },
+                        )))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(_) => {
+                        tracing::warn!(
+                            error_code = "intervention_explanation_failed",
+                            "intervention explanation could not be built"
+                        );
+                        Ok(None)
+                    }
                 }
             }
 

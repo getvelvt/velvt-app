@@ -16,12 +16,14 @@ use velvt_shared_types::{
     WorkBlockPhase, WorkBlockPurpose, WorkBlockResult, WorkBlockSnapshot, WORK_BLOCK_STATE_VERSION,
 };
 
+use velvt_shared_types::{DemotionState, DemotionStateKind};
+
 use crate::{
     delivery::PushAdapter,
     persistence::{
-        PersistenceError, WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome,
-        WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo,
-        WrongInterventionCounts,
+        DemotionStateRecord, InterventionDemotionState, PersistenceError, WorkBlockCompletion,
+        WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin,
+        WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
     },
 };
 
@@ -38,6 +40,55 @@ const DRIFT_WINDOW_SECONDS: i64 = 10 * 60;
 const DRIFT_MIN_SWITCHES: u32 = 4;
 const DRIFT_MIN_ELAPSED_SECONDS: u32 = 5 * 60;
 const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
+/// The registered banned vocabulary for every Rust-authored copy surface
+/// (roadmap invariants 2, 6, and 7). Matched case-insensitively as
+/// substrings against rendered copy. Absence framing, failure tallies, and
+/// streak language are banned everywhere, not only in intervention copy.
+pub const BANNED_COPY_TOKENS: &[&str] = &[
+    "still",
+    "dismiss",
+    "failed",
+    "failure",
+    "ignored",
+    "last time",
+    "again",
+    "learned",
+    "adaptive",
+    "missed",
+    "skipped",
+    "declined",
+    "you didn't",
+    "you haven't",
+    "you never",
+    "last invitation",
+    "last offer",
+    "streak",
+    "broken chain",
+];
+
+/// Rolling window for the local wrong-intervention counter: `was_focused`
+/// replies over interventions delivered. The auto-demotion policy below
+/// evaluates over this same window.
+const WRONG_INTERVENTION_ROLLING_DAYS: i64 = 14;
+/// Versioned auto-demotion policy (roadmap invariant 4). A deterministic
+/// rule over the wrong-intervention counter, never a learned or adaptive
+/// value. Bump the threshold version when the threshold, window, or minimum
+/// sample below changes meaning.
+pub const DEMOTION_THRESHOLD_POLICY_VERSION: u32 = 1;
+/// Demotion triggers when the wrong-intervention rate strictly exceeds this
+/// whole-percent threshold. Exactly at the threshold is not demotion.
+pub const DEMOTION_THRESHOLD_PERCENT: u32 = 15;
+/// Minimum delivered interventions inside the evaluation window before the
+/// rate is meaningful. Below this floor demotion never triggers: one wrong
+/// nudge out of three delivered is thin evidence, not a 33% detector.
+pub const DEMOTION_MIN_DELIVERED_SAMPLE: u32 = 10;
+/// Versioned re-promotion policy (v1): the demoted state ends the moment the
+/// same windowed evaluation stops exceeding the threshold — because wrong
+/// replies aged out of the rolling window, because the delivered sample fell
+/// back below the minimum floor, or because the user manually reset (which
+/// restarts the evaluation window at the reset instant). Deterministic: the
+/// same stored outcome stream and clock always produce the same transitions.
+pub const DEMOTION_REPROMOTION_POLICY_VERSION: u32 = 1;
 /// The closed action registry. Two actions exist: the in-block drift
 /// recovery and the post-block gentle re-entry. Closed by construction: the
 /// schema constrains `action_id`, so an unregistered action cannot be
@@ -101,6 +152,41 @@ struct BackoffState {
 pub struct ObservationOutcome {
     pub snapshot: WorkBlockSnapshot,
     pub intervention: Option<DriftIntervention>,
+}
+
+/// One evaluation of the deterministic demotion policy: the resulting
+/// state, the windowed counts it was computed from, and the disclosure
+/// instant while demoted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DemotionEvaluation {
+    pub state: InterventionDemotionState,
+    pub counts: WrongInterventionCounts,
+    pub demoted_at: Option<DateTime<Utc>>,
+}
+
+/// The one registered explanation claim: the drift offer fired on observed
+/// switching evidence. Closed registry — an explanation for evidence that
+/// was not stored cannot be selected.
+const DRIFT_EXPLANATION_CLAIM_ID: &str = "drift_switches_observed";
+
+/// The code-selected claim, evidence, and tone for one explanation (D7).
+/// Deterministic code builds this from the stored intervention row; any
+/// phrasing layer receives exactly these values and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplanationSelection {
+    pub claim_id: &'static str,
+    pub anchor_category: String,
+    pub switch_count: u32,
+    pub window_minutes: u32,
+}
+
+/// Optional phrasing seam for the selected explanation. A provider may only
+/// rephrase the already-selected claim and values; it cannot decide what
+/// happened. No provider is wired in this release — the deterministic
+/// template below is the v1 explanation — and any future provider output
+/// must pass `validate_explanation` or the deterministic template is used.
+pub trait ExplanationPhraser: Send + Sync {
+    fn phrase(&self, selection: &ExplanationSelection) -> Option<String>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -540,6 +626,31 @@ impl WorkBlockManager {
         if previous_was_anchor == Some(true) {
             return Ok(None);
         }
+        // Auto-demotion (roadmap invariant 4; D5): while the versioned
+        // demotion policy is in `demoted`, no intervention fires through
+        // any path. The decision the gate would have made is recorded and
+        // withheld — no channel, no retry, no catch-up after re-promotion —
+        // and, like DND suppression, it starts the same cooldown and counts
+        // toward the per-block cap so re-promotion can never produce a
+        // burst. Excluded from delivered metrics: a nudge that was never
+        // shown cannot be wrong. Evidence collection, blocks, session
+        // results, and corrections are untouched by this branch.
+        if self.evaluate_demotion(now)?.state == InterventionDemotionState::Demoted {
+            self.repo.record_intervention(
+                &record.block_id,
+                &WorkBlockIntervention {
+                    offered_at: now,
+                    action_id: DRIFT_ACTION_ID.to_owned(),
+                    anchor_category: anchor,
+                    switch_count,
+                    window_seconds: DRIFT_WINDOW_SECONDS.try_into().unwrap_or(u32::MAX),
+                    outcome: WorkBlockInterventionOutcome::WithheldDemotion,
+                    outcome_at: Some(now),
+                    salience: InterventionSalience::Normal,
+                },
+            )?;
+            return Ok(None);
+        }
         // DND is data, not defiance (D2; roadmap invariants 1 and 5). When
         // the gate clears while system Focus/DND is active, the decision is
         // recorded and held: no OS notification, no in-app takeover, no
@@ -706,6 +817,143 @@ impl WorkBlockManager {
             .is_some_and(|record| record.phase == WorkBlockPhase::Active))
     }
 
+    /// Evaluates the deterministic auto-demotion policy (roadmap invariant
+    /// 4; D5) and persists the transition when the state changed.
+    ///
+    /// The state is a pure function of the stored outcome stream, the last
+    /// manual reset, and the clock: the rolling window starts at
+    /// `max(now - window, manual_reset_at)`, and the state is `Demoted`
+    /// exactly while `delivered >= minimum sample` and
+    /// `wrong / delivered > threshold` (strictly). Re-promotion is the same
+    /// evaluation ceasing to hold — versioned, deterministic, and never
+    /// learned. The persisted singleton only remembers the entered-at
+    /// instant for disclosure and the reset marker; it is never a history.
+    pub fn evaluate_demotion(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<DemotionEvaluation, WorkBlockError> {
+        let stored = self.repo.demotion_state()?;
+        let manual_reset_at = stored.as_ref().and_then(|state| state.manual_reset_at);
+        let mut since = now - Duration::days(WRONG_INTERVENTION_ROLLING_DAYS);
+        if let Some(reset_at) = manual_reset_at {
+            since = since.max(reset_at);
+        }
+        let counts = self.repo.wrong_intervention_counts(since)?;
+        let over_threshold = counts.delivered >= DEMOTION_MIN_DELIVERED_SAMPLE
+            && counts.was_focused.saturating_mul(100)
+                > counts.delivered.saturating_mul(DEMOTION_THRESHOLD_PERCENT);
+        let previous = stored
+            .as_ref()
+            .map(|state| state.state)
+            .unwrap_or(InterventionDemotionState::Active);
+        let state = if over_threshold {
+            InterventionDemotionState::Demoted
+        } else {
+            InterventionDemotionState::Active
+        };
+        let demoted_at = match (previous, state) {
+            (InterventionDemotionState::Demoted, InterventionDemotionState::Demoted) => stored
+                .as_ref()
+                .and_then(|record| record.demoted_at)
+                .or(Some(now)),
+            (_, InterventionDemotionState::Demoted) => Some(now),
+            _ => None,
+        };
+        if stored.as_ref().map(|record| record.state) != Some(state)
+            || stored.as_ref().and_then(|record| record.demoted_at) != demoted_at
+        {
+            self.repo.set_demotion_state(&DemotionStateRecord {
+                state,
+                demoted_at,
+                manual_reset_at,
+                threshold_policy_version: DEMOTION_THRESHOLD_POLICY_VERSION,
+                repromotion_policy_version: DEMOTION_REPROMOTION_POLICY_VERSION,
+                updated_at: now,
+            })?;
+        }
+        Ok(DemotionEvaluation {
+            state,
+            counts,
+            demoted_at,
+        })
+    }
+
+    /// The inspectable demotion state for the disclosure surface. Counts,
+    /// versioned constants, current state, and registered copy — nothing
+    /// else is representable.
+    pub fn demotion_state_payload(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<DemotionState, WorkBlockError> {
+        let evaluation = self.evaluate_demotion(now)?;
+        let demoted = evaluation.state == InterventionDemotionState::Demoted;
+        Ok(DemotionState {
+            state: match evaluation.state {
+                InterventionDemotionState::Active => DemotionStateKind::Active,
+                InterventionDemotionState::Demoted => DemotionStateKind::Demoted,
+            },
+            wrong_count: evaluation.counts.was_focused,
+            delivered_count: evaluation.counts.delivered,
+            threshold_percent: DEMOTION_THRESHOLD_PERCENT,
+            minimum_sample: DEMOTION_MIN_DELIVERED_SAMPLE,
+            window_days: WRONG_INTERVENTION_ROLLING_DAYS.unsigned_abs() as u32,
+            threshold_policy_version: DEMOTION_THRESHOLD_POLICY_VERSION,
+            repromotion_policy_version: DEMOTION_REPROMOTION_POLICY_VERSION,
+            demoted_at: demoted.then_some(evaluation.demoted_at).flatten(),
+            disclosure: demoted.then(demotion_disclosure_copy),
+        })
+    }
+
+    /// The user's explicit one-tap resume from the demoted state.
+    ///
+    /// Restarts the demotion evaluation window at the reset instant and
+    /// returns to `Active`. The underlying outcome record and the rolling
+    /// wrong-intervention counter are untouched: a reset changes what the
+    /// demotion rule looks at, never what happened.
+    pub fn reset_demotion(&self, now: DateTime<Utc>) -> Result<DemotionState, WorkBlockError> {
+        self.repo.set_demotion_state(&DemotionStateRecord {
+            state: InterventionDemotionState::Active,
+            demoted_at: None,
+            manual_reset_at: Some(now),
+            threshold_policy_version: DEMOTION_THRESHOLD_POLICY_VERSION,
+            repromotion_policy_version: DEMOTION_REPROMOTION_POLICY_VERSION,
+            updated_at: now,
+        })?;
+        self.demotion_state_payload(now)
+    }
+
+    /// One grounded sentence for the block's most recent shown intervention
+    /// (D7). Code selects the claim and evidence from the stored row; the
+    /// deterministic template phrases it. `phrase_explanation` is the seam
+    /// where an optional provider could rephrase the same selection later —
+    /// no provider is wired in this release, and the deterministic sentence
+    /// is the v1 explanation.
+    pub fn explain_intervention(&self, block_id: Uuid) -> Result<Option<String>, WorkBlockError> {
+        // One offer per block, so "the offer that was shown" is simply this
+        // block's offer — if it was shown at all. A held or withheld decision
+        // was never displayed and has nothing to explain.
+        let Some(shown) = self
+            .repo
+            .intervention(&block_id.to_string())?
+            .filter(|offer| {
+                !matches!(
+                    offer.outcome,
+                    WorkBlockInterventionOutcome::DeliverySuppressedDnd
+                        | WorkBlockInterventionOutcome::WithheldDemotion
+                )
+            })
+        else {
+            return Ok(None);
+        };
+        let selection = ExplanationSelection {
+            claim_id: DRIFT_EXPLANATION_CLAIM_ID,
+            anchor_category: shown.anchor_category.clone(),
+            switch_count: shown.switch_count,
+            window_minutes: (shown.window_seconds / 60).max(1),
+        };
+        Ok(Some(phrase_explanation(&selection, None)))
+    }
+
     pub fn clear_data(&self) -> Result<WorkBlockSnapshot, WorkBlockError> {
         self.repo.clear_all()?;
         self.publish_deadline(None);
@@ -815,7 +1063,7 @@ impl WorkBlockManager {
             confidence,
             status_line: status_line(record.phase, record.intensity, category.as_deref(), status),
             result,
-            active_intervention: self.active_intervention(&record.block_id)?,
+            active_intervention: self.active_intervention(&record.block_id, now)?,
         })
     }
 
@@ -824,11 +1072,19 @@ impl WorkBlockManager {
     fn active_intervention(
         &self,
         block_id: &str,
+        now: DateTime<Utc>,
     ) -> Result<Option<ActiveIntervention>, WorkBlockError> {
         let Some(intervention) = self.repo.intervention(block_id)? else {
             return Ok(None);
         };
         if intervention.outcome.is_terminal() {
+            return Ok(None);
+        }
+        // While demoted, a still-unanswered offer is not re-rendered either:
+        // demotion silences every intervention surface, not just new offers.
+        // The row stays and resolves normally (`no_response` at block end,
+        // or the user's earlier reply), so the record is never rewritten.
+        if self.evaluate_demotion(now)?.state == InterventionDemotionState::Demoted {
             return Ok(None);
         }
         Ok(Some(ActiveIntervention {
@@ -1015,6 +1271,96 @@ fn outcome_for(response: InterventionResponse) -> WorkBlockInterventionOutcome {
         InterventionResponse::WasFocused => WorkBlockInterventionOutcome::WasFocused,
         InterventionResponse::Dismissed => WorkBlockInterventionOutcome::Dismissed,
     }
+}
+
+/// Registered analyst-voice demotion disclosure (D5; roadmap invariants 4
+/// and 7). States Velvt's own error rate and the pause as respect — no
+/// apology spiral, no reference to the user's history, and it never
+/// describes the deterministic rule as learned.
+fn demotion_disclosure_copy() -> String {
+    "Velvt is getting these nudges wrong too often, so it has gone quiet: no nudges will be \
+     sent for now, and you can resume them at any time."
+        .to_owned()
+}
+
+/// Phrases one explanation from a code-selected claim. The provider, when
+/// one exists, may only rephrase the same selection; anything it returns
+/// that fails validation falls back to the deterministic template for the
+/// same selection. With no provider (this release), the deterministic
+/// template is the explanation.
+fn phrase_explanation(
+    selection: &ExplanationSelection,
+    provider: Option<&dyn ExplanationPhraser>,
+) -> String {
+    if let Some(candidate) = provider.and_then(|phraser| phraser.phrase(selection)) {
+        if validate_explanation(&candidate, selection) {
+            return candidate;
+        }
+    }
+    deterministic_explanation(selection)
+}
+
+/// The registered deterministic template for the drift claim. Exactly one
+/// sentence, grounded only in the stored row's values, analyst voice.
+fn deterministic_explanation(selection: &ExplanationSelection) -> String {
+    let anchor = selection
+        .anchor_category
+        .replace('_', " ")
+        .to_ascii_lowercase();
+    format!(
+        "Velvt offered this nudge because it observed {} switches away from {anchor} in the \
+         {} minutes before the offer.",
+        selection.switch_count, selection.window_minutes
+    )
+}
+
+/// The copy gate for a phrased explanation: exactly one sentence, no
+/// question or reply hook, no number beyond the selected evidence, the
+/// claim's own evidence present, and no banned vocabulary. Anything that
+/// fails is discarded in favor of the deterministic template.
+fn validate_explanation(sentence: &str, selection: &ExplanationSelection) -> bool {
+    let trimmed = sentence.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 240 {
+        return false;
+    }
+    // One sentence: a single terminal period and no other sentence break,
+    // question, or exclamation anywhere.
+    if !trimmed.ends_with('.') {
+        return false;
+    }
+    let body = &trimmed[..trimmed.len() - 1];
+    if body.contains(['.', '?', '!']) {
+        return false;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if BANNED_COPY_TOKENS
+        .iter()
+        .any(|token| lowered.contains(token))
+    {
+        return false;
+    }
+    // Grounding: every number in the sentence must be one of the selected
+    // values, and the selected evidence must actually appear.
+    let allowed = [
+        selection.switch_count.to_string(),
+        selection.window_minutes.to_string(),
+    ];
+    let mut digits = String::new();
+    for character in trimmed.chars().chain(std::iter::once(' ')) {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else if !digits.is_empty() {
+            if !allowed.contains(&digits) {
+                return false;
+            }
+            digits.clear();
+        }
+    }
+    let anchor = selection
+        .anchor_category
+        .replace('_', " ")
+        .to_ascii_lowercase();
+    lowered.contains(&selection.switch_count.to_string()) && lowered.contains(&anchor)
 }
 
 /// Describes only what was observed. No intent, cause, diagnosis, or judgement.
@@ -1611,6 +1957,19 @@ mod tests {
         assert_eq!(recorded.offered_at, at(330));
     }
 
+    // Removed with scope 4's integration: four tests of an in-block
+    // re-offer cooldown multiplier —
+    //   a_dismissal_doubles_the_reoffer_cooldown_and_reduces_salience
+    //   a_positive_outcome_keeps_standard_salience_and_base_cooldown
+    //   copy_does_not_escalate_after_a_dismissal
+    //   each_negative_reply_multiplies_the_cooldown_again
+    // That mechanism never shipped. This build makes one offer per block and
+    // backs off across blocks by reducing salience, which invariant 2 is
+    // already tested for here by `a_pushed_away_offer_suppresses_the_next_one`,
+    // `each_further_dismissal_doubles_the_cooldown`, and
+    // `the_offer_after_a_cooldown_returns_quietly`. Keeping tests for a
+    // mechanism the product does not have would assert a fiction.
+
     #[test]
     fn a_pushed_away_offer_suppresses_the_next_one() {
         let manager = manager();
@@ -1729,6 +2088,13 @@ mod tests {
             );
         }
     }
+
+    // Removed: `no_more_than_three_offers_are_made_per_block`.
+    // That test asserted a cap of three offers per block. This build makes
+    // one offer per block, enforced by the intervention table's primary key
+    // and relied on by the pre-registered primary metric's denominator. A
+    // cap of three is a different product decision, not a weaker form of
+    // ours, so the test is dropped rather than loosened.
 
     #[test]
     fn returning_to_the_anchor_records_the_outcome() {
@@ -1940,6 +2306,13 @@ mod tests {
             DRIFT_TITLE.to_owned(),
             SOFT_RESTART_LABEL.to_owned(),
             drift_body(4, "DEEP_WORK"),
+            demotion_disclosure_copy(),
+            deterministic_explanation(&ExplanationSelection {
+                claim_id: DRIFT_EXPLANATION_CLAIM_ID,
+                anchor_category: "DEEP_WORK".into(),
+                switch_count: 5,
+                window_minutes: 10,
+            }),
         ];
         for (completed_under_dnd, held_count) in
             [(true, 0), (true, 1), (true, 3), (false, 1), (false, 3)]
@@ -1986,17 +2359,7 @@ mod tests {
 
         for copy in &registry {
             let lowered = copy.to_ascii_lowercase();
-            for forbidden in [
-                "still",
-                "dismiss",
-                "failed",
-                "failure",
-                "ignored",
-                "last time",
-                "again",
-                "learned",
-                "adaptive",
-            ] {
+            for forbidden in BANNED_COPY_TOKENS {
                 assert!(
                     !lowered.contains(forbidden),
                     "{forbidden:?} in registered copy {copy:?}"

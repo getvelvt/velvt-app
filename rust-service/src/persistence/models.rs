@@ -349,6 +349,13 @@ pub enum WorkBlockInterventionOutcome {
     /// answered — and reconciled after the block as a count only. Excluded
     /// from delivered-intervention metrics.
     DeliverySuppressedDnd,
+    /// The drift gate cleared while the auto-demotion state machine was
+    /// demoted, so the decision was recorded and withheld: no channel, no
+    /// retry, no catch-up after re-promotion. Terminal at creation — a
+    /// nudge that was never shown cannot be answered or be wrong — and
+    /// excluded from delivered-intervention metrics. These rows are what
+    /// the weekly digest counts as "what Velvt chose not to send".
+    WithheldDemotion,
     /// The block ended with no response of any kind. Never inferred from a
     /// notification disappearing.
     NoResponse,
@@ -365,6 +372,7 @@ impl WorkBlockInterventionOutcome {
             Self::WasFocused => "was_focused",
             Self::Dismissed => "dismissed",
             Self::DeliverySuppressedDnd => "delivery_suppressed_dnd",
+            Self::WithheldDemotion => "withheld_demotion",
             Self::NoResponse => "no_response",
         }
     }
@@ -381,6 +389,7 @@ impl WorkBlockInterventionOutcome {
             "was_focused" => Some(Self::WasFocused),
             "dismissed" => Some(Self::Dismissed),
             "delivery_suppressed_dnd" => Some(Self::DeliverySuppressedDnd),
+            "withheld_demotion" => Some(Self::WithheldDemotion),
             "no_response" => Some(Self::NoResponse),
             _ => None,
         }
@@ -417,6 +426,65 @@ impl WorkBlockInterventionOutcome {
 pub struct WrongInterventionCounts {
     pub delivered: u32,
     pub was_focused: u32,
+}
+
+/// The two states of the deterministic auto-demotion policy (roadmap
+/// invariant 4; D5). A versioned rule over the wrong-intervention counter,
+/// never a learned or adaptive value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterventionDemotionState {
+    Active,
+    Demoted,
+}
+
+impl InterventionDemotionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Demoted => "demoted",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "demoted" => Some(Self::Demoted),
+            _ => None,
+        }
+    }
+}
+
+/// The persisted demotion state singleton. The state is derived
+/// deterministically from the stored intervention outcomes plus
+/// `manual_reset_at`; this record exists so the entered-at instant can be
+/// disclosed and a manual reset is remembered. Current state only — never
+/// a transition history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemotionStateRecord {
+    pub state: InterventionDemotionState,
+    pub demoted_at: Option<DateTime<Utc>>,
+    pub manual_reset_at: Option<DateTime<Utc>>,
+    pub threshold_policy_version: u32,
+    pub repromotion_policy_version: u32,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One stored weekly receipts digest, frozen at generation time from the
+/// same stored aggregates the local metrics read (D6). Bounded counts only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeeklyDigestRecord {
+    /// Local Monday (`YYYY-MM-DD`) of the covered week.
+    pub week_start_local_date: String,
+    pub generated_at: DateTime<Utc>,
+    pub blocks_declared: u32,
+    pub blocks_completed: u32,
+    pub recoveries: u32,
+    pub wrong_interventions: u32,
+    pub invitations_accepted: u32,
+    pub withheld: u32,
+    pub digest_version: u32,
+    pub delivered_at: Option<DateTime<Utc>>,
+    pub acknowledged_at: Option<DateTime<Utc>>,
 }
 
 /// A block-scoped classification correction: for this block, `category`

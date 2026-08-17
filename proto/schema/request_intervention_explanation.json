@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. The one-tap 'explain this nudge' request for the block's most recent shown intervention. Carries only the block id and the client's UTC offset (used solely to bucket the coarse weekly tap count locally). This affordance accepts no user text anywhere: there is no input field, reply, follow-up, or thread, and adding one is a stop condition (D7).",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "request_intervention_explanation" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id", "utc_offset_seconds"],
+      "properties": {
+        "block_id": { "type": "string", "format": "uuid" },
+        "utc_offset_seconds": {
+          "type": "integer",
+          "minimum": -64800,
+          "maximum": 64800
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

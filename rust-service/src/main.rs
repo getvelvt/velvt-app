@@ -192,12 +192,20 @@ async fn main() {
         );
         // Rust owns the deterministic good-hours policy and every
         // invitation gate; Swift renders the offer and records direct input.
+        let initiation_gates = velvt_service::initiation::RuntimeInvitationGates::new(
+            Arc::clone(&focus),
+            Arc::clone(&work_block_repo),
+        );
         let initiation = velvt_service::initiation::InitiationManager::new(
             persistence.initiation_repo(),
-            velvt_service::initiation::RuntimeInvitationGates::new(
-                Arc::clone(&focus),
-                Arc::clone(&work_block_repo),
-            ),
+            Arc::clone(&initiation_gates) as Arc<dyn velvt_service::initiation::InvitationGates>,
+        );
+        // Weekly receipts and the explain-tap probe bucket: counts read from
+        // the same stored aggregates the metrics use, held by the same
+        // delivery gates an invitation consults.
+        let receipts = velvt_service::receipts::ReceiptsManager::new(
+            persistence.receipts_repo(),
+            initiation_gates as Arc<dyn velvt_service::initiation::InvitationGates>,
         );
         match work_blocks.recover_after_restart(chrono::Utc::now()) {
             Ok(snapshot) if snapshot.phase != velvt_shared_types::WorkBlockPhase::Idle => {
@@ -478,6 +486,7 @@ async fn main() {
             .with_work_blocks(Arc::clone(&work_blocks), Arc::clone(&push_adapter))
             .with_focus(Arc::clone(&focus))
             .with_initiation(Arc::clone(&initiation))
+            .with_receipts(Arc::clone(&receipts))
             .with_auth_state(auth_state.subscribe())
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,

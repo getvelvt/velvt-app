@@ -146,11 +146,12 @@ final class WorkBlockCoordinatorTests: XCTestCase {
     workspace.post(name: NSWorkspace.didWakeNotification, object: nil)
     system.post(name: .NSSystemClockDidChange, object: nil)
     system.post(name: .NSSystemTimeZoneDidChange, object: nil)
-    try await waitUntil { client.sentMessages.count == 5 }
+    try await waitUntil { client.sentMessages.count == 6 }
 
     // Each OS boundary maps to exactly one lifecycle command — no polling.
     // Wake additionally asks the initiation policy once, because a machine
-    // waking is exactly the moment a stored invitation may have gone stale.
+    // waking is exactly the moment a stored invitation may have gone
+    // stale, and asks once whether a digest week completed while asleep.
     let lifecycleMessages = client.sentMessages.filter {
       if case .workBlockLifecycle = $0 { return true }
       return false
@@ -170,6 +171,14 @@ final class WorkBlockCoordinatorTests: XCTestCase {
       }.count,
       1,
       "wake refreshes the invitation exactly once"
+    )
+    XCTAssertEqual(
+      client.sentMessages.filter {
+        if case .requestWeeklyDigest = $0 { return true }
+        return false
+      }.count,
+      1,
+      "wake asks for the digest exactly once"
     )
   }
 
@@ -372,6 +381,137 @@ final class WorkBlockCoordinatorTests: XCTestCase {
         .requestInitiationInvitation(.init(utcOffsetSeconds: -28_800)))
         && client.sentMessages.contains(.requestInitiationSettings)
     }
+  }
+
+  /// Scope 4: the demotion disclosure renders the service state verbatim,
+  /// the reset is guarded on being demoted, and the reply re-renders the
+  /// new state.
+  func testDemotionStateRendersVerbatimAndResetIsGuardedOneTap() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let coordinator = WorkBlockCoordinator(ipcClient: client)
+    coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+
+    // Active state: reset sends nothing.
+    messages.send(.demotionState(syntheticDemotionState(kind: .active)))
+    try await waitUntil { coordinator.demotionState?.state == .active }
+    coordinator.resetDemotion()
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertFalse(client.sentMessages.contains(.resetInterventionDemotion))
+
+    // Demoted state: the disclosure is present and reset sends exactly the
+    // registered command.
+    let demoted = syntheticDemotionState(kind: .demoted)
+    messages.send(.demotionState(demoted))
+    try await waitUntil { coordinator.demotionState == demoted }
+    XCTAssertNotNil(coordinator.demotionState?.disclosure)
+    coordinator.resetDemotion()
+    try await waitUntil { client.sentMessages.contains(.resetInterventionDemotion) }
+
+    messages.send(.demotionState(syntheticDemotionState(kind: .active)))
+    try await waitUntil { coordinator.demotionState?.state == .active }
+  }
+
+  /// Scope 4: the digest renders the stored counts verbatim; the one-tap
+  /// acknowledgment closes the card and sends the week key only.
+  func testWeeklyDigestRendersStoredCountsAndAcknowledgeClosesIt() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let coordinator = WorkBlockCoordinator(ipcClient: client, utcOffsetSeconds: { -28_800 })
+    coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+
+    client.setConnectionStatus(.connected)
+    try await waitUntil {
+      client.sentMessages.contains(.requestWeeklyDigest(.init(utcOffsetSeconds: -28_800)))
+        && client.sentMessages.contains(.requestDemotionState)
+    }
+
+    let digest = WeeklyDigest(
+      weekStartLocalDate: "2026-07-27",
+      blocksDeclared: 5,
+      blocksCompleted: 3,
+      recoveries: 4,
+      wrongInterventions: 1,
+      invitationsAccepted: 2,
+      withheld: 1,
+      headline: "You returned 4 times and completed 3 of 5 blocks this week.",
+      digestVersion: 1
+    )
+    messages.send(.weeklyDigest(digest))
+    try await waitUntil { coordinator.weeklyDigest == digest }
+
+    coordinator.acknowledgeWeeklyDigest()
+    XCTAssertNil(coordinator.weeklyDigest, "one tap closes the card")
+    try await waitUntil {
+      client.sentMessages.contains(
+        .acknowledgeWeeklyDigest(.init(weekStartLocalDate: "2026-07-27")))
+    }
+
+    // A second tap with no card sends nothing: there is no reply surface.
+    let sentBefore = client.sentMessages.count
+    coordinator.acknowledgeWeeklyDigest()
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(client.sentMessages.count, sentBefore)
+  }
+
+  /// Scope 4 (D7): the explain tap is guarded on a live card, carries no
+  /// user text (the DTO has no text field), renders the one sentence
+  /// verbatim, and the sentence leaves with the card. No input, no reply.
+  func testExplainTapIsOneShotGuardedAndSentenceLeavesWithTheCard() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let coordinator = WorkBlockCoordinator(ipcClient: client, utcOffsetSeconds: { 3_600 })
+    coordinator.start(messages: messages, connectionStatus: client.connectionStatus)
+
+    // No live card: the tap sends nothing.
+    messages.send(.workBlockState(activeSnapshot()))
+    try await waitUntil { coordinator.snapshot != nil }
+    coordinator.requestExplanation()
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertFalse(
+      client.sentMessages.contains { message in
+        if case .requestInterventionExplanation = message { return true }
+        return false
+      })
+
+    // Live card: exactly the registered request is sent.
+    messages.send(.workBlockState(activeSnapshot(activeIntervention: offer())))
+    try await waitUntil { coordinator.snapshot?.activeIntervention != nil }
+    coordinator.requestExplanation()
+    let blockID = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+    try await waitUntil {
+      client.sentMessages.contains(
+        .requestInterventionExplanation(.init(blockID: blockID, utcOffsetSeconds: 3_600)))
+    }
+
+    let explanation = InterventionExplanation(
+      blockID: blockID,
+      sentence:
+        "Velvt offered this nudge because it observed 4 switches away from deep work in the 10 minutes before the offer."
+    )
+    messages.send(.interventionExplanation(explanation))
+    try await waitUntil { coordinator.explanation == explanation }
+
+    // The card resolves; the sentence goes with it.
+    messages.send(.workBlockState(activeSnapshot()))
+    try await waitUntil { coordinator.explanation == nil }
+  }
+
+  private func syntheticDemotionState(kind: DemotionStateKind) -> DemotionState {
+    DemotionState(
+      state: kind,
+      wrongCount: kind == .demoted ? 4 : 1,
+      deliveredCount: 16,
+      thresholdPercent: 15,
+      minimumSample: 10,
+      windowDays: 14,
+      thresholdPolicyVersion: 1,
+      repromotionPolicyVersion: 1,
+      demotedAt: kind == .demoted ? Date(timeIntervalSince1970: 1_800_000_000) : nil,
+      disclosure: kind == .demoted
+        ? "Velvt is getting these nudges wrong too often, so it has gone quiet: no nudges will be sent for now, and you can resume them at any time."
+        : nil
+    )
   }
 
   private func syntheticInvitation() -> InitiationInvitation {

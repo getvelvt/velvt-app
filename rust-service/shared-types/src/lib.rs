@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -80,6 +80,19 @@ pub enum ClientMessage {
     SetInitiationSettings(SetInitiationSettings),
     /// Reads the current Rust-owned initiation-invitation setting.
     RequestInitiationSettings(RequestInitiationSettings),
+    /// Reads the current auto-demotion state of the intervention detector.
+    /// The state machine and its versioned criteria are owned in Rust.
+    RequestDemotionState(RequestDemotionState),
+    /// The user's explicit one-tap resume from the demoted state.
+    ResetInterventionDemotion(ResetInterventionDemotion),
+    /// Asks whether the weekly receipts digest for the most recent completed
+    /// local week is ready to show. Held during quiet hours and Focus/DND.
+    RequestWeeklyDigest(RequestWeeklyDigest),
+    /// The one-tap acknowledgment that closes a shown weekly digest.
+    AcknowledgeWeeklyDigest(AcknowledgeWeeklyDigest),
+    /// The one-tap "explain this nudge" request. Accepts no user text; there
+    /// is no reply, follow-up, or thread anywhere on this surface (D7).
+    RequestInterventionExplanation(RequestInterventionExplanation),
     /// Test-only proof that adding a client DTO does not change existing handlers.
     #[cfg(any(test, feature = "extensibility-proof"))]
     DummyExtension(DummyExtension),
@@ -151,6 +164,13 @@ pub enum ServerMessage {
     InitiationInvitation(InitiationInvitation),
     /// The current Rust-owned initiation-invitation setting.
     InitiationSettings(InitiationSettings),
+    /// The current state of the deterministic, versioned auto-demotion
+    /// policy, disclosed as a feature and inspectable on demand.
+    DemotionState(DemotionState),
+    /// The weekly receipts digest for one completed local week.
+    WeeklyDigest(WeeklyDigest),
+    /// Exactly one grounded sentence explaining a shown intervention.
+    InterventionExplanation(InterventionExplanation),
 }
 
 /// Server's first message on every connection.
@@ -965,6 +985,139 @@ pub struct InitiationSettings {
     pub invitations_enabled: bool,
 }
 
+/// Reads the current auto-demotion state of the intervention detector.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestDemotionState {}
+
+/// The user's explicit one-tap resume from the demoted (observe-only)
+/// state. Resetting restarts the demotion evaluation window from the reset
+/// instant; it never edits or discards the underlying outcome record, and
+/// the wrong-intervention counter itself is untouched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetInterventionDemotion {}
+
+/// The two states of the deterministic auto-demotion policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DemotionStateKind {
+    /// Interventions may fire through the normal gates.
+    Active,
+    /// Interventions are paused; Velvt observes quietly. Disclosed, never
+    /// hidden.
+    Demoted,
+}
+
+/// The current state of the deterministic, versioned auto-demotion policy
+/// over the rolling wrong-intervention counter (roadmap invariant 4; D5).
+///
+/// PRIVACY: carries only the two bounded counts the rate is computed from,
+/// the versioned policy constants, the current state, and Rust-authored
+/// disclosure copy. No transition history, timeline, category, or copy
+/// evidence is representable. Local IPC surface only — never uploaded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DemotionState {
+    pub state: DemotionStateKind,
+    /// `dismissed_was_focused` replies inside the evaluation window.
+    pub wrong_count: u32,
+    /// Interventions delivered inside the evaluation window. Suppressed and
+    /// withheld decisions were never shown and are excluded.
+    pub delivered_count: u32,
+    /// Versioned demotion threshold, in whole percent. Demotion requires the
+    /// rate to exceed this value strictly.
+    pub threshold_percent: u32,
+    /// Versioned minimum delivered sample below which demotion never
+    /// triggers.
+    pub minimum_sample: u32,
+    /// Rolling evaluation window, in days.
+    pub window_days: u32,
+    pub threshold_policy_version: u32,
+    pub repromotion_policy_version: u32,
+    /// When the current demotion began. Present only while demoted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demoted_at: Option<DateTime<Utc>>,
+    /// Rust-authored disclosure copy. Present only while demoted; Swift
+    /// renders it verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disclosure: Option<String>,
+}
+
+/// Asks whether the weekly receipts digest for the most recent completed
+/// local week is ready to show. Carries only the client's UTC offset so
+/// Rust can bound the local week; generation, count sourcing, quiet-hours
+/// and Focus holds, and the acknowledged flag are all owned in Rust.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestWeeklyDigest {
+    pub utc_offset_seconds: i32,
+}
+
+/// The one-tap acknowledgment that closes a shown weekly digest.
+/// Bookkeeping only: it stops the card re-rendering and changes nothing
+/// else. There is no reply, follow-up, or thread.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcknowledgeWeeklyDigest {
+    /// Local Monday (`YYYY-MM-DD`) of the digest week being acknowledged.
+    pub week_start_local_date: String,
+}
+
+/// The weekly receipts digest for one completed local week (D6).
+///
+/// Every count is read from the same stored aggregates the local metrics
+/// use, exactly. One digest, not a dashboard: recoveries and completions
+/// lead, the wrong-intervention count appears exactly once, and no streak,
+/// chain, or failure tally is representable (D8; roadmap invariant 6).
+/// Local IPC surface only — never uploaded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeeklyDigest {
+    /// Local Monday (`YYYY-MM-DD`) of the covered week.
+    pub week_start_local_date: String,
+    pub blocks_declared: u32,
+    pub blocks_completed: u32,
+    /// Returns to the block's dominant work, summed from the stored session
+    /// results of the week. The accumulating positive stat; it leads.
+    pub recoveries: u32,
+    /// `dismissed_was_focused` replies inside the week. Stated once,
+    /// plainly.
+    pub wrong_interventions: u32,
+    pub invitations_accepted: u32,
+    /// What Velvt chose not to send: decisions held under DND plus
+    /// decisions withheld while demoted.
+    pub withheld: u32,
+    /// Rust-authored recovery-led headline. Swift renders it verbatim.
+    pub headline: String,
+    /// Version of the deterministic digest policy that produced this.
+    pub digest_version: u32,
+}
+
+/// The one-tap "explain this nudge" request for the block's most recent
+/// shown intervention. Accepts no user text anywhere: there is no input
+/// field, reply, follow-up, or thread, and adding one is a stop condition
+/// (D7). The UTC offset is used solely to bucket the coarse local weekly
+/// tap count.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestInterventionExplanation {
+    pub block_id: Uuid,
+    pub utc_offset_seconds: i32,
+}
+
+/// Exactly one grounded sentence explaining the block's most recent shown
+/// intervention. Deterministic code selects the claim, evidence, and tone
+/// from the stored intervention record; the sentence cannot exceed that
+/// evidence, and Swift renders it verbatim with no reply affordance (D7).
+/// Local IPC surface only — never uploaded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterventionExplanation {
+    pub block_id: Uuid,
+    pub sentence: String,
+}
+
 /// Focus/DND-derived outcome recorded by the service for one work block.
 ///
 /// `CompletedUnderDnd` marks a success: the block completed while DND was
@@ -1637,12 +1790,186 @@ mod extensibility_proof {
 }
 
 #[cfg(test)]
+mod v28_demotion_receipts_probe_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_twenty_eight() {
+        assert_eq!(PROTOCOL_VERSION, 28);
+    }
+
+    #[test]
+    fn demotion_state_messages_round_trip_and_match_schema_shape() {
+        let request = ClientMessage::RequestDemotionState(RequestDemotionState {});
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(encoded, r#"{"type":"request_demotion_state","payload":{}}"#);
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            request
+        );
+
+        let reset = ClientMessage::ResetInterventionDemotion(ResetInterventionDemotion {});
+        let encoded = serde_json::to_string(&reset).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"reset_intervention_demotion","payload":{}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            reset
+        );
+
+        let active = ServerMessage::DemotionState(DemotionState {
+            state: DemotionStateKind::Active,
+            wrong_count: 1,
+            delivered_count: 12,
+            threshold_percent: 15,
+            minimum_sample: 10,
+            window_days: 14,
+            threshold_policy_version: 1,
+            repromotion_policy_version: 1,
+            demoted_at: None,
+            disclosure: None,
+        });
+        let encoded = serde_json::to_string(&active).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"demotion_state","payload":{"state":"active","wrong_count":1,"delivered_count":12,"threshold_percent":15,"minimum_sample":10,"window_days":14,"threshold_policy_version":1,"repromotion_policy_version":1}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            active
+        );
+    }
+
+    /// The demotion payload carries the current state and its versioned
+    /// constants only. A transition history, timeline, or per-transition
+    /// record is rejected at decode time.
+    #[test]
+    fn demotion_state_rejects_history_fields() {
+        let smuggled = r#"{"type":"demotion_state","payload":{"state":"demoted","wrong_count":3,"delivered_count":12,"threshold_percent":15,"minimum_sample":10,"window_days":14,"threshold_policy_version":1,"repromotion_policy_version":1,"transitions":[]}}"#;
+        assert!(serde_json::from_str::<ServerMessage>(smuggled).is_err());
+    }
+
+    #[test]
+    fn weekly_digest_messages_round_trip_and_match_schema_shape() {
+        let request = ClientMessage::RequestWeeklyDigest(RequestWeeklyDigest {
+            utc_offset_seconds: -28_800,
+        });
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"request_weekly_digest","payload":{"utc_offset_seconds":-28800}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            request
+        );
+
+        let digest = ServerMessage::WeeklyDigest(WeeklyDigest {
+            week_start_local_date: "2026-07-27".into(),
+            blocks_declared: 5,
+            blocks_completed: 3,
+            recoveries: 4,
+            wrong_interventions: 1,
+            invitations_accepted: 2,
+            withheld: 1,
+            headline: "You returned 4 times and completed 3 of 5 blocks.".into(),
+            digest_version: 1,
+        });
+        let encoded = serde_json::to_string(&digest).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"weekly_digest","payload":{"week_start_local_date":"2026-07-27","blocks_declared":5,"blocks_completed":3,"recoveries":4,"wrong_interventions":1,"invitations_accepted":2,"withheld":1,"headline":"You returned 4 times and completed 3 of 5 blocks.","digest_version":1}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            digest
+        );
+
+        let acknowledge = ClientMessage::AcknowledgeWeeklyDigest(AcknowledgeWeeklyDigest {
+            week_start_local_date: "2026-07-27".into(),
+        });
+        let encoded = serde_json::to_string(&acknowledge).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"acknowledge_weekly_digest","payload":{"week_start_local_date":"2026-07-27"}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            acknowledge
+        );
+    }
+
+    /// The digest is a closed set of bounded counts plus one registered
+    /// headline. A streak, chain, or per-day field is rejected at decode
+    /// time.
+    #[test]
+    fn weekly_digest_rejects_streak_shaped_fields() {
+        for field in ["\"streak\":3", "\"days\":[1,2]", "\"failure_count\":1"] {
+            let smuggled = format!(
+                r#"{{"type":"weekly_digest","payload":{{"week_start_local_date":"2026-07-27","blocks_declared":5,"blocks_completed":3,"recoveries":4,"wrong_interventions":1,"invitations_accepted":2,"withheld":1,"headline":"x","digest_version":1,{field}}}}}"#
+            );
+            assert!(
+                serde_json::from_str::<ServerMessage>(&smuggled).is_err(),
+                "digest accepted smuggled field {field:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn intervention_explanation_messages_round_trip_and_match_schema_shape() {
+        let request =
+            ClientMessage::RequestInterventionExplanation(RequestInterventionExplanation {
+                block_id: Uuid::nil(),
+                utc_offset_seconds: 3_600,
+            });
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"request_intervention_explanation","payload":{"block_id":"00000000-0000-0000-0000-000000000000","utc_offset_seconds":3600}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            request
+        );
+
+        let explanation = ServerMessage::InterventionExplanation(InterventionExplanation {
+            block_id: Uuid::nil(),
+            sentence: "Velvt offered this nudge because it observed 5 switches away from focus \
+                       work in the 10 minutes before the offer."
+                .into(),
+        });
+        let encoded = serde_json::to_string(&explanation).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, explanation);
+    }
+
+    /// The explanation request is structurally content-free: any user-text
+    /// field is rejected at decode time, so a chat surface cannot grow out
+    /// of this affordance without a protocol change (D7).
+    #[test]
+    fn explanation_request_rejects_user_text_fields() {
+        for field in ["\"text\":\"why\"", "\"message\":\"hi\"", "\"reply\":\"ok\""] {
+            let smuggled = format!(
+                r#"{{"type":"request_intervention_explanation","payload":{{"block_id":"00000000-0000-0000-0000-000000000000","utc_offset_seconds":0,{field}}}}}"#
+            );
+            assert!(
+                serde_json::from_str::<ClientMessage>(&smuggled).is_err(),
+                "explanation request accepted smuggled field {field:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod v27_initiation_contract {
     use super::*;
 
     #[test]
-    fn protocol_version_is_twenty_seven() {
-        assert_eq!(PROTOCOL_VERSION, 27);
+    fn protocol_version_is_at_least_twenty_seven() {
+        let version = PROTOCOL_VERSION;
+        assert!(version >= 27);
     }
 
     #[test]

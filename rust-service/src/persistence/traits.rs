@@ -1,11 +1,11 @@
 use super::{
-    AbstractionMapping, BatchEvent, CompletedBlockDwellSpan, FocusTransition, HistoryCacheEntry,
-    InitiationInvitationOutcome, InitiationInvitationRecord, InsightCacheEntry,
+    AbstractionMapping, BatchEvent, CompletedBlockDwellSpan, DemotionStateRecord, FocusTransition,
+    HistoryCacheEntry, InitiationInvitationOutcome, InitiationInvitationRecord, InsightCacheEntry,
     LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch, PersistenceError,
     PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry,
-    UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WorkBlockCategoryCorrection,
-    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
-    WorkBlockRecord, WrongInterventionCounts,
+    UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
+    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
+    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WrongInterventionCounts,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -315,14 +315,22 @@ pub trait WorkBlockRepo: Send + Sync {
     /// `since`, and how many were answered `was_focused` — the reply that says
     /// the offer should never have fired. Two integers, content-free.
     ///
-    /// A decision held because Focus/DND was active was never delivered, so it
-    /// is excluded from the delivered count. Counting a nudge nobody could see
-    /// as an interruption they tolerated would flatter the precision metric.
+    /// A decision held because Focus/DND was active, or withheld because the
+    /// user is auto-demoted, was never delivered and is excluded from the
+    /// delivered count. Counting a nudge nobody could see as an interruption
+    /// they tolerated would flatter the precision metric.
     fn wrong_intervention_counts(
         &self,
         since: DateTime<Utc>,
     ) -> Result<WrongInterventionCounts, PersistenceError>;
 
+    /// The persisted demotion state singleton, if one has been written.
+    fn demotion_state(&self) -> Result<Option<DemotionStateRecord>, PersistenceError>;
+    /// Writes the demotion state singleton (insert-or-update on the one
+    /// row). Current state only; no history accumulates.
+    fn set_demotion_state(&self, record: &DemotionStateRecord) -> Result<(), PersistenceError>;
+    /// Transitions an offer to a terminal outcome. Only an `offered` row is
+    /// updated, so a recorded return is never overwritten by block expiry.
     fn resolve_intervention(
         &self,
         block_id: &str,
@@ -379,4 +387,102 @@ pub trait InitiationRepo: Send + Sync {
     /// Deletes every invitation row. The opt-out setting is an explicit user
     /// choice and survives; the behavioral record does not.
     fn clear_invitations(&self) -> Result<u64, PersistenceError>;
+}
+
+/// Storage seam for the weekly receipts digest and the explain-tap probe
+/// (0.1.6 Scope 4; D6, D7). Everything device-local.
+///
+/// Every count aggregate here reads the same stored rows the local metrics
+/// read — `work_block`, `work_block_result`, `work_block_intervention`, and
+/// `initiation_invitation` — through the same predicates. No parallel
+/// counters exist.
+pub trait ReceiptsRepo: Send + Sync {
+    /// Blocks declared with `since <= started_at < until`.
+    fn declared_block_count_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError>;
+    /// Completed blocks with `since <= started_at < until`. Shares the exact
+    /// SQL predicate with `InitiationRepo::completed_block_count`.
+    fn completed_block_count_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError>;
+    /// Stored session-result payloads for blocks with
+    /// `since <= started_at < until`. The digest sums `recovery_count` from
+    /// these — the same stored numbers each session result displayed.
+    fn result_payloads_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<String>, PersistenceError>;
+    /// Invitations accepted with `since <= outcome_at < until`, from the
+    /// same stored rows the invitation-acceptance metric reads.
+    fn accepted_invitation_count_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError>;
+    /// The wrong-intervention counts bounded to `since <= offered_at <
+    /// until`. Shares the exact SQL body with
+    /// `WorkBlockRepo::wrong_intervention_counts`, so the digest's weekly
+    /// wrong-intervention count cannot drift from the rolling metric.
+    fn wrong_intervention_counts_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<WrongInterventionCounts, PersistenceError>;
+    /// Decisions Velvt chose not to send with `since <= offered_at < until`:
+    /// held under DND plus withheld while demoted, from the same stored
+    /// intervention rows the reconciliation counts read.
+    fn withheld_count_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError>;
+    /// Interventions delivered with `since <= offered_at < until`, through
+    /// the same delivered predicate the wrong-intervention counter uses.
+    /// This is the probe denominator; it is derived, never stored.
+    fn delivered_intervention_count_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError>;
+    /// The stored digest for a local week, if generated.
+    fn weekly_digest(
+        &self,
+        week_start_local_date: &str,
+    ) -> Result<Option<WeeklyDigestRecord>, PersistenceError>;
+    /// Stores a freshly generated digest row. Insert-only; a stored digest
+    /// is frozen and never regenerated.
+    fn store_weekly_digest(&self, record: &WeeklyDigestRecord) -> Result<(), PersistenceError>;
+    /// Marks the first showing. Only a null `delivered_at` is written, so
+    /// the first-delivery instant is never overwritten.
+    fn mark_digest_delivered(
+        &self,
+        week_start_local_date: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError>;
+    /// Records the user's one-tap close. Idempotent.
+    fn acknowledge_digest(
+        &self,
+        week_start_local_date: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError>;
+    /// Increments the coarse, content-free explain-tap count for a local
+    /// week. One bounded integer per week; nothing else is representable.
+    fn record_explain_tap(
+        &self,
+        week_start_local_date: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError>;
+    /// The stored tap count for a local week (0 when absent).
+    fn explain_taps_for_week(&self, week_start_local_date: &str) -> Result<u64, PersistenceError>;
+    /// Deletes digests and probe buckets keyed strictly before the given
+    /// local Monday. Deterministic retention, called at generation time.
+    fn prune_receipts_before(&self, week_start_local_date: &str) -> Result<u64, PersistenceError>;
+    /// Deletes every digest row and probe bucket (clear-all-data).
+    fn clear_receipts(&self) -> Result<u64, PersistenceError>;
 }

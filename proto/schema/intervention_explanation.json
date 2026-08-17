@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Rust to Swift. Exactly one grounded sentence explaining the block's most recent shown intervention. Deterministic code selects the claim, evidence, and tone from the stored intervention record under the grounded-language rules; the sentence cannot exceed that evidence, and Swift renders it verbatim with no reply affordance. One sentence by contract — a second sentence, question, or thread is structurally out of scope (D7). Local IPC surface only — never uploaded.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "intervention_explanation" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id", "sentence"],
+      "properties": {
+        "block_id": { "type": "string", "format": "uuid" },
+        "sentence": { "type": "string", "minLength": 1, "maxLength": 240 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

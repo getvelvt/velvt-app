@@ -26,6 +26,12 @@ public struct WorkBlockView: View {
       if let offer = coordinator.quietHoursOffer {
         quietHoursOfferCard(offer)
       }
+      if let demotion = coordinator.demotionState, demotion.state == .demoted {
+        demotionDisclosureCard(demotion)
+      }
+      if let digest = coordinator.weeklyDigest {
+        weeklyDigestCard(digest)
+      }
       if let invitation = coordinator.invitation {
         invitationCard(invitation)
       }
@@ -213,12 +219,127 @@ public struct WorkBlockView: View {
       .buttonStyle(.plain)
       .font(.caption)
       .foregroundStyle(.secondary)
+
+      // The one-tap explanation (D7): the sentence is Rust-authored from
+      // the stored evidence and rendered verbatim. One sentence, no input
+      // field, no reply, no thread — this affordance is the chat gate, not
+      // a chat.
+      if let explanation = coordinator.explanation {
+        Label(explanation.sentence, systemImage: "text.magnifyingglass")
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel("Explanation. \(explanation.sentence)")
+      } else {
+        Button(DigestFraming.explainLabel) {
+          coordinator.requestExplanation()
+        }
+        .buttonStyle(.plain)
+        .controlSize(.small)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .accessibilityHint("Shows one sentence about the evidence behind this nudge")
+      }
     }
     .padding(10)
     .background(Color.primary.opacity(0.06))
     .clipShape(RoundedRectangle(cornerRadius: 8))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(intervention.title). \(intervention.body)")
+  }
+
+  /// The demotion disclosure (D5; roadmap invariant 4): shown as respect,
+  /// never hidden. The body copy is Rust-authored and rendered verbatim;
+  /// the detail line shows the exact counts and versioned constants the
+  /// deterministic rule evaluated, and the one button is the manual reset.
+  private func demotionDisclosureCard(_ state: DemotionState) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label(DigestFraming.demotionTitle, systemImage: "pause.circle")
+        .font(.subheadline.bold())
+
+      if let disclosure = state.disclosure {
+        Text(disclosure)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      Text(DigestFraming.demotionDetail(state))
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityLabel("Demotion detail. \(DigestFraming.demotionDetail(state))")
+
+      HStack(spacing: 8) {
+        Button(DigestFraming.resumeLabel) {
+          coordinator.resetDemotion()
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .accessibilityHint("Resumes nudges; the evidence record is unchanged")
+
+        Spacer(minLength: 0)
+      }
+    }
+    .padding(10)
+    .background(Color.primary.opacity(0.06))
+    .clipShape(RoundedRectangle(cornerRadius: 8))
+    .padding([.horizontal, .top], 16)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(
+      "Velvt has gone quiet. \(state.disclosure ?? DigestFraming.demotionDetail(state))")
+  }
+
+  /// The weekly receipts digest (D6, D8): one card, not a dashboard.
+  /// Recoveries and completions lead, the wrong-intervention count appears
+  /// exactly once, and every number is the stored count verbatim.
+  private func weeklyDigestCard(_ digest: WeeklyDigest) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label(DigestFraming.digestTitle, systemImage: "doc.plaintext")
+        .font(.subheadline.bold())
+
+      Text(digest.headline)
+        .font(.caption)
+        .fixedSize(horizontal: false, vertical: true)
+
+      VStack(alignment: .leading, spacing: 3) {
+        digestRow(DigestFraming.returnedLabel, digest.recoveries)
+        digestRow(DigestFraming.completedLabel, digest.blocksCompleted)
+        digestRow(DigestFraming.declaredLabel, digest.blocksDeclared)
+        digestRow(DigestFraming.invitationsLabel, digest.invitationsAccepted)
+        digestRow(DigestFraming.wrongLabel, digest.wrongInterventions)
+        digestRow(DigestFraming.withheldLabel, digest.withheld)
+      }
+
+      HStack(spacing: 8) {
+        Button(DigestFraming.acknowledgeLabel) {
+          coordinator.acknowledgeWeeklyDigest()
+        }
+        .controlSize(.small)
+        .accessibilityHint("Closes this week's receipts")
+
+        Spacer(minLength: 0)
+      }
+    }
+    .padding(10)
+    .background(Color.primary.opacity(0.06))
+    .clipShape(RoundedRectangle(cornerRadius: 8))
+    .padding([.horizontal, .top], 16)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Weekly receipts. \(digest.headline)")
+  }
+
+  private func digestRow(_ label: String, _ count: Int) -> some View {
+    HStack {
+      Text(label)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+      Spacer(minLength: 8)
+      Text("\(count)")
+        .font(.caption2.bold().monospacedDigit())
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("\(label), \(count)")
   }
 
   /// The next-morning quiet-hours offer. One tap accepts; declining is a

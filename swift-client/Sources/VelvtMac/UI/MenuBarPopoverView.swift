@@ -1545,6 +1545,36 @@ public struct MenuBarPopoverView: View {
                     }
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
+                    Button {
+                        workBlockCoordinator.simulateDebugDemotion()
+                        dismissSettingsSubmenus()
+                    } label: {
+                        HStack {
+                            Image(systemName: "pause.circle")
+                            Text("Simulate Demotion")
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                    Button {
+                        workBlockCoordinator.simulateDebugWeeklyDigest()
+                        dismissSettingsSubmenus()
+                    } label: {
+                        HStack {
+                            Image(systemName: "doc.plaintext")
+                            Text("Simulate Weekly Receipts")
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
                 }
         #endif
         }

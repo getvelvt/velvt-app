@@ -36,6 +36,11 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case dismissInitiationInvitation(DismissInitiationInvitation)
     case setInitiationSettings(SetInitiationSettings)
     case requestInitiationSettings
+    case requestDemotionState
+    case resetInterventionDemotion
+    case requestWeeklyDigest(RequestWeeklyDigest)
+    case acknowledgeWeeklyDigest(AcknowledgeWeeklyDigest)
+    case requestInterventionExplanation(RequestInterventionExplanation)
 
     public init(from decoder: Decoder) throws {
         let envelope = try decoder.container(keyedBy: EnvelopeCodingKeys.self)
@@ -108,6 +113,16 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .setInitiationSettings(try SetInitiationSettings(from: payload))
         case "request_initiation_settings":
             self = .requestInitiationSettings
+        case "request_demotion_state":
+            self = .requestDemotionState
+        case "reset_intervention_demotion":
+            self = .resetInterventionDemotion
+        case "request_weekly_digest":
+            self = .requestWeeklyDigest(try RequestWeeklyDigest(from: payload))
+        case "acknowledge_weekly_digest":
+            self = .acknowledgeWeeklyDigest(try AcknowledgeWeeklyDigest(from: payload))
+        case "request_intervention_explanation":
+            self = .requestInterventionExplanation(try RequestInterventionExplanation(from: payload))
         default:
       throw DecodingError.dataCorrupted(
         .init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
@@ -216,6 +231,21 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .requestInitiationSettings:
             try envelope.encode("request_initiation_settings", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case .requestDemotionState:
+            try envelope.encode("request_demotion_state", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case .resetInterventionDemotion:
+            try envelope.encode("reset_intervention_demotion", forKey: .type)
+            try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case let .requestWeeklyDigest(value):
+            try envelope.encode("request_weekly_digest", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .acknowledgeWeeklyDigest(value):
+            try envelope.encode("acknowledge_weekly_digest", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .requestInterventionExplanation(value):
+            try envelope.encode("request_intervention_explanation", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         }
     }
 }
@@ -253,6 +283,12 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case initiationInvitation(InitiationInvitation)
     /// The current Rust-owned initiation-invitation setting.
     case initiationSettings(InitiationSettings)
+    /// The current state of the deterministic, versioned auto-demotion policy.
+    case demotionState(DemotionState)
+    /// The weekly receipts digest for one completed local week.
+    case weeklyDigest(WeeklyDigest)
+    /// Exactly one grounded sentence explaining a shown intervention.
+    case interventionExplanation(InterventionExplanation)
     /// Extension point for a future server discriminator. Unknown payload fields
     /// are deliberately discarded so handlers do not require exhaustive updates.
     case unknown(type: String)
@@ -314,6 +350,12 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .initiationInvitation(try InitiationInvitation(from: payload))
         case "initiation_settings":
             self = .initiationSettings(try InitiationSettings(from: payload))
+        case "demotion_state":
+            self = .demotionState(try DemotionState(from: payload))
+        case "weekly_digest":
+            self = .weeklyDigest(try WeeklyDigest(from: payload))
+        case "intervention_explanation":
+            self = .interventionExplanation(try InterventionExplanation(from: payload))
         default:
             self = .unknown(type: type)
         }
@@ -400,6 +442,15 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case let .initiationSettings(value):
             try envelope.encode("initiation_settings", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .demotionState(value):
+            try envelope.encode("demotion_state", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .weeklyDigest(value):
+            try envelope.encode("weekly_digest", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .interventionExplanation(value):
+            try envelope.encode("intervention_explanation", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .unknown(type):
             try envelope.encode(type, forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
@@ -436,6 +487,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case .quietHoursOffer: "quiet_hours_offer"
         case .initiationInvitation: "initiation_invitation"
         case .initiationSettings: "initiation_settings"
+        case .demotionState: "demotion_state"
+        case .weeklyDigest: "weekly_digest"
+        case .interventionExplanation: "intervention_explanation"
         case .unknown: "unknown"
         }
     }
@@ -1913,6 +1967,179 @@ public struct InitiationSettings: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case invitationsEnabled = "invitations_enabled"
+    }
+}
+
+/// The two states of the Rust-owned deterministic auto-demotion policy.
+public enum DemotionStateKind: String, Codable, Equatable, Sendable {
+    case active
+    case demoted
+}
+
+/// The current state of the deterministic, versioned auto-demotion policy
+/// over the rolling wrong-intervention counter. Disclosed as a feature,
+/// inspectable on demand, and manually resettable. Rust owns the state
+/// machine and authors the disclosure copy; Swift renders it verbatim.
+public struct DemotionState: Codable, Equatable, Sendable {
+    public let state: DemotionStateKind
+    public let wrongCount: Int
+    public let deliveredCount: Int
+    public let thresholdPercent: Int
+    public let minimumSample: Int
+    public let windowDays: Int
+    public let thresholdPolicyVersion: Int
+    public let repromotionPolicyVersion: Int
+    public let demotedAt: Date?
+    public let disclosure: String?
+
+    public init(
+        state: DemotionStateKind,
+        wrongCount: Int,
+        deliveredCount: Int,
+        thresholdPercent: Int,
+        minimumSample: Int,
+        windowDays: Int,
+        thresholdPolicyVersion: Int,
+        repromotionPolicyVersion: Int,
+        demotedAt: Date? = nil,
+        disclosure: String? = nil
+    ) {
+        self.state = state
+        self.wrongCount = wrongCount
+        self.deliveredCount = deliveredCount
+        self.thresholdPercent = thresholdPercent
+        self.minimumSample = minimumSample
+        self.windowDays = windowDays
+        self.thresholdPolicyVersion = thresholdPolicyVersion
+        self.repromotionPolicyVersion = repromotionPolicyVersion
+        self.demotedAt = demotedAt
+        self.disclosure = disclosure
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case state, disclosure
+        case wrongCount = "wrong_count"
+        case deliveredCount = "delivered_count"
+        case thresholdPercent = "threshold_percent"
+        case minimumSample = "minimum_sample"
+        case windowDays = "window_days"
+        case thresholdPolicyVersion = "threshold_policy_version"
+        case repromotionPolicyVersion = "repromotion_policy_version"
+        case demotedAt = "demoted_at"
+    }
+}
+
+/// Asks whether the weekly receipts digest for the most recent completed
+/// local week is ready to show. Generation, count sourcing, and the
+/// quiet-hours/Focus holds are all owned in Rust.
+public struct RequestWeeklyDigest: Codable, Equatable, Sendable {
+    public let utcOffsetSeconds: Int
+
+    public init(utcOffsetSeconds: Int) {
+        self.utcOffsetSeconds = utcOffsetSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case utcOffsetSeconds = "utc_offset_seconds"
+    }
+}
+
+/// The one-tap acknowledgment that closes a shown weekly digest.
+public struct AcknowledgeWeeklyDigest: Codable, Equatable, Sendable {
+    public let weekStartLocalDate: String
+
+    public init(weekStartLocalDate: String) {
+        self.weekStartLocalDate = weekStartLocalDate
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case weekStartLocalDate = "week_start_local_date"
+    }
+}
+
+/// The weekly receipts digest for one completed local week. Every count is
+/// read by the service from the same stored aggregates its metrics use;
+/// Swift renders the counts and the Rust-authored headline verbatim. One
+/// digest, not a dashboard: no streak, chain, or failure tally exists here.
+public struct WeeklyDigest: Codable, Equatable, Sendable {
+    public let weekStartLocalDate: String
+    public let blocksDeclared: Int
+    public let blocksCompleted: Int
+    public let recoveries: Int
+    public let wrongInterventions: Int
+    public let invitationsAccepted: Int
+    public let withheld: Int
+    public let headline: String
+    public let digestVersion: Int
+
+    public init(
+        weekStartLocalDate: String,
+        blocksDeclared: Int,
+        blocksCompleted: Int,
+        recoveries: Int,
+        wrongInterventions: Int,
+        invitationsAccepted: Int,
+        withheld: Int,
+        headline: String,
+        digestVersion: Int
+    ) {
+        self.weekStartLocalDate = weekStartLocalDate
+        self.blocksDeclared = blocksDeclared
+        self.blocksCompleted = blocksCompleted
+        self.recoveries = recoveries
+        self.wrongInterventions = wrongInterventions
+        self.invitationsAccepted = invitationsAccepted
+        self.withheld = withheld
+        self.headline = headline
+        self.digestVersion = digestVersion
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case recoveries, withheld, headline
+        case weekStartLocalDate = "week_start_local_date"
+        case blocksDeclared = "blocks_declared"
+        case blocksCompleted = "blocks_completed"
+        case wrongInterventions = "wrong_interventions"
+        case invitationsAccepted = "invitations_accepted"
+        case digestVersion = "digest_version"
+    }
+}
+
+/// The one-tap "explain this nudge" request for the block's most recent
+/// shown intervention. Accepts no user text anywhere: there is no input
+/// field, reply, follow-up, or thread. The UTC offset only buckets the
+/// coarse local weekly tap count.
+public struct RequestInterventionExplanation: Codable, Equatable, Sendable {
+    public let blockID: UUID
+    public let utcOffsetSeconds: Int
+
+    public init(blockID: UUID, utcOffsetSeconds: Int) {
+        self.blockID = blockID
+        self.utcOffsetSeconds = utcOffsetSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case blockID = "block_id"
+        case utcOffsetSeconds = "utc_offset_seconds"
+    }
+}
+
+/// Exactly one grounded sentence explaining the block's most recent shown
+/// intervention. The service selects the claim, evidence, and tone from the
+/// stored intervention record; Swift renders the sentence verbatim with no
+/// reply affordance.
+public struct InterventionExplanation: Codable, Equatable, Sendable {
+    public let blockID: UUID
+    public let sentence: String
+
+    public init(blockID: UUID, sentence: String) {
+        self.blockID = blockID
+        self.sentence = sentence
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sentence
+        case blockID = "block_id"
     }
 }
 

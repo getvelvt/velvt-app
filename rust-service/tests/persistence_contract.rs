@@ -1,4 +1,4 @@
-use chrono::{Duration, TimeZone, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
@@ -12,12 +12,34 @@ use velvt_service::delivery::{parse_insight_with_rehydrator, LocalInsightRehydra
 use velvt_service::persistence::{
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, NewUploadBatch,
     PersistenceError, RawEventEntry, SqlitePersistence, UploadBatchStatus,
+    WorkBlockCategoryCorrection, WorkBlockIntervention, WorkBlockInterventionOutcome,
+    WorkBlockRecord,
 };
 use velvt_service::upload::BatchEventPayload;
 use velvt_shared_types::RawEvent;
+use velvt_shared_types::{InterventionSalience, WorkBlockIntensity, WorkBlockPhase};
 
 fn database() -> SqlitePersistence {
     SqlitePersistence::open_in_memory().unwrap()
+}
+
+fn work_block_record(block_id: &str, started_at: DateTime<Utc>) -> WorkBlockRecord {
+    WorkBlockRecord {
+        block_id: block_id.to_owned(),
+        phase: WorkBlockPhase::Active,
+        intention: None,
+        purpose: None,
+        intensity: WorkBlockIntensity::Medium,
+        planned_duration_seconds: 1_500,
+        started_at,
+        paused_at: None,
+        total_paused_seconds: 0,
+        ended_at: None,
+        recovered_after_restart: false,
+        recovery_of: None,
+        intention_expires_at: started_at + Duration::hours(24),
+        updated_at: started_at,
+    }
 }
 
 #[test]
@@ -1081,4 +1103,101 @@ fn correcting_the_same_app_twice_updates_the_rule() {
         "FOCUS_WORK",
         "the most recent correction wins"
     );
+}
+
+/// Invariant 4's input: the rolling counter the auto-demotion rule reads.
+/// Counts what the product actually records — `was_focused` is main's
+/// vocabulary for "this offer should never have fired".
+#[test]
+fn the_wrong_intervention_counter_counts_delivered_and_was_focused() {
+    let database = database();
+    let blocks = database.work_block_repo();
+    let start = Utc::now() - Duration::seconds(600);
+
+    for (index, outcome) in [
+        WorkBlockInterventionOutcome::Returned,
+        WorkBlockInterventionOutcome::WasFocused,
+        WorkBlockInterventionOutcome::WasFocused,
+        WorkBlockInterventionOutcome::Dismissed,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let block_id = format!("wic-{index}");
+        blocks
+            .create(&work_block_record(&block_id, start))
+            .expect("block starts");
+        blocks
+            .record_intervention(
+                &block_id,
+                &WorkBlockIntervention {
+                    offered_at: start + Duration::seconds(index as i64),
+                    action_id: "protect_next_10".into(),
+                    anchor_category: "FOCUS_WORK".into(),
+                    switch_count: 4,
+                    window_seconds: 600,
+                    outcome,
+                    outcome_at: Some(start + Duration::seconds(index as i64 + 5)),
+                    salience: InterventionSalience::Normal,
+                },
+            )
+            .expect("intervention records");
+    }
+
+    let counts = blocks
+        .wrong_intervention_counts(start - Duration::seconds(60))
+        .expect("counts read");
+    assert_eq!(
+        counts.delivered, 4,
+        "every delivered offer is the denominator"
+    );
+    assert_eq!(
+        counts.was_focused, 2,
+        "only was_focused disputes the judgment"
+    );
+
+    // Offers before the window are outside the rolling rate entirely.
+    let later = blocks
+        .wrong_intervention_counts(Utc::now() + Duration::seconds(60))
+        .expect("counts read");
+    assert_eq!(later.delivered, 0);
+}
+
+/// Invariant 3: a correction is believed instantly, and restating it does not
+/// rewrite when it was first believed.
+#[test]
+fn a_block_correction_is_recorded_once_and_keeps_its_first_timestamp() {
+    let database = database();
+    let blocks = database.work_block_repo();
+    // Whole seconds: corrected_at persists as a Unix integer, so a fixture
+    // carrying microseconds would fail on the round-trip for a reason that has
+    // nothing to do with the behaviour under test.
+    let start = Utc.timestamp_opt(Utc::now().timestamp() - 300, 0).unwrap();
+    blocks
+        .create(&work_block_record("corr-1", start))
+        .expect("block starts");
+
+    let first = WorkBlockCategoryCorrection {
+        category: "PASSIVE_CONSUMPTION".into(),
+        counts_as_category: "FOCUS_WORK".into(),
+        corrected_at: start + Duration::seconds(30),
+    };
+    let restated = WorkBlockCategoryCorrection {
+        corrected_at: start + Duration::seconds(120),
+        ..first.clone()
+    };
+    blocks
+        .record_category_correction("corr-1", &first)
+        .expect("first correction");
+    blocks
+        .record_category_correction("corr-1", &restated)
+        .expect("restating is a no-op, not an error");
+
+    let stored = blocks.category_corrections("corr-1").expect("read back");
+    assert_eq!(stored.len(), 1, "restating does not duplicate");
+    assert_eq!(
+        stored[0].corrected_at, first.corrected_at,
+        "the first correction's timestamp is when the user was believed"
+    );
+    assert_eq!(stored[0].counts_as_category, "FOCUS_WORK");
 }

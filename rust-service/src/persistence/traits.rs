@@ -1,8 +1,9 @@
 use super::{
     AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, LocalDisplayAggregate,
     LocalEventMetadata, NewUploadBatch, PersistenceError, PersonalOverrideRecord, RawEventEntry,
-    UploadBatch, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockIntervention,
-    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
+    UploadBatch, UploadQueueDiagnostics, WorkBlockCategoryCorrection, WorkBlockCompletion,
+    WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
+    WrongInterventionCounts,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -243,6 +244,28 @@ pub trait WorkBlockRepo: Send + Sync {
     ) -> Result<Vec<WorkBlockIntervention>, PersistenceError>;
     /// Transitions an offer to a terminal outcome. Only an `offered` row is
     /// updated, so a recorded return is never overwritten by block expiry.
+    /// Records a block-scoped classification correction. The first correction
+    /// for a category wins; recording it again is a no-op.
+    fn record_category_correction(
+        &self,
+        block_id: &str,
+        correction: &WorkBlockCategoryCorrection,
+    ) -> Result<(), PersistenceError>;
+
+    /// Every block-scoped correction, oldest first.
+    fn category_corrections(
+        &self,
+        block_id: &str,
+    ) -> Result<Vec<WorkBlockCategoryCorrection>, PersistenceError>;
+
+    /// Rolling wrong-intervention counts across blocks: offers delivered since
+    /// `since`, and how many were answered `was_focused` — the reply that says
+    /// the offer should never have fired. Two integers, content-free.
+    fn wrong_intervention_counts(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<WrongInterventionCounts, PersistenceError>;
+
     fn resolve_intervention(
         &self,
         block_id: &str,

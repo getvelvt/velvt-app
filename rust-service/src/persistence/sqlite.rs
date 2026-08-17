@@ -2,8 +2,9 @@ use super::{
     AbstractionMapRepo, AbstractionMapping, BatchEvent, HistoryCacheEntry, HistoryCacheRepo,
     InsightCacheEntry, InsightCacheRepo, LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch,
     PersonalOverrideRecord, RawEventEntry, RawEventRepo, UploadBatch, UploadBatchRepo,
-    UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCompletion, WorkBlockIntervention,
-    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WorkBlockRepo,
+    UploadBatchStatus, UploadQueueDiagnostics, WorkBlockCategoryCorrection, WorkBlockCompletion,
+    WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
+    WorkBlockRepo, WrongInterventionCounts,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1735,6 +1736,81 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             params![block_id, outcome.as_str(), at.timestamp()],
         )?;
         Ok(changed > 0)
+    }
+
+    fn record_category_correction(
+        &self,
+        block_id: &str,
+        correction: &WorkBlockCategoryCorrection,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        // The first correction for a category wins. A user correcting the same
+        // category twice in one block is restating, not revising, and silently
+        // overwriting the original timestamp would misreport when they were
+        // first believed.
+        connection.execute(
+            "INSERT INTO work_block_category_correction(
+                block_id, category, counts_as_category, corrected_at
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(block_id, category) DO NOTHING",
+            params![
+                block_id,
+                correction.category,
+                correction.counts_as_category,
+                correction.corrected_at.timestamp()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn category_corrections(
+        &self,
+        block_id: &str,
+    ) -> Result<Vec<WorkBlockCategoryCorrection>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT category, counts_as_category, corrected_at
+             FROM work_block_category_correction
+             WHERE block_id = ?1 ORDER BY corrected_at",
+        )?;
+        let rows = statement.query_map([block_id], |row| {
+            Ok(WorkBlockCategoryCorrection {
+                category: row.get(0)?,
+                counts_as_category: row.get(1)?,
+                corrected_at: timestamp_from_row(row, 2)?,
+            })
+        })?;
+        let mut corrections = Vec::new();
+        for correction in rows {
+            corrections.push(correction?);
+        }
+        Ok(corrections)
+    }
+
+    fn wrong_intervention_counts(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<WrongInterventionCounts, PersistenceError> {
+        let connection = self.0.connection()?;
+        // `was_focused` is main's vocabulary for the reply the trust-patch
+        // branch called `dismissed_was_focused`. Same meaning, and this is the
+        // name already in the shipped protocol 25 and in the database CHECK
+        // constraint, so the counter reads what the product actually records.
+        connection
+            .query_row(
+                "SELECT
+                    COUNT(*),
+                    COALESCE(SUM(outcome = 'was_focused'), 0)
+                 FROM work_block_intervention WHERE offered_at >= ?1",
+                [since.timestamp()],
+                |row| {
+                    Ok(WrongInterventionCounts {
+                        delivered: row.get(0)?,
+                        was_focused: row.get(1)?,
+                    })
+                },
+            )
+            .map_err(PersistenceError::from)
     }
 
     fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError> {

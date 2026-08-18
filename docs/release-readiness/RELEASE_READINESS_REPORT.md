@@ -287,23 +287,12 @@ tools, reproducible tests, and eight accountable specialist workstreams. This
 limitation is explicit rather than presenting an unrelated skill invocation as
 evidence.
 
-Specialist evidence:
-
-- `ARCHITECTURE_AUDIT_HANDOFF.md`
-- `CORE_QA_HANDOFF.md`
-- `INSIGHT_NOTIFICATION_HANDOFF.md`
-- `PRIVACY_SECURITY_HANDOFF.md`
-- `DISTRIBUTION_HANDOFF.md`
-- `UPDATE_SYSTEM_HANDOFF.md`
-- `UPDATER_SECURITY_REVIEW.md`
-- `PRODUCT_CRITIC_HANDOFF.md`
-- `ENGINEERING_REVIEW_HANDOFF.md`
-
-Each handoff records verdict, commands/evidence, files changed, tests, P0-P3
-findings, blockers, confidence, and whether evidence is packaged, development
-only, implemented-but-unverified, or proposed. The lead reproduced all P0/P1
-release claims that affected the final decision. Where evidence remained
-incomplete, the more conservative assessment was retained.
+The historical specialist handoffs used to produce this report have been
+archived outside the application repository. The retained
+`UPDATER_SECURITY_REVIEW.md` records the updater-specific security evidence.
+The lead reproduced all P0/P1 release claims that affected the final decision;
+where evidence remained incomplete, the more conservative assessment was
+retained.
 
 ## Activation checklist before reconsidering ship
 

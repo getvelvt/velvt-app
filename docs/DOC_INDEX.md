@@ -1,6 +1,5 @@
 # Documentation Index
 
-- [Scope 3 Focus/Activity handoff](scope3-minimal-dashboard-handoff.md)
 - [Focus Fragmentation and Daily Activity architecture](architecture/focus-activity-surfaces.md)
 
 Use this file to locate the correct documentation file before making edits.

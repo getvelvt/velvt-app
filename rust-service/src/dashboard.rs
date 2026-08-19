@@ -677,8 +677,20 @@ fn early_signal(
                 ),
             }
         }),
+        // Seeded on the calendar day, not on `observed_through`: this
+        // snapshot is recomputed on every popover refresh, and a seed that
+        // advanced with the clock would re-word the suggestion under the
+        // reader's eyes. Stable within a day, different across days.
         suggested_action: is_ready.then(|| {
-            "Start a block to hold one thing for a while.".to_owned()
+            let day = observed_through.format("%Y-%m-%d").to_string();
+            let seed = crate::work_block::copy_seed_from(&[day.as_bytes()]);
+            match seed % 4 {
+                0 => "Start a block to hold one thing for a while.",
+                1 => "A block would hold one thing in place for a while.",
+                2 => "Try a block to keep one thing in front of you.",
+                _ => "Start a block and give one thing the next stretch.",
+            }
+            .to_owned()
         }),
         action_minutes: if is_ready { EARLY_SIGNAL_ACTION_MINUTES } else { 0 },
     }

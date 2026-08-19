@@ -100,7 +100,23 @@ const DRIFT_ACTION_ID: &str = "protect_next_10";
 const SOFT_RESTART_ACTION_ID: &str = "soft_restart_10";
 const SOFT_RESTART_LABEL: &str = "Want back in? 10-minute soft restart.";
 const DRIFT_PROTECT_MINUTES: u32 = 10;
-const DRIFT_TITLE: &str = "Your work block is running";
+/// Repetition is its own failure mode for an interruption: the fifth
+/// identical banner is easier to ignore than the first, and an ignored offer
+/// costs exactly what a wrong one costs — it lands in the denominator of the
+/// pre-registered primary outcome either way.
+///
+/// Only the frame varies. Every variant states the same four stored facts —
+/// switch count, anchor, window, protected minutes — so the copy stays
+/// grounded and no variant can claim more than the evidence.
+///
+/// Index 0 is the original wording, which `NudgePreviewView` shows during
+/// onboarding and the notifier tests pin.
+const DRIFT_TITLES: [&str; 4] = [
+    "Your work block is running",
+    "You are in a work block",
+    "Your work block has time left",
+    "The block you started is open",
+];
 
 /// Backoff after a pushed-away offer.
 ///
@@ -695,11 +711,14 @@ impl WorkBlockManager {
                 salience: backoff.salience,
             },
         )?;
+        // `now` is the value just recorded as `offered_at`, so the re-render
+        // path below reproduces this exact wording from the stored row.
+        let seed = copy_seed(&record.block_id, switch_count, now);
         Ok(Some(DriftIntervention {
             block_id: Uuid::parse_str(&record.block_id).unwrap_or_default(),
             action_id: DRIFT_ACTION_ID,
-            title: DRIFT_TITLE.to_owned(),
-            body: drift_body(switch_count, &anchor),
+            title: drift_title(seed),
+            body: drift_body(seed, switch_count, &anchor),
             salience: backoff.salience,
         }))
     }
@@ -1087,10 +1106,15 @@ impl WorkBlockManager {
         if self.evaluate_demotion(now)?.state == InterventionDemotionState::Demoted {
             return Ok(None);
         }
+        let seed = copy_seed(block_id, intervention.switch_count, intervention.offered_at);
         Ok(Some(ActiveIntervention {
             action_id: intervention.action_id.clone(),
-            title: DRIFT_TITLE.to_owned(),
-            body: drift_body(intervention.switch_count, &intervention.anchor_category),
+            title: drift_title(seed),
+            body: drift_body(
+                seed,
+                intervention.switch_count,
+                &intervention.anchor_category,
+            ),
             anchor_category: intervention.anchor_category,
             switch_count: intervention.switch_count,
             window_seconds: intervention.window_seconds,
@@ -1363,16 +1387,69 @@ fn validate_explanation(sentence: &str, selection: &ExplanationSelection) -> boo
     lowered.contains(&selection.switch_count.to_string()) && lowered.contains(&anchor)
 }
 
+/// Which phrasing this offer gets, derived from the offer's own stored
+/// identity rather than from a random source.
+///
+/// This must be a pure function of values that survive a restart. `deliver`
+/// and `active_intervention` render the same offer independently — one for
+/// the banner, one for the card behind it — and a random pick would let the
+/// two disagree about what Velvt just said. Seeding on `offered_at` as well
+/// as the block means two offers inside one block also read differently.
+/// FNV-1a over whatever identifies one piece of copy. No dependency, stable
+/// across platforms and releases — a hash whose output changed between
+/// versions would re-word offers that were already shown.
+pub(crate) fn copy_seed_from(parts: &[&[u8]]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for byte in *part {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+fn copy_seed(block_id: &str, switch_count: u32, offered_at: DateTime<Utc>) -> u64 {
+    copy_seed_from(&[
+        block_id.as_bytes(),
+        &switch_count.to_le_bytes(),
+        &offered_at.timestamp().to_le_bytes(),
+    ])
+}
+
+fn drift_title(seed: u64) -> String {
+    DRIFT_TITLES[(seed % DRIFT_TITLES.len() as u64) as usize].to_owned()
+}
+
 /// Describes only what was observed. No intent, cause, diagnosis, or judgement.
-fn drift_body(switch_count: u32, anchor: &str) -> String {
+///
+/// The title and body indices are drawn from different parts of the seed so
+/// the pairing varies too, rather than four fixed messages.
+fn drift_body(seed: u64, switch_count: u32, anchor: &str) -> String {
     let minutes = DRIFT_WINDOW_SECONDS / 60;
     // `friendly_category` capitalises for sentence-initial use; this category
     // sits mid-sentence.
     let anchor = anchor.replace('_', " ").to_ascii_lowercase();
-    format!(
-        "Velvt observed {switch_count} switches away from {anchor} in the last {minutes} minutes. \
-         Protect the next {DRIFT_PROTECT_MINUTES} minutes for the work you chose."
-    )
+    let protect = DRIFT_PROTECT_MINUTES;
+    // `DRIFT_MIN_SWITCHES` is 4, so the count is never singular here.
+    match (seed / DRIFT_TITLES.len() as u64) % 4 {
+        0 => format!(
+            "Velvt observed {switch_count} switches away from {anchor} in the last {minutes} \
+             minutes. Protect the next {protect} minutes for the work you chose."
+        ),
+        1 => format!(
+            "{switch_count} switches away from {anchor} in the last {minutes} minutes. The next \
+             {protect} minutes can be held for the work you chose."
+        ),
+        2 => format!(
+            "In the last {minutes} minutes, Velvt counted {switch_count} switches away from \
+             {anchor}. Hold the next {protect} minutes for the work you chose."
+        ),
+        _ => format!(
+            "Velvt counted {switch_count} switches away from {anchor} over the last {minutes} \
+             minutes. The next {protect} minutes are yours to protect."
+        ),
+    }
 }
 
 fn status_line(
@@ -1897,6 +1974,84 @@ mod tests {
         offer
     }
 
+    /// The banner and the card behind it must say the same thing.
+    ///
+    /// `deliver` renders the offer once for the notification; `active_intervention`
+    /// renders it again from the stored row every time the popover opens. These
+    /// are separate code paths over the same offer, so a non-deterministic pick
+    /// would let a user read one sentence in the banner and a different one in
+    /// the app — for the same nudge.
+    #[test]
+    fn the_delivered_offer_and_its_re_render_read_identically() {
+        let manager = manager();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        let mut delivered = None;
+        for (offset, category) in [
+            (10, "DEEP_WORK"),
+            (400, "COMMUNICATION"),
+            (420, "DEEP_WORK"),
+            (440, "COMMUNICATION"),
+            (460, "DEEP_WORK"),
+            (480, "COMMUNICATION"),
+            (500, "DEEP_WORK"),
+            (520, "COMMUNICATION"),
+        ] {
+            if let Some(outcome) = manager
+                .observe_safe_category(
+                    category,
+                    ClassificationStatus::Classified,
+                    ClassificationConfidence::High,
+                    at(offset),
+                )
+                .unwrap()
+            {
+                delivered = delivered.or(outcome.intervention);
+            }
+        }
+        let delivered = delivered.expect("the gate fired");
+
+        let re_rendered = manager
+            .active_intervention(&block_id.to_string(), at(530))
+            .unwrap()
+            .expect("the offer is unanswered, so it re-renders");
+
+        assert_eq!(delivered.title, re_rendered.title);
+        assert_eq!(delivered.body, re_rendered.body);
+    }
+
+    /// Variation is the point, so assert it actually varies — a seed that
+    /// collapsed to one variant would pass every other test in this file.
+    #[test]
+    fn offer_copy_spreads_across_the_registered_variants() {
+        let mut seen = HashMap::<String, u32>::new();
+        for offset in 0..200i64 {
+            let seed = copy_seed("a-block-id", 4, at(offset));
+            *seen
+                .entry(format!(
+                    "{}|{}",
+                    drift_title(seed),
+                    drift_body(seed, 4, "DEEP_WORK")
+                ))
+                .or_default() += 1;
+        }
+        assert!(
+            seen.len() >= 12,
+            "expected the 4x4 pool to be exercised, saw {} distinct messages",
+            seen.len()
+        );
+
+        // Same offer, same wording — the property the re-render depends on.
+        assert_eq!(
+            copy_seed("a-block-id", 4, at(7)),
+            copy_seed("a-block-id", 4, at(7))
+        );
+        assert_ne!(
+            copy_seed("a-block-id", 4, at(7)),
+            copy_seed("b-block-id", 4, at(7))
+        );
+    }
+
     /// An offer never fires on the observation that returns to the anchor.
     ///
     /// The switch threshold can be crossed while the warm-up still holds the
@@ -1995,7 +2150,10 @@ mod tests {
         let offer = drift_block(&manager, 8_000, None).expect("the cooldown has elapsed");
 
         assert_eq!(offer.salience, InterventionSalience::Quiet);
-        assert_eq!(offer.title, DRIFT_TITLE, "copy is unchanged by backoff");
+        assert!(
+            DRIFT_TITLES.contains(&offer.title.as_str()),
+            "copy after a cooldown stays in the registered pool, never escalates"
+        );
         let recorded = repo.recent_interventions(1).unwrap();
         assert_eq!(
             recorded[0].salience,
@@ -2303,9 +2461,7 @@ mod tests {
     #[test]
     fn registered_copy_is_analyst_voice_with_no_history_references() {
         let mut registry: Vec<String> = vec![
-            DRIFT_TITLE.to_owned(),
             SOFT_RESTART_LABEL.to_owned(),
-            drift_body(4, "DEEP_WORK"),
             demotion_disclosure_copy(),
             deterministic_explanation(&ExplanationSelection {
                 claim_id: DRIFT_EXPLANATION_CLAIM_ID,
@@ -2314,6 +2470,12 @@ mod tests {
                 window_minutes: 10,
             }),
         ];
+        // Every phrasing variant, not just the first: a banned word in
+        // variant 3 would otherwise reach users and pass this test.
+        for seed in 0..64u64 {
+            registry.push(drift_title(seed));
+            registry.push(drift_body(seed, 4, "DEEP_WORK"));
+        }
         for (completed_under_dnd, held_count) in
             [(true, 0), (true, 1), (true, 3), (false, 1), (false, 3)]
         {

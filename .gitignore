@@ -35,3 +35,7 @@ swift-client/VelvtMac.xcodeproj/project.pbxproj
 *.sqlite3
 *.db
 *.log
+
+# Python bytecode (scripts/analyze_cohort.py and friends)
+__pycache__/
+*.pyc

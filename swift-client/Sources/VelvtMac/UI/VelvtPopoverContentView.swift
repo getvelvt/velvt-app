@@ -320,6 +320,7 @@ private struct EarlySignalProgressView: View {
                     .font(.caption2)
                     .foregroundStyle(Color.velvtMuted)
                     .fixedSize(horizontal: false, vertical: true)
+                EarlySignalBasisDisclosure(signal: signal)
             } else {
         Text(
           errorMessage ?? "Waiting for the local privacy service to report this observation window."
@@ -357,6 +358,79 @@ private struct EarlySignalProgressView: View {
     }
 }
 
+/// The bare label "Early local signal" names a mechanism the reader cannot
+/// interrogate: it appears before any baseline exists, computed from evidence
+/// they never see. This is the same seam as "Why am I seeing this?" on a cloud
+/// insight — the claim, the numbers behind it, and the boundary that produced
+/// them, available on demand rather than crowding the card.
+///
+/// Every value shown here is already on the client, so this costs no protocol
+/// change and asserts nothing that is not stored.
+private struct EarlySignalBasisDisclosure: View {
+    let signal: LocalEarlySignal?
+    @State private var isExpanded = false
+
+    var body: some View {
+        DisclosureGroup("What is an early local signal?", isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(
+                    "A first read on how today is going, computed on this Mac from abstracted "
+                        + "categories — so it can appear before a seven-day baseline exists."
+                )
+                if let basisText {
+                    Text(basisText)
+                }
+                // Deliberately narrower than "nothing leaves this Mac":
+                // abstracted category events do sync in upload batches
+                // (`BatchEvent`). What is claimed here is what the code
+                // enforces — raw context is never an input, and the signal
+                // itself has no upload path.
+                Text(
+                    "App names, window titles, URLs, and file paths are never read into it. "
+                        + "The signal itself is computed and kept on this Mac."
+                )
+            }
+            .font(.caption2)
+            .foregroundStyle(Color.velvtMuted)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 5)
+        }
+        .font(.caption)
+        .tint(Color.velvtText)
+        .accessibilityHint(
+            "Explains what an early local signal is and the privacy-safe numbers behind this one"
+        )
+    }
+
+    private var basisText: String? {
+        guard let signal, signal.evidenceEventCount > 0 else { return nil }
+        var parts = [
+            "\(signal.evidenceEventCount) categorized "
+                + (signal.evidenceEventCount == 1 ? "observation" : "observations")
+        ]
+        if signal.focusedSeconds > 0 {
+            parts.append("\(durationText(signal.focusedSeconds)) focused")
+        }
+        if signal.longestUninterruptedSeconds > 0 {
+            parts.append(
+                "longest uninterrupted stretch \(durationText(signal.longestUninterruptedSeconds))"
+            )
+        }
+        if signal.meaningfulSwitchCount > 0 {
+            parts.append(
+                "\(signal.meaningfulSwitchCount) meaningful "
+                    + (signal.meaningfulSwitchCount == 1 ? "switch" : "switches")
+            )
+        }
+        let lead = signal.status == .ready ? "Behind this one: " : "Observed so far: "
+        return lead + parts.joined(separator: ", ") + "."
+    }
+
+    private func durationText(_ seconds: Int) -> String {
+        seconds < 60 ? "\(seconds)s" : "\(seconds / 60) min"
+    }
+}
+
 private struct EarlyLocalSignalView: View {
     let signal: LocalEarlySignal
     let onSuggestedAction: (() -> Void)?
@@ -386,6 +460,7 @@ private struct EarlyLocalSignalView: View {
                 Button("Protect \(signal.actionMinutes) minutes", action: onSuggestedAction)
                     .buttonStyle(.borderedProminent)
             }
+            EarlySignalBasisDisclosure(signal: signal)
       Text(
         "Computed only from abstracted categories on this Mac · Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened))"
       )

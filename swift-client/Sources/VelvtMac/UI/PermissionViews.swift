@@ -301,6 +301,12 @@ public struct PermissionRecoveryView: View {
             Text("Collection is paused. Re-grant Accessibility access in System Settings.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                // The window is user-resizable down to a 500pt content width.
+                // Without this the caption takes its ideal single-line width
+                // and truncates to "...access in System..." at every width
+                // below ~590pt, dropping the one noun that says where to go.
+                // Wrapping costs a second line and keeps the sentence.
+                .fixedSize(horizontal: false, vertical: true)
             Button("Open Accessibility Settings", action: openSettings)
         }
     }

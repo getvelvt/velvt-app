@@ -631,6 +631,276 @@ private struct CompactWorkBlockControl: View {
   }
 }
 
+/// Where every mark on the work-block evidence timeline goes, for a track of
+/// a given width.
+///
+/// This exists because the timeline had no bounds check and no collision
+/// handling, and a real block found both at once. Collection died three
+/// minutes into a twenty-five minute block, so the window held five
+/// transitions inside its first ~1% and nothing after. Each transition was
+/// offset by `timeOffset(...) - 3`, so all five landed within a couple of
+/// points of x=0 and stacked; the switching-cluster glyph was offset by
+/// `clusterOffset(...) - 6`, so at x≈0 it rendered six points outside the
+/// track's leading edge, on top of the pile. The topmost mark won and the
+/// evidence read as one smudge.
+///
+/// Two rules fix that, and they are geometry rules, not judgement calls:
+///
+/// 1. **A mark is a box, not a point.** Every offset here is the leading edge
+///    of a glyph of a known width, clamped into `0 ... width - glyphWidth`,
+///    so no mark can render outside the track no matter where in the window
+///    its timestamp falls — including exactly at the window start and exactly
+///    at the window end.
+/// 2. **Marks closer together than they are wide collapse, they do not
+///    move.** Of the three ways to handle collision, nudging overlapping
+///    ticks apart to a minimum spacing is the one that lies: separating five
+///    marks by 7pt on a 300pt bar for a 25-minute window relocates the last
+///    of them by roughly two and a half minutes of wall-clock time, which is
+///    an invented timestamp on a surface whose entire job is evidence.
+///    Dropping the ticks once density passes a threshold and showing only the
+///    cluster mark loses the ticks in the common case where transitions are
+///    dense but no cluster was reported, and shows nothing at all. Collapsing
+///    keeps the mark inside the run's own time extent — a run is closed once
+///    it would span more than `minimumTickSpacing` points, so a collapsed
+///    mark never claims more of the timeline than one tick's width — and it
+///    keeps the count, which the label then states. The only cost is that the
+///    reader must hover or focus the mark to learn the count, and that cost
+///    is paid in a string, not in a fabricated position.
+///
+/// Nothing here derives a number for display. It consumes the transitions and
+/// clusters Rust already sent and decides only where they can be drawn.
+struct TimelineMarkerLayout: Equatable {
+
+  // MARK: Vertical metrics
+
+  /// The bar itself: background, segments, and transition ticks.
+  static let trackHeight: CGFloat = 22
+  static let segmentHeight: CGFloat = 18
+  static var segmentTopInset: CGFloat { (trackHeight - segmentHeight) / 2 }
+  static let tickHeight: CGFloat = 22
+  /// Clusters get their own lane below the bar so a cluster can never sit on
+  /// top of the transitions it is made of.
+  static let clusterLaneGap: CGFloat = 2
+  static let clusterLaneHeight: CGFloat = 8
+  static let clusterRailHeight: CGFloat = 3
+  static var clusterLaneTop: CGFloat { trackHeight + clusterLaneGap }
+  static var trackHeightWithClusterLane: CGFloat { clusterLaneTop + clusterLaneHeight }
+
+  // MARK: Horizontal metrics
+
+  /// Hit target and clamping box for one tick. The visible bar is narrower
+  /// and centred inside it, so a tick clamped hard against either end of the
+  /// track is still visibly inside the track rather than flush with its edge.
+  static let tickGlyphWidth: CGFloat = 6
+  static let singleTickBarWidth: CGFloat = 2
+  /// A collapsed run is drawn wider than a single tick so density is legible
+  /// without hovering, even though the exact count is not.
+  static let collapsedTickBarWidth: CGFloat = 4
+  /// Two tick centres closer than this cannot be read as two marks, so the
+  /// run collapses into one. It is also the cap on how much of the timeline
+  /// a single collapsed mark is allowed to stand for.
+  static let minimumTickSpacing: CGFloat = 7
+  /// A cluster whose start and end land on the same point still has to be
+  /// visible and still has to be clickable.
+  static let minimumClusterRailWidth: CGFloat = 8
+  /// A short segment is widened to this so it is visible — but only into
+  /// space no other segment wants. See `segmentBars`.
+  static let minimumSegmentWidth: CGFloat = 5
+  /// The floor below which a segment is not drawn at all, because it has no
+  /// room left to be drawn in.
+  static let hairlineSegmentWidth: CGFloat = 1
+
+  struct Tick: Equatable, Identifiable {
+    /// The first transition in the run, which is stable for a given width.
+    let id: String
+    /// Leading edge of a `tickGlyphWidth`-wide glyph, already clamped.
+    let offset: CGFloat
+    /// Every transition this one mark stands for, in time order. Never empty.
+    let transitionIDs: [String]
+
+    var transitionCount: Int { transitionIDs.count }
+    var isCollapsed: Bool { transitionIDs.count > 1 }
+    var center: CGFloat { offset + TimelineMarkerLayout.tickGlyphWidth / 2 }
+  }
+
+  struct ClusterRail: Equatable, Identifiable {
+    let id: String
+    /// Leading edge, already clamped so `offset + width <= trackWidth`.
+    let offset: CGFloat
+    let width: CGFloat
+  }
+
+  struct SegmentBar: Equatable, Identifiable {
+    let id: String
+    /// Leading edge, already clamped so `offset + width <= trackWidth`.
+    let offset: CGFloat
+    let width: CGFloat
+  }
+
+  let ticks: [Tick]
+  let clusterRails: [ClusterRail]
+  let segmentBars: [SegmentBar]
+
+  static let empty = TimelineMarkerLayout(ticks: [], clusterRails: [], segmentBars: [])
+
+  static func make(focus: LocalFocusFragmentation, width: CGFloat) -> TimelineMarkerLayout {
+    make(
+      transitions: focus.transitions,
+      clusters: focus.clusters,
+      segments: focus.segments,
+      windowStartedAt: focus.windowStartedAt,
+      windowEndedAt: focus.windowEndedAt,
+      width: width
+    )
+  }
+
+  static func make(
+    transitions: [LocalTransitionMarker],
+    clusters: [LocalSwitchingCluster],
+    segments: [LocalTimelineSegment] = [],
+    windowStartedAt: Date,
+    windowEndedAt: Date,
+    width: CGFloat
+  ) -> TimelineMarkerLayout {
+    guard width > 0 else { return .empty }
+
+    // Runs are closed on extent, not on gap-to-previous. Chaining on the gap
+    // would let a long, evenly-dense sequence collapse into one mark spanning
+    // most of the bar, which is a worse lie than the overlap it fixed.
+    var runs: [(first: CGFloat, last: CGFloat, ids: [String])] = []
+    for transition in transitions.sorted(by: { $0.occurredAt < $1.occurredAt }) {
+      let center = position(
+        transition.occurredAt,
+        windowStartedAt: windowStartedAt,
+        windowEndedAt: windowEndedAt,
+        width: width
+      )
+      if var run = runs.last, center - run.first < minimumTickSpacing {
+        run.last = center
+        run.ids.append(transition.id)
+        runs[runs.count - 1] = run
+      } else {
+        runs.append((first: center, last: center, ids: [transition.id]))
+      }
+    }
+
+    var ticks: [Tick] = []
+    var previousCenter: CGFloat?
+    for run in runs {
+      // Sit in the middle of the run's own extent, then hold the minimum
+      // spacing against the previous mark. Because a run spans less than
+      // `minimumTickSpacing`, this pass can move a mark by at most half that
+      // — under four points, a few seconds of a 25-minute window.
+      var center = (run.first + run.last) / 2
+      if let previous = previousCenter { center = max(center, previous + minimumTickSpacing) }
+      previousCenter = center
+      ticks.append(
+        Tick(
+          id: run.ids[0],
+          offset: clampedCenter(center, glyphWidth: tickGlyphWidth, trackWidth: width),
+          transitionIDs: run.ids
+        ))
+    }
+
+    let rails = clusters.map { cluster -> ClusterRail in
+      let start = position(
+        cluster.startedAt,
+        windowStartedAt: windowStartedAt,
+        windowEndedAt: windowEndedAt,
+        width: width
+      )
+      let end = position(
+        cluster.endedAt,
+        windowStartedAt: windowStartedAt,
+        windowEndedAt: windowEndedAt,
+        width: width
+      )
+      let railWidth = min(width, max(minimumClusterRailWidth, end - start))
+      return ClusterRail(
+        id: cluster.id,
+        offset: clampedLeading(start, glyphWidth: railWidth, trackWidth: width),
+        width: railWidth
+      )
+    }
+
+    return TimelineMarkerLayout(
+      ticks: ticks,
+      clusterRails: rails,
+      segmentBars: segmentBars(
+        segments,
+        windowStartedAt: windowStartedAt,
+        windowEndedAt: windowEndedAt,
+        width: width
+      )
+    )
+  }
+
+  /// A segment is only widened into space the next segment does not want.
+  ///
+  /// The old rule was `max(5, width * proportion)` with each bar positioned
+  /// independently at its own start, which is fine while segments are long
+  /// and silently destructive once they are not: on a dead-collection block
+  /// whose longest meaningful stretch was seventeen seconds, a dozen
+  /// sub-five-point segments each inflated to five points and drew over
+  /// their neighbours, so what looked like four blocks of colour was twelve
+  /// segments with eight of them buried. Now the floor applies only where
+  /// there is room for it, and where there is not, each bar gets exactly the
+  /// space between its own start and the next one's. The transition ticks
+  /// carry "a switch happened here" in the dense case, which is what the
+  /// five-point floor was standing in for.
+  static func segmentBars(
+    _ segments: [LocalTimelineSegment],
+    windowStartedAt: Date,
+    windowEndedAt: Date,
+    width: CGFloat
+  ) -> [SegmentBar] {
+    guard width > 0 else { return [] }
+    let ordered = segments.sorted { $0.startedAt < $1.startedAt }
+    let starts = ordered.map {
+      position($0.startedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
+        width: width)
+    }
+    return ordered.enumerated().compactMap { index, segment -> SegmentBar? in
+      let start = starts[index]
+      let end = position(
+        segment.endedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
+        width: width)
+      let available = max(0, (index + 1 < starts.count ? starts[index + 1] : width) - start)
+      guard available >= hairlineSegmentWidth else { return nil }
+      let barWidth = min(max(minimumSegmentWidth, end - start), available)
+      return SegmentBar(
+        id: segment.id,
+        offset: clampedLeading(start, glyphWidth: barWidth, trackWidth: width),
+        width: barWidth
+      )
+    }
+  }
+
+  /// Centre point on the track for an instant in the window, clamped to the
+  /// window so an out-of-window timestamp cannot escape the track.
+  static func position(
+    _ date: Date, windowStartedAt: Date, windowEndedAt: Date, width: CGFloat
+  ) -> CGFloat {
+    let total = max(1, windowEndedAt.timeIntervalSince(windowStartedAt))
+    let ratio = date.timeIntervalSince(windowStartedAt) / total
+    return width * CGFloat(min(1, max(0, ratio)))
+  }
+
+  /// Leading edge for a glyph of `glyphWidth` centred on `center`, clamped so
+  /// the whole glyph is inside `0 ... trackWidth`.
+  static func clampedCenter(
+    _ center: CGFloat, glyphWidth: CGFloat, trackWidth: CGFloat
+  ) -> CGFloat {
+    clampedLeading(center - glyphWidth / 2, glyphWidth: glyphWidth, trackWidth: trackWidth)
+  }
+
+  static func clampedLeading(
+    _ leading: CGFloat, glyphWidth: CGFloat, trackWidth: CGFloat
+  ) -> CGFloat {
+    min(max(0, trackWidth - glyphWidth), max(0, leading))
+  }
+}
+
 public struct FocusFragmentationView: View {
   let focus: LocalFocusFragmentation?
   let errorMessage: String?
@@ -641,6 +911,13 @@ public struct FocusFragmentationView: View {
   /// them, and neither the intention nor the anchor is on this DTO.
   var header: String?
   @State private var hoveredDetail: String?
+  /// The last laid-out track width, kept so keyboard focus can resolve which
+  /// mark an id belongs to. A collapsed tick's id is its run's first
+  /// transition, and which transitions share a run depends on the width, so
+  /// `updateFocusedDetail` cannot answer "how many switches is this mark?"
+  /// without it — and answering "one" would be the exact lie the collapse
+  /// exists to avoid.
+  @State private var trackWidth: CGFloat = 0
   @FocusState private var focusedEvidenceID: String?
 
   public var body: some View {
@@ -730,115 +1007,155 @@ public struct FocusFragmentationView: View {
   }
 
   private func focusTimeline(_ focus: LocalFocusFragmentation) -> some View {
-    GeometryReader { proxy in
-      ZStack(alignment: .leading) {
+    let hasClusters = !focus.clusters.isEmpty
+    return GeometryReader { proxy in
+      let layout = TimelineMarkerLayout.make(focus: focus, width: proxy.size.width)
+      ZStack(alignment: .topLeading) {
         RoundedRectangle(cornerRadius: 4)
           .fill(Color.white.opacity(0.08))
+          .frame(height: TimelineMarkerLayout.trackHeight)
           .accessibilityHidden(true)
-        timelineSegments(focus, width: proxy.size.width)
-        transitionMarkers(focus, width: proxy.size.width)
-        clusterMarkers(focus, width: proxy.size.width)
+        timelineSegments(layout, focus: focus)
+        transitionTicks(layout, focus: focus)
+        clusterRails(layout, focus: focus)
       }
+      .onAppear { trackWidth = proxy.size.width }
+      .onChange(of: proxy.size.width) { newWidth in trackWidth = newWidth }
     }
-    .frame(height: 24)
+    .frame(
+      height: hasClusters
+        ? TimelineMarkerLayout.trackHeightWithClusterLane
+        : TimelineMarkerLayout.trackHeight
+    )
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Attention timeline, \(focus.windowLabel)")
   }
 
-  private func timelineSegments(_ focus: LocalFocusFragmentation, width: CGFloat) -> some View {
-    ZStack(alignment: .leading) {
-      ForEach(focus.segments) { segment in
-        timelineSegment(segment, focus: focus, width: width)
+  private func timelineSegments(
+    _ layout: TimelineMarkerLayout, focus: LocalFocusFragmentation
+  ) -> some View {
+    ZStack(alignment: .topLeading) {
+      ForEach(layout.segmentBars) { bar in
+        timelineSegment(bar, focus: focus)
       }
     }
   }
 
   private func timelineSegment(
-    _ segment: LocalTimelineSegment,
-    focus: LocalFocusFragmentation,
-    width: CGFloat
+    _ bar: TimelineMarkerLayout.SegmentBar,
+    focus: LocalFocusFragmentation
   ) -> some View {
-    let detail = segmentDetail(segment)
-    let renderedWidth = max(CGFloat(5), width * segmentWidth(segment, focus: focus))
+    let segment = focus.segments.first { $0.id == bar.id }
+    let detail = segment.map(segmentDetail) ?? ""
     return Button {
       hoveredDetail = detail
     } label: {
       ZStack {
         RoundedRectangle(cornerRadius: 3)
-          .fill(categoryColor(segment.category))
-        if renderedWidth >= 34 {
+          .fill(categoryColor(segment?.category ?? ""))
+        if bar.width >= 34, let segment {
           Text(shortCategory(segment.category))
             .font(.system(size: 8, weight: .semibold))
             .foregroundStyle(Color.black.opacity(0.72))
             .lineLimit(1)
         }
       }
-      .frame(width: renderedWidth, height: 20)
+      .frame(width: bar.width, height: TimelineMarkerLayout.segmentHeight)
     }
     .buttonStyle(.plain)
-    .offset(x: segmentOffset(segment, focus: focus, width: width))
+    .offset(x: bar.offset, y: TimelineMarkerLayout.segmentTopInset)
     .help(detail)
-    .focused($focusedEvidenceID, equals: segment.id)
+    .focused($focusedEvidenceID, equals: bar.id)
     .onHover { hoveredDetail = $0 ? detail : nil }
     .accessibilityLabel(detail)
   }
 
-  private func transitionMarkers(_ focus: LocalFocusFragmentation, width: CGFloat) -> some View {
-    ForEach(focus.transitions) { transition in
-      transitionMarker(transition, focus: focus, width: width)
+  private func transitionTicks(
+    _ layout: TimelineMarkerLayout, focus: LocalFocusFragmentation
+  ) -> some View {
+    ForEach(layout.ticks) { tick in
+      transitionTick(tick, focus: focus)
     }
   }
 
-  private func transitionMarker(
-    _ transition: LocalTransitionMarker,
-    focus: LocalFocusFragmentation,
-    width: CGFloat
+  /// One tick stands for one *or more* transitions. `TimelineMarkerLayout`
+  /// decides which, and the label says how many — a collapsed mark that
+  /// claimed to be a single switch would be the same lie the stacked markers
+  /// told visually.
+  private func transitionTick(
+    _ tick: TimelineMarkerLayout.Tick,
+    focus: LocalFocusFragmentation
   ) -> some View {
-    let detail =
-      "Observed category switch from \(friendlyCategory(transition.fromCategory)) to \(friendlyCategory(transition.toCategory)), \(transition.confidence.rawValue) confidence."
+    let detail = tickDetail(tick, focus: focus)
     return Button {
       hoveredDetail = detail
     } label: {
-      Rectangle()
-        .fill(Color.velvtText.opacity(0.78))
-        .frame(width: 2, height: 22)
-        .padding(.horizontal, 2)
+      ZStack {
+        Color.clear
+        RoundedRectangle(cornerRadius: tick.isCollapsed ? 1.5 : 0.5)
+          .fill(Color.velvtText.opacity(tick.isCollapsed ? 0.95 : 0.78))
+          .frame(
+            width: tick.isCollapsed
+              ? TimelineMarkerLayout.collapsedTickBarWidth
+              : TimelineMarkerLayout.singleTickBarWidth,
+            height: TimelineMarkerLayout.tickHeight
+          )
+      }
+      .frame(
+        width: TimelineMarkerLayout.tickGlyphWidth,
+        height: TimelineMarkerLayout.tickHeight
+      )
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .offset(x: timeOffset(transition.occurredAt, focus: focus, width: width) - 3)
+    .offset(x: tick.offset)
     .help(detail)
-    .focused($focusedEvidenceID, equals: transition.id)
+    .focused($focusedEvidenceID, equals: tick.id)
     .onHover { hoveredDetail = $0 ? detail : nil }
     .accessibilityLabel(detail)
   }
 
-  private func clusterMarkers(_ focus: LocalFocusFragmentation, width: CGFloat) -> some View {
-    ForEach(focus.clusters) { cluster in
-      clusterMarker(cluster, focus: focus, width: width)
+  private func clusterRails(
+    _ layout: TimelineMarkerLayout, focus: LocalFocusFragmentation
+  ) -> some View {
+    ForEach(layout.clusterRails) { rail in
+      clusterRail(rail, focus: focus)
     }
   }
 
-  private func clusterMarker(
-    _ cluster: LocalSwitchingCluster,
-    focus: LocalFocusFragmentation,
-    width: CGFloat
+  /// A cluster is a span with a start and an end, so it is drawn as one: a
+  /// thin rail in its own lane under the bar, covering the time it actually
+  /// covers.
+  ///
+  /// It used to be a 9pt bold `circle.grid.cross` on a filled circle sitting
+  /// on the bar itself — a glyph heavier than the segment bar it annotated,
+  /// pinned to the cluster's start instant as though a cluster happened at a
+  /// moment, and offset by a hard-coded −6 that pushed it outside the track's
+  /// leading edge whenever the cluster began near the top of the window. The
+  /// rail is subordinate to the ticks by construction: it is 3pt tall, it is
+  /// not on the bar, and it cannot cover a tick.
+  private func clusterRail(
+    _ rail: TimelineMarkerLayout.ClusterRail,
+    focus: LocalFocusFragmentation
   ) -> some View {
-    let detail =
-      "Switching cluster. \(cluster.explanation) Confidence \(cluster.confidence.rawValue)."
-    let xOffset = clusterOffset(cluster, focus: focus, width: width) - 6
+    let cluster = focus.clusters.first { $0.id == rail.id }
+    let detail = cluster.map(clusterDetail) ?? ""
     return Button {
       hoveredDetail = detail
     } label: {
-      Image(systemName: "circle.grid.cross")
-        .font(.system(size: 9, weight: .bold))
-        .foregroundStyle(Color.velvtText)
-        .padding(2)
-        .background(Color.black.opacity(0.65), in: Circle())
+      ZStack {
+        Color.clear
+        Capsule()
+          .fill(Color.velvtPink.opacity(0.6))
+          .frame(width: rail.width, height: TimelineMarkerLayout.clusterRailHeight)
+      }
+      .frame(width: rail.width, height: TimelineMarkerLayout.clusterLaneHeight)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .offset(x: xOffset)
+    .offset(x: rail.offset, y: TimelineMarkerLayout.clusterLaneTop)
     .help(detail)
-    .focused($focusedEvidenceID, equals: cluster.id)
+    .focused($focusedEvidenceID, equals: rail.id)
     .onHover { hoveredDetail = $0 ? detail : nil }
     .accessibilityLabel(detail)
     .accessibilityHint(
@@ -847,22 +1164,48 @@ public struct FocusFragmentationView: View {
   }
 
   private func metrics(_ focus: LocalFocusFragmentation) -> some View {
-    LazyVGrid(
-      columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
-      alignment: .leading,
-      spacing: 4
-    ) {
-      focusMetric(
-        "Planned / elapsed",
-        "\(duration(focus.plannedDurationSeconds)) / \(duration(focus.elapsedDurationSeconds))",
-        "Planned duration and recorded elapsed duration for this explicit work block.")
-      focusMetric(
-        "Longest stretch", duration(focus.longestUninterruptedSeconds),
-        "Longest uninterrupted classified category stretch in this window.")
-      focusMetric(
-        "Switches", "\(focus.observedSwitchCount)",
-        "Observed movement between classified categories; idle, system, duplicates, and unclassified movement are excluded."
-      )
+    VStack(alignment: .leading, spacing: 5) {
+      // The qualifier goes above the numbers, not in a tooltip under them.
+      // A block whose collection died three minutes into twenty-five reports
+      // a 17-second longest stretch, and that number is only readable next
+      // to how much of the window was actually observed — which Rust already
+      // sends on this DTO as `coverage` and `coverage_ratio`, and which this
+      // card used to spend only inside a `.help(...)` nobody opens.
+      if let notice = coverageNotice(focus) {
+        Text(notice)
+          .font(.caption2)
+          .foregroundStyle(Color.velvtMuted)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel(notice)
+      }
+      LazyVGrid(
+        columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
+        alignment: .leading,
+        spacing: 4
+      ) {
+        focusMetric(
+          "Planned / elapsed",
+          "\(duration(focus.plannedDurationSeconds)) / \(duration(focus.elapsedDurationSeconds))",
+          "Planned duration and recorded elapsed duration for this explicit work block.")
+        focusMetric(
+          "Longest stretch", duration(focus.longestUninterruptedSeconds),
+          metricEvidenceHelp(
+            "Longest uninterrupted classified category stretch in this window.", focus: focus))
+        focusMetric(
+          "Switches", "\(focus.observedSwitchCount)",
+          metricEvidenceHelp(
+            "Observed movement between classified categories; idle, system, duplicates, and unclassified movement are excluded.",
+            focus: focus)
+        )
+      }
+      if !focus.clusters.isEmpty {
+        Text(
+          focus.clusters.count == 1
+            ? "Underline: switching cluster." : "Underlines: switching clusters."
+        )
+        .font(.caption2)
+        .foregroundStyle(Color.velvtMuted)
+      }
     }
     .help(
       "\(focus.recoveryCount) recoveries · \(focus.clusters.count) switching clusters · \(coverageLabel(focus)) coverage"
@@ -881,16 +1224,43 @@ public struct FocusFragmentationView: View {
     .accessibilityHint(help)
   }
 
+  /// States the coverage Rust already reported. It reports a fraction and
+  /// stops — the reading of that fraction is the person's, and a card that
+  /// warned them about their own block would be inventing a finding out of a
+  /// collection outage.
+  private func coverageNotice(_ focus: LocalFocusFragmentation) -> String? {
+    switch focus.coverage {
+    case .good:
+      return nil
+    case .noData:
+      return "No activity was observed inside this window."
+    case .partial:
+      return
+        "Observed activity covers \(coveragePercent(focus))% of this window. Longest stretch and switches count only that part."
+    }
+  }
+
+  private func metricEvidenceHelp(_ base: String, focus: LocalFocusFragmentation) -> String {
+    guard focus.coverage != .good else { return base }
+    return "\(base) Measured over the \(coveragePercent(focus))% of this window with observed activity."
+  }
+
+  private func coveragePercent(_ focus: LocalFocusFragmentation) -> Int {
+    Int((focus.coverageRatio * 100).rounded())
+  }
+
   private func updateFocusedDetail() {
     guard let focus, let id = focusedEvidenceID else { return }
     if let segment = focus.segments.first(where: { $0.id == id }) {
       hoveredDetail = segmentDetail(segment)
+    } else if let tick = TimelineMarkerLayout.make(focus: focus, width: trackWidth)
+      .ticks.first(where: { $0.id == id })
+    {
+      hoveredDetail = tickDetail(tick, focus: focus)
     } else if let transition = focus.transitions.first(where: { $0.id == id }) {
-      hoveredDetail =
-        "Observed category switch from \(friendlyCategory(transition.fromCategory)) to \(friendlyCategory(transition.toCategory)), \(transition.confidence.rawValue) confidence."
+      hoveredDetail = transitionDetail(transition)
     } else if let cluster = focus.clusters.first(where: { $0.id == id }) {
-      hoveredDetail =
-        "Switching cluster. \(cluster.explanation) Confidence \(cluster.confidence.rawValue)."
+      hoveredDetail = clusterDetail(cluster)
     }
   }
 
@@ -904,32 +1274,21 @@ public struct FocusFragmentationView: View {
     "\(friendlyCategory(segment.category)), \(duration(Int(segment.endedAt.timeIntervalSince(segment.startedAt)))), \(segment.confidence.rawValue) confidence."
   }
 
-  private func segmentWidth(_ segment: LocalTimelineSegment, focus: LocalFocusFragmentation)
-    -> CGFloat
-  {
-    let total = max(1, focus.windowEndedAt.timeIntervalSince(focus.windowStartedAt))
-    return CGFloat(max(1, segment.endedAt.timeIntervalSince(segment.startedAt)) / total)
+  private func transitionDetail(_ transition: LocalTransitionMarker) -> String {
+    transitionEvidenceLabel(transition)
   }
 
-  private func segmentOffset(
-    _ segment: LocalTimelineSegment, focus: LocalFocusFragmentation, width: CGFloat
-  ) -> CGFloat {
-    timeOffset(segment.startedAt, focus: focus, width: width)
+  private func clusterDetail(_ cluster: LocalSwitchingCluster) -> String {
+    clusterEvidenceLabel(cluster)
   }
 
-  private func clusterOffset(
-    _ cluster: LocalSwitchingCluster, focus: LocalFocusFragmentation, width: CGFloat
-  ) -> CGFloat {
-    timeOffset(cluster.startedAt, focus: focus, width: width)
+  private func tickDetail(
+    _ tick: TimelineMarkerLayout.Tick, focus: LocalFocusFragmentation
+  ) -> String {
+    tickEvidenceLabel(
+      tick, transitions: focus.transitions, windowStartedAt: focus.windowStartedAt)
   }
 
-  private func timeOffset(
-    _ date: Date, focus: LocalFocusFragmentation, width: CGFloat
-  ) -> CGFloat {
-    let total = max(1, focus.windowEndedAt.timeIntervalSince(focus.windowStartedAt))
-    let ratio = date.timeIntervalSince(focus.windowStartedAt) / total
-    return width * CGFloat(min(1, max(0, ratio)))
-  }
 
   private func coverageLabel(_ focus: LocalFocusFragmentation) -> String {
     "\(Int((focus.coverageRatio * 100).rounded()))% \(focus.coverage.rawValue.replacingOccurrences(of: "_", with: " "))"
@@ -1326,6 +1685,41 @@ private func duration(_ seconds: Int) -> String {
 
 private func friendlyCategory(_ category: String) -> String {
   category.replacingOccurrences(of: "_", with: " ").lowercased().capitalized
+}
+
+// MARK: - Evidence-marker labels
+
+/// The spoken and hovered text for one transition tick, one collapsed run of
+/// them, or one switching cluster.
+///
+/// These live at file scope rather than inside `FocusFragmentationView`
+/// because the count in a collapsed label is the load-bearing part and has to
+/// be assertable in a test: a mark standing for five switches that announces
+/// itself as one switch is the same defect as five marks stacked on one pixel,
+/// moved from the pixels into the accessibility tree.
+
+func transitionEvidenceLabel(_ transition: LocalTransitionMarker) -> String {
+  "Observed category switch from \(friendlyCategory(transition.fromCategory)) to \(friendlyCategory(transition.toCategory)), \(transition.confidence.rawValue) confidence."
+}
+
+func clusterEvidenceLabel(_ cluster: LocalSwitchingCluster) -> String {
+  "Switching cluster, \(cluster.transitionCount) transitions. \(cluster.explanation) Confidence \(cluster.confidence.rawValue)."
+}
+
+func tickEvidenceLabel(
+  _ tick: TimelineMarkerLayout.Tick,
+  transitions: [LocalTransitionMarker],
+  windowStartedAt: Date
+) -> String {
+  let members = tick.transitionIDs.compactMap { id in
+    transitions.first { $0.id == id }
+  }
+  guard let first = members.first, let last = members.last else { return "" }
+  guard members.count > 1 else { return transitionEvidenceLabel(first) }
+  let firstElapsed = duration(Int(first.occurredAt.timeIntervalSince(windowStartedAt).rounded()))
+  let lastElapsed = duration(Int(last.occurredAt.timeIntervalSince(windowStartedAt).rounded()))
+  return
+    "\(members.count) observed category switches, too close together to draw apart: from \(friendlyCategory(first.fromCategory)) at \(firstElapsed) through \(friendlyCategory(last.toCategory)) at \(lastElapsed)."
 }
 
 // MARK: - IPCStatusBanner

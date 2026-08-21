@@ -883,3 +883,201 @@ final class CorrectionWorkbenchSnapshotTests: XCTestCase {
       ])
   }
 }
+
+/// Renders the menu bar surface at the sizes a resizable window can actually
+/// take — including through the real `NSPanel`, chrome and all — so the window
+/// architecture and the header can be looked at instead of reasoned about.
+///
+/// Skipped unless `VELVT_WINDOW_SCREENSHOT_DIR` names an output directory,
+/// following the existing synthetic snapshot tests. No app launch, no
+/// Accessibility permission.
+@MainActor
+final class MenuBarWindowSnapshotTests: XCTestCase {
+  func testRenderMenuBarSurfaceWhenRequested() throws {
+    let output = try outputDirectory()
+    registerWordmark()
+
+    var sizes: [(String, CGSize)] = [
+      ("preferred", MenuBarPopoverLayout.preferredContentSize),
+      ("minimum", MenuBarPopoverLayout.minimumContentSize),
+      ("wide", CGSize(width: 900, height: 620)),
+    ]
+    // Width ladder at a fixed height, then a height ladder at the preferred
+    // width. `minimumContentSize` is read off these, not guessed.
+    for width in stride(from: CGFloat(340), through: 620, by: 20) {
+      sizes.append(("w\(Int(width))", CGSize(width: width, height: 480)))
+    }
+    for height in stride(from: CGFloat(240), through: 480, by: 40) {
+      sizes.append(("h\(Int(height))", CGSize(width: 600, height: height)))
+    }
+    for (name, size) in sizes {
+      try render(makeView(), named: "menu-bar-\(name).png", outputDirectory: output, size: size)
+    }
+    print("window_snapshot_count=\(sizes.count)")
+  }
+
+  /// The long-label case: a denied Accessibility permission puts "Collection
+  /// paused: Accessibility permission required" in the header, which is the
+  /// string most likely to be cut at the right edge when the window narrows.
+  func testRenderLongHeaderLabelsWhenRequested() throws {
+    let output = try outputDirectory()
+    registerWordmark()
+    let permissions = FakePermissionManager()
+    let presentation = PermissionPresentationModel(
+      permissionManager: permissions,
+      onboardingStateStore: InMemoryOnboardingStateStore()
+    )
+    permissions.setStatus(.denied, for: .accessibility)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+    for width in [CGFloat(500), 600, 900] {
+      try render(
+        makeView(presentation: presentation),
+        named: "menu-bar-denied-w\(Int(width)).png",
+        outputDirectory: output,
+        size: CGSize(width: width, height: 480)
+      )
+    }
+  }
+
+  /// The guided tour bar carries `layoutPriority(2)`, the highest in the
+  /// surface. With the window short and the tour open, the header is the thing
+  /// the layout would otherwise squeeze — and a squeezed fixed 30pt image box
+  /// clips rather than shrinks. These shots are the check that it does not.
+  func testRenderGuidedTourAtShortHeightsWhenRequested() throws {
+    let output = try outputDirectory()
+    registerWordmark()
+    for height in [CGFloat(320), 400, 567] {
+      let tour = GuidedTourModel()
+      tour.start()
+      try render(
+        makeView(guidedTour: tour),
+        named: "menu-bar-tour-h\(Int(height)).png",
+        outputDirectory: output,
+        size: CGSize(width: 600, height: height)
+      )
+    }
+  }
+
+  /// Renders through the real `NSPanel`, capturing the window's frame view so
+  /// the title bar strip is in the picture. This is the shot that shows the
+  /// header is not drawn under the chrome.
+  func testRenderTheRealPanelWindowWhenRequested() throws {
+    let output = try outputDirectory()
+    registerWordmark()
+    let presenter = MenuBarPanelPresenter()
+    defer { presenter.close() }
+    let hosting = NSHostingController(rootView: makeView())
+    hosting.sizingOptions = []
+    presenter.contentViewController = hosting
+    presenter.maximumContentSize = CGSize(width: 2_000, height: 1_500)
+
+    for (name, size) in [
+      ("panel-preferred", MenuBarPopoverLayout.preferredContentSize),
+      ("panel-minimum", MenuBarPopoverLayout.minimumContentSize),
+      ("panel-resized-larger", CGSize(width: 860, height: 640)),
+    ] {
+      presenter.contentSize = size
+      presenter.panel.orderFront(nil)
+      presenter.panel.layoutIfNeeded()
+      guard let frameView = presenter.panel.contentView?.superview else {
+        return XCTFail("panel has no frame view")
+      }
+      frameView.layoutSubtreeIfNeeded()
+      print(
+        "panel \(name) content=\(presenter.contentSize) frame=\(presenter.panel.frame.size) "
+          + "safeAreaTop=\(presenter.panel.contentView?.safeAreaInsets.top ?? -1)"
+      )
+      try write(frameView, named: "menu-bar-\(name).png", outputDirectory: output)
+    }
+  }
+
+  private func outputDirectory() throws -> String {
+    guard let output = ProcessInfo.processInfo.environment["VELVT_WINDOW_SCREENSHOT_DIR"] else {
+      throw XCTSkip("Set VELVT_WINDOW_SCREENSHOT_DIR to render the menu bar surface")
+    }
+    return output
+  }
+
+  /// SwiftPM does not compile `Assets.xcassets`, so `Image("VelvtWordmark")`
+  /// has no artwork to find under `swift test`. Registering the shipped SVG
+  /// under the same name is attempted here for completeness; SwiftUI resolves
+  /// `Image(_:)` through the asset catalog rather than through AppKit's named
+  /// image table, so the wordmark renders as its empty 76x30 box. The box is
+  /// what the clipping bug is about, and the box is measurable.
+  private func registerWordmark() {
+    guard NSImage(named: "VelvtWordmark") == nil else { return }
+    let repoRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let svg = repoRoot
+      .appendingPathComponent("Assets.xcassets/VelvtWordmark.imageset/VelvtWordmark.svg")
+    guard let image = NSImage(contentsOf: svg) else { return }
+    image.isTemplate = true
+    image.setName("VelvtWordmark")
+  }
+
+  private func makeView(
+    presentation: PermissionPresentationModel? = nil,
+    guidedTour: GuidedTourModel = GuidedTourModel()
+  ) -> MenuBarPopoverView {
+    let resolved =
+      presentation
+      ?? PermissionPresentationModel(
+        permissionManager: FakePermissionManager(),
+        onboardingStateStore: InMemoryOnboardingStateStore()
+      )
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    return MenuBarPopoverView(
+      presentation: resolved,
+      coordinator: ConcreteDisplayDataCoordinator(),
+      serviceConnectionStatus: ServiceConnectionStatusModel(
+        connectionStatus: Just(.connected).eraseToAnyPublisher()
+      ),
+      collectionActivityStatus: CollectionActivityStatusModel(
+        collectionStatus: Just(.running).eraseToAnyPublisher()
+      ),
+      currentActivity: CurrentActivityModel(),
+      serviceAlertModel: ServiceAlertModel(messages: Empty<ServerMessage, Never>()),
+      accountStateManager: AccountStateManager(keychain: FakeKeychain()),
+      ipcClient: client,
+      menuStatusViewModel: MenuStatusViewModel(ipcClient: client, messages: messages),
+      updateController: .disabled(),
+      guidedTour: guidedTour,
+      onEscape: {}
+    )
+  }
+
+  private func render<V: View>(
+    _ view: V,
+    named name: String,
+    outputDirectory: String,
+    size: CGSize
+  ) throws {
+    let root = AnyView(
+      view
+        .frame(width: size.width, height: size.height, alignment: .top)
+        .background(Color.velvtSurface)
+        .preferredColorScheme(.dark)
+    )
+    let host = NSHostingView(rootView: root)
+    host.frame = NSRect(origin: .zero, size: size)
+    host.layoutSubtreeIfNeeded()
+    try write(host, named: name, outputDirectory: outputDirectory)
+  }
+
+  private func write(_ view: NSView, named name: String, outputDirectory: String) throws {
+    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+      return XCTFail("Unable to create snapshot bitmap for \(name)")
+    }
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    guard let data = bitmap.representation(using: .png, properties: [:]) else {
+      return XCTFail("Unable to encode snapshot PNG for \(name)")
+    }
+    let directory = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try data.write(to: directory.appendingPathComponent(name), options: .atomic)
+  }
+}

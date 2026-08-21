@@ -724,14 +724,140 @@ public enum MenuBarPopoverLayout {
         )
     }
 
-    /// The floor the screen clamp may not go under. The clamp used to be
+    /// The floor the screen clamp may not go under, and the floor a manual
+    /// resize may not drag under. The clamp used to be
     /// `max(1, visibleFrame - inset)`, which on a small enough visible frame
-    /// hands `NSPopover` a 1pt dimension. A 1pt popover is not a degraded
+    /// hands the window a 1pt dimension. A 1pt window is not a degraded
     /// interface, it is an invisible one, and the user has no way back out of
-    /// it. Below this size the popover fills the visible frame instead.
-    public static let minimumContentSize = CGSize(width: 420, height: 320)
+    /// it. Below this size the window fills the visible frame instead.
+    ///
+    /// 500x320 is measured, not chosen. Rendering the surface on a width
+    /// ladder (`MenuBarWindowSnapshotTests`) puts the floor at 470pt: the
+    /// bottom bar reads "Start a focus sess…" at 460, "Start a focus sessi…"
+    /// at 465 and the whole label at 470. 500 keeps 30pt of slack for the
+    /// wider account labels ("Reauthenticate" instead of "Sign In"). On the
+    /// height ladder 320 is the shortest window where the Now tab's primary
+    /// action is on screen without scrolling; 280 cuts "Start a work block"
+    /// in half and 240 hides it behind the bottom bar.
+    public static let minimumContentSize = CGSize(width: 500, height: 320)
 
     public static let screenInset: CGFloat = 24
+
+    /// Measured on the panel style mask this app uses — `.titled` *without*
+    /// `.fullSizeContentView`, so the content view sits below the title bar
+    /// rather than under it. A window frame is this much taller than its
+    /// content. Deliberately not `.fullSizeContentView`: that mask reports
+    /// `contentView.safeAreaInsets.top == 28` and draws the content under the
+    /// title bar, which is exactly the "wordmark cut off at the top edge"
+    /// failure. With this mask the measured insets are zero on every edge and
+    /// a top clip is structurally impossible.
+    public static let titleBarHeight: CGFloat = 28
+
+    /// The gap between the bottom of the status item and the top of the
+    /// window, matching the standing distance `NSPopover` leaves for its arrow.
+    public static let statusItemGap: CGFloat = 6
+
+    /// The ceiling a manual resize may not drag past: the screen the window is
+    /// on, less the standing inset, and never below the floor.
+    public static func maximumContentSize(for visibleFrame: CGRect?) -> CGSize {
+        guard let visibleFrame else {
+            return CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        }
+        return CGSize(
+            width: max(minimumContentSize.width, visibleFrame.width - screenInset),
+            height: max(
+                minimumContentSize.height,
+                visibleFrame.height - screenInset - titleBarHeight
+            )
+        )
+    }
+
+    /// The size to open at.
+    ///
+    /// `stored` is the size the user last dragged the window to, or nil on a
+    /// first launch. A size the user chose outranks the preferred size, but
+    /// not the screen: a window restored from a 6K display onto a laptop is
+    /// clamped down rather than opened wider than the screen it is on. The
+    /// walkthrough adds its bar to whatever survives that, so opening the tour
+    /// grows the window by the bar and never moves the rows above it.
+    public static func resolvedContentSize(
+        stored: CGSize?,
+        visibleFrame: CGRect?,
+        includesWalkthrough: Bool = false
+    ) -> CGSize {
+        guard let stored, stored.width > 0, stored.height > 0 else {
+            return contentSize(for: visibleFrame, includesWalkthrough: includesWalkthrough)
+        }
+        let maximum = maximumContentSize(for: visibleFrame)
+        let base = CGSize(
+            width: min(max(stored.width, min(minimumContentSize.width, maximum.width)), maximum.width),
+            height: min(
+                max(stored.height, min(minimumContentSize.height, maximum.height)),
+                maximum.height
+            )
+        )
+        guard includesWalkthrough else { return base }
+        return CGSize(
+            width: base.width,
+            height: min(base.height + guidedTourBarHeight, maximum.height)
+        )
+    }
+
+    /// The size to persist after a manual resize. The walkthrough bar is the
+    /// window's, not the user's, so it is taken back off before storing —
+    /// otherwise resizing with the tour open would make the tour's extra 87pt
+    /// permanent and the window would grow by a bar on every launch.
+    public static func storableContentSize(
+        _ contentSize: CGSize,
+        includesWalkthrough: Bool
+    ) -> CGSize {
+        guard includesWalkthrough else { return contentSize }
+        return CGSize(
+            width: contentSize.width,
+            height: max(minimumContentSize.height, contentSize.height - guidedTourBarHeight)
+        )
+    }
+
+    /// Where the window goes: under the status item, horizontally centred on
+    /// it, and always inside the visible frame of the screen the status item
+    /// is on.
+    ///
+    /// The origin is recomputed from the status item on every open rather than
+    /// restored from disk. That is what makes the window survive the status
+    /// item moving — a menu bar rearrangement, a display change, a notch, a
+    /// second monitor being unplugged — without a restored frame ever being
+    /// able to land somewhere the user cannot see. Only the *size* is
+    /// persisted; the position is always derived.
+    public static func windowFrame(
+        forContentSize contentSize: CGSize,
+        statusItemFrame: CGRect?,
+        visibleFrame: CGRect?
+    ) -> CGRect {
+        let size = CGSize(width: contentSize.width, height: contentSize.height + titleBarHeight)
+        guard let visibleFrame else {
+            let origin = statusItemFrame.map {
+                CGPoint(x: $0.midX - size.width / 2, y: $0.minY - statusItemGap - size.height)
+            } ?? .zero
+            return CGRect(origin: origin, size: size)
+        }
+
+        var x: CGFloat
+        var y: CGFloat
+        if let statusItemFrame {
+            x = statusItemFrame.midX - size.width / 2
+            y = statusItemFrame.minY - statusItemGap - size.height
+        } else {
+            x = visibleFrame.midX - size.width / 2
+            y = visibleFrame.maxY - statusItemGap - size.height
+        }
+
+        // Clamp into the visible frame. `min` is applied before `max` so that a
+        // window wider or taller than the screen still has its top-left corner
+        // on screen rather than its bottom-right.
+        x = max(visibleFrame.minX, min(x, visibleFrame.maxX - size.width))
+        y = max(visibleFrame.minY, min(y, visibleFrame.maxY - size.height))
+        return CGRect(x: x, y: y, width: size.width, height: size.height)
+    }
 
     public static func contentSize(
         for visibleFrame: CGRect?,
@@ -1009,17 +1135,31 @@ public struct MenuBarPopoverView: View {
         }
     }
 
+    /// The window is resizable now, so this row has to survive being narrowed
+    /// and shortened rather than merely fitting at 600x480.
+    ///
+    /// Three things make it survive. `fixedSize(vertical:)` on the whole row
+    /// means the header reports the height it actually needs and is never
+    /// compressed into it: the wordmark's box is a fixed 30pt and a squeezed
+    /// fixed frame does not shrink, it clips — which is the reported cut-off
+    /// top edge. `layoutPriority(1)` means the flexible workspace below gives
+    /// up the space instead of the header. And both status lines wrap
+    /// (`fixedSize(horizontal: false, vertical: true)`, no `lineLimit`) so a
+    /// long label such as "Collection paused: Accessibility permission
+    /// required" or "Checking cloud synchronization…" takes a second line at a
+    /// narrow width instead of being truncated at the right edge.
     private var mainHeader: some View {
         HStack(alignment: .top, spacing: 8) {
             Image("VelvtWordmark")
                 .resizable()
                 .renderingMode(.template)
+                .interpolation(.high)
                 .scaledToFit()
                 .foregroundStyle(Color.velvtText)
                 .frame(width: 76, height: 30, alignment: .leading)
                 .accessibilityLabel("Velvt")
                 .layoutPriority(1)
-            Spacer()
+            Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(localCollectionPresentation.label)
@@ -1027,7 +1167,10 @@ public struct MenuBarPopoverView: View {
                         .foregroundStyle(localCollectionPresentation.color)
                         .multilineTextAlignment(.trailing)
                         .fixedSize(horizontal: false, vertical: true)
-                    Circle().fill(localCollectionPresentation.color).frame(width: 7, height: 7)
+                    Circle()
+                        .fill(localCollectionPresentation.color)
+                        .frame(width: 7, height: 7)
+                        .layoutPriority(1)
                 }
                 Text(backendStatusLabel)
                     .font(.caption2)
@@ -1040,6 +1183,9 @@ public struct MenuBarPopoverView: View {
         .padding(.horizontal, 16)
         .padding(.top, 15)
         .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .layoutPriority(1)
         .overlay {
             if guidedTour.isPresented, guidedTour.step == .statusAndRecovery {
                 RoundedRectangle(cornerRadius: 7)
@@ -1236,10 +1382,17 @@ public struct MenuBarPopoverView: View {
             Button {
                 showsFocusSession.toggle()
             } label: {
+                // The window narrows now, and something in this row has to
+                // give first. It should not be the one action the row exists
+                // for: without this the primary button was the last item in
+                // the HStack and therefore the first to truncate, reading
+                // "Start a focus sess…" from 465pt down.
                 Label("Start a focus session", systemImage: "timer")
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
+            .layoutPriority(1)
             .tourHighlight(guidedTour.isPresented && guidedTour.step == .today)
             .popover(isPresented: $showsFocusSession, arrowEdge: .bottom) {
                 ScrollView {

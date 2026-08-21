@@ -482,6 +482,211 @@ final class CollectionModuleTests: XCTestCase {
         XCTAssertTrue(sink.events.isEmpty)
     }
 
+    // MARK: - Block-end dwell flush
+    //
+    // The defect these cover: a dwell is start-stamped and end-delivered, so
+    // the agent cannot know its length until the user leaves. The only flush
+    // paths are `stop()`, AX-observer failure, and permission revocation, so a
+    // dwell still in progress when a work block ends is never emitted at all.
+    // `flushPendingDwell(at:)` is the primitive that closes it; the tests below
+    // pin the conservation property that makes splitting a dwell safe.
+
+    func testDwellStillInProgressIsNeverEmittedWithoutAFlush() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "code", 20: "chat"]
+        let dates = DateQueue([
+            Date(timeIntervalSince1970: 0),
+            Date(timeIntervalSince1970: 182),
+            Date(timeIntervalSince1970: 263),
+            // Consumed by `deinit`'s `stop()` once the agent goes out of scope.
+            Date(timeIntervalSince1970: 1_598)
+        ])
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            now: dates.next
+        )
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+        workspace.activate(.init(processIdentifier: 20, appName: "Slack"))
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+        // The user now stays in Editor past the end of the block. No switch
+        // happens, so nothing further is emitted and the last 1,237 seconds of
+        // the block are invisible to every consumer of the event stream.
+
+        XCTAssertEqual(sink.events.count, 2)
+        XCTAssertEqual(sink.events.map(\.appName), ["Editor", "Slack"])
+        XCTAssertEqual(
+            sink.events.map(\.durationSeconds).reduce(0, +),
+            263,
+            "Only the two closed dwells are accounted for; the open one is not."
+        )
+    }
+
+    func testFlushEmitsTheDwellMeasuredSoFarAndDoesNotDoubleCountTheLaterSwitch() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "code", 20: "chat"]
+        let dates = DateQueue([
+            Date(timeIntervalSince1970: 0),
+            Date(timeIntervalSince1970: 182),
+            Date(timeIntervalSince1970: 263),
+            Date(timeIntervalSince1970: 1_598),
+            // Consumed by `deinit`'s `stop()` once the agent goes out of scope.
+            Date(timeIntervalSince1970: 1_700)
+        ])
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            now: dates.next
+        )
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+        workspace.activate(.init(processIdentifier: 20, appName: "Slack"))
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+
+        // The block's last second. The dwell is still open and has run 1,232s.
+        XCTAssertTrue(agent.flushPendingDwell(at: Date(timeIntervalSince1970: 1_495)))
+        // The user genuinely leaves 103 seconds later.
+        workspace.activate(.init(processIdentifier: 20, appName: "Slack"))
+
+        XCTAssertEqual(
+            sink.events,
+            [
+                RawEvent(
+                    appName: "Editor",
+                    windowTitle: "code",
+                    occurredAt: Date(timeIntervalSince1970: 0),
+                    durationSeconds: 182
+                ),
+                RawEvent(
+                    appName: "Slack",
+                    windowTitle: "chat",
+                    occurredAt: Date(timeIntervalSince1970: 182),
+                    durationSeconds: 81
+                ),
+                RawEvent(
+                    appName: "Editor",
+                    windowTitle: "code",
+                    occurredAt: Date(timeIntervalSince1970: 263),
+                    durationSeconds: 1_232
+                ),
+                RawEvent(
+                    appName: "Editor",
+                    windowTitle: "code",
+                    occurredAt: Date(timeIntervalSince1970: 1_495),
+                    durationSeconds: 103
+                )
+            ]
+        )
+
+        // Conservation: the two Editor spans abut at 1495 and do not overlap,
+        // so the split adds no seconds and loses none.
+        let editorSeconds = sink.events
+            .filter { $0.appName == "Editor" }
+            .map(\.durationSeconds)
+            .reduce(0, +)
+        XCTAssertEqual(editorSeconds, 182 + 1_335)
+        XCTAssertEqual(sink.events.map(\.durationSeconds).reduce(0, +), 1_598)
+    }
+
+    func testFlushIsIdempotentAndEmitsNothingWhenNothingHasBeenMeasured() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "code"]
+        let dates = DateQueue([
+            Date(timeIntervalSince1970: 0),
+            // Consumed by `deinit`'s `stop()` once the agent goes out of scope.
+            Date(timeIntervalSince1970: 900)
+        ])
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            now: dates.next
+        )
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+
+        // A flush at the dwell's own anchor has measured nothing.
+        XCTAssertFalse(agent.flushPendingDwell(at: Date(timeIntervalSince1970: 0)))
+        XCTAssertTrue(sink.events.isEmpty)
+
+        XCTAssertTrue(agent.flushPendingDwell(at: Date(timeIntervalSince1970: 600)))
+        // A repeat at the same instant re-measures zero and stays silent, so a
+        // duplicated trigger cannot inflate the ledger.
+        XCTAssertFalse(agent.flushPendingDwell(at: Date(timeIntervalSince1970: 600)))
+
+        XCTAssertEqual(sink.events.count, 1)
+        XCTAssertEqual(sink.events[0].durationSeconds, 600)
+    }
+
+    func testFlushEmitsNothingBeforeStartOrAfterStop() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "code"]
+        let dates = DateQueue([
+            Date(timeIntervalSince1970: 0),
+            Date(timeIntervalSince1970: 100)
+        ])
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            now: dates.next
+        )
+
+        XCTAssertFalse(agent.flushPendingDwell(at: Date(timeIntervalSince1970: 50)))
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+        agent.stop()
+
+        XCTAssertFalse(agent.flushPendingDwell(at: Date(timeIntervalSince1970: 999)))
+        XCTAssertEqual(sink.events.count, 1, "Only stop()'s own flush.")
+        XCTAssertEqual(sink.events[0].durationSeconds, 100)
+    }
+
+    func testFlushPreservesActivityIdentitySoTheDwellIsNotSplitAgain() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "code"]
+        let dates = DateQueue([
+            Date(timeIntervalSince1970: 0),
+            Date(timeIntervalSince1970: 700),
+            // Consumed by `deinit`'s `stop()` once the agent goes out of scope.
+            Date(timeIntervalSince1970: 800)
+        ])
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            now: dates.next
+        )
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+        XCTAssertTrue(agent.flushPendingDwell(at: Date(timeIntervalSince1970: 600)))
+        // A repeat notification for the unchanged activity must still be
+        // recognised as a continuation of the re-opened dwell, not a switch.
+        accessibility.emitTitle("code")
+
+        XCTAssertEqual(sink.events.count, 1)
+        XCTAssertEqual(sink.events[0].occurredAt, Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(sink.events[0].durationSeconds, 600)
+    }
+
     private func makeAgent(
         sink: RecordingEventSink = RecordingEventSink(),
         permission: FakePermissionChecker = FakePermissionChecker(isTrusted: true),

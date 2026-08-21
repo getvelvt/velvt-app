@@ -42,6 +42,23 @@ public struct RawEvent: Equatable, Sendable {
             durationSeconds: seconds
         )
     }
+
+    /// The same activity, re-opened at `instant` with nothing measured yet.
+    ///
+    /// Used to split one continuous dwell into two abutting spans. The
+    /// identity fields are preserved verbatim so the agent's
+    /// same-activity comparison still treats a later notification for this
+    /// app as a continuation rather than a switch.
+    func reanchored(at instant: Date) -> RawEvent {
+        RawEvent(
+            appName: appName,
+            bundleIdentifier: bundleIdentifier,
+            windowTitle: windowTitle,
+            focusedDocumentURL: focusedDocumentURL,
+            occurredAt: instant,
+            durationSeconds: 0
+        )
+    }
 }
 
 public protocol EventSink: AnyObject {
@@ -205,10 +222,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             }
             isRunning = false
             activeProcessIdentifier = nil
-            let finalEvent = pendingDwellEvent.map {
-                $0.withDuration(seconds: dwellSeconds(from: $0.occurredAt, through: now()))
-            }
-            pendingDwellEvent = nil
+            let finalEvent = takePendingDwellLocked(at: now(), reanchor: false)
             return (true, finalEvent)
         }
         guard result.shouldStop else {
@@ -220,6 +234,84 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         accessibilityObserver.stop()
         workspaceObserver.stop()
         statusSubject.send(.idle)
+    }
+
+    /// Emits the dwell that is still in progress, carrying only the duration
+    /// measured up to `instant`, and re-opens the same activity at `instant`
+    /// so the remainder is still measured and emitted when the user actually
+    /// switches away.
+    ///
+    /// Splitting one dwell this way conserves time exactly. The flushed span
+    /// `[start, instant]` and the later span `[instant, switch]` abut and do
+    /// not overlap, so no second of activity is counted twice and none is
+    /// dropped. A flush with nothing measured yet emits nothing, so repeated
+    /// calls at the same instant are idempotent.
+    ///
+    /// This is not a scheduled activity check and does not make the module
+    /// non-event-driven: it queries neither the Accessibility API nor the
+    /// workspace, and it reports only an observation the agent has already
+    /// made. The caller supplies `instant`; the agent never wakes itself.
+    ///
+    /// **Not yet wired to work-block end, deliberately.** Two facts block it,
+    /// both verified against the service on 2026-08-21:
+    ///
+    /// 1. The only block-end signal Swift receives is the `work_block_state`
+    ///    snapshot the deadline scheduler pushes *after* it has already run
+    ///    `finish` (`work_block/mod.rs:1289`). By then the block reads
+    ///    `completed`, so a flush sent on that signal is discarded by the
+    ///    phase guard at `work_block/mod.rs:519` and changes nothing.
+    /// 2. Firing earlier — off the snapshot's `ends_at` — would land the event
+    ///    while the block is still active and would fix the ledger, but the
+    ///    service also runs `evaluate_drift` on every observation
+    ///    (`work_block/mod.rs:563`) and can push an OS notification from it
+    ///    (`ipc/router.rs:1507`). The gates read the flushed event's
+    ///    `occurred_at`, which is the dwell's start, so a long terminal dwell
+    ///    can clear them and interrupt the user seconds before their block
+    ///    ends. Suppressing that needs a field the v28 protocol does not have.
+    ///
+    /// - Returns: `true` when an event was emitted.
+    @discardableResult
+    public func flushPendingDwell(at instant: Date) -> Bool {
+        let completedEvent = lock.withLock { () -> RawEvent? in
+            guard isRunning, let pending = pendingDwellEvent else {
+                return nil
+            }
+            guard dwellSeconds(from: pending.occurredAt, through: instant) > 0 else {
+                return nil
+            }
+            return takePendingDwellLocked(at: instant, reanchor: true)
+        }
+        guard let completedEvent else {
+            return false
+        }
+        eventSink?.receive(completedEvent)
+        return true
+    }
+
+    /// Closes the in-progress dwell at `instant` and returns the event to
+    /// deliver, or `nil` when none is open.
+    ///
+    /// When `reanchor` is true the same activity is re-opened at `instant`,
+    /// so collection continues and the remaining time is measured against
+    /// the new anchor. When it is false the dwell is discarded, which is
+    /// what the teardown paths want: collection is ending, so there is no
+    /// remainder to measure.
+    ///
+    /// The caller must already hold `lock`. `instant` is an autoclosure so the
+    /// teardown paths, which pass `now()`, still read the clock only when a
+    /// dwell is actually open.
+    private func takePendingDwellLocked(
+        at instant: @autoclosure () -> Date,
+        reanchor: Bool
+    ) -> RawEvent? {
+        guard let pending = pendingDwellEvent else {
+            return nil
+        }
+        let closedAt = instant()
+        pendingDwellEvent = reanchor ? pending.reanchored(at: closedAt) : nil
+        return pending.withDuration(
+            seconds: dwellSeconds(from: pending.occurredAt, through: closedAt)
+        )
     }
 
     deinit {
@@ -341,10 +433,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
                 return (false, nil)
             }
             activeProcessIdentifier = nil
-            let finalEvent = pendingDwellEvent.map {
-                $0.withDuration(seconds: dwellSeconds(from: $0.occurredAt, through: now()))
-            }
-            pendingDwellEvent = nil
+            let finalEvent = takePendingDwellLocked(at: now(), reanchor: false)
             return (true, finalEvent)
         }
         guard result.shouldHandle else {
@@ -368,10 +457,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             }
             isRunning = false
             activeProcessIdentifier = nil
-            let finalEvent = pendingDwellEvent.map {
-                $0.withDuration(seconds: dwellSeconds(from: $0.occurredAt, through: now()))
-            }
-            pendingDwellEvent = nil
+            let finalEvent = takePendingDwellLocked(at: now(), reanchor: false)
             return (true, finalEvent)
         }
         guard result.shouldStop else {

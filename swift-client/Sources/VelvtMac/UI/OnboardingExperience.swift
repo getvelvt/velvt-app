@@ -274,7 +274,7 @@ public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
         case .today: "Start a focus session"
         case .earlySignal: "Today's insight"
         case .focusFragmentation: "Focus fragmentation"
-        case .dailyActivity: "Your week"
+        case .dailyActivity: "Patterns"
         case .statusAndRecovery: "Collection status"
         case .settings: "Settings"
         }
@@ -289,11 +289,22 @@ public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
         case .focusFragmentation:
             "Review broad context changes within your current focus session."
         case .dailyActivity:
-            "Review seven days of privacy-safe activity in one place."
+            // The seven-day activity chart this step used to point at has been
+            // retired; the correction rows it carried now live in Settings.
+            //
+            // This line must describe what the tab RENDERS, which today is
+            // WeekOverWeekCoachingView and nothing else. An earlier draft
+            // promised "one thing Velvt has noticed about how you work" — that
+            // is the antecedent card, which is shadow-only and reads nothing
+            // into this tab. Onboarding is the first thing a user reads; a
+            // promise it cannot keep on day one is the exact failure this
+            // product's thesis cannot survive. Change this line when the
+            // antecedent surface actually lands, not before.
+            "Your week set against the one before it, once there is enough local evidence to compare."
         case .statusAndRecovery:
             "See whether local collection and cloud synchronization need attention."
         case .settings:
-            "Manage collection, queued events, your account, and this tour."
+            "Manage collection, teach Velvt which apps are which, your account, and this tour."
         }
     }
 }

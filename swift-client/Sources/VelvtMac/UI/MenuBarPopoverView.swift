@@ -11,58 +11,41 @@ public enum MenuBarAccountAction: Equatable {
 private struct HistoryWorkspaceView: View {
     @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
     @ObservedObject var localDashboardCoordinator: LocalDashboardCoordinator
-    let menuStatusViewModel: MenuStatusViewModel?
 
     var body: some View {
         YourWeekContentView(
             snapshot: localDashboardCoordinator.snapshot,
             historyAvailability: coordinator.historyAvailability,
-            historyViewModel: coordinator.historyViewModel,
-            onCorrectActivity: { segment, category, localName in
-                guard
-                    let eventID = segment.representativeEventID,
-                    let stableID = segment.stableID
-                else { return }
-                menuStatusViewModel?.correct(
-                    eventID: eventID,
-                    stableID: stableID,
-                    category: category,
-                    localActivityName: localName
-                )
-                localDashboardCoordinator.refresh()
-            },
-            onUndoActivity: { segment in
-                guard let stableID = segment.stableID else { return }
-                menuStatusViewModel?.undoCorrection(stableID: stableID)
-                localDashboardCoordinator.refresh()
-            }
+            historyViewModel: coordinator.historyViewModel
         )
         .onAppear { localDashboardCoordinator.refresh() }
     }
 }
 
 struct YourWeekContentView: View {
+    /// Retained but not rendered here. The seven-day activity chart that used
+    /// to lead this tab is the literal Screen Time artifact, and this is the
+    /// tab 05 § 3 reserves for a single pattern claim — "a list of patterns is
+    /// a dashboard, and a dashboard is a tracker." The activity rows moved to
+    /// the Settings correction workbench, where a duration next to a
+    /// correctable label is a tool rather than a report. This snapshot stays
+    /// on the type because the antecedent card lands on this tab and reads
+    /// from it.
     let snapshot: LocalDashboardSnapshot?
     let historyAvailability: DeliveryAvailability
     @ObservedObject var historyViewModel: HistoryViewModel
-    var onCorrectActivity: (LocalDailyActivitySegment, String, String?) -> Void = { _, _, _ in }
-    var onUndoActivity: (LocalDailyActivitySegment) -> Void = { _ in }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                DailyActivityView(
-                    snapshot: snapshot,
-                    onCorrectActivity: onCorrectActivity,
-                    onUndoActivity: onUndoActivity
-                )
-                WeekOverWeekCoachingView(
-                    availability: historyAvailability,
-                    viewModel: historyViewModel
-                )
-            }
-            .padding(12)
+        // No scroll view of its own: the workspace detail pane scrolls every
+        // tab now, and nesting two scroll views made the inner one swallow
+        // the wheel events that should have moved the outer one.
+        VStack(alignment: .leading, spacing: 12) {
+            WeekOverWeekCoachingView(
+                availability: historyAvailability,
+                viewModel: historyViewModel
+            )
         }
+        .padding(12)
     }
 }
 
@@ -714,8 +697,40 @@ public struct PopoverConnectionPresentation {
 }
 
 public enum MenuBarPopoverLayout {
-    public static let preferredContentSize = CGSize(width: 660, height: 450)
-    public static let walkthroughContentSize = CGSize(width: 660, height: 600)
+    /// 600pt is measured, not chosen. It is the narrowest popover width at
+    /// which the Now tab stops rewrapping: the tab's content measures 325pt
+    /// tall at 660, 620 and 600, then 354pt at 560 and 383pt at 500. Every
+    /// 40pt of extra narrowing buys roughly 30pt of extra height on the
+    /// tallest tab, so width below 600 is paid for in the scarce dimension.
+    /// At 600 the popover is 47% of a 1280pt laptop screen instead of 52%.
+    ///
+    /// 480pt of height clears the tallest realistic Now tab — an active work
+    /// block plus the early signal measures 358pt against a 390pt content
+    /// budget — without needing the whole pane to scroll in the common case.
+    public static let preferredContentSize = CGSize(width: 600, height: 480)
+
+    /// The guided-tour bar measures exactly 86pt at 560, 600 and 660pt wide,
+    /// plus its 1pt divider. Growing the popover by that amount and no more
+    /// keeps every row of the main content where it was when the tour opens
+    /// and closes. The previous fixed 600pt walkthrough height added 150pt,
+    /// so opening the tour pushed the content pane 63pt taller and closing it
+    /// pulled it back — a visible jump on both edges of the transition.
+    public static let guidedTourBarHeight: CGFloat = 87
+
+    public static var walkthroughContentSize: CGSize {
+        CGSize(
+            width: preferredContentSize.width,
+            height: preferredContentSize.height + guidedTourBarHeight
+        )
+    }
+
+    /// The floor the screen clamp may not go under. The clamp used to be
+    /// `max(1, visibleFrame - inset)`, which on a small enough visible frame
+    /// hands `NSPopover` a 1pt dimension. A 1pt popover is not a degraded
+    /// interface, it is an invisible one, and the user has no way back out of
+    /// it. Below this size the popover fills the visible frame instead.
+    public static let minimumContentSize = CGSize(width: 420, height: 320)
+
     public static let screenInset: CGFloat = 24
 
     public static func contentSize(
@@ -727,9 +742,29 @@ public enum MenuBarPopoverLayout {
             : preferredContentSize
         guard let visibleFrame else { return preferredSize }
         return CGSize(
-            width: min(preferredSize.width, max(1, visibleFrame.width - screenInset)),
-            height: min(preferredSize.height, max(1, visibleFrame.height - screenInset))
+            width: clamp(
+                preferredSize.width,
+                available: visibleFrame.width,
+                minimum: minimumContentSize.width
+            ),
+            height: clamp(
+                preferredSize.height,
+                available: visibleFrame.height,
+                minimum: minimumContentSize.height
+            )
         )
+    }
+
+    /// Shrinks to the screen, but never below a size a person can read and
+    /// never past the screen itself. The result is always greater than zero
+    /// and never exceeds `available`.
+    private static func clamp(
+        _ preferred: CGFloat,
+        available: CGFloat,
+        minimum: CGFloat
+    ) -> CGFloat {
+        let usableMinimum = min(preferred, minimum)
+        return max(min(usableMinimum, available), min(preferred, available - screenInset))
     }
 }
 
@@ -741,7 +776,9 @@ public enum MenuBarMotionPolicy {
 
 enum SettingsSubmenu: CaseIterable, Equatable {
     case appInfo
-    case queuedEvents
+    /// The correction workbench. Named for what a person does here, not for
+    /// the upload queue it also happens to list.
+    case teachApps
     case collectionSettings
     case onboarding
     #if DEBUG
@@ -751,7 +788,7 @@ enum SettingsSubmenu: CaseIterable, Equatable {
     var title: String {
         switch self {
         case .appInfo: return "App Info"
-        case .queuedEvents: return "Activity & Corrections"
+        case .teachApps: return "Teach Velvt Your Apps"
         case .collectionSettings: return "Collection Settings"
         case .onboarding: return "Onboarding & Tour"
         #if DEBUG
@@ -763,12 +800,24 @@ enum SettingsSubmenu: CaseIterable, Equatable {
     var preferredHeight: CGFloat {
         switch self {
         case .appInfo: return 420
-        case .queuedEvents: return 520
+        case .teachApps: return 520
         case .collectionSettings: return 180
         case .onboarding: return 210
         #if DEBUG
         case .debug: return 190
         #endif
+        }
+    }
+
+    /// The workbench carries a text field, a category picker and a row of
+    /// controls on one line; measured at 300pt the inline correction editor
+    /// needs 97pt of height against 84pt at pane width, because every control
+    /// wraps. 380pt gives it room while keeping the submenu plus the popover
+    /// under 1000pt of a 1280pt screen.
+    var preferredWidth: CGFloat {
+        switch self {
+        case .teachApps: return 380
+        default: return 300
         }
     }
 }
@@ -851,7 +900,6 @@ public struct MenuBarPopoverView: View {
     private let onTerminate: () -> Void
     @State private var navigator = MenuBarPopoverNavigator()
     @State private var presentedSettingsSubmenu: SettingsSubmenu?
-    @State private var confirmsClassificationReset = false
     @State private var confirmsWorkBlockClear = false
     @State private var diagnosticsCopied = false
     @State private var debugInsightStatus: String?
@@ -1036,12 +1084,16 @@ public struct MenuBarPopoverView: View {
                 Divider().opacity(0.15)
             }
 
-            Group {
-                if navigator.selectedWorkspaceTab == .settings {
-                    ScrollView { workspaceTransitionContent }
-                } else {
-                    workspaceTransitionContent
-                }
+            // Every tab scrolls, not only Settings. Measured at the 600pt
+            // popover width against a 390pt content budget: the Now tab is
+            // 358pt with an active block, 392pt once the privacy disclosure is
+            // open, and 435pt with the accessibility recovery banner above it.
+            // Without a scroll view on this path that last 45-77pt was simply
+            // clipped, and the Now tab has no scroll view of its own anywhere
+            // beneath it — so the "Start a work block" button could sit below
+            // the cut with no way to reach it.
+            ScrollView {
+                workspaceTransitionContent
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
@@ -1165,8 +1217,7 @@ public struct MenuBarPopoverView: View {
             case .history:
                 HistoryWorkspaceView(
                     coordinator: coordinator,
-                    localDashboardCoordinator: localDashboardCoordinator,
-                    menuStatusViewModel: menuStatusViewModel
+                    localDashboardCoordinator: localDashboardCoordinator
                 )
                 .tourHighlight(guidedTour.isPresented && guidedTour.step == .dailyActivity)
 
@@ -1254,10 +1305,7 @@ public struct MenuBarPopoverView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             settingsSubmenuRow(SettingsSubmenu.appInfo.title, submenu: .appInfo)
-            settingsSubmenuRow(
-                "\(SettingsSubmenu.queuedEvents.title) (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))",
-                submenu: .queuedEvents
-            )
+            settingsSubmenuRow(SettingsSubmenu.teachApps.title, submenu: .teachApps)
             settingsSubmenuRow(SettingsSubmenu.collectionSettings.title, submenu: .collectionSettings)
             settingsSubmenuRow(SettingsSubmenu.onboarding.title, submenu: .onboarding)
             #if DEBUG
@@ -1341,99 +1389,15 @@ public struct MenuBarPopoverView: View {
             }
             .onAppear { menuStatusViewModel?.refresh() }
 
-        case .queuedEvents:
-            VStack(spacing: 0) {
-                submenuTitle(
-                    "\(submenu.title) (\(menuStatusViewModel?.status?.queuedEventCount ?? 0) queued)"
+        case .teachApps:
+            if let menuStatusViewModel {
+                CorrectionWorkbenchView(
+                    menuStatus: menuStatusViewModel,
+                    localDashboard: localDashboardCoordinator,
+                    title: submenu.title
                 )
-                classificationExplanation
-                let queuedEvents = Array((menuStatusViewModel?.status?.queuedEvents ?? []).prefix(10))
-                if queuedEvents.isEmpty {
-                    Text("No queued events")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(queuedEvents) { event in
-                                QueuedEventCorrectionRow(
-                                    event: event,
-                                    onSave: { category, activityName in
-                                        menuStatusViewModel?.correct(
-                                            event,
-                                            category: category,
-                                            localActivityName: activityName
-                                        )
-                                    },
-                                    onUndo: {
-                                        menuStatusViewModel?.undoCorrection(event)
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    .frame(height: 190)
-                }
-                Divider().padding(.vertical, 6)
-                Text("Saved corrections")
-                    .font(.caption.bold())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                if let menuStatusViewModel {
-                    CorrectionHistoryBrowser(model: menuStatusViewModel)
-                } else {
-                    Text("No saved corrections yet")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                }
-                if let sendError = menuStatusViewModel?.sendError {
-                    Text(sendError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                }
-                // The correction is already saved by the time this appears.
-                // Copy comes from the service verbatim so the confirmation says
-                // exactly what changed and for how long.
-                if let acknowledgment = menuStatusViewModel?.correctionAcknowledgment {
-                    Label(acknowledgment, systemImage: "checkmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .accessibilityLabel(acknowledgment)
-                }
-                Divider().padding(.top, 8)
-                Button("Retry Cloud Synchronization") { menuStatusViewModel?.sendAllNow() }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                Button("Reset Local Activity Corrections", role: .destructive) {
-                    confirmsClassificationReset = true
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-            .onAppear { menuStatusViewModel?.refresh() }
-            .confirmationDialog(
-                "Reset all local activity and category corrections on this Mac?",
-                isPresented: $confirmsClassificationReset,
-                titleVisibility: .visible
-            ) {
-                Button("Reset Corrections", role: .destructive) {
-                    menuStatusViewModel?.resetClassificationLearning()
-                }
-                Button("Cancel", role: .cancel) {}
+            } else {
+                CorrectionWorkbenchUnavailableView(title: submenu.title)
             }
 
         case .collectionSettings:
@@ -1803,7 +1767,11 @@ public struct MenuBarPopoverView: View {
                 ScrollView {
                     settingsSubmenuContent(for: submenu)
                 }
-                .frame(width: 300, height: submenu.preferredHeight, alignment: .top)
+                .frame(
+                    width: submenu.preferredWidth,
+                    height: submenu.preferredHeight,
+                    alignment: .top
+                )
                 .preferredColorScheme(.dark)
             }
             .frame(width: 1, height: 1)
@@ -1872,26 +1840,6 @@ public struct MenuBarPopoverView: View {
         }
         .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
     }
-    private var classificationExplanation: some View {
-        Text(
-            "Velvt categorizes activity on this Mac. Unclassified means it is not sure. "
-                + "Give an activity a local name and category to teach similar activity. "
-                + "Saved corrections remain available after upload; raw app and window details "
-                + "stay on this Mac."
-        )
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
-        .accessibilityLabel(
-            "How categories work. Velvt categorizes activity on this Mac. "
-                + "Unclassified means it is not sure. Local names and categories teach similar "
-                + "activity and remain after upload. Raw app and window details stay on this Mac."
-        )
-    }
-
   private func statusRow(
     _ title: String, presentation: PopoverConnectionPresentation, refresh: @escaping () -> Void
   ) -> some View {
@@ -1915,6 +1863,218 @@ public struct MenuBarPopoverView: View {
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+    }
+}
+
+/// The correction workbench, extracted so that it actually observes the model
+/// it renders.
+///
+/// `MenuBarPopoverView` holds `MenuStatusViewModel` as a plain `let`, not an
+/// `@ObservedObject` — an `@ObservedObject` cannot be optional. So nothing in
+/// this surface was subscribed to the model that publishes corrections: the
+/// queued rows, the saved-corrections list and the service's "correction
+/// saved" confirmation all redrew only when some *unrelated* observed object
+/// happened to publish. The confirmation clears itself after six seconds, so
+/// whether the user ever saw the acknowledgement for the correction they just
+/// made came down to whether an event happened to be captured inside that
+/// window. Taking the model non-optionally here restores the subscription.
+struct CorrectionWorkbenchView: View {
+    @ObservedObject var menuStatus: MenuStatusViewModel
+    @ObservedObject var localDashboard: LocalDashboardCoordinator
+    let title: String
+    @State private var confirmsReset = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(title)
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            explanation
+            // The activity rows. They arrived here from the Patterns tab,
+            // where the same data was drawn as a seven-day stacked chart with
+            // a percentage column — the literal Screen Time artifact, and the
+            // single strongest reason the product read as a tracker. The rows
+            // are the affordance for choosing something to correct, so they
+            // are kept; the week and the percentages are not.
+            LocalActivityCorrectionList(
+                snapshot: localDashboard.snapshot,
+                onCorrectActivity: { segment, category, localName in
+                    guard
+                        let eventID = segment.representativeEventID,
+                        let stableID = segment.stableID
+                    else { return }
+                    menuStatus.correct(
+                        eventID: eventID,
+                        stableID: stableID,
+                        category: category,
+                        localActivityName: localName
+                    )
+                },
+                onUndoActivity: { segment in
+                    guard let stableID = segment.stableID else { return }
+                    menuStatus.undoCorrection(stableID: stableID)
+                }
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+
+            Divider().padding(.vertical, 6)
+            sectionLabel(
+                "Waiting to sync (\(menuStatus.status?.queuedEventCount ?? 0))"
+            )
+            queuedEventRows
+
+            Divider().padding(.vertical, 6)
+            sectionLabel("Saved corrections")
+            CorrectionHistoryBrowser(model: menuStatus)
+
+            if let sendError = menuStatus.sendError {
+                Text(sendError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            }
+            // The correction is already saved by the time this appears.
+            // Copy comes from the service verbatim so the confirmation says
+            // exactly what changed and for how long.
+            if let acknowledgment = menuStatus.correctionAcknowledgment {
+                Label(acknowledgment, systemImage: "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .accessibilityLabel(acknowledgment)
+            }
+
+            Divider().padding(.top, 8)
+            Button("Retry Cloud Synchronization") { menuStatus.sendAllNow() }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+            Button("Reset Local Activity Corrections", role: .destructive) {
+                confirmsReset = true
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .onAppear {
+            menuStatus.refresh()
+            localDashboard.refresh()
+        }
+        // Redraw the activity rows off the service's own confirmation that a
+        // correction was taken, not off the click that requested it.
+        //
+        // The two commands travel over one actor-isolated socket client on two
+        // unstructured tasks, so a dashboard request fired immediately after a
+        // correction can reach the router first and rebuild the rows from
+        // pre-correction data. The router then has nothing further to push,
+        // and `LocalDashboardCoordinator` only refreshes on a work-block
+        // message, on reconnect, or on appear — so the corrected label could
+        // stay wrong on screen indefinitely. The acknowledgement cannot arrive
+        // before the correction has been written, which makes it the one
+        // signal that is safe to refresh on.
+        .onChange(of: menuStatus.correctionAcknowledgment) { acknowledgment in
+            guard acknowledgment != nil else { return }
+            localDashboard.refresh()
+        }
+        .confirmationDialog(
+            "Reset all local activity and category corrections on this Mac?",
+            isPresented: $confirmsReset,
+            titleVisibility: .visible
+        ) {
+            Button("Reset Corrections", role: .destructive) {
+                menuStatus.resetClassificationLearning()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    @ViewBuilder
+    private var queuedEventRows: some View {
+        let queuedEvents = Array((menuStatus.status?.queuedEvents ?? []).prefix(10))
+        if queuedEvents.isEmpty {
+            Text("Nothing is waiting to sync.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+        } else {
+            // No scroll view of its own. The list is capped at ten rows by the
+            // service, and a 190pt scroll view nested inside the submenu's own
+            // scroll view meant a wheel gesture over these rows moved the
+            // inner list and then stopped, instead of continuing down to the
+            // saved corrections below it.
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(queuedEvents) { event in
+                    QueuedEventCorrectionRow(
+                        event: event,
+                        onSave: { category, activityName in
+                            menuStatus.correct(
+                                event,
+                                category: category,
+                                localActivityName: activityName
+                            )
+                        },
+                        onUndo: { menuStatus.undoCorrection(event) }
+                    )
+                }
+            }
+        }
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption.bold())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+    }
+
+    private var explanation: some View {
+        Text(Self.explanationCopy)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+            .accessibilityLabel(Self.explanationCopy)
+    }
+
+    /// 05 § 2, verbatim. It is the whole framing of this surface: not a report
+    /// on the user, a place where the user corrects the software.
+    static let explanationCopy =
+        "Velvt gets these wrong sometimes. Fixing one here fixes it everywhere, on this Mac only — nothing about it ever syncs."
+}
+
+/// Shown when the correction workbench has no service connection behind it.
+struct CorrectionWorkbenchUnavailableView: View {
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(title)
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            Text(
+                "The local privacy service is not connected, so there is nothing to correct yet."
+            )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+        }
     }
 }
 

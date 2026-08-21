@@ -141,8 +141,47 @@ final class MenuBarNavigationTests: XCTestCase {
         )
     }
 
-    func testTourSafePopoverHeightIs450Points() {
-        XCTAssertEqual(MenuBarPopoverLayout.preferredContentSize, CGSize(width: 660, height: 450))
+    /// Both numbers are measured, not preferences. 600pt is the narrowest
+    /// width at which the Now tab's content stops rewrapping (325pt tall at
+    /// 660, 620 and 600; 354pt at 560; 383pt at 500), and 480pt clears the
+    /// tallest realistic Now tab (358pt with an active block) inside the
+    /// header and bottom-bar chrome.
+    func testPopoverIsSizedToTheWidestContentAndNotWider() {
+        XCTAssertEqual(MenuBarPopoverLayout.preferredContentSize, CGSize(width: 600, height: 480))
+    }
+
+    /// The guided-tour bar measures 86pt plus a 1pt divider at every width the
+    /// popover can take, so the walkthrough must grow the popover by exactly
+    /// that. The previous 450 -> 600 step added 150pt, 63pt more than the bar
+    /// needs, and the surplus went into the content pane: every row moved when
+    /// the tour opened and moved back when it closed.
+    func testWalkthroughGrowsByExactlyTheTourBarSoContentDoesNotMove() {
+        XCTAssertEqual(
+            MenuBarPopoverLayout.walkthroughContentSize.height
+                - MenuBarPopoverLayout.preferredContentSize.height,
+            MenuBarPopoverLayout.guidedTourBarHeight
+        )
+        XCTAssertEqual(
+            MenuBarPopoverLayout.walkthroughContentSize.width,
+            MenuBarPopoverLayout.preferredContentSize.width
+        )
+    }
+
+    /// The clamp used to be `max(1, visibleFrame - inset)`. A 1pt popover is
+    /// not a graceful degradation; there is no way back out of it.
+    func testSmallScreenClampNeverProducesAnUnusablePopover() {
+        for height in stride(from: CGFloat(1), through: 400, by: 7) {
+            let frame = CGRect(x: 0, y: 0, width: 320, height: height)
+            let size = MenuBarPopoverLayout.contentSize(for: frame)
+
+            XCTAssertLessThanOrEqual(size.height, frame.height)
+            XCTAssertLessThanOrEqual(size.width, frame.width)
+            XCTAssertGreaterThanOrEqual(
+                size.height,
+                min(MenuBarPopoverLayout.minimumContentSize.height, frame.height),
+                "A \(height)pt screen produced a \(size.height)pt popover"
+            )
+        }
     }
 
     func testSettingsRetainsEveryDestination() {
@@ -150,16 +189,32 @@ final class MenuBarNavigationTests: XCTestCase {
       XCTAssertEqual(
         SettingsSubmenu.allCases.map(\.title),
         [
-            "App Info", "Activity & Corrections", "Collection Settings", "Onboarding & Tour",
+            "App Info", "Teach Velvt Your Apps", "Collection Settings", "Onboarding & Tour",
             "Debug/Testing",
         ])
         #else
       XCTAssertEqual(
         SettingsSubmenu.allCases.map(\.title),
         [
-            "App Info", "Queued Events", "Collection Settings", "Onboarding & Tour",
+            "App Info", "Teach Velvt Your Apps", "Collection Settings", "Onboarding & Tour",
         ])
         #endif
+    }
+
+    /// The workbench is the only destination with a text field, a picker and a
+    /// button row on one line. Measured at 300pt the inline correction editor
+    /// needs 97pt against 84pt at pane width, because the controls wrap.
+    func testTheCorrectionWorkbenchGetsMoreWidthThanTheOtherDestinations() {
+        XCTAssertEqual(SettingsSubmenu.teachApps.preferredWidth, 380)
+        for submenu in SettingsSubmenu.allCases where submenu != .teachApps {
+            XCTAssertEqual(submenu.preferredWidth, 300)
+        }
+        XCTAssertLessThan(
+            MenuBarPopoverLayout.preferredContentSize.width
+                + SettingsSubmenu.teachApps.preferredWidth,
+            1_280,
+            "The popover and its widest submenu must fit a 1280pt laptop screen"
+        )
     }
 
     func testGuidedTourCoversOnlyLiveDestinationsAndMovesDeterministically() {
@@ -463,4 +518,368 @@ final class DeviceRevokedUITests: XCTestCase {
         manager.clearDeviceRevokedFlag()
         XCTAssertFalse(manager.isDeviceRevoked, "Flag must be cleared so re-auth screen can appear")
     }
+}
+
+// MARK: - Correction workbench
+
+/// The constraint these tests exist for: a surface may not present itself as a
+/// live readout of what Velvt thinks unless a correction visibly changes what
+/// it shows.
+///
+/// Before this pass it did not. Two independent mechanisms, both reproduced
+/// below against the fixtures the service actually emits:
+///
+///  1. The selection was keyed on `LocalDailyActivitySegment.id`, which the
+///     service builds as `{date}-segment-{index}-{category}`. A correction
+///     changes the category and re-sorts the day by duration, so both halves
+///     of that id move and the corrected row is simply gone from the next
+///     snapshot. The panel holding the correction controls vanished at the
+///     moment the user used it.
+///  2. The evidence sentence was a `String` captured when the row was clicked,
+///     so it went on asserting the classification the user had just replaced
+///     for as long as the popover stayed open.
+@MainActor
+final class LocalActivityCorrectionListTests: XCTestCase {
+
+  private let stableID = "abs_editor_local"
+
+  /// What the service sends before the correction: the activity is
+  /// unclassified, so it sorts last and its id carries `unclassified`.
+  private func beforeCorrection() -> LocalDashboardSnapshot {
+    snapshot(segments: [
+      segment(id: "2026-08-16-segment-0-focus_work", stableID: "abs_other", label: "Xcode",
+        category: "FOCUS_WORK", seconds: 5_400, percentage: 75, confidence: .high),
+      segment(id: "2026-08-16-segment-1-unclassified", stableID: stableID, label: "Unclassified",
+        suggestedName: "Sketch Companion", category: "UNCLASSIFIED", seconds: 1_800,
+        percentage: 25, confidence: .none),
+    ])
+  }
+
+  /// What the service sends after it: the same activity, now classified, so it
+  /// re-buckets under a new category and the day is re-sorted. Same
+  /// `stableID`, different `id`, different index.
+  private func afterCorrection() -> LocalDashboardSnapshot {
+    snapshot(segments: [
+      segment(id: "2026-08-16-segment-0-focus_work", stableID: "abs_other", label: "Xcode",
+        category: "FOCUS_WORK", seconds: 5_400, percentage: 75, confidence: .high),
+      segment(id: "2026-08-16-segment-1-creative", stableID: stableID, label: "Sketch Companion",
+        suggestedName: "Sketch Companion", aliasConfirmed: true, category: "CREATIVE",
+        seconds: 1_800, percentage: 25, confidence: .high),
+    ])
+  }
+
+  func testTheSegmentIdentityTheServiceSendsDoesNotSurviveACorrection() {
+    let before = try! XCTUnwrap(
+      LocalActivityCorrectionList.correctableDay(in: beforeCorrection())
+    ).segments.first(where: { $0.stableID == stableID })!
+    let after = try! XCTUnwrap(
+      LocalActivityCorrectionList.correctableDay(in: afterCorrection())
+    ).segments.first(where: { $0.stableID == stableID })!
+
+    XCTAssertNotEqual(
+      before.id, after.id,
+      "The service's segment id embeds the category, so a correction changes it")
+    XCTAssertEqual(before.stableID, after.stableID)
+  }
+
+  func testASelectedActivityStaysSelectedThroughItsOwnCorrection() {
+    let selected = LocalActivityCorrectionList.selectedSegment(
+      stableID: stableID, in: beforeCorrection())
+    XCTAssertEqual(selected?.label, "Unclassified")
+
+    let stillSelected = LocalActivityCorrectionList.selectedSegment(
+      stableID: stableID, in: afterCorrection())
+    XCTAssertNotNil(
+      stillSelected,
+      "The correction panel must not disappear the moment the correction lands")
+    XCTAssertEqual(stillSelected?.label, "Sketch Companion")
+    XCTAssertEqual(stillSelected?.category, "CREATIVE")
+  }
+
+  func testTheEvidenceLineIsRereadFromTheSnapshotRatherThanCaptured() {
+    let before = LocalActivityCorrectionList.selectedSegment(
+      stableID: stableID, in: beforeCorrection())!
+    let after = LocalActivityCorrectionList.selectedSegment(
+      stableID: stableID, in: afterCorrection())!
+
+    XCTAssertTrue(LocalActivityCorrectionList.detail(for: before).hasPrefix("Unclassified"))
+    XCTAssertTrue(LocalActivityCorrectionList.detail(for: after).hasPrefix("Sketch Companion"))
+    XCTAssertNotEqual(
+      LocalActivityCorrectionList.detail(for: before),
+      LocalActivityCorrectionList.detail(for: after))
+  }
+
+  /// 05 § 2: "A percentage of your week is a report; a duration next to a
+  /// correctable label is a workbench."
+  func testTheWorkbenchStatesADurationAndNeverAPercentage() {
+    let segment = LocalActivityCorrectionList.selectedSegment(
+      stableID: stableID, in: beforeCorrection())!
+    let detail = LocalActivityCorrectionList.detail(for: segment)
+
+    XCTAssertTrue(detail.contains("30m"), detail)
+    XCTAssertFalse(detail.contains("%"), detail)
+    XCTAssertFalse(detail.lowercased().contains("7 day"), detail)
+    XCTAssertFalse(detail.lowercased().contains("week"), detail)
+  }
+
+  func testDurationsReadAsMinutesAndHours() {
+    XCTAssertEqual(LocalActivityCorrectionList.plainDuration(0), "0m")
+    XCTAssertEqual(LocalActivityCorrectionList.plainDuration(1_800), "30m")
+    XCTAssertEqual(LocalActivityCorrectionList.plainDuration(3_600), "1h 0m")
+    XCTAssertEqual(LocalActivityCorrectionList.plainDuration(5_400), "1h 30m")
+  }
+
+  /// Picking the most recent day that has activity, rather than today, keeps
+  /// the workbench usable first thing in the morning. It is a filter over the
+  /// delivered payload, not a computation on it.
+  func testTheWorkbenchFallsBackToTheMostRecentDayThatHasActivity() {
+    let populated = beforeCorrection()
+    var days = populated.dailyActivity
+    days.append(
+      LocalDailyActivityDay(
+        id: "2026-08-17", date: "2026-08-17", state: .noData, activeSeconds: 0,
+        coverage: .noData, segments: []))
+    let withEmptyToday = LocalDashboardSnapshot(
+      generatedAt: populated.generatedAt, windowStart: populated.windowStart,
+      windowEnd: populated.windowEnd, switchCount: populated.switchCount,
+      switchesPerHour: populated.switchesPerHour, coverage: populated.coverage,
+      earlySignal: populated.earlySignal, segments: populated.segments,
+      focusFragmentation: nil, dailyActivity: days)
+
+    XCTAssertEqual(
+      LocalActivityCorrectionList.correctableDay(in: withEmptyToday)?.date, "2026-08-16")
+    XCTAssertNil(LocalActivityCorrectionList.correctableDay(in: nil))
+  }
+
+  func testAnUnknownCategoryFallsBackToAnEditableOne() {
+    XCTAssertEqual(LocalActivityCorrectionList.correctionCategory("CREATIVE"), "UNLOGGED")
+    XCTAssertEqual(LocalActivityCorrectionList.correctionCategory("FOCUS_WORK"), "FOCUS_WORK")
+  }
+
+  // MARK: Fixtures
+
+  private func segment(
+    id: String, stableID: String, label: String, suggestedName: String? = nil,
+    aliasConfirmed: Bool = false, category: String, seconds: Int, percentage: Int,
+    confidence: ClassificationConfidence
+  ) -> LocalDailyActivitySegment {
+    LocalDailyActivitySegment(
+      id: id, label: label, representativeEventID: UUID(), stableID: stableID,
+      suggestedName: suggestedName, aliasConfirmed: aliasConfirmed, category: category,
+      durationSeconds: seconds, percentage: percentage, confidence: confidence,
+      explanation: nil)
+  }
+
+  private func snapshot(segments: [LocalDailyActivitySegment]) -> LocalDashboardSnapshot {
+    let base = Date(timeIntervalSince1970: 1_800_000_000)
+    return LocalDashboardSnapshot(
+      generatedAt: base, windowStart: base, windowEnd: base.addingTimeInterval(3_600),
+      switchCount: 3, switchesPerHour: 3, coverage: .good,
+      earlySignal: LocalEarlySignal(
+        status: .ready, observedFrom: base, observedThrough: base.addingTimeInterval(3_600),
+        observedSeconds: 3_600, requiredSeconds: 0, evidenceEventCount: 9, focusedSeconds: 2_100,
+        meaningfulSwitchCount: 3, longestUninterruptedSeconds: 1_080,
+        observation: "One change of direction in the last 60 minutes.",
+        suggestedAction: "Want 25 minutes on it, uninterrupted?", actionMinutes: 25),
+      segments: [], focusFragmentation: nil,
+      dailyActivity: [
+        LocalDailyActivityDay(
+          id: "2026-08-16", date: "2026-08-16", state: .ready, activeSeconds: 7_200,
+          coverage: .good, segments: segments)
+      ])
+  }
+}
+
+// MARK: - Correction workbench wiring
+
+import SwiftUI
+
+@MainActor
+final class CorrectionWorkbenchViewTests: XCTestCase {
+
+  /// The framing sentence is the whole point of this surface: not a report on
+  /// the user, a place where the user corrects the software.
+  func testTheWorkbenchExplainsItselfAsSomethingYouFixNotSomethingYouRead() {
+    let copy = CorrectionWorkbenchView.explanationCopy
+
+    XCTAssertTrue(copy.contains("Velvt gets these wrong sometimes"), copy)
+    XCTAssertTrue(copy.contains("this Mac only"), copy)
+    XCTAssertFalse(copy.lowercased().contains("7 day"), copy)
+    XCTAssertFalse(copy.lowercased().contains("percentage"), copy)
+  }
+
+  /// The correction and the dashboard request travel over one actor-isolated
+  /// socket client on two unstructured tasks, so refreshing the rows straight
+  /// after the click can read the dashboard back before the correction has
+  /// been applied. Refreshing off the service's acknowledgement instead cannot
+  /// race it: the acknowledgement is written by the same handler that applied
+  /// the correction.
+  func testCorrectedRowsRefreshOffTheServiceAcknowledgementNotTheClick() async throws {
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let menuStatus = MenuStatusViewModel(ipcClient: client, messages: messages)
+    let dashboard = LocalDashboardCoordinator(ipcClient: client)
+    dashboard.start(messages: messages, connectionStatus: client.connectionStatus)
+
+    let host = NSHostingView(
+      rootView: CorrectionWorkbenchView(
+        menuStatus: menuStatus,
+        localDashboard: dashboard,
+        title: "Teach Velvt Your Apps"
+      )
+      .frame(width: 380, height: 560)
+    )
+    host.frame = NSRect(x: 0, y: 0, width: 380, height: 560)
+    host.layoutSubtreeIfNeeded()
+    try await waitUntil("the workbench asks for the rows when it opens") {
+      self.dashboardRequestCount(client) > 0
+    }
+
+    let before = dashboardRequestCount(client)
+    messages.send(.menuStatus(acknowledgingStatus()))
+
+    try await waitUntil("a correction the service confirmed redraws the rows it changed") {
+      self.dashboardRequestCount(client) > before
+    }
+  }
+
+  private func waitUntil(
+    _ description: String,
+    timeout: TimeInterval = 3,
+    _ condition: @escaping () -> Bool
+  ) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if condition() { return }
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    XCTFail("Timed out waiting until \(description)")
+  }
+
+  func testAWorkbenchWithNoServiceBehindItSaysSoRatherThanShowingAnEmptyList() {
+    let host = NSHostingView(
+      rootView: CorrectionWorkbenchUnavailableView(title: "Teach Velvt Your Apps")
+        .frame(width: 380)
+    )
+    host.frame = NSRect(x: 0, y: 0, width: 380, height: 200)
+    host.layoutSubtreeIfNeeded()
+
+    XCTAssertGreaterThan(host.fittingSize.height, 0)
+  }
+
+  private func dashboardRequestCount(_ client: FakeIPCClient) -> Int {
+    client.sentMessages.filter {
+      if case .requestLocalDashboard = $0 { return true }
+      return false
+    }.count
+  }
+
+  private func acknowledgingStatus() -> MenuStatus {
+    MenuStatus(
+      deviceID: "device",
+      cloudReady: true,
+      uploadStatus: "idle",
+      lastUploadErrorCode: nil,
+      nextUploadAttemptAt: nil,
+      lastSuccessfulSyncAt: nil,
+      pendingUploadBatchCount: 0,
+      failedUploadBatchCount: 0,
+      rejectedUploadBatchCount: 0,
+      queuedEventCount: 0,
+      queuedEvents: [],
+      correctionHistory: [],
+      correctionAcknowledgment: "Sketch Companion is creative work from now on."
+    )
+  }
+}
+
+/// Renders the correction workbench at the width the settings submenu gives
+/// it, so the next person can see the layout instead of reasoning about it.
+/// Skipped unless `VELVT_WORKBENCH_SCREENSHOT_DIR` names an output directory,
+/// following the existing synthetic snapshot tests. No app launch, no
+/// Accessibility permission.
+@MainActor
+final class CorrectionWorkbenchSnapshotTests: XCTestCase {
+  func testRenderWorkbenchWhenRequested() async throws {
+    guard
+      let output = ProcessInfo.processInfo.environment["VELVT_WORKBENCH_SCREENSHOT_DIR"]
+    else {
+      throw XCTSkip("Set VELVT_WORKBENCH_SCREENSHOT_DIR to render the workbench")
+    }
+
+    let width = SettingsSubmenu.teachApps.preferredWidth
+    let height = SettingsSubmenu.teachApps.preferredHeight
+    let client = FakeIPCClient()
+    let messages = PassthroughSubject<ServerMessage, Never>()
+    let menuStatus = MenuStatusViewModel(ipcClient: client, messages: messages)
+    let dashboard = LocalDashboardCoordinator(ipcClient: client)
+    dashboard.start(messages: messages, connectionStatus: client.connectionStatus)
+    messages.send(.localDashboard(Self.syntheticSnapshot()))
+    for _ in 0..<100 where dashboard.snapshot == nil {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+
+    let view = ScrollView {
+      CorrectionWorkbenchView(
+        menuStatus: menuStatus, localDashboard: dashboard, title: "Teach Velvt Your Apps")
+    }
+    .frame(width: width, height: height, alignment: .top)
+    .background(Color.velvtSurface)
+    .preferredColorScheme(.dark)
+
+    let host = NSHostingView(rootView: AnyView(view))
+    host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+    host.layoutSubtreeIfNeeded()
+    guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
+      return XCTFail("Unable to create snapshot bitmap")
+    }
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    guard let data = bitmap.representation(using: .png, properties: [:]) else {
+      return XCTFail("Unable to encode snapshot PNG")
+    }
+    let directory = URL(fileURLWithPath: output, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try data.write(
+      to: directory.appendingPathComponent("correction-workbench.png"), options: .atomic)
+    print("workbench_snapshot_size=\(Int(width))x\(Int(height))")
+  }
+
+  static func syntheticSnapshot() -> LocalDashboardSnapshot {
+    let base = Date(timeIntervalSince1970: 1_800_000_000)
+    func segment(
+      _ id: String, _ stableID: String, _ label: String, _ category: String, _ seconds: Int,
+      _ percentage: Int, _ confidence: ClassificationConfidence, _ suggestion: String? = nil
+    ) -> LocalDailyActivitySegment {
+      LocalDailyActivitySegment(
+        id: id, label: label, representativeEventID: UUID(), stableID: stableID,
+        suggestedName: suggestion, aliasConfirmed: false, category: category,
+        durationSeconds: seconds, percentage: percentage, confidence: confidence,
+        explanation: "One sustained focus work block lasted 45 minutes.")
+    }
+    return LocalDashboardSnapshot(
+      generatedAt: base, windowStart: base, windowEnd: base.addingTimeInterval(3_600),
+      switchCount: 3, switchesPerHour: 3, coverage: .good,
+      earlySignal: LocalEarlySignal(
+        status: .ready, observedFrom: base, observedThrough: base.addingTimeInterval(3_600),
+        observedSeconds: 3_600, requiredSeconds: 0, evidenceEventCount: 9,
+        focusedSeconds: 2_100, meaningfulSwitchCount: 3, longestUninterruptedSeconds: 1_080,
+        observation: "One change of direction in the last 60 minutes.",
+        suggestedAction: "Want 25 minutes on it, uninterrupted?", actionMinutes: 25),
+      segments: [], focusFragmentation: nil,
+      dailyActivity: [
+        LocalDailyActivityDay(
+          id: "2026-08-16", date: "2026-08-16", state: .ready, activeSeconds: 11_700,
+          coverage: .good,
+          segments: [
+            segment("d-segment-0-focus_work", "abs_a", "Xcode", "FOCUS_WORK", 5_400, 45, .high),
+            segment(
+              "d-segment-1-communication", "abs_b", "Slack", "COMMUNICATION", 2_700, 24, .medium),
+            segment("d-segment-2-reference", "abs_c", "Safari", "REFERENCE", 1_800, 16, .medium),
+            segment(
+              "d-segment-3-unclassified", "abs_d", "Unclassified", "UNCLASSIFIED", 1_200, 10,
+              .none, "Sketch Companion"),
+            segment("d-segment-4-other", "abs_e", "Other", "OTHER", 600, 5, .none),
+          ])
+      ])
+  }
 }

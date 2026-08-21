@@ -956,236 +956,255 @@ public struct FocusFragmentationView: View {
   }
 }
 
-public struct DailyActivityView: View {
+/// The correction workbench: one row per activity the local service has
+/// classified, each a duration next to a label you can change.
+///
+/// This replaces the seven-day stacked activity chart. The chart was the only
+/// place a misclassification could be corrected — corrections are load-bearing,
+/// they write `personal_app_override`, `personal_override` and
+/// `personal_semantic_prototype`, so a correction genuinely changes future
+/// classification — but it was also the literal Screen Time artifact: seven
+/// dated rows of stacked colour with a percentage-of-your-week column. The
+/// affordance is kept and the report around it is not. A percentage of your
+/// week is a report; a duration next to a correctable label is a workbench.
+///
+/// Nothing here is derived in Swift. The rows are the segments the Rust
+/// service already sent for one day, rendered in the order it sent them, with
+/// the bar widths it supplied. Aggregating durations across the seven days
+/// would mean computing a displayed number on this side of the IPC boundary,
+/// which is Rust's job; doing it properly needs a payload that does not exist
+/// at protocol v28.
+public struct LocalActivityCorrectionList: View {
   let snapshot: LocalDashboardSnapshot?
   var onCorrectActivity: (LocalDailyActivitySegment, String, String?) -> Void = { _, _, _ in }
   var onUndoActivity: (LocalDailyActivitySegment) -> Void = { _ in }
-  @State private var hoveredDetail: String?
-  @State private var selectedDetail: String?
-  @State private var selectedSegmentID: String?
-  @State private var editingSegmentID: String?
-  @FocusState private var focusedSegmentID: String?
+
+  /// Keyed on `stableID`, never on `LocalDailyActivitySegment.id`.
+  ///
+  /// The service builds that id as `{date}-segment-{index}-{category}`, so it
+  /// encodes both the category and the segment's rank by duration. A
+  /// correction changes the category, which re-buckets the activity and
+  /// re-sorts the day — so the id of the thing the user just corrected does
+  /// not exist in the next snapshot. Keyed on the id, the selection silently
+  /// evaporated at the exact moment the user acted on it: the row they were
+  /// working in disappeared and the evidence line kept asserting the
+  /// classification they had just replaced. `stableID` is the abstraction
+  /// identity the correction itself is written against, so it survives.
+  @State private var selectedStableID: String?
+  @State private var isEditing = false
+  @FocusState private var focusedRowID: String?
+
+  public init(
+    snapshot: LocalDashboardSnapshot?,
+    onCorrectActivity: @escaping (LocalDailyActivitySegment, String, String?) -> Void = {
+      _, _, _ in
+    },
+    onUndoActivity: @escaping (LocalDailyActivitySegment) -> Void = { _ in }
+  ) {
+    self.snapshot = snapshot
+    self.onCorrectActivity = onCorrectActivity
+    self.onUndoActivity = onUndoActivity
+  }
 
   public var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack {
-        Text("Daily Activity").font(.headline)
-        Spacer()
-        Text("7 days").font(.caption2).foregroundStyle(Color.velvtMuted)
-      }
-      if let days = snapshot?.dailyActivity, days.count == 7 {
-        ForEach(days) { day in
-          dayRow(day)
+    VStack(alignment: .leading, spacing: 6) {
+      if let day = Self.correctableDay(in: snapshot), !day.segments.isEmpty {
+        VStack(alignment: .leading, spacing: 3) {
+          ForEach(day.segments) { segment in
+            activityRow(segment)
+          }
         }
+        selectionDetail
       } else {
-        ForEach(0..<7, id: \.self) { _ in
-          RoundedRectangle(cornerRadius: 3)
-            .fill(Color.white.opacity(0.06))
-            .frame(height: 22)
-        }
-        Text("Still building the seven local day rows.")
-          .font(.caption2).foregroundStyle(Color.velvtMuted)
-      }
-      Divider().opacity(0.18)
-      HStack(spacing: 5) {
-        Image(systemName: "sparkles")
-        Text("Selected activity evidence")
-      }
-      .font(.caption2.bold())
-      .foregroundStyle(Color.velvtPink)
-      Text(displayedDetail)
+        Text(Self.emptyStateCopy)
           .font(.caption2)
           .foregroundStyle(Color.velvtMuted)
           .fixedSize(horizontal: false, vertical: true)
-          .lineLimit(2)
-          .help(displayedDetail)
-          .accessibilityLabel(displayedDetail)
-      if let segment = selectedSegment, segment.stableID != nil {
-        HStack(spacing: 7) {
-          ActivityContextIcon(name: segment.suggestedName ?? segment.label)
-          VStack(alignment: .leading, spacing: 1) {
-            Text(segment.suggestedName ?? segment.label)
-              .font(.caption.bold())
-              .lineLimit(1)
-            Label(
-              segment.suggestedName == nil ? "Local only" : "Local-only suggestion",
-              systemImage: "lock.fill"
-            )
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
-          }
-          Spacer(minLength: 4)
-          if let suggestion = segment.suggestedName, !segment.aliasConfirmed {
-            Button("Use suggestion") {
-              onCorrectActivity(segment, correctionCategory(segment.category), suggestion)
-            }
-            .controlSize(.small)
-            .accessibilityHint("Confirms this device-local name for future matching activity")
-          }
-          Button(segment.label == "Unclassified" ? "Name & categorize" : "Rename / Categorize") {
-            editingSegmentID = segment.id
-          }
-          .controlSize(.small)
-          .buttonStyle(.borderedProminent)
-          .accessibilityHint("Opens local-only activity naming and category controls")
-        }
-        if editingSegmentID == segment.id {
-          InlineActivityCorrectionEditor(
-            segment: segment,
-            onSave: { category, name in
-              onCorrectActivity(segment, category, name)
-              editingSegmentID = nil
-            },
-            onCancel: { editingSegmentID = nil },
-            onUndo: segment.aliasConfirmed
-              ? {
-                  onUndoActivity(segment)
-                  editingSegmentID = nil
-                }
-              : nil
-          )
-          .id(segment.id)
-        }
+          .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
-    .padding(10)
-    .background(Color.velvtPanel)
-    .clipShape(RoundedRectangle(cornerRadius: 8))
-    .onChange(of: focusedSegmentID) { _ in updateFocusedDetail() }
+    .onChange(of: focusedRowID) { id in
+      guard let id else { return }
+      selectedStableID = id
+      isEditing = false
+    }
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Daily Activity, exactly seven days")
+    .accessibilityLabel("Activities Velvt has categorized on this Mac")
   }
 
-  private func dayRow(_ day: LocalDailyActivityDay) -> some View {
-    HStack(spacing: 8) {
-      VStack(alignment: .leading, spacing: 1) {
-        Text(dayLabel(day.date)).font(.caption.bold())
-        Text(stateLabel(day)).font(.caption2).foregroundStyle(Color.velvtMuted)
-      }
-      .frame(width: 104, alignment: .leading)
-      GeometryReader { proxy in
-        HStack(spacing: 1) {
-          if day.segments.isEmpty {
-            RoundedRectangle(cornerRadius: 3)
-              .fill(Color.white.opacity(0.07))
-              .help(stateLabel(day))
-              .accessibilityLabel("\(dayLabel(day.date)), \(stateLabel(day))")
-          } else {
-            ForEach(Array(day.segments.enumerated()), id: \.element.id) { index, segment in
-              let detail = segmentDetail(segment, day: day)
-              Button {
-                selectedDetail = detail
-                selectedSegmentID = segment.id
-              } label: {
-                let width = max(6, proxy.size.width * CGFloat(segment.percentage) / 100)
-                ZStack {
-                  RoundedRectangle(cornerRadius: 3)
-                    .fill(palette(index, category: segment.category))
-                  Text(segment.label)
-                    .font(.system(size: 7, weight: .semibold))
-                    .foregroundStyle(Color.black.opacity(0.72))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.55)
-                    .padding(.horizontal, 2)
-                }
-                .frame(width: width)
-              }
-              .buttonStyle(.plain)
-              .help(detail)
-              .focused($focusedSegmentID, equals: segment.id)
-              .onHover { hoveredDetail = $0 ? detail : nil }
-              .accessibilityLabel(detail)
-              .accessibilityHint(
-                segment.explanation
-                  ?? "No additional grounded evidence is available for this segment.")
-            }
-          }
-        }
-      }
-      .frame(height: 14)
-      Text(duration(day.activeSeconds))
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(Color.velvtMuted)
-        .frame(width: 46, alignment: .trailing)
-    }
-    .frame(height: 24)
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel(
-      "\(dayLabel(day.date)), \(stateLabel(day)), \(duration(day.activeSeconds)) recorded")
+  static let emptyStateCopy =
+    "Velvt has not categorized anything on this Mac yet. Once it has, the activities show up here and you can fix any it got wrong."
+
+  /// The most recent day the service sent that actually has activity in it.
+  ///
+  /// A filter over the delivered payload, not a computation on it. Picking the
+  /// most recent non-empty day rather than "today" means the workbench is
+  /// never empty at nine in the morning, and it costs nothing: a correction is
+  /// written against the activity's `stableID`, not against a date, so fixing
+  /// yesterday's label fixes the label everywhere including today.
+  static func correctableDay(in snapshot: LocalDashboardSnapshot?) -> LocalDailyActivityDay? {
+    snapshot?.dailyActivity.last(where: { !$0.segments.isEmpty })
   }
 
-  private func updateFocusedDetail() {
-    guard let id = focusedSegmentID,
-      let day = snapshot?.dailyActivity.first(where: {
-        $0.segments.contains(where: { $0.id == id })
-      }),
-      let segment = day.segments.first(where: { $0.id == id })
-    else { return }
-    selectedDetail = segmentDetail(segment, day: day)
-    selectedSegmentID = segment.id
+  /// Resolves the selected row against the current snapshot.
+  ///
+  /// Called on every render rather than captured, so a correction that changes
+  /// the label, the category or the confidence is on screen the moment the
+  /// next snapshot lands.
+  static func selectedSegment(
+    stableID: String?,
+    in snapshot: LocalDashboardSnapshot?
+  ) -> LocalDailyActivitySegment? {
+    guard let stableID else { return nil }
+    guard let day = correctableDay(in: snapshot) else { return nil }
+    return day.segments.first(where: { $0.stableID == stableID })
   }
 
-  private var selectedSegment: LocalDailyActivitySegment? {
-    guard let selectedSegmentID else { return nil }
-    return snapshot?.dailyActivity
-      .lazy
-      .flatMap(\.segments)
-      .first(where: { $0.id == selectedSegmentID })
-  }
-
-  private var displayedDetail: String {
-    if let hoveredDetail { return hoveredDetail }
-    if let selectedDetail { return selectedDetail }
-    guard let days = snapshot?.dailyActivity else {
-      return "Waiting for the local privacy service to build this seven-day view."
-    }
-    for day in days.reversed() {
-      if let segment = day.segments.first(where: { $0.explanation != nil }) {
-        return segmentDetail(segment, day: day)
-      }
-    }
-    return "No grounded activity insight yet. Keep Velvt running while you work."
-  }
-
-  private func segmentDetail(_ segment: LocalDailyActivitySegment, day: LocalDailyActivityDay)
-    -> String
-  {
+  /// The evidence sentence for a row, derived from the segment in hand.
+  ///
+  /// No percentage: a share of a period is a report about the period. A
+  /// duration and a confidence are facts about the thing being corrected.
+  static func detail(for segment: LocalDailyActivitySegment) -> String {
     let base =
-      "\(dayLabel(day.date)), \(segment.label), \(duration(segment.durationSeconds)), \(segment.percentage)%, \(segment.confidence.rawValue) confidence."
+      "\(segment.label), \(plainDuration(segment.durationSeconds)), \(segment.confidence.rawValue) confidence."
     return [base, segment.explanation].compactMap { $0 }.joined(separator: " ")
   }
 
-  private func stateLabel(_ day: LocalDailyActivityDay) -> String {
-    switch day.state {
-    case .noData: return "No data"
-    case .lowConfidence: return "Low confidence"
-    case .stillBuilding: return "Still building"
-    case .ready:
-      return day.segments.contains(where: { $0.label == "Unclassified" })
-        ? "Includes Unclassified" : "Recorded"
+  static func plainDuration(_ seconds: Int) -> String {
+    let minutes = max(0, seconds) / 60
+    if minutes < 60 { return "\(minutes)m" }
+    return "\(minutes / 60)h \(minutes % 60)m"
+  }
+
+  private var resolvedSegment: LocalDailyActivitySegment? {
+    Self.selectedSegment(stableID: selectedStableID, in: snapshot)
+  }
+
+  private func activityRow(_ segment: LocalDailyActivitySegment) -> some View {
+    let isSelected = segment.stableID != nil && segment.stableID == selectedStableID
+    return Button {
+      guard let stableID = segment.stableID else { return }
+      if selectedStableID == stableID {
+        selectedStableID = nil
+        isEditing = false
+      } else {
+        selectedStableID = stableID
+        isEditing = false
+      }
+    } label: {
+      HStack(spacing: 8) {
+        Text(segment.suggestedName ?? segment.label)
+          .font(.caption)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .frame(width: 120, alignment: .leading)
+        GeometryReader { proxy in
+          // Width comes from the share the service computed. It is used as a
+          // bar length and never printed, so the workbench shows a magnitude
+          // without making a claim about a proportion of anyone's week.
+          RoundedRectangle(cornerRadius: 3)
+            .fill(barColor(segment))
+            .frame(
+              width: max(4, proxy.size.width * CGFloat(min(100, max(0, segment.percentage))) / 100),
+              height: 12
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(height: 12)
+        Text(Self.plainDuration(segment.durationSeconds))
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(Color.velvtMuted)
+          .frame(width: 48, alignment: .trailing)
+      }
+      .contentShape(Rectangle())
+      .padding(.vertical, 4)
+      .padding(.horizontal, 6)
+      .background(isSelected ? Color.velvtPanelHighlight : Color.clear)
+      .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+    .buttonStyle(.plain)
+    .disabled(segment.stableID == nil)
+    .focused($focusedRowID, equals: segment.stableID ?? segment.id)
+    .help(Self.detail(for: segment))
+    .accessibilityLabel(Self.detail(for: segment))
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
+    .accessibilityHint("Select to rename or recategorize this activity")
+  }
+
+  @ViewBuilder
+  private var selectionDetail: some View {
+    if let segment = resolvedSegment {
+      Divider().opacity(0.18)
+      Text(Self.detail(for: segment))
+        .font(.caption2)
+        .foregroundStyle(Color.velvtMuted)
+        .fixedSize(horizontal: false, vertical: true)
+        .lineLimit(3)
+        .accessibilityLabel(Self.detail(for: segment))
+      HStack(spacing: 7) {
+        ActivityContextIcon(name: segment.suggestedName ?? segment.label)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(segment.suggestedName ?? segment.label)
+            .font(.caption.bold())
+            .lineLimit(1)
+          Label(
+            segment.suggestedName == nil ? "Local only" : "Local-only suggestion",
+            systemImage: "lock.fill"
+          )
+          .font(.caption2)
+          .foregroundStyle(Color.velvtMuted)
+        }
+        Spacer(minLength: 4)
+        if let suggestion = segment.suggestedName, !segment.aliasConfirmed {
+          Button("Use suggestion") {
+            onCorrectActivity(segment, Self.correctionCategory(segment.category), suggestion)
+          }
+          .controlSize(.small)
+          .accessibilityHint("Confirms this device-local name for future matching activity")
+        }
+        Button(segment.label == "Unclassified" ? "Name & categorize" : "Rename / Categorize") {
+          isEditing.toggle()
+        }
+        .controlSize(.small)
+        .buttonStyle(.borderedProminent)
+        .accessibilityHint("Opens local-only activity naming and category controls")
+      }
+      if isEditing {
+        InlineActivityCorrectionEditor(
+          segment: segment,
+          onSave: { category, name in
+            onCorrectActivity(segment, category, name)
+            isEditing = false
+          },
+          onCancel: { isEditing = false },
+          onUndo: segment.aliasConfirmed
+            ? {
+              onUndoActivity(segment)
+              isEditing = false
+            }
+            : nil
+        )
+        // Keyed on the abstraction, so the editor is not torn down and rebuilt
+        // when a correction changes the segment's category.
+        .id(segment.stableID)
+      }
     }
   }
 
-  private func correctionCategory(_ value: String) -> String {
+  static func correctionCategory(_ value: String) -> String {
     InlineActivityCorrectionEditor.categories.contains(value) ? value : "UNLOGGED"
   }
 
-  private func dayLabel(_ value: String) -> String {
-    let parser = DateFormatter()
-    parser.dateFormat = "yyyy-MM-dd"
-    parser.locale = Locale(identifier: "en_US_POSIX")
-    guard let date = parser.date(from: value) else { return value }
-    let formatter = DateFormatter()
-    formatter.dateFormat = "EEE d"
-    return formatter.string(from: date)
-  }
-
-  private func palette(_ index: Int, category: String) -> Color {
-    if category == "UNCLASSIFIED" { return Color.gray.opacity(0.55) }
-    if category == "OTHER" { return Color.velvtMuted.opacity(0.5) }
-    return [
-      Color.velvtGreen, .velvtPink, .velvtBlue, .orange.opacity(0.85), .purple.opacity(0.85),
-    ][index % 5]
+  private func barColor(_ segment: LocalDailyActivitySegment) -> Color {
+    switch segment.category {
+    case "UNCLASSIFIED": return Color.gray.opacity(0.55)
+    case "OTHER": return Color.velvtMuted.opacity(0.5)
+    case "FOCUS_WORK": return .velvtGreen
+    case "COMMUNICATION": return .velvtPink
+    case "REFERENCE": return .velvtBlue
+    case "CREATIVE": return .orange.opacity(0.85)
+    default: return .purple.opacity(0.85)
+    }
   }
 }
 

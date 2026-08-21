@@ -45,12 +45,18 @@ final class MenuBarControllerTests: XCTestCase {
     func testPopoverUsesPreferredCompactSizeWhenScreenAllows() {
         let visibleFrame = CGRect(x: 0, y: 0, width: 1_440, height: 900)
 
-        XCTAssertEqual(MenuBarPopoverLayout.preferredContentSize, CGSize(width: 660, height: 450))
-        XCTAssertEqual(MenuBarPopoverLayout.walkthroughContentSize, CGSize(width: 660, height: 600))
+        XCTAssertEqual(MenuBarPopoverLayout.preferredContentSize, CGSize(width: 600, height: 480))
+        XCTAssertEqual(MenuBarPopoverLayout.walkthroughContentSize, CGSize(width: 600, height: 567))
         XCTAssertEqual(
             MenuBarPopoverLayout.contentSize(for: visibleFrame),
             MenuBarPopoverLayout.preferredContentSize
         )
+    }
+
+    /// 600pt is 47% of the narrowest Mac laptop screen. It used to be 660,
+    /// which is 52% — more than half the display for a menu bar popover.
+    func testPopoverIsUnderHalfOfTheNarrowestLaptopScreen() {
+        XCTAssertLessThan(MenuBarPopoverLayout.preferredContentSize.width, 1_280 / 2)
     }
 
     func testPopoverSizeStaysWithinVisibleScreen() {
@@ -60,7 +66,22 @@ final class MenuBarControllerTests: XCTestCase {
         XCTAssertLessThanOrEqual(size.width, visibleFrame.width)
         XCTAssertLessThanOrEqual(size.height, visibleFrame.height)
         XCTAssertEqual(size.width, visibleFrame.width - MenuBarPopoverLayout.screenInset)
-        XCTAssertEqual(size.height, visibleFrame.height - MenuBarPopoverLayout.screenInset)
+        // The height floor wins here: 300 - 24 is 276pt, below the 320pt
+        // minimum, so the popover takes the whole visible height rather than
+        // shrinking under the size at which it stops being readable.
+        XCTAssertEqual(size.height, visibleFrame.height)
+    }
+
+    /// The old clamp was `max(1, visibleFrame - inset)`, which hands
+    /// `NSPopover` a 1pt dimension on a small enough frame.
+    func testTinyVisibleFrameNeverProducesAOnePointPopover() {
+        for edge in [CGFloat(1), 4, 10, 25, 26, 60, 200, 340] {
+            let size = MenuBarPopoverLayout.contentSize(
+                for: CGRect(x: 0, y: 0, width: edge, height: edge)
+            )
+            XCTAssertEqual(size.width, min(MenuBarPopoverLayout.minimumContentSize.width, edge))
+            XCTAssertEqual(size.height, min(MenuBarPopoverLayout.minimumContentSize.height, edge))
+        }
     }
 
     func testWalkthroughAddsHeightWithoutExceedingVisibleScreen() {

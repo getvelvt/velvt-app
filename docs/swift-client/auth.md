@@ -39,29 +39,24 @@ Only valid transitions are accepted through `transition(to:)`. Invalid transitio
 
 Swift does not make any HTTP request in this flow.
 
-## Keychain Fields
+## Keychain Storage
 
-`KeychainKey` defines these entries:
+Current sessions are encoded into one `velvt.auth_snapshot` Keychain item:
 
-| Key | Purpose |
+| Snapshot field | Purpose |
 |---|---|
-| `velvt.access_token` | Access token from Rust/cloud |
-| `velvt.refresh_token` | Refresh token from Rust/cloud |
-| `velvt.user_access_token` | User-bound access token used by Rust only to refresh user auth and reissue device credentials |
-| `velvt.user_refresh_token` | User-bound refresh token used by Rust only to refresh user auth |
-| `velvt.user_expires_at` | User token expiry as Unix timestamp string |
-| `velvt.user_id` | Current user ID |
-| `velvt.device_id` | Device ID registered by Rust |
-| `velvt.expires_at` | Token expiry as Unix timestamp string |
-| `velvt.email` | Local account display email |
-| `velvt.pending_deletion` | Relaunch-safe sentinel while account deletion is pending |
+| `session` | Device tokens, optional user tokens, their expiries, and the registered device ID |
+| `userId` | Current user ID |
+| `email` | Local account display email |
+| `pendingDeletion` | Relaunch-safe sentinel while account deletion is pending |
 
 Tokens must never be logged or stored outside Keychain.
 
-`AccountStateManager` restores these fields with a single startup read pass
-through `KeychainService.loadAll()`, then serves account state, session replay,
-and Settings/App Info email display from memory. Settings must not trigger its
-own Keychain read.
+`AccountStateManager` reads that item once during initialization, then serves
+account state, session replay, Settings/App Info email display, and subsequent
+session-update persistence from its in-memory snapshot. An unchanged
+`auth_session_updated` echo is ignored, so reconnecting to Rust does not trigger
+another Keychain authorization prompt or redundant write.
 
 ## Session Replay
 
@@ -106,7 +101,7 @@ The user is logged out locally even if the IPC send fails.
 Account deletion uses `.pendingErasure` to avoid losing state across relaunch:
 
 1. User confirms deletion.
-2. Swift transitions to `.pendingErasure` and writes `velvt.pending_deletion`.
+2. Swift transitions to `.pendingErasure` and updates `pendingDeletion` in the auth snapshot.
 3. Swift sends `.deleteAccount` over IPC.
 4. If sending fails, Swift calls `cancelPendingErasure()` and returns to `.loggedIn` when a user ID is still available.
 5. If Rust returns `account_deletion_accepted`, Swift clears Keychain and returns to `.loggedOut`.

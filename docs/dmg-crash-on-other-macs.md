@@ -55,7 +55,7 @@ ls -t ~/Library/Logs/DiagnosticReports/Velvt* | head -1 | xargs head -40
 
 ## Root cause in the build
 
-`dist/Velvt.dmg` was produced by the **local** path (`make dmg` →
+`dist/Velvt.dmg` was produced by the **local** path (`VELVT_ALLOW_LOCAL_DMG=1 make dmg` →
 `scripts/sign_release.sh local`), which ad-hoc signs by design. Local artifacts
 are for the build machine only and are not distributable.
 

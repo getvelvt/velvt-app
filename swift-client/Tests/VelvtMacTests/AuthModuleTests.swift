@@ -12,12 +12,14 @@ private struct TestStoredAuthSnapshot: Codable {
 final class SnapshotCountingKeychain: KeychainProtocol {
     private var values: [KeychainKey: String]
     private(set) var loadKeys: [KeychainKey] = []
+    private(set) var storeKeys: [KeychainKey] = []
 
     init(values: [KeychainKey: String]) {
         self.values = values
     }
 
     func store(token: String, for key: KeychainKey) throws {
+        storeKeys.append(key)
         values[key] = token
     }
 
@@ -198,6 +200,62 @@ final class AccountStateManagerTests: XCTestCase {
         guard case .authSession? = client.sentMessages.first else {
             return XCTFail("Expected stored auth session to be sent to Rust")
         }
+    }
+
+    func testRestoredSessionEchoDoesNotAccessKeychainAgain() async throws {
+        let client = FakeIPCClient()
+        let session = AuthSession(
+            deviceId: "device-1",
+            accessToken: "stored-access",
+            refreshToken: "stored-refresh",
+            expiresAt: Date(timeIntervalSinceNow: 3600)
+        )
+        let rawSnapshot = try encodeSnapshot(TestStoredAuthSnapshot(
+            userId: "u123",
+            email: "ada@example.com",
+            pendingDeletion: false,
+            session: session
+        ))
+        let keychain = SnapshotCountingKeychain(values: [.authSnapshot: rawSnapshot])
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+
+        client.inject(.authSessionUpdated(session))
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(keychain.loadKeys, [.authSnapshot])
+        XCTAssertTrue(keychain.storeKeys.isEmpty)
+    }
+
+    func testChangedSessionUpdateUsesCachedSnapshotWithoutSecondRead() async throws {
+        let client = FakeIPCClient()
+        let initialSession = AuthSession(
+            deviceId: "device-1",
+            accessToken: "stored-access",
+            refreshToken: "stored-refresh",
+            expiresAt: Date(timeIntervalSinceNow: 3600)
+        )
+        let rawSnapshot = try encodeSnapshot(TestStoredAuthSnapshot(
+            userId: "u123",
+            email: "ada@example.com",
+            pendingDeletion: false,
+            session: initialSession
+        ))
+        let keychain = SnapshotCountingKeychain(values: [.authSnapshot: rawSnapshot])
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+        let refreshedSession = AuthSession(
+            deviceId: "device-1",
+            accessToken: "refreshed-access",
+            refreshToken: "refreshed-refresh",
+            expiresAt: Date(timeIntervalSinceNow: 7200)
+        )
+
+        client.inject(.authSessionUpdated(refreshedSession))
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(keychain.loadKeys, [.authSnapshot])
+        XCTAssertEqual(keychain.storeKeys, [.authSnapshot])
     }
 
     func testSuccessfulAuthenticationStoresEmailInKeychain() async {
@@ -837,6 +895,43 @@ final class AuthViewModelTests: XCTestCase {
         await Task.yield()
 
         XCTAssertEqual(sut.connectionStatus, .connected)
+    }
+
+    func testCredentialsRemainSubmittableWhileServiceIsDisconnected() {
+        let sut = makeViewModel()
+        sut.email = "user@example.com"
+        sut.password = "secret"
+
+        XCTAssertEqual(sut.connectionStatus, .disconnected)
+        XCTAssertTrue(sut.canSubmitCredentials)
+    }
+
+    func testSignUpWhileServiceIsDisconnectedSurfacesAvailabilityError() async {
+        let client = FakeIPCClient()
+        client.shouldThrowOnSend = IPCError.notConnected
+        let (sut, manager, _) = makeViewModelWithDependencies(client: client)
+        sut.email = "user@example.com"
+        sut.password = "secret"
+
+        await sut.signUp()
+
+        XCTAssertEqual(manager.accountState, .loggedOut)
+        XCTAssertEqual(sut.errorMessage, "Service not ready. Please wait a moment and try again.")
+        XCTAssertFalse(sut.isLoading)
+    }
+
+    func testLogInWhileServiceIsDisconnectedSurfacesAvailabilityError() async {
+        let client = FakeIPCClient()
+        client.shouldThrowOnSend = IPCError.notConnected
+        let (sut, manager, _) = makeViewModelWithDependencies(client: client)
+        sut.email = "user@example.com"
+        sut.password = "secret"
+
+        await sut.logIn()
+
+        XCTAssertEqual(manager.accountState, .loggedOut)
+        XCTAssertEqual(sut.errorMessage, "Service not ready. Please wait a moment and try again.")
+        XCTAssertFalse(sut.isLoading)
     }
 
     func testSignUpDoesNotSendWhenAuthenticationIsAlreadyInProgress() async {

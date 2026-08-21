@@ -29,6 +29,7 @@ VELVT_UPDATE_FEED_URL ?=
 VELVT_UPDATE_PUBLIC_ED_KEY ?=
 VELVT_BUILD_MARKETING_VERSION ?= 1.0.0
 VELVT_BUILD_NUMBER ?= 2
+VELVT_ALLOW_LOCAL_DMG ?= 0
 VELVT_GENERATE_APPCAST_SHA256 ?=
 VELVT_SIGN_UPDATE_SHA256 ?=
 
@@ -114,7 +115,10 @@ package-release: check-swift-toolchain
 prepare-dmg-tool:
 	./scripts/prepare_dmg_tool.sh
 
-dmg: package-release prepare-dmg-tool
+dmg: check-swift-toolchain
+	@test "$(VELVT_ALLOW_LOCAL_DMG)" = "1" || (echo "ERROR: 'make dmg' creates an ad-hoc signed, build-machine-only image." >&2; echo "Use 'make alpha-dmg' for testers, or set VELVT_ALLOW_LOCAL_DMG=1 for local verification only." >&2; exit 1)
+	@$(MAKE) package-release
+	@$(MAKE) prepare-dmg-tool
 	./scripts/create_dmg.sh $(VELVT_APP_PATH) $(VELVT_DMG_PATH) local
 	VELVT_RELEASE_ARCHS="$(VELVT_RELEASE_ARCHS)" ./scripts/verify_release.sh --mode local --app $(VELVT_APP_PATH) --dmg $(VELVT_DMG_PATH)
 

@@ -1,7 +1,22 @@
--- Privacy invariant: no schema column may store raw app names, window titles,
--- URLs, bundle IDs, paths, filenames, contacts, or other raw user content.
--- Persist only stable identifiers, abstract labels/categories, timestamps,
--- and ready-to-display local cache payloads.
+-- Privacy invariant: no schema column may store window titles, URLs, bundle IDs,
+-- paths, filenames, contacts, or other raw user content. Persist only stable
+-- identifiers, abstract labels/categories, timestamps, and ready-to-display
+-- local cache payloads.
+--
+-- ONE NAMED EXCEPTION, added by migration 0011 and disclosed in PRIVACY.md:
+-- `raw_event_buffer.local_name_suggestion` stores the RAW APPLICATION NAME, and
+-- only when the classifier matched neither a seed rule nor a user correction, so
+-- the local UI can offer a one-tap rename instead of showing "Unclassified".
+-- It is device-local, expires with the buffer after 7 days, is redacted in the
+-- `Debug` implementation, and is structurally absent from the upload path --
+-- `BatchEventPayload`'s hand-written `Serialize` impl emits six fields and none
+-- of them is a name, a label, or a stable ID.
+--
+-- This header previously asserted that no column may store raw app names. That
+-- was false from migration 0011 onward. Corrected 2026-08-21 by disclosing the
+-- exception rather than deleting the column, which earns its keep.
+-- Any NEW column that would hold raw content needs the same treatment: name it
+-- here, name it in PRIVACY.md, and prove it cannot reach `upload/`.
 
 CREATE TABLE abstraction_map (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

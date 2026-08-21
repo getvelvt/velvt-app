@@ -132,11 +132,93 @@ unchanged from the pre-existing implementation.
 
 ---
 
+## Audit 6 — Re-run at protocol 28 (2026-08-21)
+
+Audits 1-5 above were performed at protocol **v6/v7**. The protocol is now at
+**v28** — 21 revisions later — so those findings were stale and are superseded
+for the fields listed here. This re-run was performed against commit `3d2af2f`
+on branch `integration/d1-truth-fixes`, and against a **live database with
+23,026 real events**, not fixtures.
+
+### 6.1 Two device-local columns that Audits 1-5 did not cover
+
+| Column | Contents | Verdict |
+|---|---|---|
+| `raw_event_buffer.local_name_suggestion` (migration 0011) | The **raw application name, verbatim**, for classifier misses only | DISCLOSED, not a violation |
+| `raw_event_buffer.local_display_label` | Friendly UI string (`Gmail`, `YouTube`, `Coding`) | DISCLOSED, not a violation |
+
+**Measured on the live database:** 11,373 of 23,026 rows (49%) carry a non-null
+`local_name_suggestion`, holding **15 distinct raw application names**. 22,271 of
+23,026 rows (97%) carry a non-null `local_display_label`.
+
+**Two documentation claims were falsified by this measurement and have been
+corrected in the same commit as this audit:**
+
+1. `PRIVACY.md` stated *"Despite its name, `raw_event_buffer` never contains raw
+   app names or window titles — see PRIVACY_AUDIT.md Audit 1 for the
+   verification."* The window-title half is true. **The app-name half was false**,
+   and it cited this document as its verification.
+2. `ARCHITECTURE.md` R3 stated `local_display_label` is *"forced to `NULL` by the
+   DAL and covered by tests."* **It is populated on ~97% of rows.**
+
+Neither is a leak. Both are a documentation failure, which in a product whose
+thesis is honest measurement is its own category of defect.
+
+### 6.2 The boundary itself — re-verified by running
+
+- **No raw field is reachable from `upload/`.** `grep -rn` for `app_name`,
+  `window_title`, `local_name_suggestion`, `local_display_label`, and
+  `focused_document_url` across `rust-service/src/upload/` returns **zero hits**.
+- **`BatchEventPayload` emits six fields.** Its hand-written `Serialize` impl
+  (`upload/dto.rs:19-56`) holds `stable_id`, `label`, and `taxonomy_version` on
+  the struct and emits **none of them**. On the wire: `event_id`, `occurred_at`,
+  `abstraction_type` (one of eight), `abstraction_type_version`,
+  `classification_tier`, `payload{duration_seconds, category}`.
+- **End-to-end, against real data.** `batch_event` — the upload mirror — holds
+  **23,024 rows**. Searching every text column for the six most identifying app
+  names present in `local_name_suggestion` (`Google Chrome`, `WhatsApp`,
+  `DaVinci Resolve`, `RStudio`, `GitHub Desktop`, `Messages`) returns **0 matches
+  each**. The table has no `local_name_suggestion` or `local_display_label`
+  column at all — the exclusion is structural, not filtered.
+- **No log path interpolates them.** No `tracing::` call anywhere in
+  `rust-service/src/` references `local_name`, `app_name`, `window_title`, or
+  `display_label`. `local_name_suggestion` is additionally redacted to
+  `[redacted]` in the `Debug` impl (`persistence/models.rs:83-84`).
+
+### 6.3 `focused_document_url` — a raw field Audits 1-5 predate
+
+Added after v7. Swift sends the focused browser document URL over the local
+socket. `AbstractionEngine::process` (`abstraction/engine.rs:146-154`)
+destructures it and immediately reduces it via `focused_site_context`
+(`abstraction/browser.rs`) to **a validated hostname and nothing else** — paths,
+queries, fragments, credentials, and ports discarded, `file://` rejected
+outright. The raw URL is never read again. **SAFE**, and now documented in
+PRIVACY.md's "What is collected", which previously omitted it while asserting
+"Nothing else is observed."
+
+### 6.4 Result
+
+**Zero VIOLATION findings. Two DOCUMENTATION findings, both corrected in this
+commit.** The boundary holds; the description of it did not.
+
+### 6.5 Not re-verified in this pass
+
+Audits 2 (tokens), 3, 4, and 5 (ONNX) were **not** re-run at v28. They are 21
+protocol revisions stale and should not be cited as current. Note separately
+that the ONNX path is not built into the distributable —
+`scripts/build_rust_helper.sh` builds without `--features onnx` — so Audit 5
+describes code that does not ship.
+
+---
+
 ## Sign-off
 
-This audit was completed on 2026-06-16 against commit `7742c9d` (plus the
-uncommitted MVP integration changes described in the accompanying PR:
-device registration, account-auth relay, raw-event ingestion wiring,
-notification push, and the v6/v7 protocol additions). Re-run this audit
-before merging if further changes touch `abstraction/`, `upload/`,
-`auth/`, or `ipc/`.
+Audits 1-5 were completed on 2026-06-16 against commit `7742c9d` at protocol
+v6/v7. **They are stale.** Audit 6 re-runs the raw-content boundary at protocol
+28 against commit `3d2af2f` and a live 23,026-event database, on 2026-08-21.
+
+Re-run this audit before merging if further changes touch `abstraction/`,
+`upload/`, `auth/`, or `ipc/` — and **re-run it against a database with real
+usage in it**, not fixtures. Both defects corrected here were invisible to
+fixture-based verification and took one SQL query against a real database to
+find.

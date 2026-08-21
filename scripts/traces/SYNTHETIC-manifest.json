@@ -1,0 +1,37 @@
+{
+  "block_seconds": 3600,
+  "blocks_per_trace": 5,
+  "compressed_blocks_per_trace": 2,
+  "compressed_dwell_scale": 0.05,
+  "compressed_traces": 30,
+  "files": {
+    "SYNTHETIC-suite-a-recovery.jsonl": {
+      "acceptance": "every trace's observed offer matches its expect_offer field",
+      "sha256": "03228dc3f06133abcfee9e16b5ca145087739d3572b666dccfec3f8d74f87b18",
+      "traces": 17
+    },
+    "SYNTHETIC-suite-b-null-compressed.jsonl": {
+      "acceptance": "at least one offer, in aggregate. Not scored per trace.",
+      "sha256": "881e680fb94800a32f4261403327eba3756d1b25dd6ec3ac4a252b45923aa106",
+      "traces": 30
+    },
+    "SYNTHETIC-suite-b-null.jsonl": {
+      "acceptance": "ZERO offers across every trace. Any offer is a false discovery.",
+      "sha256": "d3f876ee465b6db7ebecf3dc2dad657915eb6697ce7bc5735da93ea6e86c0cf2",
+      "traces": 100
+    }
+  },
+  "gate_constants": {
+    "DRIFT_MIN_ELAPSED_SECONDS": 300,
+    "DRIFT_MIN_REMAINING_SECONDS": 120,
+    "DRIFT_MIN_SWITCHES": 4,
+    "DRIFT_WINDOW_SECONDS": 600
+  },
+  "generator": "scripts/generate_traces.py",
+  "generator_version": 1,
+  "label": "SYNTHETIC \u2014 generated fixtures, no real user data",
+  "null_traces": 100,
+  "replayed_by": "rust-service/tests/trace_replay.rs",
+  "schema": "velvt-trace/1",
+  "seed": 20260821
+}

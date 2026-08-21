@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Pre-push guard: no Swift file leaves this machine half-registered in the
+# Xcode target. `swift test` compiles the tree by directory and never notices;
+# the DMG build is where it surfaces, minutes in, as a link error.
+#
+# Install with: ./scripts/install_git_hooks.sh
+# Bypass, deliberately and rarely: git push --no-verify
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+guard="$root/scripts/verify_pbxproj_membership.sh"
+
+if [[ ! -x "$guard" ]]; then
+  echo "pre-push: $guard is missing or not executable; skipping the check." >&2
+  exit 0
+fi
+
+if ! "$guard"; then
+  echo "pre-push: refusing to push. Fix the target membership above." >&2
+  exit 1
+fi

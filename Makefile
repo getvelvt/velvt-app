@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain prepare-dmg-tool build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release verify-release verify-release-production build-app-local-core clean
+.PHONY: check-rust-toolchain check-swift-toolchain prepare-dmg-tool build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release test-measurement verify-release verify-release-production build-app-local-core clean
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -76,7 +76,7 @@ lint-swift: check-swift-toolchain
 
 build-all: build-rust build-swift
 
-test-all: test-rust test-swift
+test-all: test-rust test-swift test-measurement
 
 # Produces a single runnable artifact: dist/Velvt.app. The Xcode
 # "Bundle Rust Service" Run Script phase builds cargo --release and embeds
@@ -232,6 +232,13 @@ test-update-release:
 
 test-dmg-release:
 	./scripts/tests/dmg_release_policy_test.sh
+
+# The measurement instrument: the cohort export, the analysis harness, the
+# boundary proof, and the synthetic trace generator. These guard the numbers the
+# pre-registration will be reported from, so they run with the rest of the suite
+# rather than only when a human remembers.
+test-measurement:
+	./scripts/tests/run_measurement_tests.sh
 
 verify-release:
 	VELVT_RELEASE_ARCHS="$(VELVT_RELEASE_ARCHS)" ./scripts/verify_release.sh --mode local --app $(VELVT_APP_PATH) --dmg $(VELVT_DMG_PATH)

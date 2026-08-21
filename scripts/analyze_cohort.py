@@ -43,7 +43,11 @@ WRONG_INTERVENTION_OUTCOMES = ("was_focused", "wrong_classification")
 # cannot inform the metric. Declared in advance as an exclusion.
 WARMUP_EXCLUSION_SECONDS = 300
 
-TERMINAL_OUTCOMES = (
+# Terminal outcomes for an offer that was actually DELIVERED to a person: a
+# banner or an in-app card reached them and this is how it resolved. These are
+# the only rows that may sit in the primary-outcome denominator, because the
+# primary outcome asks what a delivered interruption changed.
+DELIVERED_TERMINAL_OUTCOMES = (
     "accepted_action",
     "returned",
     "not_helpful",
@@ -52,6 +56,34 @@ TERMINAL_OUTCOMES = (
     "dismissed",
     "no_response",
 )
+
+# Terminal outcomes for a decision the gate made and then WITHHELD. Both are in
+# the shipped v28 CHECK constraint — `delivery_suppressed_dnd` from migration
+# 0020, `withheld_demotion` from migration 0023 — and both are terminal at
+# creation, delivered by no channel. A nudge that was never shown cannot be
+# returned to and cannot be wrong, so these rows must never enter the delivered
+# denominator; they are partitioned out and reported on their own.
+#
+# Amendment, dated 2026-08-21, stating what was known at the time: the
+# pre-registration written on 2026-08-09 enumerated the outcome vocabulary as it
+# stood before migrations 0020 and 0023 landed, so this script silently routed
+# both values to `malformed` and DROPPED the row — shrinking the denominator
+# rather than reporting the withholding. That is a defect in the instrument, not
+# a change of definition: the primary outcome's numerator and denominator are
+# unchanged, and the recovered rows are reported in a block of their own.
+WITHHELD_TERMINAL_OUTCOMES = (
+    "delivery_suppressed_dnd",
+    "withheld_demotion",
+)
+
+# Everything the shipped schema can store, `offered` aside (the only
+# non-terminal state). Kept as one tuple so an unknown value is still caught.
+TERMINAL_OUTCOMES = DELIVERED_TERMINAL_OUTCOMES + WITHHELD_TERMINAL_OUTCOMES
+
+WITHHELD_REASONS = {
+    "delivery_suppressed_dnd": "Do Not Disturb was on; no channel fired.",
+    "withheld_demotion": "auto-demotion was active; Velvt had gone quiet.",
+}
 
 
 @dataclass
@@ -76,6 +108,11 @@ class Excluded:
 @dataclass
 class Cohort:
     offers: list[Offer] = field(default_factory=list)
+    # Decisions the gate recorded and withheld. Deliberately a separate list
+    # from `offers`, so that no ratio computed over `offers` can accidentally
+    # pick them up: partitioning by outcome inside a single list is one `if`
+    # away from counting a nudge nobody saw as a nudge somebody ignored.
+    withheld: list[Offer] = field(default_factory=list)
     excluded: list[Excluded] = field(default_factory=list)
     participants: set[str] = field(default_factory=set)
     empty_exports: list[str] = field(default_factory=list)
@@ -143,24 +180,32 @@ def load(paths: list[Path]) -> Cohort:
                     and (outcome_at - offered_at) <= RETURN_WINDOW_SECONDS
                 )
 
-            cohort.offers.append(
-                Offer(
-                    participant=participant,
-                    block_id=block_id,
-                    outcome=outcome,
-                    salience=(row.get("salience") or "normal").strip() or "normal",
-                    offered_at=offered_at,
-                    outcome_at=outcome_at,
-                    planned_duration_seconds=planned,
-                    returned_within_window=returned,
-                )
+            record = Offer(
+                participant=participant,
+                block_id=block_id,
+                outcome=outcome,
+                salience=(row.get("salience") or "normal").strip() or "normal",
+                offered_at=offered_at,
+                outcome_at=outcome_at,
+                planned_duration_seconds=planned,
+                # A withheld row is terminal at creation and reached no
+                # channel, so it can never have been returned to. Force the
+                # flag off rather than trusting an exporter's column.
+                returned_within_window=(
+                    False if outcome in WITHHELD_TERMINAL_OUTCOMES else returned
+                ),
             )
+            if outcome in WITHHELD_TERMINAL_OUTCOMES:
+                cohort.withheld.append(record)
+            else:
+                cohort.offers.append(record)
     return cohort
 
 
 def analyse(cohort: Cohort) -> dict:
     offers = cohort.offers
     denominator = len(offers)
+    withheld = cohort.withheld
 
     returned = [o for o in offers if o.returned_within_window]
     raw_returned = [o for o in offers if o.outcome == "returned"]
@@ -178,11 +223,23 @@ def analyse(cohort: Cohort) -> dict:
             "no_response": sum(1 for o in subset if o.outcome == "no_response"),
         }
 
+    withheld_counts = Counter(o.outcome for o in withheld)
+
     return {
         "participants": {
             "exports_received": len(cohort.participants),
             "with_at_least_one_offer": len({o.participant for o in offers}),
+            "with_at_least_one_withheld": len({o.participant for o in withheld}),
             "exported_zero_offers": sorted(cohort.empty_exports),
+        },
+        "decisions_recorded": {
+            "definition": (
+                "Every row the gate wrote, delivered or not. Reported so the "
+                "delivered denominator can be audited against it."
+            ),
+            "total": denominator + len(withheld),
+            "delivered": denominator,
+            "withheld": len(withheld),
         },
         "primary_outcome": {
             "definition": (
@@ -210,8 +267,36 @@ def analyse(cohort: Cohort) -> dict:
             "no_response": len(silent),
             "note": "Silence is not a refusal. It stays in the denominator.",
         },
+        "withheld": {
+            "definition": (
+                "Decisions the gate made and did not deliver. Terminal at "
+                "creation, delivered by no channel, and excluded from every "
+                "denominator above — a nudge nobody saw cannot be returned to "
+                "and cannot be wrong."
+            ),
+            "total": len(withheld),
+            "by_outcome": dict(sorted(withheld_counts.items())),
+            "reasons": {
+                outcome: WITHHELD_REASONS[outcome]
+                for outcome in sorted(withheld_counts)
+                if outcome in WITHHELD_REASONS
+            },
+            "share_of_recorded_decisions": (
+                f"{len(withheld)}/{denominator + len(withheld)}"
+                if (denominator + len(withheld))
+                else "not computable (no decisions recorded)"
+            ),
+            "note": (
+                "Report this beside the delivered counts, not folded into "
+                "them. A high withheld count with a low delivered count is the "
+                "gate choosing not to speak, which is a result in itself."
+            ),
+        },
         "outcome_distribution": dict(
             sorted(Counter(o.outcome for o in offers).items())
+        ),
+        "outcome_distribution_note": (
+            "Delivered offers only. Withheld decisions are in the 'withheld' block."
         ),
         "salience_split": by_salience,
         "exclusions": {
@@ -244,11 +329,23 @@ def render(result: dict) -> str:
     add("=" * 64)
     add(f"exports received:        {p['exports_received']}")
     add(f"  with >=1 offer:        {p['with_at_least_one_offer']}")
+    add(f"  with >=1 withheld:     {p['with_at_least_one_withheld']}")
     add(f"  exported zero offers:  {len(p['exported_zero_offers'])} {p['exported_zero_offers'] or ''}")
     if p["exports_received"] and not p["with_at_least_one_offer"]:
         add("")
-        add("  No offer fired for anyone. That is a result, not a failure of")
-        add("  collection: the gate's thresholds were never met. Report it.")
+        add("  No offer was delivered to anyone. That is a result, not a failure")
+        add("  of collection: the gate's thresholds were never met, or every")
+        add("  decision it did make was withheld. Report it, and read the")
+        add("  WITHHELD block below before concluding which.")
+
+    decisions = result["decisions_recorded"]
+    add("")
+    add("DECISIONS RECORDED")
+    add("-" * 64)
+    add(f"  {decisions['definition']}")
+    add(f"  total:     {decisions['total']}")
+    add(f"  delivered: {decisions['delivered']}   <- the denominator below")
+    add(f"  withheld:  {decisions['withheld']}   <- partitioned out, reported separately")
 
     primary = result["primary_outcome"]
     add("")
@@ -274,15 +371,31 @@ def render(result: dict) -> str:
             add(f"  ABOVE the {trust['auto_demotion_threshold']:.0%} auto-demotion threshold.")
 
     add("")
-    add("OUTCOME DISTRIBUTION")
+    add("OUTCOME DISTRIBUTION (delivered only)")
     add("-" * 64)
     if result["outcome_distribution"]:
         for outcome, count in result["outcome_distribution"].items():
             add(f"  {outcome:24} {count}")
     else:
-        add("  (no offers)")
+        add("  (no delivered offers)")
     add(f"  silence (no_response): {result['silence']['no_response']} — "
         "not a refusal, stays in the denominator")
+
+    held = result["withheld"]
+    add("")
+    add("WITHHELD (recorded, never delivered)")
+    add("-" * 64)
+    add(f"  {held['definition']}")
+    if held["by_outcome"]:
+        for outcome, count in held["by_outcome"].items():
+            reason = held["reasons"].get(outcome, "")
+            add(f"  {outcome:24} {count}   {reason}")
+    elif decisions["total"]:
+        add("  (none — every recorded decision was delivered)")
+    else:
+        add("  (no decisions were recorded at all, so none could be withheld)")
+    add(f"  share of recorded decisions: {held['share_of_recorded_decisions']}")
+    add("  These rows are NOT in the primary-outcome or trust denominators.")
 
     add("")
     add("SALIENCE SPLIT")

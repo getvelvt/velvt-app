@@ -8,8 +8,11 @@
 # intervention change what the person did — is not measurable without the
 # participant deliberately handing it over. This script is that hand-over.
 #
-# What it emits: one row per intervention offer, with safe taxonomy categories
-# and timings only.
+# What it emits: one row per recorded intervention decision, with safe taxonomy
+# categories and timings only. Two of those decisions are terminal at creation
+# and reached no channel — `delivery_suppressed_dnd` (migration 0020) and
+# `withheld_demotion` (migration 0023). They are exported like any other row;
+# `analyze_cohort.py` partitions them out of the delivered denominator.
 #
 # What it cannot emit, by construction: the free-form block intention, app
 # names, window titles, URLs, filenames, or any observation rows. The query
@@ -68,7 +71,7 @@ fi
 # export must be a valid CSV with a header and zero rows, not an empty file
 # that reads as a broken script. Keep this list in step with the aliases below.
 printf '%s\n' \
-    'block_id,purpose,intensity,planned_duration_seconds,block_phase,offered_at,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention' \
+    'block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention' \
     > "$OUT"
 
 sqlite3 -readonly -noheader -csv "$WORK/snapshot.sqlite" >> "$OUT" <<'SQL'
@@ -78,7 +81,26 @@ SELECT
     b.intensity                                  AS intensity,
     b.planned_duration_seconds                   AS planned_duration_seconds,
     b.phase                                      AS block_phase,
+    -- Block timing. Without these the offer instant has no denominator: an
+    -- offer at t+600 means something different in a 5-minute block than in a
+    -- 3-hour one, and `DRIFT_MIN_REMAINING_SECONDS` is a gate on exactly this
+    -- quantity. Epoch seconds, no timezone, no local date.
+    b.started_at                                 AS started_at,
+    b.ended_at                                   AS ended_at,
+    b.total_paused_seconds                       AS total_paused_seconds,
     i.offered_at                                 AS offered_at,
+    -- Derived, using the shipped gate's own arithmetic: elapsed is wall time
+    -- since start minus accumulated pause, clamped at zero, and remaining is
+    -- the planned duration minus that, clamped at zero.
+    --
+    -- Honest caveat, because this column will be read as if it were recorded
+    -- at the offer instant and it is not: `total_paused_seconds` is the
+    -- block's FINAL accumulated pause, so a block paused *after* the offer
+    -- makes this an under-estimate of what the gate actually saw. The three
+    -- raw inputs are exported beside it so anyone can recompute or discard it.
+    MAX(0, b.planned_duration_seconds
+           - MAX(0, MAX(0, i.offered_at - b.started_at) - b.total_paused_seconds)
+    )                                            AS remaining_seconds_at_offer,
     i.action_id                                  AS action_id,
     i.anchor_category                            AS anchor_category,
     i.switch_count                               AS switch_count,
@@ -131,8 +153,10 @@ fi
 
 cat <<SUMMARY
 
-Contains: block id, purpose, intensity, planned duration, offer time, anchor
-category, switch count, salience, outcome, and outcome time.
+Contains: block id, purpose, intensity, planned duration, block phase, block
+start and end times, total time paused, offer time, how much of the block was
+left when the offer fired, anchor category, switch count, salience, outcome,
+and outcome time. Times are plain epoch seconds.
 
 Does NOT contain: your block intentions, app names, window titles, URLs,
 filenames, or anything you typed or read. Open it and check before sending.

@@ -12,7 +12,7 @@ final class MenuBarNavigationTests: XCTestCase {
   func testRestoredWorkspaceNavigationKeepsThePreviousOrderAndTitles() {
     XCTAssertEqual(
       MenuBarWorkspaceTab.allCases.map(\.title),
-      ["Today", "Your Week", "Settings"]
+      ["Now", "Patterns", "Settings"]
     )
   }
 

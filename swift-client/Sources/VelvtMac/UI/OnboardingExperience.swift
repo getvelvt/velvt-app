@@ -405,9 +405,15 @@ public struct FirstRunExperienceView: View {
         case .welcome:
             IntroPage(
                 systemImage: "hand.raised.fill",
-                title: "Velvt learns how your attention breaks.",
+                // "Velvt learns how your attention breaks" was the first
+                // sentence a new user read, and it claimed a capability the
+                // shipped product does not have — banned outright by
+                // GOAL.md. What Velvt actually does is notice one thing, and
+                // that is a better promise than the one it was overstating.
+                title:
+                    "Velvt notices the moment you leave the work you sat down to do.",
                 body:
-                    "It notices when you have drifted from the work you sat down to do, and offers one way back before the block is lost. Raw work context never leaves your Mac."
+                    "When it does, it offers one way back before the block is lost. Raw work context never leaves your Mac."
             )
         case .privacy:
             VStack(alignment: .leading, spacing: 18) {
@@ -440,9 +446,12 @@ public struct FirstRunExperienceView: View {
                     "arrow.triangle.2.circlepath",
                     "Understand broad context switching and uninterrupted stretches.")
                 capability("leaf", "Take one modest recovery action.")
+                // "Focus Fragmentation" is the name of a metric, and a
+                // metric name on the first screen teaches the reader that
+                // this is a thing that measures them.
                 capability(
                     "calendar",
-                    "Review Focus Fragmentation and seven days of Activity without scores or moral judgment.")
+                    "Look back at how a block went, with no score and no verdict.")
             }
         case .ready:
             IntroPage(

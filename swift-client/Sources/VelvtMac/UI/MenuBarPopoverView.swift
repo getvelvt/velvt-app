@@ -778,10 +778,14 @@ public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
     case history
     case settings
 
+    /// "Today" and "Your Week" are reporting periods — the vocabulary of a
+    /// report you read, not of a thing that is watching with you right now.
+    /// "Now" is where the product actually lives, and "Patterns" is a claim
+    /// about the person rather than a date range.
     public var title: String {
         switch self {
-        case .workBlock: return "Today"
-        case .history: return "Your Week"
+        case .workBlock: return "Now"
+        case .history: return "Patterns"
         case .settings: return "Settings"
         }
     }

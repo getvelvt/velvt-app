@@ -1,11 +1,12 @@
 use super::{
-    AbstractionMapping, BatchEvent, CompletedBlockDwellSpan, DemotionStateRecord, FocusTransition,
-    HistoryCacheEntry, InitiationInvitationOutcome, InitiationInvitationRecord, InsightCacheEntry,
-    LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch, PersistenceError,
-    PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry,
-    UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
-    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
-    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WrongInterventionCounts,
+    AbstractionMapping, BatchEvent, BlockAntecedent, CompletedBlockDwellSpan, DemotionStateRecord,
+    FocusTransition, HistoryCacheEntry, InitiationInvitationOutcome, InitiationInvitationRecord,
+    InsightCacheEntry, InterventionDecision, LocalDisplayAggregate, LocalEventMetadata,
+    NewUploadBatch, OutOfBlockRun, PersistenceError, PersonalOverrideRecord,
+    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, UploadBatch,
+    UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection,
+    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
+    WorkBlockRecord, WrongInterventionCounts,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -339,6 +340,24 @@ pub trait WorkBlockRepo: Send + Sync {
     ) -> Result<bool, PersistenceError>;
     fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError>;
     fn clear_all(&self) -> Result<u64, PersistenceError>;
+
+    /// Appends one drift-policy decision, including an abstention.
+    ///
+    /// Writes to `intervention_decision_log` and nothing else. It must never
+    /// touch `work_block_intervention`: that table's `PRIMARY KEY(block_id)` is
+    /// the denominator of the pre-registered primary outcome, and a silence
+    /// decision recorded there would silently change a pre-registered metric.
+    ///
+    /// `decision_id` is unique per decision; a replayed id is a no-op rather
+    /// than an error, so a retried write cannot double-count an evaluation.
+    fn record_decision(&self, decision: &InterventionDecision) -> Result<(), PersistenceError>;
+
+    /// Every logged decision for a block, oldest first.
+    fn decisions(&self, block_id: &str) -> Result<Vec<InterventionDecision>, PersistenceError>;
+
+    /// The most recent decisions across every block, newest first.
+    fn recent_decisions(&self, limit: usize)
+        -> Result<Vec<InterventionDecision>, PersistenceError>;
 }
 
 /// Storage seam for the deterministic initiation-invitation policy: the
@@ -485,4 +504,40 @@ pub trait ReceiptsRepo: Send + Sync {
     fn prune_receipts_before(&self, week_start_local_date: &str) -> Result<u64, PersistenceError>;
     /// Deletes every digest row and probe bucket (clear-all-data).
     fn clear_receipts(&self) -> Result<u64, PersistenceError>;
+}
+
+/// Storage seam for the durable behavioural substrate: out-of-block runs and
+/// the bounded pre-block window.
+///
+/// Separate from `WorkBlockRepo` deliberately. Everything behind this trait is
+/// derived evidence with its own retention, and none of it is representable in
+/// the upload path. Keeping it out of `WorkBlockRepo` means the block state
+/// machine cannot accidentally acquire a dependency on the behavioural model,
+/// which is the direction that would let a model result start driving delivery.
+pub trait BehaviorRepo: Send + Sync {
+    /// Appends one closed out-of-block run. Broad category and coarse time
+    /// only; the type carries no field that could hold app identity.
+    fn record_out_of_block_run(&self, run: &OutOfBlockRun) -> Result<(), PersistenceError>;
+
+    /// Runs whose start bucket is at or after `since_bucket`, oldest first.
+    fn out_of_block_runs(&self, since_bucket: i64) -> Result<Vec<OutOfBlockRun>, PersistenceError>;
+
+    /// Deletes at most `batch_size` runs whose start bucket is strictly before
+    /// `cutoff_bucket`. Batched so retention never holds the write lock for an
+    /// unbounded time.
+    fn delete_out_of_block_runs_before(
+        &self,
+        cutoff_bucket: i64,
+        batch_size: usize,
+    ) -> Result<u64, PersistenceError>;
+
+    /// Records the pre-block window once, at block start. A second write for
+    /// the same block is a no-op: the antecedent is recorded once and never
+    /// updated, so a later evaluation cannot rewrite history.
+    fn record_block_antecedent(&self, antecedent: &BlockAntecedent)
+        -> Result<(), PersistenceError>;
+
+    /// The recorded antecedent for a block, if one exists.
+    fn block_antecedent(&self, block_id: &str)
+        -> Result<Option<BlockAntecedent>, PersistenceError>;
 }

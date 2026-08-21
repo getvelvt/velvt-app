@@ -287,6 +287,7 @@ fn digest_payload(record: &WeeklyDigestRecord) -> WeeklyDigest {
             record.recoveries,
             record.blocks_completed,
             record.blocks_declared,
+            record.withheld,
         ),
         digest_version: record.digest_version,
     }
@@ -296,14 +297,32 @@ fn digest_payload(record: &WeeklyDigestRecord) -> WeeklyDigest {
 /// Recoveries lead as the accumulating positive stat; completions follow;
 /// nothing here can render a streak, a chain, or a failure tally, and no
 /// branch references what did not happen.
-fn digest_headline(recoveries: u32, completed: u32, declared: u32) -> String {
-    match (recoveries, declared) {
-        (0, 0) => "Your week's receipts, from the evidence Velvt kept.".to_owned(),
-        (0, _) => format!("You completed {completed} of {declared} blocks this week."),
-        (_, 0) => format!("You returned to your work {recoveries} times this week."),
+///
+/// `withheld` — decisions Velvt made and then held, under Focus/DND or while
+/// demoted — was already computed, already stored, already across the IPC
+/// boundary and already rendered, as row four of the digest body under
+/// `DigestFraming.withheldLabel`. It is the only number in the product that
+/// counts an interruption that did not happen, which makes it the one stat a
+/// notification app cannot copy, and it was sitting below the fold. Promoting
+/// it costs no protocol change, no new measurement, and no Swift change.
+///
+/// It is promoted as the second clause rather than the first on purpose: the
+/// user stays the subject of the sentence. "Velvt chose not to send 6 nudges"
+/// is the instrument reporting on itself, which is the exact defect this
+/// release removed everywhere else.
+fn digest_headline(recoveries: u32, completed: u32, declared: u32, withheld: u32) -> String {
+    let counts = match (recoveries, declared) {
+        (0, 0) => "Your week's receipts, from the evidence Velvt kept".to_owned(),
+        (0, _) => format!("You completed {completed} of {declared} blocks this week"),
+        (_, 0) => format!("You returned to your work {recoveries} times this week"),
         _ => format!(
-            "You returned {recoveries} times and completed {completed} of {declared} blocks this week."
+            "You returned {recoveries} times and completed {completed} of {declared} blocks this week"
         ),
+    };
+    match withheld {
+        0 => format!("{counts}."),
+        1 => format!("{counts}, and Velvt chose not to send one nudge."),
+        _ => format!("{counts}, and Velvt chose not to send {withheld} nudges."),
     }
 }
 
@@ -344,21 +363,21 @@ mod tests {
     #[test]
     fn headline_leads_with_recoveries_and_never_renders_a_tally_of_misses() {
         assert_eq!(
-            digest_headline(4, 3, 5),
+            digest_headline(4, 3, 5, 0),
             "You returned 4 times and completed 3 of 5 blocks this week."
         );
         assert_eq!(
-            digest_headline(0, 2, 2),
+            digest_headline(0, 2, 2, 0),
             "You completed 2 of 2 blocks this week."
         );
         assert_eq!(
-            digest_headline(3, 0, 0),
+            digest_headline(3, 0, 0, 0),
             "You returned to your work 3 times this week."
         );
         for headline in [
-            digest_headline(0, 0, 0),
-            digest_headline(4, 3, 5),
-            digest_headline(0, 2, 5),
+            digest_headline(0, 0, 0, 0),
+            digest_headline(4, 3, 5, 0),
+            digest_headline(0, 2, 5, 0),
         ] {
             let lowered = headline.to_ascii_lowercase();
             for banned in crate::work_block::BANNED_COPY_TOKENS {
@@ -366,6 +385,48 @@ mod tests {
                     !lowered.contains(banned),
                     "banned token {banned:?} in digest headline {headline:?}"
                 );
+            }
+        }
+    }
+
+    /// Restraint reaches the headline, and the user stays the subject of it.
+    /// `withheld` was already stored, already across IPC and already rendered
+    /// as a row; the only thing that changed is which sentence it appears in.
+    #[test]
+    fn withheld_is_promoted_into_the_headline_without_displacing_the_user() {
+        assert_eq!(
+            digest_headline(4, 3, 5, 6),
+            "You returned 4 times and completed 3 of 5 blocks this week, and Velvt chose not to \
+             send 6 nudges."
+        );
+        assert_eq!(
+            digest_headline(0, 0, 0, 1),
+            "Your week's receipts, from the evidence Velvt kept, and Velvt chose not to send one \
+             nudge."
+        );
+        // The count of held nudges never becomes the subject, and never
+        // renders as "1 nudges".
+        for withheld in 0..5_u32 {
+            for (recoveries, completed, declared) in [(0, 0, 0), (0, 2, 5), (4, 3, 5), (3, 0, 0)] {
+                let headline = digest_headline(recoveries, completed, declared, withheld);
+                assert!(
+                    headline.starts_with("You"),
+                    "digest headline does not open on the user: {headline:?}"
+                );
+                assert!(
+                    !headline.contains("1 nudge"),
+                    "singular nudge rendered with a numeral: {headline:?}"
+                );
+                let lowered = headline.to_ascii_lowercase();
+                for banned in crate::work_block::BANNED_COPY_TOKENS
+                    .iter()
+                    .chain(crate::work_block::BANNED_JARGON_TOKENS)
+                {
+                    assert!(
+                        !lowered.contains(banned),
+                        "banned token {banned:?} in digest headline {headline:?}"
+                    );
+                }
             }
         }
     }

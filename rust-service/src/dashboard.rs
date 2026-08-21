@@ -76,6 +76,11 @@ struct WindowAggregate {
     switches_per_hour: f64,
     coverage: LocalDashboardCoverage,
     coverage_ratio: f64,
+    /// Seconds of the window Velvt could actually categorize. The copy below
+    /// counts minutes in these, never in wall-clock minutes: telling someone
+    /// what their last hour looked like when only twenty minutes of it were
+    /// seen is a claim the evidence does not support.
+    observed_seconds: u64,
     longest_uninterrupted_seconds: u64,
     recovery_count: u32,
     early_signal: LocalEarlySignal,
@@ -125,6 +130,7 @@ fn aggregate_window(
         switches_per_hour,
         coverage,
         coverage_ratio,
+        observed_seconds,
         longest_uninterrupted_seconds,
         recovery_count,
         early_signal,
@@ -303,19 +309,9 @@ fn focus_fragmentation(
     let comparison =
         earlier_today_comparison(repo, &aggregate, analysis_start, analysis_end, offset)?;
     let observation = if aggregate.coverage != LocalDashboardCoverage::Good {
-        "Coverage is still building, so Velvt is not making a confident switching comparison."
-            .to_owned()
-    } else if aggregate.clusters.is_empty() {
-        format!(
-            "Velvt observed {} category switches in this work-block window; a switch is movement, not proof of distraction.",
-            aggregate.switch_count
-        )
+        LOW_COVERAGE_BLOCK_COPY.to_owned()
     } else {
-        format!(
-            "Velvt observed {} switching cluster{} in this work-block window; clusters describe timing, not intent.",
-            aggregate.clusters.len(),
-            if aggregate.clusters.len() == 1 { "" } else { "s" }
-        )
+        direction_copy(aggregate.switch_count, aggregate.observed_seconds)
     };
     let next_action = block
         .result
@@ -380,18 +376,11 @@ fn earlier_today_comparison(
         return Ok(None);
     }
     let delta = current.switch_count as i32 - earlier.switch_count as i32;
-    let direction = match delta.cmp(&0) {
-        std::cmp::Ordering::Less => format!("{} fewer", delta.unsigned_abs()),
-        std::cmp::Ordering::Equal => "the same number of".to_owned(),
-        std::cmp::Ordering::Greater => format!("{} more", delta.unsigned_abs()),
-    };
     Ok(Some(LocalFocusComparison {
         kind: LocalComparisonKind::EarlierToday,
         label: "versus earlier today".to_owned(),
         switch_delta: delta,
-        explanation: format!(
-            "This comparable 60-minute window had {direction} observed category switches than the preceding covered 60-minute window earlier today."
-        ),
+        explanation: comparison_copy(delta),
     }))
 }
 
@@ -646,7 +635,11 @@ fn early_signal(
     let observed_from = evidence_segments.first().map(|segment| segment.started_at);
     let is_ready = observed_seconds >= EARLY_SIGNAL_REQUIRED_SECONDS && evidence_event_count > 0;
     LocalEarlySignal {
-        status: if is_ready { LocalEarlySignalStatus::Ready } else { LocalEarlySignalStatus::InsufficientEvidence },
+        status: if is_ready {
+            LocalEarlySignalStatus::Ready
+        } else {
+            LocalEarlySignalStatus::InsufficientEvidence
+        },
         observed_from,
         observed_through,
         observed_seconds,
@@ -655,45 +648,124 @@ fn early_signal(
         focused_seconds,
         meaningful_switch_count: transitions.len() as u32,
         longest_uninterrupted_seconds,
-        // Says what was observed, in the user's words and with the count that
-        // makes it checkable. The previous copy — "your recorded activity held
-        // a relatively steady broad category in this observation window" —
-        // used three internal terms in one sentence and hedged the one fact it
-        // had, so it read as a system describing itself rather than telling
-        // someone what they just did. The numbers were already computed and
-        // discarded; a claim the user can verify against their own memory is
-        // both clearer and more honest than a claim they can only take on
-        // trust.
-        observation: is_ready.then(|| {
-            let minutes = observed_seconds / 60;
-            match transitions.len() {
-                0 => format!("You stayed on one kind of work for the last {minutes} minutes."),
-                1 => format!("You changed what you were working on once in the last {minutes} minutes."),
-                count if count < 3 => format!(
-                    "You changed what you were working on {count} times in the last {minutes} minutes."
-                ),
-                count => format!(
-                    "You changed what you were working on {count} times in the last {minutes} minutes — enough that it is worth noticing."
-                ),
-            }
-        }),
-        // Seeded on the calendar day, not on `observed_through`: this
-        // snapshot is recomputed on every popover refresh, and a seed that
-        // advanced with the clock would re-word the suggestion under the
-        // reader's eyes. Stable within a day, different across days.
-        suggested_action: is_ready.then(|| {
-            let day = observed_through.format("%Y-%m-%d").to_string();
-            let seed = crate::work_block::copy_seed_from(&[day.as_bytes()]);
-            match seed % 4 {
-                0 => "Start a block to hold one thing for a while.",
-                1 => "A block would hold one thing in place for a while.",
-                2 => "Try a block to keep one thing in front of you.",
-                _ => "Start a block and give one thing the next stretch.",
-            }
-            .to_owned()
-        }),
-        action_minutes: if is_ready { EARLY_SIGNAL_ACTION_MINUTES } else { 0 },
+        // Does not lead with the count. With no baseline there is nothing to
+        // compare 4 to, so a number in first position is Screen Time's exact
+        // grammar — count over window, plus a soft nag — and the reader has
+        // no way to tell whether it is a lot. The count still appears; it is
+        // just no longer the claim.
+        observation: is_ready.then(|| direction_copy(transitions.len() as u32, observed_seconds)),
+        // One line, carrying the evidence, instead of four rotations of the
+        // same contentless advice. Rewording generic advice to seem fresh is
+        // a symptom of advice that carries no information, and the rotation
+        // was seeded, tested and maintained as if it were a feature.
+        //
+        // The minutes offered are `EARLY_SIGNAL_ACTION_MINUTES` and not a
+        // separately chosen number: the sentence sits directly above a button
+        // that starts a block of exactly that length, and a sentence that
+        // proposes a different duration from the button under it is a
+        // sentence the product does not keep.
+        suggested_action: is_ready
+            .then(|| {
+                dominant_category(&evidence_segments).map(|category| {
+                    format!(
+                        "{} has had most of your last {}. Want {EARLY_SIGNAL_ACTION_MINUTES} \
+                         minutes on it, uninterrupted?",
+                        friendly_category(&category),
+                        window_minutes_phrase(observed_seconds)
+                    )
+                })
+            })
+            .flatten(),
+        action_minutes: if is_ready {
+            EARLY_SIGNAL_ACTION_MINUTES
+        } else {
+            0
+        },
     }
+}
+
+/// The only within-person comparison the product currently has, which makes
+/// it the one place a count actually means something. It was spent on "this
+/// comparable 60-minute window had 3 more observed category switches than
+/// the preceding covered 60-minute window" — a sentence about two windows
+/// rather than about the person who was in them.
+///
+/// Both windows are exactly `MAX_WINDOW_SECONDS`; `comparison_is_eligible`
+/// refuses anything shorter, so "hour" is the measurement, not a rounding.
+fn comparison_copy(switch_delta: i32) -> String {
+    match switch_delta.cmp(&0) {
+        std::cmp::Ordering::Less => format!(
+            "You changed direction {} fewer times in this hour than in the hour before it.",
+            switch_delta.unsigned_abs()
+        ),
+        std::cmp::Ordering::Equal => {
+            "You changed direction the same number of times in this hour as in the hour before it."
+                .to_owned()
+        }
+        std::cmp::Ordering::Greater => format!(
+            "You changed direction {} more times in this hour than in the hour before it.",
+            switch_delta.unsigned_abs()
+        ),
+    }
+}
+
+/// Said when too little of a declared block could be categorized to support
+/// any claim about it. Velvt is the subject on purpose: this is a statement
+/// about what the instrument could see, not about what the person did.
+///
+/// It replaces "Coverage is still building, so Velvt is not making a
+/// confident switching comparison." — which shipped a `BANNED_COPY_TOKENS`
+/// word ("still") to users because the registry was enforced in four modules
+/// and not in this one.
+const LOW_COVERAGE_BLOCK_COPY: &str = "Velvt hasn't seen enough of this block yet to say anything.";
+
+/// The one sentence both local surfaces say about a stretch of time: the
+/// early signal about the last hour, the work-block card about the block.
+///
+/// The interpretation in the last branch ("in pieces") is entailed by the
+/// number rather than added to it, and it is a claim about the hour, not
+/// about the person — which is the line between describing evidence and
+/// diagnosing someone.
+fn direction_copy(switch_count: u32, observed_seconds: u64) -> String {
+    let window = window_minutes_phrase(observed_seconds);
+    match switch_count {
+        0 => format!("You've been on one thing for the last {window}."),
+        1 => format!("One change of direction in the last {window}."),
+        2 => format!("Two changes of direction in the last {window}."),
+        count => {
+            let verb = if observed_seconds / 60 == 1 {
+                "has"
+            } else {
+                "have"
+            };
+            format!("The last {window} {verb} been in pieces — {count} changes of direction.")
+        }
+    }
+}
+
+/// "minute" or "42 minutes" — the tail of "the last …" and "your last …",
+/// counted in categorized seconds rather than wall-clock seconds.
+fn window_minutes_phrase(observed_seconds: u64) -> String {
+    let minutes = observed_seconds / 60;
+    if minutes == 1 {
+        "minute".to_owned()
+    } else {
+        format!("{minutes} minutes")
+    }
+}
+
+/// The category holding the most categorized time in a window. Ties break on
+/// the category name so the answer cannot oscillate between equal candidates
+/// across two refreshes of the same popover.
+fn dominant_category(segments: &[&LocalTimelineSegment]) -> Option<String> {
+    let mut durations = HashMap::<&str, u64>::new();
+    for segment in segments {
+        *durations.entry(&segment.category).or_default() += segment_seconds(segment);
+    }
+    durations
+        .into_iter()
+        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(left.0)))
+        .map(|(category, _)| category.to_owned())
 }
 
 fn recovery_count(segments: &[LocalTimelineSegment]) -> u32 {
@@ -701,15 +773,7 @@ fn recovery_count(segments: &[LocalTimelineSegment]) -> u32 {
         .iter()
         .filter(|segment| is_meaningful_category(&segment.category))
         .collect::<Vec<_>>();
-    let mut durations = HashMap::<&str, u64>::new();
-    for segment in &meaningful {
-        *durations.entry(&segment.category).or_default() += segment_seconds(segment);
-    }
-    let Some(dominant) = durations
-        .into_iter()
-        .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(left.0)))
-        .map(|item| item.0)
-    else {
+    let Some(dominant) = dominant_category(&meaningful) else {
         return 0;
     };
     let mut seen = false;
@@ -1160,6 +1224,163 @@ mod tests {
         );
         assert_eq!(day.segments[0].label, "Unclassified");
         assert_eq!(day.state, LocalDailyActivityState::LowConfidence);
+    }
+
+    /// The enforcement gap that let "Coverage is still building" ship.
+    ///
+    /// `BANNED_COPY_TOKENS` was checked in `receipts`, `focus`, `initiation`
+    /// and `work_block` and in no other module, so this one — which authors
+    /// the two sentences a user sees most often — was the only Rust copy
+    /// surface with no registry test at all. The registry was not wrong; it
+    /// was simply not asked. Every sentence this module can produce is
+    /// enumerated below, including the branches a single fixture would never
+    /// reach, because a banned word in branch three reaches users exactly as
+    /// easily as one in branch one.
+    #[test]
+    fn every_local_dashboard_sentence_passes_both_copy_registries() {
+        let mut registry = vec![
+            LOW_COVERAGE_BLOCK_COPY.to_owned(),
+            friendly_list(&[]),
+            "Protect the next 10 minutes for the work you chose.".to_owned(),
+        ];
+        for delta in [-4_i32, -1, 0, 1, 4] {
+            registry.push(comparison_copy(delta));
+        }
+        for observed_seconds in [60_u64, 120, 600, 3_600] {
+            registry.push(window_minutes_phrase(observed_seconds));
+            for switch_count in 0..6_u32 {
+                registry.push(direction_copy(switch_count, observed_seconds));
+            }
+        }
+        for category in ["FOCUS_WORK", "COMMUNICATION", "REFERENCE", "UNCLASSIFIED"] {
+            registry.push(friendly_category(category));
+            registry.push(friendly_list(&[category.to_owned()]));
+        }
+        for seconds in [0_u64, 1, 59, 60, 90, 3_600] {
+            registry.push(plain_duration(seconds));
+        }
+
+        // The two rendered surfaces, end to end, rather than only the copy
+        // helpers behind them: the early signal and the work-block card.
+        for events in [
+            vec![measured_event(0, 900, "FOCUS_WORK")],
+            vec![
+                measured_event(0, 600, "FOCUS_WORK"),
+                measured_event(600, 300, "COMMUNICATION"),
+                measured_event(900, 600, "FOCUS_WORK"),
+            ],
+            vec![
+                measured_event(0, 120, "FOCUS_WORK"),
+                measured_event(120, 120, "COMMUNICATION"),
+                measured_event(240, 120, "REFERENCE"),
+                measured_event(360, 120, "FOCUS_WORK"),
+                measured_event(480, 120, "COMMUNICATION"),
+            ],
+            vec![measured_event(0, 30, "FOCUS_WORK")],
+        ] {
+            let aggregate = aggregate_window(
+                events,
+                DateTime::from_timestamp(0, 0).unwrap(),
+                DateTime::from_timestamp(1_800, 0).unwrap(),
+            );
+            registry.extend(aggregate.early_signal.observation.clone());
+            registry.extend(aggregate.early_signal.suggested_action.clone());
+            registry.extend(
+                aggregate
+                    .clusters
+                    .iter()
+                    .map(|cluster| cluster.explanation.clone()),
+            );
+            registry.push(if aggregate.coverage != LocalDashboardCoverage::Good {
+                LOW_COVERAGE_BLOCK_COPY.to_owned()
+            } else {
+                direction_copy(aggregate.switch_count, aggregate.observed_seconds)
+            });
+        }
+
+        for copy in &registry {
+            let lowered = copy.to_ascii_lowercase();
+            for forbidden in crate::work_block::BANNED_COPY_TOKENS {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "banned copy token {forbidden:?} in local dashboard copy {copy:?}"
+                );
+            }
+            for forbidden in crate::work_block::BANNED_JARGON_TOKENS {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "banned jargon token {forbidden:?} in local dashboard copy {copy:?}"
+                );
+            }
+        }
+    }
+
+    /// The early signal must not open with the count. That is Screen Time's
+    /// grammar — a number over a window with no baseline to read it against
+    /// — and it is the specific defect the rewrite exists to remove, so it
+    /// is asserted separately from the vocabulary registries: a sentence can
+    /// pass both and still lead with 4.
+    #[test]
+    fn the_early_signal_never_leads_with_the_count() {
+        for observed_seconds in [60_u64, 600, 3_600] {
+            for switch_count in 0..6_u32 {
+                let copy = direction_copy(switch_count, observed_seconds);
+                assert!(
+                    !copy.starts_with(|character: char| character.is_ascii_digit()),
+                    "early signal leads with the count: {copy:?}"
+                );
+                assert!(
+                    !copy.contains("worth noticing"),
+                    "the soft nag is back in {copy:?}"
+                );
+            }
+        }
+        assert_eq!(
+            direction_copy(0, 1_500),
+            "You've been on one thing for the last 25 minutes."
+        );
+        assert_eq!(
+            direction_copy(4, 1_500),
+            "The last 25 minutes have been in pieces — 4 changes of direction."
+        );
+        // Singular windows are reachable: the signal is ready at 60 seconds.
+        assert_eq!(
+            direction_copy(0, 90),
+            "You've been on one thing for the last minute."
+        );
+        assert_eq!(
+            direction_copy(3, 90),
+            "The last minute has been in pieces — 3 changes of direction."
+        );
+    }
+
+    /// The suggested action carries evidence and proposes exactly the block
+    /// the button under it starts. The four rotating variants of "Start a
+    /// block to hold one thing for a while" are gone: a suggestion that has
+    /// to be reworded to seem fresh is a suggestion with nothing in it.
+    #[test]
+    fn the_suggested_action_names_the_dominant_category_and_matches_its_button() {
+        let signal = aggregate_window(
+            vec![
+                measured_event(0, 900, "FOCUS_WORK"),
+                measured_event(900, 300, "COMMUNICATION"),
+            ],
+            DateTime::from_timestamp(0, 0).unwrap(),
+            DateTime::from_timestamp(1_200, 0).unwrap(),
+        )
+        .early_signal;
+        let action = signal
+            .suggested_action
+            .expect("a ready signal suggests one");
+        assert_eq!(
+            action,
+            "Focus work has had most of your last 20 minutes. Want 10 minutes on it, uninterrupted?"
+        );
+        assert_eq!(signal.action_minutes, EARLY_SIGNAL_ACTION_MINUTES);
+        assert!(
+            action.contains(&signal.action_minutes.to_string()),
+            "the sentence proposes a different duration from the button under it"
+        );
     }
 
     #[test]

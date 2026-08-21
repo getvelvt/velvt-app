@@ -69,6 +69,9 @@ All persistence lives in a SQLite database at
 | `work_block` | local state and optional free-form intention | intention: 24 hours; safe state retained until clear |
 | `work_block_observation` | safe category/status/confidence spans only | retained with local work-block data |
 | `work_block_result` | safe local duration, transition, recovery, coverage, evidence, observation, and one next action | retained until clear |
+| `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: broad anchor category, switch count, elapsed and remaining seconds, and the verdict. No label, no app identity, no window title, no URL, no intention text | retained with local work-block data; removed with the block it belongs to and by clear-all-data |
+| `out_of_block_run` | activity outside a declared work block, as broad category plus coarse time: start floored to a five-minute bucket, duration, local hour, and local date. Structurally cannot hold an application name, a label, a stable ID, a window title, or a URL — it is deliberately less informative than the 7-day `raw_event_buffer` it is derived from | 90 days |
+| `block_antecedent` | the bounded window of activity immediately before a block started, recorded once and never updated: the *set* of broad categories present (not their order), a switch count, a dominant category and its dwell, weekday/weekend, and hour bucket. The window is capped at 30 minutes by the database schema, so it cannot be widened by a setting | retained with local work-block data; removed with the block and by clear-all-data |
 
 `raw_event_buffer` holds no window titles and no URLs. It does hold two
 device-local columns that can name an application, and both are disclosed here

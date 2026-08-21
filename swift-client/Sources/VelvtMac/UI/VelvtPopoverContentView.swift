@@ -389,6 +389,16 @@ private struct EarlySignalBasisDisclosure: View {
                     "App names, window titles, URLs, and file paths are never read into it. "
                         + "The signal itself is computed and kept on this Mac."
                 )
+                // The one place the caveat belongs. It used to be bolted onto
+                // four separate claims — two sentences from Rust and two
+                // accessibility hints on the timeline — and a hedge attached
+                // to a claim retracts the claim. Said once, here, where the
+                // reader came looking for it, it is a description of the
+                // method instead.
+                Text(
+                    "Velvt can see what you moved between, never why. It counts the moves and "
+                        + "leaves the meaning to you."
+                )
             }
             .font(.caption2)
             .foregroundStyle(Color.velvtMuted)
@@ -491,8 +501,8 @@ struct EmptyDeliveryState: View {
     }
 }
 
-/// Today's analytical workspace. Seven-day activity belongs in Your Week so
-/// the same monitor is not repeated in two tabs.
+/// The Now workspace. Seven-day activity belongs in Patterns so the same
+/// monitor is not repeated in two tabs.
 public struct MinimalDashboardWorkspaceView: View {
   @ObservedObject private var coordinator: ConcreteDisplayDataCoordinator
   @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
@@ -531,12 +541,29 @@ public struct MinimalDashboardWorkspaceView: View {
       FocusFragmentationView(
         focus: localDashboardCoordinator.snapshot?.focusFragmentation,
         errorMessage: localDashboardCoordinator.commandError,
-        onStartWorkBlock: onStartWorkBlock
+        onStartWorkBlock: onStartWorkBlock,
+        header: workBlockCardHeader
       )
       .tourHighlight(highlightsFocus)
     }
     .padding(12)
     .onAppear { localDashboardCoordinator.refresh() }
+  }
+
+  /// The intention the user typed when they declared this block, else the
+  /// anchor category Rust derived for it. Both are values already on the
+  /// snapshot; this chooses between two given strings and derives neither.
+  private var workBlockCardHeader: String? {
+    guard let snapshot = workBlockCoordinator.snapshot else { return nil }
+    if let intention = snapshot.intention,
+      !intention.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
+      return intention
+    }
+    guard let anchor = snapshot.result?.safeEvidenceCategory ?? snapshot.currentCategory else {
+      return nil
+    }
+    return friendlyCategory(anchor)
   }
 
   @ViewBuilder
@@ -608,6 +635,11 @@ public struct FocusFragmentationView: View {
   let focus: LocalFocusFragmentation?
   let errorMessage: String?
   let onStartWorkBlock: () -> Void
+  /// What this block is about, in the user's own words if they gave any, and
+  /// otherwise the anchor category Rust already derived for it. Passed in
+  /// rather than computed: Swift renders derivations, it does not perform
+  /// them, and neither the intention nor the anchor is on this DTO.
+  var header: String?
   @State private var hoveredDetail: String?
   @FocusState private var focusedEvidenceID: String?
 
@@ -615,8 +647,8 @@ public struct FocusFragmentationView: View {
     VStack(alignment: .leading, spacing: 7) {
       if let focus {
         // Observation first, then the one action, then the evidence behind
-        // them. "Focus Fragmentation" names a metric, not a meaning, and a
-        // chart cannot tell someone what just happened to their attention.
+        // them. A chart cannot tell someone what just happened to their
+        // attention.
         // Leading with the chart put the only two sentences that carry meaning
         // at the bottom of the card in caption text, truncated, with the real
         // wording reachable only by hovering — which is the roadmap's
@@ -653,10 +685,21 @@ public struct FocusFragmentationView: View {
 
         Divider().opacity(0.15)
 
+        // The card is named after the work, not after the metric. The
+        // comment above this card used to say "Focus Fragmentation names a
+        // metric, not a meaning" — and the view then printed it anyway,
+        // twice, as the label over the chart and as the empty-state title.
+        // With no intention and no anchor yet there is nothing honest to put
+        // here, so the row carries the window alone rather than falling back
+        // to the metric name.
         HStack(spacing: 6) {
-          Text("Focus Fragmentation")
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
+          if let header, !header.isEmpty {
+            Text(header)
+              .font(.caption2)
+              .foregroundStyle(Color.velvtMuted)
+              .lineLimit(1)
+              .truncationMode(.tail)
+          }
           Spacer()
           Text(focus.windowLabel)
             .font(.caption2)
@@ -666,14 +709,13 @@ public struct FocusFragmentationView: View {
         metrics(focus)
       } else {
         VStack(alignment: .leading, spacing: 8) {
-          Text("Focus Fragmentation").font(.headline)
-          Text(
-            errorMessage
-              ?? "Start a work block to see its attention timeline. Velvt does not infer your intent from general activity."
-          )
-          .font(.caption)
-          .foregroundStyle(Color.velvtMuted)
-          .fixedSize(horizontal: false, vertical: true)
+          Text("Velvt only watches a block you started on purpose.")
+            .font(.headline)
+            .fixedSize(horizontal: false, vertical: true)
+          Text(errorMessage ?? "Start one and it'll tell you how it went.")
+            .font(.caption)
+            .foregroundStyle(Color.velvtMuted)
+            .fixedSize(horizontal: false, vertical: true)
           Button("Start a work block", action: onStartWorkBlock)
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
@@ -700,7 +742,7 @@ public struct FocusFragmentationView: View {
     }
     .frame(height: 24)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Focus Fragmentation timeline, \(focus.windowLabel)")
+    .accessibilityLabel("Attention timeline, \(focus.windowLabel)")
   }
 
   private func timelineSegments(_ focus: LocalFocusFragmentation, width: CGFloat) -> some View {
@@ -739,7 +781,6 @@ public struct FocusFragmentationView: View {
     .focused($focusedEvidenceID, equals: segment.id)
     .onHover { hoveredDetail = $0 ? detail : nil }
     .accessibilityLabel(detail)
-    .accessibilityHint("Observed category movement is not proof of distraction")
   }
 
   private func transitionMarkers(_ focus: LocalFocusFragmentation, width: CGFloat) -> some View {
@@ -769,7 +810,6 @@ public struct FocusFragmentationView: View {
     .focused($focusedEvidenceID, equals: transition.id)
     .onHover { hoveredDetail = $0 ? detail : nil }
     .accessibilityLabel(detail)
-    .accessibilityHint("A switch is observed category movement, not proof of distraction")
   }
 
   private func clusterMarkers(_ focus: LocalFocusFragmentation, width: CGFloat) -> some View {

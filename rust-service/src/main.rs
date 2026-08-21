@@ -3,6 +3,18 @@
 //! R1 owns transport, framing, version negotiation, and typed message
 //! validation. It does not implement event processing or later service layers.
 
+/// The behavioural layer: the frozen feature contract and the retention that
+/// bounds the durable substrate it reads.
+///
+/// Declared here rather than in `lib.rs` only because this lane does not own
+/// `lib.rs`. It belongs in the library — nothing about it is entry-point
+/// specific, and the online and offline models will both need to import it.
+/// Moving it is a one-line change: add `pub mod behavior;` to `src/lib.rs`,
+/// delete this declaration, and drop the `#![allow(dead_code)]` at the top of
+/// `behavior/features.rs`, which exists only because a binary crate has no
+/// notion of a symbol that is public for someone else to use.
+mod behavior;
+
 #[tokio::main]
 async fn main() {
     if let Some(argument) = std::env::args().nth(1) {
@@ -105,6 +117,7 @@ async fn main() {
 
     #[cfg(unix)]
     {
+        use crate::behavior::OutOfBlockRunRetentionTarget;
         use std::sync::Arc;
         use velvt_service::auth::{
             AccountAuthService, AuthManager, AuthState, AuthStateMachine, HttpClient,
@@ -456,6 +469,15 @@ async fn main() {
             config.cache_expiry_grace,
             config.retention_batch_size,
         );
+        // The fifth target. `out_of_block_run` is durable, not infinite: 90
+        // days, a constant rather than a config value, so widening it requires
+        // a code change and a PRIVACY.md edit rather than an environment
+        // variable. Registered after the four existing targets; order does not
+        // matter here because no target reads another's rows.
+        let out_of_block_run_target = OutOfBlockRunRetentionTarget::with_default_retention(
+            persistence.behavior_repo(),
+            config.retention_batch_size,
+        );
         let retention_scheduler =
             RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
                 .add_target(raw_event_target)
@@ -463,7 +485,8 @@ async fn main() {
                 .add_target(cache_target)
                 .add_target(WorkBlockIntentionRetentionTarget::new(
                     work_block_retention_repo,
-                ));
+                ))
+                .add_target(out_of_block_run_target);
         let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
 
         // R7 + R8 transport — shutdown-aware, reconnect-tracking.

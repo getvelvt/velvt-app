@@ -21,9 +21,10 @@ use velvt_shared_types::{DemotionState, DemotionStateKind};
 use crate::{
     delivery::PushAdapter,
     persistence::{
-        DemotionStateRecord, InterventionDemotionState, PersistenceError, WorkBlockCompletion,
-        WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin,
-        WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
+        DemotionStateRecord, GateVerdict, InterventionDecision, InterventionDemotionState,
+        PersistenceError, WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome,
+        WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo,
+        WrongInterventionCounts,
     },
 };
 
@@ -40,6 +41,19 @@ const DRIFT_WINDOW_SECONDS: i64 = 10 * 60;
 const DRIFT_MIN_SWITCHES: u32 = 4;
 const DRIFT_MIN_ELAPSED_SECONDS: u32 = 5 * 60;
 const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
+/// The version of the decision policy above, stamped on every logged decision.
+///
+/// Bump it whenever a gate constant, a branch, or the order of the branches
+/// changes meaning. Decisions logged under different policy versions are not
+/// pooled: a rate computed across a policy change is a number about two
+/// different policies.
+pub const DRIFT_POLICY_VERSION: u32 = 1;
+/// The realized probability of the arm actually taken. Exactly 1.0 while the
+/// policy is deterministic — there is no randomization, and none is being
+/// introduced here. The value is recorded now because a propensity cannot be
+/// retrofitted: a decision made this week without one can never be used for
+/// off-policy evaluation later.
+const DRIFT_DETERMINISTIC_PROPENSITY: f64 = 1.0;
 /// The registered banned vocabulary for every Rust-authored copy surface
 /// (roadmap invariants 2, 6, and 7). Matched case-insensitively as
 /// substrings against rendered copy. Absence framing, failure tallies, and
@@ -64,6 +78,37 @@ pub const BANNED_COPY_TOKENS: &[&str] = &[
     "last offer",
     "streak",
     "broken chain",
+];
+
+/// The registered jargon vocabulary, enforced beside [`BANNED_COPY_TOKENS`]
+/// on every sentence this release rewrote (roadmap invariants 6 and 7).
+///
+/// Two failure modes, one list. The nouns — "observation window", "category
+/// switch", "coverage ratio" — are the instrument describing itself, and they
+/// put Velvt where the user belongs in the sentence. The clauses — "is not
+/// proof", "does not show", "describes timing" — are hedges, and a hedge
+/// bolted onto a claim retracts the claim. The honest version of that caveat
+/// is said once, in the disclosure, never on the end of a fact.
+///
+/// Scope, stated so the test cannot quietly grow past it: this list is
+/// enforced on the end-of-block result, the local dashboard's early signal
+/// and work-block card, and the weekly digest headline. The drift
+/// intervention copy is deliberately exempt — `DRIFT_TITLES` and
+/// `drift_body` are a pre-registered instrument whose exact wording is
+/// pinned by the notifier tests and by an onboarding preview, and rewording
+/// it mid-experiment would pool two different instruments under one
+/// measurement.
+pub const BANNED_JARGON_TOKENS: &[&str] = &[
+    "velvt observed",
+    "observation window",
+    "category switch",
+    "coverage ratio",
+    "classification",
+    "transition",
+    "cluster",
+    "is not proof",
+    "does not show",
+    "describes timing",
 ];
 
 /// Rolling window for the local wrong-intervention counter: `was_focused`
@@ -573,8 +618,65 @@ impl WorkBlockManager {
         Ok(())
     }
 
+    /// Records one drift-policy decision, including every abstention.
+    ///
+    /// Fire-and-forget by design: a failed write is logged and swallowed, never
+    /// propagated. Delivery behaviour changes by exactly zero — every gate below
+    /// suppresses exactly as it did before, and a broken log must never be able
+    /// to change what the user sees or does not see.
+    ///
+    /// This never writes to `work_block_intervention`. That table's
+    /// `PRIMARY KEY(block_id)` is the denominator of the pre-registered primary
+    /// outcome, and a silence decision recorded there would silently change a
+    /// pre-registered metric.
+    ///
+    /// `anchor_category` is `None` at the branches that abstain before the gate
+    /// has computed an anchor. The log records what the gate knew at the instant
+    /// it decided, not what could be reconstructed afterwards.
+    fn log_decision(
+        &self,
+        record: &WorkBlockRecord,
+        now: DateTime<Utc>,
+        verdict: GateVerdict,
+        anchor_category: Option<&str>,
+        switch_count: u32,
+    ) {
+        let elapsed = elapsed_seconds(record, now);
+        let decision = InterventionDecision {
+            decision_id: Uuid::new_v4().to_string(),
+            occurred_at: now,
+            block_id: Some(record.block_id.clone()),
+            policy_version: DRIFT_POLICY_VERSION,
+            anchor_category: anchor_category.map(str::to_owned),
+            switch_count,
+            elapsed_seconds: elapsed,
+            remaining_seconds: record.planned_duration_seconds.saturating_sub(elapsed),
+            gate_verdict: verdict,
+            propensity: DRIFT_DETERMINISTIC_PROPENSITY,
+            // Resolved on the 600-second horizon by a later pass, never here.
+            // NULL means unresolved; it never means "did not return".
+            anchor_seen_within_600s: None,
+            outcome_at: None,
+        };
+        if let Err(error) = self.repo.record_decision(&decision) {
+            tracing::error!(
+                error_code = "intervention_decision_log_write_failed",
+                error = %error,
+                gate_verdict = verdict.as_str(),
+                "a drift decision could not be logged; the decision itself is unchanged"
+            );
+        }
+    }
+
     /// Deterministic drift gate. Returns an offer at most once per block, and
     /// abstains whenever the evidence is thin rather than guessing.
+    ///
+    /// Every branch below records what it decided into
+    /// `intervention_decision_log` — including the abstentions, which are the
+    /// whole point: without them the eligibility rate of the gate is
+    /// unrecoverable after the fact. The recording is additive. No gate moved,
+    /// no threshold changed, and nothing here writes to
+    /// `work_block_intervention` that did not write to it before.
     fn evaluate_drift(
         &self,
         record: &WorkBlockRecord,
@@ -582,22 +684,27 @@ impl WorkBlockManager {
     ) -> Result<Option<DriftIntervention>, WorkBlockError> {
         let elapsed = elapsed_seconds(record, now);
         if elapsed < DRIFT_MIN_ELAPSED_SECONDS {
+            self.log_decision(record, now, GateVerdict::AbstainedWarmup, None, 0);
             return Ok(None);
         }
         if record.planned_duration_seconds.saturating_sub(elapsed) < DRIFT_MIN_REMAINING_SECONDS {
+            self.log_decision(record, now, GateVerdict::AbstainedRemaining, None, 0);
             return Ok(None);
         }
         // Hard cap. One offer per block, enforced by the row's existence
         // regardless of how it was resolved.
         if self.repo.intervention(&record.block_id)?.is_some() {
+            self.log_decision(record, now, GateVerdict::AbstainedBlockCap, None, 0);
             return Ok(None);
         }
         let backoff = self.backoff_state(now)?;
         if backoff.suppressed {
+            self.log_decision(record, now, GateVerdict::AbstainedBackoff, None, 0);
             return Ok(None);
         }
         let observations = self.repo.observations(&record.block_id)?;
         let Some(anchor) = dominant_category(&observations) else {
+            self.log_decision(record, now, GateVerdict::AbstainedNoAnchor, None, 0);
             return Ok(None);
         };
         let window_start = now - Duration::seconds(DRIFT_WINDOW_SECONDS);
@@ -628,6 +735,13 @@ impl WorkBlockManager {
             previous_was_anchor = Some(is_anchor);
         }
         if switch_count < DRIFT_MIN_SWITCHES {
+            self.log_decision(
+                record,
+                now,
+                GateVerdict::AbstainedMinSwitches,
+                Some(&anchor),
+                switch_count,
+            );
             return Ok(None);
         }
         // Never offer while the latest confident evidence is the anchor: the
@@ -640,6 +754,13 @@ impl WorkBlockManager {
         // Offer frequency can only decrease under this rule, which is the
         // direction roadmap invariant 2 requires.
         if previous_was_anchor == Some(true) {
+            self.log_decision(
+                record,
+                now,
+                GateVerdict::AbstainedAtAnchor,
+                Some(&anchor),
+                switch_count,
+            );
             return Ok(None);
         }
         // Auto-demotion (roadmap invariant 4; D5): while the versioned
@@ -652,6 +773,13 @@ impl WorkBlockManager {
         // shown cannot be wrong. Evidence collection, blocks, session
         // results, and corrections are untouched by this branch.
         if self.evaluate_demotion(now)?.state == InterventionDemotionState::Demoted {
+            self.log_decision(
+                record,
+                now,
+                GateVerdict::WithheldDemotion,
+                Some(&anchor),
+                switch_count,
+            );
             self.repo.record_intervention(
                 &record.block_id,
                 &WorkBlockIntervention {
@@ -680,6 +808,13 @@ impl WorkBlockManager {
         // metrics and reconciles after the block as a count, never as a
         // late nudge.
         if self.focus_active(now) {
+            self.log_decision(
+                record,
+                now,
+                GateVerdict::SuppressedDnd,
+                Some(&anchor),
+                switch_count,
+            );
             self.repo.record_intervention(
                 &record.block_id,
                 &WorkBlockIntervention {
@@ -698,6 +833,13 @@ impl WorkBlockManager {
             )?;
             return Ok(None);
         }
+        self.log_decision(
+            record,
+            now,
+            GateVerdict::Offered,
+            Some(&anchor),
+            switch_count,
+        );
         self.repo.record_intervention(
             &record.block_id,
             &WorkBlockIntervention {
@@ -1484,6 +1626,76 @@ fn status_line(
     }
 }
 
+/// The registered sentence Velvt says once a block is over.
+///
+/// The user is the grammatical subject of every branch that has one, the
+/// evidence is stated once, and no clause takes the claim back: the caveat
+/// about what a switch does and does not mean is said in the disclosure, not
+/// bolted onto a fact the reader can check against their own memory. The
+/// recovery branch is the one sentence in the product that no timer and no
+/// screen-time report can produce — it is the only place the person leaving
+/// and the same person returning are counted as one event.
+///
+/// Every argument is already computed by `aggregate_result` above. This
+/// function measures nothing; it only chooses a sentence.
+fn block_result_copy(
+    coverage: WorkBlockCoverage,
+    anchor: Option<&str>,
+    switch_aways: u32,
+    recoveries: u32,
+    longest_seconds: u32,
+    observed_seconds: u32,
+) -> String {
+    // Insufficient coverage and a missing anchor are the same condition
+    // (`safe_evidence_category` is `None` exactly when coverage is
+    // insufficient); both are handled so the function stays total.
+    if coverage == WorkBlockCoverage::Insufficient {
+        return LOW_COVERAGE_RESULT_COPY.to_owned();
+    }
+    let Some(anchor) = anchor else {
+        return LOW_COVERAGE_RESULT_COPY.to_owned();
+    };
+    let anchor = friendly_category(anchor).to_ascii_lowercase();
+    let longest = plain_minutes(rounded_minutes(longest_seconds));
+    if switch_aways == 0 {
+        let covered = plain_minutes(rounded_minutes(observed_seconds));
+        return format!("You stayed on {anchor} for all {covered} of this block.");
+    }
+    let left = if switch_aways == 1 {
+        "once".to_owned()
+    } else {
+        format!("{switch_aways} times")
+    };
+    if recoveries == 0 {
+        return format!(
+            "You left {anchor} {left} and the block ended somewhere else. Longest run: {longest}."
+        );
+    }
+    let came_back = if switch_aways == 1 {
+        "came back".to_owned()
+    } else {
+        format!("came back {recoveries} of them")
+    };
+    format!("You left {anchor} {left} and {came_back}. The longest single run was {longest}.")
+}
+
+/// Said when there is not enough covered activity to support any claim.
+/// Velvt is the subject here on purpose: this branch is a statement about
+/// what the instrument could see, not about what the person did.
+const LOW_COVERAGE_RESULT_COPY: &str =
+    "Too much of this block was outside what Velvt can categorize. There's nothing honest to say \
+     about it.";
+
+/// Minutes with the right noun. "1 minutes" is the kind of seam that tells a
+/// reader a machine wrote the sentence and nobody read it.
+fn plain_minutes(minutes: u32) -> String {
+    if minutes == 1 {
+        "1 minute".to_owned()
+    } else {
+        format!("{minutes} minutes")
+    }
+}
+
 fn aggregate_result(
     record: &WorkBlockRecord,
     phase: WorkBlockPhase,
@@ -1574,20 +1786,14 @@ fn aggregate_result(
     let safe_evidence_category = (coverage != WorkBlockCoverage::Insufficient)
         .then_some(dominant)
         .flatten();
-    let observation = if coverage == WorkBlockCoverage::Insufficient {
-        "Coverage was incomplete, so Velvt cannot make a confident observation about this block."
-            .into()
-    } else if switch_aways == 0 {
-        format!(
-            "Velvt observed one sustained category pattern across {} minutes of covered activity.",
-            rounded_minutes(observed_seconds)
-        )
-    } else {
-        format!(
-            "Velvt observed {switch_aways} switch-away transitions across {} minutes of covered activity; switching alone does not show distraction.",
-            rounded_minutes(observed_seconds)
-        )
-    };
+    let observation = block_result_copy(
+        coverage,
+        safe_evidence_category.as_deref(),
+        switch_aways,
+        recoveries,
+        longest,
+        observed_seconds,
+    );
     WorkBlockResult {
         planned_duration_seconds: record.planned_duration_seconds,
         elapsed_duration_seconds: elapsed,
@@ -2530,6 +2736,80 @@ mod tests {
         }
     }
 
+    /// The end-of-block sentence, over every branch and every count that can
+    /// reach it. Three separate invariants, because they fail separately:
+    /// the banned-copy registry (absence framing), the new banned-jargon
+    /// registry (instrument nouns and retracting hedges), and the grammatical
+    /// subject. The last one is the whole point of the rewrite — a sentence
+    /// can pass both registries and still be a tracker reporting on itself.
+    #[test]
+    fn block_result_copy_keeps_the_user_as_subject_and_carries_no_jargon() {
+        let mut registry = vec![block_result_copy(
+            WorkBlockCoverage::Insufficient,
+            None,
+            0,
+            0,
+            0,
+            0,
+        )];
+        assert_eq!(registry[0], LOW_COVERAGE_RESULT_COPY);
+        // A missing anchor under sufficient coverage is unreachable through
+        // `aggregate_result`, but the function is total and says so.
+        assert_eq!(
+            block_result_copy(WorkBlockCoverage::Good, None, 3, 1, 600, 1_500),
+            LOW_COVERAGE_RESULT_COPY
+        );
+
+        let mut user_subject = Vec::new();
+        for coverage in [WorkBlockCoverage::Partial, WorkBlockCoverage::Good] {
+            for anchor in ["FOCUS_WORK", "DEEP_WORK", "COMMUNICATION"] {
+                for switch_aways in 0..4u32 {
+                    for recoveries in 0..=switch_aways {
+                        let copy = block_result_copy(
+                            coverage,
+                            Some(anchor),
+                            switch_aways,
+                            recoveries,
+                            60 * u32::from(switch_aways as u16 + 1),
+                            1_500,
+                        );
+                        user_subject.push(copy.clone());
+                        registry.push(copy);
+                    }
+                }
+            }
+        }
+
+        for copy in &user_subject {
+            assert!(
+                copy.starts_with("You "),
+                "block result copy does not make the user the subject: {copy:?}"
+            );
+            // "1 minutes" is the seam that tells a reader nobody proofread
+            // the sentence.
+            assert!(
+                !copy.contains("1 minutes"),
+                "singular minute rendered as plural: {copy:?}"
+            );
+        }
+
+        for copy in &registry {
+            let lowered = copy.to_ascii_lowercase();
+            for forbidden in BANNED_COPY_TOKENS {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "banned copy token {forbidden:?} in block result {copy:?}"
+                );
+            }
+            for forbidden in BANNED_JARGON_TOKENS {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "banned jargon token {forbidden:?} in block result {copy:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn state_transitions_are_bounded_and_terminal_completion_is_idempotent() {
         let manager = manager();
@@ -2593,9 +2873,7 @@ mod tests {
         assert_eq!(result.coverage, WorkBlockCoverage::Insufficient);
         assert_eq!(result.confidence, ConfidenceLevel::None);
         assert!(result.safe_evidence_category.is_none());
-        assert!(result
-            .observation
-            .contains("cannot make a confident observation"));
+        assert_eq!(result.observation, LOW_COVERAGE_RESULT_COPY);
     }
 
     #[test]
@@ -2655,9 +2933,13 @@ mod tests {
         assert_eq!(result.switch_away_count, 1);
         assert_eq!(result.recovery_count, 1);
         assert_eq!(result.safe_evidence_category.as_deref(), Some("FOCUS_WORK"));
-        assert!(result
-            .observation
-            .contains("switching alone does not show distraction"));
+        // The moat sentence: the person who left and the person who came
+        // back are the same subject, counted as one event, with no clause
+        // taking the claim back.
+        assert_eq!(
+            result.observation,
+            "You left focus work once and came back. The longest single run was 3 minutes."
+        );
         assert!(!result.observation.contains("failed"));
     }
 
@@ -3073,5 +3355,634 @@ mod tests {
             )
             .unwrap()
             .is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // The decision and abstention log (04-DATA-ARCHITECTURE.md § 4).
+    //
+    // Two properties are load-bearing and both are tested below:
+    //
+    //   1. Every `gate_verdict` in the closed enum is reachable. A closed enum
+    //      with unreachable variants is a lie about what the gate does.
+    //   2. `work_block_intervention` is byte-identical before and after. Its
+    //      PRIMARY KEY(block_id) is the denominator of the pre-registered
+    //      primary outcome; polluting it silently changes a pre-registered
+    //      metric, which is the one thing this project cannot do.
+    // -----------------------------------------------------------------------
+
+    /// A `WorkBlockRepo` that drops every decision-log write and delegates
+    /// everything else untouched.
+    ///
+    /// This is how "before" is reproduced honestly. The only change the decision
+    /// log makes to `evaluate_drift` is a set of `self.log_decision(..)` calls,
+    /// and `log_decision` does exactly one thing: build a row and hand it to
+    /// `record_decision`, swallowing any error. A repo that no-ops
+    /// `record_decision` therefore runs the gate exactly as it ran before the
+    /// log existed — so a dump taken through this wrapper is a real "before",
+    /// not the same run described twice.
+    struct DecisionLogDisabled(Arc<dyn WorkBlockRepo>);
+
+    impl WorkBlockRepo for DecisionLogDisabled {
+        fn create(&self, block: &WorkBlockRecord) -> Result<(), PersistenceError> {
+            self.0.create(block)
+        }
+        fn latest(&self) -> Result<Option<WorkBlockRecord>, PersistenceError> {
+            self.0.latest()
+        }
+        fn get(&self, block_id: &str) -> Result<WorkBlockRecord, PersistenceError> {
+            self.0.get(block_id)
+        }
+        fn set_paused(&self, block_id: &str, at: DateTime<Utc>) -> Result<(), PersistenceError> {
+            self.0.set_paused(block_id, at)
+        }
+        fn set_active(
+            &self,
+            block_id: &str,
+            at: DateTime<Utc>,
+            total_paused_seconds: u32,
+        ) -> Result<(), PersistenceError> {
+            self.0.set_active(block_id, at, total_paused_seconds)
+        }
+        fn mark_recovered(
+            &self,
+            block_id: &str,
+            at: DateTime<Utc>,
+        ) -> Result<(), PersistenceError> {
+            self.0.mark_recovered(block_id, at)
+        }
+        fn close_open_observation(
+            &self,
+            block_id: &str,
+            at: DateTime<Utc>,
+        ) -> Result<(), PersistenceError> {
+            self.0.close_open_observation(block_id, at)
+        }
+        fn append_observation(
+            &self,
+            block_id: &str,
+            observation: &WorkBlockObservation,
+        ) -> Result<(), PersistenceError> {
+            self.0.append_observation(block_id, observation)
+        }
+        fn observations(
+            &self,
+            block_id: &str,
+        ) -> Result<Vec<WorkBlockObservation>, PersistenceError> {
+            self.0.observations(block_id)
+        }
+        fn latest_observation(
+            &self,
+            block_id: &str,
+        ) -> Result<Option<WorkBlockObservation>, PersistenceError> {
+            self.0.latest_observation(block_id)
+        }
+        fn finalize(
+            &self,
+            block_id: &str,
+            completion: &WorkBlockCompletion,
+        ) -> Result<WorkBlockResult, PersistenceError> {
+            self.0.finalize(block_id, completion)
+        }
+        fn result(&self, block_id: &str) -> Result<Option<WorkBlockResult>, PersistenceError> {
+            self.0.result(block_id)
+        }
+        fn record_intervention(
+            &self,
+            block_id: &str,
+            intervention: &WorkBlockIntervention,
+        ) -> Result<(), PersistenceError> {
+            self.0.record_intervention(block_id, intervention)
+        }
+        fn intervention(
+            &self,
+            block_id: &str,
+        ) -> Result<Option<WorkBlockIntervention>, PersistenceError> {
+            self.0.intervention(block_id)
+        }
+        fn recent_interventions(
+            &self,
+            limit: usize,
+        ) -> Result<Vec<WorkBlockIntervention>, PersistenceError> {
+            self.0.recent_interventions(limit)
+        }
+        fn record_category_correction(
+            &self,
+            block_id: &str,
+            correction: &crate::persistence::WorkBlockCategoryCorrection,
+        ) -> Result<(), PersistenceError> {
+            self.0.record_category_correction(block_id, correction)
+        }
+        fn category_corrections(
+            &self,
+            block_id: &str,
+        ) -> Result<Vec<crate::persistence::WorkBlockCategoryCorrection>, PersistenceError>
+        {
+            self.0.category_corrections(block_id)
+        }
+        fn wrong_intervention_counts(
+            &self,
+            since: DateTime<Utc>,
+        ) -> Result<WrongInterventionCounts, PersistenceError> {
+            self.0.wrong_intervention_counts(since)
+        }
+        fn demotion_state(&self) -> Result<Option<DemotionStateRecord>, PersistenceError> {
+            self.0.demotion_state()
+        }
+        fn set_demotion_state(&self, record: &DemotionStateRecord) -> Result<(), PersistenceError> {
+            self.0.set_demotion_state(record)
+        }
+        fn resolve_intervention(
+            &self,
+            block_id: &str,
+            outcome: WorkBlockInterventionOutcome,
+            at: DateTime<Utc>,
+        ) -> Result<bool, PersistenceError> {
+            self.0.resolve_intervention(block_id, outcome, at)
+        }
+        fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError> {
+            self.0.expire_intentions(now)
+        }
+        fn clear_all(&self) -> Result<u64, PersistenceError> {
+            self.0.clear_all()
+        }
+        /// The one method that differs: the write is dropped on the floor.
+        fn record_decision(
+            &self,
+            _decision: &InterventionDecision,
+        ) -> Result<(), PersistenceError> {
+            Ok(())
+        }
+        fn decisions(&self, block_id: &str) -> Result<Vec<InterventionDecision>, PersistenceError> {
+            self.0.decisions(block_id)
+        }
+        fn recent_decisions(
+            &self,
+            limit: usize,
+        ) -> Result<Vec<InterventionDecision>, PersistenceError> {
+            self.0.recent_decisions(limit)
+        }
+    }
+
+    /// A manager over a fresh in-memory database, with the decision log either
+    /// live or disabled. The returned repo is always the real one, so a
+    /// disabled-log run can still be inspected.
+    fn gate_manager(
+        logging: bool,
+        focus: Option<Arc<FakeFocus>>,
+    ) -> (WorkBlockManager, Arc<dyn WorkBlockRepo>) {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let real = db.work_block_repo();
+        let seen_by_manager: Arc<dyn WorkBlockRepo> = if logging {
+            real.clone()
+        } else {
+            Arc::new(DecisionLogDisabled(real.clone()))
+        };
+        let mut manager = WorkBlockManager::new(seen_by_manager);
+        if let Some(focus) = focus {
+            manager = manager.with_focus_source(focus as Arc<dyn FocusStateSource>);
+        }
+        (manager, real)
+    }
+
+    /// Every `work_block_intervention` row, all columns, in a stable order.
+    ///
+    /// `block_id` is deliberately absent: it is a fresh UUID on every run, so
+    /// including it would make any two runs differ for a reason that has nothing
+    /// to do with what is being tested. Every other column is compared verbatim,
+    /// and the row count is compared separately.
+    fn intervention_dump(repo: &Arc<dyn WorkBlockRepo>) -> String {
+        format!("{:#?}", repo.recent_interventions(1_024).unwrap())
+    }
+
+    /// Logged verdicts in the order the gate produced them.
+    fn logged_verdicts(repo: &Arc<dyn WorkBlockRepo>) -> Vec<GateVerdict> {
+        repo.recent_decisions(1_024)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .map(|decision| decision.gate_verdict)
+            .collect()
+    }
+
+    /// Seeds a completed block and one recorded offer, without going through
+    /// the manager. Used to build the demoting outcome stream, which needs one
+    /// block per offer: the intervention table's primary key would collapse
+    /// sixteen offers in one block to a single row.
+    fn seed_answered_block(
+        repo: &Arc<dyn WorkBlockRepo>,
+        block_id: &str,
+        outcome: WorkBlockInterventionOutcome,
+        offered_at: DateTime<Utc>,
+    ) {
+        repo.create(&WorkBlockRecord {
+            block_id: block_id.to_owned(),
+            phase: WorkBlockPhase::Completed,
+            intention: None,
+            purpose: None,
+            intensity: WorkBlockIntensity::Medium,
+            planned_duration_seconds: 1_500,
+            started_at: offered_at - Duration::seconds(600),
+            paused_at: None,
+            total_paused_seconds: 0,
+            ended_at: Some(offered_at + Duration::seconds(60)),
+            recovered_after_restart: false,
+            recovery_of: None,
+            origin: WorkBlockOrigin::Manual,
+            intention_expires_at: offered_at,
+            updated_at: offered_at,
+        })
+        .unwrap();
+        repo.record_intervention(
+            block_id,
+            &WorkBlockIntervention {
+                offered_at,
+                action_id: DRIFT_ACTION_ID.to_owned(),
+                anchor_category: "DEEP_WORK".into(),
+                switch_count: 4,
+                window_seconds: 600,
+                outcome,
+                outcome_at: Some(offered_at + Duration::seconds(30)),
+                salience: InterventionSalience::Normal,
+            },
+        )
+        .unwrap();
+    }
+
+    /// One scenario per gate verdict, each on its own database.
+    ///
+    /// Returns, per scenario: its name, the verdict it exists to reach, every
+    /// verdict the log recorded, and a canonical dump of the
+    /// `work_block_intervention` rows the scenario produced.
+    fn drive_every_gate_scenario(
+        logging: bool,
+    ) -> Vec<(&'static str, GateVerdict, Vec<GateVerdict>, String)> {
+        let mut scenarios = Vec::new();
+
+        // Warmup: the block has not run long enough to have an anchor.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+        scenarios.push((
+            "warmup",
+            GateVerdict::AbstainedWarmup,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Remaining: past warmup, but under two minutes are left.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(400), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 310);
+        scenarios.push((
+            "remaining",
+            GateVerdict::AbstainedRemaining,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Block cap: an offer already exists for this block.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        observe(&manager, "REFERENCE", 540);
+        scenarios.push((
+            "block_cap",
+            GateVerdict::AbstainedBlockCap,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Backoff: a `not_helpful` reply in the previous block starts a
+        // cooldown that the next block runs inside.
+        let (manager, repo) = gate_manager(logging, None);
+        drift_block(&manager, 0, Some(InterventionResponse::NotHelpful));
+        manager.start(request(3_600), at(600)).unwrap();
+        observe(&manager, "DEEP_WORK", 610);
+        observe(&manager, "COMMUNICATION", 910);
+        scenarios.push((
+            "backoff",
+            GateVerdict::AbstainedBackoff,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // No anchor: evidence exists but none of it is confident, so there is
+        // nothing to have drifted away from.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "SYSTEM", 310);
+        scenarios.push((
+            "no_anchor",
+            GateVerdict::AbstainedNoAnchor,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Minimum switches: one departure is not four.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "COMMUNICATION", 400);
+        scenarios.push((
+            "min_switches",
+            GateVerdict::AbstainedMinSwitches,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // At anchor: four departures accumulate while the block is still in
+        // warmup, and the first observation after warmup is the anchor itself.
+        // The evidence is not discarded — the gate simply refuses to say "you
+        // are away" to someone who is demonstrably back.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        for (offset, category) in [
+            (10, "DEEP_WORK"),
+            (200, "COMMUNICATION"),
+            (205, "DEEP_WORK"),
+            (250, "COMMUNICATION"),
+            (255, "DEEP_WORK"),
+            (270, "COMMUNICATION"),
+            (275, "DEEP_WORK"),
+            (290, "COMMUNICATION"),
+            (310, "DEEP_WORK"),
+        ] {
+            observe(&manager, category, offset);
+        }
+        scenarios.push((
+            "at_anchor",
+            GateVerdict::AbstainedAtAnchor,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Withheld by demotion: four wrong of sixteen delivered is over the
+        // threshold, so the gate clears and the decision is held.
+        let (manager, repo) = gate_manager(logging, None);
+        for index in 0..16 {
+            seed_answered_block(
+                &repo,
+                &format!("seeded-block-{index}"),
+                if index < 4 {
+                    WorkBlockInterventionOutcome::WasFocused
+                } else {
+                    WorkBlockInterventionOutcome::Returned
+                },
+                at(-7_200 + i64::from(index) * 60),
+            );
+        }
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        scenarios.push((
+            "withheld_demotion",
+            GateVerdict::WithheldDemotion,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Suppressed by DND: the gate clears while system Focus is active.
+        let focus = FakeFocus::new();
+        focus.set_active(at(0), at(3_600));
+        let (manager, repo) = gate_manager(logging, Some(focus));
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        scenarios.push((
+            "suppressed_dnd",
+            GateVerdict::SuppressedDnd,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Offered: the gate clears and the offer is delivered.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        scenarios.push((
+            "offered",
+            GateVerdict::Offered,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        scenarios
+    }
+
+    /// Mandatory test 1. Every value in the closed `gate_verdict` enum is
+    /// reachable by a real scenario driven through the shipped gate.
+    ///
+    /// Reachability is asserted twice, deliberately: each scenario must produce
+    /// the verdict it exists to produce, and the union across scenarios must be
+    /// the whole enum. The second assertion is what fails when a variant is
+    /// added to the enum without a scenario, rather than the variant quietly
+    /// becoming a value the schema permits and the gate never writes.
+    #[test]
+    fn every_gate_verdict_is_reachable() {
+        let scenarios = drive_every_gate_scenario(true);
+        let mut reached = std::collections::HashSet::new();
+
+        for (name, target, verdicts, _) in &scenarios {
+            assert!(
+                verdicts.contains(target),
+                "scenario `{name}` did not reach {:?}; it logged {verdicts:?}",
+                target
+            );
+            reached.extend(verdicts.iter().copied());
+        }
+
+        let expected: std::collections::HashSet<GateVerdict> =
+            GateVerdict::ALL.into_iter().collect();
+        assert_eq!(
+            reached, expected,
+            "the closed verdict enum and the reachable verdicts disagree"
+        );
+    }
+
+    /// Mandatory test 2, part one. The decision-log write path cannot touch
+    /// `work_block_intervention` at all.
+    ///
+    /// Writing one decision of every verdict against a database that already
+    /// holds a real offer leaves that table byte-identical. The seeded row makes
+    /// the comparison non-vacuous: two empty dumps would also be equal.
+    #[test]
+    fn writing_every_decision_verdict_leaves_work_block_intervention_untouched() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let repo = db.work_block_repo();
+        seed_answered_block(
+            &repo,
+            "pre-existing-block",
+            WorkBlockInterventionOutcome::Returned,
+            at(-600),
+        );
+
+        let before = intervention_dump(&repo);
+        assert!(
+            before.contains("Returned"),
+            "the guard is vacuous unless the table already holds a row"
+        );
+
+        for verdict in GateVerdict::ALL {
+            repo.record_decision(&InterventionDecision {
+                decision_id: format!("decision-{}", verdict.as_str()),
+                occurred_at: at(0),
+                block_id: Some("pre-existing-block".into()),
+                policy_version: DRIFT_POLICY_VERSION,
+                anchor_category: Some("DEEP_WORK".into()),
+                switch_count: 4,
+                elapsed_seconds: 600,
+                remaining_seconds: 900,
+                gate_verdict: verdict,
+                propensity: DRIFT_DETERMINISTIC_PROPENSITY,
+                anchor_seen_within_600s: None,
+                outcome_at: None,
+            })
+            .unwrap();
+        }
+
+        assert_eq!(
+            repo.decisions("pre-existing-block").unwrap().len(),
+            GateVerdict::ALL.len(),
+            "every verdict is storable"
+        );
+        assert_eq!(
+            before,
+            intervention_dump(&repo),
+            "the decision log wrote into the pre-registered denominator"
+        );
+    }
+
+    /// Mandatory test 2, part two. `work_block_intervention` is byte-identical
+    /// before and after the decision log exists.
+    ///
+    /// "Before" is the same scenario run against a repo that drops decision
+    /// writes, which is exactly the gate minus this change. Every scenario is
+    /// compared: row count first, because the row count is the denominator, then
+    /// the full column dump, because a changed column would be just as bad and
+    /// harder to notice.
+    #[test]
+    fn work_block_intervention_is_byte_identical_before_and_after_the_decision_log() {
+        let before = drive_every_gate_scenario(false);
+        let after = drive_every_gate_scenario(true);
+        assert_eq!(before.len(), after.len());
+
+        for ((name, _, before_verdicts, before_dump), (_, _, after_verdicts, after_dump)) in
+            before.iter().zip(after.iter())
+        {
+            assert!(
+                before_verdicts.is_empty(),
+                "scenario `{name}`: the disabled-log run must record nothing"
+            );
+            assert!(
+                !after_verdicts.is_empty(),
+                "scenario `{name}`: the live-log run recorded no decision, so the \
+                 comparison would pass for the wrong reason"
+            );
+            assert_eq!(
+                before_dump.matches("WorkBlockIntervention").count(),
+                after_dump.matches("WorkBlockIntervention").count(),
+                "scenario `{name}`: the intervention row count changed"
+            );
+            assert_eq!(
+                before_dump, after_dump,
+                "scenario `{name}`: a `work_block_intervention` row changed"
+            );
+        }
+    }
+
+    /// The abstentions are the point: the whole reason the log is not
+    /// `work_block_intervention` is that seven of the ten verdicts must leave
+    /// that table empty while still being recorded somewhere.
+    #[test]
+    fn abstentions_are_recorded_without_producing_an_intervention_row() {
+        let (manager, repo) = gate_manager(true, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "COMMUNICATION", 400);
+
+        let block_id = repo.latest().unwrap().unwrap().block_id;
+        let decisions = repo.decisions(&block_id).unwrap();
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[0].gate_verdict, GateVerdict::AbstainedWarmup);
+        assert_eq!(decisions[1].gate_verdict, GateVerdict::AbstainedMinSwitches);
+        assert!(
+            repo.intervention(&block_id).unwrap().is_none(),
+            "an abstention must never create an offer row"
+        );
+
+        // What the log knew, not what could be reconstructed later: the warmup
+        // abstention happened before the gate had computed an anchor.
+        assert_eq!(decisions[0].anchor_category, None);
+        assert_eq!(decisions[1].anchor_category.as_deref(), Some("DEEP_WORK"));
+        assert_eq!(decisions[1].switch_count, 1);
+    }
+
+    /// Propensity is 1.0 and the policy version is stamped, on every decision
+    /// regardless of verdict. Neither can be retrofitted: a decision recorded
+    /// this week without them can never be used for off-policy evaluation.
+    #[test]
+    fn every_decision_carries_a_propensity_and_a_policy_version() {
+        let (manager, repo) = gate_manager(true, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+
+        let decisions = repo.recent_decisions(1_024).unwrap();
+        assert!(!decisions.is_empty());
+        for decision in decisions {
+            assert_eq!(decision.propensity, 1.0);
+            assert_eq!(decision.policy_version, DRIFT_POLICY_VERSION);
+            // Unresolved, never "did not return".
+            assert_eq!(decision.anchor_seen_within_600s, None);
+            assert_eq!(decision.outcome_at, None);
+        }
+    }
+
+    /// Clearing local data clears the decisions with it. A decision log that
+    /// survived a clear would be behavioural evidence the user believes they
+    /// deleted.
+    #[test]
+    fn clearing_local_data_removes_every_logged_decision() {
+        let (manager, repo) = gate_manager(true, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        assert!(!repo.recent_decisions(1_024).unwrap().is_empty());
+
+        manager.clear_data().unwrap();
+
+        assert!(
+            repo.recent_decisions(1_024).unwrap().is_empty(),
+            "decisions outlived the block they were made about"
+        );
+    }
+
+    /// A replayed decision id is a no-op. A retried write must not double-count
+    /// an evaluation, because the eligibility rate is a ratio of counts.
+    #[test]
+    fn a_replayed_decision_id_does_not_double_count() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let repo = db.work_block_repo();
+        seed_answered_block(
+            &repo,
+            "block-for-replay",
+            WorkBlockInterventionOutcome::Returned,
+            at(-600),
+        );
+        let decision = InterventionDecision {
+            decision_id: "stable-id".into(),
+            occurred_at: at(0),
+            block_id: Some("block-for-replay".into()),
+            policy_version: DRIFT_POLICY_VERSION,
+            anchor_category: None,
+            switch_count: 0,
+            elapsed_seconds: 60,
+            remaining_seconds: 1_440,
+            gate_verdict: GateVerdict::AbstainedWarmup,
+            propensity: DRIFT_DETERMINISTIC_PROPENSITY,
+            anchor_seen_within_600s: None,
+            outcome_at: None,
+        };
+
+        repo.record_decision(&decision).unwrap();
+        repo.record_decision(&decision).unwrap();
+
+        assert_eq!(repo.decisions("block-for-replay").unwrap().len(), 1);
     }
 }

@@ -648,3 +648,201 @@ pub struct WorkBlockIntervention {
     /// without it: an ignored quiet offer never rang.
     pub salience: InterventionSalience,
 }
+
+/// The closed verdict vocabulary of the drift gate.
+///
+/// Every variant is a real branch of `evaluate_drift`, and there is a test that
+/// constructs a scenario for each: a closed enum with unreachable variants is a
+/// lie about what the gate does.
+///
+/// Ordering of the variants follows the order the gate evaluates them, so the
+/// enum reads as the policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GateVerdict {
+    /// The block has not run long enough to have an anchor.
+    AbstainedWarmup,
+    /// Too little time remains for a return to mean anything.
+    AbstainedRemaining,
+    /// One offer per block, already spent.
+    AbstainedBlockCap,
+    /// Inside the re-offer cooldown earned by a negative reply.
+    AbstainedBackoff,
+    /// No confident dominant category yet, so there is nothing to drift from.
+    AbstainedNoAnchor,
+    /// Departures observed, but below the evidence threshold.
+    AbstainedMinSwitches,
+    /// The latest confident evidence is the anchor: the user is already back.
+    AbstainedAtAnchor,
+    /// The versioned demotion policy is in `demoted`; recorded, never shown.
+    WithheldDemotion,
+    /// System Focus/DND was active; recorded and held, never shown.
+    SuppressedDnd,
+    /// The gate cleared and an offer was delivered.
+    Offered,
+}
+
+impl GateVerdict {
+    /// Every variant, in policy-evaluation order. The reachability test walks
+    /// this, so a variant added without a scenario fails the build's tests
+    /// rather than silently becoming a dead enum arm.
+    pub const ALL: [GateVerdict; 10] = [
+        GateVerdict::AbstainedWarmup,
+        GateVerdict::AbstainedRemaining,
+        GateVerdict::AbstainedBlockCap,
+        GateVerdict::AbstainedBackoff,
+        GateVerdict::AbstainedNoAnchor,
+        GateVerdict::AbstainedMinSwitches,
+        GateVerdict::AbstainedAtAnchor,
+        GateVerdict::WithheldDemotion,
+        GateVerdict::SuppressedDnd,
+        GateVerdict::Offered,
+    ];
+
+    /// The stored token. Must match the schema's CHECK vocabulary exactly;
+    /// a mismatch is a constraint violation at the first write, not a silent
+    /// downgrade.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AbstainedWarmup => "abstained_warmup",
+            Self::AbstainedRemaining => "abstained_remaining",
+            Self::AbstainedBlockCap => "abstained_block_cap",
+            Self::AbstainedBackoff => "abstained_backoff",
+            Self::AbstainedNoAnchor => "abstained_no_anchor",
+            Self::AbstainedMinSwitches => "abstained_min_switches",
+            Self::AbstainedAtAnchor => "abstained_at_anchor",
+            Self::WithheldDemotion => "withheld_demotion",
+            Self::SuppressedDnd => "suppressed_dnd",
+            Self::Offered => "offered",
+        }
+    }
+
+    /// Total by construction: an unrecognised token is `None`, never a
+    /// defaulted verdict. A row written by a newer binary must not read back
+    /// as an older meaning.
+    pub fn from_stored(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == value)
+    }
+
+    /// Whether this verdict actually put something in front of the user.
+    /// `withheld_demotion` and `suppressed_dnd` decided to offer and then held
+    /// it; nothing rang, so nothing was delivered.
+    pub fn was_delivered(self) -> bool {
+        matches!(self, Self::Offered)
+    }
+}
+
+/// One evaluation of the drift policy and the decision it produced, including
+/// every abstention.
+///
+/// Deliberately not `WorkBlockIntervention`: that table's `PRIMARY KEY(block_id)`
+/// is the denominator of the pre-registered primary outcome. This record never
+/// touches it.
+///
+/// `anchor_category` is `None` when the gate abstained before it had computed an
+/// anchor. That is evidence about the gate, not missing data — the log states
+/// what the gate knew at the instant it decided.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterventionDecision {
+    pub decision_id: String,
+    pub occurred_at: DateTime<Utc>,
+    pub block_id: Option<String>,
+    pub policy_version: u32,
+    pub anchor_category: Option<String>,
+    pub switch_count: u32,
+    pub elapsed_seconds: u32,
+    pub remaining_seconds: u32,
+    pub gate_verdict: GateVerdict,
+    /// The realized probability of the arm that was taken. 1.0 while the policy
+    /// is deterministic. Stored now so that off-policy evaluation is possible
+    /// later; a decision made without one can never be corrected after the fact.
+    pub propensity: f64,
+    /// Proximal outcome on the same horizon regardless of verdict. `None` means
+    /// unresolved, never "did not return".
+    pub anchor_seen_within_600s: Option<bool>,
+    pub outcome_at: Option<DateTime<Utc>>,
+}
+
+/// The bucket granularity for `out_of_block_run.started_at_bucket`, matching the
+/// five-minute precision class `focus_state_evidence` (migration 0019) already
+/// established. Defined once so no caller can introduce a finer one — a new
+/// precision class is a privacy change, and it should require editing this line.
+pub const OUT_OF_BLOCK_RUN_BUCKET_SECONDS: i64 = 300;
+
+/// Floors a unix timestamp onto the five-minute bucket grid.
+///
+/// `div_euclid` rather than `/` so a pre-epoch timestamp floors downwards too,
+/// instead of rounding towards zero into the following bucket.
+pub fn out_of_block_run_bucket(at: DateTime<Utc>) -> i64 {
+    at.timestamp()
+        .div_euclid(OUT_OF_BLOCK_RUN_BUCKET_SECONDS)
+        .saturating_mul(OUT_OF_BLOCK_RUN_BUCKET_SECONDS)
+}
+
+/// One closed run of activity that happened outside any declared work block.
+///
+/// Broad category and coarse time only. There is deliberately no field that
+/// could hold a label, a stable id, an application name, a window title, a URL,
+/// or intention text — the durable store knows less than the 7-day buffer it is
+/// folded from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutOfBlockRun {
+    /// Unix seconds floored to the 300-second bucket.
+    pub started_at_bucket: i64,
+    pub duration_seconds: u32,
+    pub category: String,
+    /// Carried so that `is_confident_evidence` is reconstructible out of block.
+    /// Without it the feature layer and the shipped gate could disagree about
+    /// what counts as evidence, and every comparison between them would be
+    /// meaningless.
+    pub classification_status: ClassificationStatus,
+    pub classification_confidence: ClassificationConfidence,
+    pub local_hour: u8,
+    pub local_date: String,
+}
+
+/// Whether a block started on a weekday or at the weekend. Closed vocabulary:
+/// the schema constrains it, so an unrecognised day type cannot be stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DayType {
+    Weekday,
+    Weekend,
+}
+
+impl DayType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Weekday => "weekday",
+            Self::Weekend => "weekend",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "weekday" => Some(Self::Weekday),
+            "weekend" => Some(Self::Weekend),
+            _ => None,
+        }
+    }
+}
+
+/// The bounded pre-block window, recorded once at block start and never updated.
+///
+/// `categories` is a *set*, not a sequence: a sequence would be both more
+/// informative to the model and more identifying. `window_seconds` is bounded by
+/// the schema at 30 minutes, so the amount of pre-block context recorded cannot
+/// grow without a migration and a privacy review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockAntecedent {
+    pub block_id: String,
+    pub window_seconds: u32,
+    /// Distinct categories present in the window, sorted, no duplicates.
+    /// Serialized as a JSON array; no ordering information, no per-item dwell.
+    pub categories: Vec<String>,
+    pub switch_count: u32,
+    pub dominant_category: Option<String>,
+    pub dominant_dwell_seconds: Option<u32>,
+    pub day_type: DayType,
+    pub hour_bucket: u8,
+    pub is_first_block_of_day: bool,
+    pub antecedent_version: u32,
+}

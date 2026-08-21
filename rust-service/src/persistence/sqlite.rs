@@ -1,9 +1,10 @@
 use super::{
-    AbstractionMapRepo, AbstractionMapping, BatchEvent, CompletedBlockDwellSpan,
-    DemotionStateRecord, FocusRepo, FocusTransition, HistoryCacheEntry, HistoryCacheRepo,
-    InitiationInvitationOutcome, InitiationInvitationRecord, InitiationRepo, InsightCacheEntry,
-    InsightCacheRepo, InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata,
-    NewUploadBatch, PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState,
+    AbstractionMapRepo, AbstractionMapping, BatchEvent, BehaviorRepo, BlockAntecedent,
+    CompletedBlockDwellSpan, DayType, DemotionStateRecord, FocusRepo, FocusTransition, GateVerdict,
+    HistoryCacheEntry, HistoryCacheRepo, InitiationInvitationOutcome, InitiationInvitationRecord,
+    InitiationRepo, InsightCacheEntry, InsightCacheRepo, InterventionDecision,
+    InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch,
+    OutOfBlockRun, PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState,
     RawEventEntry, RawEventRepo, ReceiptsRepo, UploadBatch, UploadBatchRepo, UploadBatchStatus,
     UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection,
     WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
@@ -159,6 +160,10 @@ impl SqlitePersistence {
 
     pub fn initiation_repo(&self) -> Arc<dyn InitiationRepo> {
         Arc::new(SqliteInitiationRepo(self.clone()))
+    }
+
+    pub fn behavior_repo(&self) -> Arc<dyn BehaviorRepo> {
+        Arc::new(SqliteBehaviorRepo(self.clone()))
     }
 
     fn insert_batch_with_events(
@@ -1879,8 +1884,115 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         // The demotion state is derived behavioral evidence, not a user
         // preference: it dies with the record it was derived from.
         connection.execute("DELETE FROM intervention_demotion_state", [])?;
+        // Block-scoped decisions leave with their block by cascade. A decision
+        // logged without a block (there is no such write site today, but the
+        // column is nullable) would otherwise survive a clear, so it is removed
+        // explicitly rather than relying on the foreign key.
+        connection.execute(
+            "DELETE FROM intervention_decision_log WHERE block_id IS NULL",
+            [],
+        )?;
         Ok(removed)
     }
+
+    fn record_decision(&self, decision: &InterventionDecision) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        // A replayed decision id is a no-op rather than an error: a retried
+        // write must not double-count an evaluation in the eligibility rate.
+        connection.execute(
+            "INSERT INTO intervention_decision_log(
+                decision_id, occurred_at, block_id, policy_version, anchor_category,
+                switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
+                propensity, anchor_seen_within_600s, outcome_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(decision_id) DO NOTHING",
+            params![
+                decision.decision_id,
+                decision.occurred_at.timestamp(),
+                decision.block_id,
+                decision.policy_version,
+                decision.anchor_category,
+                decision.switch_count,
+                decision.elapsed_seconds,
+                decision.remaining_seconds,
+                decision.gate_verdict.as_str(),
+                decision.propensity,
+                decision.anchor_seen_within_600s.map(i64::from),
+                decision.outcome_at.map(|at| at.timestamp()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn decisions(&self, block_id: &str) -> Result<Vec<InterventionDecision>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT decision_id, occurred_at, block_id, policy_version, anchor_category,
+                    switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
+                    propensity, anchor_seen_within_600s, outcome_at
+             FROM intervention_decision_log
+             WHERE block_id = ?1
+             ORDER BY occurred_at ASC, decision_id ASC",
+        )?;
+        let rows = statement.query_map([block_id], decision_from_row)?;
+        let mut decisions = Vec::new();
+        for row in rows {
+            decisions.push(row?);
+        }
+        Ok(decisions)
+    }
+
+    fn recent_decisions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<InterventionDecision>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT decision_id, occurred_at, block_id, policy_version, anchor_category,
+                    switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
+                    propensity, anchor_seen_within_600s, outcome_at
+             FROM intervention_decision_log
+             ORDER BY occurred_at DESC, decision_id DESC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit as i64], decision_from_row)?;
+        let mut decisions = Vec::new();
+        for row in rows {
+            decisions.push(row?);
+        }
+        Ok(decisions)
+    }
+}
+
+/// Reads one logged decision. An unrecognised `gate_verdict` is an error, not a
+/// defaulted variant: a row written by a newer binary must never read back as an
+/// older meaning, because every downstream count would then be wrong and silent.
+fn decision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InterventionDecision> {
+    let verdict: String = row.get(8)?;
+    let gate_verdict = GateVerdict::from_stored(&verdict).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            8,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unrecognised gate verdict",
+            )),
+        )
+    })?;
+    Ok(InterventionDecision {
+        decision_id: row.get(0)?,
+        occurred_at: timestamp_from_row(row, 1)?,
+        block_id: row.get(2)?,
+        policy_version: row.get(3)?,
+        anchor_category: row.get(4)?,
+        switch_count: row.get(5)?,
+        elapsed_seconds: row.get(6)?,
+        remaining_seconds: row.get(7)?,
+        gate_verdict,
+        propensity: row.get(9)?,
+        anchor_seen_within_600s: row.get::<_, Option<i64>>(10)?.map(|value| value != 0),
+        outcome_at: optional_timestamp_from_row(row, 11)?,
+    })
 }
 
 /// The one delivered/withheld split, written once. `delivered` counts every
@@ -2734,6 +2846,19 @@ fn invalid_enum() -> rusqlite::Error {
     rusqlite::Error::InvalidQuery
 }
 
+/// A stored JSON column that no longer parses. Distinct from `invalid_enum` so
+/// a corrupt payload cannot be mistaken for an unrecognised vocabulary token.
+fn invalid_stored_json(index: usize) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        index,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "stored JSON column did not parse",
+        )),
+    )
+}
+
 fn parse_work_block_phase(value: &str) -> rusqlite::Result<WorkBlockPhase> {
     match value {
         "active" => Ok(WorkBlockPhase::Active),
@@ -2939,11 +3064,165 @@ fn invalidate_cache(
     Ok(connection.execute(query, [date])? as u64)
 }
 
+/// The durable behavioural substrate: out-of-block runs and the bounded
+/// pre-block window.
+///
+/// Nothing behind this repo can hold a label, a stable id, an application name,
+/// a window title, a URL, or intention text — the column list is the guarantee,
+/// not a runtime filter.
+struct SqliteBehaviorRepo(SqlitePersistence);
+
+impl BehaviorRepo for SqliteBehaviorRepo {
+    fn record_out_of_block_run(&self, run: &OutOfBlockRun) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO out_of_block_run(
+                started_at_bucket, duration_seconds, category, classification_status,
+                classification_confidence, local_hour, local_date
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                run.started_at_bucket,
+                run.duration_seconds,
+                run.category,
+                run.classification_status.as_str(),
+                run.classification_confidence.as_str(),
+                run.local_hour,
+                run.local_date,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn out_of_block_runs(&self, since_bucket: i64) -> Result<Vec<OutOfBlockRun>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT started_at_bucket, duration_seconds, category, classification_status,
+                    classification_confidence, local_hour, local_date
+             FROM out_of_block_run
+             WHERE started_at_bucket >= ?1
+             ORDER BY started_at_bucket ASC, id ASC",
+        )?;
+        let rows = statement.query_map([since_bucket], |row| {
+            let status: String = row.get(3)?;
+            let confidence: String = row.get(4)?;
+            Ok(OutOfBlockRun {
+                started_at_bucket: row.get(0)?,
+                duration_seconds: row.get(1)?,
+                category: row.get(2)?,
+                classification_status: parse_classification_status_value(&status)?,
+                classification_confidence: parse_classification_confidence_value(&confidence)?,
+                local_hour: row.get(5)?,
+                local_date: row.get(6)?,
+            })
+        })?;
+        let mut runs = Vec::new();
+        for row in rows {
+            runs.push(row?);
+        }
+        Ok(runs)
+    }
+
+    fn delete_out_of_block_runs_before(
+        &self,
+        cutoff_bucket: i64,
+        batch_size: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let deleted = connection.execute(
+            "DELETE FROM out_of_block_run WHERE id IN (
+                SELECT id FROM out_of_block_run
+                WHERE started_at_bucket < ?1
+                ORDER BY started_at_bucket ASC
+                LIMIT ?2
+             )",
+            params![cutoff_bucket, batch_size as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+
+    fn record_block_antecedent(
+        &self,
+        antecedent: &BlockAntecedent,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        // Recorded once at block start and never updated: a second write is a
+        // no-op, so a later evaluation cannot rewrite the window that was
+        // actually observed before the block began.
+        let mut categories = antecedent.categories.clone();
+        categories.sort();
+        categories.dedup();
+        let encoded = serde_json::to_string(&categories)?;
+        connection.execute(
+            "INSERT INTO block_antecedent(
+                block_id, window_seconds, categories, switch_count, dominant_category,
+                dominant_dwell_seconds, day_type, hour_bucket, is_first_block_of_day,
+                antecedent_version
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(block_id) DO NOTHING",
+            params![
+                antecedent.block_id,
+                antecedent.window_seconds,
+                encoded,
+                antecedent.switch_count,
+                antecedent.dominant_category,
+                antecedent.dominant_dwell_seconds,
+                antecedent.day_type.as_str(),
+                antecedent.hour_bucket,
+                i64::from(antecedent.is_first_block_of_day),
+                antecedent.antecedent_version,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn block_antecedent(
+        &self,
+        block_id: &str,
+    ) -> Result<Option<BlockAntecedent>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT block_id, window_seconds, categories, switch_count, dominant_category,
+                        dominant_dwell_seconds, day_type, hour_bucket, is_first_block_of_day,
+                        antecedent_version
+                 FROM block_antecedent WHERE block_id = ?1",
+                [block_id],
+                |row| {
+                    let encoded: String = row.get(2)?;
+                    let day_type: String = row.get(6)?;
+                    Ok(BlockAntecedent {
+                        block_id: row.get(0)?,
+                        window_seconds: row.get(1)?,
+                        // A row that cannot be parsed is an error, never an
+                        // empty set: an empty antecedent is a real observation
+                        // ("nothing preceded this block") and must not be
+                        // manufactured by a decoding failure.
+                        categories: serde_json::from_str(&encoded)
+                            .map_err(|_| invalid_stored_json(2))?,
+                        switch_count: row.get(3)?,
+                        dominant_category: row.get(4)?,
+                        dominant_dwell_seconds: row.get(5)?,
+                        day_type: DayType::from_stored(&day_type).ok_or_else(invalid_enum)?,
+                        hour_bucket: row.get(7)?,
+                        is_first_block_of_day: row.get::<_, i64>(8)? != 0,
+                        antecedent_version: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::SqlitePersistence;
+    use crate::persistence::{
+        BlockAntecedent, DayType, GateVerdict, InterventionDecision, OutOfBlockRun,
+    };
     use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
+    use velvt_shared_types::{ClassificationConfidence, ClassificationStatus};
 
     #[test]
     fn newly_added_migration_applies_after_initial_schema_deploy() {
@@ -3254,5 +3533,325 @@ mod tests {
         assert!(connection
             .prepare("SELECT local_name_suggestion FROM raw_event_buffer")
             .is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // The durable behavioural substrate (04-DATA-ARCHITECTURE.md §§ 2, 3).
+    // -----------------------------------------------------------------------
+
+    /// The schema is the privacy guarantee. A column that could hold an
+    /// application name, a label, a stable id, a window title, a URL, or
+    /// intention text would make the durable store *more* informative than the
+    /// seven-day buffer it is folded from, which is the exact inversion this
+    /// design exists to avoid. Asserted against `sqlite_master`, so adding such
+    /// a column in a later migration fails here rather than in review.
+    #[test]
+    fn the_behavioural_tables_have_no_column_that_could_identify_an_application() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let schema = database.schema_sql().unwrap();
+        for table in [
+            "out_of_block_run",
+            "block_antecedent",
+            "intervention_decision_log",
+        ] {
+            let definition = schema
+                .iter()
+                .find(|sql| sql.contains(&format!("CREATE TABLE {table}")))
+                .unwrap_or_else(|| panic!("{table} is missing from the schema"))
+                .to_ascii_lowercase();
+            for forbidden in [
+                "stable_id",
+                "label",
+                "display_name",
+                "local_display_label",
+                "local_name_suggestion",
+                "window_title",
+                "url",
+                "intention",
+                "bundle",
+                "app_name",
+            ] {
+                assert!(
+                    !definition.contains(forbidden),
+                    "{table} gained a `{forbidden}` column; the durable store must \
+                     stay strictly less informative than the buffer it derives from"
+                );
+            }
+        }
+    }
+
+    /// `is_confident_evidence` is `status = classified` AND `confidence IN
+    /// (high, medium)` AND the category is not SYSTEM/UNCLASSIFIED/UNLOGGED.
+    /// All three inputs must survive into `out_of_block_run`, or the feature
+    /// layer would have to invent its own notion of confident evidence — and
+    /// the model and the shipped gate would be free to disagree.
+    #[test]
+    fn an_out_of_block_run_round_trips_every_input_the_confidence_rule_needs() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.behavior_repo();
+        let run = OutOfBlockRun {
+            started_at_bucket: 1_800_000_300,
+            duration_seconds: 420,
+            category: "COMMUNICATION".into(),
+            classification_status: ClassificationStatus::Classified,
+            classification_confidence: ClassificationConfidence::Medium,
+            local_hour: 9,
+            local_date: "2026-08-21".into(),
+        };
+        repo.record_out_of_block_run(&run).unwrap();
+
+        let stored = repo.out_of_block_runs(0).unwrap();
+        assert_eq!(stored, vec![run]);
+        // All three, together, are what makes the predicate reconstructible.
+        assert_eq!(
+            stored[0].classification_status,
+            ClassificationStatus::Classified
+        );
+        assert_eq!(
+            stored[0].classification_confidence,
+            ClassificationConfidence::Medium
+        );
+        assert_eq!(stored[0].category, "COMMUNICATION");
+    }
+
+    /// The five-minute grid is a precision class, not a rounding detail:
+    /// introducing a finer one is a privacy change. Floors downwards on both
+    /// sides of the epoch.
+    #[test]
+    fn the_run_start_bucket_floors_onto_the_five_minute_grid() {
+        use crate::persistence::{out_of_block_run_bucket, OUT_OF_BLOCK_RUN_BUCKET_SECONDS};
+        assert_eq!(OUT_OF_BLOCK_RUN_BUCKET_SECONDS, 300);
+        let bucket = |seconds: i64| {
+            out_of_block_run_bucket(chrono::DateTime::from_timestamp(seconds, 0).unwrap())
+        };
+        assert_eq!(bucket(0), 0);
+        assert_eq!(bucket(299), 0);
+        assert_eq!(bucket(300), 300);
+        assert_eq!(bucket(301), 300);
+        assert_eq!(bucket(-1), -300, "pre-epoch instants floor downwards too");
+    }
+
+    /// The schema's own bounds. A duration outside 0..1800 or an hour outside
+    /// 0..23 cannot be stored, so a bad fold job fails loudly instead of
+    /// writing a value the feature layer would silently trust.
+    #[test]
+    fn out_of_block_run_bounds_are_enforced_by_the_schema() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.behavior_repo();
+        let valid = OutOfBlockRun {
+            started_at_bucket: 0,
+            duration_seconds: 1_800,
+            category: "REFERENCE".into(),
+            classification_status: ClassificationStatus::Classified,
+            classification_confidence: ClassificationConfidence::High,
+            local_hour: 23,
+            local_date: "2026-08-21".into(),
+        };
+        repo.record_out_of_block_run(&valid).unwrap();
+
+        let too_long = OutOfBlockRun {
+            duration_seconds: 1_801,
+            ..valid.clone()
+        };
+        assert!(repo.record_out_of_block_run(&too_long).is_err());
+
+        let bad_hour = OutOfBlockRun {
+            local_hour: 24,
+            ..valid.clone()
+        };
+        assert!(repo.record_out_of_block_run(&bad_hour).is_err());
+
+        let bad_date = OutOfBlockRun {
+            local_date: "2026-8-21".into(),
+            ..valid
+        };
+        assert!(repo.record_out_of_block_run(&bad_date).is_err());
+    }
+
+    /// The antecedent is recorded once at block start and never updated: a
+    /// later evaluation must not be able to rewrite the window that was
+    /// actually observed before the block began.
+    #[test]
+    fn a_block_antecedent_is_written_once_and_never_rewritten() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let connection = database.connection().unwrap();
+        connection
+            .execute(
+                "INSERT INTO work_block(
+                    block_id, phase, intensity, planned_duration_seconds, started_at,
+                    total_paused_seconds, recovered_after_restart,
+                    intention_expires_at, updated_at
+                 ) VALUES ('antecedent-block', 'active', 'medium', 1800, 0, 0, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let repo = database.behavior_repo();
+        let first = BlockAntecedent {
+            block_id: "antecedent-block".into(),
+            window_seconds: 900,
+            // Deliberately unsorted with a duplicate: the set is canonicalised
+            // on write, so no ordering information can leak in through the
+            // caller's argument order.
+            categories: vec![
+                "REFERENCE".into(),
+                "COMMUNICATION".into(),
+                "COMMUNICATION".into(),
+            ],
+            switch_count: 3,
+            dominant_category: Some("COMMUNICATION".into()),
+            dominant_dwell_seconds: Some(540),
+            day_type: DayType::Weekday,
+            hour_bucket: 8,
+            is_first_block_of_day: true,
+            antecedent_version: 1,
+        };
+        repo.record_block_antecedent(&first).unwrap();
+
+        let stored = repo
+            .block_antecedent("antecedent-block")
+            .unwrap()
+            .expect("the antecedent was recorded");
+        assert_eq!(stored.categories, vec!["COMMUNICATION", "REFERENCE"]);
+        assert_eq!(stored.switch_count, 3);
+        assert_eq!(stored.day_type, DayType::Weekday);
+        assert!(stored.is_first_block_of_day);
+
+        repo.record_block_antecedent(&BlockAntecedent {
+            switch_count: 99,
+            categories: vec!["SOCIAL_FEED".into()],
+            ..first
+        })
+        .unwrap();
+        let reread = repo.block_antecedent("antecedent-block").unwrap().unwrap();
+        assert_eq!(
+            reread, stored,
+            "the antecedent was rewritten after the fact"
+        );
+    }
+
+    /// The 30-minute ceiling lives in the schema, not in a config file. A user
+    /// cannot widen it, and neither can a future constant: widening it requires
+    /// a migration, which requires a privacy review.
+    #[test]
+    fn the_antecedent_window_cannot_exceed_thirty_minutes() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let connection = database.connection().unwrap();
+        connection
+            .execute(
+                "INSERT INTO work_block(
+                    block_id, phase, intensity, planned_duration_seconds, started_at,
+                    total_paused_seconds, recovered_after_restart,
+                    intention_expires_at, updated_at
+                 ) VALUES ('wide-window', 'active', 'medium', 1800, 0, 0, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let repo = database.behavior_repo();
+        let over_the_ceiling = BlockAntecedent {
+            block_id: "wide-window".into(),
+            window_seconds: 1_801,
+            categories: vec!["COMMUNICATION".into()],
+            switch_count: 0,
+            dominant_category: None,
+            dominant_dwell_seconds: None,
+            day_type: DayType::Weekend,
+            hour_bucket: 0,
+            is_first_block_of_day: false,
+            antecedent_version: 1,
+        };
+        assert!(repo.record_block_antecedent(&over_the_ceiling).is_err());
+
+        let at_the_ceiling = BlockAntecedent {
+            window_seconds: 1_800,
+            ..over_the_ceiling
+        };
+        repo.record_block_antecedent(&at_the_ceiling).unwrap();
+    }
+
+    /// A decision belongs to its block. When the block goes, so does the
+    /// decision — otherwise a cleared database would still hold the behavioural
+    /// evidence the user believes they deleted.
+    #[test]
+    fn decisions_cascade_with_the_block_they_were_made_about() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let connection = database.connection().unwrap();
+        connection
+            .execute(
+                "INSERT INTO work_block(
+                    block_id, phase, intensity, planned_duration_seconds, started_at,
+                    total_paused_seconds, recovered_after_restart,
+                    intention_expires_at, updated_at
+                 ) VALUES ('cascading-block', 'completed', 'medium', 1800, 0, 0, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let repo = database.work_block_repo();
+        repo.record_decision(&InterventionDecision {
+            decision_id: "cascade-1".into(),
+            occurred_at: chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+            block_id: Some("cascading-block".into()),
+            policy_version: 1,
+            anchor_category: None,
+            switch_count: 0,
+            elapsed_seconds: 10,
+            remaining_seconds: 1_790,
+            gate_verdict: GateVerdict::AbstainedWarmup,
+            propensity: 1.0,
+            anchor_seen_within_600s: None,
+            outcome_at: None,
+        })
+        .unwrap();
+        assert_eq!(repo.decisions("cascading-block").unwrap().len(), 1);
+
+        repo.clear_all().unwrap();
+        assert!(repo.recent_decisions(16).unwrap().is_empty());
+    }
+
+    /// The propensity column is the irreversible item: it cannot be
+    /// retrofitted, and a value outside (0, 1] is not a probability. The schema
+    /// refuses it rather than letting an off-policy estimator divide by it.
+    #[test]
+    fn propensity_must_be_a_probability() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let connection = database.connection().unwrap();
+        connection
+            .execute(
+                "INSERT INTO work_block(
+                    block_id, phase, intensity, planned_duration_seconds, started_at,
+                    total_paused_seconds, recovered_after_restart,
+                    intention_expires_at, updated_at
+                 ) VALUES ('propensity-block', 'active', 'medium', 1800, 0, 0, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let repo = database.work_block_repo();
+        let decision = |id: &str, propensity: f64| InterventionDecision {
+            decision_id: id.into(),
+            occurred_at: chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
+            block_id: Some("propensity-block".into()),
+            policy_version: 1,
+            anchor_category: None,
+            switch_count: 0,
+            elapsed_seconds: 0,
+            remaining_seconds: 1_800,
+            gate_verdict: GateVerdict::AbstainedWarmup,
+            propensity,
+            anchor_seen_within_600s: None,
+            outcome_at: None,
+        };
+        assert!(repo.record_decision(&decision("zero", 0.0)).is_err());
+        assert!(repo.record_decision(&decision("over", 1.5)).is_err());
+        repo.record_decision(&decision("deterministic", 1.0))
+            .unwrap();
+        repo.record_decision(&decision("randomized", 0.5)).unwrap();
+        assert_eq!(repo.decisions("propensity-block").unwrap().len(), 2);
     }
 }

@@ -1,12 +1,12 @@
 use super::{
-    AbstractionMapping, BatchEvent, BlockAntecedent, CompletedBlockDwellSpan, DemotionStateRecord,
-    FocusTransition, HistoryCacheEntry, InitiationInvitationOutcome, InitiationInvitationRecord,
-    InsightCacheEntry, InterventionDecision, LocalDisplayAggregate, LocalEventMetadata,
-    NewUploadBatch, OutOfBlockRun, PersistenceError, PersonalOverrideRecord,
-    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, UploadBatch,
-    UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection,
-    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
-    WorkBlockRecord, WrongInterventionCounts,
+    AbstractionMapping, AntecedentFinding, AntecedentFindingState, AntecedentRetractionReason,
+    BatchEvent, BlockAntecedent, CompletedBlockDwellSpan, DemotionStateRecord, FocusTransition,
+    HistoryCacheEntry, InitiationInvitationOutcome, InitiationInvitationRecord, InsightCacheEntry,
+    InterventionDecision, LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch, OutOfBlockRun,
+    PersistenceError, PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState,
+    RawEventEntry, UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
+    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
+    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WrongInterventionCounts,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -540,4 +540,83 @@ pub trait BehaviorRepo: Send + Sync {
     /// The recorded antecedent for a block, if one exists.
     fn block_antecedent(&self, block_id: &str)
         -> Result<Option<BlockAntecedent>, PersistenceError>;
+}
+
+/// Storage seam for discovered antecedent patterns (`0029`).
+///
+/// Separate from [`BehaviorRepo`] deliberately, and for the same reason
+/// `BehaviorRepo` is separate from [`WorkBlockRepo`]: a finding is a *claim*,
+/// the substrate is *evidence*, and keeping the two seams apart means the block
+/// state machine cannot acquire a dependency on a claim. That is the direction
+/// in which a model result would start driving delivery.
+///
+/// **Nothing in the shipped path implements a caller for this trait.** Findings
+/// are written by the miner and read by tests. There is no IPC message that
+/// carries one and no copy template that renders one; surfacing is Week 8+ and
+/// gated on real data.
+///
+/// The honesty rule — a finding cannot be surfaced without held-out
+/// confirmation — is enforced by the schema, not here. [`mark_surfaced`] can be
+/// called on an unconfirmed finding and it will fail, which is the point: a
+/// rule a caller has to remember is a rule that will be forgotten during a
+/// rushed change.
+///
+/// [`mark_surfaced`]: AntecedentFindingRepo::mark_antecedent_finding_surfaced
+pub trait AntecedentFindingRepo: Send + Sync {
+    /// Records one discovered finding. The unique index on
+    /// `(candidate_id, registry_version, window_start, window_end)` makes
+    /// recording the same look twice an error rather than a doubling of the
+    /// apparent evidence.
+    fn record_antecedent_finding(
+        &self,
+        finding: &AntecedentFinding,
+    ) -> Result<(), PersistenceError>;
+
+    fn antecedent_finding(
+        &self,
+        finding_id: &str,
+    ) -> Result<Option<AntecedentFinding>, PersistenceError>;
+
+    /// Findings in a given state, most recently discovered first.
+    fn antecedent_findings_in_state(
+        &self,
+        state: AntecedentFindingState,
+    ) -> Result<Vec<AntecedentFinding>, PersistenceError>;
+
+    /// Attaches a held-out confirmation and moves the finding to `confirmed`.
+    /// Returns `false` when no such finding exists.
+    fn confirm_antecedent_finding(
+        &self,
+        finding_id: &str,
+        confirmed_at: i64,
+        support_episodes: u32,
+        effect_size: f64,
+    ) -> Result<bool, PersistenceError>;
+
+    /// Moves a finding to `surfaced`. **Fails** — by database trigger, not by
+    /// application check — when `confirmed_at` is NULL.
+    fn mark_antecedent_finding_surfaced(
+        &self,
+        finding_id: &str,
+        surfaced_at: i64,
+    ) -> Result<bool, PersistenceError>;
+
+    fn retract_antecedent_finding(
+        &self,
+        finding_id: &str,
+        retracted_at: i64,
+        reason: AntecedentRetractionReason,
+    ) -> Result<bool, PersistenceError>;
+
+    /// The user says this finding is wrong. Records the dispute, retracts, and
+    /// leaves the row in place so the same candidate is not re-surfaced without
+    /// new evidence.
+    fn dispute_antecedent_finding(
+        &self,
+        finding_id: &str,
+        disputed_at: i64,
+    ) -> Result<bool, PersistenceError>;
+
+    /// Deletes every finding (clear-all-data).
+    fn clear_antecedent_findings(&self) -> Result<u64, PersistenceError>;
 }

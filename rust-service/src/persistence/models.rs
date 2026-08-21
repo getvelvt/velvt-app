@@ -846,3 +846,116 @@ pub struct BlockAntecedent {
     pub is_first_block_of_day: bool,
     pub antecedent_version: u32,
 }
+
+/// The lifecycle of a discovered antecedent pattern (`0029`).
+///
+/// Closed vocabulary, constrained by the schema. `Surfaced` is unreachable
+/// without `confirmed_at`, and that is enforced by the database rather than by
+/// this enum — an invariant a caller can hold wrong is not an invariant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AntecedentFindingState {
+    /// Discovered on one window; not yet carried to a held-out window.
+    Candidate,
+    /// Replicated on a later, unseen window.
+    Confirmed,
+    /// Shown to the user. **Unreachable today**: nothing surfaces.
+    Surfaced,
+    Retracted,
+    /// The user said this is wrong.
+    Disputed,
+}
+
+impl AntecedentFindingState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Candidate => "candidate",
+            Self::Confirmed => "confirmed",
+            Self::Surfaced => "surfaced",
+            Self::Retracted => "retracted",
+            Self::Disputed => "disputed",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "candidate" => Some(Self::Candidate),
+            "confirmed" => Some(Self::Confirmed),
+            "surfaced" => Some(Self::Surfaced),
+            "retracted" => Some(Self::Retracted),
+            "disputed" => Some(Self::Disputed),
+            _ => None,
+        }
+    }
+}
+
+/// Why a finding stopped being asserted. Closed vocabulary, constrained by the
+/// schema.
+///
+/// `RegistryVersionChange` exists because a finding discovered under one
+/// candidate registry is not comparable to one discovered under another: the
+/// family size moved, so the correction that licensed it no longer applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AntecedentRetractionReason {
+    EffectDisappeared,
+    SupportLost,
+    UserDisputed,
+    RegistryVersionChange,
+}
+
+impl AntecedentRetractionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EffectDisappeared => "effect_disappeared",
+            Self::SupportLost => "support_lost",
+            Self::UserDisputed => "user_disputed",
+            Self::RegistryVersionChange => "registry_version_change",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "effect_disappeared" => Some(Self::EffectDisappeared),
+            "support_lost" => Some(Self::SupportLost),
+            "user_disputed" => Some(Self::UserDisputed),
+            "registry_version_change" => Some(Self::RegistryVersionChange),
+            _ => None,
+        }
+    }
+}
+
+/// One discovered antecedent pattern (`0029_antecedent_findings.sql`).
+///
+/// `effect_size` and `confirm_effect_size` are **risk differences**,
+/// `P(Y=1|A) - P(Y=1|not A)`, on `[-1, 1]`. Not odds ratios, and there is no
+/// field for one: the analysis computes only the quantity a surface could
+/// state, so a surface cannot render a quantity the analysis did not compute.
+///
+/// `candidate_id` is a key from the closed compile-time registry in
+/// `behavior/candidates.rs`. It cannot hold an application name, a label, a
+/// stable id, a window title, a URL, or intention text, because the registry
+/// that mints it has no constructor that could.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AntecedentFinding {
+    pub finding_id: String,
+    pub candidate_id: String,
+    pub candidate_registry_version: u32,
+    pub discovered_at: i64,
+    /// `YYYY-MM-DD`, enforced by the schema.
+    pub discovery_window_start: String,
+    pub discovery_window_end: String,
+    pub support_episodes: u32,
+    /// Risk difference on the discovery window.
+    pub effect_size: f64,
+    /// Benjamini-Hochberg q-value over the logged family size.
+    pub q_value: f64,
+    /// `None` means never confirmed, which means never shown.
+    pub confirmed_at: Option<i64>,
+    pub confirm_support_episodes: Option<u32>,
+    /// Risk difference on the held-out window.
+    pub confirm_effect_size: Option<f64>,
+    pub state: AntecedentFindingState,
+    pub surfaced_at: Option<i64>,
+    pub retracted_at: Option<i64>,
+    pub retraction_reason: Option<AntecedentRetractionReason>,
+    pub user_disputed_at: Option<i64>,
+}

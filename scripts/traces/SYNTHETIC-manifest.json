@@ -1,4 +1,33 @@
 {
+  "antecedents": {
+    "antecedent_prevalence": 0.35,
+    "baseline_risk": 0.7,
+    "day_effect_sd": 0.1,
+    "generator_version": 1,
+    "history_weeks": [
+      2,
+      4,
+      6,
+      8,
+      12
+    ],
+    "null_traces": 100,
+    "null_weeks": 8,
+    "planted_candidate_id": "prevcat_COMMUNICATION",
+    "planted_seeds_per_cell": 16,
+    "read_by": "rust-service/tests/behavior_antecedents.rs",
+    "risk_given_antecedent": [
+      0.4,
+      0.55,
+      0.65,
+      0.7
+    ],
+    "saturated_traces": 8,
+    "saturated_weeks": 26,
+    "schema": "velvt-episodes/1",
+    "sparse_traces": 16,
+    "sparse_weeks": 2
+  },
   "block_seconds": 3600,
   "blocks_per_trace": 5,
   "compressed_blocks_per_trace": 2,
@@ -19,6 +48,16 @@
       "acceptance": "ZERO offers across every trace. Any offer is a false discovery.",
       "sha256": "d3f876ee465b6db7ebecf3dc2dad657915eb6697ce7bc5735da93ea6e86c0cf2",
       "traces": 100
+    },
+    "SYNTHETIC-suite-c-segmentation.jsonl": {
+      "acceptance": "NULL: the change-point detector's false-alarm rate is reported at every threshold, not asserted to be zero. REGIME: the planted change point is recovered, with the lag reported in runs and in minutes. SPARSE: both models abstain, with a stated reason.",
+      "sha256": "e88b2181a8f2c2bf56edf5ecca5dfd7e679a0d47f1c1a8bfc3932e4d93033a2f",
+      "traces": 188
+    },
+    "SYNTHETIC-suite-d-antecedents.jsonl": {
+      "acceptance": "NULL: ZERO surfaced findings across every trace. Any surfaced finding is a false discovery and the acceptance fails. SATURATED: at least one surfaced finding in aggregate, so the NULL zero is falsifiable. PLANTED: the recovery fraction is REPORTED at every cell, not asserted. SPARSE: abstain, with a stated reason.",
+      "sha256": "aaa5bab968c08a8df9853e629107d636819bcd06a7027b849ad4414bbe8c9b22",
+      "traces": 444
     }
   },
   "gate_constants": {
@@ -33,5 +72,28 @@
   "null_traces": 100,
   "replayed_by": "rust-service/tests/trace_replay.rs",
   "schema": "velvt-trace/1",
-  "seed": 20260821
+  "seed": 20260821,
+  "segmentation": {
+    "drifting_traces": 16,
+    "drifting_weeks": 12,
+    "generator_version": 1,
+    "null_traces": 100,
+    "null_weeks": 4,
+    "planted_baseline": 0.3,
+    "planted_effect_sizes": [
+      0.7,
+      0.55,
+      0.45,
+      0.3
+    ],
+    "planted_seeds_per_effect": 8,
+    "planted_weeks": 8,
+    "read_by": "rust-service/tests/behavior_segmentation.rs",
+    "regime_change_week": 4,
+    "regime_traces": 24,
+    "regime_weeks": 8,
+    "schema": "velvt-runs/1",
+    "sparse_traces": 16,
+    "sparse_weeks": 2
+  }
 }

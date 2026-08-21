@@ -1,5 +1,6 @@
 use super::{
-    AbstractionMapRepo, AbstractionMapping, BatchEvent, BehaviorRepo, BlockAntecedent,
+    AbstractionMapRepo, AbstractionMapping, AntecedentFinding, AntecedentFindingRepo,
+    AntecedentFindingState, AntecedentRetractionReason, BatchEvent, BehaviorRepo, BlockAntecedent,
     CompletedBlockDwellSpan, DayType, DemotionStateRecord, FocusRepo, FocusTransition, GateVerdict,
     HistoryCacheEntry, HistoryCacheRepo, InitiationInvitationOutcome, InitiationInvitationRecord,
     InitiationRepo, InsightCacheEntry, InsightCacheRepo, InterventionDecision,
@@ -164,6 +165,12 @@ impl SqlitePersistence {
 
     pub fn behavior_repo(&self) -> Arc<dyn BehaviorRepo> {
         Arc::new(SqliteBehaviorRepo(self.clone()))
+    }
+
+    /// Discovered antecedent patterns (`0029`). Has no caller in the shipped
+    /// path: the miner writes findings, tests read them, and nothing surfaces.
+    pub fn antecedent_finding_repo(&self) -> Arc<dyn AntecedentFindingRepo> {
+        Arc::new(SqliteAntecedentFindingRepo(self.clone()))
     }
 
     fn insert_batch_with_events(
@@ -3211,6 +3218,206 @@ impl BehaviorRepo for SqliteBehaviorRepo {
             )
             .optional()
             .map_err(PersistenceError::from)
+    }
+}
+
+/// Discovered antecedent patterns (`0029_antecedent_findings.sql`).
+///
+/// Every honesty rule this table carries lives in the schema: the surfacing
+/// trigger, the `surfaced_at`/`confirmed_at` CHECK, and the one-look-per-window
+/// unique index. This impl deliberately adds none of its own. A rule duplicated
+/// in application code is a rule that can drift from the one the database
+/// actually enforces, and only one of the two is authoritative.
+struct SqliteAntecedentFindingRepo(SqlitePersistence);
+
+const ANTECEDENT_FINDING_COLUMNS: &str = "finding_id, candidate_id, candidate_registry_version, \
+     discovered_at, discovery_window_start, discovery_window_end, support_episodes, effect_size, \
+     q_value, confirmed_at, confirm_support_episodes, confirm_effect_size, state, surfaced_at, \
+     retracted_at, retraction_reason, user_disputed_at";
+
+fn antecedent_finding_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AntecedentFinding> {
+    let state: String = row.get(12)?;
+    let reason: Option<String> = row.get(15)?;
+    Ok(AntecedentFinding {
+        finding_id: row.get(0)?,
+        candidate_id: row.get(1)?,
+        candidate_registry_version: row.get(2)?,
+        discovered_at: row.get(3)?,
+        discovery_window_start: row.get(4)?,
+        discovery_window_end: row.get(5)?,
+        support_episodes: row.get(6)?,
+        effect_size: row.get(7)?,
+        q_value: row.get(8)?,
+        confirmed_at: row.get(9)?,
+        confirm_support_episodes: row.get(10)?,
+        confirm_effect_size: row.get(11)?,
+        state: AntecedentFindingState::from_stored(&state).ok_or_else(invalid_enum)?,
+        surfaced_at: row.get(13)?,
+        retracted_at: row.get(14)?,
+        retraction_reason: match reason {
+            None => None,
+            Some(value) => {
+                Some(AntecedentRetractionReason::from_stored(&value).ok_or_else(invalid_enum)?)
+            }
+        },
+        user_disputed_at: row.get(16)?,
+    })
+}
+
+impl AntecedentFindingRepo for SqliteAntecedentFindingRepo {
+    fn record_antecedent_finding(
+        &self,
+        finding: &AntecedentFinding,
+    ) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT INTO antecedent_finding(
+                finding_id, candidate_id, candidate_registry_version, discovered_at,
+                discovery_window_start, discovery_window_end, support_episodes, effect_size,
+                q_value, confirmed_at, confirm_support_episodes, confirm_effect_size, state,
+                surfaced_at, retracted_at, retraction_reason, user_disputed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            params![
+                finding.finding_id,
+                finding.candidate_id,
+                finding.candidate_registry_version,
+                finding.discovered_at,
+                finding.discovery_window_start,
+                finding.discovery_window_end,
+                finding.support_episodes,
+                finding.effect_size,
+                finding.q_value,
+                finding.confirmed_at,
+                finding.confirm_support_episodes,
+                finding.confirm_effect_size,
+                finding.state.as_str(),
+                finding.surfaced_at,
+                finding.retracted_at,
+                finding.retraction_reason.map(|reason| reason.as_str()),
+                finding.user_disputed_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn antecedent_finding(
+        &self,
+        finding_id: &str,
+    ) -> Result<Option<AntecedentFinding>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                &format!(
+                    "SELECT {ANTECEDENT_FINDING_COLUMNS} FROM antecedent_finding \
+                     WHERE finding_id = ?1"
+                ),
+                [finding_id],
+                antecedent_finding_from_row,
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+    }
+
+    fn antecedent_findings_in_state(
+        &self,
+        state: AntecedentFindingState,
+    ) -> Result<Vec<AntecedentFinding>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT {ANTECEDENT_FINDING_COLUMNS} FROM antecedent_finding \
+             WHERE state = ?1 ORDER BY discovered_at DESC, finding_id ASC"
+        ))?;
+        let rows = statement.query_map([state.as_str()], antecedent_finding_from_row)?;
+        let mut findings = Vec::new();
+        for row in rows {
+            findings.push(row?);
+        }
+        Ok(findings)
+    }
+
+    fn confirm_antecedent_finding(
+        &self,
+        finding_id: &str,
+        confirmed_at: i64,
+        support_episodes: u32,
+        effect_size: f64,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Two statements because SQLite's `BEFORE UPDATE OF <column>` triggers
+        // fire per named column, and the held-out check has to see the
+        // confirmation timestamp land. Both run inside one implicit
+        // transaction per statement; a failure of the second leaves a
+        // confirmed-but-still-`candidate` row, which reads as unconfirmed
+        // everywhere and can never be surfaced.
+        let updated = connection.execute(
+            "UPDATE antecedent_finding
+                SET confirmed_at = ?2, confirm_support_episodes = ?3, confirm_effect_size = ?4
+              WHERE finding_id = ?1",
+            params![finding_id, confirmed_at, support_episodes, effect_size],
+        )?;
+        if updated == 0 {
+            return Ok(false);
+        }
+        connection.execute(
+            "UPDATE antecedent_finding SET state = 'confirmed' WHERE finding_id = ?1",
+            [finding_id],
+        )?;
+        Ok(true)
+    }
+
+    fn mark_antecedent_finding_surfaced(
+        &self,
+        finding_id: &str,
+        surfaced_at: i64,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // No `confirmed_at IS NOT NULL` guard in this WHERE clause, on purpose.
+        // The database is the thing that must refuse, and a guard here would
+        // turn a loud ABORT into a quiet no-op the day someone edits the
+        // schema.
+        let updated = connection.execute(
+            "UPDATE antecedent_finding SET state = 'surfaced', surfaced_at = ?2 \
+             WHERE finding_id = ?1",
+            params![finding_id, surfaced_at],
+        )?;
+        Ok(updated > 0)
+    }
+
+    fn retract_antecedent_finding(
+        &self,
+        finding_id: &str,
+        retracted_at: i64,
+        reason: AntecedentRetractionReason,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        let updated = connection.execute(
+            "UPDATE antecedent_finding
+                SET state = 'retracted', retracted_at = ?2, retraction_reason = ?3
+              WHERE finding_id = ?1",
+            params![finding_id, retracted_at, reason.as_str()],
+        )?;
+        Ok(updated > 0)
+    }
+
+    fn dispute_antecedent_finding(
+        &self,
+        finding_id: &str,
+        disputed_at: i64,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        let updated = connection.execute(
+            "UPDATE antecedent_finding
+                SET state = 'disputed', user_disputed_at = ?2, retracted_at = ?2,
+                    retraction_reason = 'user_disputed'
+              WHERE finding_id = ?1",
+            params![finding_id, disputed_at],
+        )?;
+        Ok(updated > 0)
+    }
+
+    fn clear_antecedent_findings(&self) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        Ok(connection.execute("DELETE FROM antecedent_finding", [])? as u64)
     }
 }
 

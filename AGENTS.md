@@ -145,7 +145,7 @@ swift-client/
 # Rust Service (`rust-service/`)
 
 ## Scope
-Unix socket IPC server, raw event ingestion, abstraction engine, SQLite persistence, upload batching, cloud sync, and (future) local analytics.
+Unix socket IPC server, raw event ingestion, abstraction engine, SQLite persistence, upload batching, cloud sync, and privacy-preserving local behavioral analytics.
 
 **The Rust service does NOT:**
 - Render any UI
@@ -154,7 +154,7 @@ Unix socket IPC server, raw event ingestion, abstraction engine, SQLite persiste
 
 ## Architecture Constraints
 - **The service is the privacy enforcement boundary.** Abstraction happens here before any data is written to the upload queue. Raw fields must never appear in `abstracted_events` or `upload_batches` tables.
-- **No analytics in MVP.** Analytics modules may exist as stubbed feature-flagged modules, but must not execute in the default build. Gate behind a compile-time or runtime feature flag.
+- **Local behavioral analytics belong in Rust.** Detailed task-context, episode, longitudinal evidence, and experiment modeling must remain behind the Rust privacy boundary. Introduce new behavioral-model capabilities behind runtime feature flags until their phase acceptance gates pass. Local LLM inference and opaque models over raw activity remain out of scope.
 - **No full-table scans on hot paths.** Use indexed queries only for event ingestion and batching.
 - **Auto-update aware.** The service must support being replaced on disk and restarted by the Swift client's update mechanism. It must not hold exclusive file locks that prevent replacement.
 
@@ -239,10 +239,10 @@ Cross-workspace changes (anything touching `proto/`) require updating both works
 
 **In scope:**
 - `swift-client/`: passive event capture, IPC relay, menu bar UI, onboarding, permissions, notification display, 7-day history display, daily insight display, local retention controls
-- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, cloud sync, insight payload delivery, work-block state and drift-intervention evidence (`work_block`), the two approved 0.1.5 display surfaces (`dashboard`)
+- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, cloud sync, insight payload delivery, work-block state and drift-intervention evidence (`work_block`), the two approved 0.1.5 display surfaces (`dashboard`), and phase-gated local task-context, longitudinal evidence, and experiment modeling defined by `VELVT_IMPLEMENTATION_MASTER_PLAN.md` in the parent workspace
 
 **Explicitly deferred — do not build:**
-- Local analytics engine or local LLM inference (no `rust-service/src/analytics/` module exists; see `DEFERRED.md`)
+- Local LLM inference, opaque general sequence models, or autonomous intervention policies. Transparent local behavioral analytics and experiments are now in scope under `VELVT_IMPLEMENTATION_MASTER_PLAN.md` in the parent workspace.
 - Charts or streak counters beyond the two restrained 0.1.5 surfaces (Focus Fragmentation and Daily Activity) already served by `rust-service/src/dashboard.rs`
 - Unabstracted cloud personalization
 - Cross-platform Swift client (Windows/Linux)

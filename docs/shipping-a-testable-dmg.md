@@ -2,7 +2,7 @@
 
 Goal: a `.dmg` that installs and runs on a Mac that has never built Velvt.
 
-Today `make dmg` produces an ad-hoc signed bundle. It works on the build machine
+`VELVT_ALLOW_LOCAL_DMG=1 make dmg` produces an ad-hoc signed bundle. It works on the build machine
 and crashes on every other Mac — see
 [`dmg-crash-on-other-macs.md`](dmg-crash-on-other-macs.md) for why. The fix is a
 Developer ID certificate plus notarization, which requires paid Apple Developer
@@ -105,7 +105,7 @@ immutable and the target refuses to overwrite one.
 
 | Target | Signing | Installs elsewhere? | Use for |
 |---|---|---|---|
-| `make dmg` | ad-hoc | **No** — crashes | Local verification only |
+| `VELVT_ALLOW_LOCAL_DMG=1 make dmg` | ad-hoc | **No** — crashes | Local verification only |
 | `make alpha-dmg` | Developer ID + notarized | **Yes** | Testing alpha, private beta |
 | `make release` | Developer ID + notarized + Sparkle appcast | Yes | Public releases with auto-update |
 

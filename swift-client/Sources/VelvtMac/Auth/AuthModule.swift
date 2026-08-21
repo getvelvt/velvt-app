@@ -249,6 +249,7 @@ public final class AccountStateManager: ObservableObject {
     private var connectionStatusCancellable: AnyCancellable?
     private var pendingEmail: String?
     private var accountEmailCache: String??
+    private var cachedSnapshot: StoredAuthSnapshot?
     private var cachedSession: AuthSession?
 
     public init(keychain: any KeychainProtocol) {
@@ -266,6 +267,7 @@ public final class AccountStateManager: ObservableObject {
         _isDeviceRevoked = Published(wrappedValue: false)
         _requiresReauthentication = Published(wrappedValue: false)
         serverMessages = PassthroughSubject()
+        cachedSnapshot = storedSnapshot
         cachedSession = storedSnapshot?.session
         accountEmailCache = .some(storedSnapshot?.email)
     }
@@ -315,7 +317,7 @@ public final class AccountStateManager: ObservableObject {
         if let accountEmailCache {
             return accountEmailCache
         }
-        let email = Self.loadStoredSnapshot(from: keychain)?.email
+        let email = cachedSnapshot?.email
         accountEmailCache = email
         return email
     }
@@ -334,6 +336,7 @@ public final class AccountStateManager: ObservableObject {
     public func logOut() {
         transition(to: .loggingOut)
         keychain.deleteAll()
+        cachedSnapshot = nil
         cachedSession = nil
         pendingEmail = nil
         accountEmailCache = .some(nil)
@@ -345,7 +348,7 @@ public final class AccountStateManager: ObservableObject {
     /// failed and the session is still valid. Requires knowing the current userId.
     public func cancelPendingErasure() {
         guard case .pendingErasure = accountState,
-              var snapshot = Self.loadStoredSnapshot(from: keychain) else { return }
+              var snapshot = cachedSnapshot else { return }
         snapshot.pendingDeletion = false
         try? store(snapshot: snapshot)
         accountState = .loggedIn(userId: snapshot.userId)
@@ -426,6 +429,7 @@ public final class AccountStateManager: ObservableObject {
             }
         case .accountDeletionAccepted:
             keychain.deleteAll()
+            cachedSnapshot = nil
             cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
@@ -433,6 +437,7 @@ public final class AccountStateManager: ObservableObject {
             accountState = .loggedOut
         case .needsReauth:
             keychain.deleteAll()
+            cachedSnapshot = nil
             cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
@@ -440,6 +445,7 @@ public final class AccountStateManager: ObservableObject {
             accountState = .loggedOut
         case .deviceRevoked:
             keychain.deleteAll()
+            cachedSnapshot = nil
             cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
@@ -489,6 +495,8 @@ public final class AccountStateManager: ObservableObject {
                 "auth.handleAuthSuccess: Keychain write failed — \(error.localizedDescription)"
             )
             keychain.deleteAll()
+            cachedSnapshot = nil
+            cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
             accountState = .loggedOut
@@ -496,20 +504,20 @@ public final class AccountStateManager: ObservableObject {
     }
 
     private func store(session: AuthSession) {
+        guard session != cachedSession else { return }
         do {
-            guard let userId = currentUserId ?? Self.loadStoredSnapshot(from: keychain)?.userId else {
+            guard let userId = currentUserId,
+                  let existing = cachedSnapshot else {
                 authLogger.warning("auth.storeSession: received session update without a known userId")
                 return
             }
-            let existing = Self.loadStoredSnapshot(from: keychain)
             let snapshot = StoredAuthSnapshot(
                 userId: userId,
-                email: accountEmailCache ?? existing?.email,
-                pendingDeletion: existing?.pendingDeletion ?? false,
+                email: accountEmailCache ?? existing.email,
+                pendingDeletion: existing.pendingDeletion,
                 session: session
             )
             try store(snapshot: snapshot)
-            cachedSession = session
         } catch {
             authLogger.error("auth.storeSession: Keychain write failed — \(error.localizedDescription)")
         }
@@ -530,13 +538,15 @@ public final class AccountStateManager: ObservableObject {
     }
 
     private func updatePendingDeletionFlag(_ isPendingDeletion: Bool) {
-        guard var snapshot = Self.loadStoredSnapshot(from: keychain) else { return }
+        guard var snapshot = cachedSnapshot else { return }
         snapshot.pendingDeletion = isPendingDeletion
         try? store(snapshot: snapshot)
     }
 
     private func store(snapshot: StoredAuthSnapshot) throws {
         try keychain.store(token: Self.encode(snapshot: snapshot), for: .authSnapshot)
+        cachedSnapshot = snapshot
+        cachedSession = snapshot.session
     }
 
     private static func loadStoredSnapshot(from keychain: any KeychainProtocol) -> StoredAuthSnapshot? {

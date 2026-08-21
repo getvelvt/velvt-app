@@ -2213,9 +2213,9 @@ private struct MenuBarAuthenticationView: View {
               await authViewModel.logIn()
             }
           }
-        }.buttonStyle(.borderedProminent).disabled(
-          authViewModel.isLoading || authViewModel.email.isEmpty || authViewModel.password.isEmpty
-            || authViewModel.connectionStatus != .connected)
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!authViewModel.canSubmitCredentials)
       }
       Button(
         authViewModel.authMode == .signUp ? "I already have an account" : "Create a new account"

@@ -61,6 +61,7 @@ app_protocol="$(read_plist VelvtProtocolVersion)"
   echo "ERROR: helper taxonomy resource is missing." >&2
   exit 1
 }
+bash "$script_dir/verify_helper_portability.sh" "$helper"
 
 helper_protocol="$($helper --protocol-version)"
 [[ "$helper_protocol" == "$app_protocol" ]] || {

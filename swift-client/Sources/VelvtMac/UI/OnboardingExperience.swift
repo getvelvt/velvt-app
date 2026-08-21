@@ -213,7 +213,7 @@ public final class FocusAllowancePromptModel: ObservableObject {
         requestFocusAuthorization: @escaping (@escaping (Bool) -> Void) -> Void =
             INFocusStatusProvider.requestAuthorization,
         openFocusSettings: @escaping @MainActor () -> Void =
-            FocusAllowancePromptModel.openSystemFocusSettings,
+            { FocusAllowancePromptModel.openSystemFocusSettings() },
         onContinue: @escaping () -> Void
     ) {
         self.defaults = defaults
@@ -1076,12 +1076,7 @@ public struct OnboardingAccountExperienceView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(
-                    authViewModel.isLoading
-                        || authViewModel.email.isEmpty
-                        || authViewModel.password.isEmpty
-                        || authViewModel.connectionStatus != .connected
-                )
+                .disabled(!authViewModel.canSubmitCredentials)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 24)
@@ -1223,8 +1218,6 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
             }
         case .notifications:
             finishNotificationStage()
-        case .focusAllowance:
-            finishFocusAllowanceStage()
         case .nudgePreview:
             finishNudgePreviewStage()
         case .tourInvitation:

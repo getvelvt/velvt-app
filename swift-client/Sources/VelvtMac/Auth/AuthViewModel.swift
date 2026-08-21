@@ -24,6 +24,10 @@ public final class AuthViewModel: ObservableObject {
     @Published public private(set) var showDeleteConfirmation: Bool = false
     @Published public private(set) var connectionStatus: ConnectionStatus = .disconnected
 
+    public var canSubmitCredentials: Bool {
+        !isLoading && !email.isEmpty && !password.isEmpty
+    }
+
     private let accountStateManager: AccountStateManager
     private let ipcClient: any IPCClientProtocol
     private let authResponseTimeout: TimeInterval

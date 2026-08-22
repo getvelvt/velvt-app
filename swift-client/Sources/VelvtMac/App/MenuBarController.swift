@@ -379,12 +379,14 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
     /// replaced.
     ///
     /// Deferred by one turn because AppKit installs the *new* key window after
-    /// posting this, and the guard below needs to see it: the Settings
-    /// submenus are `NSPopover`s anchored inside this panel, the sign-in flow
-    /// is a sheet on it, and both take key. Measured, a popover shown from a
-    /// view in this panel becomes a child window of it (`window.parent ===
-    /// panel`, and it appears in `panel.childWindows`), so the check is
-    /// ordinary public API rather than a class-name test.
+    /// posting this, and the guard below needs to see it: the focus-session
+    /// composer is an `NSPopover` anchored inside this panel, the sign-in flow
+    /// and the two destructive confirmations are sheets on it, and all of them
+    /// take key. Measured, a popover shown from a view in this panel becomes a
+    /// child window of it (`window.parent === panel`, and it appears in
+    /// `panel.childWindows`), so the check is ordinary public API rather than
+    /// a class-name test. Settings navigation is *not* in that list any more —
+    /// it renders in this window and takes no key from it.
     public func windowDidResignKey(_ notification: Notification) {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.panel.isVisible else { return }
@@ -397,9 +399,10 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
     /// Pure so the rule can be tested against real windows without driving a
     /// real activation cycle.
     ///
-    /// Key moving to a window this panel owns — a Settings submenu popover, a
-    /// sign-in sheet — is not the user clicking away, and dismissing on it
-    /// would close the surface the moment anyone opened anything in it.
+    /// Key moving to a window this panel owns — the focus-session popover, a
+    /// sign-in sheet, a confirmation sheet — is not the user clicking away,
+    /// and dismissing on it would close the surface the moment anyone opened
+    /// anything in it.
     static func shouldDismiss(panel: NSWindow, keyWindow: NSWindow?) -> Bool {
         guard let keyWindow else { return true }
         if keyWindow === panel { return false }

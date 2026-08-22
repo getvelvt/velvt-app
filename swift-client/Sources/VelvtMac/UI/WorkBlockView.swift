@@ -8,6 +8,25 @@ public enum WorkBlockDurationChoice: String, CaseIterable, Identifiable {
   public var id: String { rawValue }
 }
 
+/// The duration window the local service accepts for a declared block.
+///
+/// Mirrored from `planned_duration_seconds INTEGER NOT NULL CHECK(... BETWEEN
+/// 300 AND 10800)` in `0009_work_blocks.sql` and re-checked in
+/// `WorkBlockManager::start`, which answers anything outside it with
+/// `invalid_work_block_request`. Every surface that can send a start command
+/// reads the bounds from here so the stepper's range and the suggested-action
+/// buttons' gate cannot drift apart from each other or from the schema.
+public enum WorkBlockDurationLimits {
+  public static let minimumSeconds = 300
+  public static let maximumSeconds = 10_800
+  public static let minutesRange = (minimumSeconds / 60)...(maximumSeconds / 60)
+  public static let minuteStep = 5
+
+  public static func acceptsMinutes(_ minutes: Int) -> Bool {
+    (minimumSeconds...maximumSeconds).contains(minutes * 60)
+  }
+}
+
 public struct WorkBlockView: View {
   @ObservedObject private var coordinator: WorkBlockCoordinator
   @State private var intention = ""
@@ -19,6 +38,20 @@ public struct WorkBlockView: View {
 
   public init(coordinator: WorkBlockCoordinator) {
     self.coordinator = coordinator
+  }
+
+  /// Snapshot-render seam. The duration controls are `@State`, so the
+  /// minimum and the maximum a person can actually choose cannot be looked
+  /// at without a way to seed them. Internal, so only the test bundle can
+  /// reach it; the shipping call site is the public initializer above.
+  init(
+    coordinator: WorkBlockCoordinator,
+    durationChoice: WorkBlockDurationChoice,
+    customMinutes: Int
+  ) {
+    self.coordinator = coordinator
+    _durationChoice = State(initialValue: durationChoice)
+    _customMinutes = State(initialValue: customMinutes)
   }
 
   public var body: some View {
@@ -35,14 +68,24 @@ public struct WorkBlockView: View {
       if let invitation = coordinator.invitation {
         invitationCard(invitation)
       }
-      if plansAnotherSession {
+      // A live block outranks the planning form. The form used to win, so
+      // "Plan another session" followed by an invitation accepted anywhere
+      // else left a start form sitting on top of a running block; and the
+      // Start button used to clear the flag on press, which flashed the
+      // finished block's result card back for however long the round trip
+      // took. The flag is cleared when the service confirms, below.
+      if let snapshot = coordinator.snapshot,
+        snapshot.phase == .active || snapshot.phase == .paused
+      {
+        activeBlock(snapshot)
+      } else if plansAnotherSession {
         startForm
       } else if let snapshot = coordinator.snapshot {
         switch snapshot.phase {
         case .idle:
           startForm
         case .active, .paused:
-          activeBlock(snapshot)
+          EmptyView()
         case .completed, .abandoned, .expired:
           resultView(snapshot)
         }
@@ -59,6 +102,17 @@ public struct WorkBlockView: View {
     }
     .accessibilityElement(children: .contain)
     .onAppear { coordinator.refreshInvitation() }
+    .onChange(of: coordinator.snapshot?.phase) { phase in
+      // The form closes when the service confirms the block, not when the
+      // button is pressed. If the send fails there is nothing to go back to
+      // and the typed intention goes with it; the intention is cleared here
+      // instead, once it has been handed over, so it is not sitting in the
+      // field for the next session.
+      if phase == .active || phase == .paused {
+        plansAnotherSession = false
+        intention = ""
+      }
+    }
   }
 
   private var startForm: some View {
@@ -92,7 +146,9 @@ public struct WorkBlockView: View {
       .labelsHidden()
 
       if durationChoice == .custom {
-        Stepper("\(customMinutes) minutes", value: $customMinutes, in: 5...180, step: 5)
+        Stepper(
+          "\(customMinutes) minutes", value: $customMinutes,
+          in: WorkBlockDurationLimits.minutesRange, step: WorkBlockDurationLimits.minuteStep)
           .font(.caption)
           .accessibilityLabel("Custom duration")
           .accessibilityValue("\(customMinutes) minutes")
@@ -146,7 +202,6 @@ public struct WorkBlockView: View {
           purpose: purpose,
           intensity: intensity
         )
-        plansAnotherSession = false
       }
       .buttonStyle(.borderedProminent)
       .tint(Color.velvtPink)
@@ -512,6 +567,22 @@ public struct WorkBlockView: View {
             .accessibilityLabel("Do Not Disturb summary. \(reconciliation)")
         }
 
+        // The qualifier goes above the numbers it qualifies, in the same
+        // words the local dashboard's work-block card already uses, from the
+        // same two fields. This card shows elapsed and the dashboard card
+        // shows elapsed, and only one of them said what the other numbers
+        // beside it were measured over: `25m / 25m` next to a 17-second
+        // longest stretch is unreadable without it. `nil` when coverage is
+        // good, so this is not a second notice bolted onto the existing one
+        // — it is the existing one, on the other surface that shows elapsed.
+        if let notice = coverageNotice(result) {
+          Text(notice)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel(notice)
+        }
+
         // Recoveries lead, and are counted rather than rated. A number that
         // can only go up cannot be lost, which is what a streak gets wrong:
         // coming back four times is the achievement, not going unbroken.
@@ -549,14 +620,18 @@ public struct WorkBlockView: View {
             .keyboardShortcut(.defaultAction)
             .accessibilityHint("Starts a ten-minute block on the local service")
 
-          Button("Plan another session") { plansAnotherSession = true }
-            .accessibilityHint("Choose the next session's work type and duration")
+          planAnotherButton(prominent: false)
         } else {
-          Button("Plan another session") { plansAnotherSession = true }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
-            .accessibilityHint("Choose the next session's work type and duration")
+          planAnotherButton(prominent: true)
         }
+      } else {
+        // A terminal block with no result row on the snapshot. The service
+        // writes one on finish, but a block that ended while the app was not
+        // running comes back through restart recovery without one, and
+        // `clearWorkBlockData` removes it. Every button used to live inside
+        // `if let result`, so this state rendered a title, a status line, and
+        // no way out of itself at all.
+        planAnotherButton(prominent: true)
       }
 
       if let error = coordinator.commandError {
@@ -567,6 +642,41 @@ public struct WorkBlockView: View {
   }
 
   @ViewBuilder
+  private func planAnotherButton(prominent: Bool) -> some View {
+    if prominent {
+      Button("Plan another session") { plansAnotherSession = true }
+        .buttonStyle(.borderedProminent)
+        .keyboardShortcut(.defaultAction)
+        .accessibilityHint("Choose the next session's work type and duration")
+    } else {
+      Button("Plan another session") { plansAnotherSession = true }
+        .accessibilityHint("Choose the next session's work type and duration")
+    }
+  }
+
+  /// Elapsed and remaining for a live block.
+  ///
+  /// Both live values hang off `ends_at`, which is the only number on this
+  /// snapshot that stays true as wall-clock advances. The service publishes
+  /// state on commands and on one deadline sleep and never on a timer, so
+  /// `elapsed_duration_seconds` was true when the message was sent and is
+  /// stale by exactly however long the panel took to open. Anchoring a
+  /// count-up on `now - elapsed` therefore restarted the clock at whatever
+  /// the last push happened to say: ten minutes into a block whose start
+  /// command was the last push, Elapsed read 0:00 and kept counting from
+  /// there.
+  ///
+  /// Nothing is re-derived. The service defines
+  /// `ends_at = started_at + planned + total_paused` and
+  /// `remaining = planned - elapsed`, so:
+  ///
+  ///     remaining(now) = ends_at - now
+  ///     elapsed(now)   = now - (ends_at - planned)
+  ///
+  /// `ends_at` rather than `started_at` is what carries paused time, which is
+  /// why the two agree across a pause and resume without Swift ever holding a
+  /// `total_paused_seconds` of its own.
+  @ViewBuilder
   private func timeColumn(
     _ title: String,
     seconds: Int,
@@ -575,17 +685,25 @@ public struct WorkBlockView: View {
   ) -> some View {
     VStack(alignment: .leading, spacing: 2) {
       Text(title).font(.caption2).foregroundStyle(.secondary)
-      if snapshot.phase == .active {
-        if countsDown, let endsAt = snapshot.endsAt {
+      if snapshot.phase == .active, let endsAt = snapshot.endsAt {
+        if countsDown {
           Text(timerInterval: Date()...max(Date(), endsAt), countsDown: true)
             .font(.caption.bold().monospacedDigit())
         } else {
-          let effectiveStart = Date().addingTimeInterval(-TimeInterval(seconds))
-          Text(timerInterval: effectiveStart...Date.distantFuture, countsDown: false)
-            .font(.caption.bold().monospacedDigit())
+          Text(
+            timerInterval: endsAt.addingTimeInterval(
+              -TimeInterval(snapshot.plannedDurationSeconds))...Date.distantFuture,
+            countsDown: false
+          )
+          .font(.caption.bold().monospacedDigit())
         }
       } else {
-        Text(durationLabel(seconds))
+        // Paused, or an active block the service sent without a deadline.
+        // The last number it published, in the same shape the running timer
+        // draws, so pausing a ninety-minute block cannot turn 1:29:00 into
+        // 89:00. The old branching ran a count-*up* here whenever `ends_at`
+        // was missing, including for the Remaining column.
+        Text(DurationText.clock(seconds))
           .font(.caption.bold().monospacedDigit())
       }
     }
@@ -594,7 +712,7 @@ public struct WorkBlockView: View {
   private func resultMetric(_ title: String, _ seconds: Int) -> some View {
     VStack(alignment: .leading, spacing: 2) {
       Text(title).font(.caption2).foregroundStyle(.secondary)
-      Text(durationLabel(seconds)).font(.caption.bold().monospacedDigit())
+      Text(DurationText.compact(seconds)).font(.caption.bold().monospacedDigit())
     }
   }
 
@@ -646,8 +764,24 @@ public struct WorkBlockView: View {
     }
   }
 
+  /// The sentence the local dashboard's work-block card already shows, from
+  /// the same two stored fields. `nil` when coverage is good — there is
+  /// nothing to qualify — which is also what keeps this from becoming a
+  /// second low-coverage warning.
+  private func coverageNotice(_ result: WorkBlockResult) -> String? {
+    CoverageNotice.sentence(
+      isGood: result.coverage == .good,
+      isEmpty: result.coverage == .insufficient && result.coverageRatio <= 0,
+      coverageRatio: result.coverageRatio,
+      switchLabel: "switch-aways")
+  }
+
   private func coverageLabel(_ result: WorkBlockResult) -> String {
-    "\(result.coverage.rawValue.capitalized) coverage · \(result.confidence.rawValue.capitalized) confidence"
+    let confidence = "\(result.confidence.rawValue.capitalized) confidence"
+    // When the sentence above the numbers has already stated the fraction,
+    // this line does not restate it: one coverage statement per card.
+    guard coverageNotice(result) == nil else { return confidence }
+    return "\(result.coverage.rawValue.capitalized) coverage · \(confidence)"
   }
 
   private func evidenceLabel(_ result: WorkBlockResult) -> String {
@@ -657,9 +791,6 @@ public struct WorkBlockView: View {
     return "Evidence category: \(categoryLabel(category))."
   }
 
-  private func durationLabel(_ seconds: Int) -> String {
-    String(format: "%d:%02d", max(0, seconds) / 60, max(0, seconds) % 60)
-  }
 }
 
 extension String {

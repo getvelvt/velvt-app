@@ -220,16 +220,14 @@ public struct TodayWorkspaceView: View {
         case .cloud:
             InsightCardView(
                 viewModel: coordinator.insightViewModel,
-                onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
-                    ? startSuggestedWorkBlock
-                    : nil
+                onSuggestedAction: canStartSuggestedBlock ? startSuggestedWorkBlock : nil
             )
                 .padding(.horizontal, 16)
         case .earlyLocal:
             if let signal = readyLocalSignal {
                 EarlyLocalSignalView(
                     signal: signal,
-                    onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
+                    onSuggestedAction: canStartEarlySignalBlock(signal)
                         ? { startEarlySignalWorkBlock(signal) }
                         : nil
                 )
@@ -276,7 +274,30 @@ public struct TodayWorkspaceView: View {
         return signal
     }
 
+    /// Both suggested-action buttons carry a duration authored elsewhere —
+    /// the cloud insight payload's `action_minutes`, and the local signal's
+    /// — and both fed it straight into a start command. The service accepts
+    /// 300...10800 seconds and answers anything else with
+    /// `invalid_work_block_request`, which reaches the person as "Unable to
+    /// update this local work block. Try again." for a button they were
+    /// invited to press.
+    ///
+    /// The gate withholds the button rather than clamping the number,
+    /// because the button states its own duration: clamping four minutes up
+    /// to five would start a block the label did not offer.
+    private var canStartSuggestedBlock: Bool {
+        workBlockCoordinator.snapshot?.phase == .idle
+            && WorkBlockDurationLimits.acceptsMinutes(
+                coordinator.insightViewModel.suggestedActionMinutes)
+    }
+
+    private func canStartEarlySignalBlock(_ signal: LocalEarlySignal) -> Bool {
+        workBlockCoordinator.snapshot?.phase == .idle
+            && WorkBlockDurationLimits.acceptsMinutes(signal.actionMinutes)
+    }
+
     private func startSuggestedWorkBlock() {
+        guard canStartSuggestedBlock else { return }
         workBlockCoordinator.startBlock(
             intention: nil,
             durationSeconds: coordinator.insightViewModel.suggestedActionMinutes * 60,
@@ -286,6 +307,7 @@ public struct TodayWorkspaceView: View {
     }
 
     private func startEarlySignalWorkBlock(_ signal: LocalEarlySignal) {
+        guard canStartEarlySignalBlock(signal) else { return }
         workBlockCoordinator.startBlock(
             intention: nil,
             durationSeconds: signal.actionMinutes * 60,
@@ -595,7 +617,10 @@ public struct MinimalDashboardWorkspaceView: View {
 
 }
 
-private struct CompactWorkBlockControl: View {
+/// The one-line live control that sits above the evidence card while a block
+/// is running. Internal rather than file-private so the env-gated snapshot
+/// renderer can put the live row on screen on its own.
+struct CompactWorkBlockControl: View {
   let snapshot: WorkBlockSnapshot
   @ObservedObject var coordinator: WorkBlockCoordinator
 
@@ -604,11 +629,9 @@ private struct CompactWorkBlockControl: View {
       VStack(alignment: .leading, spacing: 2) {
         Text(snapshot.phase == .paused ? "Work block paused" : "Work block active")
           .font(.caption.bold())
-        Text(
-          "\(duration(snapshot.elapsedDurationSeconds)) elapsed of \(duration(snapshot.plannedDurationSeconds)) planned"
-        )
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(Color.velvtMuted)
+        elapsedLine
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(Color.velvtMuted)
       }
       Spacer(minLength: 8)
       if snapshot.phase == .paused {
@@ -624,10 +647,45 @@ private struct CompactWorkBlockControl: View {
     .background(Color.velvtPanel)
     .clipShape(RoundedRectangle(cornerRadius: 8))
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Active work block")
-    .accessibilityValue(
-      "\(duration(snapshot.elapsedDurationSeconds)) elapsed, \(duration(snapshot.plannedDurationSeconds)) planned"
-    )
+    .accessibilityLabel(
+      snapshot.phase == .paused ? "Paused work block" : "Active work block")
+  }
+
+  /// The service publishes work-block state on commands and on one deadline
+  /// sleep — `run_deadline_scheduler` says so in as many words: "there is no
+  /// periodic timer or state polling." So `elapsed_duration_seconds` is true
+  /// at the instant it was sent and at no instant after. Open the panel ten
+  /// minutes into a block whose start command was the last push and this row
+  /// read "0m elapsed of 25m planned".
+  ///
+  /// The live value is not re-derived here. The service defines
+  /// `ends_at = started_at + planned + total_paused` and
+  /// `remaining = planned - elapsed`, so `ends_at - planned` is the exact
+  /// instant its own elapsed count starts from — including across pauses,
+  /// which is why `ends_at` and not `started_at`. The ticking text is the
+  /// service's own number, continued.
+  @ViewBuilder
+  private var elapsedLine: some View {
+    if snapshot.phase == .active, let endsAt = snapshot.endsAt {
+      HStack(spacing: 0) {
+        Text(
+          timerInterval: endsAt.addingTimeInterval(
+            -TimeInterval(snapshot.plannedDurationSeconds))...Date.distantFuture,
+          countsDown: false
+        )
+        Text(" elapsed of \(duration(snapshot.plannedDurationSeconds)) planned")
+      }
+      .accessibilityElement(children: .combine)
+    } else {
+      // Clock, not compact, so a pause cannot change the shape of the number
+      // that was ticking a second ago. One rule across the minutes surfaces:
+      // while a block is running or paused, a counted time is a clock; once
+      // it is over, every number on the result card is a duration. A chosen
+      // duration — the plan — is always a duration.
+      Text(
+        "\(DurationText.clock(snapshot.elapsedDurationSeconds)) elapsed of \(duration(snapshot.plannedDurationSeconds)) planned"
+      )
+    }
   }
 }
 
@@ -1229,15 +1287,11 @@ public struct FocusFragmentationView: View {
   /// warned them about their own block would be inventing a finding out of a
   /// collection outage.
   private func coverageNotice(_ focus: LocalFocusFragmentation) -> String? {
-    switch focus.coverage {
-    case .good:
-      return nil
-    case .noData:
-      return "No activity was observed inside this window."
-    case .partial:
-      return
-        "Observed activity covers \(coveragePercent(focus))% of this window. Longest stretch and switches count only that part."
-    }
+    CoverageNotice.sentence(
+      isGood: focus.coverage == .good,
+      isEmpty: focus.coverage == .noData,
+      coverageRatio: focus.coverageRatio,
+      switchLabel: "switches")
   }
 
   private func metricEvidenceHelp(_ base: String, focus: LocalFocusFragmentation) -> String {
@@ -1674,14 +1728,75 @@ struct InlineActivityCorrectionEditor: View {
   }
 }
 
-private func duration(_ seconds: Int) -> String {
-  let value = max(0, seconds)
-  let hours = value / 3600
-  let minutes = (value % 3600) / 60
-  if hours > 0 { return "\(hours)h \(minutes)m" }
-  if minutes > 0 { return "\(minutes)m" }
-  return "\(value)s"
+/// The one duration vocabulary for the work-block minutes surfaces.
+///
+/// There used to be four local rules and they disagreed with each other. A
+/// 17-second longest stretch was published as `17s` on the dashboard card and
+/// as `0:17` on the result card. A three-hour block's remaining time read
+/// `179:00` while paused and `2:59:00` a second later while running. And the
+/// largest-unit-only rule silently rounded a 1m59s longest stretch down to
+/// `1m` — a 41% understatement of the single number that card exists to
+/// report, on a card whose whole job is evidence.
+///
+/// Two shapes, because there are two jobs:
+///
+/// - `compact` is a measured duration standing next to other measured
+///   durations. The two most significant non-zero units, largest first, with
+///   a trailing zero unit dropped: `0s`, `17s`, `1m 30s`, `25m`, `59m 59s`,
+///   `1h`, `2h 59m`, `3h`. One rule end to end, so `17s` next to `25m` is the
+///   same rule reading a smaller number rather than a different formatter.
+/// - `clock` is a countdown or a frozen countdown, and matches exactly what
+///   SwiftUI's own `Text(timerInterval:)` draws beside it, so pausing a block
+///   cannot change the shape of the number.
+enum DurationText {
+  static func compact(_ seconds: Int) -> String {
+    let value = max(0, seconds)
+    let hours = value / 3600
+    let minutes = (value % 3600) / 60
+    let remainder = value % 60
+    if hours > 0 { return minutes > 0 ? "\(hours)h \(minutes)m" : "\(hours)h" }
+    if minutes > 0 { return remainder > 0 ? "\(minutes)m \(remainder)s" : "\(minutes)m" }
+    return "\(value)s"
+  }
+
+  static func clock(_ seconds: Int) -> String {
+    let value = max(0, seconds)
+    let hours = value / 3600
+    let minutes = (value % 3600) / 60
+    let remainder = value % 60
+    if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, remainder) }
+    return String(format: "%d:%02d", minutes, remainder)
+  }
 }
+
+/// The one sentence that states how much of a work-block window was actually
+/// observed.
+///
+/// It lives here rather than inside either card because two cards show
+/// elapsed — the local dashboard's work-block card and the end-of-block
+/// result card — and a sentence written out twice is a sentence that drifts.
+/// It states the fraction the service already reported and stops: reading it
+/// is the person's job, and a card that warned them about their own block
+/// would be manufacturing a finding out of a collection outage.
+///
+/// `switchLabel` is the name the calling card gives its own switch metric, so
+/// the sentence points at a label the reader can see.
+enum CoverageNotice {
+  static func sentence(
+    isGood: Bool,
+    isEmpty: Bool,
+    coverageRatio: Double,
+    switchLabel: String
+  ) -> String? {
+    if isGood { return nil }
+    if isEmpty { return "No activity was observed inside this window." }
+    let percent = Int((coverageRatio * 100).rounded())
+    return
+      "Observed activity covers \(percent)% of this window. Longest stretch and \(switchLabel) count only that part."
+  }
+}
+
+private func duration(_ seconds: Int) -> String { DurationText.compact(seconds) }
 
 private func friendlyCategory(_ category: String) -> String {
   category.replacingOccurrences(of: "_", with: " ").lowercased().capitalized

@@ -392,8 +392,19 @@ final class MenuBarControllerTests: XCTestCase {
     }
 
     /// Click-away dismissal, minus the activation cycle. Key moving to a
-    /// window the panel owns is someone opening a Settings submenu or the
-    /// sign-in sheet, not the user leaving.
+    /// window the panel owns is not the user leaving.
+    ///
+    /// The Settings submenus used to be the main thing that took key inside
+    /// this panel, and they are gone — settings detail is rendered in the
+    /// panel now. The guard still has work: the focus-session popover is an
+    /// `NSPopover` anchored in this panel, the sign-in flow is a sheet on it,
+    /// and both "Clear Local Work Blocks" and "Delete Account" put a
+    /// confirmation sheet on it. Losing any of those to a dismissal would
+    /// close the surface the moment the user opened it.
+    ///
+    /// The last case is the one that keeps this honest after the submenus
+    /// left: a window that is somebody *else's* child is still a stranger, so
+    /// the guard may not be loosened to "any window with a parent".
     func testClickAwayDismissesButOpeningSomethingInsideDoesNot() {
         let presenter = MenuBarPanelPresenter()
         defer { presenter.close() }
@@ -406,13 +417,131 @@ final class MenuBarControllerTests: XCTestCase {
             contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
             styleMask: [.titled], backing: .buffered, defer: false
         )
+        let otherWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let othersChild = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
         panel.addChildWindow(child, ordered: .above)
-        defer { panel.removeChildWindow(child) }
+        otherWindow.addChildWindow(othersChild, ordered: .above)
+        defer {
+            panel.removeChildWindow(child)
+            otherWindow.removeChildWindow(othersChild)
+        }
 
         XCTAssertFalse(MenuBarPanelPresenter.shouldDismiss(panel: panel, keyWindow: panel))
         XCTAssertFalse(MenuBarPanelPresenter.shouldDismiss(panel: panel, keyWindow: child))
         XCTAssertTrue(MenuBarPanelPresenter.shouldDismiss(panel: panel, keyWindow: stranger))
+        XCTAssertTrue(MenuBarPanelPresenter.shouldDismiss(panel: panel, keyWindow: othersChild))
         XCTAssertTrue(MenuBarPanelPresenter.shouldDismiss(panel: panel, keyWindow: nil))
+    }
+
+    /// Keyboard navigation, asserted where it actually lives.
+    ///
+    /// The destination list is a SwiftUI `List`, and a `List` on macOS is an
+    /// `NSTableView` underneath — which is the entire reason it is a `List`
+    /// and not the column of `Button`s it replaced. Arrow keys between rows,
+    /// Tab into the list, and a selection that survives focus leaving are the
+    /// table's behaviour, not something reimplemented above it. A column of
+    /// buttons would photograph identically and answer no key press, so the
+    /// check is that the table is really there with a row per destination.
+    func testTheSettingsDestinationListIsARealKeyboardNavigableTable() {
+        let presenter = MenuBarPanelPresenter()
+        defer { presenter.close() }
+        let hosting = NSHostingController(
+            rootView: makeSettingsPopoverView().openedOnSettings(nil)
+        )
+        hosting.sizingOptions = []
+        presenter.contentViewController = hosting
+        presenter.contentSize = CGSize(width: 600, height: 520)
+        presenter.panel.orderFront(nil)
+        presenter.panel.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+        guard let table = Self.firstTableView(in: presenter.panel.contentView) else {
+            return XCTFail("The settings destination list did not materialize as a table")
+        }
+        XCTAssertGreaterThanOrEqual(
+            table.numberOfRows,
+            SettingsSubmenu.allCases.count - 1,
+            "Every settings destination outside DEBUG needs a row a key press can reach"
+        )
+        XCTAssertTrue(
+            presenter.panel.canBecomeKey,
+            "A list nobody can focus is not keyboard navigation"
+        )
+    }
+
+    private static func firstTableView(in view: NSView?) -> NSTableView? {
+        guard let view else { return nil }
+        if let table = view as? NSTableView { return table }
+        for subview in view.subviews {
+            if let table = firstTableView(in: subview) { return table }
+        }
+        return nil
+    }
+
+    private func makeSettingsPopoverView() -> MenuBarPopoverView {
+        let client = FakeIPCClient()
+        return MenuBarPopoverView(
+            presentation: PermissionPresentationModel(
+                permissionManager: FakePermissionManager(),
+                onboardingStateStore: InMemoryOnboardingStateStore()
+            ),
+            coordinator: ConcreteDisplayDataCoordinator(),
+            serviceConnectionStatus: ServiceConnectionStatusModel(
+                connectionStatus: Just(.connected).eraseToAnyPublisher()
+            ),
+            collectionActivityStatus: CollectionActivityStatusModel(
+                collectionStatus: Just(.idle).eraseToAnyPublisher()
+            ),
+            currentActivity: CurrentActivityModel(),
+            serviceAlertModel: ServiceAlertModel(messages: Empty<ServerMessage, Never>()),
+            ipcClient: client,
+            updateController: .disabled(),
+            onEscape: {}
+        )
+    }
+
+    /// The panel is still the thing that has to survive a settings click.
+    ///
+    /// Selecting a destination no longer creates any window at all, so no
+    /// resign-key event is posted and there is nothing for the guard to catch.
+    ///
+    /// The assertion has to be made with a destination actually open, through
+    /// the real panel: an empty panel with no content installed has no child
+    /// windows either, so checking one proves nothing about settings. Every
+    /// destination is mounted in turn and the panel is required to still own
+    /// no window afterwards — that is the user's complaint, stated as a test.
+    func testSelectingASettingsDestinationCreatesNoWindowForTheGuardToCatch() {
+        let presenter = MenuBarPanelPresenter()
+        defer { presenter.close() }
+        let panel = presenter.panel
+        presenter.contentSize = CGSize(width: 600, height: 520)
+        panel.orderFront(nil)
+
+        for destination in SettingsSubmenu.allCases {
+            let hosting = NSHostingController(
+                rootView: makeSettingsPopoverView().openedOnSettings(destination)
+            )
+            hosting.sizingOptions = []
+            presenter.contentViewController = hosting
+            panel.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+            XCTAssertEqual(
+                panel.childWindows?.count ?? 0, 0,
+                "Opening \(destination.title) put a detached window on the panel"
+            )
+            XCTAssertTrue(
+                panel.sheets.isEmpty,
+                "Opening \(destination.title) put a sheet on the panel"
+            )
+            XCTAssertFalse(MenuBarPanelPresenter.shouldDismiss(panel: panel, keyWindow: panel))
+        }
     }
 
     /// `NSWindow.contentMinSize` is enforced for a user drag but not for

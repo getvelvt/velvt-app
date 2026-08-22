@@ -743,6 +743,11 @@ public enum MenuBarPopoverLayout {
 
     public static let screenInset: CGFloat = 24
 
+    /// The workspace rail down the left of the surface — Now / Patterns /
+    /// Settings. Named because the Settings pane has to subtract it to know
+    /// how much width it is actually being given.
+    public static let navigationRailWidth: CGFloat = 132
+
     /// Measured on the panel style mask this app uses — `.titled` *without*
     /// `.fullSizeContentView`, so the content view sits below the title bar
     /// rather than under it. A window frame is this much taller than its
@@ -900,7 +905,12 @@ public enum MenuBarMotionPolicy {
     }
 }
 
-enum SettingsSubmenu: CaseIterable, Equatable {
+/// A Settings destination.
+///
+/// Still named for the submenus it used to be, because the set of
+/// destinations is exactly what it was: this stopped being a submenu when it
+/// stopped opening a window, not when it changed contents.
+enum SettingsSubmenu: CaseIterable, Hashable, Identifiable {
     case appInfo
     /// The correction workbench. Named for what a person does here, not for
     /// the upload queue it also happens to list.
@@ -923,27 +933,63 @@ enum SettingsSubmenu: CaseIterable, Equatable {
         }
     }
 
-    var preferredHeight: CGFloat {
-        switch self {
-        case .appInfo: return 420
-        case .teachApps: return 520
-        case .collectionSettings: return 180
-        case .onboarding: return 210
-        #if DEBUG
-        case .debug: return 190
-        #endif
-        }
+    var id: Self { self }
+}
+
+/// How the Settings tab arranges its destination list against the detail that
+/// list selects.
+enum SettingsPaneMode: Equatable {
+    /// List on the left, detail beside it — what a resizable window buys, and
+    /// the shape the Now / Patterns / Settings rail already uses one level up.
+    case sideBySide(listWidth: CGFloat)
+
+    /// One column: the list, or the selected destination with a way back.
+    /// Below the threshold, two columns would hand the detail *less* width
+    /// than the child popover this pane replaced, which would make the fix a
+    /// regression for the correction workbench.
+    case stacked
+}
+
+/// The Settings pane's layout rule, pulled out of the view so the widths can
+/// be asserted rather than eyeballed.
+enum SettingsPaneLayout {
+    /// Fits "Teach Velvt Your Apps" — the longest destination title — on one
+    /// line at `.caption`, with the room a sidebar row insets away.
+    static let listWidth: CGFloat = 164
+
+    /// The width every destination was already laid out for: the width of the
+    /// `NSPopover` this pane replaced. The detail is never given less.
+    static let minimumDetailWidth: CGFloat = 300
+
+    /// And never lets a destination stretch past this.
+    ///
+    /// Measured on the wide shots: at 603pt of detail the Collection Settings
+    /// toggles drift to the middle of the pane, because a `Toggle` at its
+    /// intrinsic width centres itself in a `VStack` and 300pt of popover used
+    /// to hide that; the onboarding sentence runs to a 685pt line. Both are
+    /// artifacts of handing content laid out for 300–380pt whatever a dragged
+    /// window happens to be. Capping the content column and pinning it left
+    /// keeps every destination the shape it was designed as, and lets the
+    /// extra width the user asked for go to the destinations that use it.
+    static let maximumDetailContentWidth: CGFloat = 420
+
+    /// The width the Settings tab has to work with inside a window of
+    /// `contentWidth` — the workspace rail and its hairline come off first.
+    static func paneWidth(forContentWidth contentWidth: CGFloat) -> CGFloat {
+        max(0, contentWidth - MenuBarPopoverLayout.navigationRailWidth - 1)
     }
 
-    /// The workbench carries a text field, a category picker and a row of
-    /// controls on one line; measured at 300pt the inline correction editor
-    /// needs 97pt of height against 84pt at pane width, because every control
-    /// wraps. 380pt gives it room while keeping the submenu plus the popover
-    /// under 1000pt of a 1280pt screen.
-    var preferredWidth: CGFloat {
-        switch self {
-        case .teachApps: return 380
-        default: return 300
+    static func mode(forPaneWidth paneWidth: CGFloat) -> SettingsPaneMode {
+        paneWidth >= listWidth + minimumDetailWidth
+            ? .sideBySide(listWidth: listWidth)
+            : .stacked
+    }
+
+    /// What the selected destination actually gets to draw in.
+    static func detailWidth(forPaneWidth paneWidth: CGFloat) -> CGFloat {
+        switch mode(forPaneWidth: paneWidth) {
+        case .sideBySide(let listWidth): return paneWidth - listWidth
+        case .stacked: return paneWidth
         }
     }
 }
@@ -1000,6 +1046,32 @@ public struct MenuBarPopoverNavigator {
     }
 }
 
+/// What Escape does, given what is open.
+enum MenuBarEscapeAction: Equatable {
+    case dismissGuidedTour
+    case clearSettingsSelection
+    case closeSurface
+}
+
+/// Escape used to mean one thing — close the surface — because everything it
+/// could have backed out of first was a separate window that took the key
+/// press itself. The Settings detail is inside this window now, so Escape has
+/// to back out of it before it closes anything, and the order is worth
+/// asserting rather than reading.
+enum MenuBarEscapeResolver {
+    static func action(
+        guidedTourIsPresented: Bool,
+        selectedWorkspaceTab: MenuBarWorkspaceTab,
+        selectedSettingsDestination: SettingsSubmenu?
+    ) -> MenuBarEscapeAction {
+        if guidedTourIsPresented { return .dismissGuidedTour }
+        if selectedWorkspaceTab == .settings, selectedSettingsDestination != nil {
+            return .clearSettingsSelection
+        }
+        return .closeSurface
+    }
+}
+
 public struct MenuBarPopoverView: View {
     @ObservedObject private var presentation: PermissionPresentationModel
     private let permissionManager: (any PermissionManagerProtocol)?
@@ -1025,7 +1097,7 @@ public struct MenuBarPopoverView: View {
     private let onEscape: () -> Void
     private let onTerminate: () -> Void
     @State private var navigator = MenuBarPopoverNavigator()
-    @State private var presentedSettingsSubmenu: SettingsSubmenu?
+    @State private var selectedSettingsDestination: SettingsSubmenu?
     @State private var confirmsWorkBlockClear = false
     @State private var diagnosticsCopied = false
     @State private var debugInsightStatus: String?
@@ -1087,6 +1159,22 @@ public struct MenuBarPopoverView: View {
         self.onTerminate = onTerminate
     }
 
+    /// Test seam. Returns a copy of this view whose workspace already starts
+    /// on Settings with `destination` selected, so the snapshot tests can
+    /// photograph each destination without an app, a click, or a reach into
+    /// SwiftUI's private state. Assigning a `State` before the view is first
+    /// rendered is the supported way to give one an initial value. The
+    /// shipping app never calls this — every real path starts with no
+    /// destination selected.
+    func openedOnSettings(_ destination: SettingsSubmenu?) -> MenuBarPopoverView {
+        var copy = self
+        var seeded = MenuBarPopoverNavigator()
+        seeded.showSettings()
+        copy._navigator = State(initialValue: seeded)
+        copy._selectedSettingsDestination = State(initialValue: destination)
+        return copy
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             mainContent
@@ -1114,10 +1202,14 @@ public struct MenuBarPopoverView: View {
         .preferredColorScheme(.dark)
         .tint(Color.velvtPink)
         .onExitCommand {
-            if guidedTour.isPresented {
-                guidedTour.dismiss()
-            } else {
-                onEscape()
+            switch MenuBarEscapeResolver.action(
+                guidedTourIsPresented: guidedTour.isPresented,
+                selectedWorkspaceTab: navigator.selectedWorkspaceTab,
+                selectedSettingsDestination: selectedSettingsDestination
+            ) {
+            case .dismissGuidedTour: guidedTour.dismiss()
+            case .clearSettingsSelection: clearSettingsSelection()
+            case .closeSurface: onEscape()
             }
         }
         .onChange(of: guidedTour.step) { route(to: $0) }
@@ -1125,12 +1217,12 @@ public struct MenuBarPopoverView: View {
             if isPresented {
                 route(to: guidedTour.step)
             } else {
-                dismissSettingsSubmenus()
+                clearSettingsSelection()
                 navigator.selectWorkspaceTab(.workBlock)
             }
         }
         .onReceive(popoverWillOpen) {
-            dismissSettingsSubmenus()
+            clearSettingsSelection()
             navigator.resetForPopoverOpening()
         }
     }
@@ -1210,7 +1302,7 @@ public struct MenuBarPopoverView: View {
     private var workspace: some View {
         HStack(spacing: 0) {
             workspaceNavigationRail
-                .frame(width: 132)
+                .frame(width: MenuBarPopoverLayout.navigationRailWidth)
 
             Divider().opacity(0.2)
 
@@ -1238,11 +1330,22 @@ public struct MenuBarPopoverView: View {
             // clipped, and the Now tab has no scroll view of its own anywhere
             // beneath it — so the "Start a work block" button could sit below
             // the cut with no way to reach it.
-            ScrollView {
+            // Settings is the exception. It is a destination list beside the
+            // detail that list selects, and a master-detail nested inside a
+            // page scroll scrolls the page rather than the column under the
+            // pointer — the same nesting mistake the comment above describes,
+            // one level down. Its two columns scroll themselves.
+            if navigator.selectedWorkspaceTab == .settings {
                 workspaceTransitionContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .layoutPriority(1)
+            } else {
+                ScrollView {
+                    workspaceTransitionContent
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .layoutPriority(1)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .layoutPriority(1)
 
             Divider().opacity(0.15)
             workspaceBottomBar
@@ -1284,7 +1387,7 @@ public struct MenuBarPopoverView: View {
         let isSelected = navigator.selectedWorkspaceTab == tab
         return Button {
             guard !isSelected else { return }
-            dismissSettingsSubmenus()
+            clearSettingsSelection()
             navigator.selectWorkspaceTab(tab)
         } label: {
             Label(tab.title, systemImage: tab.systemImage)
@@ -1370,7 +1473,16 @@ public struct MenuBarPopoverView: View {
             case .settings:
                 settingsContent
             }
-    }
+        }
+        // Settings fills the pane: its list column and its detail column each
+        // need to know how tall they are so they can scroll themselves. Every
+        // other tab is inside a scroll view and must keep reporting the height
+        // it actually wants.
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: navigator.selectedWorkspaceTab == .settings ? .infinity : nil,
+            alignment: .top
+        )
     }
 
     private var workspaceBottomBar: some View {
@@ -1408,18 +1520,33 @@ public struct MenuBarPopoverView: View {
         .background(Color.velvtSurface.opacity(0.32))
     }
 
+    /// The settled state, drawn as settled.
+    ///
+    /// This row used to pair an indeterminate `ProgressView` with the words
+    /// "Gathering info", and it rendered whenever `collectionActivityStatus`
+    /// was `.running` — which is to say, the entire time the app is working
+    /// correctly. `.running` is what `CollectionModule` sends once collection
+    /// starts; nothing ever moves it to a finished state, because there is
+    /// nothing to finish. A spinner is a promise that something will complete,
+    /// so this one promised something that never arrives, and a user watching
+    /// it for twenty minutes was reading it exactly as intended.
+    ///
+    /// It also disagreed with itself: the same condition renders as "active"
+    /// elsewhere, so one state was described two ways on one screen.
+    ///
+    /// If a genuinely transient state is wanted here later, the honest
+    /// candidate is the first cloud insight — that one really is pending, and
+    /// really does resolve. It is a different signal from "is collection
+    /// running" and needs its own condition, not this one.
     private var gatheringInfoStatus: some View {
         HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-                .frame(width: 14, height: 14)
-            Text("Gathering info")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 0)
+            Circle()
+                .fill(Color.velvtGreen)
+                .frame(width: 7, height: 7)
             Text("Local collection active")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
@@ -1450,54 +1577,175 @@ public struct MenuBarPopoverView: View {
         .padding(.vertical, 9)
     }
 
+    /// The Settings tab: a destination list and the selected destination's
+    /// detail, both inside this window.
+    ///
+    /// This used to be a column of rows that each opened an `NSPopover` — a
+    /// second, detached window floating outside this one — and opened it on
+    /// *hover*, so moving the pointer across the column threw up a window the
+    /// user had not asked for. The surface is a resizable panel with a 500pt
+    /// floor now, so the detail has somewhere to live in the window that is
+    /// already open, and it is reached by clicking a row like every other
+    /// navigation in this app.
     private var settingsContent: some View {
-        VStack(spacing: 0) {
-            Text("Settings")
-                .font(.headline)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            settingsSubmenuRow(SettingsSubmenu.appInfo.title, submenu: .appInfo)
-            settingsSubmenuRow(SettingsSubmenu.teachApps.title, submenu: .teachApps)
-            settingsSubmenuRow(SettingsSubmenu.collectionSettings.title, submenu: .collectionSettings)
-            settingsSubmenuRow(SettingsSubmenu.onboarding.title, submenu: .onboarding)
-            #if DEBUG
-                if simulateNotification != nil {
-                    settingsSubmenuRow(SettingsSubmenu.debug.title, submenu: .debug)
+        GeometryReader { proxy in
+            let mode = SettingsPaneLayout.mode(forPaneWidth: proxy.size.width)
+            VStack(spacing: 0) {
+                switch mode {
+                case .sideBySide(let listWidth):
+                    HStack(spacing: 0) {
+                        settingsDestinationList
+                            .frame(width: listWidth)
+                        Divider().opacity(0.2)
+                        settingsDetail(showsBackButton: false)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .stacked:
+                    if selectedSettingsDestination == nil {
+                        settingsDestinationList
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        settingsDetail(showsBackButton: true)
+                    }
                 }
-            #endif
-            Divider().padding(.vertical, 8)
-            HStack(spacing: 8) {
-                if let accountStateManager, let ipcClient {
-                    SettingsAccountDeletionButton(
-                        accountStateManager: accountStateManager,
-                        ipcClient: ipcClient
-                    )
-                }
-                Button("Check for Updates…") {
-                    updateController.checkForUpdates()
-                }
-                .buttonStyle(.bordered)
-                .disabled(!updateController.canCheckForUpdates)
-                Button("Quit Velvt", role: .destructive, action: onTerminate)
-                    .buttonStyle(.bordered)
-                Spacer(minLength: 12)
-                Text("Velvt \(appVersion)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Divider().opacity(0.15)
+                // Deliberately outside the columns and always on screen:
+                // account deletion, updates and Quit belong to the app rather
+                // than to any one destination, and they used to be reachable
+                // no matter which submenu window was open.
+                settingsFooter
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .padding(.bottom, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onAppear {
-            dismissSettingsSubmenus()
-            updateController.refreshAvailability()
+        .onAppear { updateController.refreshAvailability() }
+    }
+
+    /// The DEBUG destination only exists when the app was built with a way to
+    /// simulate an insight, exactly as the old row did.
+    private var settingsDestinations: [SettingsSubmenu] {
+        SettingsSubmenu.allCases.filter { destination in
+            #if DEBUG
+                if destination == .debug { return simulateNotification != nil }
+            #endif
+            return true
         }
     }
 
+    /// A `List` with a selection binding, not the stack of buttons this used
+    /// to be, and for one reason: a `List` is an `NSTableView` underneath, and
+    /// the table is where macOS keyboard navigation already lives. The arrow
+    /// keys move the selection between rows, the list takes focus, and the
+    /// selected row keeps its highlight when focus leaves. Selecting a row is
+    /// the navigation here — there is no separate activation step, and nothing
+    /// opens until a row is selected.
+    ///
+    /// Hover draws the standard row highlight and does nothing else, which is
+    /// the entire complaint this pane exists to answer. Escape backs out; see
+    /// `MenuBarEscapeResolver`.
+    private var settingsDestinationList: some View {
+        List(selection: $selectedSettingsDestination) {
+            ForEach(settingsDestinations) { destination in
+                Text(destination.title)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    // A sidebar row draws its label in the secondary colour,
+                    // which on this background is close to unreadable at
+                    // `.caption`. These rows are the navigation, not a caption
+                    // under it.
+                    .foregroundStyle(Color.velvtText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .tag(destination)
+            }
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(Color.velvtSurface.opacity(0.4))
+        .accessibilityLabel("Settings sections")
+    }
+
     @ViewBuilder
-    private func settingsSubmenuContent(for submenu: SettingsSubmenu) -> some View {
+    private func settingsDetail(showsBackButton: Bool) -> some View {
+        VStack(spacing: 0) {
+            if showsBackButton {
+                Button {
+                    clearSettingsSelection()
+                } label: {
+                    Label("All Settings", systemImage: "chevron.left")
+                        .font(.caption)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHint("Returns to the list of settings sections")
+                Divider().opacity(0.15)
+            }
+            ScrollView {
+                Group {
+                    if let destination = selectedSettingsDestination {
+                        settingsDestinationContent(for: destination)
+                    } else {
+                        settingsDetailPlaceholder
+                    }
+                }
+                .frame(maxWidth: SettingsPaneLayout.maximumDetailContentWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Only ever seen side by side: when the pane stacks, an empty selection
+    /// shows the list itself rather than a pane telling you to go find it.
+    private var settingsDetailPlaceholder: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Settings")
+                .font(.headline)
+            Text("Pick a section on the left to open it here.")
+                .font(.caption)
+                .foregroundStyle(Color.velvtMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+    }
+
+    private var settingsFooter: some View {
+        HStack(spacing: 8) {
+            if let accountStateManager, let ipcClient {
+                SettingsAccountDeletionButton(
+                    accountStateManager: accountStateManager,
+                    ipcClient: ipcClient
+                )
+            }
+            Button("Check for Updates…") {
+                updateController.checkForUpdates()
+            }
+            .buttonStyle(.bordered)
+            .disabled(!updateController.canCheckForUpdates)
+            Button("Quit Velvt", role: .destructive, action: onTerminate)
+                .buttonStyle(.bordered)
+            Spacer(minLength: 8)
+            Text("Velvt \(appVersion)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .layoutPriority(-1)
+        }
+        // The row has to survive the 500pt floor, where it is competing for
+        // 367pt with three bordered buttons in it.
+        .controlSize(.small)
+        .font(.caption)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func settingsDestinationContent(for submenu: SettingsSubmenu) -> some View {
         switch submenu {
         case .appInfo:
             VStack(spacing: 0) {
@@ -1608,7 +1856,7 @@ public struct MenuBarPopoverView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 10)
                 Button("Replay Full Intro") {
-                    dismissSettingsSubmenus()
+                    clearSettingsSelection()
                     replayOnboarding?()
                     onEscape()
                 }
@@ -1616,7 +1864,7 @@ public struct MenuBarPopoverView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 Button("Take Guided Tour") {
-                    dismissSettingsSubmenus()
+                    clearSettingsSelection()
                     startGuidedTour?()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1653,7 +1901,7 @@ public struct MenuBarPopoverView: View {
                     }
                     Button {
                         workBlockCoordinator.simulateDebugInvitation()
-                        dismissSettingsSubmenus()
+                        clearSettingsSelection()
                     } label: {
                         HStack {
                             Image(systemName: "sunrise")
@@ -1668,7 +1916,7 @@ public struct MenuBarPopoverView: View {
                     .frame(maxWidth: .infinity)
                     Button {
                         workBlockCoordinator.simulateDebugDemotion()
-                        dismissSettingsSubmenus()
+                        clearSettingsSelection()
                     } label: {
                         HStack {
                             Image(systemName: "pause.circle")
@@ -1683,7 +1931,7 @@ public struct MenuBarPopoverView: View {
                     .frame(maxWidth: .infinity)
                     Button {
                         workBlockCoordinator.simulateDebugWeeklyDigest()
-                        dismissSettingsSubmenus()
+                        clearSettingsSelection()
                     } label: {
                         HStack {
                             Image(systemName: "doc.plaintext")
@@ -1711,7 +1959,7 @@ public struct MenuBarPopoverView: View {
     }
 
     private func route(to step: GuidedTourStep) {
-        dismissSettingsSubmenus()
+        clearSettingsSelection()
         switch step {
         case .today, .earlySignal, .focusFragmentation, .statusAndRecovery:
             navigator.selectWorkspaceTab(.workBlock)
@@ -1886,59 +2134,8 @@ public struct MenuBarPopoverView: View {
         }
     }
 
-    private func settingsRow(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-      HStack {
-        Text(title)
-        Spacer()
-        Image(systemName: "chevron.right").foregroundStyle(.secondary)
-      }
-            .contentShape(Rectangle()).padding(.horizontal, 16).padding(.vertical, 12)
-        }.buttonStyle(.plain).frame(maxWidth: .infinity)
-    }
-
-    private func settingsSubmenuRow(_ title: String, submenu: SettingsSubmenu) -> some View {
-    Button {
-      showSettingsSubmenu(submenu)
-    } label: {
-      HStack {
-        Text(title)
-        Spacer()
-        Image(systemName: "chevron.right").foregroundStyle(.secondary)
-      }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
-        .onHover { if $0 { showSettingsSubmenu(submenu) } }
-        .overlay(alignment: .trailing) {
-            SubmenuPopoverAnchor(
-                isPresented: submenuBinding(for: submenu)
-            ) {
-                ScrollView {
-                    settingsSubmenuContent(for: submenu)
-                }
-                .frame(
-                    width: submenu.preferredWidth,
-                    height: submenu.preferredHeight,
-                    alignment: .top
-                )
-                .preferredColorScheme(.dark)
-            }
-            .frame(width: 1, height: 1)
-            .allowsHitTesting(false)
-        }
-    }
-
-    private func showSettingsSubmenu(_ submenu: SettingsSubmenu) {
-        guard presentedSettingsSubmenu != submenu else { return }
-        presentedSettingsSubmenu = submenu
-    }
-
-    private func dismissSettingsSubmenus() {
-        presentedSettingsSubmenu = nil
+    private func clearSettingsSelection() {
+        selectedSettingsDestination = nil
     }
 
     private func runDebugInsightSimulation() {
@@ -1959,18 +2156,6 @@ public struct MenuBarPopoverView: View {
         }
     }
 
-    private func submenuBinding(for submenu: SettingsSubmenu) -> Binding<Bool> {
-        Binding(
-            get: { presentedSettingsSubmenu == submenu },
-            set: { isPresented in
-                if isPresented {
-                    showSettingsSubmenu(submenu)
-                } else if presentedSettingsSubmenu == submenu {
-                    dismissSettingsSubmenus()
-                }
-            }
-        )
-    }
     private func infoRow(_ title: String, _ value: String) -> some View {
     HStack {
       Text(title).foregroundStyle(.secondary)
@@ -2282,130 +2467,6 @@ private struct GuidedTourBar: View {
 private extension String {
     var nilIfBlank: String? {
         trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
-    }
-}
-
-private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
-    @Binding var isPresented: Bool
-    let content: () -> Content
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(isPresented: $isPresented)
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        NSView()
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.updateBinding($isPresented)
-        let popover = context.coordinator.popover
-        let contentViewController = context.coordinator.host(content())
-
-        if isPresented {
-            let targetView = nsView.bounds.isEmpty ? (nsView.superview ?? nsView) : nsView
-            let sourceRect = NSRect(
-                x: targetView.bounds.maxX - 1,
-                y: targetView.bounds.midY,
-                width: 1,
-                height: 1
-            )
-            contentViewController.view.layoutSubtreeIfNeeded()
-            let contentSize = contentViewController.view.fittingSize
-            popover.contentSize = contentSize
-
-            if !popover.isShown {
-                popover.show(relativeTo: sourceRect, of: targetView, preferredEdge: .maxX)
-            }
-            if let window = popover.contentViewController?.view.window,
-        let sourceFrame = targetView.window?.convertToScreen(
-          targetView.convert(targetView.bounds, to: nil))
-      {
-                window.setFrame(
-                    SubmenuPopoverPlacement.frame(
-                        sourceFrameInScreen: sourceFrame,
-                        submenuContentSize: contentSize,
-                        sourceMenuFrameInScreen: targetView.window?.frame,
-                        currentWindowFrame: window.frame
-                    ),
-                    display: true
-                )
-            }
-        } else if !isPresented, popover.isShown {
-            popover.performClose(nil)
-        }
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.dismantle()
-    }
-
-    final class Coordinator: NSObject, NSPopoverDelegate {
-        let popover = NSPopover()
-        private var contentViewController: NSHostingController<Content>?
-        private var setPresented: (Bool) -> Void
-        private var isDismantling = false
-
-        init(isPresented: Binding<Bool>) {
-            setPresented = { isPresented.wrappedValue = $0 }
-            super.init()
-            popover.behavior = .semitransient
-            popover.delegate = self
-        }
-
-        func host(_ content: Content) -> NSHostingController<Content> {
-            if let contentViewController {
-                contentViewController.rootView = content
-                return contentViewController
-            }
-            let contentViewController = NSHostingController(rootView: content)
-            self.contentViewController = contentViewController
-            popover.contentViewController = contentViewController
-            return contentViewController
-        }
-
-        func updateBinding(_ isPresented: Binding<Bool>) {
-            setPresented = { isPresented.wrappedValue = $0 }
-        }
-
-        func dismantle() {
-            isDismantling = true
-            popover.delegate = nil
-            popover.close()
-            popover.contentViewController = nil
-            contentViewController = nil
-        }
-
-        func popoverDidClose(_ notification: Notification) {
-            guard !isDismantling else { return }
-            setPresented(false)
-        }
-    }
-}
-
-struct SubmenuPopoverPlacement {
-    static func frame(
-        sourceFrameInScreen: CGRect,
-        submenuContentSize: CGSize,
-        sourceMenuFrameInScreen: CGRect? = nil,
-        currentWindowFrame: CGRect? = nil
-    ) -> CGRect {
-        let x = currentWindowFrame?.minX ?? sourceFrameInScreen.maxX
-        let centeredY = sourceFrameInScreen.midY - submenuContentSize.height / 2
-        let y: CGFloat
-        if let sourceMenuFrameInScreen,
-      centeredY + submenuContentSize.height > sourceMenuFrameInScreen.maxY
-    {
-            y = sourceMenuFrameInScreen.maxY - submenuContentSize.height
-        } else {
-            y = centeredY
-        }
-        return CGRect(
-            x: x,
-            y: y,
-            width: submenuContentSize.width,
-            height: submenuContentSize.height
-        )
     }
 }
 

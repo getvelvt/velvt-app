@@ -201,21 +201,154 @@ final class MenuBarNavigationTests: XCTestCase {
         #endif
     }
 
-    /// The workbench is the only destination with a text field, a picker and a
-    /// button row on one line. Measured at 300pt the inline correction editor
-    /// needs 97pt against 84pt at pane width, because the controls wrap.
-    func testTheCorrectionWorkbenchGetsMoreWidthThanTheOtherDestinations() {
-        XCTAssertEqual(SettingsSubmenu.teachApps.preferredWidth, 380)
-        for submenu in SettingsSubmenu.allCases where submenu != .teachApps {
-            XCTAssertEqual(submenu.preferredWidth, 300)
-        }
-        XCTAssertLessThan(
-            MenuBarPopoverLayout.preferredContentSize.width
-                + SettingsSubmenu.teachApps.preferredWidth,
-            1_280,
-            "The popover and its widest submenu must fit a 1280pt laptop screen"
-        )
+  /// Settings detail is rendered in this window now, so the question the old
+  /// per-destination popover widths answered — "is there room" — is answered
+  /// by the pane instead. The floor is the width the destinations were already
+  /// laid out for: the 300pt of the `NSPopover` this pane replaced. No window
+  /// size a user can produce may hand the detail less than that.
+  func testTheSettingsDetailNeverGetsLessWidthThanThePopoverItReplaced() {
+    for contentWidth in stride(from: MenuBarPopoverLayout.minimumContentSize.width, through: 2_000, by: 1)
+    {
+      let pane = SettingsPaneLayout.paneWidth(forContentWidth: contentWidth)
+      XCTAssertGreaterThanOrEqual(
+        SettingsPaneLayout.detailWidth(forPaneWidth: pane),
+        SettingsPaneLayout.minimumDetailWidth,
+        "A \(contentWidth)pt window squeezed the settings detail"
+      )
     }
+  }
+
+  /// At the size the surface opens at, the requested shape is the one that
+  /// renders: list on the left, detail beside it.
+  func testTheSettingsPaneIsSideBySideAtTheSizeTheWindowOpensAt() {
+    let pane = SettingsPaneLayout.paneWidth(
+      forContentWidth: MenuBarPopoverLayout.preferredContentSize.width)
+
+    XCTAssertEqual(
+      SettingsPaneLayout.mode(forPaneWidth: pane),
+      .sideBySide(listWidth: SettingsPaneLayout.listWidth)
+    )
+    XCTAssertGreaterThanOrEqual(
+      SettingsPaneLayout.detailWidth(forPaneWidth: pane),
+      SettingsPaneLayout.minimumDetailWidth
+    )
+  }
+
+  /// At the 500pt floor two columns would leave the detail 203pt — less than
+  /// the popover it replaced — so the pane stacks and the detail takes the
+  /// whole thing instead. This is the case the correction workbench depends
+  /// on: it is the widest destination there is.
+  func testTheSettingsPaneStacksAtTheWindowMinimumRatherThanSqueezingTheDetail() {
+    let pane = SettingsPaneLayout.paneWidth(
+      forContentWidth: MenuBarPopoverLayout.minimumContentSize.width)
+
+    XCTAssertEqual(SettingsPaneLayout.mode(forPaneWidth: pane), .stacked)
+    XCTAssertEqual(SettingsPaneLayout.detailWidth(forPaneWidth: pane), pane)
+    XCTAssertLessThan(
+      pane - SettingsPaneLayout.listWidth,
+      SettingsPaneLayout.minimumDetailWidth,
+      "If two columns fit at the floor, this pane should not be stacking"
+    )
+  }
+
+  /// Widening is monotone inside each layout mode, and steps down exactly
+  /// once — at the threshold, where the pane stops being one column and the
+  /// destination list becomes permanently visible beside the detail.
+  ///
+  /// That step cannot be designed away: side-by-side always hands the list a
+  /// column the stacked layout did not have to give. What can be held is its
+  /// size and its count. The detail never loses more than the list it gained,
+  /// it never lands under the floor asserted above, and it happens once rather
+  /// than oscillating around the boundary.
+  func testTheSettingsDetailStepsDownExactlyOnceAndNeverByMoreThanTheListItGains() {
+    var steps: [(CGFloat, CGFloat)] = []
+    var previous = SettingsPaneLayout.detailWidth(
+      forPaneWidth: SettingsPaneLayout.paneWidth(
+        forContentWidth: MenuBarPopoverLayout.minimumContentSize.width))
+
+    for contentWidth in stride(
+      from: MenuBarPopoverLayout.minimumContentSize.width + 1, through: 1_600, by: 1)
+    {
+      let width = SettingsPaneLayout.detailWidth(
+        forPaneWidth: SettingsPaneLayout.paneWidth(forContentWidth: contentWidth))
+      if width < previous { steps.append((contentWidth, previous - width)) }
+      previous = width
+    }
+
+    XCTAssertEqual(steps.count, 1, "The settings detail width changes shape more than once: \(steps)")
+    XCTAssertLessThanOrEqual(
+      steps.first?.1 ?? .greatestFiniteMagnitude,
+      SettingsPaneLayout.listWidth,
+      "The detail gave up more width than the destination list it gained"
+    )
+    XCTAssertEqual(
+      SettingsPaneLayout.mode(
+        forPaneWidth: SettingsPaneLayout.paneWidth(forContentWidth: steps[0].0)),
+      .sideBySide(listWidth: SettingsPaneLayout.listWidth),
+      "The one step down is the stacked-to-side-by-side flip and nothing else"
+    )
+  }
+
+  /// The content column cap has to sit above the floor, or a wide window and
+  /// a narrow one would disagree about how wide a destination is.
+  func testTheDetailContentCapSitsAboveTheFloorItIsCappingTowards() {
+    XCTAssertGreaterThanOrEqual(
+      SettingsPaneLayout.maximumDetailContentWidth,
+      SettingsPaneLayout.minimumDetailWidth
+    )
+    // At the size the window opens at, the detail is narrower than the cap, so
+    // the cap changes nothing there: a destination is drawn at the width it
+    // has until the user asks for more.
+    XCTAssertLessThanOrEqual(
+      SettingsPaneLayout.detailWidth(
+        forPaneWidth: SettingsPaneLayout.paneWidth(
+          forContentWidth: MenuBarPopoverLayout.preferredContentSize.width)),
+      SettingsPaneLayout.maximumDetailContentWidth
+    )
+  }
+
+  /// The rail width the settings pane subtracts has to be the rail width the
+  /// workspace actually draws, or every assertion above is measuring a
+  /// different window than the one that ships.
+  func testTheSettingsPaneSubtractsTheRailTheWorkspaceDraws() {
+    XCTAssertEqual(MenuBarPopoverLayout.navigationRailWidth, 132)
+    XCTAssertEqual(
+      SettingsPaneLayout.paneWidth(forContentWidth: 600),
+      600 - MenuBarPopoverLayout.navigationRailWidth - 1
+    )
+    XCTAssertEqual(SettingsPaneLayout.paneWidth(forContentWidth: 10), 0)
+  }
+
+  /// Escape used to mean one thing, because everything it could have backed
+  /// out of first was a separate window that took the key press itself. The
+  /// settings detail is in this window now, so Escape backs out of it before
+  /// it closes the surface — and the guided tour still outranks both.
+  func testEscapeBacksOutOfTheOpenSettingsDetailBeforeClosingTheSurface() {
+    XCTAssertEqual(
+      MenuBarEscapeResolver.action(
+        guidedTourIsPresented: false, selectedWorkspaceTab: .settings,
+        selectedSettingsDestination: .teachApps),
+      .clearSettingsSelection
+    )
+    XCTAssertEqual(
+      MenuBarEscapeResolver.action(
+        guidedTourIsPresented: false, selectedWorkspaceTab: .settings,
+        selectedSettingsDestination: nil),
+      .closeSurface
+    )
+    XCTAssertEqual(
+      MenuBarEscapeResolver.action(
+        guidedTourIsPresented: false, selectedWorkspaceTab: .workBlock,
+        selectedSettingsDestination: .appInfo),
+      .closeSurface
+    )
+    XCTAssertEqual(
+      MenuBarEscapeResolver.action(
+        guidedTourIsPresented: true, selectedWorkspaceTab: .settings,
+        selectedSettingsDestination: .appInfo),
+      .dismissGuidedTour
+    )
+  }
 
     func testGuidedTourCoversOnlyLiveDestinationsAndMovesDeterministically() {
         let tour = GuidedTourModel()
@@ -389,50 +522,37 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(presentation.indicatorColor, .green)
     }
 
-    func testShortSettingsSubmenuIsCenteredOnSourceRow() {
-        let sourceFrame = CGRect(x: 100, y: 400, width: 300, height: 44)
-        let submenuSize = CGSize(width: 280, height: 88)
+  /// The two defects this pane replaced, guarded where they lived.
+  ///
+  /// Settings used to navigate on `.onHover` — the pointer crossing a row was
+  /// enough to open something — and what it opened was an `NSPopover`, a
+  /// detached window floating outside this one. Neither is visible to a unit
+  /// test of a SwiftUI view and either is one line to reintroduce, so they are
+  /// asserted against the source. `NSPopover` in prose is fine; constructing
+  /// one is the thing.
+  func testTheMenuBarSurfaceNeverNavigatesOnHoverAndOwnsNoChildPopover() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/VelvtMac/UI/MenuBarPopoverView.swift"),
+      encoding: .utf8
+    )
 
-        let frame = SubmenuPopoverPlacement.frame(
-            sourceFrameInScreen: sourceFrame,
-            submenuContentSize: submenuSize
-        )
-
-        XCTAssertEqual(frame.midY, sourceFrame.midY, accuracy: 0.001)
-        XCTAssertEqual(frame.minX, sourceFrame.maxX, accuracy: 0.001)
-    }
-
-    func testTallSettingsSubmenuDoesNotMoveAboveSourceMenuTop() {
-        let sourceMenuFrame = CGRect(x: 100, y: 300, width: 300, height: 220)
-        let sourceFrame = CGRect(x: 100, y: 390, width: 300, height: 44)
-        let submenuSize = CGSize(width: 280, height: 260)
-
-        let frame = SubmenuPopoverPlacement.frame(
-            sourceFrameInScreen: sourceFrame,
-            submenuContentSize: submenuSize,
-            sourceMenuFrameInScreen: sourceMenuFrame
-        )
-
-        XCTAssertEqual(frame.maxY, sourceMenuFrame.maxY, accuracy: 0.001)
-        XCTAssertLessThan(frame.midY, sourceFrame.midY)
-    }
-
-    func testShortSettingsSubmenuIgnoresStaleTallWindowHeight() {
-        let sourceMenuFrame = CGRect(x: 100, y: 300, width: 300, height: 220)
-        let sourceFrame = CGRect(x: 100, y: 390, width: 300, height: 44)
-        let staleTallWindowFrame = CGRect(x: 410, y: 260, width: 280, height: 260)
-        let debugSubmenuSize = CGSize(width: 280, height: 88)
-
-        let frame = SubmenuPopoverPlacement.frame(
-            sourceFrameInScreen: sourceFrame,
-            submenuContentSize: debugSubmenuSize,
-            sourceMenuFrameInScreen: sourceMenuFrame,
-            currentWindowFrame: staleTallWindowFrame
-        )
-
-        XCTAssertEqual(frame.midY, sourceFrame.midY, accuracy: 0.001)
-        XCTAssertEqual(frame.height, debugSubmenuSize.height, accuracy: 0.001)
-    }
+    XCTAssertFalse(
+      source.contains("onHover"),
+      "Hover may highlight. It may not navigate: that is the reported complaint."
+    )
+    XCTAssertFalse(
+      source.contains("NSPopover("),
+      "Settings detail belongs in the resizable panel, not in a second window."
+    )
+    XCTAssertTrue(
+      source.contains("List(selection: $selectedSettingsDestination)"),
+      "The destination list is a List so that arrow keys and Tab work"
+    )
+  }
 
 }
 @MainActor
@@ -793,8 +913,8 @@ final class CorrectionWorkbenchViewTests: XCTestCase {
   }
 }
 
-/// Renders the correction workbench at the width the settings submenu gives
-/// it, so the next person can see the layout instead of reasoning about it.
+/// Renders the correction workbench at the width the settings pane gives it,
+/// so the next person can see the layout instead of reasoning about it.
 /// Skipped unless `VELVT_WORKBENCH_SCREENSHOT_DIR` names an output directory,
 /// following the existing synthetic snapshot tests. No app launch, no
 /// Accessibility permission.
@@ -807,8 +927,11 @@ final class CorrectionWorkbenchSnapshotTests: XCTestCase {
       throw XCTSkip("Set VELVT_WORKBENCH_SCREENSHOT_DIR to render the workbench")
     }
 
-    let width = SettingsSubmenu.teachApps.preferredWidth
-    let height = SettingsSubmenu.teachApps.preferredHeight
+    // The narrowest the workbench is ever drawn: the settings pane at the
+    // 500pt window floor, where it stacks and takes the whole pane.
+    let width = SettingsPaneLayout.paneWidth(
+      forContentWidth: MenuBarPopoverLayout.minimumContentSize.width)
+    let height = CGFloat(520)
     let client = FakeIPCClient()
     let messages = PassthroughSubject<ServerMessage, Never>()
     let menuStatus = MenuStatusViewModel(ipcClient: client, messages: messages)
@@ -916,6 +1039,71 @@ final class MenuBarWindowSnapshotTests: XCTestCase {
     print("window_snapshot_count=\(sizes.count)")
   }
 
+  /// Every settings destination, through the real `NSPanel`, at the three
+  /// widths that matter: the 500pt floor where the pane stacks, the size the
+  /// window opens at where it goes side by side, and a dragged-wider window.
+  ///
+  /// Through the panel and not a bare `NSHostingView`, deliberately. The
+  /// destination list is a `List`, a `List` is an `NSTableView` underneath,
+  /// and a table draws its rows only once it is in a window — rendered into a
+  /// windowless hosting view the list column comes out empty, which is a
+  /// picture of the renderer rather than of the pane.
+  ///
+  /// The point of the shots is that no destination is a second window any
+  /// more and that none of them lost content on the way in.
+  func testRenderEverySettingsDestinationThroughTheRealPanelWhenRequested() throws {
+    let output = try outputDirectory()
+    registerWordmark()
+    let presenter = MenuBarPanelPresenter()
+    defer { presenter.close() }
+    presenter.maximumContentSize = CGSize(width: 2_000, height: 1_500)
+
+    var destinations: [(String, SettingsSubmenu?)] = [
+      ("list", nil),
+      ("app-info", .appInfo),
+      ("teach-apps", .teachApps),
+      ("collection", .collectionSettings),
+      ("onboarding", .onboarding),
+    ]
+    #if DEBUG
+      destinations.append(("debug", .debug))
+    #endif
+
+    for (name, destination) in destinations {
+      // One view instance, resized under the camera. That is deliberate: the
+      // three shots of a destination are the same live pane being dragged from
+      // the floor to a wide window, so if the selection did not survive a
+      // resize — or if the stacked-to-side-by-side flip dropped it — the later
+      // shots in each row would come back on the placeholder.
+      let hosting = NSHostingController(
+        rootView: makeView(simulateNotification: { .scheduled }).openedOnSettings(destination))
+      hosting.sizingOptions = []
+      presenter.contentViewController = hosting
+      for (widthName, size) in [
+        ("min500", MenuBarPopoverLayout.minimumContentSize),
+        ("open600", CGSize(width: 600, height: 520)),
+        ("wide900", CGSize(width: 900, height: 620)),
+      ] {
+        presenter.contentSize = size
+        presenter.panel.orderFront(nil)
+        presenter.panel.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        guard let frameView = presenter.panel.contentView?.superview else {
+          return XCTFail("panel has no frame view")
+        }
+        frameView.layoutSubtreeIfNeeded()
+        try write(
+          frameView, named: "settings-panel-\(widthName)-\(name).png", outputDirectory: output)
+        let pane = SettingsPaneLayout.paneWidth(forContentWidth: size.width)
+        print(
+          "settings shot=\(widthName)/\(name) pane=\(Int(pane)) "
+            + "detail=\(Int(SettingsPaneLayout.detailWidth(forPaneWidth: pane))) "
+            + "mode=\(SettingsPaneLayout.mode(forPaneWidth: pane))"
+        )
+      }
+    }
+  }
+
   /// The long-label case: a denied Accessibility permission puts "Collection
   /// paused: Accessibility permission required" in the header, which is the
   /// string most likely to be cut at the right edge when the window narrows.
@@ -1020,7 +1208,8 @@ final class MenuBarWindowSnapshotTests: XCTestCase {
 
   private func makeView(
     presentation: PermissionPresentationModel? = nil,
-    guidedTour: GuidedTourModel = GuidedTourModel()
+    guidedTour: GuidedTourModel = GuidedTourModel(),
+    simulateNotification: (() async -> DebugInsightSimulationResult)? = nil
   ) -> MenuBarPopoverView {
     let resolved =
       presentation
@@ -1044,6 +1233,7 @@ final class MenuBarWindowSnapshotTests: XCTestCase {
       accountStateManager: AccountStateManager(keychain: FakeKeychain()),
       ipcClient: client,
       menuStatusViewModel: MenuStatusViewModel(ipcClient: client, messages: messages),
+      simulateNotification: simulateNotification,
       updateController: .disabled(),
       guidedTour: guidedTour,
       onEscape: {}

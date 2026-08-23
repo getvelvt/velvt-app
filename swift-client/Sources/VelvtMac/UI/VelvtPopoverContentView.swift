@@ -767,6 +767,12 @@ struct TimelineMarkerLayout: Equatable {
   /// The floor below which a segment is not drawn at all, because it has no
   /// room left to be drawn in.
   static let hairlineSegmentWidth: CGFloat = 1
+  /// The floor below which a stretch with no segment on it is left alone.
+  ///
+  /// Two adjacent segments always leave a sub-point hole between them, and
+  /// hatching every one of those would turn a fully observed bar into a
+  /// dotted line. Only a hole wide enough to read as a hole is marked as one.
+  static let minimumUnobservedSpanWidth: CGFloat = 6
 
   struct Tick: Equatable, Identifiable {
     /// The first transition in the run, which is stable for a given width.
@@ -795,11 +801,26 @@ struct TimelineMarkerLayout: Equatable {
     let width: CGFloat
   }
 
+  /// A stretch of the track that no segment covers.
+  ///
+  /// This is the difference between "one category the whole time" and "the
+  /// instrument was off", which on a bare track are the same pixels. At full
+  /// coverage there are none of these; at partial coverage they are most of
+  /// the bar, and drawing them is what keeps the axis from claiming the
+  /// unobserved part was quiet.
+  struct UnobservedSpan: Equatable, Identifiable {
+    let id: String
+    let offset: CGFloat
+    let width: CGFloat
+  }
+
   let ticks: [Tick]
   let clusterRails: [ClusterRail]
   let segmentBars: [SegmentBar]
+  let unobservedSpans: [UnobservedSpan]
 
-  static let empty = TimelineMarkerLayout(ticks: [], clusterRails: [], segmentBars: [])
+  static let empty = TimelineMarkerLayout(
+    ticks: [], clusterRails: [], segmentBars: [], unobservedSpans: [])
 
   static func make(focus: LocalFocusFragmentation, width: CGFloat) -> TimelineMarkerLayout {
     make(
@@ -889,8 +910,48 @@ struct TimelineMarkerLayout: Equatable {
         windowStartedAt: windowStartedAt,
         windowEndedAt: windowEndedAt,
         width: width
+      ),
+      unobservedSpans: unobservedSpans(
+        segments,
+        windowStartedAt: windowStartedAt,
+        windowEndedAt: windowEndedAt,
+        width: width
       )
     )
+  }
+
+  /// The complement of the segments: every stretch of the window the service
+  /// sent nothing for, in track coordinates.
+  ///
+  /// Derives no number for display. It walks the segments the service already
+  /// sent, in time order, and reports the holes — the same thing `segmentBars`
+  /// does with the segments themselves.
+  static func unobservedSpans(
+    _ segments: [LocalTimelineSegment],
+    windowStartedAt: Date,
+    windowEndedAt: Date,
+    width: CGFloat
+  ) -> [UnobservedSpan] {
+    guard width > 0 else { return [] }
+    var spans: [UnobservedSpan] = []
+    var cursor: CGFloat = 0
+    func close(_ upTo: CGFloat) {
+      guard upTo - cursor >= minimumUnobservedSpanWidth else { return }
+      spans.append(
+        UnobservedSpan(id: "unobserved-\(spans.count)", offset: cursor, width: upTo - cursor))
+    }
+    for segment in segments.sorted(by: { $0.startedAt < $1.startedAt }) {
+      let start = position(
+        segment.startedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
+        width: width)
+      let end = position(
+        segment.endedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
+        width: width)
+      close(start)
+      cursor = max(cursor, end)
+    }
+    close(width)
+    return spans
   }
 
   /// A segment is only widened into space the next segment does not want.
@@ -981,9 +1042,16 @@ public struct FocusFragmentationView: View {
   public var body: some View {
     VStack(alignment: .leading, spacing: 7) {
       if let focus {
-        // Observation first, then the one action, then the evidence behind
-        // them. A chart cannot tell someone what just happened to their
-        // attention.
+        // Coverage is a layout variable here, not a sentence appended to one.
+        // The card renders what it knows and stops; what it does not know is
+        // not drawn faintly, it is not drawn.
+        let state = FocusEvidenceState.resolve(
+          coverage: focus.coverage, coverageRatio: focus.coverageRatio)
+
+        // The hero line, in every state. When coverage is thin this is the
+        // service's own low-coverage sentence, so the top of the card says
+        // the same thing whether or not there is a chart under it.
+        //
         // Leading with the chart put the only two sentences that carry meaning
         // at the bottom of the card in caption text, truncated, with the real
         // wording reachable only by hovering — which is the roadmap's
@@ -998,16 +1066,31 @@ public struct FocusFragmentationView: View {
             .foregroundStyle(Color.velvtMuted)
             .help(focusHelp(focus))
         }
-        Text(focus.nextAction)
-          .font(.callout.weight(.semibold))
-          .fixedSize(horizontal: false, vertical: true)
+
+        // Directly under the hero when there is no evidence section, because
+        // there it is the reason there is no evidence section. In the drawable
+        // state it moves down to sit over the numbers it qualifies.
+        if !state.showsObservedMetrics, let notice = coverageNotice(focus, state: state) {
+          Text(notice)
+            .font(.caption2)
+            .foregroundStyle(Color.velvtMuted)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel(notice)
+        }
 
         // Roadmap invariant 6: recoveries are the headline personal stat,
         // never streaks. Every other tool can say where the time went; only
         // Velvt knows the person came back. It is also a number that cannot be
         // lost — it only ever goes up, so it cannot be used against them.
         // Stated as a fact, not praise: the analyst voice does not congratulate.
-        if focus.recoveryCount > 0 {
+        //
+        // Gated with the rest of the observed numbers. "You came back once"
+        // is counted over the observed part like everything else, and under a
+        // sentence that has just said there is not enough here to say
+        // anything it is not a headline stat, it is the contradiction. The
+        // count only ever goes up, so withholding it costs nothing: it is
+        // there the moment there is enough of the block behind it.
+        if state.showsObservedMetrics, focus.recoveryCount > 0 {
           Label(
             focus.recoveryCount == 1
               ? "You came back once." : "You came back \(focus.recoveryCount) times.",
@@ -1040,8 +1123,11 @@ public struct FocusFragmentationView: View {
             .font(.caption2)
             .foregroundStyle(Color.velvtMuted)
         }
-        focusTimeline(focus)
-        metrics(focus)
+        if state.showsTimeline {
+          focusTimeline(focus)
+        }
+        metrics(focus, state: state)
+        nextActionRow(focus)
       } else {
         VStack(alignment: .leading, spacing: 8) {
           Text("Velvt only watches a block you started on purpose.")
@@ -1073,6 +1159,7 @@ public struct FocusFragmentationView: View {
           .fill(Color.white.opacity(0.08))
           .frame(height: TimelineMarkerLayout.trackHeight)
           .accessibilityHidden(true)
+        unobservedSpans(layout)
         timelineSegments(layout, focus: focus)
         transitionTicks(layout, focus: focus)
         clusterRails(layout, focus: focus)
@@ -1087,6 +1174,45 @@ public struct FocusFragmentationView: View {
     )
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Attention timeline, \(focus.windowLabel)")
+    // The dashed stretches are hidden from the accessibility tree
+    // individually — a reader does not need eleven "not observed" nodes to
+    // learn one fact about the window — so the encoding is named once here.
+    .accessibilityHint("Dashed stretches are time no activity was observed in")
+  }
+
+  /// The stretches with no segment on them, drawn as unobserved rather than
+  /// left as bare track.
+  ///
+  /// On a full-coverage bar an empty stretch means one category held the
+  /// whole time. On a partial one it means the instrument was not looking.
+  /// Those are opposite facts and they were the same pixels. Hatching them
+  /// is the alternative to the other repair available here — rescaling the
+  /// axis onto the observed extent — which was rejected for three reasons:
+  /// horizontal position on this bar means elapsed time into the block, and
+  /// re-basing changes that meaning silently; partial coverage is usually
+  /// interior holes, so re-basing moves the emptiness inward instead of
+  /// removing it; and saying what the new axis covered would mean deriving
+  /// and printing a duration in Swift, which is the service's job. Marking
+  /// the fiction is cheaper and more honest than shrinking it.
+  private func unobservedSpans(_ layout: TimelineMarkerLayout) -> some View {
+    ForEach(layout.unobservedSpans) { span in
+      ZStack {
+        RoundedRectangle(cornerRadius: 3)
+          .fill(Color.black.opacity(0.22))
+        Path { path in
+          let midpoint = TimelineMarkerLayout.segmentHeight / 2
+          path.move(to: CGPoint(x: 2, y: midpoint))
+          path.addLine(to: CGPoint(x: span.width - 2, y: midpoint))
+        }
+        .stroke(
+          Color.velvtMuted.opacity(0.7),
+          style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+      }
+      .frame(width: span.width, height: TimelineMarkerLayout.segmentHeight)
+      .offset(x: span.offset, y: TimelineMarkerLayout.segmentTopInset)
+      .help("No activity was observed in this part of the window.")
+      .accessibilityHidden(true)
+    }
   }
 
   private func timelineSegments(
@@ -1221,7 +1347,17 @@ public struct FocusFragmentationView: View {
     )
   }
 
-  private func metrics(_ focus: LocalFocusFragmentation) -> some View {
+  /// The numbers, and only the ones the coverage behind them supports.
+  ///
+  /// Planned and elapsed are on the card in every state: neither is measured
+  /// by the classifier. The user chose the plan and the service timed the
+  /// block, so a collection outage cannot make either of them wrong. Longest
+  /// stretch and switches are the opposite — they exist only inside the
+  /// observed fraction — so they appear only when that fraction is large
+  /// enough to be worth reading, and when it is not, the row is one metric
+  /// wide rather than three metrics wide with two of them describing an
+  /// outage.
+  private func metrics(_ focus: LocalFocusFragmentation, state: FocusEvidenceState) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       // The qualifier goes above the numbers, not in a tooltip under them.
       // A block whose collection died three minutes into twenty-five reports
@@ -1229,7 +1365,7 @@ public struct FocusFragmentationView: View {
       // to how much of the window was actually observed — which Rust already
       // sends on this DTO as `coverage` and `coverage_ratio`, and which this
       // card used to spend only inside a `.help(...)` nobody opens.
-      if let notice = coverageNotice(focus) {
+      if state.showsObservedMetrics, let notice = coverageNotice(focus, state: state) {
         Text(notice)
           .font(.caption2)
           .foregroundStyle(Color.velvtMuted)
@@ -1237,7 +1373,9 @@ public struct FocusFragmentationView: View {
           .accessibilityLabel(notice)
       }
       LazyVGrid(
-        columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
+        columns: Array(
+          repeating: GridItem(.flexible(), spacing: 8),
+          count: state.showsObservedMetrics ? 3 : 1),
         alignment: .leading,
         spacing: 4
       ) {
@@ -1245,18 +1383,23 @@ public struct FocusFragmentationView: View {
           "Planned / elapsed",
           "\(duration(focus.plannedDurationSeconds)) / \(duration(focus.elapsedDurationSeconds))",
           "Planned duration and recorded elapsed duration for this explicit work block.")
-        focusMetric(
-          "Longest stretch", duration(focus.longestUninterruptedSeconds),
-          metricEvidenceHelp(
-            "Longest uninterrupted classified category stretch in this window.", focus: focus))
-        focusMetric(
-          "Switches", "\(focus.observedSwitchCount)",
-          metricEvidenceHelp(
-            "Observed movement between classified categories; idle, system, duplicates, and unclassified movement are excluded.",
-            focus: focus)
-        )
+        if state.showsObservedMetrics {
+          focusMetric(
+            "Longest stretch", duration(focus.longestUninterruptedSeconds),
+            metricEvidenceHelp(
+              "Longest uninterrupted classified category stretch in this window.", focus: focus))
+          focusMetric(
+            "Switches", "\(focus.observedSwitchCount)",
+            metricEvidenceHelp(
+              "Observed movement between classified categories; idle, system, duplicates, and unclassified movement are excluded.",
+              focus: focus)
+          )
+        }
       }
-      if !focus.clusters.isEmpty {
+      // A legend for an encoding that is on screen. When the timeline is
+      // withheld the underlines are withheld with it, and a line naming them
+      // would be a key to a chart that is not there.
+      if state.showsTimeline, !focus.clusters.isEmpty {
         Text(
           focus.clusters.count == 1
             ? "Underline: switching cluster." : "Underlines: switching clusters."
@@ -1268,6 +1411,25 @@ public struct FocusFragmentationView: View {
     .help(
       "\(focus.recoveryCount) recoveries · \(focus.clusters.count) switching clusters · \(coverageLabel(focus)) coverage"
     )
+  }
+
+  /// The service's next-action label, rendered as whatever it currently is.
+  /// See `FocusNextActionRole` for why it is not always bold body text.
+  @ViewBuilder
+  private func nextActionRow(_ focus: LocalFocusFragmentation) -> some View {
+    switch FocusNextActionRole.resolve(phase: focus.phase) {
+    case .underway:
+      Text(focus.nextAction)
+        .font(.caption)
+        .foregroundStyle(Color.velvtMuted)
+        .fixedSize(horizontal: false, vertical: true)
+    case .offer:
+      Button(focus.nextAction, action: onStartWorkBlock)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .padding(.top, 1)
+        .accessibilityHint("Opens the focus session planner on this Mac")
+    }
   }
 
   private func focusMetric(_ title: String, _ value: String, _ help: String) -> some View {
@@ -1286,12 +1448,14 @@ public struct FocusFragmentationView: View {
   /// stops — the reading of that fraction is the person's, and a card that
   /// warned them about their own block would be inventing a finding out of a
   /// collection outage.
-  private func coverageNotice(_ focus: LocalFocusFragmentation) -> String? {
+  private func coverageNotice(
+    _ focus: LocalFocusFragmentation, state: FocusEvidenceState
+  ) -> String? {
     CoverageNotice.sentence(
       isGood: focus.coverage == .good,
-      isEmpty: focus.coverage == .noData,
+      isEmpty: state == .noObservation,
       coverageRatio: focus.coverageRatio,
-      switchLabel: "switches")
+      switchLabel: state.showsObservedMetrics ? "switches" : nil)
   }
 
   private func metricEvidenceHelp(_ base: String, focus: LocalFocusFragmentation) -> String {
@@ -1782,17 +1946,130 @@ enum DurationText {
 /// `switchLabel` is the name the calling card gives its own switch metric, so
 /// the sentence points at a label the reader can see.
 enum CoverageNotice {
+  /// `switchLabel` is `nil` on a card that is not showing those numbers at
+  /// all. The second clause is a pointer at two labels on screen; on a card
+  /// that withheld them it would point at nothing, so the sentence stops
+  /// after the fraction — the same claim, minus a reference that no longer
+  /// resolves.
   static func sentence(
     isGood: Bool,
     isEmpty: Bool,
     coverageRatio: Double,
-    switchLabel: String
+    switchLabel: String?
   ) -> String? {
     if isGood { return nil }
     if isEmpty { return "No activity was observed inside this window." }
     let percent = Int((coverageRatio * 100).rounded())
-    return
-      "Observed activity covers \(percent)% of this window. Longest stretch and \(switchLabel) count only that part."
+    let covered = "Observed activity covers \(percent)% of this window."
+    guard let switchLabel else { return covered }
+    return "\(covered) Longest stretch and \(switchLabel) count only that part."
+  }
+}
+
+/// The one place a coverage number becomes a layout decision.
+///
+/// Rust owns the verdict about *claims*: it sends `coverage` and
+/// `coverage_ratio`, and `dashboard.rs` already refuses to say anything about
+/// a block it could not see. Swift owns one question Rust cannot answer,
+/// because it is a question about a chart and Rust has never seen the card:
+/// whether there is enough observed material for a drawing of it to carry
+/// anything a sentence does not.
+enum FocusCardCoverage {
+  /// At or below this fraction the window holds no observed activity at all.
+  ///
+  /// The one coverage number Swift compares against anything. The service
+  /// reports an empty window as `.noData`, and this is checked beside that
+  /// label so a zero-ratio window arriving as `partial` is still treated as
+  /// empty rather than drawn as a chart of nothing.
+  static let empty: Double = 0
+
+  // There is deliberately no second threshold beside it.
+  //
+  // The obvious design is a Swift-side "enough to draw" line — a quarter of
+  // the window, say — so a 30%-covered block still gets a timeline. It was
+  // built, rendered, and thrown away, because of what the render showed: at
+  // 30% the service still sends `LOW_COVERAGE_BLOCK_COPY` as the observation,
+  // so the card read "Velvt hasn't seen enough of this block yet to say
+  // anything" above a chart, a recovery count and two metrics. That is the
+  // reported bug at a larger number.
+  //
+  // The sufficiency line lives in one place, `SUFFICIENT_COVERAGE_RATIO` in
+  // `rust-service/src/dashboard.rs`, and it already decides whether the
+  // service is willing to speak about a block: at `.good` it sends a real
+  // observation, otherwise it sends the low-coverage sentence. So the card
+  // draws its evidence exactly when the service was willing to speak, and a
+  // threshold on this side could only ever disagree with that one.
+}
+
+/// What a work-block card is entitled to put on screen, given how much of its
+/// own window was actually observed.
+///
+/// `rust-service/src/work_block/mod.rs` states the rule this enum exists to
+/// carry out: a hedge bolted onto a claim retracts the claim. That rule was
+/// applied to sentences and never to charts. A block whose collection died a
+/// minute into twenty-five printed "Velvt hasn't seen enough of this block yet
+/// to say anything" and then, underneath it, a bold imperative, a recovery
+/// count, a full-width timeline that was 96% empty, a longest stretch of 17
+/// seconds beside a planned 25 minutes, a switch count and a legend — seven
+/// claims under a retraction, every one of them computed over the 4% that
+/// existed. Coverage decides which of those exist. It does not decide whether
+/// a sentence is appended to them.
+enum FocusEvidenceState: Equatable {
+  /// Nothing was observed. There is no evidence, so there is no evidence
+  /// section: the window it covers, the duration that was planned, and the
+  /// way out.
+  case noObservation
+  /// Something was observed, but too little of the window to draw. Same
+  /// shape as `.noObservation`, with the fraction stated instead of the
+  /// absence.
+  case tooLittleToDraw
+  /// The service was willing to speak about this block, so the card is
+  /// willing to draw it. The timeline still marks the part of the window it
+  /// did not see rather than leaving it as bare track — `.good` is three
+  /// quarters, not all of it.
+  case drawable
+
+  static func resolve(
+    coverage: LocalDashboardCoverage,
+    coverageRatio: Double
+  ) -> FocusEvidenceState {
+    if coverage == .noData || coverageRatio <= FocusCardCoverage.empty { return .noObservation }
+    if coverage == .good { return .drawable }
+    return .tooLittleToDraw
+  }
+
+  /// The timeline, and with it the cluster lane and the legend that explains
+  /// the lane.
+  var showsTimeline: Bool { self == .drawable }
+
+  /// Every number measured over the observed part only — longest stretch,
+  /// switch count, recoveries. They are on the card exactly when the observed
+  /// part is large enough to stand behind them. A 17-second longest stretch
+  /// inside a 25-minute block is a statement about missing data; printing it
+  /// in the same row as "25m / 25m" makes it a statement about the person.
+  var showsObservedMetrics: Bool { self == .drawable }
+}
+
+/// What the service's `next_action` label is, on this card, right now.
+///
+/// `LocalFocusFragmentation` carries the label and nothing else: the action
+/// id and the duration stay on `WorkBlockResult`, where the end-of-block card
+/// turns the same label into a button. Here it arrived alone and was rendered
+/// as bold body text — an imperative with no control beside it, under a
+/// sentence saying the card had nothing to say. Either it gets its action back
+/// or it stops shouting, and which of those depends only on whether the block
+/// it is talking about is still running.
+enum FocusNextActionRole: Equatable {
+  /// The block is over. The label is an offer, so it goes in the control that
+  /// can accept it.
+  case offer
+  /// The block is running or paused. The offer is already being taken, and
+  /// the controls for that block are in the live row above this card, so the
+  /// label is a standing instruction stated quietly.
+  case underway
+
+  static func resolve(phase: WorkBlockPhase) -> FocusNextActionRole {
+    phase == .active || phase == .paused ? .underway : .offer
   }
 }
 

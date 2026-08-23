@@ -1007,6 +1007,102 @@ final class TimelineMarkerLayoutTests: XCTestCase {
       ).isEmpty)
   }
 
+  // MARK: Unobserved stretches
+
+  /// An empty stretch of track means "one category held the whole time" on a
+  /// fully covered bar and "the instrument was not looking" on a partly
+  /// covered one. Those are opposite facts and they were the same pixels.
+
+  func testAFullyCoveredWindowHasNoUnobservedStretches() {
+    XCTAssertTrue(
+      TimelineMarkerLayout.unobservedSpans(
+        [segment("all", 0, 1_500, "FOCUS_WORK")],
+        windowStartedAt: windowStart, windowEndedAt: windowEnd, width: trackWidth
+      ).isEmpty)
+  }
+
+  func testAWindowWithNoSegmentsIsUnobservedEndToEnd() {
+    let spans = TimelineMarkerLayout.unobservedSpans(
+      [], windowStartedAt: windowStart, windowEndedAt: windowEnd, width: trackWidth)
+    XCTAssertEqual(spans.count, 1)
+    XCTAssertEqual(spans[0].offset, 0)
+    XCTAssertEqual(spans[0].width, trackWidth)
+  }
+
+  /// The reported block: collection died a minute into twenty-five, so the
+  /// remaining twenty-four are not quiet, they are unseen.
+  func testTheTailLeftBehindWhenCollectionDiesIsMarkedUnobserved() {
+    let spans = TimelineMarkerLayout.unobservedSpans(
+      [segment("a", 0, 60, "FOCUS_WORK")],
+      windowStartedAt: windowStart, windowEndedAt: windowEnd, width: trackWidth)
+    XCTAssertEqual(spans.count, 1)
+    XCTAssertEqual(spans[0].offset, trackWidth * 60 / 1_500, accuracy: 0.001)
+    XCTAssertEqual(spans[0].offset + spans[0].width, trackWidth, accuracy: 0.001)
+  }
+
+  func testInteriorHolesBetweenObservedStretchesAreMarkedToo() {
+    let spans = TimelineMarkerLayout.unobservedSpans(
+      [
+        segment("a", 0, 300, "FOCUS_WORK"),
+        segment("b", 600, 300, "REFERENCE"),
+        segment("c", 1_200, 300, "FOCUS_WORK"),
+      ],
+      windowStartedAt: windowStart, windowEndedAt: windowEnd, width: trackWidth)
+    XCTAssertEqual(spans.count, 2)
+    XCTAssertEqual(spans[0].offset, trackWidth * 300 / 1_500, accuracy: 0.001)
+    XCTAssertEqual(spans[1].offset, trackWidth * 900 / 1_500, accuracy: 0.001)
+  }
+
+  /// Two adjacent segments always leave a sub-point hole between them.
+  /// Hatching every one of those would turn a fully observed bar into a
+  /// dotted line, so only a hole wide enough to read as a hole is marked.
+  func testHairlineHolesBetweenAdjacentSegmentsAreLeftAlone() {
+    let spans = TimelineMarkerLayout.unobservedSpans(
+      (0..<10).map { segment("g\($0)", Double($0) * 150 + Double($0), 150, "FOCUS_WORK") },
+      windowStartedAt: windowStart, windowEndedAt: windowEnd, width: trackWidth)
+    XCTAssertTrue(
+      spans.allSatisfy { $0.width >= TimelineMarkerLayout.minimumUnobservedSpanWidth },
+      "every marked stretch is at least as wide as the floor")
+  }
+
+  func testUnobservedStretchesNeverLeaveTheTrackAndNeverOverlap() {
+    let spans = TimelineMarkerLayout.unobservedSpans(
+      [
+        segment("a", -600, 300, "FOCUS_WORK"),
+        segment("b", 600, 120, "REFERENCE"),
+        segment("c", 1_400, 600, "FOCUS_WORK"),
+      ],
+      windowStartedAt: windowStart, windowEndedAt: windowEnd, width: trackWidth)
+    for span in spans {
+      XCTAssertGreaterThanOrEqual(span.offset, 0)
+      XCTAssertLessThanOrEqual(span.offset + span.width, trackWidth + 0.001)
+    }
+    for (previous, next) in zip(spans, spans.dropFirst()) {
+      XCTAssertLessThanOrEqual(previous.offset + previous.width, next.offset + 0.001)
+    }
+  }
+
+  func testAZeroWidthTrackHasNoUnobservedStretches() {
+    XCTAssertTrue(
+      TimelineMarkerLayout.unobservedSpans(
+        [], windowStartedAt: windowStart, windowEndedAt: windowEnd, width: 0
+      ).isEmpty)
+  }
+
+  /// Segments out of time order are the service's ordering, not a promise.
+  func testUnorderedSegmentsProduceTheSameStretchesAsOrderedOnes() {
+    let ordered = [
+      segment("a", 0, 300, "FOCUS_WORK"),
+      segment("b", 600, 300, "REFERENCE"),
+    ]
+    XCTAssertEqual(
+      TimelineMarkerLayout.unobservedSpans(
+        ordered, windowStartedAt: windowStart, windowEndedAt: windowEnd, width: trackWidth),
+      TimelineMarkerLayout.unobservedSpans(
+        ordered.reversed(), windowStartedAt: windowStart, windowEndedAt: windowEnd,
+        width: trackWidth))
+  }
+
   // MARK: Helpers
 
   private func segment(
@@ -1056,6 +1152,153 @@ final class TimelineMarkerLayoutTests: XCTestCase {
       confidence: .medium,
       explanation: "\(count) switches in 3 minutes between focus work and communication."
     )
+  }
+}
+
+// MARK: - Coverage as a layout variable
+
+/// The work-block card used to spend coverage on a sentence and nothing else.
+///
+/// A real block at 4% coverage rendered the service's own "Velvt hasn't seen
+/// enough of this block yet to say anything", then a bold imperative with no
+/// control beside it, then "You came back once.", then a full-width timeline
+/// that was 96% empty, then the coverage sentence, then a 17-second longest
+/// stretch in the same row as "25m / 25m", then a legend for an encoding that
+/// was two pixels wide. Every one of those is a claim, and every one of them
+/// was computed over the 4% that existed.
+///
+/// These tests pin the decision, not the pixels: which of those parts exist
+/// is a function of the coverage the service reported, and nothing else.
+@MainActor
+final class FocusEvidenceStateTests: XCTestCase {
+  func testAnEmptyWindowIsTheNoObservationState() {
+    XCTAssertEqual(
+      FocusEvidenceState.resolve(coverage: .noData, coverageRatio: 0), .noObservation)
+  }
+
+  /// The service reports an empty window as `.noData`, but the ratio is
+  /// checked beside the label so a zero-coverage window arriving as `partial`
+  /// cannot become a chart of nothing.
+  func testAZeroRatioLabelledPartialIsStillTreatedAsEmpty() {
+    XCTAssertEqual(
+      FocusEvidenceState.resolve(coverage: .partial, coverageRatio: 0), .noObservation)
+  }
+
+  func testTheReportedFourPercentBlockDrawsNothing() {
+    let state = FocusEvidenceState.resolve(coverage: .partial, coverageRatio: 0.04)
+    XCTAssertEqual(state, .tooLittleToDraw)
+    XCTAssertFalse(state.showsTimeline)
+    XCTAssertFalse(state.showsObservedMetrics)
+  }
+
+  /// The tempting middle design — a Swift-side "enough to draw" line at, say,
+  /// a quarter — reproduces the reported bug at a larger number, because the
+  /// service still sends its low-coverage sentence at 30% and at 74%. There is
+  /// one sufficiency line and the service owns it.
+  func testEveryPartialCoverageCollapsesHoweverCloseToSufficientItIs() {
+    for ratio in [0.04, 0.12, 0.30, 0.49, 0.74] {
+      let state = FocusEvidenceState.resolve(coverage: .partial, coverageRatio: ratio)
+      XCTAssertEqual(state, .tooLittleToDraw, "ratio \(ratio)")
+      XCTAssertFalse(state.showsTimeline, "ratio \(ratio)")
+      XCTAssertFalse(state.showsObservedMetrics, "ratio \(ratio)")
+    }
+  }
+
+  func testGoodCoverageIsTheOnlyStateThatDrawsEvidence() {
+    for ratio in [0.75, 0.9, 1.0] {
+      let state = FocusEvidenceState.resolve(coverage: .good, coverageRatio: ratio)
+      XCTAssertEqual(state, .drawable, "ratio \(ratio)")
+      XCTAssertTrue(state.showsTimeline, "ratio \(ratio)")
+      XCTAssertTrue(state.showsObservedMetrics, "ratio \(ratio)")
+    }
+  }
+
+  /// The invariant the whole design rests on: `dashboard.rs` sends a real
+  /// observation exactly when coverage is `.good` and its low-coverage
+  /// sentence otherwise, so the card draws exactly when the service was
+  /// willing to speak. A chart under a retraction is the bug.
+  func testTheCardDrawsExactlyWhenTheServiceWasWillingToSpeak() {
+    let cases: [(LocalDashboardCoverage, Double)] = [
+      (.noData, 0), (.partial, 0.04), (.partial, 0.3), (.partial, 0.74),
+      (.good, 0.75), (.good, 1.0),
+    ]
+    for (coverage, ratio) in cases {
+      let drawsEvidence = FocusEvidenceState.resolve(
+        coverage: coverage, coverageRatio: ratio
+      ).showsTimeline
+      XCTAssertEqual(drawsEvidence, coverage == .good, "\(coverage) \(ratio)")
+    }
+  }
+
+  /// The recovery count is the headline personal stat, and it is counted over
+  /// the observed part like everything else. Under a sentence saying there is
+  /// not enough here to say anything it stops being a headline and becomes
+  /// the contradiction, so it is gated with the other observed numbers. The
+  /// count only ever goes up, so withholding it costs nothing permanent.
+  func testRecoveriesAreGatedWithTheOtherObservedNumbers() {
+    XCTAssertFalse(
+      FocusEvidenceState.resolve(coverage: .partial, coverageRatio: 0.04).showsObservedMetrics)
+    XCTAssertTrue(
+      FocusEvidenceState.resolve(coverage: .good, coverageRatio: 0.98).showsObservedMetrics)
+  }
+
+  /// The coverage sentence's second clause points at two labels on screen. On
+  /// a card that withheld them it would point at nothing, so it stops after
+  /// the fraction — the same claim, minus a reference that no longer resolves.
+  func testTheCoverageSentenceNeverPointsAtMetricsTheCardIsNotShowing() {
+    let withheld = CoverageNotice.sentence(
+      isGood: false, isEmpty: false, coverageRatio: 0.04, switchLabel: nil)
+    XCTAssertEqual(withheld, "Observed activity covers 4% of this window.")
+    XCTAssertFalse(withheld?.contains("Longest stretch") ?? true)
+  }
+
+  func testTheCoverageSentenceStillNamesTheMetricsWhenTheyAreOnScreen() {
+    XCTAssertEqual(
+      CoverageNotice.sentence(
+        isGood: false, isEmpty: false, coverageRatio: 0.12, switchLabel: "switches"),
+      "Observed activity covers 12% of this window. Longest stretch and switches count only that part."
+    )
+  }
+
+  func testAnEmptyWindowStatesTheAbsenceRatherThanZeroPercent() {
+    XCTAssertEqual(
+      CoverageNotice.sentence(
+        isGood: false, isEmpty: true, coverageRatio: 0, switchLabel: nil),
+      "No activity was observed inside this window.")
+  }
+
+  /// A `.good` card says nothing about coverage at all, in either shape.
+  func testGoodCoverageSaysNothingAboutCoverage() {
+    XCTAssertNil(
+      CoverageNotice.sentence(
+        isGood: true, isEmpty: false, coverageRatio: 0.98, switchLabel: nil))
+    XCTAssertNil(
+      CoverageNotice.sentence(
+        isGood: true, isEmpty: false, coverageRatio: 0.98, switchLabel: "switches"))
+  }
+
+  /// An imperative with no button next to it is an offer that lost its
+  /// action. It gets it back once the block it is talking about is over, and
+  /// is stated quietly while that block is still running.
+  func testTheNextActionIsAControlOnlyWhenThereIsNoBlockUnderWay() {
+    XCTAssertEqual(FocusNextActionRole.resolve(phase: .active), .underway)
+    XCTAssertEqual(FocusNextActionRole.resolve(phase: .paused), .underway)
+    for phase in [WorkBlockPhase.completed, .idle, .abandoned, .expired] {
+      XCTAssertEqual(FocusNextActionRole.resolve(phase: phase), .offer, "\(phase)")
+    }
+  }
+
+  /// One formatter, one rule, every duration on the card. `17s` beside `25m`
+  /// is the same rule reading a smaller number, which is why a 17-second
+  /// longest stretch reads as broken next to a 25-minute plan: the problem
+  /// was never the formatting, it was that the number was on the card at all.
+  func testEveryDurationOnTheCardComesFromOneRule() {
+    XCTAssertEqual(DurationText.compact(0), "0s")
+    XCTAssertEqual(DurationText.compact(17), "17s")
+    XCTAssertEqual(DurationText.compact(210), "3m 30s")
+    XCTAssertEqual(DurationText.compact(1_500), "25m")
+    XCTAssertEqual(DurationText.compact(3_600), "1h")
+    XCTAssertEqual(DurationText.compact(10_740), "2h 59m")
   }
 }
 
@@ -1198,6 +1441,199 @@ final class TimelineEvidenceSnapshotTests: XCTestCase {
       named: "timeline-06-no-evidence.png", outputDirectory: output)
   }
 
+
+  /// Every coverage state the work-block card has to survive, at the window
+  /// minimum and at a comfortable width.
+  ///
+  /// Coverage is a layout variable on this card, not a sentence appended to
+  /// one, so "what does 4% look like" is a question about pixels and the
+  /// only way to answer it is to render 4% and look. Skipped unless
+  /// `VELVT_COVERAGE_SCREENSHOT_DIR` names an output directory.
+  func testRenderEveryCoverageStateWhenRequested() throws {
+    guard let output = ProcessInfo.processInfo.environment["VELVT_COVERAGE_SCREENSHOT_DIR"]
+    else {
+      throw XCTSkip("Set VELVT_COVERAGE_SCREENSHOT_DIR to render coverage-state screenshots")
+    }
+    let suffix = ProcessInfo.processInfo.environment["VELVT_COVERAGE_SHOT_SUFFIX"] ?? ""
+
+    func renderBothWidths(_ view: FocusFragmentationView, _ name: String, height: CGFloat = 320)
+      throws
+    {
+      try render(
+        view, named: "\(name)-500pt\(suffix).png", outputDirectory: output,
+        size: NSSize(width: 500, height: height), padding: 12)
+      try render(
+        view, named: "\(name)-700pt\(suffix).png", outputDirectory: output,
+        size: NSSize(width: 700, height: height), padding: 12)
+    }
+
+    // 0%. The block was declared, ran its 25 minutes, and the instrument saw
+    // nothing at all inside it.
+    try renderBothWidths(
+      card(
+        transitions: [], clusters: [], segments: [],
+        observation: lowCoverageObservation,
+        longestUninterrupted: 0, switches: 0, coverage: .noData, coverageRatio: 0,
+        recoveries: 0),
+      "coverage-00-no-data")
+
+    // 4%. The reported bug, rebuilt from the numbers on the screenshot:
+    // 25m/25m, longest stretch 17s, 5 switches, one cluster, 4% coverage.
+    // Sixty seconds of observed material at the very start of a 1500-second
+    // window, then nothing.
+    let deadCollectionSegments: [LocalTimelineSegment] = {
+      let categories = ["FOCUS_WORK", "REFERENCE", "FOCUS_WORK", "COMMUNICATION", "REFERENCE"]
+      let lengths: [TimeInterval] = [11, 17, 9, 14, 6, 3]
+      var start: TimeInterval = 0
+      return lengths.enumerated().map { index, length in
+        defer { start += length }
+        return segment(
+          "g\(index)", start, length, categories[index % categories.count],
+          index.isMultiple(of: 3) ? .medium : .low)
+      }
+    }()
+    try renderBothWidths(
+      card(
+        transitions: [
+          transition("s1", 11, "FOCUS_WORK", "REFERENCE"),
+          transition("s2", 28, "REFERENCE", "FOCUS_WORK"),
+          transition("s3", 37, "FOCUS_WORK", "COMMUNICATION"),
+          transition("s4", 51, "COMMUNICATION", "REFERENCE"),
+          transition("s5", 57, "REFERENCE", "FOCUS_WORK"),
+        ],
+        clusters: [
+          clusterFixture(
+            "c1", 11, 57, 5,
+            "5 switches in 1 minute between focus work, reference, and communication.")
+        ],
+        segments: deadCollectionSegments,
+        observation: lowCoverageObservation,
+        longestUninterrupted: 17, switches: 5, coverage: .partial, coverageRatio: 0.04),
+      "coverage-04-dead-collection")
+
+    // 30%. Partial, but with enough observed material spread across the
+    // window that the marks can be told apart — four stretches with real
+    // holes between them.
+    try renderBothWidths(
+      card(
+        transitions: [
+          transition("s1", 300, "FOCUS_WORK", "REFERENCE"),
+          transition("s2", 700, "REFERENCE", "FOCUS_WORK"),
+          transition("s3", 1_200, "FOCUS_WORK", "COMMUNICATION"),
+        ],
+        clusters: [],
+        segments: [
+          segment("a", 0, 120, "FOCUS_WORK", .high),
+          segment("b", 300, 90, "REFERENCE", .medium),
+          segment("c", 700, 210, "FOCUS_WORK", .high),
+          segment("d", 1_200, 30, "COMMUNICATION", .medium),
+        ],
+        observation: lowCoverageObservation,
+        longestUninterrupted: 210, switches: 3, coverage: .partial, coverageRatio: 0.30,
+        recoveries: 2),
+      "coverage-30-partial")
+
+    // 80%. Good coverage still means a fifth of the window was not seen,
+    // and this is the only state where a hole in the bar has no sentence
+    // beside it to explain it — so the hatching is the whole explanation.
+    try renderBothWidths(
+      card(
+        transitions: [
+          transition("s1", 420, "FOCUS_WORK", "REFERENCE"),
+          transition("s2", 780, "REFERENCE", "FOCUS_WORK"),
+        ],
+        clusters: [],
+        segments: [
+          segment("a", 0, 420, "FOCUS_WORK", .high),
+          segment("b", 480, 300, "REFERENCE", .high),
+          segment("c", 900, 480, "FOCUS_WORK", .high),
+        ],
+        observation: "You've been on one thing for most of the last 25 minutes.",
+        longestUninterrupted: 480, switches: 2, coverage: .good, coverageRatio: 0.80,
+        recoveries: 2),
+      "coverage-80-good-with-gaps")
+
+    // 100%, few switches. The shape the card was designed for.
+    try renderBothWidths(
+      card(
+        transitions: [
+          transition("s1", 900, "FOCUS_WORK", "REFERENCE"),
+          transition("s2", 1_140, "REFERENCE", "FOCUS_WORK"),
+        ],
+        clusters: [],
+        segments: [
+          segment("a", 0, 900, "FOCUS_WORK", .high),
+          segment("b", 900, 240, "REFERENCE", .high),
+          segment("c", 1_140, 360, "FOCUS_WORK", .high),
+        ],
+        observation: "You've been on one thing for most of the last 25 minutes.",
+        longestUninterrupted: 900, switches: 2, coverage: .good, coverageRatio: 0.99,
+        recoveries: 1),
+      "coverage-100-few-switches")
+
+    // 100%, many switches. Full coverage does not mean a calm bar; this is
+    // the density the collapse rule and the cluster lane exist for.
+    let churnCategories = ["FOCUS_WORK", "COMMUNICATION", "REFERENCE", "COMMUNICATION"]
+    try renderBothWidths(
+      card(
+        transitions: (0..<40).map {
+          transition(
+            "s\($0)", 20 + Double($0) * 36,
+            churnCategories[$0 % churnCategories.count],
+            churnCategories[($0 + 1) % churnCategories.count])
+        },
+        clusters: [
+          clusterFixture("c1", 200, 480, 8, "8 switches in 5 minutes."),
+          clusterFixture("c2", 1_000, 1_280, 8, "8 switches in 5 minutes."),
+        ],
+        segments: (0..<41).map {
+          segment(
+            "g\($0)", Double($0) * 36, 36, churnCategories[$0 % churnCategories.count],
+            .medium)
+        },
+        observation: "Your attention has moved 40 times in the last 25 minutes.",
+        longestUninterrupted: 36, switches: 40, coverage: .good, coverageRatio: 0.97,
+        recoveries: 4),
+      "coverage-100-many-switches", height: 340)
+
+    // A running block versus a completed one, on identical evidence. The
+    // difference is the offer: while the block is running the next action is
+    // already under way and is stated, not offered; once it is over the same
+    // Rust-authored label is the control that acts on it.
+    let runningEvidence: (transitions: [LocalTransitionMarker], segments: [LocalTimelineSegment]) = (
+      [
+        transition("s1", 480, "FOCUS_WORK", "COMMUNICATION"),
+        transition("s2", 600, "COMMUNICATION", "FOCUS_WORK"),
+      ],
+      [
+        segment("a", 0, 480, "FOCUS_WORK", .high),
+        segment("b", 480, 120, "COMMUNICATION", .medium),
+        segment("c", 600, 900, "FOCUS_WORK", .high),
+      ]
+    )
+    try renderBothWidths(
+      card(
+        transitions: runningEvidence.transitions, clusters: [],
+        segments: runningEvidence.segments,
+        observation: "You've been on one thing for most of the last 25 minutes.",
+        longestUninterrupted: 900, switches: 2, coverage: .good, coverageRatio: 0.98,
+        phase: .active, recoveries: 1),
+      "phase-active-running")
+    try renderBothWidths(
+      card(
+        transitions: runningEvidence.transitions, clusters: [],
+        segments: runningEvidence.segments,
+        observation: "You've been on one thing for most of the last 25 minutes.",
+        longestUninterrupted: 900, switches: 2, coverage: .good, coverageRatio: 0.98,
+        phase: .completed, recoveries: 1),
+      "phase-completed")
+  }
+
+  /// The sentence the service already sends as the observation whenever
+  /// coverage is anything other than good (`LOW_COVERAGE_BLOCK_COPY`).
+  private let lowCoverageObservation =
+    "Velvt hasn't seen enough of this block yet to say anything."
+
   // MARK: Fixtures
 
   private func card(
@@ -1208,12 +1644,14 @@ final class TimelineEvidenceSnapshotTests: XCTestCase {
     longestUninterrupted: Int,
     switches: Int,
     coverage: LocalDashboardCoverage,
-    coverageRatio: Double
+    coverageRatio: Double,
+    phase: WorkBlockPhase = .completed,
+    recoveries: Int = 1
   ) -> FocusFragmentationView {
     FocusFragmentationView(
       focus: LocalFocusFragmentation(
         blockID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
-        phase: .completed,
+        phase: phase,
         windowLabel: "Most recent 25 work-block minutes",
         windowStartedAt: windowStart,
         windowEndedAt: windowStart.addingTimeInterval(1_500),
@@ -1221,7 +1659,7 @@ final class TimelineEvidenceSnapshotTests: XCTestCase {
         elapsedDurationSeconds: 1_500,
         longestUninterruptedSeconds: longestUninterrupted,
         observedSwitchCount: switches,
-        recoveryCount: 1,
+        recoveryCount: recoveries,
         coverage: coverage,
         coverageRatio: coverageRatio,
         comparison: nil,
@@ -1281,11 +1719,12 @@ final class TimelineEvidenceSnapshotTests: XCTestCase {
     _ view: V,
     named name: String,
     outputDirectory: String,
-    size: NSSize = NSSize(width: 600, height: 300)
+    size: NSSize = NSSize(width: 600, height: 300),
+    padding: CGFloat = 18
   ) throws {
     let root = AnyView(
       view
-        .padding(18)
+        .padding(padding)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .background(Color.velvtSurface)
         .preferredColorScheme(.dark)

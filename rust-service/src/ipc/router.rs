@@ -1482,37 +1482,39 @@ impl R7Router {
                     ) {
                         Ok(Some(outcome)) => {
                             if let Some(push) = &self.work_block_push {
-                                push.push_work_block_state(outcome.snapshot).await;
-                                // Delivered on the same local path as the daily
-                                // insight, but authored entirely on-device: an
-                                // in-session offer never waits on the cloud or
-                                // on a mature baseline.
-                                // Reduced salience means the in-app card only:
-                                // after a negative reply in this block, the
-                                // offer never regains the OS notification.
-                                // Velvt's own quiet hours only ever reduce
-                                // delivery: inside the accepted window the
-                                // offer keeps its in-app card but sends no
-                                // OS notification, exactly like reduced
-                                // salience. (Active system DND never reaches
-                                // this point — the manager holds the whole
-                                // decision.)
-                                if let Some(intervention) = outcome.intervention {
-                                    let in_quiet_hours = self.focus.as_ref().is_some_and(|focus| {
+                                let mut snapshot = outcome.snapshot;
+                                // An in-session offer is authored entirely
+                                // on-device: it never waits on the cloud or on
+                                // a mature baseline.
+                                //
+                                // Salience is the whole delivery instruction,
+                                // and the snapshot is the only thing that
+                                // carries it to the client. `Normal` rings and
+                                // renders; `Quiet` renders only. Reduced
+                                // salience is already set by backoff: after a
+                                // negative reply in this block, the offer never
+                                // regains the OS notification.
+                                //
+                                // Velvt's own quiet hours reduce delivery the
+                                // same way — inside the accepted window the
+                                // offer keeps its in-app card and sends no OS
+                                // notification — so the window is applied here,
+                                // on the field the client reads, rather than on
+                                // a parallel push the client's notification
+                                // path never consulted. (Active system DND
+                                // never reaches this point: the manager holds
+                                // the whole decision and no offer is surfaced
+                                // at all.)
+                                if snapshot.active_intervention.is_some()
+                                    && self.focus.as_ref().is_some_and(|focus| {
                                         focus.in_velvt_quiet_hours(occurred_at)
-                                    });
-                                    if intervention.salience == InterventionSalience::Normal
-                                        && !in_quiet_hours
-                                    {
-                                        push.push_notification(
-                                            Uuid::new_v4(),
-                                            &intervention.title,
-                                            &intervention.body,
-                                            occurred_at.date_naive(),
-                                        )
-                                        .await;
+                                    })
+                                {
+                                    if let Some(active) = snapshot.active_intervention.as_mut() {
+                                        active.salience = InterventionSalience::Quiet;
                                     }
                                 }
+                                push.push_work_block_state(snapshot).await;
                             }
                         }
                         Ok(None) => {}

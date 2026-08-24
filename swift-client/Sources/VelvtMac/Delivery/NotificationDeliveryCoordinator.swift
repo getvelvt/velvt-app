@@ -53,14 +53,19 @@ public final class UserDefaultsScheduledNotificationTracker: ScheduledNotificati
 /// Listens for `notificationPayload` server pushes and forwards them to a
 /// `NotificationSchedulerProtocol` after a notifications-permission check.
 ///
-/// Denied/restricted/unknown permission status discards the payload
-/// silently: no crash, no retry, no re-request, and — since the payload is
-/// simply dropped — no logging of its content.
+/// Denied/restricted/unknown permission status discards the payload: no
+/// crash, no re-request, and — since the payload is simply dropped — no
+/// logging of its content. The drop is reported as an outcome, because a
+/// permission gate that returns in silence makes a channel that has never
+/// delivered anything indistinguishable from a healthy one. The payload is
+/// not recorded in `scheduledNotifications`, so it stays eligible if Rust
+/// re-sends it.
 @MainActor
 public final class NotificationDeliveryCoordinator {
     private let scheduler: any NotificationSchedulerProtocol
     private let permissionManager: any PermissionManagerProtocol
     private let scheduledNotifications: any ScheduledNotificationTracking
+    private let reporter: any NotificationDeliveryReporting
     private let debounceInterval: Duration
     private var cancellables = Set<AnyCancellable>()
 
@@ -81,11 +86,13 @@ public final class NotificationDeliveryCoordinator {
         scheduler: any NotificationSchedulerProtocol,
         permissionManager: any PermissionManagerProtocol,
         scheduledNotifications: any ScheduledNotificationTracking = UserDefaultsScheduledNotificationTracker(),
+        reporter: any NotificationDeliveryReporting = OSLogNotificationDeliveryReporter(),
         debounceInterval: Duration = .milliseconds(250)
     ) {
         self.scheduler = scheduler
         self.permissionManager = permissionManager
         self.scheduledNotifications = scheduledNotifications
+        self.reporter = reporter
         self.debounceInterval = debounceInterval
     }
 
@@ -112,7 +119,7 @@ public final class NotificationDeliveryCoordinator {
     @discardableResult
     public func handle(_ payload: NotificationPayload) -> Task<Void, Never> {
         pendingTasksByDate[payload.insightDate]?.cancel()
-        let task = Task { @MainActor [weak self, scheduler, permissionManager, scheduledNotifications, debounceInterval] in
+        let task = Task { @MainActor [weak self, scheduler, permissionManager, scheduledNotifications, reporter, debounceInterval] in
             // Briefly wait so a near-simultaneous newer payload for the same
             // date can cancel this task before any scheduling work happens.
             try? await Task.sleep(for: debounceInterval)
@@ -131,9 +138,16 @@ public final class NotificationDeliveryCoordinator {
             let status = checked == .unknown
                 ? await permissionManager.requestPermission(for: .notifications)
                 : checked
-            guard status == .granted, !Task.isCancelled else { return }
+            guard status == .granted, !Task.isCancelled else {
+                reporter.report(.blockedByPermission(status), surface: .dailyInsight)
+                self?.pendingTasksByDate.removeValue(forKey: payload.insightDate)
+                return
+            }
             if await scheduler.schedule(payload) {
                 scheduledNotifications.record(payload.notificationID)
+                reporter.report(.delivered, surface: .dailyInsight)
+            } else {
+                reporter.report(.rejectedByNotificationCentre, surface: .dailyInsight)
             }
             self?.pendingTasksByDate.removeValue(forKey: payload.insightDate)
         }
@@ -149,15 +163,21 @@ public final class NotificationDeliveryCoordinator {
         now: Date = Date()
     ) -> Task<DebugInsightSimulationResult, Never> {
         let payload = Self.debugNotificationPayload(now: now)
-        return Task { @MainActor [scheduler, permissionManager, debounceInterval] in
+        return Task { @MainActor [scheduler, permissionManager, reporter, debounceInterval] in
             try? await Task.sleep(for: debounceInterval)
             guard !Task.isCancelled else { return .schedulingFailed }
             let currentStatus = await permissionManager.checkStatus(for: .notifications)
             let status = currentStatus == .unknown
                 ? await permissionManager.requestPermission(for: .notifications)
                 : currentStatus
-            guard status == .granted, !Task.isCancelled else { return .permissionDenied }
-            return await scheduler.schedule(payload) ? .scheduled : .schedulingFailed
+            guard status == .granted, !Task.isCancelled else {
+                reporter.report(.blockedByPermission(status), surface: .dailyInsight)
+                return .permissionDenied
+            }
+            let scheduled = await scheduler.schedule(payload)
+            reporter.report(
+                scheduled ? .delivered : .rejectedByNotificationCentre, surface: .dailyInsight)
+            return scheduled ? .scheduled : .schedulingFailed
         }
     }
 

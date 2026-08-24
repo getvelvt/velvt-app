@@ -142,9 +142,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         permissionCoordinator = coordinator
 
         let scheduler = UNNotificationScheduler(metrics: metricsStore)
+        // One line on the unified log per delivery attempt, on both surfaces.
+        // A notification that is never posted is otherwise invisible from
+        // inside the app, which is how an installation can go its whole life
+        // without delivering anything and still look healthy.
+        let deliveryReporter = OSLogNotificationDeliveryReporter()
         let notificationCoordinator = NotificationDeliveryCoordinator(
             scheduler: scheduler,
-            permissionManager: permissionManager
+            permissionManager: permissionManager,
+            reporter: deliveryReporter
         )
         notificationCoordinator.start(serverMessages: accountStateManager.serverMessages)
         notificationDeliveryCoordinator = notificationCoordinator
@@ -154,7 +160,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // same offer to the notification centre.
         let interventionNotifier = InterventionNotifier(
             scheduler: scheduler,
-            permissionManager: permissionManager
+            permissionManager: permissionManager,
+            reporter: deliveryReporter
         )
         interventionNotifier.start(snapshots: workBlocks.$snapshot)
         self.interventionNotifier = interventionNotifier

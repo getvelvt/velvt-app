@@ -531,6 +531,47 @@ final class PermissionModuleTests: XCTestCase {
         controller.close()
     }
 
+    @MainActor
+    /// The notification stage was orphaned: `launchStage` never took
+    /// `.notifications` and `presentNotificationStage` had no caller, so the
+    /// first-run chain jumped accessibility straight to focus allowance. That
+    /// stage holds the only reachable call to
+    /// `requestPermission(for: .notifications)`, so the app could not ask, and
+    /// a product whose one output is a timely notification shipped unable to
+    /// earn the right to send one. Assert the stage is on screen, not merely
+    /// that some window is.
+    func testFirstRunReachesTheNotificationStageAfterAccessibility() {
+        let permissions = FakePermissionManager()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore()
+        )
+        let controller = OnboardingWindowController(
+            presentation: presentation,
+            permissionManager: permissions,
+            accountStateManager: AccountStateManager(keychain: FakeKeychain()),
+            ipcClient: FakeIPCClient(),
+            onStartUsing: {},
+            onStartTour: {}
+        )
+
+        controller.presentOnLaunch()
+        XCTAssertTrue(controller.windowShouldClose(NSWindow()), "intro advances")
+
+        // The accessibility stage refuses to advance until it is granted, so
+        // grant it the way the system would rather than skipping the gate.
+        permissions.setStatus(.granted, for: .accessibility)
+        XCTAssertTrue(
+            controller.windowShouldClose(NSWindow()),
+            "a granted accessibility stage advances")
+
+        XCTAssertEqual(
+            controller.presentedWindowTitle,
+            "Velvt Notifications",
+            "accessibility must hand off to the notification ask, not jump over it")
+        controller.close()
+    }
+
     func testEstablishedInstallationBypassesNewIntroWithoutChangingLegacyValues() {
         let suite = "onboarding.migration.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

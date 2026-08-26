@@ -25,8 +25,8 @@ use velvt_service::upload::EventIngestor;
 use velvt_service::work_block::{FocusStateSource, WorkBlockManager};
 use velvt_shared_types::{
     ClientMessage, EndWorkBlock, FocusStateChanged, InterventionSalience, RawEvent,
-    RespondQuietHoursOffer, ServerMessage, StartWorkBlock, WorkBlockDndOutcome,
-    WorkBlockIntensity, WorkBlockPurpose,
+    RespondQuietHoursOffer, ServerMessage, StartWorkBlock, WorkBlockDndOutcome, WorkBlockIntensity,
+    WorkBlockPurpose,
 };
 
 struct OfflineHttp;
@@ -419,5 +419,8 @@ async fn an_offer_outside_quiet_hours_reaches_the_client_as_normal_salience() {
             }
         }
     }
-    assert!(cards > 0, "the drift gate has to clear for this to mean anything");
+    assert!(
+        cards > 0,
+        "the drift gate has to clear for this to mean anything"
+    );
 }

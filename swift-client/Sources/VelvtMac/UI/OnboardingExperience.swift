@@ -1161,6 +1161,15 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
         windowController != nil
     }
 
+    /// Which stage is on screen, observable without reaching into the stage
+    /// models. The notification stage was orphaned once — `launchStage` never
+    /// took `.notifications` and `presentNotificationStage` had no caller —
+    /// and nothing failed, because every assertion available to a test was
+    /// about whether *a* window was up, not which one.
+    var presentedWindowTitle: String? {
+        windowController?.window?.title
+    }
+
     public init(
         presentation: PermissionPresentationModel,
         permissionManager: any PermissionManagerProtocol,
@@ -1418,8 +1427,18 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private func finishAccessibilityStage() {
         guard launchStage == .accessibility else { return }
         dismissWindow()
-        launchStage = .focusAllowance
-        presentFocusAllowanceStage()
+        // The notification stage used to sit here and was spliced out, leaving
+        // `presentNotificationStage` with no caller and `.notifications` never
+        // assigned to `launchStage`. The consequence was total: this is the
+        // only reachable surface that calls `requestPermission(for:
+        // .notifications)`, so the app could never ask, `checkStatus` answered
+        // "not determined" forever, and every drift offer and insight was
+        // dropped at the permission gate. A product whose one output is a
+        // timely notification shipped with no way to earn the right to send
+        // one. `finishNotificationStage` already routes onward to
+        // `.focusAllowance`, so restoring the call restores the original chain.
+        launchStage = .notifications
+        presentNotificationStage()
     }
 
     private func finishNotificationStage() {

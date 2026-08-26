@@ -66,6 +66,15 @@ const MINOR_SEGMENT_PERCENT: u64 = 1;
 /// list a person can still read down.
 const MAX_DISPLAY_BUCKETS: usize = 12;
 
+/// The most segments a single day can carry: the named buckets plus `Other`.
+///
+/// Exported because the outbound validator has to agree with what this module
+/// produces, and when the two were independent numbers they drifted the moment
+/// one changed — the shaper rejected every snapshot, and the whole local
+/// dashboard came back as an error with nothing naming the day that caused it.
+/// Deriving the bound from the cap makes disagreement unrepresentable.
+pub const MAX_DAILY_ACTIVITY_SEGMENTS: usize = MAX_DISPLAY_BUCKETS + 1;
+
 pub fn snapshot(
     repo: &dyn RawEventRepo,
     work_block: Option<&WorkBlockSnapshot>,

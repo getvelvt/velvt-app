@@ -87,6 +87,74 @@ fn bounded_seven_day_dashboard_query_is_indexed_and_measured() {
     );
 }
 
+/// The dashboard builds the local snapshot; the shaper decides whether it may
+/// leave the process. Both bound how many segments a day may carry, and while
+/// those were two independent numbers in two files, raising the dashboard's cap
+/// silently made every snapshot unshippable: the shaper rejected the payload,
+/// the router answered `local_dashboard_unavailable`, and the whole surface
+/// showed one error naming nothing.
+///
+/// Every unit test around the day builder called it directly and never sent its
+/// output through the validator, so the disagreement was invisible to all of
+/// them. This one is deliberately the pair.
+#[test]
+fn a_day_of_many_apps_survives_the_outbound_validator() {
+    let database = database();
+    let repository = database.raw_event_repo();
+    let now = Utc::now();
+
+    // Far more distinct apps than a day may name, each large enough to clear
+    // the tiny-bucket floor, so the cap is what decides the segment count.
+    for index in 0..40_i64 {
+        for repeat in 0..4_i64 {
+            repository
+                .insert(&RawEventEntry {
+                    event_id: format!("many-{index}-{repeat}"),
+                    stable_id: format!("app-{index}"),
+                    label: "document:edit".into(),
+                    local_display_label: Some(format!("App {index}")),
+                    local_name_suggestion: None,
+                    category: if index % 2 == 0 {
+                        "FOCUS_WORK"
+                    } else {
+                        "REFERENCE"
+                    }
+                    .into(),
+                    taxonomy_version: "mvp-1".into(),
+                    classification_tier: "exact_match".into(),
+                    classification_status: "classified".into(),
+                    classification_confidence: "high".into(),
+                    classification_source: "seed".into(),
+                    occurred_at: now - Duration::seconds(index * 200 + repeat * 50),
+                    duration_seconds: 50,
+                    upload_eligible: true,
+                    app_stable_id: None,
+                    app_scope_eligible: true,
+                })
+                .unwrap();
+        }
+    }
+
+    let snapshot = dashboard::snapshot(&*repository, None, now, 3_600, 0).unwrap();
+    let widest = snapshot
+        .daily_activity
+        .iter()
+        .map(|day| day.segments.len())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        widest > 6,
+        "this fixture has to actually exercise the bound; widest day held {widest} segments"
+    );
+    assert!(
+        widest <= dashboard::MAX_DAILY_ACTIVITY_SEGMENTS,
+        "the day builder exceeded its own declared bound: {widest}"
+    );
+
+    velvt_service::delivery::shaper::shape_local_dashboard(snapshot)
+        .expect("a snapshot the dashboard produced has to be one the shaper will send");
+}
+
 fn timestamp(seconds: i64) -> chrono::DateTime<Utc> {
     Utc.timestamp_opt(seconds, 0).unwrap()
 }

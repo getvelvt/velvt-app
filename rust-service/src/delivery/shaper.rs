@@ -193,7 +193,7 @@ impl ValidatePayload for LocalDashboardSnapshot {
         }
         if self.daily_activity.len() != 7
             || self.daily_activity.iter().any(|day| {
-                day.segments.len() > 6
+                day.segments.len() > crate::dashboard::MAX_DAILY_ACTIVITY_SEGMENTS
                     || day.segments.iter().any(|segment| segment.percentage > 100)
             })
         {

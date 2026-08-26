@@ -323,11 +323,7 @@ fn focus_fragmentation(
     Ok(Some(LocalFocusFragmentation {
         block_id,
         phase: block.phase,
-        window_label: if actual_seconds <= MAX_WINDOW_SECONDS {
-            format!("{} work-block minutes", window_seconds.div_ceil(60))
-        } else {
-            "Most recent 60 work-block minutes".to_owned()
-        },
+        window_label: window_label(window_seconds, actual_seconds),
         window_started_at: analysis_start,
         window_ended_at: analysis_end,
         planned_duration_seconds: block.planned_duration_seconds,
@@ -382,6 +378,27 @@ fn earlier_today_comparison(
         switch_delta: delta,
         explanation: comparison_copy(delta),
     }))
+}
+
+/// The window a block's evidence covers, as a person reads it.
+///
+/// `window_seconds` is seconds-since-start for any block under an hour old,
+/// so the raw `div_ceil` printed "0 work-block minutes" the instant a block
+/// began and "1 work-block minutes" for the rest of the first minute. This
+/// label sits outside the timeline gate, so it is the first text a person
+/// reads after pressing start, and both readings looked like a broken app.
+/// Clamped to a minute because a window shorter than one is not a window the
+/// copy can describe, and pluralised because "1 minutes" retracts the care
+/// every other string here takes.
+fn window_label(window_seconds: u64, actual_seconds: u32) -> String {
+    if actual_seconds > MAX_WINDOW_SECONDS {
+        return "Most recent 60 work-block minutes".to_owned();
+    }
+    let minutes = window_seconds.div_ceil(60).max(1);
+    format!(
+        "{minutes} work-block {}",
+        if minutes == 1 { "minute" } else { "minutes" }
+    )
 }
 
 fn daily_activity(
@@ -1397,5 +1414,24 @@ mod tests {
         );
         assert_eq!(day.segments[0].label, sentinel);
         assert!(!format!("{day:?}").contains(sentinel));
+    }
+
+    /// The first label a person reads after pressing start. Both broken
+    /// readings were reachable in the first minute of every block, and the
+    /// card shows this line in every coverage state, including the one that
+    /// says Velvt has not seen enough yet.
+    #[test]
+    fn the_window_label_is_never_zero_and_never_says_one_minutes() {
+        assert_eq!(window_label(0, 0), "1 work-block minute");
+        assert_eq!(window_label(1, 1), "1 work-block minute");
+        assert_eq!(window_label(59, 59), "1 work-block minute");
+        assert_eq!(window_label(60, 60), "1 work-block minute");
+        assert_eq!(window_label(61, 61), "2 work-block minutes");
+        assert_eq!(window_label(120, 120), "2 work-block minutes");
+        // Past the cap the copy stops counting and says so.
+        assert_eq!(
+            window_label(9_999, MAX_WINDOW_SECONDS + 1),
+            "Most recent 60 work-block minutes"
+        );
     }
 }

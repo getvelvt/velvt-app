@@ -151,6 +151,18 @@ public final class InterventionNotifier {
         currentOffer = nil
         disposition = nil
         hasRequestedPermission = false
+        // An attempt outlives the offer it was for. `requestPermission` waits
+        // on a system alert the user may never answer, and until it returns
+        // `finishAttempt` never runs, so `isAttempting` stays true and the
+        // one-at-a-time guard turns away every later offer for the life of
+        // the process. That is a fresh install — where the alert is shown for
+        // the first time — losing drift delivery permanently, silently, on
+        // the first offer it ever makes. Cancelling here is not cancelling a
+        // decision: the permission alert stays on screen and its answer is
+        // still recorded by the system.
+        inFlightTask?.cancel()
+        inFlightTask = nil
+        isAttempting = false
     }
 
     private func attemptDelivery(key: OfferKey, offer: ActiveIntervention) -> Task<Void, Never>? {

@@ -293,6 +293,43 @@ final class InterventionNotifierTests: XCTestCase {
         )
     }
 
+    /// A permission alert the user walks away from must not take drift
+    /// delivery down with it. `isAttempting` is set before the permission
+    /// round trip and cleared only when that trip returns, so an unanswered
+    /// system alert left the one-at-a-time guard latched for the life of the
+    /// process — and the alert is only ever shown on a machine that has not
+    /// answered it before, so this was a fresh install losing every offer it
+    /// would ever make, silently, starting with its first.
+    func test_an_unanswered_permission_alert_does_not_latch_out_later_offers() async throws {
+        let center = FakeUNUserNotificationCenter()
+        let scheduler = UNNotificationScheduler(center: center)
+        let permissions = HangingPermissionManager()
+        let notifier = InterventionNotifier(scheduler: scheduler, permissionManager: permissions)
+
+        // The first offer asks, and the ask never comes back.
+        let stalled = await notifier.handle(
+            snapshot(blockID: UUID(), offeredAt: Date(timeIntervalSince1970: 1000)))
+        XCTAssertNotNil(stalled, "the first offer starts an attempt")
+        try await waitUntil { permissions.requestCount == 1 }
+        XCTAssertTrue(center.addedRequests.isEmpty, "nothing can ring while the ask is open")
+
+        // The block ends; the offer it belonged to is gone.
+        await notifier.handle(snapshot(blockID: UUID(), offeredAt: nil))?.value
+
+        // A later block, on a machine where permission has since been granted.
+        // The property under test is that this offer is taken up PROMPTLY.
+        // Awaiting the stalled attempt instead would pass either way: the
+        // unanswered alert does eventually return, and delivery then works —
+        // it is the interval before it does, with every offer turned away,
+        // that is the defect.
+        permissions.setStatus(.granted, for: .notifications)
+        _ = await notifier.handle(
+            snapshot(blockID: UUID(), offeredAt: Date(timeIntervalSince1970: 2000)))
+        try await waitUntil(timeout: .seconds(2)) { center.addedRequests.count >= 1 }
+
+        stalled?.cancel()
+    }
+
     /// The offer is republished for as long as it is unanswered. A drop that
     /// was never a product decision has to be reconsidered on the next one.
     func test_an_offer_blocked_by_permission_is_retried_on_the_next_snapshot() async throws {
@@ -419,5 +456,34 @@ private final class StubPermissionManager: PermissionManagerProtocol, @unchecked
     func requestPermission(for permission: PermissionType) async -> PermissionStatus {
         requestCount += 1
         return statusAfterRequest
+    }
+}
+
+/// The system permission alert a user opens and never answers. `Task.sleep`
+/// is cancellation-aware, so a cancelled attempt unwinds here exactly as a
+/// real one would.
+private final class HangingPermissionManager: PermissionManagerProtocol, @unchecked Sendable {
+    private let subject = CurrentValueSubject<[PermissionType: PermissionStatus], Never>(
+        [.notifications: .unknown])
+    private(set) var requestCount = 0
+
+    var statusPublisher: AnyPublisher<[PermissionType: PermissionStatus], Never> {
+        subject.eraseToAnyPublisher()
+    }
+
+    func checkStatus(for permission: PermissionType) async -> PermissionStatus {
+        subject.value[permission] ?? .unknown
+    }
+
+    func requestPermission(for permission: PermissionType) async -> PermissionStatus {
+        requestCount += 1
+        try? await Task.sleep(nanoseconds: 60_000_000_000)
+        return subject.value[permission] ?? .unknown
+    }
+
+    func setStatus(_ status: PermissionStatus, for permission: PermissionType) {
+        var statuses = subject.value
+        statuses[permission] = status
+        subject.send(statuses)
     }
 }

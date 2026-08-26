@@ -330,6 +330,13 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     @Published public private(set) var insightAvailability: InsightAvailability = .loading
     @Published public private(set) var historyAvailability: DeliveryAvailability = .loading
     @Published public private(set) var insightNotReadyReason: String?
+    /// Why history is not ready, kept for the same reason the insight one is.
+    /// Rust already distinguishes "the backend could not be reached" from
+    /// "there is nothing to show" (`router.rs` emits `backend_unavailable` and
+    /// `invalid_cached_payload`), and discarding it made a network failure
+    /// render as advice to keep working — the app blaming the user for its
+    /// own outage.
+    @Published public private(set) var historyNotReadyReason: String?
 
     public var displayState: AnyPublisher<DisplayState, Never> {
         $state.eraseToAnyPublisher()
@@ -422,6 +429,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
             insightNotReadyReason = payload.reason
         case "history_payload":
             historyAvailability = .notGenerated
+            historyNotReadyReason = payload.reason
         default:
             return
         }
@@ -440,6 +448,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
         historyViewModel.reset()
         insightAvailability = .loading
         insightNotReadyReason = nil
+        historyNotReadyReason = nil
         historyAvailability = .loading
         state = .loading
     }

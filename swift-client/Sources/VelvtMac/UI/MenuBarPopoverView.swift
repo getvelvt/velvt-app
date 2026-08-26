@@ -16,6 +16,7 @@ private struct HistoryWorkspaceView: View {
         YourWeekContentView(
             snapshot: localDashboardCoordinator.snapshot,
             historyAvailability: coordinator.historyAvailability,
+            historyNotReadyReason: coordinator.historyNotReadyReason,
             historyViewModel: coordinator.historyViewModel
         )
         .onAppear { localDashboardCoordinator.refresh() }
@@ -33,6 +34,7 @@ struct YourWeekContentView: View {
     /// from it.
     let snapshot: LocalDashboardSnapshot?
     let historyAvailability: DeliveryAvailability
+    var historyNotReadyReason: String? = nil
     @ObservedObject var historyViewModel: HistoryViewModel
 
     var body: some View {
@@ -42,6 +44,7 @@ struct YourWeekContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             WeekOverWeekCoachingView(
                 availability: historyAvailability,
+                notReadyReason: historyNotReadyReason,
                 viewModel: historyViewModel
             )
         }
@@ -51,6 +54,11 @@ struct YourWeekContentView: View {
 
 struct WeekOverWeekCoachingView: View {
     let availability: DeliveryAvailability
+    /// Why history is unavailable, when the service said why. Rust
+    /// distinguishes an unreachable backend from an empty week; without this
+    /// the tab answered both with advice to keep working, which tells someone
+    /// whose network failed that the fault is their work habits.
+    var notReadyReason: String? = nil
     @ObservedObject var viewModel: HistoryViewModel
 
     var body: some View {
@@ -80,7 +88,9 @@ struct WeekOverWeekCoachingView: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else if availability == .notGenerated {
                 coachingPlaceholder(
-                    "No observed day is ready yet. Keep Velvt running during a normal work block."
+                    notReadyReason == "backend_unavailable"
+                        ? "Daily summaries could not be reached just now. Local collection is unaffected and this will catch up on its own."
+                        : "No observed day is ready yet. Keep Velvt running during a normal work block."
                 )
             } else if availability == .loading || viewModel.isLoading {
                 coachingPlaceholder(

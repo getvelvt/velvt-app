@@ -1271,3 +1271,120 @@ final class MenuBarWindowSnapshotTests: XCTestCase {
     try data.write(to: directory.appendingPathComponent(name), options: .atomic)
   }
 }
+
+// MARK: - Local seven-day activity (Patterns tab)
+
+final class LocalWeekActivityTests: XCTestCase {
+    private func segment(
+        _ id: String, category: String, seconds: Int, percentage: Int = 0
+    ) -> LocalDailyActivitySegment {
+        LocalDailyActivitySegment(
+            id: id,
+            label: id,
+            category: category,
+            durationSeconds: seconds,
+            percentage: percentage,
+            confidence: .high,
+            explanation: nil
+        )
+    }
+
+    private func day(
+        _ date: String, activeSeconds: Int, segments: [LocalDailyActivitySegment]
+    ) -> LocalDailyActivityDay {
+        LocalDailyActivityDay(
+            id: date,
+            date: date,
+            state: segments.isEmpty ? .noData : .ready,
+            activeSeconds: activeSeconds,
+            coverage: segments.isEmpty ? .noData : .good,
+            segments: segments
+        )
+    }
+
+    /// Segments are bucketed per app, so two browsers both classified
+    /// REFERENCE arrive as two segments. Drawn unmerged they are two slices of
+    /// one colour touching, which reads as a single slice whose width
+    /// disagrees with the hover text over either half.
+    func testTwoAppsInOneCategoryBecomeOneSlice() {
+        let subject = day(
+            "2026-08-22",
+            activeSeconds: 900,
+            segments: [
+                segment("chrome", category: "REFERENCE", seconds: 300),
+                segment("safari", category: "REFERENCE", seconds: 200),
+                segment("xcode", category: "FOCUS_WORK", seconds: 400),
+            ]
+        )
+
+        let slices = LocalWeekActivityView.slices(for: subject)
+
+        // 300 + 200 merged puts REFERENCE ahead of FOCUS_WORK's 400, which is
+        // the merge doing its job: unmerged, the widest slice would be 400.
+        XCTAssertEqual(slices.map(\.category), ["REFERENCE", "FOCUS_WORK"])
+        XCTAssertEqual(slices.map(\.seconds), [500, 400])
+        XCTAssertEqual(
+            slices.filter { $0.category == "REFERENCE" }.count, 1,
+            "one category is one slice")
+    }
+
+    /// A zero-second segment would draw at the 5pt minimum width and claim a
+    /// colour in the legend for time that was never observed.
+    func testZeroSecondSegmentsAreNotDrawn() {
+        let subject = day(
+            "2026-08-22",
+            activeSeconds: 300,
+            segments: [
+                segment("chrome", category: "REFERENCE", seconds: 300),
+                segment("ghost", category: "SOCIAL_FEED", seconds: 0),
+            ]
+        )
+
+        XCTAssertEqual(LocalWeekActivityView.slices(for: subject).map(\.category), ["REFERENCE"])
+    }
+
+    /// A colour that means FOCUS_WORK on Monday and REFERENCE on Tuesday makes
+    /// the legend a lie, so the ranking is computed once across the window.
+    func testACategoryKeepsOneColourAcrossEveryDay() {
+        let totals = ["FOCUS_WORK": 6000, "REFERENCE": 3000, "SOCIAL_FEED": 100]
+        let palette = ActivityPalette.assign(forSecondsByCategory: totals)
+
+        XCTAssertEqual(palette["FOCUS_WORK"], ActivityPalette.colors[0])
+        XCTAssertEqual(palette["REFERENCE"], ActivityPalette.colors[1])
+        XCTAssertEqual(palette["SOCIAL_FEED"], ActivityPalette.colors[2])
+    }
+
+    /// Equal totals must not shuffle the mapping between renders; the tie
+    /// breaks on name so a redraw repaints the same bars.
+    func testEqualTotalsRankStablyByName() {
+        let ranked = ActivityPalette.rank(["REFERENCE": 100, "COMMUNICATION": 100])
+        XCTAssertEqual(ranked.map(\.key), ["COMMUNICATION", "REFERENCE"])
+    }
+
+    /// Rust returns a row for every day in the window including empty ones, so
+    /// an unobserved day has to say so rather than render as a thin bar.
+    func testAnEmptyDayHasNoSlicesAndSaysSoOutLoud() {
+        let empty = day("2026-08-20", activeSeconds: 0, segments: [])
+
+        XCTAssertTrue(LocalWeekActivityView.slices(for: empty).isEmpty)
+        XCTAssertEqual(
+            LocalWeekActivityView.accessibilityLabel(for: empty),
+            "Thu 20, no observed activity")
+    }
+
+    /// The spoken row carries the same three facts as the drawn one.
+    func testTheSpokenRowNamesTheDayTheTimeAndTheDominantCategory() {
+        let subject = day(
+            "2026-08-22",
+            activeSeconds: 8100,
+            segments: [
+                segment("xcode", category: "FOCUS_WORK", seconds: 5000),
+                segment("chrome", category: "REFERENCE", seconds: 3100),
+            ]
+        )
+
+        XCTAssertEqual(
+            LocalWeekActivityView.accessibilityLabel(for: subject),
+            "Sat 22, 2h 15m observed, mostly Focus Work")
+    }
+}

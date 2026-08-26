@@ -178,20 +178,36 @@ enum ActivityPalette {
     /// Ranks categories by observed time across the window, breaking ties on
     /// name so the mapping is stable between renders.
     static func assign(for days: [DaySummaryViewModel]) -> [String: Color] {
-        let totals = days
+        assign(forSecondsByCategory: secondsByCategory(days))
+    }
+
+    /// The ranking itself, over category totals rather than over one
+    /// particular day model. The seven-day view on the Patterns tab reads
+    /// local `LocalDailyActivityDay` values rather than cloud summaries, and
+    /// a colour has to mean the same category in both or the legend lies.
+    static func assign(forSecondsByCategory totals: [String: Int]) -> [String: Color] {
+        Dictionary(
+            uniqueKeysWithValues: rank(totals).enumerated().map { index, entry in
+                (entry.key, colors[index % colors.count])
+            }
+        )
+    }
+
+    /// Descending by observed time, ties broken on name so the mapping does
+    /// not shuffle between renders.
+    static func rank(_ totals: [String: Int]) -> [(key: String, value: Int)] {
+        totals.sorted { left, right in
+            left.value == right.value ? left.key < right.key : left.value > right.value
+        }
+    }
+
+    private static func secondsByCategory(_ days: [DaySummaryViewModel]) -> [String: Int] {
+        days
             .flatMap(\.typeProportions)
             .filter { $0.proportion > 0 }
             .reduce(into: [String: Int]()) { totals, proportion in
                 totals[proportion.category, default: 0] += proportion.seconds
             }
-        let ordered = totals.sorted { left, right in
-            left.value == right.value ? left.key < right.key : left.value > right.value
-        }
-        return Dictionary(
-            uniqueKeysWithValues: ordered.enumerated().map { index, entry in
-                (entry.key, colors[index % colors.count])
-            }
-        )
     }
 
     static func ordered(for days: [DaySummaryViewModel]) -> [(category: String, color: Color)] {

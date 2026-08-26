@@ -24,14 +24,22 @@ private struct HistoryWorkspaceView: View {
 }
 
 struct YourWeekContentView: View {
-    /// Retained but not rendered here. The seven-day activity chart that used
-    /// to lead this tab is the literal Screen Time artifact, and this is the
-    /// tab 05 § 3 reserves for a single pattern claim — "a list of patterns is
-    /// a dashboard, and a dashboard is a tracker." The activity rows moved to
-    /// the Settings correction workbench, where a duration next to a
-    /// correctable label is a tool rather than a report. This snapshot stays
-    /// on the type because the antecedent card lands on this tab and reads
-    /// from it.
+    /// The seven days, read from local evidence on this Mac.
+    ///
+    /// This chart was removed once, on the reasoning that "a list of patterns
+    /// is a dashboard, and a dashboard is a tracker." That objection was aimed
+    /// at the wrong thing. What made the old version a tracker was that it
+    /// reported cloud daily summaries — a scoreboard arriving from elsewhere.
+    /// `dailyActivity` is different in kind: Rust builds it from this
+    /// machine's own observations, it never leaves the device, and it is the
+    /// evidence behind the single pattern claim below rather than a substitute
+    /// for one. Showing the week the claim was drawn from is what separates an
+    /// observation from an assertion.
+    ///
+    /// It was also, in practice, being thrown away: this property arrived on
+    /// every snapshot and was never read, while the tab rendered a cloud
+    /// summary that has returned `no_data` for every day it has ever been
+    /// asked about.
     let snapshot: LocalDashboardSnapshot?
     let historyAvailability: DeliveryAvailability
     var historyNotReadyReason: String? = nil
@@ -42,6 +50,7 @@ struct YourWeekContentView: View {
         // tab now, and nesting two scroll views made the inner one swallow
         // the wheel events that should have moved the outer one.
         VStack(alignment: .leading, spacing: 12) {
+            LocalWeekActivityView(days: snapshot?.dailyActivity ?? [])
             WeekOverWeekCoachingView(
                 availability: historyAvailability,
                 notReadyReason: historyNotReadyReason,
@@ -50,6 +59,232 @@ struct YourWeekContentView: View {
         }
         .padding(12)
     }
+}
+
+/// Seven local days, drawn from `LocalDashboardSnapshot.dailyActivity`.
+///
+/// Rust builds exactly `DAILY_ACTIVITY_DAYS` rows per request
+/// (`dashboard.rs:387`) and the shaper pins the count, so the row count is the
+/// service's to decide and this view renders whatever it is handed rather than
+/// padding or truncating to a number of its own.
+struct LocalWeekActivityView: View {
+    let days: [LocalDailyActivityDay]
+
+    /// Time per category across the whole window. Segments arrive bucketed per
+    /// app — one row per `(stable_id, category)` — so several can share a
+    /// category, and a bar coloured per segment would give one category two
+    /// colours in a single day.
+    private var secondsByCategory: [String: Int] {
+        days.reduce(into: [String: Int]()) { totals, day in
+            for segment in day.segments where segment.durationSeconds > 0 {
+                totals[segment.category, default: 0] += segment.durationSeconds
+            }
+        }
+    }
+
+    private var palette: [String: Color] {
+        ActivityPalette.assign(forSecondsByCategory: secondsByCategory)
+    }
+
+    private var hasAnyActivity: Bool {
+        days.contains { $0.activeSeconds > 0 }
+    }
+
+    /// One slice per category for a single day, widest first.
+    ///
+    /// Segments arrive bucketed per app — one per `(stable_id, category)` — so
+    /// several can carry the same category. Drawing them unmerged puts two
+    /// slices of one colour side by side, which reads as one slice whose width
+    /// disagrees with the hover text under the pointer.
+    static func slices(for day: LocalDailyActivityDay) -> [(category: String, seconds: Int)] {
+        let totals = day.segments.reduce(into: [String: Int]()) { totals, segment in
+            guard segment.durationSeconds > 0 else { return }
+            totals[segment.category, default: 0] += segment.durationSeconds
+        }
+        return ActivityPalette.rank(totals).map { (category: $0.key, seconds: $0.value) }
+    }
+
+    /// Spoken as one row: the same three facts the sighted row carries, in the
+    /// same order.
+    static func accessibilityLabel(for day: LocalDailyActivityDay) -> String {
+        let date = DaySummaryViewModel.formatDate(day.date)
+        guard day.activeSeconds > 0 else { return "\(date), no observed activity" }
+        let time = DaySummaryViewModel.formatActiveTime(day.activeSeconds)
+        guard let top = slices(for: day).first else { return "\(date), \(time) observed" }
+        return "\(date), \(time) observed, mostly \(localCategoryLabel(top.category))"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Daily Activity")
+                        .font(.headline)
+                        .foregroundStyle(Color.velvtText)
+                    // Names the source, because the honest thing about this
+                    // chart is where it comes from.
+                    Text("Observed on this Mac")
+                        .font(.caption2)
+                        .foregroundStyle(Color.velvtMuted)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Text("\(days.count) days")
+                    .font(.caption2)
+                    .foregroundStyle(Color.velvtMuted)
+            }
+
+            if days.isEmpty {
+                Text("Waiting for the first local observation.")
+                    .font(.caption)
+                    .foregroundStyle(Color.velvtMuted)
+                    .padding(.top, 2)
+            } else {
+                VStack(spacing: 3) {
+                    ForEach(days) { day in
+                        LocalDayActivityRow(day: day, palette: palette)
+                    }
+                }
+                if hasAnyActivity {
+                    LocalActivityLegend(
+                        entries: ActivityPalette.rank(secondsByCategory).compactMap { entry in
+                            palette[entry.key].map { (category: entry.key, color: $0) }
+                        }
+                    )
+                    .padding(.top, 2)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.velvtPanel)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Daily activity observed on this Mac")
+    }
+}
+
+private struct LocalDayActivityRow: View {
+    let day: LocalDailyActivityDay
+    let palette: [String: Color]
+
+    private var isEmpty: Bool { day.activeSeconds == 0 }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(DaySummaryViewModel.formatDate(day.date))
+                .font(.caption.bold())
+                .foregroundStyle(isEmpty ? Color.velvtMuted.opacity(0.5) : Color.velvtText)
+                .lineLimit(1)
+                .frame(width: 62, alignment: .leading)
+
+            LocalSplitActivityBar(day: day, palette: palette)
+                .frame(height: 9)
+                .frame(maxWidth: .infinity)
+
+            Text(isEmpty ? "—" : DaySummaryViewModel.formatActiveTime(day.activeSeconds))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(Color.velvtMuted)
+                .frame(width: 48, alignment: .trailing)
+        }
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(LocalWeekActivityView.accessibilityLabel(for: day))
+    }
+}
+
+/// Per-slice detail is a native `.help` tooltip rather than a pointer-entered
+/// callback that rewrites a label elsewhere. This file is asserted against the
+/// literal name of that callback, because a row acting on the pointer merely
+/// crossing it is the defect the guard exists for. A tooltip says the same
+/// sentence without reopening that door.
+private struct LocalSplitActivityBar: View {
+    let day: LocalDailyActivityDay
+    let palette: [String: Color]
+
+    private var slices: [(category: String, seconds: Int)] {
+        LocalWeekActivityView.slices(for: day)
+    }
+
+    private var total: Int {
+        max(slices.reduce(0) { $0 + $1.seconds }, 1)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            HStack(spacing: 2) {
+                if slices.isEmpty {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.white.opacity(day.activeSeconds == 0 ? 0.06 : 0.12))
+                        .help(emptyHelpText)
+                } else {
+                    ForEach(slices, id: \.category) { slice in
+                        let text = helpText(for: slice)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(palette[slice.category] ?? ActivityPalette.unmatched)
+                            .frame(
+                                width: max(
+                                    5,
+                                    proxy.size.width * CGFloat(slice.seconds) / CGFloat(total)))
+                            .help(text)
+                            .accessibilityHidden(true)
+                    }
+                }
+            }
+        }
+    }
+
+    private var emptyHelpText: String {
+        day.activeSeconds == 0
+            ? "Nothing observed on this day."
+            : "Observed activity on this day is not classified yet."
+    }
+
+    private func helpText(for slice: (category: String, seconds: Int)) -> String {
+        let percent = Int((Double(slice.seconds) / Double(total) * 100).rounded())
+        return
+            "\(localCategoryLabel(slice.category)): \(DaySummaryViewModel.formatActiveTime(slice.seconds)), \(percent)% of observed time."
+    }
+}
+
+/// Names the colours. Without it the bars are decoration.
+private struct LocalActivityLegend: View {
+    let entries: [(category: String, color: Color)]
+
+    var body: some View {
+        FlowingLegend(entries: entries)
+    }
+}
+
+private struct FlowingLegend: View {
+    let entries: [(category: String, color: Color)]
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { chips }
+            VStack(alignment: .leading, spacing: 3) { chips }
+        }
+    }
+
+    @ViewBuilder
+    private var chips: some View {
+        ForEach(entries.prefix(5), id: \.category) { entry in
+            HStack(spacing: 4) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(entry.color)
+                    .frame(width: 7, height: 7)
+                Text(localCategoryLabel(entry.category))
+                    .font(.caption2)
+                    .foregroundStyle(Color.velvtMuted)
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
+/// `FOCUS_WORK` is a wire value, not a word. This is the only transform
+/// applied to it — no renaming, no grouping, no editorialising.
+func localCategoryLabel(_ category: String) -> String {
+    category.replacingOccurrences(of: "_", with: " ").lowercased().capitalized
 }
 
 struct WeekOverWeekCoachingView: View {

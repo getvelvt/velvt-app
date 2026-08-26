@@ -20,7 +20,19 @@ use crate::persistence::{PersistenceError, RawEventEntry, RawEventRepo};
 const MIN_WINDOW_SECONDS: u32 = 60;
 const MAX_WINDOW_SECONDS: u32 = 60 * 60;
 const MAX_WINDOW_EVENTS: usize = 512;
-const MAX_DAY_EVENTS: usize = 2_048;
+/// Per-day read cap for the seven-day activity rows.
+///
+/// `events_between` is `ORDER BY occurred_at ASC LIMIT`, so a day over this
+/// cap is not sampled — it is cut off at its earliest N events, and the rows
+/// silently describe the first part of the day as if it were the whole of it.
+/// At 2,048 that truncated three of eight days on a real machine, one of them
+/// reporting roughly a third of its observed hours. A day is loaded, folded
+/// into buckets and dropped one at a time, so the cost of raising this is one
+/// day's rows in memory, and the query is single-index and sub-millisecond at
+/// every value measured. `day_was_truncated` still reports when the cap binds,
+/// because a number that quietly means "some of this day" is worse than a
+/// smaller one that says so.
+const MAX_DAY_EVENTS: usize = 16_384;
 const MAX_EVENT_DURATION_SECONDS: i64 = 30 * 60;
 /// Days rendered by the local daily-activity chart.
 ///
@@ -35,7 +47,24 @@ pub const SWITCHING_CLUSTER_RULE_VERSION: u32 = 1;
 pub const SWITCHING_CLUSTER_MIN_TRANSITIONS: usize = 3;
 pub const SWITCHING_CLUSTER_WINDOW_SECONDS: i64 = 5 * 60;
 const SUFFICIENT_COVERAGE_RATIO: f64 = 0.75;
-const TINY_SEGMENT_SECONDS: u64 = 60;
+/// Below this, a display bucket is noise rather than a place the day went.
+const TINY_SEGMENT_SECONDS: u64 = 30;
+
+/// A bucket under this share of the day folds into `Other`.
+///
+/// Buckets are per `(stable_id, category)` — per app — so a day spent across
+/// many apps of the *same* category had each app individually fall under the
+/// old 5% and vanish into `Other` before anything downstream could group them
+/// by category. On real data that made `Other` 51% of the busiest day and 28%
+/// of the average one: a bar that is mostly one grey slice saying nothing.
+/// `Other` also carries no `stable_id`, so every second swept into it is a
+/// second the correction workbench cannot offer to teach.
+const MINOR_SEGMENT_PERCENT: u64 = 1;
+
+/// How many buckets a day names before the rest folds into `Other`. Twelve
+/// keeps `Other` near a tenth of a typical day while leaving the workbench a
+/// list a person can still read down.
+const MAX_DISPLAY_BUCKETS: usize = 12;
 
 pub fn snapshot(
     repo: &dyn RawEventRepo,
@@ -416,12 +445,16 @@ fn daily_activity(
             end.min(now),
             MAX_DAY_EVENTS,
         )?;
+        // The cap binding is indistinguishable, from inside `aggregate_day`,
+        // from a day that simply ended there.
+        let truncated = events.len() >= MAX_DAY_EVENTS;
         days.push(aggregate_day(
             date,
             events,
             start,
             end.min(now),
             date == today,
+            truncated,
         ));
     }
     Ok(days)
@@ -445,6 +478,7 @@ fn aggregate_day(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     is_today: bool,
+    truncated: bool,
 ) -> LocalDailyActivityDay {
     events.sort_by_key(|event| event.occurred_at);
     let segments = build_segments(events.clone(), start, end);
@@ -465,7 +499,10 @@ fn aggregate_day(
     };
     let coverage = if active_seconds == 0 {
         LocalDashboardCoverage::NoData
-    } else if coverage_ratio < SUFFICIENT_COVERAGE_RATIO {
+    } else if truncated || coverage_ratio < SUFFICIENT_COVERAGE_RATIO {
+        // A day read up to its cap is partial by construction, however well
+        // classified the part that was read happens to be. Calling it `Good`
+        // would attach full confidence to a fraction of a day.
         LocalDashboardCoverage::Partial
     } else {
         LocalDashboardCoverage::Good
@@ -535,8 +572,9 @@ fn aggregate_day(
     for bucket in buckets {
         let is_tiny = bucket.seconds < TINY_SEGMENT_SECONDS
             || (active_seconds > 0
-                && bucket.seconds.saturating_mul(100) < active_seconds.saturating_mul(5));
-        if is_tiny || selected.len() >= 5 {
+                && bucket.seconds.saturating_mul(100)
+                    < active_seconds.saturating_mul(MINOR_SEGMENT_PERCENT));
+        if is_tiny || selected.len() >= MAX_DISPLAY_BUCKETS {
             other_seconds = other_seconds.saturating_add(bucket.seconds);
         } else {
             selected.push(bucket);
@@ -1164,6 +1202,7 @@ mod tests {
             start,
             end,
             false,
+            false,
         );
         assert_eq!(day.active_seconds, 30);
         assert_eq!(
@@ -1185,6 +1224,36 @@ mod tests {
         assert_eq!(rounded_percentage(2, 3), 67);
     }
 
+    /// A day cut off at the read cap describes its earliest events only. The
+    /// part that was read can be perfectly classified, so `coverage_ratio`
+    /// alone would call it Good and hand full confidence to a fraction of a
+    /// day. Truncation has to beat the ratio, not be averaged with it.
+    #[test]
+    fn a_day_cut_off_at_the_read_cap_is_never_reported_as_good_coverage() {
+        let date = NaiveDate::from_ymd_opt(2026, 7, 20).unwrap();
+        let start = DateTime::from_timestamp(0, 0).unwrap();
+        let end = DateTime::from_timestamp(120, 0).unwrap();
+        let fully_classified = vec![measured_event(0, 120, "FOCUS_WORK")];
+
+        let whole = aggregate_day(date, fully_classified.clone(), start, end, false, false);
+        assert_eq!(
+            whole.coverage,
+            LocalDashboardCoverage::Good,
+            "the same evidence, read whole, is good coverage"
+        );
+
+        let truncated = aggregate_day(date, fully_classified, start, end, false, true);
+        assert_eq!(
+            truncated.coverage,
+            LocalDashboardCoverage::Partial,
+            "a day the cap cut short is partial however well the read part classified"
+        );
+        assert_eq!(
+            truncated.active_seconds, whole.active_seconds,
+            "truncation changes the claim about the day, not the seconds actually observed"
+        );
+    }
+
     #[test]
     fn day_aggregation_includes_only_the_overlap_from_an_event_before_midnight() {
         let date = NaiveDate::from_ymd_opt(2026, 7, 20).unwrap();
@@ -1195,6 +1264,7 @@ mod tests {
             vec![measured_event(-60, 120, "FOCUS_WORK")],
             start,
             end,
+            false,
             false,
         );
         assert_eq!(day.active_seconds, 60);
@@ -1218,11 +1288,64 @@ mod tests {
             DateTime::from_timestamp(0, 0).unwrap(),
             DateTime::from_timestamp(900, 0).unwrap(),
             false,
+            false,
         );
         assert!(day.segments.len() <= 6);
         assert_eq!(
             day.segments.last().map(|segment| segment.label.as_str()),
             Some("Other")
+        );
+    }
+
+    /// Many apps of one category is the ordinary shape of a working day, and
+    /// it used to be the shape the display buckets erased. Each of these ten
+    /// reference apps holds 30 seconds of an 1,100-second day — 2.7% each,
+    /// under the old 5% floor and at the old 60-second tiny threshold — so
+    /// every one of them folded into `Other` individually, and a third of the
+    /// day rendered as one grey slice attributed to nothing. Grouping happens
+    /// downstream, by category; the buckets have to survive long enough to
+    /// reach it.
+    #[test]
+    fn many_small_apps_of_one_category_survive_to_be_grouped() {
+        // One dominant app, then ten small ones that each sit below the old
+        // thresholds but above the new ones.
+        let mut events = vec![measured_event(0, 800, "FOCUS_WORK")];
+        events[0].stable_id = "editor".to_owned();
+        for index in 0..10 {
+            let mut value = measured_event(800 + index * 30, 30, "REFERENCE");
+            value.stable_id = format!("reference-app-{index}");
+            value.local_display_label = Some(format!("Reference app {index}"));
+            events.push(value);
+        }
+        let day = aggregate_day(
+            NaiveDate::from_ymd_opt(2026, 7, 20).unwrap(),
+            events,
+            DateTime::from_timestamp(0, 0).unwrap(),
+            DateTime::from_timestamp(1_100, 0).unwrap(),
+            false,
+            false,
+        );
+
+        let other_seconds: u64 = day
+            .segments
+            .iter()
+            .filter(|segment| segment.label == "Other")
+            .map(|segment| segment.duration_seconds)
+            .sum();
+        assert_eq!(
+            other_seconds, 0,
+            "no app in this day is small enough to be nothing"
+        );
+
+        let reference_seconds: u64 = day
+            .segments
+            .iter()
+            .filter(|segment| segment.category.eq_ignore_ascii_case("REFERENCE"))
+            .map(|segment| segment.duration_seconds)
+            .sum();
+        assert_eq!(
+            reference_seconds, 300,
+            "every reference second is attributable to the category it was spent in"
         );
     }
 
@@ -1237,6 +1360,7 @@ mod tests {
             vec![value],
             DateTime::from_timestamp(0, 0).unwrap(),
             DateTime::from_timestamp(120, 0).unwrap(),
+            false,
             false,
         );
         assert_eq!(day.segments[0].label, "Unclassified");
@@ -1410,6 +1534,7 @@ mod tests {
             vec![value],
             DateTime::from_timestamp(0, 0).unwrap(),
             DateTime::from_timestamp(120, 0).unwrap(),
+            false,
             false,
         );
         assert_eq!(day.segments[0].label, sentinel);

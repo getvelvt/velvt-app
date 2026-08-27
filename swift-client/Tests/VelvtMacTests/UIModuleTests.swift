@@ -1388,3 +1388,40 @@ final class LocalWeekActivityTests: XCTestCase {
             "Sat 22, 2h 15m observed, mostly Focus Work")
     }
 }
+
+
+final class CorrectionRowLabelTests: XCTestCase {
+    private func segment(
+        label: String, suggested: String?, confirmed: Bool
+    ) -> LocalDailyActivitySegment {
+        LocalDailyActivitySegment(
+            id: "seg", label: label, stableID: "app",
+            suggestedName: suggested, aliasConfirmed: confirmed,
+            category: "FOCUS_WORK", durationSeconds: 600, percentage: 50,
+            confidence: .high, explanation: nil
+        )
+    }
+
+    /// The exact defect a user reported: every Chrome-hosted activity — Coding,
+    /// YouTube, Gmail, GitHub — rendered as "Google Chrome", because the row
+    /// preferred the unconfirmed suggestion over the classified label. On a real
+    /// machine that was 5,285 of roughly 18,000 events wearing the one label
+    /// this product exists not to show.
+    func testAnUnconfirmedSuggestionDoesNotReplaceTheClassifiedLabel() {
+        let coding = segment(label: "Coding", suggested: "Google Chrome", confirmed: false)
+        XCTAssertEqual(LocalActivityCorrectionList.rowLabel(for: coding), "Coding")
+    }
+
+    /// Once the user adopts the suggestion it IS the name, and hiding it then
+    /// would discard the correction they just made.
+    func testAConfirmedAliasBecomesTheName() {
+        let adopted = segment(label: "Coding", suggested: "My Editor", confirmed: true)
+        XCTAssertEqual(LocalActivityCorrectionList.rowLabel(for: adopted), "My Editor")
+    }
+
+    /// Confirmation with nothing to confirm must not blank the row.
+    func testAConfirmedSegmentWithNoSuggestionKeepsItsLabel() {
+        let bare = segment(label: "Writing", suggested: nil, confirmed: true)
+        XCTAssertEqual(LocalActivityCorrectionList.rowLabel(for: bare), "Writing")
+    }
+}

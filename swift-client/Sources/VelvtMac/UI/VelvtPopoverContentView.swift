@@ -1657,6 +1657,24 @@ public struct LocalActivityCorrectionList: View {
     Self.selectedSegment(stableID: selectedStableID, in: snapshot)
   }
 
+  /// What this row calls the activity.
+  ///
+  /// The classified label, not `suggestedName`. `suggestedName` is the raw
+  /// macOS application name, offered in the detail pane as something the user
+  /// may adopt — the "Use suggestion" button exists precisely because it has
+  /// not been adopted yet, and the detail pane labels it "Local-only
+  /// suggestion" rather than a name. Preferring it here overwrote the point of
+  /// the classifier: on a real machine 5,285 events the service had resolved to
+  /// Coding, YouTube, Gmail and GitHub all rendered as "Google Chrome", which is
+  /// both wrong and the single label this product exists not to show. Once the
+  /// user confirms the alias it becomes the name, and then it is shown.
+  static func rowLabel(for segment: LocalDailyActivitySegment) -> String {
+    guard segment.aliasConfirmed, let confirmed = segment.suggestedName else {
+      return segment.label
+    }
+    return confirmed
+  }
+
   private func activityRow(_ segment: LocalDailyActivitySegment) -> some View {
     let isSelected = segment.stableID != nil && segment.stableID == selectedStableID
     return Button {
@@ -1670,7 +1688,14 @@ public struct LocalActivityCorrectionList: View {
       }
     } label: {
       HStack(spacing: 8) {
-        Text(segment.suggestedName ?? segment.label)
+        // The classified label, not the suggestion. `suggestedName` is the raw
+        // macOS application name, offered in the detail pane as something the
+        // user may adopt — the "Use suggestion" button exists precisely because
+        // it has not been adopted yet. Preferring it here overwrote the whole
+        // point of the classifier: 5,285 events that the service had resolved
+        // to Coding, YouTube, Gmail and GitHub all rendered as "Google Chrome",
+        // which is the one label the product exists not to show.
+        Text(Self.rowLabel(for: segment))
           .font(.caption)
           .lineLimit(1)
           .truncationMode(.tail)

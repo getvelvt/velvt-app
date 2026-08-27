@@ -148,7 +148,9 @@ struct LocalWeekActivityView: View {
                 if hasAnyActivity {
                     LocalActivityLegend(
                         entries: ActivityPalette.rank(secondsByCategory).compactMap { entry in
-                            palette[entry.key].map { (category: entry.key, color: $0) }
+                            palette[entry.key].map {
+                                (category: entry.key, color: $0, seconds: entry.value)
+                            }
                         }
                     )
                     .padding(.top, 2)
@@ -225,8 +227,12 @@ private struct LocalSplitActivityBar: View {
                                 width: max(
                                     5,
                                     proxy.size.width * CGFloat(slice.seconds) / CGFloat(total)))
+                            // `.help` is delivered through the accessibility
+                            // tree, so hiding the slice from that tree silences
+                            // the tooltip along with it. The row above already
+                            // sets an explicit combined label, so nothing here
+                            // is announced twice.
                             .help(text)
-                            .accessibilityHidden(true)
                     }
                 }
             }
@@ -246,17 +252,14 @@ private struct LocalSplitActivityBar: View {
     }
 }
 
-/// Names the colours. Without it the bars are decoration.
+/// Names the colours and states the totals behind them.
+///
+/// Carrying the time here rather than only in a tooltip is deliberate: a number
+/// a person has to discover by hovering a nine-point bar is a number most people
+/// never see, and the totals are the part of this chart that is actually a
+/// claim. The tooltip still gives the per-day split.
 private struct LocalActivityLegend: View {
-    let entries: [(category: String, color: Color)]
-
-    var body: some View {
-        FlowingLegend(entries: entries)
-    }
-}
-
-private struct FlowingLegend: View {
-    let entries: [(category: String, color: Color)]
+    let entries: [(category: String, color: Color, seconds: Int)]
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -276,7 +279,14 @@ private struct FlowingLegend: View {
                     .font(.caption2)
                     .foregroundStyle(Color.velvtMuted)
                     .lineLimit(1)
+                Text(DaySummaryViewModel.formatActiveTime(entry.seconds))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(Color.velvtText)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                "\(localCategoryLabel(entry.category)), \(DaySummaryViewModel.formatActiveTime(entry.seconds)) across the window"
+            )
         }
     }
 }

@@ -145,7 +145,14 @@ impl ServiceConfig {
         // empty on every real install. This is still the tightest retention in
         // PRIVACY.md — the same safe events live 30 days in `upload_batch` —
         // and the rows are local-only, abstracted metadata.
-        let raw_event_ttl_hours = parse_env("VELVT_RAW_EVENT_TTL_HOURS", 168_u64)?;
+        // Covers `DAILY_ACTIVITY_DAYS`. A TTL shorter than the rendered window
+        // does not show "no activity" for the oldest days — it shows deleted
+        // evidence drawn as zeroes, which is why the two are pinned together by
+        // a test rather than left as two numbers that happen to match.
+        let raw_event_ttl_hours = parse_env(
+            "VELVT_RAW_EVENT_TTL_HOURS",
+            crate::dashboard::DAILY_ACTIVITY_DAYS as u64 * 24,
+        )?;
         let raw_event_expiry_interval_minutes =
             parse_env("VELVT_RAW_EVENT_EXPIRY_INTERVAL_MINUTES", 30_u64)?;
         let retention_batch_size = parse_env("VELVT_RETENTION_BATCH_SIZE", 500_usize)?;

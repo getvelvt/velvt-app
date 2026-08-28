@@ -40,7 +40,22 @@ const MAX_EVENT_DURATION_SECONDS: i64 = 30 * 60;
 /// this window: a shorter TTL renders the oldest days as permanent zeroes
 /// rather than as missing data. `raw_event_retention_covers_daily_activity`
 /// in `config` pins the relationship.
-pub const DAILY_ACTIVITY_DAYS: i64 = 7;
+/// How many local days the Patterns chart covers.
+///
+/// This number appeared in three places that had to agree and could not be
+/// changed in one: here, the outbound validator's `!= 7`, and the retention TTL
+/// that decides whether the oldest days still have evidence to draw. The
+/// validator now reads this constant, and `config::raw_event_retention_covers_daily_activity`
+/// fails the build if the TTL stops covering the window — so raising it is one
+/// edit here plus one to `VELVT_RAW_EVENT_TTL_HOURS`, and forgetting the second
+/// is a red test rather than seven days silently drawn as zeroes.
+///
+/// Fourteen rather than seven: these rows are abstracted, local-only metadata,
+/// and the same events already persist thirty days in `upload_batch`, so the
+/// window was the shorter of the two bounds for no reason a user benefits from.
+/// A person who wants the original seven sets `VELVT_RAW_EVENT_TTL_HOURS=168`
+/// and changes this to 7.
+pub const DAILY_ACTIVITY_DAYS: i64 = 14;
 const EARLY_SIGNAL_REQUIRED_SECONDS: u64 = 60;
 const EARLY_SIGNAL_ACTION_MINUTES: u32 = 10;
 pub const SWITCHING_CLUSTER_RULE_VERSION: u32 = 1;

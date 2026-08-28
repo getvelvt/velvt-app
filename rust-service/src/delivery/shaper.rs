@@ -191,7 +191,7 @@ impl ValidatePayload for LocalDashboardSnapshot {
                 return Err(ValidationError::OutOfRange { field: "segment" });
             }
         }
-        if self.daily_activity.len() != 7
+        if self.daily_activity.len() != crate::dashboard::DAILY_ACTIVITY_DAYS as usize
             || self.daily_activity.iter().any(|day| {
                 day.segments.len() > crate::dashboard::MAX_DAILY_ACTIVITY_SEGMENTS
                     || day.segments.iter().any(|segment| segment.percentage > 100)

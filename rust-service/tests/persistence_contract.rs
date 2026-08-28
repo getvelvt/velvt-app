@@ -45,7 +45,7 @@ fn work_block_record(block_id: &str, started_at: DateTime<Utc>) -> WorkBlockReco
 }
 
 #[test]
-fn bounded_seven_day_dashboard_query_is_indexed_and_measured() {
+fn bounded_daily_activity_query_is_indexed_and_measured() {
     let database = database();
     let repository = database.raw_event_repo();
     let now = Utc::now();
@@ -76,7 +76,11 @@ fn bounded_seven_day_dashboard_query_is_indexed_and_measured() {
     let result = dashboard::snapshot(&*repository, None, now, 3_600, 0).unwrap();
     let elapsed = started.elapsed();
 
-    assert_eq!(result.daily_activity.len(), 7);
+    assert_eq!(
+        result.daily_activity.len(),
+        dashboard::DAILY_ACTIVITY_DAYS as usize,
+        "the window is one constant; this test measures that it stays indexed, not that it stays seven"
+    );
     assert!(
         elapsed < std::time::Duration::from_millis(250),
         "bounded query took {elapsed:?}"

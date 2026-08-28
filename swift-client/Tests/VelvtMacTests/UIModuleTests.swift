@@ -1485,3 +1485,52 @@ final class ServiceStatusAlertTests: XCTestCase {
         }
     }
 }
+
+
+@MainActor
+final class WeeklyDigestReachabilityTests: XCTestCase {
+    private func source(_ name: String) throws -> String {
+        try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/VelvtMac/UI/\(name)"),
+            encoding: .utf8)
+    }
+
+    /// The digest was reachable only from inside the focus-session sheet, so a
+    /// correct, completed week of receipts sat unread unless the user happened
+    /// to press "Start a focus session". A weekly summary belongs on the tab
+    /// named for the week. Asserted against the source because view composition
+    /// is not observable from a unit test and this is one line to undo.
+    func testTheWeeklyDigestIsReachableFromThePatternsTab() throws {
+        let menuBar = try source("MenuBarPopoverView.swift")
+
+        XCTAssertTrue(
+            menuBar.contains("WeeklyDigestCard(digest: weeklyDigest"),
+            "the Patterns tab must render the digest, not only the focus sheet")
+        XCTAssertTrue(
+            menuBar.contains("weeklyDigest: workBlockCoordinator.weeklyDigest"),
+            "the Patterns tab must be fed the digest from the work-block coordinator")
+    }
+
+    /// Extracting the card must not remove it from where it already worked.
+    func testTheFocusSessionSheetStillShowsTheDigest() throws {
+        let workBlock = try source("WorkBlockView.swift")
+        XCTAssertTrue(
+            workBlock.contains("weeklyDigestCard(digest)"),
+            "the focus sheet keeps the digest it has always had")
+        XCTAssertTrue(
+            workBlock.contains("WeeklyDigestCard(digest: digest"),
+            "and renders it through the shared card")
+    }
+
+    /// One acknowledgement, one dismissal. Both surfaces read the same
+    /// coordinator, so clearing it anywhere clears it everywhere.
+    func testAcknowledgingIsSharedBetweenBothSurfaces() throws {
+        let menuBar = try source("MenuBarPopoverView.swift")
+        let workBlock = try source("WorkBlockView.swift")
+        XCTAssertTrue(menuBar.contains("onAcknowledgeDigest: workBlockCoordinator.acknowledgeWeeklyDigest"))
+        XCTAssertTrue(workBlock.contains("onAcknowledge: coordinator.acknowledgeWeeklyDigest"))
+    }
+}

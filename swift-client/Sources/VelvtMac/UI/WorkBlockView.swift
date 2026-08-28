@@ -349,52 +349,8 @@ public struct WorkBlockView: View {
   /// Recoveries and completions lead, the wrong-intervention count appears
   /// exactly once, and every number is the stored count verbatim.
   private func weeklyDigestCard(_ digest: WeeklyDigest) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Label(DigestFraming.digestTitle, systemImage: "doc.plaintext")
-        .font(.subheadline.bold())
-
-      Text(digest.headline)
-        .font(.caption)
-        .fixedSize(horizontal: false, vertical: true)
-
-      VStack(alignment: .leading, spacing: 3) {
-        digestRow(DigestFraming.returnedLabel, digest.recoveries)
-        digestRow(DigestFraming.completedLabel, digest.blocksCompleted)
-        digestRow(DigestFraming.declaredLabel, digest.blocksDeclared)
-        digestRow(DigestFraming.invitationsLabel, digest.invitationsAccepted)
-        digestRow(DigestFraming.wrongLabel, digest.wrongInterventions)
-        digestRow(DigestFraming.withheldLabel, digest.withheld)
-      }
-
-      HStack(spacing: 8) {
-        Button(DigestFraming.acknowledgeLabel) {
-          coordinator.acknowledgeWeeklyDigest()
-        }
-        .controlSize(.small)
-        .accessibilityHint("Closes this week's receipts")
-
-        Spacer(minLength: 0)
-      }
-    }
-    .padding(10)
-    .background(Color.primary.opacity(0.06))
-    .clipShape(RoundedRectangle(cornerRadius: 8))
-    .padding([.horizontal, .top], 16)
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("Weekly receipts. \(digest.headline)")
-  }
-
-  private func digestRow(_ label: String, _ count: Int) -> some View {
-    HStack {
-      Text(label)
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-      Spacer(minLength: 8)
-      Text("\(count)")
-        .font(.caption2.bold().monospacedDigit())
-    }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel("\(label), \(count)")
+    WeeklyDigestCard(digest: digest, onAcknowledge: coordinator.acknowledgeWeeklyDigest)
+      .padding([.horizontal, .top], 16)
   }
 
   /// The next-morning quiet-hours offer. One tap accepts; declining is a
@@ -795,4 +751,68 @@ public struct WorkBlockView: View {
 
 extension String {
   fileprivate var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// This week's receipts, as their own view so more than one surface can show
+/// them.
+///
+/// The digest used to be reachable only from inside the focus-session sheet,
+/// behind "Start a focus session" — so a completed week's receipts existed,
+/// were correct, and were invisible unless the user happened to open the one
+/// sheet that renders them. A summary of the week belongs on the tab named for
+/// the week. Acknowledging in either place clears it in both, because both read
+/// the same coordinator.
+public struct WeeklyDigestCard: View {
+  let digest: WeeklyDigest
+  let onAcknowledge: () -> Void
+
+  public init(digest: WeeklyDigest, onAcknowledge: @escaping () -> Void) {
+    self.digest = digest
+    self.onAcknowledge = onAcknowledge
+  }
+
+  public var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label(DigestFraming.digestTitle, systemImage: "doc.plaintext")
+        .font(.subheadline.bold())
+
+      Text(digest.headline)
+        .font(.caption)
+        .fixedSize(horizontal: false, vertical: true)
+
+      VStack(alignment: .leading, spacing: 3) {
+        row(DigestFraming.returnedLabel, digest.recoveries)
+        row(DigestFraming.completedLabel, digest.blocksCompleted)
+        row(DigestFraming.declaredLabel, digest.blocksDeclared)
+        row(DigestFraming.invitationsLabel, digest.invitationsAccepted)
+        row(DigestFraming.wrongLabel, digest.wrongInterventions)
+        row(DigestFraming.withheldLabel, digest.withheld)
+      }
+
+      HStack(spacing: 8) {
+        Button(DigestFraming.acknowledgeLabel, action: onAcknowledge)
+          .controlSize(.small)
+          .accessibilityHint("Closes this week's receipts")
+        Spacer(minLength: 0)
+      }
+    }
+    .padding(10)
+    .background(Color.primary.opacity(0.06))
+    .clipShape(RoundedRectangle(cornerRadius: 8))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Weekly receipts. \(digest.headline)")
+  }
+
+  private func row(_ label: String, _ count: Int) -> some View {
+    HStack {
+      Text(label)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+      Spacer(minLength: 8)
+      Text("\(count)")
+        .font(.caption2.bold().monospacedDigit())
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("\(label), \(count)")
+  }
 }

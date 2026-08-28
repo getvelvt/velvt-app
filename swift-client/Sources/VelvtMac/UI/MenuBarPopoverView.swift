@@ -11,13 +11,16 @@ public enum MenuBarAccountAction: Equatable {
 private struct HistoryWorkspaceView: View {
     @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
     @ObservedObject var localDashboardCoordinator: LocalDashboardCoordinator
+    @ObservedObject var workBlockCoordinator: WorkBlockCoordinator
 
     var body: some View {
         YourWeekContentView(
             snapshot: localDashboardCoordinator.snapshot,
             historyAvailability: coordinator.historyAvailability,
             historyNotReadyReason: coordinator.historyNotReadyReason,
-            historyViewModel: coordinator.historyViewModel
+            historyViewModel: coordinator.historyViewModel,
+            weeklyDigest: workBlockCoordinator.weeklyDigest,
+            onAcknowledgeDigest: workBlockCoordinator.acknowledgeWeeklyDigest
         )
         .onAppear { localDashboardCoordinator.refresh() }
     }
@@ -44,12 +47,20 @@ struct YourWeekContentView: View {
     let historyAvailability: DeliveryAvailability
     var historyNotReadyReason: String? = nil
     @ObservedObject var historyViewModel: HistoryViewModel
+    /// This week's receipts. They were reachable only from inside the
+    /// focus-session sheet, so a completed week could sit correct and unread
+    /// unless the user happened to open the one surface that drew them.
+    var weeklyDigest: WeeklyDigest? = nil
+    var onAcknowledgeDigest: () -> Void = {}
 
     var body: some View {
         // No scroll view of its own: the workspace detail pane scrolls every
         // tab now, and nesting two scroll views made the inner one swallow
         // the wheel events that should have moved the outer one.
         VStack(alignment: .leading, spacing: 12) {
+            if let weeklyDigest {
+                WeeklyDigestCard(digest: weeklyDigest, onAcknowledge: onAcknowledgeDigest)
+            }
             LocalWeekActivityView(days: snapshot?.dailyActivity ?? [])
             WeekOverWeekCoachingView(
                 availability: historyAvailability,
@@ -1765,7 +1776,8 @@ public struct MenuBarPopoverView: View {
             case .history:
                 HistoryWorkspaceView(
                     coordinator: coordinator,
-                    localDashboardCoordinator: localDashboardCoordinator
+                    localDashboardCoordinator: localDashboardCoordinator,
+                    workBlockCoordinator: workBlockCoordinator
                 )
                 .tourHighlight(guidedTour.isPresented && guidedTour.step == .dailyActivity)
 

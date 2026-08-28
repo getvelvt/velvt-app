@@ -557,6 +557,8 @@ public struct MinimalDashboardWorkspaceView: View {
         CompactWorkBlockControl(snapshot: snapshot, coordinator: workBlockCoordinator)
       }
 
+      TodaySoFarView(day: localDashboardCoordinator.snapshot?.dailyActivity.last)
+
       latestInsight
         .tourHighlight(highlightsInsight)
 
@@ -615,6 +617,83 @@ public struct MinimalDashboardWorkspaceView: View {
     }
   }
 
+}
+
+/// Today, as a total.
+///
+/// Every other local surface answers a different question: the early signal
+/// covers the last hour, the fragmentation card covers the current block, and
+/// the Patterns chart covers seven days at a glance. None of them answered
+/// "what have I done today", which is the question a person actually opens a
+/// menu-bar app to ask, and the one the app could already answer — Rust builds
+/// today as the last row of `daily_activity` on every snapshot.
+///
+/// It states observed time and where it went. It does not score the day,
+/// compare it to another day, or say whether it was good, because none of those
+/// are things this evidence supports.
+struct TodaySoFarView: View {
+  let day: LocalDailyActivityDay?
+
+  private var slices: [(category: String, seconds: Int)] {
+    guard let day else { return [] }
+    return LocalWeekActivityView.slices(for: day)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(alignment: .firstTextBaseline) {
+        Label("Today so far", systemImage: "sun.max")
+          .font(.caption.bold())
+          .foregroundStyle(Color.velvtText)
+        Spacer(minLength: 8)
+        Text(observedText)
+          .font(.caption.monospacedDigit())
+          .foregroundStyle(Color.velvtMuted)
+      }
+
+      if slices.isEmpty {
+        Text("Nothing observed yet today.")
+          .font(.caption2)
+          .foregroundStyle(Color.velvtMuted)
+      } else {
+        VStack(alignment: .leading, spacing: 2) {
+          ForEach(slices.prefix(3), id: \.category) { slice in
+            HStack(spacing: 6) {
+              Text(localCategoryLabel(slice.category))
+                .font(.caption2)
+                .foregroundStyle(Color.velvtMuted)
+                .lineLimit(1)
+              Spacer(minLength: 8)
+              Text(DaySummaryViewModel.formatActiveTime(slice.seconds))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(Color.velvtText)
+            }
+          }
+        }
+      }
+    }
+    .padding(10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(Color.velvtPanel)
+    .clipShape(RoundedRectangle(cornerRadius: 8))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(Self.spokenSummary(for: day))
+  }
+
+  private var observedText: String {
+    guard let day, day.activeSeconds > 0 else { return "—" }
+    return "\(DaySummaryViewModel.formatActiveTime(day.activeSeconds)) observed"
+  }
+
+  /// One sentence carrying the same three facts the card shows.
+  static func spokenSummary(for day: LocalDailyActivityDay?) -> String {
+    guard let day, day.activeSeconds > 0 else { return "Today so far, nothing observed yet" }
+    let time = DaySummaryViewModel.formatActiveTime(day.activeSeconds)
+    guard let top = LocalWeekActivityView.slices(for: day).first else {
+      return "Today so far, \(time) observed"
+    }
+    return "Today so far, \(time) observed, mostly \(localCategoryLabel(top.category))"
+  }
 }
 
 /// The one-line live control that sits above the evidence card while a block

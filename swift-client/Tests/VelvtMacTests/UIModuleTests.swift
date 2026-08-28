@@ -1534,3 +1534,52 @@ final class WeeklyDigestReachabilityTests: XCTestCase {
         XCTAssertTrue(workBlock.contains("onAcknowledge: coordinator.acknowledgeWeeklyDigest"))
     }
 }
+
+
+@MainActor
+final class TodaySoFarTests: XCTestCase {
+    private func day(_ activeSeconds: Int, _ segments: [(String, Int)]) -> LocalDailyActivityDay {
+        LocalDailyActivityDay(
+            id: "2026-08-27", date: "2026-08-27",
+            state: segments.isEmpty ? .noData : .ready,
+            activeSeconds: activeSeconds,
+            coverage: segments.isEmpty ? .noData : .good,
+            segments: segments.enumerated().map { index, pair in
+                LocalDailyActivitySegment(
+                    id: "s\(index)", label: pair.0, stableID: "app\(index)",
+                    category: pair.0, durationSeconds: pair.1, percentage: 0,
+                    confidence: .high, explanation: nil)
+            })
+    }
+
+    /// The question a person opens a menu-bar app to ask. Every other local
+    /// surface answers a different one — the last hour, the current block, or
+    /// seven days at a glance.
+    func testTodayNamesTheTimeAndWhereItWent() {
+        let today = day(11_700, [("FOCUS_WORK", 7_200), ("REFERENCE", 4_500)])
+        XCTAssertEqual(
+            TodaySoFarView.spokenSummary(for: today),
+            "Today so far, 3h 15m observed, mostly Focus Work")
+    }
+
+    /// Before anything is observed the card must say so rather than render a
+    /// confident-looking zero.
+    func testAnEmptyDaySaysSoRatherThanShowingZero() {
+        XCTAssertEqual(
+            TodaySoFarView.spokenSummary(for: day(0, [])),
+            "Today so far, nothing observed yet")
+        XCTAssertEqual(
+            TodaySoFarView.spokenSummary(for: nil),
+            "Today so far, nothing observed yet")
+    }
+
+    /// Today is the LAST element of daily_activity: Rust walks the window from
+    /// oldest to newest (dashboard.rs:394 iterates days_ago in reverse), so
+    /// reading .first would silently report a week ago as today.
+    func testTodayIsTheLastDayOfTheWindowNotTheFirst() {
+        let week = [day(60, [("REFERENCE", 60)]), day(11_700, [("FOCUS_WORK", 11_700)])]
+        XCTAssertEqual(
+            TodaySoFarView.spokenSummary(for: week.last),
+            "Today so far, 3h 15m observed, mostly Focus Work")
+    }
+}

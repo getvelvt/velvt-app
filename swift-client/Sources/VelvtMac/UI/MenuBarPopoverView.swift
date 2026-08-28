@@ -573,8 +573,52 @@ public final class ServiceAlertModel: ObservableObject {
                 title: "Service error",
                 message: error.message
             )
+        case .serviceStatus(let status):
+            return alert(forServiceState: status)
         default:
             return nil
+        }
+    }
+
+    /// The service reporting on itself.
+    ///
+    /// Rust sends this on every connection and on every health transition, and
+    /// the client decoded it and dropped it — so an app that had stopped
+    /// uploading, or had degraded to coarser classification, looked exactly
+    /// like one working perfectly. Two states are deliberately silent: `ready`
+    /// has nothing to say, and a refresh already in flight resolves itself in
+    /// seconds, so surfacing it would be a banner that exists to flicker.
+    ///
+    /// Every message here names what still works. In each of these states local
+    /// collection and every local surface are unaffected, and saying so is the
+    /// difference between a status and a scare.
+    static func alert(forServiceState status: ServiceStatus) -> ServiceAlert? {
+        switch status.state {
+        case .ready:
+            return nil
+        case .degraded where status.reason == "auth_refresh_in_flight":
+            return nil
+        case .degraded:
+            return ServiceAlert(
+                severity: .warning,
+                title: "Reduced classification",
+                message:
+                    "Velvt is labelling activity with its basic rules for now. Collection and your local history are unaffected."
+            )
+        case .authRequired:
+            return ServiceAlert(
+                severity: .warning,
+                title: "Signed out",
+                message:
+                    "Cloud sync is paused until you sign in. Collection and your local history continue on this Mac."
+            )
+        case .uploadPaused:
+            return ServiceAlert(
+                severity: .warning,
+                title: "Uploads paused",
+                message:
+                    "This device is no longer authorised to sync. Sign in again to resume. Collection and your local history continue on this Mac."
+            )
         }
     }
 }

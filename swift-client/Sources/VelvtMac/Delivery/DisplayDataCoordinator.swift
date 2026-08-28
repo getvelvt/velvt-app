@@ -338,6 +338,17 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     /// own outage.
     @Published public private(set) var historyNotReadyReason: String?
 
+    /// The service's own account of its health, which the client used to
+    /// decode and drop on the floor.
+    ///
+    /// Rust reports this on every connection — derived from auth state at
+    /// `ipc/connection.rs:381` — and on health transitions such as Tier 2
+    /// classification becoming unavailable (`delivery/push.rs:354`). Nothing in
+    /// Swift referenced it outside its own decoder, so an app running degraded,
+    /// signed out, or with uploads paused looked exactly like one running
+    /// perfectly.
+    @Published public private(set) var serviceStatus: ServiceStatus?
+
     public var displayState: AnyPublisher<DisplayState, Never> {
         $state.eraseToAnyPublisher()
     }
@@ -388,6 +399,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
                 case .insightPayload(let p): self.updateInsight(p)
                 case .historyPayload(let p): self.updateHistory(p)
                 case .cacheEmpty(let empty): self.handleCacheEmpty(empty)
+                case .serviceStatus(let status): self.serviceStatus = status
                 default: break
                 }
             }

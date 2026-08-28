@@ -1425,3 +1425,63 @@ final class CorrectionRowLabelTests: XCTestCase {
         XCTAssertEqual(LocalActivityCorrectionList.rowLabel(for: bare), "Writing")
     }
 }
+
+
+@MainActor
+final class ServiceStatusAlertTests: XCTestCase {
+    private func status(_ state: ServiceState, _ reason: String?) -> ServiceStatus {
+        ServiceStatus(state: state, reason: reason)
+    }
+
+    /// Rust reports its health on every connection and on every transition, and
+    /// the client decoded the message and dropped it. An app that had stopped
+    /// uploading, or degraded to coarser labelling, looked exactly like one
+    /// working perfectly.
+    func testDegradedAndPausedStatesAreSurfaced() {
+        XCTAssertNotNil(
+            ServiceAlertModel.alert(forServiceState: status(.degraded, "tier_two_unavailable")))
+        XCTAssertNotNil(
+            ServiceAlertModel.alert(forServiceState: status(.authRequired, "needs_reauth")))
+        XCTAssertNotNil(
+            ServiceAlertModel.alert(forServiceState: status(.uploadPaused, "device_revoked")))
+    }
+
+    /// A healthy service has nothing to say, and a refresh already in flight
+    /// resolves itself in seconds — a banner for it would exist only to flicker.
+    func testHealthyAndTransientStatesStaySilent() {
+        XCTAssertNil(ServiceAlertModel.alert(forServiceState: status(.ready, nil)))
+        XCTAssertNil(
+            ServiceAlertModel.alert(forServiceState: status(.degraded, "auth_refresh_in_flight")))
+    }
+
+    /// The defect was not the copy — it was that the message never reached any
+    /// copy at all. `ServerMessage.serviceStatus` fell through to `default:
+    /// break` in the coordinator and to `default: return nil` in the alert
+    /// dispatcher, so this asserts the dispatch itself, not just the strings.
+    func testAServiceStatusMessageReachesTheAlertDispatcher() {
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let model = ServiceAlertModel(messages: messages)
+
+        messages.send(
+            .serviceStatus(ServiceStatus(state: .uploadPaused, reason: "device_revoked")))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(
+            model.alert?.title, "Uploads paused",
+            "a service-health message must not be swallowed by the default case")
+    }
+
+    /// Every one of these states leaves local collection running. A status that
+    /// reads as total failure would send a user to uninstall over a paused
+    /// upload queue.
+    func testEverySurfacedStateSaysWhatStillWorks() {
+        for state in [ServiceState.degraded, .authRequired, .uploadPaused] {
+            let alert = ServiceAlertModel.alert(forServiceState: status(state, "x"))
+            XCTAssertNotNil(alert, "\(state) must be surfaced")
+            XCTAssertTrue(
+                alert?.message.contains("Collection") == true
+                    || alert?.message.contains("collection") == true,
+                "\(state) must name what is unaffected, got: \(alert?.message ?? "nil")")
+        }
+    }
+}

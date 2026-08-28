@@ -1471,6 +1471,43 @@ final class ServiceStatusAlertTests: XCTestCase {
             "a service-health message must not be swallowed by the default case")
     }
 
+    /// The defect a user hit: signed in, and told to sign in, permanently.
+    ///
+    /// Rust sends a status on every auth transition, and at connect time —
+    /// before the Keychain token has loaded — that status is `auth_required`.
+    /// The banner went up correctly and then could never come down, because the
+    /// subscription used `compactMap`, which drops the nil that means "healthy".
+    func testSigningInClearsTheSignedOutBanner() {
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let model = ServiceAlertModel(messages: messages)
+
+        messages.send(.serviceStatus(ServiceStatus(state: .authRequired, reason: "needs_reauth")))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(model.alert?.title, "Signed out", "the banner must appear while signed out")
+
+        messages.send(.serviceStatus(ServiceStatus(state: .ready, reason: nil)))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertNil(model.alert, "a healthy status must clear a stale banner")
+    }
+
+    /// Clearing has to be caused by good news, not by traffic. An insight
+    /// arriving says nothing about whether uploads are paused, and treating it
+    /// as reassurance would hide a real problem behind ordinary chatter.
+    func testAnUnrelatedMessageDoesNotClearTheBanner() {
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let model = ServiceAlertModel(messages: messages)
+
+        messages.send(.serviceStatus(ServiceStatus(state: .uploadPaused, reason: "device_revoked")))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertNotNil(model.alert)
+
+        messages.send(.cacheEmpty(CacheEmpty(payloadType: "history_payload", reason: nil)))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(
+            model.alert?.title, "Uploads paused",
+            "an unrelated message must leave a real alert standing")
+    }
+
     /// Every one of these states leaves local collection running. A status that
     /// reads as total failure would send a user to uninstall over a paused
     /// upload queue.

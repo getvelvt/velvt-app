@@ -546,12 +546,42 @@ public final class ServiceAlertModel: ObservableObject {
     @Published public private(set) var alert: ServiceAlert?
     private var cancellable: AnyCancellable?
 
+    /// Three outcomes, not two.
+    ///
+    /// This used to be `compactMap(alert(for:))`, which drops nils — so a
+    /// message reporting good health was indistinguishable from a message about
+    /// something else entirely, and neither could clear a banner. Rust sends a
+    /// status on every auth transition (`ipc/connection.rs:219`), and at connect
+    /// time, before the Keychain token has loaded, that status is
+    /// `auth_required`. The banner was raised on the way up and then had no way
+    /// back down: a signed-in user was told to sign in, permanently.
+    enum HealthUpdate {
+        /// This message says nothing about service health. Leave the banner alone.
+        case noOpinion
+        /// The service is healthy. Anything on screen is stale.
+        case clear
+        case raise(ServiceAlert)
+    }
+
     public init(messages: some Publisher<ServerMessage, Never>) {
-    cancellable =
-      messages
+        cancellable =
+            messages
             .receive(on: RunLoop.main)
-            .compactMap(Self.alert(for:))
-            .sink { [weak self] in self?.alert = $0 }
+            .sink { [weak self] message in
+                switch Self.healthUpdate(for: message) {
+                case .noOpinion: break
+                case .clear: self?.alert = nil
+                case .raise(let alert): self?.alert = alert
+                }
+            }
+    }
+
+    static func healthUpdate(for message: ServerMessage) -> HealthUpdate {
+        if case .serviceStatus(let status) = message {
+            // A status message always has an opinion; that is what it is for.
+            return alert(forServiceState: status).map(HealthUpdate.raise) ?? .clear
+        }
+        return alert(for: message).map(HealthUpdate.raise) ?? .noOpinion
     }
 
     public func dismiss() {

@@ -1583,3 +1583,63 @@ final class TodaySoFarTests: XCTestCase {
             "Today so far, 3h 15m observed, mostly Focus Work")
     }
 }
+
+
+final class LocalDataExportTests: XCTestCase {
+    private func snapshot() -> LocalDashboardSnapshot? {
+        let json = """
+        {"generated_at":"2026-08-27T10:00:00Z","window_start":"2026-08-27T09:00:00Z",
+         "window_end":"2026-08-27T10:00:00Z","switch_count":4,"switches_per_hour":4.0,
+         "coverage":"good",
+         "early_signal":{"status":"ready","observed_through":"2026-08-27T10:00:00Z",
+           "observed_seconds":600,"required_seconds":0,"evidence_event_count":10,
+           "focused_seconds":600,"meaningful_switch_count":4,
+           "longest_uninterrupted_seconds":300,"action_minutes":10},
+         "segments":[],
+         "daily_activity":[{"id":"d1","date":"2026-08-27","state":"ready",
+           "active_seconds":3600,"coverage":"good",
+           "segments":[{"id":"s1","label":"Coding","category":"FOCUS_WORK",
+             "alias_confirmed":false,"duration_seconds":3600,"percentage":100,
+             "confidence":"high"}]}]}
+        """
+        return try? IPCMessageCodec.makeDecoder()
+            .decode(LocalDashboardSnapshot.self, from: Data(json.utf8))
+    }
+
+    /// A product arguing "your data stays on your device" has to be able to
+    /// hand it back. There was no export of any kind before this.
+    func testTheExportCarriesTheObservationsTheUserWasShown() throws {
+        let export = LocalDataExport(
+            snapshot: snapshot(), digest: nil,
+            exportedAt: Date(timeIntervalSince1970: 1_787_000_000))
+
+        XCTAssertEqual(export.days.count, 1)
+        XCTAssertEqual(export.days.first?.observedSeconds, 3600)
+        XCTAssertEqual(export.days.first?.activities.first?.label, "Coding")
+        XCTAssertEqual(export.days.first?.activities.first?.category, "FOCUS_WORK")
+    }
+
+    /// A partial export that implies completeness is worse than none, so the
+    /// document says where the rest lives.
+    func testTheExportSaysWhereTheFullDatabaseIs() {
+        let export = LocalDataExport(snapshot: nil, digest: nil, exportedAt: Date())
+        XCTAssertTrue(export.rawDatabaseNote.contains("velvt-service.sqlite3"))
+        XCTAssertEqual(export.schema, "velvt.local-export.v1")
+    }
+
+    /// Same data, same bytes — a file a person can diff.
+    func testTheEncodingIsStableAcrossRuns() throws {
+        let at = Date(timeIntervalSince1970: 1_787_000_000)
+        let first = try LocalDataExport(snapshot: snapshot(), digest: nil, exportedAt: at).encoded()
+        let second = try LocalDataExport(snapshot: snapshot(), digest: nil, exportedAt: at).encoded()
+        XCTAssertEqual(first, second)
+        XCTAssertTrue(String(decoding: first, as: UTF8.self).contains("\"observed_seconds\" : 3600"))
+    }
+
+    /// Exporting twice in one day must not silently overwrite the first file.
+    func testTheSuggestedFilenameIsDated() {
+        let name = LocalDataExport.suggestedFilename(for: Date(timeIntervalSince1970: 1_787_000_000))
+        XCTAssertTrue(name.hasPrefix("velvt-export-"))
+        XCTAssertTrue(name.hasSuffix(".json"))
+    }
+}

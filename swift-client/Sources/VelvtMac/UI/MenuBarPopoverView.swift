@@ -1410,6 +1410,7 @@ public struct MenuBarPopoverView: View {
     @State private var selectedSettingsDestination: SettingsSubmenu?
     @State private var confirmsWorkBlockClear = false
     @State private var diagnosticsCopied = false
+    @State private var exportMessage: String?
     @State private var debugInsightStatus: String?
     @State private var showsFocusSession = false
   @State private var showsSystemState = false
@@ -2098,6 +2099,21 @@ public struct MenuBarPopoverView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
+                Button("Export My Data…") { exportLocalData() }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .accessibilityHint(
+                        "Saves the observations Velvt has shown you as a JSON file you choose the location of"
+                    )
+                if let exportMessage {
+                    Text(exportMessage)
+                        .font(.caption2)
+                        .foregroundStyle(Color.velvtMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 6)
+                }
             }
             .onAppear { menuStatusViewModel?.refresh() }
 
@@ -2402,6 +2418,33 @@ public struct MenuBarPopoverView: View {
             return "No retry scheduled"
         }
         return date.formatted(date: .omitted, time: .shortened)
+    }
+
+    /// Hands the user their own evidence, as a file, wherever they choose to
+    /// put it. A save panel rather than a fixed path: an export the app decides
+    /// the location of is the app's file, not the user's.
+    ///
+    /// The outcome is reported either way. A silent failure here is worse than
+    /// no button, because the user walks away believing they have a copy.
+    private func exportLocalData() {
+        let now = Date()
+        let document = LocalDataExport(
+            snapshot: localDashboardCoordinator.snapshot,
+            digest: workBlockCoordinator.weeklyDigest,
+            exportedAt: now
+        )
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = LocalDataExport.suggestedFilename(for: now)
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.title = "Export Velvt Data"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try document.encoded().write(to: url, options: .atomic)
+            exportMessage = "Exported \(document.days.count) observed days to \(url.lastPathComponent)."
+        } catch {
+            exportMessage = "Could not write the export: \(error.localizedDescription)"
+        }
     }
 
     private func copyDiagnostics() {

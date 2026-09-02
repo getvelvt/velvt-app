@@ -96,7 +96,7 @@ final class Scope4SyntheticSnapshotTests: XCTestCase {
         )))
     try await waitUntil { explainCoordinator.explanation != nil }
     try render(
-      WorkBlockView(coordinator: explainCoordinator),
+      WorkBlockProactiveCards(coordinator: explainCoordinator),
       named: "scope4-explain-this-nudge-synthetic.png",
       outputDirectory: output,
       size: NSSize(width: 460, height: 460)

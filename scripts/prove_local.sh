@@ -13,15 +13,24 @@
 #   2. For each table, every column whose declared type is textual is listed
 #      BY NAME, and its distinct values are printed. Numbers and timestamps
 #      are counted but not enumerated — they cannot carry a window title.
-#   3. There is no `SELECT *` in this file. Every column read is named, the
+#   3. Columns declared BLOB are named and their bytes counted, but their
+#      contents are NOT shown. A blob is neither a number nor a string, and
+#      the two in this database are not inert: `semantic_embedding_cache`
+#      and `personal_semantic_prototype` hold a hashed sketch built from the
+#      application name and the window title, and individual words are
+#      partially recoverable from that sketch. Bash and sqlite3 cannot decode
+#      it, so this script reports it as UNINSPECTED rather than leaving the
+#      column out of the walk. PRIVACY.md describes what it holds.
+#   4. There is no `SELECT *` in this file. Every column read is named, the
 #      same discipline the cohort exporter uses.
 #
 # It will show you application names. That is not a bug and it is not a leak:
 # `raw_event_buffer.local_name_suggestion` holds the raw application name for
-# up to seven days so the app can offer you a one-tap rename instead of showing
-# you "Unclassified". It is documented in PRIVACY.md, it is redacted from logs,
-# and it exists in no upload payload. This script prints it rather than hiding
-# it, because a proof that quietly skips the awkward column proves nothing.
+# up to fourteen days so the app can offer you a one-tap rename instead of
+# showing you "Unclassified". It is documented in PRIVACY.md, it is redacted
+# from logs, and it exists in no upload payload. This script prints it rather
+# than hiding it, because a proof that quietly skips the awkward column proves
+# nothing.
 #
 # Usage:
 #   ./scripts/prove_local.sh                        # the default database
@@ -39,7 +48,7 @@ SHOW_ALL=0
 DB_ARG=""
 
 usage() {
-  sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while (( $# )); do
@@ -102,7 +111,7 @@ fi
 annotation_for() {
   case "$1.$2" in
     raw_event_buffer.local_name_suggestion)
-      echo "RAW APPLICATION NAME — device-local, 7-day expiry, powers the one-tap rename" ;;
+      echo "RAW APPLICATION NAME — device-local, 14-day expiry, powers the one-tap rename" ;;
     raw_event_buffer.local_display_label)
       echo "local display string, e.g. Coding or Gmail — derived, but it can name a service" ;;
     abstraction_map.display_name)
@@ -113,6 +122,10 @@ annotation_for() {
       echo "the sentence you typed when you started a block — expires after 24h" ;;
     history_cache.payload|insight_cache.payload|weekly_digest.payload|work_block_result.payload)
       echo "a JSON summary Velvt rendered for itself; raise --width to read it whole" ;;
+    semantic_embedding_cache.embedding)
+      echo "a hashed sketch of the app name and window title — words are partially recoverable" ;;
+    personal_semantic_prototype.embedding)
+      echo "the same kind of sketch, kept for a category you corrected so it can be matched again" ;;
     *) echo "" ;;
   esac
 }
@@ -120,6 +133,17 @@ annotation_for() {
 is_text_type() {
   case "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" in
     *TEXT*|*CHAR*|*CLOB*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# A column with no declared type has BLOB affinity in SQLite, so it is counted
+# here too: an unnamed type is exactly the case a future migration could add
+# without anyone noticing it had fallen out of the walk.
+is_blob_type() {
+  case "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" in
+    *BLOB*) return 0 ;;
+    "") return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -137,7 +161,8 @@ printf '======================================================================\n
 printf 'database : %s\n' "$DB"
 printf 'size     : %s bytes\n' "$bytes"
 printf 'read     : from a throwaway copy; the file above is never opened here\n'
-printf 'shown    : every table from sqlite_master, every textual column by name\n'
+printf 'shown    : every table from sqlite_master, every textual column by name,\n'
+printf '           every binary column named and measured but never decoded\n'
 if (( SHOW_ALL )); then
   printf 'values   : all distinct values, truncated to %s characters\n' "$WIDTH"
 else
@@ -147,7 +172,10 @@ fi
 printf '\n'
 printf 'Numeric and timestamp columns are counted but not listed: an integer\n'
 printf 'cannot hold a window title. Every textual column is listed, including\n'
-printf 'the ones that name applications.\n'
+printf 'the ones that name applications. Binary columns are named, sized, and\n'
+printf 'marked UNINSPECTED — this script reads text, and the two blobs here hold\n'
+printf 'a hashed sketch of the app name and window title it cannot decode for\n'
+printf 'you. PRIVACY.md states what is recoverable from that sketch.\n'
 
 # ---------------------------------------------------------------------------
 # Inventory first, so the reader knows the shape before the detail.
@@ -155,7 +183,7 @@ printf 'the ones that name applications.\n'
 printf '\n'
 printf 'TABLE INVENTORY\n'
 rule
-printf '  %-34s %10s %8s %8s\n' "table" "rows" "text" "other"
+printf '  %-30s %10s %8s %8s %8s\n' "table" "rows" "text" "blob" "other"
 while IFS= read -r table; do
   [[ -n "$table" ]] || continue
   case "$table" in
@@ -164,30 +192,66 @@ while IFS= read -r table; do
   esac
   rows="$(q "SELECT COUNT(*) FROM \"$table\";")"
   text_cols=0
+  blob_cols=0
   other_cols=0
   while IFS="$(printf '\x1f')" read -r _cid cname ctype _rest; do
     [[ -n "${cname:-}" ]] || continue
     if is_text_type "${ctype:-}"; then
       text_cols=$((text_cols + 1))
+    elif is_blob_type "${ctype:-}"; then
+      blob_cols=$((blob_cols + 1))
     else
       other_cols=$((other_cols + 1))
     fi
   done <<EOF
 $(q "PRAGMA table_info(\"$table\");")
 EOF
-  printf '  %-34s %10s %8s %8s\n' "$table" "$rows" "$text_cols" "$other_cols"
+  printf '  %-30s %10s %8s %8s %8s\n' \
+    "$table" "$rows" "$text_cols" "$blob_cols" "$other_cols"
 done <<EOF
 $tables
 EOF
 
 # ---------------------------------------------------------------------------
-# The walk. One block per table, one paragraph per textual column.
+# The walk. One block per table, one paragraph per textual column, and one for
+# every binary column, which is named and measured but never decoded.
 # ---------------------------------------------------------------------------
 printf '\n'
-printf 'EVERY TEXTUAL COLUMN, BY NAME\n'
+printf 'EVERY TEXTUAL COLUMN, BY NAME — AND EVERY BINARY ONE, UNREAD\n'
 rule
 
 US="$(printf '\x1f')"
+
+# The one thing this script cannot read out to you. It prints text; a blob is
+# bytes. Naming the column, counting its rows, and stating how many bytes it
+# holds is the honest floor — you learn that it is there and how much of it
+# there is, which is strictly more than the silence this walk used to keep.
+emit_blob_columns() {
+  local table="$1" blob_columns="$2"
+  local cname stats rest non_null nulls total_bytes note
+  [[ -n "$blob_columns" ]] || return 0
+  while IFS= read -r cname; do
+    [[ -n "$cname" ]] || continue
+    stats="$(q "SELECT COUNT(\"$cname\"),
+                       COALESCE(SUM(CASE WHEN \"$cname\" IS NULL THEN 1 ELSE 0 END), 0),
+                       COALESCE(SUM(length(\"$cname\")), 0)
+                FROM \"$table\";")"
+    non_null="${stats%%$US*}"
+    rest="${stats#*$US}"
+    nulls="${rest%%$US*}"
+    total_bytes="${rest#*$US}"
+    printf '     %s\n' "$cname"
+    printf '       [BINARY — NOT INSPECTED BY THIS SCRIPT]\n'
+    note="$(annotation_for "$table" "$cname")"
+    if [[ -n "$note" ]]; then
+      printf '       [%s]\n' "$note"
+    fi
+    printf '       %s non-null, %s null, %s bytes stored\n' \
+      "$non_null" "$nulls" "$total_bytes"
+  done <<EOF
+$blob_columns
+EOF
+}
 
 while IFS= read -r table; do
   [[ -n "$table" ]] || continue
@@ -200,11 +264,16 @@ while IFS= read -r table; do
   columns="$(q "PRAGMA table_info(\"$table\");")"
 
   text_columns=""
+  blob_columns=""
   while IFS="$US" read -r _cid cname ctype _rest; do
     [[ -n "${cname:-}" ]] || continue
-    is_text_type "${ctype:-}" || continue
-    text_columns="${text_columns}${cname}
+    if is_text_type "${ctype:-}"; then
+      text_columns="${text_columns}${cname}
 "
+    elif is_blob_type "${ctype:-}"; then
+      blob_columns="${blob_columns}${cname}
+"
+    fi
   done <<EOF
 $columns
 EOF
@@ -213,7 +282,12 @@ EOF
   printf '  == %s  (%s row%s)\n' "$table" "$rows" "$([[ "$rows" == "1" ]] || printf 's')"
 
   if [[ -z "$text_columns" ]]; then
-    printf '     no textual columns — numbers and timestamps only\n'
+    if [[ -n "$blob_columns" ]]; then
+      printf '     no textual columns — numbers, timestamps, and the binary column(s) below\n'
+    else
+      printf '     no textual columns — numbers and timestamps only\n'
+    fi
+    emit_blob_columns "$table" "$blob_columns"
     continue
   fi
   if [[ "$rows" == "0" ]]; then
@@ -224,6 +298,7 @@ EOF
     done <<EOF
 $text_columns
 EOF
+    emit_blob_columns "$table" "$blob_columns"
     continue
   fi
 
@@ -292,6 +367,8 @@ EOF
   done <<EOF
 $text_columns
 EOF
+
+  emit_blob_columns "$table" "$blob_columns"
 done <<EOF
 $tables
 EOF
@@ -336,5 +413,11 @@ cat <<'CAVEAT'
   the six-field serialiser named above. It does not prove what a future version
   will store. Re-run it after any update; that is the point of it being ten
   seconds of bash rather than a paragraph in a document.
+
+  It also does not read the binary columns it marked UNINSPECTED above. Those
+  hold a hashed sketch of the application name and the window title, and words
+  are partially recoverable from that sketch by anyone willing to write the
+  code. Everything this script can show you, it has; that column is the one
+  place where you are still taking PRIVACY.md at its word.
 CAVEAT
 printf '\n'

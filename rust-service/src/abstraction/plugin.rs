@@ -970,9 +970,36 @@ impl EmbeddingSimilarityPlugin {
         self
     }
 
+    /// The same classifier on the zero salt, for callers with no database.
+    ///
+    /// The service startup path does not call this. `main.rs` reads the device
+    /// salt out of `embedding_salt` (migration 0031) through
+    /// `AbstractionMapRepo::embedding_salt` and calls [`Self::builtin_salted`],
+    /// and it disables Tier 2 rather than falling back here if that read fails.
+    /// What is left for this entry point is tests and tooling that have no
+    /// database to read a salt from, and any sketch it caches is recoverable
+    /// offline exactly as described on [`EmbeddingSalt`] — which is what the
+    /// warning below says, at the one remaining place it is true.
     pub fn builtin(taxonomy_version: impl Into<String>) -> Result<Self, EmbeddingError> {
+        tracing::warn!(
+            error_code = "embedding_salt_not_installed",
+            "hashed embedding features are unsalted; cached sketches are recoverable from the source"
+        );
+        Self::builtin_salted(taxonomy_version, EmbeddingSalt::UNSALTED)
+    }
+
+    /// The same classifier, keyed to one device's salt.
+    ///
+    /// The seed prototypes are embedded with the same salted model as the
+    /// observations they are compared against, so similarity, the threshold,
+    /// and the ambiguity margin all behave exactly as they did unsalted. What
+    /// changes is only which coordinates a word lands on.
+    pub fn builtin_salted(
+        taxonomy_version: impl Into<String>,
+        salt: EmbeddingSalt,
+    ) -> Result<Self, EmbeddingError> {
         const ARTIFACT: &str = "builtin-hash-v1";
-        let model = Arc::new(HashedEmbeddingModel);
+        let model = Arc::new(HashedEmbeddingModel::new(salt));
         let phrases: [(&str, &[&str]); 7] = [
             (
                 "FOCUS_WORK",
@@ -1228,8 +1255,68 @@ fn input_hash(input: &str) -> String {
     format!("{:x}", Sha256::digest(input.as_bytes()))
 }
 
+/// The per-install key mixed into every hashed feature index.
+///
+/// Without it the sketches in `semantic_embedding_cache` are an oracle anyone
+/// can compute offline. The hash family is described completely by `embed`
+/// below, so a reader of this file can embed a dictionary word, look for its
+/// coordinates in a stored row, and read back which words the window title
+/// contained -- a verifier did exactly that against a live database and
+/// recovered 1,190 distinct real words from 448 of 512 rows. Mixing in a value
+/// that only this device holds means the enumeration has to be redone per
+/// device, with that device's salt in hand.
+///
+/// It is not a secret from someone who already has the database file. The salt
+/// lives beside the cache and has to, because the vectors must survive a
+/// restart. What it removes is the source-only attack, which is the one the
+/// sketch was open to. It never leaves the device: nothing in `upload::dto` has
+/// a field it could occupy, and `Debug` below refuses to print it so a log line
+/// cannot carry it out either.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct EmbeddingSalt([u8; Self::LENGTH]);
+
+impl EmbeddingSalt {
+    /// Matches `randomblob(32)` in migration 0031, which is what generates it.
+    pub const LENGTH: usize = 32;
+
+    /// The zero salt. Every reader of this file knows it, so it protects
+    /// nothing -- it exists so that [`EmbeddingSimilarityPlugin::builtin`] has
+    /// something to pass for callers with no database, and so that a caller
+    /// cannot reach it by defaulting. The startup path does not use it.
+    pub const UNSALTED: Self = Self([0; Self::LENGTH]);
+
+    pub const fn from_bytes(bytes: [u8; Self::LENGTH]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; Self::LENGTH] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for EmbeddingSalt {
+    /// Redacted rather than derived. `HashedEmbeddingModel` derives `Debug`, so
+    /// a derived salt would be one `?` format away from a tracing field, and a
+    /// salt in a log is a salt in a crash report.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("EmbeddingSalt(redacted)")
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
-pub struct HashedEmbeddingModel;
+pub struct HashedEmbeddingModel {
+    salt: EmbeddingSalt,
+}
+
+impl HashedEmbeddingModel {
+    /// Deterministic for a fixed salt: the same input always produces the same
+    /// vector, so cached sketches stay comparable with freshly computed ones
+    /// across restarts. A different salt is a different vector space, which is
+    /// why migration 0031 empties both stores that hold vectors.
+    pub fn new(salt: EmbeddingSalt) -> Self {
+        Self { salt }
+    }
+}
 
 impl EmbeddingModel for HashedEmbeddingModel {
     fn embed(&self, input: &str) -> Result<Vec<f32>, EmbeddingError> {
@@ -1239,10 +1326,10 @@ impl EmbeddingModel for HashedEmbeddingModel {
         let normalized = normalize_classifier_text(&bounded);
         let mut vector = vec![0.0_f32; DIMENSIONS];
         for token in normalized.split_whitespace().take(128) {
-            add_hashed_feature(&mut vector, token.as_bytes(), 1.0);
+            add_hashed_feature(&mut vector, &self.salt, token.as_bytes(), 1.0);
             let padded = format!("^{token}$");
             for trigram in padded.as_bytes().windows(3).take(32) {
-                add_hashed_feature(&mut vector, trigram, 0.25);
+                add_hashed_feature(&mut vector, &self.salt, trigram, 0.25);
             }
         }
         let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
@@ -1252,8 +1339,19 @@ impl EmbeddingModel for HashedEmbeddingModel {
         for value in &mut vector {
             *value /= norm;
         }
-        fn add_hashed_feature(vector: &mut [f32], feature: &[u8], weight: f32) {
-            let digest = Sha256::digest(feature);
+        fn add_hashed_feature(
+            vector: &mut [f32],
+            salt: &EmbeddingSalt,
+            feature: &[u8],
+            weight: f32,
+        ) {
+            // The salt goes in first so that changing it changes the index and
+            // the sign of every feature, not a tail of the digest that the
+            // index and sign are not read from.
+            let digest = Sha256::new()
+                .chain_update(salt.as_bytes())
+                .chain_update(feature)
+                .finalize();
             let index = u16::from_le_bytes([digest[0], digest[1]]) as usize % vector.len();
             let sign = if digest[2] & 1 == 0 { 1.0 } else { -1.0 };
             vector[index] += sign * weight;

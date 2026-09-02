@@ -11,6 +11,11 @@ use super::{
     WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
     WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
 };
+// Named through the defining module because `persistence::mod` re-exports types
+// rather than constants; the retry ceiling is policy that belongs beside the
+// status vocabulary it extends.
+use super::models::UPLOAD_BATCH_ATTEMPT_CEILING;
+use crate::abstraction::EmbeddingSalt;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
@@ -47,6 +52,8 @@ pub enum PersistenceError {
     InvalidJson(#[from] serde_json::Error),
     #[error("SQLite persistence contains an invalid local semantic embedding")]
     InvalidSemanticEmbedding,
+    #[error("SQLite persistence contains an invalid embedding salt")]
+    InvalidEmbeddingSalt,
 }
 
 #[derive(Clone)]
@@ -283,6 +290,26 @@ impl SqlitePersistence {
         })
         .map(|n| n as usize)
         .map_err(Into::into)
+    }
+
+    /// Sets `updated_at` for the named `semantic_embedding_cache` rows.
+    /// Used in retention integration tests to simulate an entry that has not
+    /// been re-observed inside the window; `record_embedding` refreshes the
+    /// column on every write, so a test cannot age a row by writing to it.
+    pub fn set_semantic_embedding_updated_at_for_test(
+        &self,
+        key_hashes: &[String],
+        unix_ts: i64,
+    ) -> Result<usize, PersistenceError> {
+        let conn = self.connection()?;
+        let mut updated = 0;
+        for key_hash in key_hashes {
+            updated += conn.execute(
+                "UPDATE semantic_embedding_cache SET updated_at = ?2 WHERE key_hash = ?1",
+                params![key_hash, unix_ts],
+            )?;
+        }
+        Ok(updated)
     }
 }
 
@@ -730,6 +757,39 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
              )",
             [stable_id],
         )?;
+        // The app rung, resolved the way `save_personal_app_override` wrote it:
+        // through the event rows that recorded which application this mapping
+        // was classified under. Removing only the window rung left the engine
+        // falling through into the surviving app rung and returning the same
+        // category and the same typed name on the next event, so the undo the
+        // user asked for changed nothing they could see.
+        transaction.execute(
+            "DELETE FROM personal_app_override WHERE app_key_hash IN (
+                SELECT app_stable_id FROM raw_event_buffer
+                WHERE stable_id = ?1 AND app_stable_id IS NOT NULL
+             )",
+            [stable_id],
+        )?;
+        // The third place the typed name lives. Nulled rather than rewritten
+        // because `display_name` records no provenance: nothing here can tell a
+        // name the user typed from one `curated_display_label` produced, and the
+        // upsert coalesces, so a later write can never null it. A curated label
+        // is derived deterministically and comes back on the next observation of
+        // that window; a typed one must not outlive its own undo. The sibling
+        // windows of the same application are included because the app rung
+        // mirrored the typed name into every one of them.
+        transaction.execute(
+            "UPDATE abstraction_map SET display_name = NULL
+             WHERE stable_id = ?1
+                OR stable_id IN (
+                    SELECT stable_id FROM raw_event_buffer
+                    WHERE app_stable_id IN (
+                        SELECT app_stable_id FROM raw_event_buffer
+                        WHERE stable_id = ?1 AND app_stable_id IS NOT NULL
+                    )
+                 )",
+            [stable_id],
+        )?;
         transaction.commit()?;
         Ok(changed > 0)
     }
@@ -739,6 +799,22 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         let transaction = connection.transaction()?;
         let changed = transaction.execute("DELETE FROM personal_override", [])? as u64;
         transaction.execute("DELETE FROM personal_semantic_prototype", [])?;
+        // The app rung holds the same free-text `activity_name` under the
+        // application's own hash. Without this the reset was a no-op for every
+        // app-scoped correction — per migration 0017 the rung that carries
+        // almost all of them — because the engine falls through the emptied
+        // window rung into the app rung on the very next event.
+        transaction.execute("DELETE FROM personal_app_override", [])?;
+        // Every `display_name`, not only the rows a correction wrote. The column
+        // records no provenance, so no query can separate a name the user typed
+        // from one `curated_display_label` produced, and duplicating that
+        // allowlist in SQL would put a second copy of it a migration away from
+        // drifting. Clearing all of it is the only answer that is true for
+        // certain: a curated label is deterministic and is rewritten on the next
+        // observation of the window, so the cost is one event of a missing local
+        // label, while a typed name surviving a reset the user was told was
+        // destructive is a broken promise.
+        transaction.execute("UPDATE abstraction_map SET display_name = NULL", [])?;
         transaction.commit()?;
         Ok(changed)
     }
@@ -788,6 +864,61 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    fn delete_expired_semantic_embeddings(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let deleted = connection.execute(
+            "DELETE FROM semantic_embedding_cache WHERE key_hash IN (
+                 SELECT key_hash FROM semantic_embedding_cache
+                 WHERE updated_at < ?1 LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+
+    fn embedding_salt(&self) -> Result<EmbeddingSalt, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let stored = transaction
+            .query_row("SELECT salt FROM embedding_salt WHERE id = 1", [], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .optional()?;
+        let bytes = match stored {
+            Some(bytes) => <[u8; EmbeddingSalt::LENGTH]>::try_from(bytes.as_slice())
+                // Unreachable while `CHECK(length(salt) = 32)` stands, which is
+                // why this is an error rather than a silent re-mint: a row that
+                // is present but unreadable is a corrupt database, and minting
+                // over it would destroy the caches it was still keying.
+                .map_err(|_| PersistenceError::InvalidEmbeddingSalt)?,
+            None => {
+                let minted = transaction.query_row(
+                    "SELECT randomblob(?1)",
+                    [EmbeddingSalt::LENGTH as i64],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )?;
+                transaction.execute(
+                    "INSERT INTO embedding_salt(id, salt) VALUES (1, ?1)",
+                    params![minted],
+                )?;
+                // Same reason migration 0031 empties both stores in the same
+                // statement batch that mints the salt: every vector already on
+                // disk was computed in a different space, and comparing across
+                // spaces produces a similarity number that means nothing.
+                transaction.execute("DELETE FROM semantic_embedding_cache", [])?;
+                transaction.execute("DELETE FROM personal_semantic_prototype", [])?;
+                <[u8; EmbeddingSalt::LENGTH]>::try_from(minted.as_slice())
+                    .map_err(|_| PersistenceError::InvalidEmbeddingSalt)?
+            }
+        };
+        transaction.commit()?;
+        Ok(EmbeddingSalt::from_bytes(bytes))
     }
 }
 
@@ -984,11 +1115,41 @@ impl RawEventRepo for SqliteRawEventRepo {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<u64, PersistenceError> {
-        // Rows the upload pipeline still owes the backend are spared, mirroring
-        // upload-batch retention, which deliberately never deletes pending or
-        // failed batches. An eligible row with no `batch_event` has been acked
-        // to Swift but not yet persisted into a batch; expiring it on the TTL
-        // deleted an accepted event that nothing could ever re-send.
+        // Rows the upload pipeline still owes the backend are spared. The
+        // predicate is character-for-character the one `unbatched_events` uses,
+        // and that is the whole rule: a row is kept exactly while
+        // `recover_unbatched` would re-queue it at the next start. An eligible
+        // row with no `batch_event` was acked to Swift and never reached a
+        // batch — the service died between the ack and the flush, or the
+        // backlog was longer than one start's recovery limit — and expiring it
+        // on the TTL deleted an accepted event that nothing could re-send.
+        //
+        // This comment used to say the rule mirrored upload-batch retention,
+        // "which deliberately never deletes pending or failed batches."
+        // `delete_stale_queued_batch` deletes exactly those, so that sentence
+        // is gone rather than softened. What the rule actually rests on is an
+        // ordering of horizons: a batched row has to be deleted here before the
+        // sweep that deletes its batch cascades the `batch_event` away, because
+        // a row whose `batch_event` disappears re-enters the spared set and is
+        // never collected again. The raw TTL is 14 days
+        // (`VELVT_RAW_EVENT_TTL_HOURS`, defaulted from `DAILY_ACTIVITY_DAYS`)
+        // against a 30-day sent-and-queued batch horizon
+        // (`VELVT_SENT_BATCH_RETENTION_DAYS`), so it holds by 16 days — and
+        // inverts the moment the TTL is raised past 720 hours.
+        // `tests/retention.rs::the_raw_event_horizon_stays_inside_the_batch_horizon`
+        // is that ordering as an assertion rather than as two numbers that
+        // happen to be in the right order.
+        //
+        // Open, found 2026-08-31, not fixed here: `delete_rejected_batch` runs
+        // at 7 days (`VELVT_REJECTED_BATCH_AUDIT_DAYS`), which is inside the
+        // raw TTL, so a rejected batch's rows do come back unbatched and
+        // `recover_unbatched` re-queues them at the next start — against the
+        // rule in `upload/coordinator.rs` that a `raw_field_rejected` batch is
+        // permanently terminal and must never re-enter retry scheduling. The
+        // development device has never held a rejected batch, so nothing has
+        // taken that path. The fix belongs in the rejected sweep or its
+        // horizon, not in this predicate, which is why it is named here instead
+        // of quietly widened.
         let connection = self.0.connection()?;
         let deleted = connection.execute(
             "DELETE FROM raw_event_buffer WHERE id IN (
@@ -1108,11 +1269,15 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
                     ))
                 },
             )?;
+        // `abandoned` belongs in this list even though it has no count of its
+        // own: the error that ended a batch's retries is the most recent thing
+        // the user has not been told, and dropping it would let a queue that
+        // failed its way to terminal report no error at all.
         let last_error_code = connection
             .query_row(
                 "SELECT last_error_code
                  FROM upload_batch
-                 WHERE status IN ('pending', 'failed', 'rejected')
+                 WHERE status IN ('pending', 'failed', 'rejected', 'abandoned')
                    AND last_error_code IS NOT NULL
                  ORDER BY created_at DESC, id DESC
                  LIMIT 1",
@@ -1146,10 +1311,9 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
         next_attempt_at: DateTime<Utc>,
         error_code: &str,
     ) -> Result<(), PersistenceError> {
-        update_batch_state(
+        update_batch_retry_state(
             &self.0,
-            "UPDATE upload_batch SET status = 'failed', attempt_count = attempt_count + 1,
-             next_attempt_at = ?2, last_error_code = ?3 WHERE batch_id = ?1",
+            "failed",
             batch_id,
             next_attempt_at.timestamp(),
             error_code,
@@ -1162,10 +1326,9 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
         next_attempt_at: DateTime<Utc>,
         error_code: &str,
     ) -> Result<(), PersistenceError> {
-        update_batch_state(
+        update_batch_retry_state(
             &self.0,
-            "UPDATE upload_batch SET status = 'pending', attempt_count = attempt_count + 1,
-             next_attempt_at = ?2, last_error_code = ?3 WHERE batch_id = ?1",
+            "pending",
             batch_id,
             next_attempt_at.timestamp(),
             error_code,
@@ -1308,6 +1471,28 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
         let deleted = connection.execute(
             "DELETE FROM upload_batch WHERE id IN (
                  SELECT id FROM upload_batch WHERE status = 'rejected' AND created_at < ?1 LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+
+    fn delete_stale_queued_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Deliberately no status filter. The two statuses the other sweeps
+        // enumerate were the only ones ever collected, so a batch that never
+        // reached one of them lived forever; naming statuses here would
+        // reproduce that hole the next time the vocabulary grows. A sent batch
+        // that outlived this horizon by creation date is collected too — its
+        // events are already delivered, so removing the local copy early is
+        // never a loss.
+        let deleted = connection.execute(
+            "DELETE FROM upload_batch WHERE id IN (
+                 SELECT id FROM upload_batch WHERE created_at < ?1 LIMIT ?2
              )",
             params![cutoff.timestamp(), limit as i64],
         )?;
@@ -1968,6 +2153,84 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             decisions.push(row?);
         }
         Ok(decisions)
+    }
+
+    fn unresolved_decisions(
+        &self,
+        horizon_closed_by: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<InterventionDecision>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT decision_id, occurred_at, block_id, policy_version, anchor_category,
+                    switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
+                    propensity, anchor_seen_within_600s, outcome_at
+             FROM intervention_decision_log
+             WHERE anchor_seen_within_600s IS NULL
+               AND anchor_category IS NOT NULL
+               AND block_id IS NOT NULL
+               AND occurred_at <= ?1
+             ORDER BY occurred_at ASC, decision_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(
+            params![horizon_closed_by.timestamp(), limit as i64],
+            decision_from_row,
+        )?;
+        let mut decisions = Vec::new();
+        for row in rows {
+            decisions.push(row?);
+        }
+        Ok(decisions)
+    }
+
+    fn observed_category_between(
+        &self,
+        block_id: &str,
+        category: &str,
+        from: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // `occurred_at > ?3`, not `>=`. `observe_safe_category` appends the
+        // observation before it calls `evaluate_drift`, so the observation that
+        // triggered a decision is already on disk carrying the decision's own
+        // timestamp. Under `>=` the `AbstainedAtAnchor` verdict — which fires
+        // exactly when the latest confident observation IS the anchor — would
+        // read back as "the user returned" for every row of it, definitionally
+        // and without a single return having happened. The bound answers what
+        // happened after the decision, so the evidence the decision was made on
+        // is not part of the answer.
+        connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM work_block_observation
+                    WHERE block_id = ?1 AND lower(category) = lower(?2)
+                      AND occurred_at > ?3 AND occurred_at <= ?4
+                 )",
+                params![block_id, category, from.timestamp(), until.timestamp()],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    fn resolve_decision(
+        &self,
+        decision_id: &str,
+        anchor_seen: bool,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // `anchor_seen_within_600s IS NULL` is the whole idempotence guarantee:
+        // a decision answered once keeps the answer it was given, so rerunning
+        // the resolver over history cannot move a number anyone has read.
+        let updated = connection.execute(
+            "UPDATE intervention_decision_log
+             SET anchor_seen_within_600s = ?2, outcome_at = ?3
+             WHERE decision_id = ?1 AND anchor_seen_within_600s IS NULL",
+            params![decision_id, i64::from(anchor_seen), at.timestamp()],
+        )?;
+        Ok(updated > 0)
     }
 }
 
@@ -2984,6 +3247,7 @@ fn upload_status_from_str(status: &str) -> rusqlite::Result<UploadBatchStatus> {
         "sent" => Ok(UploadBatchStatus::Sent),
         "failed" => Ok(UploadBatchStatus::Failed),
         "rejected" => Ok(UploadBatchStatus::Rejected),
+        "abandoned" => Ok(UploadBatchStatus::Abandoned),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
@@ -2997,6 +3261,46 @@ fn update_batch_state(
 ) -> Result<(), PersistenceError> {
     let connection = persistence.connection()?;
     let updated = connection.execute(query, params![batch_id, next_attempt_at, error_code])?;
+    if updated == 0 {
+        Err(PersistenceError::NotFound {
+            entity: "upload_batch",
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// Records one spent attempt and returns the batch to the retry queue under
+/// `retry_status`, unless the attempt just spent was its last.
+///
+/// The ceiling is applied in the same statement as the increment, so there is
+/// no window in which a batch past its ceiling is still resumable. Without it a
+/// batch retries for as long as the service runs: nothing else in the queue
+/// counts attempts, and an unreachable host leaves the device upload-eligible,
+/// so the retry never stops on its own.
+fn update_batch_retry_state(
+    persistence: &SqlitePersistence,
+    retry_status: &str,
+    batch_id: &str,
+    next_attempt_at: i64,
+    error_code: &str,
+) -> Result<(), PersistenceError> {
+    let connection = persistence.connection()?;
+    let updated = connection.execute(
+        "UPDATE upload_batch
+         SET status = CASE WHEN attempt_count + 1 >= ?5 THEN 'abandoned' ELSE ?4 END,
+             attempt_count = attempt_count + 1,
+             next_attempt_at = ?2,
+             last_error_code = ?3
+         WHERE batch_id = ?1",
+        params![
+            batch_id,
+            next_attempt_at,
+            error_code,
+            retry_status,
+            UPLOAD_BATCH_ATTEMPT_CEILING
+        ],
+    )?;
     if updated == 0 {
         Err(PersistenceError::NotFound {
             entity: "upload_batch",
@@ -3424,6 +3728,7 @@ impl AntecedentFindingRepo for SqliteAntecedentFindingRepo {
 #[cfg(test)]
 mod tests {
     use super::SqlitePersistence;
+    use crate::abstraction::EmbeddingSalt;
     use crate::persistence::{
         BlockAntecedent, DayType, GateVerdict, InterventionDecision, OutOfBlockRun,
     };
@@ -4060,5 +4365,189 @@ mod tests {
             .unwrap();
         repo.record_decision(&decision("randomized", 0.5)).unwrap();
         assert_eq!(repo.decisions("propensity-block").unwrap().len(), 2);
+    }
+
+    /// Migration 0030 widens a CHECK, which SQLite can only do by rebuilding.
+    /// `upload_batch` is the parent of `batch_event` under `ON DELETE CASCADE`,
+    /// and with foreign keys enabled a DROP of the parent performs an implicit
+    /// DELETE — so a rebuild in the wrong order silently takes every queued
+    /// event with it. The from-scratch path cannot catch that: the tables are
+    /// empty when the migration runs. This is the upgrade path a shipped device
+    /// takes, with rows on disk.
+    #[test]
+    fn migration_0030_rebuilds_the_parent_without_cascading_queued_events() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", true)
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        for migration in super::EMBEDDED_MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version < 30)
+        {
+            connection.execute_batch(migration.sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                    rusqlite::params![migration.version, migration.name],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO upload_batch(batch_id, status, attempt_count, last_error_code)
+                 VALUES ('stranded', 'failed', 7, 'transport')",
+                [],
+            )
+            .unwrap();
+        for index in 0..3 {
+            connection
+                .execute(
+                    "INSERT INTO batch_event(
+                        batch_id, event_id, stable_id, label, category, taxonomy_version, occurred_at
+                     ) VALUES ('stranded', ?1, 'abs_1', 'document:edit', 'FOCUS_WORK', 'mvp-1', 0)",
+                    rusqlite::params![format!("evt-{index}")],
+                )
+                .unwrap();
+        }
+
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+        database.run_migrations().unwrap();
+
+        let connection = database.connection().unwrap();
+        let events: i64 = connection
+            .query_row("SELECT COUNT(*) FROM batch_event", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(events, 3, "the queued events must survive the rebuild");
+        let (status, attempts): (String, i64) = connection
+            .query_row(
+                "SELECT status, attempt_count FROM upload_batch WHERE batch_id = 'stranded'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), attempts), ("failed", 7));
+        connection
+            .execute(
+                "UPDATE upload_batch SET status = 'abandoned' WHERE batch_id = 'stranded'",
+                [],
+            )
+            .expect("the widened CHECK accepts the terminal status");
+        assert!(
+            connection
+                .execute(
+                    "UPDATE upload_batch SET status = 'discarded' WHERE batch_id = 'stranded'",
+                    [],
+                )
+                .is_err(),
+            "the vocabulary is still closed"
+        );
+    }
+
+    /// Migration 0031 mints the salt, so a migrated database reads and never
+    /// writes. Two reads must agree: a salt that moved between calls would put
+    /// vectors from two spaces into one cache, and every similarity computed
+    /// across them would be a number about nothing.
+    #[test]
+    fn embedding_salt_is_read_back_unchanged_and_is_not_the_zero_salt() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.abstraction_map_repo();
+
+        let first = repo.embedding_salt().unwrap();
+        let second = repo.embedding_salt().unwrap();
+
+        assert_eq!(first, second, "the salt must be stable across reads");
+        assert_ne!(
+            first,
+            EmbeddingSalt::UNSALTED,
+            "0031 mints a random salt; the zero salt protects nothing"
+        );
+    }
+
+    /// The create path. It exists so that a startup which cannot read a salt is
+    /// never answered with `EmbeddingSalt::UNSALTED`, and it has to empty both
+    /// vector stores for the reason 0031 does: a fresh salt is a fresh vector
+    /// space, and a sketch computed under the old key is not comparable with
+    /// one computed under the new key.
+    #[test]
+    fn a_minted_embedding_salt_empties_the_stores_that_hold_vectors() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let connection = database.connection().unwrap();
+        connection
+            .execute_batch(
+                "DELETE FROM embedding_salt;
+                 INSERT INTO semantic_embedding_cache(key_hash, embedding, dimensions)
+                     VALUES (hex(randomblob(32)), x'0001', 256);
+                 INSERT INTO personal_semantic_prototype(key_hash, category, embedding, dimensions)
+                     VALUES (hex(randomblob(32)), 'FOCUS_WORK', x'0001', 256);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let repo = database.abstraction_map_repo();
+        let minted = repo.embedding_salt().unwrap();
+        assert_ne!(minted, EmbeddingSalt::UNSALTED);
+        assert_eq!(
+            minted,
+            repo.embedding_salt().unwrap(),
+            "the minted salt is persisted, not regenerated per call"
+        );
+
+        let connection = database.connection().unwrap();
+        let cached: i64 = connection
+            .query_row("SELECT COUNT(*) FROM semantic_embedding_cache", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let prototypes: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM personal_semantic_prototype",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            (cached, prototypes),
+            (0, 0),
+            "vectors from the previous space must not survive a new salt"
+        );
+    }
+
+    /// Migration 0031's header states in the present tense that the salt this
+    /// table holds is the key the shipped classifier computes under. Nothing in
+    /// the test suite runs `main`, so that sentence is pinned against the
+    /// startup source itself — the same technique `tests/published_claims.rs`
+    /// uses on PRIVACY.md, for the same reason. 0031 shipped once with the
+    /// header written and the wiring absent; this is what makes that state red
+    /// instead of quiet.
+    #[test]
+    fn startup_builds_the_builtin_classifier_under_the_device_salt() {
+        const STARTUP: &str = include_str!("../main.rs");
+        assert!(
+            STARTUP.contains(".embedding_salt()"),
+            "startup no longer reads the device salt, so migration 0031 mints a key \
+             nothing uses and pays a cache wipe for it"
+        );
+        assert!(
+            STARTUP.contains("EmbeddingSimilarityPlugin::builtin_salted("),
+            "startup no longer builds the built-in classifier under the device salt"
+        );
+        assert!(
+            !STARTUP.contains("EmbeddingSimilarityPlugin::builtin("),
+            "startup builds the built-in classifier on `EmbeddingSalt::UNSALTED`, which \
+             every reader of `plugin.rs` knows. Sketches cached under it are recoverable \
+             offline from published source, which is the exposure 0031 says it closed"
+        );
     }
 }

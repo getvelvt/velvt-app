@@ -95,7 +95,33 @@ async fn main() {
     }
     let embedding_plugin = load_embedding_plugin(&config, &taxonomy)
         .or_else(|| {
-            velvt_service::abstraction::EmbeddingSimilarityPlugin::builtin(taxonomy.version()).ok()
+            // The shipped Tier 2 fallback runs on this install's salt. Without
+            // it the hash family is the one written out in `plugin.rs`, so the
+            // sketches this caches in `semantic_embedding_cache` are readable
+            // back to words by anyone holding the file and the public source,
+            // with nothing taken off the device.
+            //
+            // A salt the database cannot produce disables Tier 2 rather than
+            // falling back to `EmbeddingSalt::UNSALTED`: an unsalted classifier
+            // wired in here would keep caching recoverable sketches while
+            // migration 0031 and PRIVACY.md both describe a salted one. Tier 1
+            // and Tier 3 still classify, so the cost is classification quality
+            // rather than a property the documents assert.
+            let salt = persistence
+                .abstraction_map_repo()
+                .embedding_salt()
+                .inspect_err(|_| {
+                    tracing::warn!(
+                        error_code = "embedding_salt_unavailable",
+                        "Tier 2 classification disabled"
+                    );
+                })
+                .ok()?;
+            velvt_service::abstraction::EmbeddingSimilarityPlugin::builtin_salted(
+                taxonomy.version(),
+                salt,
+            )
+            .ok()
         })
         .map(|plugin| plugin.with_learning_store(persistence.semantic_learning_store()));
     // Tracked before the plugin is consumed below: true only when an operator
@@ -132,8 +158,9 @@ async fn main() {
         use velvt_service::ipc::{MenuStatusProvider, R7Router, ReconnectTracker};
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
-            CacheRetentionTarget, RawEventRetentionTarget, RetentionScheduler,
-            UploadBatchRetentionTarget, WorkBlockIntentionRetentionTarget,
+            CacheRetentionTarget, InterventionDecisionOutcomeTarget, RawEventRetentionTarget,
+            RetentionScheduler, SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+            WorkBlockIntentionRetentionTarget,
         };
         use velvt_service::upload::{
             BatchAssembler, EventIngestor, HttpBatchUploader, SharedUploadBatcher, UploadBatcher,
@@ -478,6 +505,24 @@ async fn main() {
             persistence.behavior_repo(),
             config.retention_batch_size,
         );
+        // The sixth. `semantic_embedding_cache` had no target at all, and its
+        // only bound was a 512-row cap that a frequently revisited window never
+        // falls out of. It holds a sketch derived from the window title, so it
+        // expires on the raw-event horizon, as a constant for the same reason
+        // `out_of_block_run` uses one.
+        let semantic_embedding_cache_target =
+            SemanticEmbeddingCacheRetentionTarget::with_default_retention(
+                persistence.abstraction_map_repo(),
+                config.retention_batch_size,
+            );
+        // The seventh, and the only one that writes rather than deletes: the
+        // outcome pass the decision log's write site says resolves it. Batched
+        // and idempotent like the others, so it backfills all of history a
+        // tick at a time and then costs one bounded query per cycle.
+        let decision_outcome_target = InterventionDecisionOutcomeTarget::new(
+            Arc::clone(&work_block_repo),
+            config.retention_batch_size,
+        );
         let retention_scheduler =
             RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
                 .add_target(raw_event_target)
@@ -486,7 +531,9 @@ async fn main() {
                 .add_target(WorkBlockIntentionRetentionTarget::new(
                     work_block_retention_repo,
                 ))
-                .add_target(out_of_block_run_target);
+                .add_target(out_of_block_run_target)
+                .add_target(semantic_embedding_cache_target)
+                .add_target(decision_outcome_target);
         let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
 
         // R7 + R8 transport — shutdown-aware, reconnect-tracking.

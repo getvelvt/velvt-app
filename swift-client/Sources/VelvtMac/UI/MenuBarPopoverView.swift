@@ -1412,6 +1412,26 @@ enum MenuBarEscapeResolver {
     }
 }
 
+/// What the workspace's primary action is called, given the phase of the block
+/// the service reports.
+///
+/// The label was unconditional. A drift offer's notification calls
+/// `openPopover()`, which lands here with a block already running, so the one
+/// prominent button on the surface invited the person to start the thing they
+/// had not stopped doing — and it was also the only way to reach the reply
+/// buttons. Drawing the cards in the panel body fixes the second half; this is
+/// the first.
+enum MenuBarFocusSessionButtonLabel {
+    static func title(for phase: WorkBlockPhase?) -> String {
+        switch phase {
+        case .active, .paused:
+            return "Current work block"
+        case .idle, .completed, .abandoned, .expired, nil:
+            return "Start a focus session"
+        }
+    }
+}
+
 public struct MenuBarPopoverView: View {
     @ObservedObject private var presentation: PermissionPresentationModel
     private let permissionManager: (any PermissionManagerProtocol)?
@@ -1774,6 +1794,15 @@ public struct MenuBarPopoverView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
             }
+            // Above the tab content and outside the switch, so a drift offer
+            // and an invitation are on whichever tab the panel opens on. They
+            // used to be drawn only by `WorkBlockView`, which this file
+            // instantiates in exactly one place: the popover behind "Start a
+            // focus session". An invitation asking someone to declare a block
+            // was therefore reachable only by pressing the button that starts
+            // one, and a drift offer's notification opens this panel onto a
+            // tab that has no reply buttons on it.
+            WorkBlockProactiveCards(coordinator: workBlockCoordinator)
             switch navigator.selectedWorkspaceTab {
             case .workBlock:
                 MinimalDashboardWorkspaceView(
@@ -1841,8 +1870,12 @@ public struct MenuBarPopoverView: View {
                 // for: without this the primary button was the last item in
                 // the HStack and therefore the first to truncate, reading
                 // "Start a focus sess…" from 465pt down.
-                Label("Start a focus session", systemImage: "timer")
-                    .fixedSize(horizontal: true, vertical: false)
+                Label(
+                    MenuBarFocusSessionButtonLabel.title(
+                        for: workBlockCoordinator.snapshot?.phase),
+                    systemImage: "timer"
+                )
+                .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
@@ -2945,7 +2978,7 @@ private struct SettingsAccountDeletionButton: View {
                 Button("Cancel", role: .cancel) { authViewModel.cancelAccountDeletion() }
             } message: {
                 Text(
-                    "Velvt deletes behavioral data and disables authentication. It retains only an anonymized account record and the erasure/audit records required to prove deletion completed."
+                    "Deletes your account and the activity stored for it in the cloud, keeping only an anonymized account record and the erasure/audit records required to prove deletion completed. Activity waiting to upload from this Mac is destroyed and never sent. Everything else Velvt has stored locally stays on this Mac; delete ~/.velvt/ to remove it."
                 )
             }
         }

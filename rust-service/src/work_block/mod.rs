@@ -547,19 +547,18 @@ impl WorkBlockManager {
             return Ok(None);
         }
         self.repo.close_open_observation(&record.block_id, at)?;
-        self.repo.append_observation(
-            &record.block_id,
-            &WorkBlockObservation {
-                occurred_at: at,
-                ended_at: None,
-                category: category.to_owned(),
-                classification_status: status,
-                classification_confidence: confidence,
-            },
-        )?;
+        let observation = WorkBlockObservation {
+            occurred_at: at,
+            ended_at: None,
+            category: category.to_owned(),
+            classification_status: status,
+            classification_confidence: confidence,
+        };
+        self.repo
+            .append_observation(&record.block_id, &observation)?;
         // Observing the return closes the loop: an offer is only worth making
         // if its outcome is recorded.
-        self.record_return_if_pending(&record, category, at)?;
+        self.record_return_if_pending(&record, &observation, at)?;
         let intervention = self.evaluate_drift(&record, at)?;
         let snapshot = self.snapshot_for(record, at)?;
         Ok(Some(ObservationOutcome {
@@ -585,7 +584,12 @@ impl WorkBlockManager {
             return Err(WorkBlockError::InvalidRequest);
         };
         if existing.outcome.is_terminal() {
-            // Already answered. Report current state rather than failing.
+            // The one outcome slot is already spoken for and cannot be
+            // rewritten. That is usually an earlier tap, but not always:
+            // `returned` and `no_response` are written by the machine, so this
+            // branch also swallows a genuine first reply that arrived after the
+            // anchor was observed again or after the block ended. Report
+            // current state rather than failing.
             return self.snapshot_for(record, now);
         }
         self.repo
@@ -595,19 +599,34 @@ impl WorkBlockManager {
 
     /// Marks a pending offer as returned once the anchor category is observed
     /// again. Only an `offered` row transitions, so this is idempotent.
+    ///
+    /// The observation has to clear `is_confident_evidence` — the same bar the
+    /// departure had to clear for the offer to exist at all. Closing on weaker
+    /// evidence than opening would let a low-confidence re-classification of
+    /// the anchor retire an offer that only confident evidence could raise, and
+    /// `Returned` is terminal: it stops `active_intervention` rendering and
+    /// makes `report_intervention_outcome` a no-op, so the user loses the reply
+    /// surface without having replied. `was_focused` is the sole numerator of
+    /// the demotion policy, so every such close biases it downward.
     fn record_return_if_pending(
         &self,
         record: &WorkBlockRecord,
-        category: &str,
+        observation: &WorkBlockObservation,
         at: DateTime<Utc>,
     ) -> Result<(), WorkBlockError> {
+        if !is_confident_evidence(observation) {
+            return Ok(());
+        }
         let Some(pending) = self.repo.intervention(&record.block_id)? else {
             return Ok(());
         };
         if pending.outcome != WorkBlockInterventionOutcome::Offered {
             return Ok(());
         }
-        if !pending.anchor_category.eq_ignore_ascii_case(category) {
+        if !pending
+            .anchor_category
+            .eq_ignore_ascii_case(&observation.category)
+        {
             return Ok(());
         }
         self.repo.resolve_intervention(
@@ -2472,6 +2491,47 @@ mod tests {
         let recorded = repo.intervention(&block_id).unwrap().unwrap();
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Returned);
         assert_eq!(recorded.outcome_at, Some(at(560)));
+    }
+
+    /// The close criterion has to match the open criterion.
+    ///
+    /// Only `is_confident_evidence` counts a departure, so only
+    /// `is_confident_evidence` may count the return. `Returned` is terminal, so
+    /// a low-confidence re-classification of the anchor closing the offer would
+    /// take away the user's only chance to answer "I was focused" — the answer
+    /// the demotion policy counts.
+    #[test]
+    fn a_low_confidence_glimpse_of_the_anchor_does_not_close_the_offer() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+
+        let outcome = manager
+            .observe_safe_category(
+                "DEEP_WORK",
+                ClassificationStatus::Classified,
+                ClassificationConfidence::Low,
+                at(560),
+            )
+            .unwrap()
+            .expect("a differently classified observation produces a snapshot");
+
+        let recorded = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Offered);
+        // The offer is still live on both surfaces the user can reach: the card
+        // in the pushed snapshot, and the reply that lands against it.
+        assert!(outcome.snapshot.active_intervention.is_some());
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::WasFocused, at(580))
+            .unwrap();
+        assert_eq!(
+            repo.intervention(&block_id.to_string())
+                .unwrap()
+                .unwrap()
+                .outcome,
+            WorkBlockInterventionOutcome::WasFocused
+        );
     }
 
     #[test]

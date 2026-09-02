@@ -21,7 +21,8 @@ use crate::delivery::{shaper, CacheManager, PushAdapter};
 use crate::focus::FocusManager;
 use crate::initiation::InitiationManager;
 use crate::persistence::{
-    AbstractionMapRepo, RawEventEntry, RawEventRepo, UploadBatchRepo, UploadQueueDiagnostics,
+    AbstractionMapRepo, PersistenceError, RawEventEntry, RawEventRepo, UploadBatchRepo,
+    UploadQueueDiagnostics,
 };
 use crate::receipts::ReceiptsManager;
 use crate::upload::EventIngestor;
@@ -621,7 +622,13 @@ impl MessageRouter for R7Router {
 
             ClientMessage::DeleteAccount(_) => {
                 self.expire_open_invitation();
-                Ok(Some(self.account.delete_account().await))
+                let outcome = self.account.delete_account().await;
+                // After acceptance, not before: a deletion the cloud refused
+                // leaves the user signed in and the queue theirs.
+                if matches!(outcome, ServerMessage::AccountDeletionAccepted(_)) {
+                    self.destroy_resumable_upload_queue();
+                }
+                Ok(Some(outcome))
             }
 
             ClientMessage::RequestMenuStatus(_) => Ok(Some(ServerMessage::MenuStatus(
@@ -1353,6 +1360,93 @@ impl R7Router {
                     },
                 )))
             }
+        }
+    }
+
+    /// Deletes every upload batch that can still be sent, and the events
+    /// inside them, once the cloud has accepted the account deletion.
+    ///
+    /// The queue has no owner. `resumable_batches` selects on status and
+    /// schedule and on nothing about who queued the row, and neither
+    /// `upload_batch` nor `BatchPayload` carries a device or user identifier, so
+    /// the cloud attributes a batch purely by whichever bearer
+    /// token the retry loop is holding when it next runs. Account deletion
+    /// clears the device id along with the tokens
+    /// (`AccountAuthService::clear_local_session`), so the next sign-up on this
+    /// Mac registers a new device — and the backend scopes duplicate detection
+    /// by device id, so batches minted under the deleted account are not
+    /// refused as duplicates there. They are stored against the new account.
+    /// The likeliest person on the other end of that is the same one, deleting
+    /// and re-registering, which restores the history they asked to destroy.
+    ///
+    /// `SqliteUploadBatchRepo::pending_batches` is `resumable_batches` at an
+    /// unbounded horizon, which is the horizon this needs: on the development
+    /// device every one of the 182 queued batches carried the same
+    /// `next_attempt_at`, and all of them were scheduled past the moment the
+    /// service last ran. A purge on the retry loop's own horizon would have
+    /// left every one of them behind.
+    ///
+    /// It reaches `pending` and `failed` and nothing else, because those are
+    /// the two statuses `resumable_batches` returns: `sent`, `rejected` and
+    /// `abandoned` are terminal and no code path uploads them. Those rows stay
+    /// on disk with the rest of the local database, and the deletion dialog
+    /// says so rather than implying a purge that does not happen.
+    ///
+    /// A process that dies between the cloud's acceptance and this call leaves
+    /// the queue behind, and this is the only place ownership is enforced. The
+    /// standing check that would also cover it belongs in `resume_pending` —
+    /// `BatchAssembler` derives a batch id by hashing the device id with the
+    /// event ids, so a resumed batch can be tested against the device holding
+    /// it. `tests/account_deletion.rs` pins that property and shows the rule
+    /// working; nothing in `src/` installs it.
+    fn destroy_resumable_upload_queue(&self) {
+        let Some(batches) = &self.upload_batches else {
+            tracing::error!(
+                error_code = "account_deletion_queue_unreachable",
+                "no upload queue was attached, so queued activity was not destroyed"
+            );
+            return;
+        };
+        let queued = match batches.pending_batches() {
+            Ok(queued) => queued,
+            Err(error) => {
+                tracing::error!(
+                    error_code = "account_deletion_queue_read_failed",
+                    error = %error,
+                    "queued activity was not destroyed with the account"
+                );
+                return;
+            }
+        };
+        let mut destroyed = 0usize;
+        let mut surviving = 0usize;
+        for batch in &queued {
+            match batches.discard_batch(&batch.batch_id) {
+                // A row already gone is the outcome this wants.
+                Ok(()) | Err(PersistenceError::NotFound { .. }) => destroyed += 1,
+                Err(error) => {
+                    surviving += 1;
+                    tracing::error!(
+                        error_code = "account_deletion_batch_delete_failed",
+                        error = %error,
+                        "a queued batch survived account deletion"
+                    );
+                }
+            }
+        }
+        if surviving == 0 {
+            tracing::info!(
+                message_type = "delete_account",
+                destroyed_batches = destroyed,
+                "queued activity was destroyed with the account"
+            );
+        } else {
+            tracing::error!(
+                error_code = "account_deletion_queue_purge_incomplete",
+                destroyed_batches = destroyed,
+                surviving_batches = surviving,
+                "queued activity survived account deletion"
+            );
         }
     }
 

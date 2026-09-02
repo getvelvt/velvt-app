@@ -8,6 +8,7 @@ use super::{
     WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
     WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WrongInterventionCounts,
 };
+use crate::abstraction::EmbeddingSalt;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use velvt_shared_types::WorkBlockResult;
@@ -52,6 +53,36 @@ pub trait AbstractionMapRepo: Send + Sync {
     fn personal_semantic_prototype_count(&self) -> Result<u64, PersistenceError>;
     fn classifier_artifact_count(&self, artifact_version: &str) -> Result<u64, PersistenceError>;
     fn display_name_for_label(&self, label: &str) -> Result<Option<String>, PersistenceError>;
+    /// Deletes at most `limit` rows from `semantic_embedding_cache` whose
+    /// `updated_at` is before `cutoff`.
+    ///
+    /// The cache is a derivation of the application name and window title, so
+    /// it is evidence with the same shape as a raw event and it expires on the
+    /// same horizon. `personal_semantic_prototype` is deliberately not swept
+    /// here: it holds corrections the user made on purpose, which is learned
+    /// state rather than a cache, and it is cleared by the reset that offers to
+    /// clear it.
+    fn delete_expired_semantic_embeddings(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
+    /// This install's embedding salt, minting one if the row is absent.
+    ///
+    /// Migration 0031 creates the row, so the read is the only path a migrated
+    /// database takes. The create path exists because the alternative is worse:
+    /// a startup that cannot produce a salt would otherwise fall back to
+    /// [`EmbeddingSalt::UNSALTED`], and every sketch cached after that would be
+    /// recoverable from the published source with nothing taken off the device.
+    ///
+    /// Read and create happen in one transaction, so two processes racing on
+    /// first launch cannot mint two salts and write vectors from two spaces into
+    /// the same table. Minting also empties `semantic_embedding_cache` and
+    /// `personal_semantic_prototype` in that same transaction, for the reason
+    /// 0031 empties them: a different salt is a different vector space, and a
+    /// vector from the old one compared against a vector from the new one is a
+    /// similarity score about nothing.
+    fn embedding_salt(&self) -> Result<EmbeddingSalt, PersistenceError>;
 }
 
 pub trait UploadBatchRepo: Send + Sync {
@@ -114,6 +145,25 @@ pub trait UploadBatchRepo: Send + Sync {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<u64, PersistenceError>;
+    /// Deletes at most `limit` batches of any status whose `created_at` is
+    /// before `cutoff`. Cascade deletes the associated `batch_event` rows.
+    ///
+    /// The backstop for everything the status-scoped sweeps above do not name.
+    /// A queued batch has no expiry of its own, and the path that fills the
+    /// queue without bound is sustained transport failure rather than anything
+    /// the user did, so the queue needs a horizon that does not depend on the
+    /// batch ever reaching a terminal status.
+    ///
+    /// Defaulted to "nothing was stale" for the test doubles that wrap a real
+    /// repository and model only the upload path. A repository that stores
+    /// batches must override it; `SqliteUploadBatchRepo` does.
+    fn delete_stale_queued_batch(
+        &self,
+        _cutoff: DateTime<Utc>,
+        _limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        Ok(0)
+    }
 }
 
 pub trait HistoryCacheRepo: Send + Sync {
@@ -358,6 +408,64 @@ pub trait WorkBlockRepo: Send + Sync {
     /// The most recent decisions across every block, newest first.
     fn recent_decisions(&self, limit: usize)
         -> Result<Vec<InterventionDecision>, PersistenceError>;
+
+    /// Decisions whose 600-second horizon closed at or before
+    /// `horizon_closed_by` and whose proximal outcome is still unresolved,
+    /// oldest first.
+    ///
+    /// A decision that abstained before the gate had computed an anchor is
+    /// excluded rather than resolved: there is no anchor to look for, so the
+    /// horizon is unanswerable, and NULL keeps meaning exactly what migration
+    /// 0026 says it means. Excluding it in SQL is also what stops the resolver
+    /// re-reading the same unanswerable rows on every pass forever.
+    ///
+    /// The three outcome-resolution methods carry defaults describing a
+    /// repository that has no decision log — nothing unresolved, nothing
+    /// observed, nothing to write. That is true of the wrapping test doubles
+    /// and false of anything that stores rows, so a storage-backed repository
+    /// must override all three; `SqliteWorkBlockRepo` does.
+    fn unresolved_decisions(
+        &self,
+        _horizon_closed_by: DateTime<Utc>,
+        _limit: usize,
+    ) -> Result<Vec<InterventionDecision>, PersistenceError> {
+        Ok(Vec::new())
+    }
+
+    /// Whether an observation of `category` was recorded in the block after
+    /// `from` and up to and including `until`.
+    ///
+    /// The lower bound is exclusive on purpose. `from` is the decision's own
+    /// timestamp, and the observation the decision was made on already carries
+    /// it — `observe_safe_category` appends before it evaluates. Including it
+    /// would resolve `AbstainedAtAnchor` to "returned" by construction, since
+    /// that verdict fires precisely when the latest confident observation is the
+    /// anchor. The live return path has the same shape: `record_return_if_pending`
+    /// runs before the gate, so it can never resolve an offer against the
+    /// observation that produced it. Same category equality on both sides, so a
+    /// backfilled outcome and a `returned` outcome cannot disagree about what
+    /// counts as coming back.
+    fn observed_category_between(
+        &self,
+        _block_id: &str,
+        _category: &str,
+        _from: DateTime<Utc>,
+        _until: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        Ok(false)
+    }
+
+    /// Writes the proximal outcome of one decision. Only an unresolved row
+    /// transitions, so the resolver is idempotent and a rerun can never rewrite
+    /// an answer already given. Returns whether a row changed.
+    fn resolve_decision(
+        &self,
+        _decision_id: &str,
+        _anchor_seen: bool,
+        _at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        Ok(false)
+    }
 }
 
 /// Storage seam for the deterministic initiation-invitation policy: the

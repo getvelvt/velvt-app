@@ -211,14 +211,118 @@ describes code that does not ship.
 
 ---
 
+## Audit 7 — the embedding cache, and the tool that could not see it (2026-08-31)
+
+Audit 6 re-ran the raw-content boundary at protocol 28 and found the two
+disclosed `raw_event_buffer` columns. It walked `TEXT` columns and it did not
+walk `BLOB` columns, so it did not reach `semantic_embedding_cache`. Neither did
+`scripts/prove_local.sh`, for exactly the same reason and in the same words:
+its `is_text_type` matched `*TEXT*|*CHAR*|*CLOB*`, so both embedding columns
+fell into the "other" bucket beside the integers and were never enumerated. The
+script's own header said numbers and timestamps "cannot carry a window title."
+A blob is neither, and this one can.
+
+### 7.1 What the sketch is
+
+`DefaultTitleAbstractor` (`abstraction/mod.rs`) is a pass-through, and it is the
+one installed (`abstraction/engine.rs`). So Tier 2 receives the verbatim window
+title, `embedding_input` builds `"{app_name} [SEP] {window_title}"`
+(`abstraction/plugin.rs`), and `HashedEmbeddingModel` writes a 256-dimension
+sketch of it to `semantic_embedding_cache.embedding` under a SHA-256 of the same
+string. Each word is added at weight 1.0 at a SHA-256-derived index and sign,
+and every character trigram of `^word$` at 0.25 — roughly a nine-coordinate
+joint signature per word.
+
+### 7.2 Recovery, measured on the live database
+
+`HashedEmbeddingModel` was reimplemented from this repository's source and run
+against the live database on 2026-08-31. The stored vectors are L2-normalised;
+the pre-normalisation scale is recoverable because every coordinate before
+normalisation is a multiple of 0.25, so the correct scale is the one that makes
+that true of all 256 at once.
+
+| Measure | Result |
+|---|---|
+| Rows in `semantic_embedding_cache` | 512 |
+| Rows yielding at least one dictionary word | **452 (88.3%)** |
+| Distinct words recovered across the table | **935** |
+| Dictionary used | `/usr/share/dict/words`, 234,143 entries, nothing bespoke |
+
+Recovered words are visibly real title content: `chrome`, `terminal`, `claude`,
+`overleaf`, `slack`, `zoom`, `citation`, `annotation`, `accessibility`.
+
+Precision, on a synthetic sensitive title rather than on real data: the
+normalised string `divorce attorney consultation booking` returns exactly
+`{attorney, booking, consultation, divorce}` — four of 234,143 candidates, no
+false positives.
+
+An external review of the same code on the same day, using a different
+dictionary, reported 448 of 512 rows and 1,190 distinct words. The two runs
+agree.
+
+### 7.3 The hash is unsalted
+
+`add_hashed_feature` is a plain SHA-256 of the token. It is identical on every
+install, so the oracle above is computable offline from published source and
+needs nothing from the target machine. A per-install random salt would change
+that to requiring the salt first. **It is not in the shipped code.** This is the
+only recommendation in this audit that is not already closed.
+
+### 7.4 Verdict
+
+**No VIOLATION.** Nothing about the sketch is uploaded, and the exclusion is
+structural rather than filtered: `grep -rn` for `embedding`, `semantic`,
+`prototype`, `local_name_suggestion`, `local_display_label`, `window_title`, and
+`app_name` across `rust-service/src/upload/` returns **zero hits**, and
+`batch_event` — the upload mirror — has no column that could hold one.
+
+**Three DOCUMENTATION findings, all corrected in the same commit as this audit:**
+
+1. `PRIVACY.md` contained zero occurrences of "embedding", "semantic",
+   "prototype", or "vector", and asserted the schema "simply ha[s] no field that
+   could hold" a raw field and preserves no "way to recover the original raw
+   string." Both tables are now in the storage inventory, and the recoverability
+   above is stated rather than implied away.
+2. `scripts/prove_local.sh` reported `semantic_embedding_cache` as one text
+   column and three "other" columns, printed 512 opaque hashes, and declared
+   itself a proof. It now names every `BLOB` column, reports it as UNINSPECTED
+   with a byte count, and says in its own header and closing caveat that this is
+   the one column it cannot read out to you.
+3. `out_of_block_run`, `block_antecedent`, and `antecedent_finding` are in the
+   schema, are visible to anyone who opens the database, and have no writer
+   outside tests. `PRIVACY.md` described the first two as though they were
+   accruing and omitted the third. All three now carry the disclosure that
+   `migrations/0029` already carried.
+
+Also narrowed: Audit 5 above states the concatenated input string is "never
+logged, stored, or returned in an error type." The string itself is not stored.
+A hash of it and a sketch derived from it both are, and § 7.1-7.2 are the
+current statement.
+
+### 7.5 Not re-verified in this pass
+
+Audits 2 (tokens), 3, and 4 remain stale at v6/v7 and were not re-run. Audit 5
+(ONNX) describes code the distributable does not build, per § 6.5, and is
+unchanged by this pass.
+
+---
+
 ## Sign-off
 
 Audits 1-5 were completed on 2026-06-16 against commit `7742c9d` at protocol
 v6/v7. **They are stale.** Audit 6 re-runs the raw-content boundary at protocol
 28 against commit `3d2af2f` and a live 23,026-event database, on 2026-08-21.
+Audit 7 extends it to the `BLOB` columns Audit 6 did not walk, against a live
+24,160-event database, on 2026-08-31.
 
 Re-run this audit before merging if further changes touch `abstraction/`,
 `upload/`, `auth/`, or `ipc/` — and **re-run it against a database with real
-usage in it**, not fixtures. Both defects corrected here were invisible to
+usage in it**, not fixtures. Every defect corrected here was invisible to
 fixture-based verification and took one SQL query against a real database to
 find.
+
+One method note, since Audit 6 and Audit 7 found the same class of thing twice:
+both audits, and `prove_local.sh` with them, walked the columns they knew how to
+read. Enumerate from `sqlite_master` and account for every column by declared
+type — including the ones the tool cannot render — or the next undisclosed
+column will be the next one whose type nobody wrote a branch for.

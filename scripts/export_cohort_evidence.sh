@@ -8,26 +8,41 @@
 # intervention change what the person did — is not measurable without the
 # participant deliberately handing it over. This script is that hand-over.
 #
-# What it emits: one row per recorded intervention decision, with safe taxonomy
-# categories and timings only. Two of those decisions are terminal at creation
-# and reached no channel — `delivery_suppressed_dnd` (migration 0020) and
-# `withheld_demotion` (migration 0023). They are exported like any other row;
-# `analyze_cohort.py` partitions them out of the delivered denominator.
+# What it emits: TWO files.
 #
-# What it cannot emit, by construction: the free-form block intention, app
-# names, window titles, URLs, filenames, or any observation rows. The query
-# below names every column it selects; there is no `SELECT *` anywhere in it.
+#   1. One row per DELIVERED intervention, from `work_block_intervention`, with
+#      safe taxonomy categories and timings only. Two of those outcomes are
+#      terminal at creation and reached no channel —
+#      `delivery_suppressed_dnd` (migration 0020) and `withheld_demotion`
+#      (migration 0023). They are exported like any other row;
+#      `analyze_cohort.py` partitions them out of the delivered denominator.
+#   2. One row per RECORDED DECISION, from `intervention_decision_log`
+#      (migration 0026), written to `<name>-decisions.csv` beside the first.
+#      This is the larger file and the one that matters: the gate writes a row
+#      every time it evaluates, including every time it decides to stay silent,
+#      and the replacement primary outcome's denominator is those rows and not
+#      the delivered ones. Exporting only file 1 discards every abstention,
+#      which is most of them.
+#
+# What neither can emit, by construction: the free-form block intention, app
+# names, window titles, URLs, filenames, or any observation rows. Both queries
+# below name every column they select; there is no `SELECT *` anywhere in this
+# file.
 #
 # Usage:
 #   ./scripts/export_cohort_evidence.sh                 # writes to ./velvt-cohort-<date>.csv
 #   ./scripts/export_cohort_evidence.sh /tmp/out.csv    # explicit destination
 #
-# Read the file before sending it. It is plain CSV.
+# Read both files before sending them. They are plain CSV.
 
 set -euo pipefail
 
 DB="${VELVT_DATABASE_PATH:-$HOME/.velvt/velvt-service.sqlite3}"
 OUT="${1:-./velvt-cohort-$(date -u +%Y-%m-%d).csv}"
+# Beside the first file, never inside it: the two have different row grains and
+# different denominators, and one CSV carrying both would be pooled by the first
+# person who opened it in a spreadsheet.
+DECISIONS_OUT="${OUT%.csv}-decisions.csv"
 
 if [[ ! -f "$DB" ]]; then
   echo "No Velvt database at $DB." >&2
@@ -134,20 +149,83 @@ SQL
 
 ROWS=$(( $(wc -l < "$OUT") - 1 ))
 
+# ---------------------------------------------------------------------------
+# The second file. `work_block_intervention` holds only the decisions that
+# became a delivered offer; `intervention_decision_log` holds every evaluation
+# the gate made, abstentions included, and the pre-registered denominator for
+# the replacement primary outcome is that log. An export that carried only the
+# first file discarded the abstentions, which is most of the rows and all of
+# the ones that say when Velvt chose to stay quiet.
+#
+# The block columns come from a LEFT JOIN because a decision row can name a
+# block that produced no offer, and without the block's end the analysis cannot
+# apply its own censoring rule — a decision whose 900-second horizon runs past
+# the end of the block is censored, not counted as a failure.
+# ---------------------------------------------------------------------------
+DECISION_ROWS="not exported"
+if sqlite3 -readonly "$WORK/snapshot.sqlite" \
+     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='intervention_decision_log';" \
+     | grep -q 1; then
+  printf '%s\n' \
+      'decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,block_started_at,block_ended_at,block_planned_duration_seconds' \
+      > "$DECISIONS_OUT"
+  sqlite3 -readonly -noheader -csv "$WORK/snapshot.sqlite" >> "$DECISIONS_OUT" <<'SQL'
+SELECT
+    d.decision_id                                AS decision_id,
+    d.occurred_at                                AS occurred_at,
+    d.block_id                                   AS block_id,
+    d.policy_version                             AS policy_version,
+    d.anchor_category                            AS anchor_category,
+    d.switch_count                               AS switch_count,
+    d.elapsed_seconds                            AS elapsed_seconds,
+    d.remaining_seconds                          AS remaining_seconds,
+    d.gate_verdict                               AS gate_verdict,
+    d.propensity                                 AS propensity,
+    -- NULL here means the 600-second horizon was never resolved, which is not
+    -- the same as "did not return". Resolved-and-negative is 0. Analysis must
+    -- not read one as the other.
+    d.anchor_seen_within_600s                    AS anchor_seen_within_600s,
+    d.outcome_at                                 AS outcome_at,
+    b.started_at                                 AS block_started_at,
+    b.ended_at                                   AS block_ended_at,
+    b.planned_duration_seconds                   AS block_planned_duration_seconds
+FROM intervention_decision_log AS d
+LEFT JOIN work_block AS b ON b.block_id = d.block_id
+ORDER BY d.occurred_at;
+SQL
+  DECISION_ROWS=$(( $(wc -l < "$DECISIONS_OUT") - 1 ))
+fi
+
 cat <<SUMMARY
 
 Wrote $ROWS intervention record(s) to:
   $OUT
 SUMMARY
 
+if [[ "$DECISION_ROWS" == "not exported" ]]; then
+  cat <<'NOLOG'
+
+This database predates migration 0026, so it has no decision log and no second
+file was written. Every abstention the gate made on this Mac is unrecorded --
+not missing from the export, absent from the database. Say so when you send it.
+NOLOG
+else
+  cat <<SUMMARY
+
+Wrote $DECISION_ROWS recorded decision(s) to:
+  $DECISIONS_OUT
+SUMMARY
+fi
+
 if (( ROWS == 0 )); then
   cat <<'EMPTY'
 
 No offer ever fired on this Mac. That is a result, not a failure: it says the
 detector's thresholds were never met here, which is exactly the kind of thing
-this cohort is meant to find out. Please send the file anyway — an export with
+this cohort is meant to find out. Please send the files anyway — an export with
 zero rows still counts, and leaving it out would quietly bias the numbers
-toward the people who did get interrupted.
+toward the people who did get interrupted. The decisions file will still have
+rows in it: the gate recorded every time it looked and chose not to speak.
 EMPTY
 fi
 
@@ -158,6 +236,13 @@ start and end times, total time paused, offer time, how much of the block was
 left when the offer fired, anchor category, switch count, salience, outcome,
 and outcome time. Times are plain epoch seconds.
 
+The decisions file contains: a decision id, when the gate evaluated, the block
+it belonged to, the policy version, the broad anchor category, switch count,
+elapsed and remaining seconds, the verdict — including every verdict that means
+Velvt looked and chose to stay quiet — the propensity, the resolved outcome
+flag, and the same three block timings.
+
 Does NOT contain: your block intentions, app names, window titles, URLs,
 filenames, or anything you typed or read. Open it and check before sending.
+That applies to both files.
 SUMMARY

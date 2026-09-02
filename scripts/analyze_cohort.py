@@ -8,13 +8,21 @@ denominator, window, and exclusions stated, because a ratio on its own is not
 reportable evidence.
 
 This script computes. It does not decide. Every threshold and definition here
-is read from the pre-registration written on 2026-08-09, before any data
-existed; nothing may be added after seeing results. If a definition turns out
-to be wrong, amend it in a dated note stating what was known at the time.
+is read from the pre-registration written on 2026-08-09 and the amendment dated
+2026-08-21, before any data existed; nothing may be added after seeing results.
+If a definition turns out to be wrong, amend it in a dated note stating what was
+known at the time.
+
+What it reports is the RETIRED 2026-08-09 figure, labelled as retired, plus the
+trust and withheld blocks. The replacement primary outcome — sustained anchor
+engagement over a 900-second horizon — is not computed here, because its
+denominator and its numerator both live outside this CSV. Saying so is cheaper
+than a number that looks like it.
 
 Usage:
     ./scripts/analyze_cohort.py tester-*.csv
     ./scripts/analyze_cohort.py --json tester-*.csv
+    ./scripts/analyze_cohort.py --founder-device my-mac tester-*.csv
 """
 
 from __future__ import annotations
@@ -42,6 +50,28 @@ WRONG_INTERVENTION_OUTCOMES = ("was_focused", "wrong_classification")
 # Blocks shorter than the drift gate's warm-up cannot produce an offer, so they
 # cannot inform the metric. Declared in advance as an exclusion.
 WARMUP_EXCLUSION_SECONDS = 300
+
+# The founder's own device, also declared in advance as an exclusion, and
+# applied here rather than printed. A participant's identity is the CSV's
+# filename stem — the export carries no device identifier and must not grow one
+# — so the convention is that a founder export is named `founder.csv` or
+# `founder-<something>.csv`, and `--founder-device NAME` names any export that
+# is not. This list used to be rendered in the report's footer and enforced
+# nowhere, which excluded exactly nothing.
+FOUNDER_DEVICE_PREFIXES = ("founder-", "founder_")
+
+# The power requirement from `traction-summary.md`, and every input to it is an
+# assumption, none of them measured: a 0.30 baseline under silence, a
+# 15-percentage-point effect worth detecting, alpha 0.05 two-sided, 80% power,
+# and 70/30 allocation. Halving the detectable effect to 7.5 points quadruples
+# the requirement to about 1,560. It is reported beside every ratio because a
+# percentage computed from two rows is not a finding, and printing one without
+# this number beside it is how it becomes read as one.
+POWER_REQUIRED_DECISION_POINTS = 390
+POWER_ASSUMPTIONS = (
+    "0.30 baseline under silence, a 15-point effect worth detecting, "
+    "alpha 0.05 two-sided, 80% power, 70/30 allocation"
+)
 
 # Terminal outcomes for an offer that was actually DELIVERED to a person: a
 # banner or an in-app card reached them and this is how it resolved. These are
@@ -115,6 +145,10 @@ class Cohort:
     withheld: list[Offer] = field(default_factory=list)
     excluded: list[Excluded] = field(default_factory=list)
     participants: set[str] = field(default_factory=set)
+    # Exports dropped whole by the founder-device exclusion. Kept apart from
+    # `participants` so that no count above can include a device the
+    # pre-registration excluded before any data existed.
+    excluded_participants: set[str] = field(default_factory=set)
     empty_exports: list[str] = field(default_factory=list)
     malformed: list[str] = field(default_factory=list)
 
@@ -129,10 +163,28 @@ def _int(row: dict, key: str) -> int | None:
         return None
 
 
-def load(paths: list[Path]) -> Cohort:
+def _is_founder_device(participant: str, declared: set[str]) -> bool:
+    if participant in declared:
+        return True
+    lowered = participant.lower()
+    return lowered == "founder" or lowered.startswith(FOUNDER_DEVICE_PREFIXES)
+
+
+def load(paths: list[Path], founder_devices: tuple[str, ...] = ()) -> Cohort:
     cohort = Cohort()
+    declared = {name.strip() for name in founder_devices if name.strip()}
     for path in paths:
         participant = path.stem
+        # Applied to the whole export, not row by row. A founder export with
+        # zero offers is still a founder export, and admitting it as a
+        # zero-offer participant would put it back into the participation
+        # denominator this exclusion exists to keep it out of.
+        if _is_founder_device(participant, declared):
+            cohort.excluded_participants.add(participant)
+            cohort.excluded.append(
+                Excluded(participant, "", "the founder's own device")
+            )
+            continue
         cohort.participants.add(participant)
         try:
             text = path.read_text()
@@ -241,7 +293,27 @@ def analyse(cohort: Cohort) -> dict:
             "delivered": denominator,
             "withheld": len(withheld),
         },
+        "power": {
+            "required_decision_points": POWER_REQUIRED_DECISION_POINTS,
+            "observed_decisions_here": denominator + len(withheld),
+            "assumptions": POWER_ASSUMPTIONS,
+            "sufficient": (
+                denominator + len(withheld) >= POWER_REQUIRED_DECISION_POINTS
+            ),
+            "note": (
+                "The requirement is stated over ELIGIBLE DECISION POINTS, which "
+                "this CSV does not carry — it carries delivered interventions. "
+                "The count beside it is therefore an upper bound on how close "
+                "this data gets, and it is the number every ratio below is "
+                "computed from."
+            ),
+        },
         "primary_outcome": {
+            "status": (
+                "DESCRIPTIVE. Pre-registered 2026-08-09, retired 2026-08-21, "
+                "retained so results stay comparable across that change. Not the "
+                "primary outcome and never the headline."
+            ),
             "definition": (
                 "Of drift interventions delivered, the fraction followed by a return "
                 "to the anchor category within 10 minutes."
@@ -306,6 +378,7 @@ def analyse(cohort: Cohort) -> dict:
                 "any participant who reinstalled mid-cohort (local history resets with the database)",
             ],
             "applied_here": len(cohort.excluded),
+            "founder_devices_excluded": sorted(cohort.excluded_participants),
             "detail": [
                 {"participant": e.participant, "block_id": e.block_id, "reason": e.reason}
                 for e in cohort.excluded
@@ -318,7 +391,10 @@ def analyse(cohort: Cohort) -> dict:
 def _ratio(numerator: int, denominator: int) -> str:
     if denominator == 0:
         return "not computable (denominator is 0)"
-    return f"{numerator}/{denominator} = {numerator / denominator:.1%}"
+    ratio = f"{numerator}/{denominator} = {numerator / denominator:.1%}"
+    if denominator < POWER_REQUIRED_DECISION_POINTS:
+        return f"{ratio} — underpowered, see POWER above"
+    return ratio
 
 
 def render(result: dict) -> str:
@@ -347,16 +423,47 @@ def render(result: dict) -> str:
     add(f"  delivered: {decisions['delivered']}   <- the denominator below")
     add(f"  withheld:  {decisions['withheld']}   <- partitioned out, reported separately")
 
+    power = result["power"]
+    add("")
+    add("POWER")
+    add("-" * 64)
+    add(f"  Detecting the pre-registered effect needs about "
+        f"{power['required_decision_points']} eligible decision")
+    add("  points, under assumptions none of which are measured:")
+    add(f"    {power['assumptions']}.")
+    add(f"  This data carries {power['observed_decisions_here']}.")
+    add(f"  {power['note']}")
+    if not power["sufficient"]:
+        add("  Every ratio below is reported for completeness and is not a finding.")
+
     primary = result["primary_outcome"]
     add("")
-    add("PRIMARY OUTCOME (pre-registered 2026-08-09)")
+    add("DESCRIPTIVE — RETIRED 2026-08-21, NOT THE PRIMARY OUTCOME")
     add("-" * 64)
+    add("  Pre-registered 2026-08-09 and retired by the 2026-08-21 amendment for a")
+    add("  ceiling effect readable in the drift gate's own source: the gate only")
+    add("  fires on someone who has already returned to the anchor three times")
+    add("  inside the same ten minutes, so this measures the gate's selection rule")
+    add("  rather than what the intervention changed. Retained so figures stay")
+    add("  comparable across the change. Never the headline.")
     add(f"  {primary['definition']}")
     add(f"  returned within {primary['window_seconds']}s: "
         f"{_ratio(primary['numerator'], primary['denominator'])}")
     if primary["unbounded_returned_numerator"] != primary["numerator"]:
         add(f"  unbounded 'returned' would report {primary['unbounded_returned_numerator']}"
             f"/{primary['denominator']} — overstated, do not use")
+
+    add("")
+    add("PRIMARY OUTCOME (replacement, 2026-08-21) — NOT COMPUTED HERE")
+    add("-" * 64)
+    add("  Sustained anchor engagement: at each eligible decision point, whether")
+    add("  at least 600 of the following 900 seconds were spent in the anchor")
+    add("  category. This script cannot compute it and does not approximate it.")
+    add("  Its denominator is eligible decision points from")
+    add("  intervention_decision_log and its numerator needs per-second anchor")
+    add("  coverage from work_block_observation; this CSV carries neither.")
+    add("  export_cohort_evidence.sh writes the decision log to a second CSV")
+    add("  beside this one. That file is the denominator, not the outcome.")
 
     trust = result["trust"]
     add("")
@@ -413,7 +520,15 @@ def render(result: dict) -> str:
     add("-" * 64)
     for line in exclusions["declared_in_advance"]:
         add(f"  - {line}")
-    add(f"  applied to this data: {exclusions['applied_here']} row(s)")
+    add(f"  applied to this data: {exclusions['applied_here']} exclusion(s)")
+    founder = exclusions["founder_devices_excluded"]
+    if founder:
+        add(f"  founder devices dropped whole: {', '.join(founder)}")
+    else:
+        add("  founder devices dropped whole: none. No export was named "
+            "`founder`/`founder-*`")
+        add("  and none was declared with --founder-device, so this exclusion "
+            "removed nothing.")
 
     if result["data_quality"]["malformed"]:
         add("")
@@ -431,6 +546,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csvs", nargs="+", type=Path, help="tester CSV exports")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a report")
+    parser.add_argument(
+        "--founder-device",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="drop this export whole, per the pre-registered founder-device "
+             "exclusion; repeatable. Exports named `founder` or `founder-*` "
+             "are dropped without the flag.",
+    )
     args = parser.parse_args()
 
     missing = [p for p in args.csvs if not p.exists()]
@@ -438,7 +562,7 @@ def main() -> int:
         print(f"ERROR: no such file: {', '.join(str(p) for p in missing)}", file=sys.stderr)
         return 1
 
-    result = analyse(load(args.csvs))
+    result = analyse(load(args.csvs, tuple(args.founder_device)))
     print(json.dumps(result, indent=2) if args.json else render(result))
     return 0
 

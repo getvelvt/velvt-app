@@ -160,8 +160,10 @@ impl<H: HttpClient> PollScheduler<H> {
                     }
                 }
                 Err(PollError::RateLimited { retry_after }) => {
-                    let delay = retry_after.unwrap_or(
+                    let delay = rate_limit_delay(
+                        retry_after,
                         self.client.config.poll_timeout + self.client.config.idle_interval,
+                        self.client.config.max_backoff,
                     );
                     tracing::warn!(
                         delay_ms = delay.as_millis() as u64,
@@ -220,6 +222,16 @@ impl<H: HttpClient> PollScheduler<H> {
 fn parse_retry_after(value: Option<&str>) -> Option<Duration> {
     let seconds = value?.trim().parse::<u64>().ok()?;
     (seconds > 0).then_some(Duration::from_secs(seconds))
+}
+
+fn rate_limit_delay(
+    retry_after: Option<Duration>,
+    fallback: Duration,
+    max_backoff: Duration,
+) -> Duration {
+    retry_after
+        .map(|delay| delay.min(max_backoff))
+        .unwrap_or(fallback)
 }
 
 #[derive(Deserialize)]
@@ -543,6 +555,107 @@ mod tests {
 
         assert!(matches!(result, Err(PollError::RateLimited { retry_after })
             if retry_after == Some(Duration::from_secs(45))));
+    }
+
+    #[test]
+    fn rate_limit_delay_preserves_retry_after_below_cap() {
+        assert_eq!(
+            rate_limit_delay(
+                Some(Duration::from_secs(3)),
+                Duration::from_secs(26),
+                Duration::from_secs(5),
+            ),
+            Duration::from_secs(3)
+        );
+    }
+
+    #[test]
+    fn rate_limit_delay_caps_large_retry_after_values() {
+        for retry_after in [Duration::from_secs(6), Duration::from_secs(u64::MAX)] {
+            assert_eq!(
+                rate_limit_delay(
+                    Some(retry_after),
+                    Duration::from_secs(26),
+                    Duration::from_secs(5),
+                ),
+                Duration::from_secs(5)
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limit_delay_preserves_fallback_for_unusable_headers() {
+        let fallback = Duration::from_secs(26);
+        let max_backoff = Duration::from_secs(5);
+
+        for retry_after in [
+            parse_retry_after(None),
+            parse_retry_after(Some("invalid")),
+            parse_retry_after(Some("0")),
+        ] {
+            assert_eq!(
+                rate_limit_delay(retry_after, fallback, max_backoff),
+                fallback
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_sleep_is_interrupted_by_shutdown() {
+        let (_auth_tx, auth_rx) = watch::channel(AuthState::Authenticated {
+            device_id: "device-1".into(),
+        });
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let queue = crate::delivery::PushQueue::new(1);
+        let client = PollClient::new(Arc::new(FakeHttpClient::new(vec![])), config());
+        let mut scheduler = PollScheduler::new(
+            client,
+            crate::delivery::PushAdapter::new(queue),
+            auth_rx,
+            shutdown_rx,
+        );
+
+        let sleep = tokio::spawn(async move {
+            scheduler
+                .sleep_or_shutdown(Duration::from_secs(u64::MAX))
+                .await
+        });
+        tokio::task::yield_now().await;
+        shutdown_tx.send(true).unwrap();
+
+        assert!(tokio::time::timeout(Duration::from_secs(1), sleep)
+            .await
+            .expect("shutdown should interrupt rate-limit sleep")
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn rate_limit_sleep_is_interrupted_by_auth_change() {
+        let (auth_tx, auth_rx) = watch::channel(AuthState::Authenticated {
+            device_id: "device-1".into(),
+        });
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let queue = crate::delivery::PushQueue::new(1);
+        let client = PollClient::new(Arc::new(FakeHttpClient::new(vec![])), config());
+        let mut scheduler = PollScheduler::new(
+            client,
+            crate::delivery::PushAdapter::new(queue),
+            auth_rx,
+            shutdown_rx,
+        );
+
+        let sleep = tokio::spawn(async move {
+            scheduler
+                .sleep_or_shutdown(Duration::from_secs(u64::MAX))
+                .await
+        });
+        tokio::task::yield_now().await;
+        auth_tx.send(AuthState::NeedsReauth).unwrap();
+
+        assert!(!tokio::time::timeout(Duration::from_secs(1), sleep)
+            .await
+            .expect("auth change should interrupt rate-limit sleep")
+            .unwrap());
     }
 
     #[test]

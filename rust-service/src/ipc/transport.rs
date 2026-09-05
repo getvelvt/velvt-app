@@ -4,6 +4,37 @@
 
 use super::IpcError;
 
+#[cfg(unix)]
+const ACCEPT_RETRY_POLICY: AcceptRetryPolicy = AcceptRetryPolicy {
+    initial_delay: std::time::Duration::from_millis(50),
+    max_delay: std::time::Duration::from_secs(1),
+};
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct AcceptRetryPolicy {
+    initial_delay: std::time::Duration,
+    max_delay: std::time::Duration,
+}
+
+#[cfg(unix)]
+trait AcceptSource {
+    type Connection;
+
+    async fn accept(&self) -> std::io::Result<Self::Connection>;
+}
+
+#[cfg(unix)]
+impl AcceptSource for tokio::net::UnixListener {
+    type Connection = tokio::net::UnixStream;
+
+    async fn accept(&self) -> std::io::Result<Self::Connection> {
+        tokio::net::UnixListener::accept(self)
+            .await
+            .map(|(stream, _)| stream)
+    }
+}
+
 /// Runs an IPC accept loop without exposing transport details to handlers.
 pub trait IpcTransport {
     /// Accepts clients until the transport is stopped or fails.
@@ -163,8 +194,14 @@ impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUni
 
         loop {
             tokio::select! {
-                accept = listener.accept() => {
-                    let (stream, _) = accept.map_err(|_| IpcError::Transport)?;
+                accept = accept_with_retry(
+                    &listener,
+                    &mut accept_shutdown,
+                    ACCEPT_RETRY_POLICY,
+                ) => {
+                    let Some(stream) = accept else {
+                        break;
+                    };
                     let max_errors = self.max_errors;
                     let auth_states = self.auth_states.clone();
                     let write_timeout = self.write_timeout;
@@ -241,15 +278,60 @@ impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUni
                         });
                     }
                 }
-                _ = next_shutdown(&mut accept_shutdown) => {
-                    break;
-                }
             }
         }
 
         // Wait for all in-flight connection tasks to finish.
         while join_set.join_next().await.is_some() {}
         Ok(())
+    }
+}
+
+#[cfg(unix)]
+async fn accept_with_retry<A>(
+    source: &A,
+    shutdown: &mut Option<tokio::sync::watch::Receiver<bool>>,
+    retry_policy: AcceptRetryPolicy,
+) -> Option<A::Connection>
+where
+    A: AcceptSource,
+{
+    let mut retry_delay = retry_policy.initial_delay;
+
+    loop {
+        tokio::select! {
+            accept = source.accept() => match accept {
+                Ok(connection) => return Some(connection),
+                Err(error) => {
+                    tracing::warn!(
+                        error_kind = ?error.kind(),
+                        raw_os_error = ?error.raw_os_error(),
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "IPC listener accept failed; retrying"
+                    );
+
+                    if wait_for_retry_or_shutdown(retry_delay, shutdown).await {
+                        return None;
+                    }
+                    retry_delay = retry_delay
+                        .checked_mul(2)
+                        .unwrap_or(retry_policy.max_delay)
+                        .min(retry_policy.max_delay);
+                }
+            },
+            _ = next_shutdown(shutdown) => return None,
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_retry_or_shutdown(
+    delay: std::time::Duration,
+    shutdown: &mut Option<tokio::sync::watch::Receiver<bool>>,
+) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => false,
+        _ = next_shutdown(shutdown) => true,
     }
 }
 
@@ -261,11 +343,136 @@ async fn next_shutdown(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
         return std::future::pending().await;
     };
     loop {
-        if rx.changed().await.is_err() {
-            return;
-        }
         if *rx.borrow() {
             return;
         }
+        if rx.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        io,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Mutex,
+        },
+        time::Duration,
+    };
+
+    use super::{accept_with_retry, AcceptRetryPolicy, AcceptSource};
+
+    struct FakeAcceptSource {
+        outcomes: Mutex<VecDeque<io::Result<usize>>>,
+        attempts: AtomicUsize,
+    }
+
+    impl FakeAcceptSource {
+        fn new(outcomes: impl IntoIterator<Item = io::Result<usize>>) -> Self {
+            Self {
+                outcomes: Mutex::new(outcomes.into_iter().collect()),
+                attempts: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl AcceptSource for FakeAcceptSource {
+        type Connection = usize;
+
+        async fn accept(&self) -> io::Result<Self::Connection> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            let outcome = self.outcomes.lock().unwrap().pop_front();
+            match outcome {
+                Some(outcome) => outcome,
+                None => std::future::pending().await,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn accept_errors_retry_and_reset_after_a_connection_succeeds() {
+        let source = FakeAcceptSource::new([
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "connection aborted",
+            )),
+            Err(io::Error::from_raw_os_error(24)),
+            Ok(7),
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "connection aborted",
+            )),
+            Ok(8),
+        ]);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let mut shutdown = Some(shutdown_rx);
+
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(1),
+            accept_with_retry(
+                &source,
+                &mut shutdown,
+                AcceptRetryPolicy {
+                    initial_delay: Duration::from_millis(1),
+                    max_delay: Duration::from_millis(2),
+                },
+            ),
+        )
+        .await
+        .expect("accept loop should survive recoverable errors");
+        let accepted_after_reset = accept_with_retry(
+            &source,
+            &mut shutdown,
+            AcceptRetryPolicy {
+                initial_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(2),
+            },
+        )
+        .await;
+
+        assert_eq!(accepted, Some(7));
+        assert_eq!(accepted_after_reset, Some(8));
+        assert_eq!(source.attempts.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn shutdown_interrupts_accept_error_backoff() {
+        let source = std::sync::Arc::new(FakeAcceptSource::new([Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "connection aborted",
+        ))]));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let task_source = std::sync::Arc::clone(&source);
+        let task = tokio::spawn(async move {
+            let mut shutdown = Some(shutdown_rx);
+            accept_with_retry(
+                task_source.as_ref(),
+                &mut shutdown,
+                AcceptRetryPolicy {
+                    initial_delay: Duration::from_secs(60),
+                    max_delay: Duration::from_secs(60),
+                },
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while source.attempts.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fake accept should be attempted");
+        shutdown_tx.send_replace(true);
+
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("shutdown should interrupt the retry delay")
+            .expect("accept loop task should exit cleanly");
+        assert_eq!(source.attempts.load(Ordering::SeqCst), 1);
     }
 }

@@ -170,10 +170,11 @@ fn every_seed_entry_routes_through_tier1() {
 
 #[test]
 fn unknown_app_uses_unlogged_fallback() {
+    let engine = engine();
+    let event = raw_event("Unknown App", "private title");
     let started = Instant::now();
-    let result = engine()
-        .process(raw_event("Unknown App", "private title"))
-        .unwrap();
+    let result = engine.process(event).unwrap();
+    let elapsed = started.elapsed();
 
     assert_eq!(result.label(), "unlogged");
     assert_eq!(result.category(), "UNLOGGED");
@@ -191,7 +192,10 @@ fn unknown_app_uses_unlogged_fallback() {
         ClassificationSource::Fallback
     );
     assert_eq!(result.local_name_suggestion(), None);
-    assert!(started.elapsed() < Duration::from_millis(20));
+    assert!(
+        elapsed < Duration::from_millis(20),
+        "fallback classification took {elapsed:?}"
+    );
 }
 
 #[test]

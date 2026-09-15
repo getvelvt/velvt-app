@@ -89,6 +89,14 @@ public enum CollectionStatus: Equatable, Sendable {
 public protocol CollectionAgentProtocol: AnyObject {
     func start() throws
     func stop()
+    /// Whether the agent is observing right now.
+    ///
+    /// `PermissionCollectionCoordinator` used to keep its own copy of this and
+    /// consult that instead. An agent stops itself when the AX observer reports
+    /// the permission was revoked, so the copy went stale exactly when it
+    /// mattered: the coordinator went on believing collection was running and
+    /// refused to start it again, and nothing on any surface said so.
+    var isRunning: Bool { get }
     var status: AnyPublisher<CollectionStatus, Never> { get }
 }
 
@@ -150,9 +158,11 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     private let maximumDwellDuration: TimeInterval
     private let statusSubject = CurrentValueSubject<CollectionStatus, Never>(.idle)
     private let lock = NSLock()
-    private var isRunning = false
+    private var isRunningLocked = false
     private var activeProcessIdentifier: pid_t?
     private var pendingDwellEvent: RawEvent?
+
+    public var isRunning: Bool { lock.withLock { isRunningLocked } }
 
     public convenience init(eventSink: any EventSink) {
         self.init(
@@ -180,18 +190,18 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     }
 
     public func start() throws {
-        guard lock.withLock({ !isRunning }) else {
+        guard lock.withLock({ !isRunningLocked }) else {
             return
         }
         guard permissionChecker.hasPermission() else {
             statusSubject.send(.permissionRevoked)
-            return
+            throw CollectionError.permissionRevoked
         }
         let shouldStart = lock.withLock {
-            guard !isRunning else {
+            guard !isRunningLocked else {
                 return false
             }
-            isRunning = true
+            isRunningLocked = true
             return true
         }
         guard shouldStart else {
@@ -217,10 +227,10 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
 
     public func stop() {
         let result = lock.withLock { () -> (shouldStop: Bool, finalEvent: RawEvent?) in
-            guard isRunning else {
+            guard isRunningLocked else {
                 return (false, nil)
             }
-            isRunning = false
+            isRunningLocked = false
             activeProcessIdentifier = nil
             let finalEvent = takePendingDwellLocked(at: now(), reanchor: false)
             return (true, finalEvent)
@@ -273,7 +283,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     @discardableResult
     public func flushPendingDwell(at instant: Date) -> Bool {
         let completedEvent = lock.withLock { () -> RawEvent? in
-            guard isRunning, let pending = pendingDwellEvent else {
+            guard isRunningLocked, let pending = pendingDwellEvent else {
                 return nil
             }
             guard dwellSeconds(from: pending.occurredAt, through: instant) > 0 else {
@@ -319,7 +329,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     }
 
     private func applicationDidActivate(_ application: RunningApplication) {
-        guard lock.withLock({ isRunning }) else {
+        guard lock.withLock({ isRunningLocked }) else {
             return
         }
         guard permissionChecker.hasPermission() else {
@@ -398,7 +408,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             occurredAt: now()
         )
         let completedEvent = lock.withLock { () -> RawEvent? in
-            guard isRunning && activeProcessIdentifier == processIdentifier else {
+            guard isRunningLocked && activeProcessIdentifier == processIdentifier else {
                 return nil
             }
             guard let previousEvent = pendingDwellEvent else {
@@ -429,7 +439,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             return
         }
         let result = lock.withLock { () -> (shouldHandle: Bool, finalEvent: RawEvent?) in
-            guard isRunning && activeProcessIdentifier == processIdentifier else {
+            guard isRunningLocked && activeProcessIdentifier == processIdentifier else {
                 return (false, nil)
             }
             activeProcessIdentifier = nil
@@ -452,10 +462,10 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
 
     private func stopAfterPermissionRevocation() {
         let result = lock.withLock { () -> (shouldStop: Bool, finalEvent: RawEvent?) in
-            guard isRunning else {
+            guard isRunningLocked else {
                 return (false, nil)
             }
-            isRunning = false
+            isRunningLocked = false
             activeProcessIdentifier = nil
             let finalEvent = takePendingDwellLocked(at: now(), reanchor: false)
             return (true, finalEvent)
@@ -484,7 +494,7 @@ public final class FakeCollectionAgent: CollectionAgentProtocol {
 
     private weak var eventSink: (any EventSink)?
     private let statusSubject = CurrentValueSubject<CollectionStatus, Never>(.idle)
-    private var isRunning = false
+    public private(set) var isRunning = false
 
     public init(eventSink: any EventSink) {
         self.eventSink = eventSink

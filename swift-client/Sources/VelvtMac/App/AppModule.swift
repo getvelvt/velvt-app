@@ -197,6 +197,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             restartLocalService: { [weak serviceProcessLauncher] in
                 serviceProcessLauncher?.restart()
+                // A restarted helper does not bring the socket back on its own.
+                // A versionMismatch handshake leaves the client disconnected
+                // with no reconnect armed, and this is the only other place in
+                // the app that re-dials, so it has to do both.
+                Task.detached { try? await client.connect() }
             },
             replayOnboarding: { [weak self] in
                 self?.onboardingWindowController?.presentReplay()
@@ -246,18 +251,42 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
         Task.detached {
-            do {
-                try await client.connect()
-            } catch let IPCError.versionMismatch(expected, got) {
+            await AppDelegate.connectRetryingVersionMismatch(client) { expected, got in
                 await MainActor.run {
                     let alert = NSAlert()
                     alert.alertStyle = .critical
                     alert.messageText = "Velvt update required"
                     alert.informativeText = "IPC protocol version \(got) is incompatible with required version \(expected)."
-                    alert.runModal()
+                    alert.addButton(withTitle: "Retry")
+                    alert.addButton(withTitle: "Close")
+                    return alert.runModal() == .alertFirstButtonReturn
                 }
+            }
+        }
+    }
+
+    /// Dials the IPC socket, re-dialling for as long as the person asks it to.
+    ///
+    /// `versionMismatch` is the one `IPCError` the client does not arm a
+    /// reconnect for, and `connect()` has a single call site, so without an
+    /// explicit re-dial the alert is where the app's IPC life ends until it is
+    /// relaunched. The usual cause is an orphaned helper from a crashed prior
+    /// run still holding the socket, which clears the moment that process
+    /// exits — which is why a retry is worth offering and not just an
+    /// acknowledgement.
+    nonisolated static func connectRetryingVersionMismatch(
+        _ client: any IPCClientProtocol,
+        presentVersionMismatch: (_ expected: Int, _ got: Int) async -> Bool
+    ) async {
+        while true {
+            do {
+                try await client.connect()
+                return
+            } catch let IPCError.versionMismatch(expected, got) {
+                guard await presentVersionMismatch(expected, got) else { return }
             } catch {
                 // The IPC client owns retry behavior for transport failures.
+                return
             }
         }
     }

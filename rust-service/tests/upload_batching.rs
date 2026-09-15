@@ -1585,3 +1585,140 @@ async fn startup_recovery_is_a_no_op_on_a_clean_shutdown() {
         0
     );
 }
+
+/// One `SharedUploadBatcher` whose uploader parks in the middle of the POST,
+/// plus the handles that observe it starting and release it. `count_threshold`
+/// decides which entry point is the one that completes the batch and blocks.
+fn parked_batcher(
+    repository: Arc<dyn UploadBatchRepo>,
+    count_threshold: usize,
+    age_threshold: Duration,
+) -> (
+    Arc<SharedUploadBatcher<InFlightUploader, FakePrivacyAlertSink>>,
+    Arc<tokio::sync::Notify>,
+    Arc<tokio::sync::Notify>,
+) {
+    let uploader = InFlightUploader {
+        started: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+        uploads: Arc::new(Mutex::new(0)),
+    };
+    let started = Arc::clone(&uploader.started);
+    let release = Arc::clone(&uploader.release);
+    let shared = Arc::new(SharedUploadBatcher::new(UploadBatcher::new(
+        BatchAssembler::new("device-1", count_threshold, age_threshold),
+        UploadCoordinator::new(repository, uploader, FakePrivacyAlertSink::default()),
+    )));
+    (shared, started, release)
+}
+
+fn abstracted_event() -> velvt_service::abstraction::AbstractedEvent {
+    AbstractionEngine::from_builtin_taxonomy(Arc::new(InMemoryMappingStore::default()))
+        .unwrap()
+        .process(RawEvent {
+            event_id: uuid::Uuid::new_v4(),
+            occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+            app_name: "VS Code".into(),
+            window_title: "private title".into(),
+            bundle_id: None,
+            focused_document_url: None,
+            duration_seconds: 0,
+        })
+        .unwrap()
+}
+
+/// The batcher mutex must not span the upload.
+///
+/// The router awaits every IPC message serially on one Swift connection, so an
+/// ingestion that held the lock across a POST to an unreachable host would stall
+/// the whole connection — messages and pushes alike — for the request timeout.
+/// The second ingestion below is the router's next message: it has to get in.
+#[tokio::test]
+async fn shared_ingest_releases_the_batcher_while_its_upload_is_in_flight() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let (shared, started, release) =
+        parked_batcher(database.upload_batch_repo(), 2, Duration::from_secs(180));
+    let abstraction = abstracted_event();
+
+    let blocked = tokio::spawn({
+        let shared = Arc::clone(&shared);
+        let abstraction = abstraction.clone();
+        async move {
+            for (event_id, occurred_at) in [("event-first", 10), ("event-second", 11)] {
+                shared
+                    .ingest(
+                        event_id.into(),
+                        &abstraction,
+                        5,
+                        Utc.timestamp_opt(occurred_at, 0).unwrap(),
+                    )
+                    .await?;
+            }
+            Ok::<(), velvt_service::upload::CoordinatorError>(())
+        }
+    });
+
+    started.notified().await;
+    let next_message = tokio::time::timeout(
+        Duration::from_millis(100),
+        shared.ingest(
+            "event-third".into(),
+            &abstraction,
+            5,
+            Utc.timestamp_opt(12, 0).unwrap(),
+        ),
+    )
+    .await;
+    release.notify_one();
+    blocked.await.unwrap().unwrap();
+
+    assert!(
+        next_message.is_ok(),
+        "the batcher stayed locked across the upload"
+    );
+    next_message.unwrap().unwrap();
+}
+
+/// The same for the 60-second flush task, which is the other caller that
+/// reaches `submit` while holding the lock.
+#[tokio::test]
+async fn shared_flush_due_releases_the_batcher_while_its_upload_is_in_flight() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let (shared, started, release) =
+        parked_batcher(database.upload_batch_repo(), 100, Duration::from_secs(1));
+    let abstraction = abstracted_event();
+    shared
+        .ingest(
+            "event-first".into(),
+            &abstraction,
+            5,
+            Utc.timestamp_opt(10, 0).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let blocked = tokio::spawn({
+        let shared = Arc::clone(&shared);
+        async move { shared.flush_due(Utc.timestamp_opt(30, 0).unwrap()).await }
+    });
+
+    started.notified().await;
+    let next_message = tokio::time::timeout(
+        Duration::from_millis(100),
+        shared.ingest(
+            "event-second".into(),
+            &abstraction,
+            5,
+            Utc.timestamp_opt(31, 0).unwrap(),
+        ),
+    )
+    .await;
+    release.notify_one();
+    assert!(blocked.await.unwrap().unwrap());
+
+    assert!(
+        next_message.is_ok(),
+        "the batcher stayed locked across the upload"
+    );
+    next_message.unwrap().unwrap();
+}

@@ -324,15 +324,23 @@ actor UnixSocketTransport: IPCTransportProtocol {
         }
         var framed = frame
         framed.append(0x0A)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: framed, completion: .contentProcessed { error in
-                if let error {
-                    continuation.resume(throwing: IPCError.socket(code: error.safeCode))
-                } else {
-                    continuation.resume()
-                }
-            })
-        }
+        // Network.framework completion handlers do not observe task
+        // cancellation, so tearing the socket down is the only thing that
+        // resumes this continuation. Without that the connect timeout cannot
+        // fire during the handshake: its task group waits for every child.
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                connection.send(content: framed, completion: .contentProcessed { error in
+                    if let error {
+                        continuation.resume(throwing: IPCError.socket(code: error.safeCode))
+                    } else {
+                        continuation.resume()
+                    }
+                })
+            }
+        }, onCancel: {
+            connection.cancel()
+        })
     }
 
     func receiveFrame() async throws -> Data {
@@ -345,17 +353,24 @@ actor UnixSocketTransport: IPCTransportProtocol {
             guard let connection else {
                 throw IPCError.connectionClosed
             }
-            let chunk = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, complete, error in
-                    if let error {
-                        continuation.resume(throwing: IPCError.socket(code: error.safeCode))
-                    } else if complete, data?.isEmpty != false {
-                        continuation.resume(throwing: IPCError.connectionClosed)
-                    } else {
-                        continuation.resume(returning: data ?? Data())
+            // A peer that accepted the connection and then went silent parks
+            // this read forever, and the completion handler is deaf to task
+            // cancellation. Cancelling the socket is what resumes it.
+            let chunk = try await withTaskCancellationHandler(operation: {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, complete, error in
+                        if let error {
+                            continuation.resume(throwing: IPCError.socket(code: error.safeCode))
+                        } else if complete, data?.isEmpty != false {
+                            continuation.resume(throwing: IPCError.connectionClosed)
+                        } else {
+                            continuation.resume(returning: data ?? Data())
+                        }
                     }
                 }
-            }
+            }, onCancel: {
+                connection.cancel()
+            })
             bufferedData.append(chunk)
         }
     }

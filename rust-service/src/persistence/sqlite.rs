@@ -757,6 +757,39 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
              )",
             [stable_id],
         )?;
+        // The app rung, resolved the way `save_personal_app_override` wrote it:
+        // through the event rows that recorded which application this mapping
+        // was classified under. Removing only the window rung left the engine
+        // falling through into the surviving app rung and returning the same
+        // category and the same typed name on the next event, so the undo the
+        // user asked for changed nothing they could see.
+        transaction.execute(
+            "DELETE FROM personal_app_override WHERE app_key_hash IN (
+                SELECT app_stable_id FROM raw_event_buffer
+                WHERE stable_id = ?1 AND app_stable_id IS NOT NULL
+             )",
+            [stable_id],
+        )?;
+        // The third place the typed name lives. Nulled rather than rewritten
+        // because `display_name` records no provenance: nothing here can tell a
+        // name the user typed from one `curated_display_label` produced, and the
+        // upsert coalesces, so a later write can never null it. A curated label
+        // is derived deterministically and comes back on the next observation of
+        // that window; a typed one must not outlive its own undo. The sibling
+        // windows of the same application are included because the app rung
+        // mirrored the typed name into every one of them.
+        transaction.execute(
+            "UPDATE abstraction_map SET display_name = NULL
+             WHERE stable_id = ?1
+                OR stable_id IN (
+                    SELECT stable_id FROM raw_event_buffer
+                    WHERE app_stable_id IN (
+                        SELECT app_stable_id FROM raw_event_buffer
+                        WHERE stable_id = ?1 AND app_stable_id IS NOT NULL
+                    )
+                 )",
+            [stable_id],
+        )?;
         transaction.commit()?;
         Ok(changed > 0)
     }
@@ -766,6 +799,22 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         let transaction = connection.transaction()?;
         let changed = transaction.execute("DELETE FROM personal_override", [])? as u64;
         transaction.execute("DELETE FROM personal_semantic_prototype", [])?;
+        // The app rung holds the same free-text `activity_name` under the
+        // application's own hash. Without this the reset was a no-op for every
+        // app-scoped correction — per migration 0017 the rung that carries
+        // almost all of them — because the engine falls through the emptied
+        // window rung into the app rung on the very next event.
+        transaction.execute("DELETE FROM personal_app_override", [])?;
+        // Every `display_name`, not only the rows a correction wrote. The column
+        // records no provenance, so no query can separate a name the user typed
+        // from one `curated_display_label` produced, and duplicating that
+        // allowlist in SQL would put a second copy of it a migration away from
+        // drifting. Clearing all of it is the only answer that is true for
+        // certain: a curated label is deterministic and is rewritten on the next
+        // observation of the window, so the cost is one event of a missing local
+        // label, while a typed name surviving a reset the user was told was
+        // destructive is a broken promise.
+        transaction.execute("UPDATE abstraction_map SET display_name = NULL", [])?;
         transaction.commit()?;
         Ok(changed)
     }

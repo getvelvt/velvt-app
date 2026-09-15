@@ -41,11 +41,14 @@ a category, a taxonomy version, and a timestamp. Some on-device labels and
 display names can identify the classified application so the local UI remains
 useful. The upload DTO collapses every such label to a fixed category-scoped
 cloud vocabulary (for example, `communication:inferred`) before serialization.
-The
-Rust type system makes it structurally impossible for a raw field to
-re-appear downstream: `AbstractedEvent`, the SQLite schema, and the upload
-DTO (`BatchEventPayload`/`BatchPayload`) simply have no field that could
-hold one.
+The Rust type system makes it structurally impossible for a raw field to reach
+the network: `AbstractedEvent` and the upload DTO
+(`BatchEventPayload`/`BatchPayload`) have no field that could hold one.
+
+The SQLite file on disk is a weaker claim, and it is made separately below
+rather than folded into this one. Several of its columns deliberately hold an
+application name or text you typed, and two hold a sketch derived from a window
+title. Every one of them is named in the table in the next section.
 
 An optional work-block intention also stays on the Mac. It crosses only the
 local Unix socket, is stored in the protected SQLite file for at most 24 hours,
@@ -62,16 +65,31 @@ All persistence lives in a SQLite database at
 
 | Table | Contents | Default retention |
 |---|---|---|
-| `abstraction_map` | stable-key hash → stable ID, label, category, taxonomy version | indefinite (no raw content to expire) |
-| `raw_event_buffer` | abstracted event metadata for short-lived audit/replay and the local 7-day activity chart, plus two device-local display columns described below (`local_display_label`, `local_name_suggestion`) | 7 days (`VELVT_RAW_EVENT_TTL_HOURS`) |
-| `upload_batch` / `batch_event` | privacy-safe events grouped into upload batches | sent batches: 30 days; rejected batches: 7 days (audit window) |
+| `abstraction_map` | stable-key hash → stable ID, label, category, taxonomy version, and `display_name` — the activity name you typed when you renamed a classification | the mapping: indefinite; `display_name`: until you undo that correction, or until Reset Corrections, which nulls the column on every row. No sweep expires either |
+| `raw_event_buffer` | abstracted event metadata for short-lived audit/replay and the local 14-day activity chart, plus two device-local display columns described below (`local_display_label`, `local_name_suggestion`) | 14 days (`VELVT_RAW_EVENT_TTL_HOURS`) |
+| `upload_batch` / `batch_event` | privacy-safe events grouped into upload batches | sent batches: 30 days; rejected batches: 7 days (audit window); pending and failed batches: 30 days, the same horizon as sent |
+| `personal_override` | one correction you made to a single window: the stable-key hash, the category you chose, and `activity_name`, the name you typed for it | until you undo that correction or use Reset Corrections. No sweep expires it |
+| `personal_app_override` | the same correction applied to a whole application rather than one window: app-key hash, category, `activity_name` | until you undo the correction it came from or use Reset Corrections. No sweep expires it |
+| `semantic_embedding_cache` | one hashed sketch per application-and-title pair the classifier has scored, keyed by a hash of the pair. The sketch is derived from the raw application name and the raw window title, and individual words are partially recoverable from it — described below | the 512 most recently observed pairs; a pair is swept once 14 days pass with no further observation of it. The clock restarts on every observation, so a window you keep returning to is never swept |
+| `personal_semantic_prototype` | a copy of that same sketch, kept for a category you corrected so the classifier can recognise the activity again | the 64 most-corrected pairs, at most 12 per category; removed by undoing that correction or by Reset Corrections. No sweep expires it |
 | `history_cache` / `insight_cache` | ready-to-display summaries fetched from the cloud | minutes to tens of minutes, per `VELVT_HISTORY_TTL_SECONDS`/`VELVT_INSIGHT_TTL_SECONDS` |
-| `work_block` | local state and optional free-form intention | intention: 24 hours; safe state retained until clear |
-| `work_block_observation` | safe category/status/confidence spans only | retained with local work-block data |
-| `work_block_result` | safe local duration, transition, recovery, coverage, evidence, observation, and one next action | retained until clear |
-| `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: broad anchor category, switch count, elapsed and remaining seconds, and the verdict. No label, no app identity, no window title, no URL, no intention text | retained with local work-block data; removed with the block it belongs to and by clear-all-data |
-| `out_of_block_run` | activity outside a declared work block, as broad category plus coarse time: start floored to a five-minute bucket, duration, local hour, and local date. Structurally cannot hold an application name, a label, a stable ID, a window title, or a URL — it is deliberately less informative than the 7-day `raw_event_buffer` it is derived from | 90 days |
-| `block_antecedent` | the bounded window of activity immediately before a block started, recorded once and never updated: the *set* of broad categories present (not their order), a switch count, a dominant category and its dwell, weekday/weekend, and hour bucket. The window is capped at 30 minutes by the database schema, so it cannot be widened by a setting | retained with local work-block data; removed with the block and by clear-all-data |
+| `work_block` | local state and optional free-form intention | intention: 24 hours; the safe state until Clear Local Work Blocks |
+| `work_block_observation` | safe category/status/confidence spans only | removed with its block, and by Clear Local Work Blocks |
+| `work_block_result` | safe local duration, transition, recovery, coverage, evidence, observation, and one next action | removed with its block, and by Clear Local Work Blocks |
+| `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: broad anchor category, switch count, elapsed and remaining seconds, and the verdict. No label, no app identity, no window title, no URL, no intention text | removed with the block it belongs to, and by Clear Local Work Blocks, which also deletes any row logged without a block |
+| `out_of_block_run` | activity outside a declared work block, as broad category plus coarse time: start floored to a five-minute bucket, duration, local hour, and local date. Structurally cannot hold an application name, a label, a stable ID, a window title, or a URL — it is deliberately less informative than the 14-day `raw_event_buffer` it would be derived from. **Nothing writes it today** — see the note below the table | 90 days once written |
+| `block_antecedent` | the bounded window of activity immediately before a block started, recorded once and never updated: the *set* of broad categories present (not their order), a switch count, a dominant category and its dwell, weekday/weekend, and hour bucket. The window is capped at 30 minutes by the database schema, so it cannot be widened by a setting. **Nothing writes it today** — see the note below the table | removed with its block, and by Clear Local Work Blocks |
+| `antecedent_finding` | a discovered pattern about what precedes a block: a key from a closed compile-time registry (a time bin, a day type, a broad category, a coarse elapsed bucket), an effect size, and a q-value. The registry has no constructor that could mint an application name, a label, a window title, or a URL. **Nothing writes it today** — see the note below the table | no sweep, no cascade, and no in-app action removes a row — deleting `~/.velvt/` is the only removal. Empty today |
+
+Three of those tables are empty on every install, and their rows above say so
+rather than describing a store that exists only in the schema. `out_of_block_run`,
+`block_antecedent`, and `antecedent_finding` were created by migrations 0027,
+0028, and 0029; the retention sweep for `out_of_block_run` is registered and
+runs. No shipped code path constructs a row for any of the three. The only
+callers of their write methods are tests. They are listed here because the
+tables exist on your disk and you will see them if you open the file, and
+because the retention figures above are what will apply if a writer lands —
+not a description of data being collected today.
 
 `raw_event_buffer` holds no window titles and no URLs. It does hold two
 device-local columns that can name an application, and both are disclosed here
@@ -90,13 +108,128 @@ rather than hidden behind the table's name:
 Neither column exists anywhere in the upload path: `BatchEventPayload`'s
 hand-written `Serialize` implementation (`rust-service/src/upload/dto.rs`) emits
 six fields and none of them is a label, a stable ID, or a name suggestion. Both
-expire with the rest of the buffer after 7 days, and `local_name_suggestion` is
+expire with the rest of the buffer after 14 days, and `local_name_suggestion` is
 redacted to `[redacted]` in the `Debug` implementation
 (`rust-service/src/persistence/models.rs`) so it cannot reach a log.
+
+### The embedding sketch, and what can be read back out of it
+
+`semantic_embedding_cache` is the one store on this list that is derived from a
+window title. Tier 2 classification builds the string
+`app name [SEP] window title`, turns it into a 256-number sketch, and keeps the
+sketch — not the string — under a hash of the string. Nothing about it is
+uploaded: `BatchEventPayload` has no field it could occupy.
+
+The sketch is lossy and it is not the title. It is also not one-way. Each word
+contributes at one hashed coordinate, and each character trigram of that word at
+another, so a word leaves roughly a nine-coordinate signature and a dictionary
+run over the same hash recovers a meaningful share of the words in a title.
+Reimplemented from this repository's own source and run against a live database
+on 2026-08-31, it recovered at least one dictionary word from 452 of 512 rows,
+935 distinct words in total. On the synthetic title
+`divorce attorney consultation booking` it returned exactly those four words out
+of a 234,143-word dictionary and nothing else. `PRIVACY_AUDIT.md` Audit 7 is the
+method and the numbers. That is the honest description, and it replaces the
+sentence this section used to carry.
+
+The hash is unsalted. `add_hashed_feature`
+(`rust-service/src/abstraction/plugin.rs`) is a plain SHA-256 of the token,
+computed identically on every install, so that run needs nothing from this Mac
+— the source in this repository is enough to build the oracle offline. A
+per-install random salt would raise the cost to reading the salt off this
+machine first, and it is not in the shipped code today. It is named here
+because a mitigation that does not exist should not be written down as though
+it does.
+
+`personal_semantic_prototype` holds copies of the same sketches for categories
+you corrected, and everything above applies to it unchanged.
+
+The cache's horizon is not the buffer's. `record_embedding`
+(`rust-service/src/persistence/sqlite.rs`) rewrites `updated_at` on every write,
+and `delete_expired_semantic_embeddings` deletes on `updated_at`, so the 14 days
+run from the last observation of a pair rather than from the first, while a
+`raw_event_buffer` row is swept on the age of the row itself. In practice a
+window you open every week keeps its sketch for as long as you keep opening it,
+and the 512-row cap is the only bound that still applies to it. The sweep
+reaches a pair you stopped observing; it never reaches one you keep observing.
+
+### The rest of the database
+
+The table above is every store that holds something drawn from your Mac. It is
+not every table in the file. A database with every shipped migration applied
+holds 34 tables, plus SQLite's own `sqlite_sequence`; the 17 that are not in
+that table hold counters, settings, and feature state. They are listed here for
+the same reason the three empty ones are — you will see them if you open the
+file.
+
+| Table | What it holds | Retention |
+|---|---|---|
+| `classification_telemetry` | one counter per taxonomy version and classification tier: how many events that tier classified. No app identity and no label; the only time it holds is the counter's own `updated_at` | no sweep and no in-app removal; the counters persist until `~/.velvt/` is deleted |
+| `classifier_artifact_telemetry` | the same shape for the classifier artifact: one counter per artifact version, such as `builtin-hash-v1` | no sweep and no in-app removal |
+| `embedding_salt` | a 32-byte random value generated on this device by migration 0031, provisioned as the per-install key for the embedding feature hash. No activity data. What the shipped classifier does with it is the subject of the section above | singleton, and never rewritten: a second salt would invalidate every sketch stored under the first. No sweep |
+| `upload_host_backoff` | one row per upload host — the configured API hostname, its consecutive-failure count, and the earliest time a next attempt is allowed. No event content | removed for a host as soon as a batch upload to it succeeds; otherwise it persists |
+| `work_block_intervention` | the drift offer a block received: broad anchor category, switch count, window length, salience, when it was offered, and the outcome you gave it. The block id is the primary key, so a block holds at most one. No label, app identity, window title, URL, or intention text | removed with its block, and by Clear Local Work Blocks |
+| `work_block_category_correction` | when you answer an offer with "wrong classification", the broad category that counts as focus work for that block. Categories only | removed with its block, and by Clear Local Work Blocks |
+| `intervention_demotion_state` | one row recording whether interventions are currently demoted, when that happened, and when you last reset it. The current state only, never a history | singleton; removed by Clear Local Work Blocks |
+| `focus_state_evidence` | coarse macOS Focus/DND transitions: active or inactive, the time floored to a five-minute bucket, and a local hour and date. No Focus mode name, schedule, or configuration is representable | 14 days, pruned when the next transition is reported rather than on a timer; removed by Clear Local Work Blocks |
+| `focus_observer_state` | one row holding the client's most recent UTC offset, so a local-hour rule never needs a locale or an identity | singleton, overwritten in place; removed by Clear Local Work Blocks |
+| `quiet_hours_offer_state` | one row remembering whether the quiet-hours offer was triggered, offered, accepted, or declined, when, and under which rule version | singleton; removed by Clear Local Work Blocks |
+| `velvt_quiet_hours` | Velvt's own quiet-hours window, if you accepted that offer: start and end local minutes, the rule version, and when it was configured. Not the macOS Focus configuration, which Velvt never reads or writes | singleton; no sweep, and it survives Clear Local Work Blocks — it is a setting you chose, not evidence |
+| `initiation_invitation` | one row per soft-start invitation: when it was offered, its local date, the fixed action id, and its outcome. No app identity, title, or intention text | no sweep; removed by Clear Local Work Blocks |
+| `initiation_settings` | the single invitations on/off switch | singleton; no sweep, and it survives Clear Local Work Blocks for the same reason |
+| `weekly_digest` | one row per completed local week: bounded counts — blocks declared and completed, recoveries, wrong interventions, invitations accepted, withheld — and when the digest was shown and closed. No categories, copy, or per-day breakdown is representable | 12 completed weeks, pruned when the next digest is generated; removed by Clear Local Work Blocks |
+| `explain_probe_week` | one tap counter per local week, for the explain-tap metric. Which nudge was explained is not representable | pruned on the same 12-week rule; removed by Clear Local Work Blocks |
+| `schema_migration` | one row per applied migration: its version, its file name, and when it ran. Created by the migration runner rather than by a migration file | no sweep; one row is added per migration and none is removed |
+| `persistence_migration_probe` | nothing. Migration 0002 created it to prove that a new migration file is embedded and applied, and no code path, shipped or test, inserts a row | empty on every install; no sweep |
+
+### What the app's destructive actions actually remove
+
+Several rows above name an in-app action. Each one is a specific button, and
+this is the whole of what it reaches:
+
+- **Reset Corrections** deletes `personal_override`, `personal_app_override`,
+  and `personal_semantic_prototype`, and sets `abstraction_map.display_name` to
+  NULL on every row. The per-correction **Undo** does the same for one window:
+  its own override row and prototype, the application-scoped override behind it,
+  and the `display_name` on that window and on the other windows of the same
+  application.
+- **Clear Local Work Blocks** deletes `work_block` and everything that cascades
+  from it — `work_block_observation`, `work_block_result`,
+  `work_block_intervention`, `work_block_category_correction`,
+  `block_antecedent`, and that block's `intervention_decision_log` rows — plus
+  `intervention_demotion_state`, `focus_state_evidence`, `focus_observer_state`,
+  `quiet_hours_offer_state`, `initiation_invitation`, `weekly_digest`, and
+  `explain_probe_week`. It does not reach the classification and correction
+  tables, `out_of_block_run`, or `antecedent_finding`.
+- **Delete Account** is a request to the cloud. The Rust service marks an open
+  invitation expired, relays the deletion to the account-deletion endpoint, and
+  on acceptance clears the stored device and session tokens. As of 2026-08-31 it
+  deletes nothing from this database (`ClientMessage::DeleteAccount`,
+  `rust-service/src/ipc/router.rs`).
+
+There is no in-app action that clears everything. Deleting `~/.velvt/` is the
+only complete removal, and the procedure for it is at the end of this document.
+
+### Corrections to earlier versions of this section
 
 A previous version of this document claimed `raw_event_buffer` "never contains
 raw app names or window titles." The window-title half was true; the app-name
 half was not, and it is corrected here on 2026-08-21.
+
+A previous version also gave no account of `semantic_embedding_cache` at all —
+the words "embedding", "semantic", "prototype", and "vector" did not appear in
+this document. Corrected here on 2026-08-31.
+
+A previous version of the storage table said a `semantic_embedding_cache` row is
+swept "on the same horizon as `raw_event_buffer`." The two clocks start at
+different instants, and the cache's is the one ordinary use pushes forward
+indefinitely. Corrected here on 2026-08-31.
+
+A previous version described 15 of the 34 tables in the file, said nothing about
+the other 17, and named clearing "all data" as a way to remove four of them.
+There is no such action. The second table above completes the inventory, and the
+section before this one names what each in-app action does remove. Corrected
+here on 2026-08-31.
 
 Auth and device-bound tokens are never stored in SQLite. Swift
 persists the session in the macOS Keychain through `KeychainService`; after IPC
@@ -140,20 +273,40 @@ activity" can be recognized across events), an on-device display label, and a co
 category-scoped abstraction type; unapproved values are replaced with
 `system:unknown` before persistence, metrics, or audit metadata.
 
-**Does not preserve:** the literal application name, the literal window
-title, any URL or file path that appeared in a title, or any way to
-recover the original raw string from the stable ID (it is a one-way hash
-into a local-only mapping table, not a reversible encoding).
+**Does not preserve:** the literal window title, and no URL or file path that
+appeared in one. The stable ID is a one-way hash into a local-only mapping
+table, not a reversible encoding, so nothing about the original string can be
+read back out of the ID.
+
+**Does keep on disk, named here rather than left to be discovered:** the raw
+application name, in `raw_event_buffer.local_name_suggestion`; the names you
+type when you correct a classification, in `abstraction_map.display_name`,
+`personal_override`, and `personal_app_override`; and a hashed sketch of
+`app name [SEP] window title`, in `semantic_embedding_cache` and
+`personal_semantic_prototype`. The sketch is not the title and cannot be
+turned back into one, but individual words are partially recoverable from it —
+the section above says how, and says that the hash it uses is unsalted.
 
 ## How to audit what is being collected
 
 The SQLite database is a plain file at `~/.velvt/velvt-service.sqlite3`.
 Open it with any SQLite browser (`sqlite3 ~/.velvt/velvt-service.sqlite3`)
 and inspect the tables listed above — every column is named in
-`rust-service/migrations/`, and the migration SQL itself documents the "no
-raw content" invariant inline. The full abstraction and upload code paths
-are open source in this repository; `PRIVACY_AUDIT.md` is the line-by-line
-verification a security reviewer would otherwise have to redo from
+`rust-service/migrations/`, with the one exception the inventory names:
+`schema_migration` is created by the migration runner in
+`rust-service/src/persistence/sqlite.rs`. Most of those files carry the
+invariant inline;
+`0013_personal_semantic_learning.sql`, which creates the two embedding tables,
+carries no comment at all, which is why the description of those columns lives
+here instead of beside the schema.
+
+`scripts/prove_local.sh` reads the same file and prints every textual column by
+name, including the ones that hold application names. It reports the two
+embedding columns as UNINSPECTED with a byte count: it is bash and sqlite3, it
+cannot decode a sketch, and a proof that silently omitted the column would be
+worth less than one that names what it could not read. The full abstraction and
+upload code paths are open source in this repository; `PRIVACY_AUDIT.md` is the
+line-by-line verification a security reviewer would otherwise have to redo from
 scratch.
 
 ## How to delete all local data

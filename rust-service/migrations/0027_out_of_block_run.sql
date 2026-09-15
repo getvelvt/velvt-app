@@ -1,8 +1,16 @@
 -- Durable out-of-block behavioural history, at run granularity.
 --
--- Folded from `raw_event_buffer` runs that fall outside any declared work
--- block, before the buffer's 7-day TTL reaches the source rows. The point of
--- the fold is that the durable store knows *less* than the expiring store it
+-- NOTHING WRITES THIS TABLE TODAY. The fold that would fill it -- `raw_event_buffer`
+-- runs that fall outside any declared work block, bucketed before the buffer's
+-- 14-day TTL reaches the source rows -- does not exist. No production path
+-- constructs an `OutOfBlockRun`; the only callers of `record_out_of_block_run`
+-- are tests, and the table has stood empty since this migration applied. What
+-- ships is the table, its constraints, and the retention target that sweeps it.
+-- `0029` carries the same disclosure for the same reason: a schema written in
+-- the present indicative is how a plan gets read as a fact.
+--
+-- The shape below is what the fold must produce when it is written. The point
+-- of the fold is that the durable store knows *less* than the expiring store it
 -- derives from: `raw_event_buffer` carries `stable_id`, `label`, and
 -- `local_name_suggestion` (the raw application name); this table structurally
 -- cannot hold any of them. There is no label column, no stable_id column, no
@@ -10,12 +18,13 @@
 -- from the closed shipped taxonomy, and coarse time.
 --
 -- Privacy posture is therefore identical to `work_block_observation`, and
--- strictly less informative than the buffer it is derived from. Nothing in this
--- table is representable in the upload path.
+-- strictly less informative than the buffer it would be derived from. Nothing
+-- in this table is representable in the upload path.
 --
 -- Start time is floored to the same 300-second bucket `focus_state_evidence`
 -- (0019) already established, so no new precision class is introduced.
--- Retention: 90 days, enforced by `OutOfBlockRunRetentionTarget`.
+-- Retention: 90 days, enforced by `OutOfBlockRunRetentionTarget`, which is
+-- registered in `main.rs` and today sweeps an empty table.
 
 CREATE TABLE out_of_block_run (
     id                        INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -270,6 +270,9 @@ make test-rust         # cargo test (includes the 7-path
                         # end-to-end integration suite in
                         # rust-service/tests/e2e_integration.rs)
 make test-swift         # swift test --package-path swift-client
+make bench-rust         # the #[ignore]d wall-clock latency budgets,
+                        # kept out of test-rust so a loaded machine
+                        # cannot fail a correctness run
 ```
 
 ## Smoke-Testing Against a Local velvt-core Instance
@@ -401,8 +404,38 @@ version remains attached to results.
 semantically sensitive title tokens with category-scoped abstract labels
 without transmitting raw titles.
 
-Performance gates are Tier 1 mean and p95 below 1 ms and Tier 2 p95 below
-25 ms. The integration tests report p50, p95, and p99.
+Performance gates, each with the thing that can fail on it, because a published
+number nothing runs is not a gate:
+
+- Tier 1 mean and p95 below 1 ms:
+  `rust-service/tests/abstraction_engine.rs::tier1_is_deterministic_and_completes_under_one_millisecond`,
+  in `make test-rust`, on every pull request.
+- Tier 2 p50 below 10 ms, twice — once against the test suite's zero-delay
+  stand-in and once against `HashedEmbeddingModel`, which is what `main.rs`
+  actually loads:
+  `rust-service/tests/embedding_similarity.rs::tier2_median_is_under_ten_milliseconds_with_available_model`
+  and `::builtin_tier2_median_is_under_ten_milliseconds`, both in
+  `make test-rust`, on every pull request.
+- Tier 2 p95 below 25 ms:
+  `rust-service/tests/embedding_similarity.rs::tier2_p95_is_under_twenty_five_milliseconds_with_available_model`,
+  `#[ignore]`d out of the correctness suite and run by `make bench-rust`, which
+  CI runs in the `bench` job on pushes to `main` and on demand.
+
+The tail bound is off the pull-request path on purpose: a 25 ms wall-clock
+budget on a shared runner fails under a busy neighbour about as readily as
+under a regression. What that costs is that a Tier 2 tail regression is caught
+on `main` within one merge rather than before it lands. The median bounds are
+what the pull request carries, and runner load does not move a median of 500
+samples. All of them report p50, p95, and p99.
+
+`make bench-rust` builds `--release`, because a budget for a shipped binary has
+to be measured on the build that ships; the median bounds run unoptimized with
+the rest of `make test-rust`, which is why they are set where a debug build
+clears them by a wide margin. `make bench-rust` also runs the real-model p95,
+but only where the `onnx` feature builds and `VELVT_ABSTRACTION_MODEL_PATH` and
+`VELVT_ABSTRACTION_CENTROIDS_PATH` point at artifacts; the artifacts are not in
+the repository and no CI job downloads them, so no CI run has ever measured the
+real model. See [`PERFORMANCE_REPORT.md`](PERFORMANCE_REPORT.md).
 
 ## Rust SQLite Persistence
 
@@ -412,25 +445,31 @@ production default is `~/.velvt/velvt-service.sqlite3`, and startup creates
 missing parent directories and applies every pending embedded migration before
 constructing the abstraction engine.
 
-The six feature tables are:
-
-| Table | Purpose |
-|---|---|
-| `abstraction_map` | Stable-key hash to stable ID, abstract label, category, and taxonomy version |
-| `raw_event_buffer` | Short-lived privacy-safe abstracted event metadata |
-| `upload_batch` | Idempotent upload batch state |
-| `batch_event` | Privacy-safe events assigned to a batch |
-| `history_cache` | Date-keyed ready-to-display summary payloads with TTL |
-| `insight_cache` | Date-keyed ready-to-display insight payloads with TTL |
-
-Every feature table has an auto-increment primary key and database-defaulted
-`created_at`. Time/date lookup columns are indexed. The migration-owned
+The numbered files in `rust-service/migrations/` are the schema, and they are
+the only enumeration of it that cannot go stale — this page carried a list of
+six tables for as long as there were more than six. `PRIVACY.md` lists the
+tables that hold anything drawn from your Mac, with what each one holds and for
+how long. Time and date lookup columns are indexed. The migration-owned
 `schema_migration` table records each applied version, so startup never applies
 the same migration twice.
 
-Raw app names, window titles, URLs, bundle IDs, paths, filenames, contacts, and
-other raw user content are forbidden in every schema column. Migration SQL
-documents this invariant, and integration tests inspect the resulting schema.
+The privacy invariant is narrower than this page used to state it, and the
+narrow version is the one that is true. Nothing writes a window title, a URL, a
+file path, a filename, or a contact into any column. Two columns hold an
+application name or a string derived from one — `local_name_suggestion`, which
+is the raw application name, and `local_display_label` — both on
+`raw_event_buffer`, both named in the header of
+`migrations/0001_initial_persistence.sql`, and both disclosed in `PRIVACY.md`.
+Four more hold text you typed yourself: `abstraction_map.display_name`,
+`personal_override.activity_name`, `personal_app_override.activity_name`, and
+`work_block.intention`. `semantic_embedding_cache` holds a hashed sketch built
+from the application name and the window title — not the title, and not
+recoverable as one, but individual words are partially recoverable from it,
+which `PRIVACY.md` describes rather than leaves to be found.
+
+A new column that would hold raw content gets the same treatment migration 0001
+already prescribes for the one that does: named in the migration header, named
+in `PRIVACY.md`, and shown unable to reach `upload/`.
 
 ### Adding A Migration
 

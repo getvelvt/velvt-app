@@ -10,8 +10,10 @@
 # minutes into a build, with a link error that names a symbol rather than a
 # file. That exact failure has cost this project a build once already.
 #
+# It runs on every pull request, in the swift job of .github/workflows/ci.yml.
 # Run it directly, or install it as a pre-push hook via
-# scripts/install_git_hooks.sh.
+# scripts/install_git_hooks.sh, to see the failure before the push rather than
+# after it.
 
 set -euo pipefail
 
@@ -27,19 +29,21 @@ if [[ ! -d "$sources" ]]; then
   exit 0
 fi
 
-# `swift-client/VelvtMac.xcodeproj/project.pbxproj` is listed in .gitignore, so
-# a fresh clone may not have one at all. That is worth knowing about — see the
-# note in the scripts lane report — but it must not block a push from a clone
-# that only ever touches Rust. Where the file exists, the check is enforced.
+# `swift-client/VelvtMac.xcodeproj/project.pbxproj` is tracked, so every
+# complete checkout has one. This used to exit 0 when the file was absent, back
+# when .gitignore claimed to exclude it; a guard that passes when it cannot see
+# the thing it guards is indistinguishable from no guard, and the only reason
+# that was survivable is that the file was tracked anyway.
 if [[ ! -f "$pbxproj" ]]; then
   cat >&2 <<MSG
-No $pbxproj on this machine, so target membership cannot be checked.
+No $pbxproj, so target membership cannot be checked.
 
-That file is in .gitignore, so it does not arrive with a clone. Nothing here
-is failing; there is simply nothing to compare against. On the machine that
-runs \`make alpha-dmg\` the file exists and this guard enforces.
+That file is tracked, so a complete checkout has one. Either the checkout is
+incomplete or the file was deleted. Restore it and run this again; this check
+fails rather than skips, because skipping is how an unregistered file reaches
+a release build.
 MSG
-  exit 0
+  exit 1
 fi
 
 checked=0

@@ -312,6 +312,22 @@ impl AccountAuthService {
         self.clear_local_session(false);
     }
 
+    /// Relays the deletion to the cloud and, on acceptance, clears this
+    /// device's session.
+    ///
+    /// Cloud-side only. `clear_local_session(true)` clears the device and user
+    /// tokens and the stored device id; nothing here touches
+    /// `~/.velvt/velvt-service.sqlite3`, and this service holds no persistence
+    /// handle through which it could. The local half belongs to the router's
+    /// `ClientMessage::DeleteAccount` arm, which destroys the upload queue once
+    /// this returns `AccountDeletionAccepted`.
+    ///
+    /// Clearing the device id is what makes that half necessary.
+    /// `ensure_device_registered` reuses a device id it finds on disk, so
+    /// clearing it means the next sign-up on this Mac registers a new device —
+    /// and the cloud scopes duplicate detection by device id, so a batch queued
+    /// under the deleted account arrives as new work and is stored against the
+    /// account that replaces it.
     pub async fn delete_account(&self) -> ServerMessage {
         match self
             .authenticated_http

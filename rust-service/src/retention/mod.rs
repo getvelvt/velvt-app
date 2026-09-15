@@ -13,14 +13,22 @@
 //! 4. Register it in `main.rs` with `scheduler.add_target(...)`.
 //!
 //! The scheduler core (`RetentionScheduler`) is never modified.
+//!
+//! One registered target writes rather than deletes:
+//! `InterventionDecisionOutcomeTarget` resolves outcomes whose horizon has
+//! closed. It is here because it needs exactly what this scheduler already
+//! provides — a bounded pass on a periodic tick — and it reports the rows it
+//! touched in the same `CleanupReport` field the deleting targets use.
 
 mod scheduler;
 mod targets;
 
 pub use scheduler::RetentionScheduler;
 pub use targets::{
-    CacheRetentionTarget, RawEventRetentionTarget, UploadBatchRetentionTarget,
-    WorkBlockIntentionRetentionTarget,
+    CacheRetentionTarget, InterventionDecisionOutcomeTarget, RawEventRetentionTarget,
+    SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+    WorkBlockIntentionRetentionTarget, DECISION_OUTCOME_HORIZON_SECONDS,
+    SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
 };
 
 use crate::persistence::PersistenceError;

@@ -291,6 +291,26 @@ impl SqlitePersistence {
         .map(|n| n as usize)
         .map_err(Into::into)
     }
+
+    /// Sets `updated_at` for the named `semantic_embedding_cache` rows.
+    /// Used in retention integration tests to simulate an entry that has not
+    /// been re-observed inside the window; `record_embedding` refreshes the
+    /// column on every write, so a test cannot age a row by writing to it.
+    pub fn set_semantic_embedding_updated_at_for_test(
+        &self,
+        key_hashes: &[String],
+        unix_ts: i64,
+    ) -> Result<usize, PersistenceError> {
+        let conn = self.connection()?;
+        let mut updated = 0;
+        for key_hash in key_hashes {
+            updated += conn.execute(
+                "UPDATE semantic_embedding_cache SET updated_at = ?2 WHERE key_hash = ?1",
+                params![key_hash, unix_ts],
+            )?;
+        }
+        Ok(updated)
+    }
 }
 
 #[derive(Clone)]
@@ -797,6 +817,22 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
             .map_err(Into::into)
     }
 
+    fn delete_expired_semantic_embeddings(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let deleted = connection.execute(
+            "DELETE FROM semantic_embedding_cache WHERE key_hash IN (
+                 SELECT key_hash FROM semantic_embedding_cache
+                 WHERE updated_at < ?1 LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+
     fn embedding_salt(&self) -> Result<EmbeddingSalt, PersistenceError> {
         let mut connection = self.0.connection()?;
         let transaction = connection.transaction()?;
@@ -1030,11 +1066,41 @@ impl RawEventRepo for SqliteRawEventRepo {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<u64, PersistenceError> {
-        // Rows the upload pipeline still owes the backend are spared, mirroring
-        // upload-batch retention, which deliberately never deletes pending or
-        // failed batches. An eligible row with no `batch_event` has been acked
-        // to Swift but not yet persisted into a batch; expiring it on the TTL
-        // deleted an accepted event that nothing could ever re-send.
+        // Rows the upload pipeline still owes the backend are spared. The
+        // predicate is character-for-character the one `unbatched_events` uses,
+        // and that is the whole rule: a row is kept exactly while
+        // `recover_unbatched` would re-queue it at the next start. An eligible
+        // row with no `batch_event` was acked to Swift and never reached a
+        // batch — the service died between the ack and the flush, or the
+        // backlog was longer than one start's recovery limit — and expiring it
+        // on the TTL deleted an accepted event that nothing could re-send.
+        //
+        // This comment used to say the rule mirrored upload-batch retention,
+        // "which deliberately never deletes pending or failed batches."
+        // `delete_stale_queued_batch` deletes exactly those, so that sentence
+        // is gone rather than softened. What the rule actually rests on is an
+        // ordering of horizons: a batched row has to be deleted here before the
+        // sweep that deletes its batch cascades the `batch_event` away, because
+        // a row whose `batch_event` disappears re-enters the spared set and is
+        // never collected again. The raw TTL is 14 days
+        // (`VELVT_RAW_EVENT_TTL_HOURS`, defaulted from `DAILY_ACTIVITY_DAYS`)
+        // against a 30-day sent-and-queued batch horizon
+        // (`VELVT_SENT_BATCH_RETENTION_DAYS`), so it holds by 16 days — and
+        // inverts the moment the TTL is raised past 720 hours.
+        // `tests/retention.rs::the_raw_event_horizon_stays_inside_the_batch_horizon`
+        // is that ordering as an assertion rather than as two numbers that
+        // happen to be in the right order.
+        //
+        // Open, found 2026-08-31, not fixed here: `delete_rejected_batch` runs
+        // at 7 days (`VELVT_REJECTED_BATCH_AUDIT_DAYS`), which is inside the
+        // raw TTL, so a rejected batch's rows do come back unbatched and
+        // `recover_unbatched` re-queues them at the next start — against the
+        // rule in `upload/coordinator.rs` that a `raw_field_rejected` batch is
+        // permanently terminal and must never re-enter retry scheduling. The
+        // development device has never held a rejected batch, so nothing has
+        // taken that path. The fix belongs in the rejected sweep or its
+        // horizon, not in this predicate, which is why it is named here instead
+        // of quietly widened.
         let connection = self.0.connection()?;
         let deleted = connection.execute(
             "DELETE FROM raw_event_buffer WHERE id IN (
@@ -1356,6 +1422,28 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
         let deleted = connection.execute(
             "DELETE FROM upload_batch WHERE id IN (
                  SELECT id FROM upload_batch WHERE status = 'rejected' AND created_at < ?1 LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+
+    fn delete_stale_queued_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Deliberately no status filter. The two statuses the other sweeps
+        // enumerate were the only ones ever collected, so a batch that never
+        // reached one of them lived forever; naming statuses here would
+        // reproduce that hole the next time the vocabulary grows. A sent batch
+        // that outlived this horizon by creation date is collected too — its
+        // events are already delivered, so removing the local copy early is
+        // never a loss.
+        let deleted = connection.execute(
+            "DELETE FROM upload_batch WHERE id IN (
+                 SELECT id FROM upload_batch WHERE created_at < ?1 LIMIT ?2
              )",
             params![cutoff.timestamp(), limit as i64],
         )?;
@@ -2016,6 +2104,84 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             decisions.push(row?);
         }
         Ok(decisions)
+    }
+
+    fn unresolved_decisions(
+        &self,
+        horizon_closed_by: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<InterventionDecision>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT decision_id, occurred_at, block_id, policy_version, anchor_category,
+                    switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
+                    propensity, anchor_seen_within_600s, outcome_at
+             FROM intervention_decision_log
+             WHERE anchor_seen_within_600s IS NULL
+               AND anchor_category IS NOT NULL
+               AND block_id IS NOT NULL
+               AND occurred_at <= ?1
+             ORDER BY occurred_at ASC, decision_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(
+            params![horizon_closed_by.timestamp(), limit as i64],
+            decision_from_row,
+        )?;
+        let mut decisions = Vec::new();
+        for row in rows {
+            decisions.push(row?);
+        }
+        Ok(decisions)
+    }
+
+    fn observed_category_between(
+        &self,
+        block_id: &str,
+        category: &str,
+        from: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // `occurred_at > ?3`, not `>=`. `observe_safe_category` appends the
+        // observation before it calls `evaluate_drift`, so the observation that
+        // triggered a decision is already on disk carrying the decision's own
+        // timestamp. Under `>=` the `AbstainedAtAnchor` verdict — which fires
+        // exactly when the latest confident observation IS the anchor — would
+        // read back as "the user returned" for every row of it, definitionally
+        // and without a single return having happened. The bound answers what
+        // happened after the decision, so the evidence the decision was made on
+        // is not part of the answer.
+        connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM work_block_observation
+                    WHERE block_id = ?1 AND lower(category) = lower(?2)
+                      AND occurred_at > ?3 AND occurred_at <= ?4
+                 )",
+                params![block_id, category, from.timestamp(), until.timestamp()],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    fn resolve_decision(
+        &self,
+        decision_id: &str,
+        anchor_seen: bool,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // `anchor_seen_within_600s IS NULL` is the whole idempotence guarantee:
+        // a decision answered once keeps the answer it was given, so rerunning
+        // the resolver over history cannot move a number anyone has read.
+        let updated = connection.execute(
+            "UPDATE intervention_decision_log
+             SET anchor_seen_within_600s = ?2, outcome_at = ?3
+             WHERE decision_id = ?1 AND anchor_seen_within_600s IS NULL",
+            params![decision_id, i64::from(anchor_seen), at.timestamp()],
+        )?;
+        Ok(updated > 0)
     }
 }
 

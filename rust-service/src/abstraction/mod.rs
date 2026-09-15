@@ -17,7 +17,8 @@ pub use key::{app_stable_key_for, stable_key_for, RawKey};
 pub use onnx::OrtEmbeddingModel;
 pub use plugin::{
     ClassificationPlugin, ClassificationResult, ClassificationTier, EmbeddingError,
-    EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin, HashedEmbeddingModel,
+    EmbeddingMetrics, EmbeddingModel, EmbeddingSalt, EmbeddingSimilarityPlugin,
+    HashedEmbeddingModel,
 };
 pub use store::{
     AbstractionMappingStore, InMemoryMappingStore, MappingResolution, PersonalOverride,

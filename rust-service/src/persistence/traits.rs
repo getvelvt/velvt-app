@@ -8,6 +8,7 @@ use super::{
     WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
     WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WrongInterventionCounts,
 };
+use crate::abstraction::EmbeddingSalt;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use velvt_shared_types::WorkBlockResult;
@@ -52,6 +53,22 @@ pub trait AbstractionMapRepo: Send + Sync {
     fn personal_semantic_prototype_count(&self) -> Result<u64, PersistenceError>;
     fn classifier_artifact_count(&self, artifact_version: &str) -> Result<u64, PersistenceError>;
     fn display_name_for_label(&self, label: &str) -> Result<Option<String>, PersistenceError>;
+    /// This install's embedding salt, minting one if the row is absent.
+    ///
+    /// Migration 0031 creates the row, so the read is the only path a migrated
+    /// database takes. The create path exists because the alternative is worse:
+    /// a startup that cannot produce a salt would otherwise fall back to
+    /// [`EmbeddingSalt::UNSALTED`], and every sketch cached after that would be
+    /// recoverable from the published source with nothing taken off the device.
+    ///
+    /// Read and create happen in one transaction, so two processes racing on
+    /// first launch cannot mint two salts and write vectors from two spaces into
+    /// the same table. Minting also empties `semantic_embedding_cache` and
+    /// `personal_semantic_prototype` in that same transaction, for the reason
+    /// 0031 empties them: a different salt is a different vector space, and a
+    /// vector from the old one compared against a vector from the new one is a
+    /// similarity score about nothing.
+    fn embedding_salt(&self) -> Result<EmbeddingSalt, PersistenceError>;
 }
 
 pub trait UploadBatchRepo: Send + Sync {

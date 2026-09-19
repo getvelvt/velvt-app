@@ -2945,7 +2945,7 @@ private struct SettingsAccountDeletionButton: View {
                 Button("Cancel", role: .cancel) { authViewModel.cancelAccountDeletion() }
             } message: {
                 Text(
-                    "Velvt deletes behavioral data and disables authentication. It retains only an anonymized account record and the erasure/audit records required to prove deletion completed."
+                    "Deletes your account and the activity stored for it in the cloud, keeping only an anonymized account record and the erasure/audit records required to prove deletion completed. Activity waiting to upload from this Mac is destroyed and never sent. Everything else Velvt has stored locally stays on this Mac; delete ~/.velvt/ to remove it."
                 )
             }
         }

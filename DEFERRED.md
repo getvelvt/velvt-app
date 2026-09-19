@@ -63,6 +63,16 @@ Velvt today.
 - **Trigger condition:** real-world reports of orphaned helper processes after a force-quit or crash, or a requirement for the service to keep running across Swift app updates.
 - **Estimated complexity:** medium — `SMAppService` registration, login-item UX, and a migration path off the current ad-hoc launcher.
 
+## Upload-batch ownership (`BatchRetentionPolicy`)
+
+- **Location:** [`rust-service/src/upload/coordinator.rs`](rust-service/src/upload/coordinator.rs) (`BatchRetentionPolicy`, `KeepAllBatches`, `UploadCoordinator::with_retention_policy`).
+- **What it stubs:** the seam for refusing to upload a batch that was queued under a different account. `resume_pending` and `flush_all_pending` both consult `should_discard` before rebuilding a payload, but nothing in `src/` calls `with_retention_policy`, so the coordinator always runs on `KeepAllBatches` and discards nothing. No rule can be written against the trait as it stands: `UploadBatch` carries no device or user identifier, and neither does the `upload_batch` row behind it, so no implementation can tell one owner from another. `tests/account_deletion.rs` demonstrates the rule working against a test double and says on its face that no such rule runs in production.
+- **Why it's safe to defer:** the ownership hazard this seam exists to close is already closed at the point that matters. `ClientMessage::DeleteAccount` destroys the resumable queue once the cloud accepts the deletion, so there is no surviving batch for a later account to inherit. The seam covers only the residual case of a process that dies between the cloud's acceptance and the purge — and `BatchAssembler` already derives a batch id by hashing the device id with the event ids, so the identifier a real rule would need exists and is recoverable without a migration.
+- **Trigger condition:** a second account signing in on a Mac that has ever held a queue, or any report of activity arriving against the wrong account; also any change that makes the delete path non-atomic in a new way.
+- **Estimated complexity:** low — a `MintedByThisDevice` policy exists in `tests/account_deletion.rs` and needs the device id threaded to the coordinator plus a `with_retention_policy` call at the one construction site.
+
+---
+
 ---
 
 ## Format

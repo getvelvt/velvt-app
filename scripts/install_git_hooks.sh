@@ -5,6 +5,9 @@
 # a single `git config` on the local repository: it writes to .git/config, and
 # touches no ref, no index, and no working-tree file.
 #
+# CI runs the same check in the swift job, so this is not the only place the
+# omission is caught -- it is the place it is caught before the push.
+#
 #   ./scripts/install_git_hooks.sh
 #
 # To undo:  git config --unset core.hooksPath

@@ -449,7 +449,11 @@ final class CollectionModuleTests: XCTestCase {
         XCTAssertTrue(sink.events.isEmpty)
     }
 
-    func testDeniedPermissionPublishesPermissionRevokedWithoutRegisteringObservers() throws {
+    /// The caller has to be able to tell a start from a refusal to start. This
+    /// path published `.permissionRevoked` and then returned normally out of a
+    /// `throws` function, so `PermissionCollectionCoordinator` counted it as a
+    /// start and reported collection running against an agent that never began.
+    func testDeniedPermissionThrowsAndPublishesPermissionRevokedWithoutRegisteringObservers() {
         let permission = FakePermissionChecker(isTrusted: false)
         let workspace = FakeWorkspaceObserver()
         let accessibility = FakeAccessibilityObserver()
@@ -457,9 +461,12 @@ final class CollectionModuleTests: XCTestCase {
         var statuses: [CollectionStatus] = []
         agent.status.sink { statuses.append($0) }.store(in: &cancellables)
 
-        try agent.start()
+        XCTAssertThrowsError(try agent.start()) { error in
+            XCTAssertEqual(error as? CollectionError, .permissionRevoked)
+        }
 
         XCTAssertEqual(statuses.last, .permissionRevoked)
+        XCTAssertFalse(agent.isRunning)
         XCTAssertEqual(workspace.startCallCount, 0)
         XCTAssertTrue(accessibility.operations.isEmpty)
     }

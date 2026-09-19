@@ -473,23 +473,42 @@ mod tests {
         assert_eq!(config.upload_api_base_url, "http://localhost:8000");
     }
 
+    /// The shipped raw-event horizon is a published number, so it is pinned to
+    /// a literal here rather than to an expression.
+    ///
+    /// `PRIVACY.md` states 14 days for `raw_event_buffer`.
+    /// `tests/published_claims.rs` reads that cell out of the document itself
+    /// and compares it to the loaded config, so editing the document alone turns
+    /// the build red. This literal is the other half: it turns the build red
+    /// when the constant moves and nobody has looked at the document at all,
+    /// which is what happened in commit `515ccf5` — the horizon doubled, no
+    /// `.md` file was touched, and nothing failed.
+    const DOCUMENTED_RETENTION_DAYS: u64 = 14;
+
     #[test]
     fn raw_event_retention_covers_daily_activity() {
-        // The local daily-activity chart reads `raw_event_buffer`. When the TTL
-        // is shorter than the rendered window, the oldest days are not "no
-        // activity" — they are deleted evidence drawn as zeroes, which no test
-        // could see because retention never runs in the persistence fixtures.
+        // This compared `config.raw_event_ttl >= window` with `window` derived
+        // from `DAILY_ACTIVITY_DAYS` — the same constant the TTL default is
+        // derived from. It was `x >= x`: no change to either side could fail
+        // it, and it stayed green through the 7-to-14 change that left six
+        // published "7 days" claims false. The equality against a literal is
+        // what makes the next such change red.
         let _guard = ENVIRONMENT_LOCK.lock().unwrap();
         std::env::remove_var("VELVT_RAW_EVENT_TTL_HOURS");
         let config = ServiceConfig::load().unwrap();
 
-        let window = std::time::Duration::from_secs(
-            crate::dashboard::DAILY_ACTIVITY_DAYS as u64 * 24 * 3600,
-        );
-        assert!(
-            config.raw_event_ttl >= window,
-            "raw-event TTL {:?} must cover the {}-day daily-activity window",
+        assert_eq!(
             config.raw_event_ttl,
+            std::time::Duration::from_secs(DOCUMENTED_RETENTION_DAYS * 24 * 3600),
+            "the shipped raw-event TTL default must stay the {DOCUMENTED_RETENTION_DAYS} days PRIVACY.md publishes"
+        );
+        // The original relationship still holds and still matters: the local
+        // daily-activity chart reads `raw_event_buffer`, so a window wider than
+        // the TTL renders the oldest days as deleted evidence drawn as zeroes
+        // rather than as missing data.
+        assert!(
+            crate::dashboard::DAILY_ACTIVITY_DAYS as u64 <= DOCUMENTED_RETENTION_DAYS,
+            "the {}-day daily-activity window does not fit inside a {DOCUMENTED_RETENTION_DAYS}-day TTL",
             crate::dashboard::DAILY_ACTIVITY_DAYS
         );
     }

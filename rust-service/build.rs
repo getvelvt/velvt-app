@@ -1,4 +1,4 @@
-use std::{env, fs, path::PathBuf};
+use std::{collections::HashMap, env, fs, path::PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=migrations");
@@ -10,6 +10,12 @@ fn main() {
     migrations.sort();
 
     let mut generated = String::from("const EMBEDDED_MIGRATIONS: &[Migration] = &[\n");
+    // Two branches each adding "the next migration" produce two files with the
+    // same numeric prefix. run_migrations keys idempotence on that integer, so
+    // the second file is skipped with no execute, no insert, and no error --
+    // the UNIQUE constraint on schema_migration.version is never reached. The
+    // build is the only place that collision is cheap to catch.
+    let mut versions: HashMap<i64, String> = HashMap::new();
     for path in migrations {
         let name = path
             .file_name()
@@ -21,6 +27,9 @@ fn main() {
             .expect("migration must start with a version")
             .parse::<i64>()
             .expect("migration version must be an integer");
+        if let Some(previous) = versions.insert(version, name.to_string()) {
+            panic!("duplicate migration version {version}: {previous} and {name}");
+        }
         let absolute = fs::canonicalize(&path).expect("migration path must resolve");
         generated.push_str(&format!(
             "Migration {{ version: {version}, name: {name:?}, sql: include_str!({path:?}) }},\n",

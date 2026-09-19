@@ -152,6 +152,61 @@ final class UnixSocketIPCClientTests: XCTestCase {
         client.disconnect()
     }
 
+    func testStalledHandshakeResponseTimesOutAndEntersReconnectingState() async throws {
+        let transport = ScriptedIPCTransport(
+            receives: [.success(try frame(.serverHello(ServerHello(protocolVersion: 1))))],
+            blockHandshakeResponse: true
+        )
+        let sleeper = RecordingSleeper(stopAfter: 1)
+        let client = UnixSocketIPCClient(
+            socketPath: "/tmp/velvt-test.sock",
+            protocolVersion: 1,
+            clientVersion: "1.0.0",
+            connectionTimeout: .milliseconds(10),
+            backoff: ReconnectBackoff(jitter: { 1 }),
+            sleeper: sleeper,
+            transportFactory: { transport }
+        )
+        var statuses: [ConnectionStatus] = []
+        client.connectionStatus.sink { statuses.append($0) }.store(in: &cancellables)
+
+        do {
+            try await client.connect()
+            XCTFail("Expected the stalled handshake to time out")
+        } catch {
+            XCTAssertEqual(error as? IPCError, .connectionClosed)
+        }
+        await fulfillment(of: [sleeper.completedExpectation], timeout: 1)
+
+        XCTAssertTrue(statuses.contains(.reconnecting(attempt: 1, nextRetryIn: 1)))
+        client.disconnect()
+    }
+
+    /// The connect timeout can only fire if the phase it is racing can be
+    /// unwound. `NWConnection`'s completion handlers do not observe task
+    /// cancellation, so a read parked on a peer that accepted and then went
+    /// silent holds the whole task group until the transport tears the socket
+    /// down itself.
+    func testCancellingAParkedReceiveFrameTearsDownTheConnection() async throws {
+        let listener = try SilentUnixSocketListener()
+        defer { listener.close() }
+        let transport = UnixSocketTransport()
+        try await transport.connect(to: listener.path)
+
+        let unwound = expectation(description: "receiveFrame returned after cancellation")
+        let receive = Task {
+            defer { unwound.fulfill() }
+            _ = try? await transport.receiveFrame()
+        }
+        // Let the read park in its continuation first; cancelling before the
+        // operation starts exercises the trivial path that already worked.
+        try await Task.sleep(for: .milliseconds(100))
+        receive.cancel()
+
+        await fulfillment(of: [unwound], timeout: 2)
+        await transport.close()
+    }
+
     func testMissingSocketPathThrowsTypedSocketError() async {
         let client = UnixSocketIPCClient(
             socketPath: "/tmp/velvt-definitely-missing/socket.sock",
@@ -286,6 +341,7 @@ private final class TransportQueue: @unchecked Sendable {
 private actor ScriptedIPCTransport: IPCTransportProtocol {
     nonisolated let handshakeBlockedExpectation = XCTestExpectation(description: "handshake response blocked")
     nonisolated let publicSendBlockedExpectation = XCTestExpectation(description: "public send blocked")
+    private nonisolated let stallGate = StallGate()
     private let connectError: Error?
     private let blockConnect: Bool
     private let blockHandshakeResponse: Bool
@@ -317,8 +373,25 @@ private actor ScriptedIPCTransport: IPCTransportProtocol {
             throw connectError
         }
         if blockConnect {
-            try await Task.sleep(for: .seconds(60))
+            try await stall()
         }
+    }
+
+    /// Parks the way an `NWConnection` completion handler does: task
+    /// cancellation on its own cannot resume it, only an explicit socket
+    /// teardown can. `Task.sleep` unwinds for free, so a transport phase that
+    /// never installed a cancellation handler would still pass a test built on
+    /// it.
+    private func stall() async throws {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                stallGate.park(continuation)
+            }
+        }, onCancel: { [stallGate] in
+            // The production analogue is `connection.cancel()` in
+            // UnixSocketTransport's own onCancel handler.
+            stallGate.tearDown()
+        })
     }
 
     func send(frame: Data) async throws {
@@ -336,7 +409,7 @@ private actor ScriptedIPCTransport: IPCTransportProtocol {
         receiveCount += 1
         if blockHandshakeResponse, receiveCount > 1 {
             handshakeBlockedExpectation.fulfill()
-            try await Task.sleep(for: .seconds(60))
+            try await stall()
         }
         if blockPublicSend, receiveCount > 2 {
             await withCheckedContinuation { connectionLossContinuation = $0 }
@@ -366,6 +439,34 @@ private actor ScriptedIPCTransport: IPCTransportProtocol {
     }
 }
 
+/// Models an `NWConnection` completion handler: a continuation that only an
+/// explicit teardown resumes.
+private final class StallGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var tornDown = false
+
+    func park(_ continuation: CheckedContinuation<Void, Error>) {
+        let resumeImmediately = lock.withLock { () -> Bool in
+            guard !tornDown else { return true }
+            self.continuation = continuation
+            return false
+        }
+        if resumeImmediately {
+            continuation.resume(throwing: IPCError.connectionClosed)
+        }
+    }
+
+    func tearDown() {
+        let parked = lock.withLock { () -> CheckedContinuation<Void, Error>? in
+            tornDown = true
+            defer { continuation = nil }
+            return continuation
+        }
+        parked?.resume(throwing: IPCError.connectionClosed)
+    }
+}
+
 private actor RecordingSleeper: IPCSleeping {
     nonisolated let completedExpectation = XCTestExpectation(description: "recorded reconnect delays")
     private let stopAfter: Int
@@ -385,5 +486,67 @@ private actor RecordingSleeper: IPCSleeping {
 
     func delays() -> [TimeInterval] {
         recorded
+    }
+}
+
+/// A Unix-domain socket that accepts a connection and then says nothing — the
+/// peer shape a stalled handshake actually has: a helper whose runtime is
+/// starved or stopped, or a foreign process squatting on the socket path.
+private final class SilentUnixSocketListener {
+    let path: String
+    private let listeningDescriptor: Int32
+    private let acceptQueue = DispatchQueue(label: "com.velvt.mac.tests.silent-listener")
+    private let lock = NSLock()
+    private var acceptedDescriptor: Int32 = -1
+
+    init() throws {
+        path = "/tmp/velvt-silent-\(UUID().uuidString.prefix(8)).sock"
+        listeningDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard listeningDescriptor >= 0 else { throw ListenerError.socketUnavailable }
+
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        let pathBytes = Array(path.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+            throw ListenerError.socketUnavailable
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            destination.copyBytes(from: pathBytes)
+        }
+
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                bind(listeningDescriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bound == 0, listen(listeningDescriptor, 1) == 0 else {
+            Darwin.close(listeningDescriptor)
+            throw ListenerError.socketUnavailable
+        }
+
+        acceptQueue.async { [listeningDescriptor, lock] in
+            let accepted = accept(listeningDescriptor, nil, nil)
+            guard accepted >= 0 else { return }
+            // Hold the accepted end open and never write to it, so the client's
+            // read has a live connection with nothing to read.
+            lock.withLock { self.acceptedDescriptor = accepted }
+        }
+    }
+
+    func close() {
+        let accepted = lock.withLock { () -> Int32 in
+            defer { acceptedDescriptor = -1 }
+            return acceptedDescriptor
+        }
+        if accepted >= 0 {
+            Darwin.close(accepted)
+        }
+        Darwin.close(listeningDescriptor)
+        unlink(path)
+    }
+
+    enum ListenerError: Error {
+        case socketUnavailable
     }
 }

@@ -80,13 +80,32 @@ Daily insights additionally produce a `notification_payload` IPC push (see
 1. **Tier 1 — exact match:** `SeedDictionaryPlugin` matches the app name
    against the versioned taxonomy's glob patterns. Deterministic,
    sub-millisecond (measured p95 ≈ 5 µs — see `PERFORMANCE_REPORT.md`).
-2. **Tier 2 — embedding similarity (optional):** if a Tier 2 model and
-   centroid file are configured and valid, `EmbeddingSimilarityPlugin`
-   embeds the app name/title and compares against static category
-   centroids. Absent or invalid configuration disables Tier 2 with a
-   structured warning and, when an operator explicitly configured a model
-   that failed to load, a `ServiceStatus::Degraded` IPC push — Tier 1/3
-   continue regardless.
+2. **Tier 2 — embedding similarity:** `EmbeddingSimilarityPlugin` embeds the
+   app name and window title and compares against static category centroids.
+   Which embedder runs depends on the build, and the difference is stated here
+   rather than left to be discovered:
+
+   - **Shipped builds run `builtin-hash-v1`.** `main.rs` chains
+     `.or_else(EmbeddingSimilarityPlugin::builtin(...))`, so when no ONNX model
+     is configured Tier 2 does not turn off — it runs with
+     `HashedEmbeddingModel`, a 256-dimension hashed sketch over seven built-in
+     category phrase sets. `scripts/build_rust_helper.sh` builds the
+     distributable without `--features onnx`, so this is what every DMG does.
+     The live founder install has classified 7,009 events under
+     `builtin-hash-v1` and zero under anything else.
+   - **Developer builds may run MiniLM**, when a Tier 2 model and centroid file
+     are configured and valid and the binary was built with `--features onnx`.
+     Classification quality is better; nothing else about the pipeline changes.
+
+   An operator who explicitly configures a model that then fails to load gets a
+   structured warning and a `ServiceStatus::Degraded` IPC push. Never
+   configuring one is not a degradation and does not raise it.
+
+   Tier 2 writes: the sketch is cached in `semantic_embedding_cache`, keyed by a
+   hash of `"{app_name} [SEP] {window_title}"`. Individual words are partially
+   recoverable from that sketch. See `PRIVACY.md` and `PRIVACY_AUDIT.md`
+   Audit 7 — this is the one place in the pipeline where a window title leaves a
+   durable trace, and it is on disk only.
 3. **Tier 3 — fallback:** `UnloggedFallbackPlugin` classifies anything
    unmatched as `unclassified`/`UNLOGGED` rather than dropping the event.
 
@@ -147,12 +166,36 @@ See [`PERFORMANCE_REPORT.md`](PERFORMANCE_REPORT.md) for full methodology,
 caveats, and the testing environment. Summary of what was actually
 measured in this pass:
 
-| Budget | Measured | Status |
-|---|---|---|
-| Tier 1 p95 < 1 ms | 4.86 µs | PASS |
-| Tier 2 p95 < 25 ms | 42.3 µs (fake model) | PASS, real-model latency not independently verified |
-| Idle CPU < 0.5% | 0.0% over a 7s sample | PASS (shorter window than the 60s target) |
-| Rust RSS < 50 MB | 6.7–6.9 MB over a 7s sample | PASS (shorter window than the 10-min target) |
-| IPC round-trip p95 < 50 ms | not measured | infrastructure gap, not a failure |
-| SQLite queries < 5 ms p95 at 30-day scale | not measured | infrastructure gap, not a failure |
-| Swift RSS < 80 MB | not measured | no GUI session available in this environment |
+| Budget | Measured | Enforced by | Status |
+|---|---|---|---|
+| Tier 1 p95 < 1 ms | 4.86 µs | `make test-rust`, every pull request | PASS |
+| Tier 2 p50 < 10 ms | 21.6 µs (fake model) | `make test-rust`, every pull request, against both the fake model and the builtin one | PASS |
+| Tier 2 p95 < 25 ms | 42.3 µs (fake model) | `make bench-rust`, the `bench` job on pushes to `main` | PASS, real-model latency not independently verified |
+| Idle CPU < 0.5% | 0.0% over a 7s sample | nothing automated | PASS (shorter window than the 60s target) |
+| Rust RSS < 50 MB | 6.7–6.9 MB over a 7s sample | nothing automated | PASS (shorter window than the 10-min target) |
+| IPC round-trip p95 < 50 ms | not measured | nothing automated | infrastructure gap, not a failure |
+| SQLite queries < 5 ms p95 at 30-day scale | not measured | nothing automated | infrastructure gap, not a failure |
+| Swift RSS < 80 MB | not measured | nothing automated | no GUI session available in this environment |
+
+The three tier rows are the only ones a build can fail on; the rest are
+measurements from one pass and nothing re-runs them. The tests are
+`tests/abstraction_engine.rs::tier1_is_deterministic_and_completes_under_one_millisecond`
+and, in `tests/embedding_similarity.rs`,
+`tier2_median_is_under_ten_milliseconds_with_available_model`,
+`builtin_tier2_median_is_under_ten_milliseconds` and
+`tier2_p95_is_under_twenty_five_milliseconds_with_available_model`. The tail
+bound is `#[ignore]`d out of the correctness suite and measured after merge: a
+25 ms wall-clock budget on a shared runner fails under a busy neighbour about
+as readily as under a regression. The cost of that placement is that a Tier 2
+tail regression is caught on `main` within one merge rather than before it
+lands. `make bench-rust` fails when it measures nothing, so deleting the test
+does not quietly retire the number, and it builds `--release`, so what it
+measures is the build that ships.
+
+The Measured column is the fake model in both Tier 2 rows, which is what the
+pass in `PERFORMANCE_REPORT.md` ran. `builtin_tier2_median_is_under_ten_milliseconds`
+is the one assertion here that times `HashedEmbeddingModel`, the model `main.rs`
+loads when no ONNX artifacts are configured. Its cost is not independent of
+window-title length — `classify` hashes the untruncated app-and-title into a
+cache key before `embed` truncates to 4096 characters — so the table's Tier 2
+numbers describe an ordinary title, not a long one.

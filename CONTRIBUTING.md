@@ -89,7 +89,13 @@ The Swift client declares its supported protocol version on every socket connect
 ```bash
 swift test --package-path swift-client
 xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' build
+./scripts/verify_pbxproj_membership.sh   # Xcode target membership
 ```
+
+### Every new `.swift` file has to join the Xcode target
+SwiftPM globs `swift-client/Sources`, so `swift test` is green whether or not a file is in `VelvtMac.xcodeproj`. The Xcode target lists its files explicitly, so a file added to the directory but not to the target compiles nowhere in the app: the omission first surfaces minutes into a DMG build, as a link error naming a symbol rather than a file. It has reached `main` three times.
+
+`scripts/verify_pbxproj_membership.sh` checks that every `.swift` under `swift-client/Sources` has its four `project.pbxproj` references (build file, file reference, group child, Sources build phase). It takes under a second and needs no Xcode. CI runs it in the `swift` job on every pull request; run `./scripts/install_git_hooks.sh` once per clone to also get it as a pre-push hook, which is the difference between finding this before the push and after it. `scripts/tests/verify_pbxproj_membership_test.sh` covers the guard itself.
 
 ***
 

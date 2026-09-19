@@ -44,6 +44,52 @@ jobs:
       - name: Test Rust
         run: make test-rust
 
+      # `onnx` is off by default, and the only job that compiled it was
+      # `package`, which does not run on pull requests -- so the whole of
+      # src/abstraction/onnx.rs was type-checked by nothing before merge. A
+      # check is the whole of what is possible here: running the feature needs
+      # model artifacts that are not in the repository.
+      - name: Check Rust with the onnx feature
+        run: make check-rust-onnx
+
+  bench:
+    name: Rust latency budgets
+    # Where the Tier 2 p95 budget published in README.md and ARCHITECTURE.md is
+    # enforced. It is deliberately off the pull-request path: a 25 ms wall-clock
+    # tail bound on a shared runner fails under a busy neighbour about as
+    # readily as under a regression, and a required check that goes red for
+    # reasons unrelated to the change teaches everyone to re-run it. The pull
+    # request still carries the Tier 2 median bound, in `make test-rust`, which
+    # runner load cannot move.
+    #
+    # What that timing trades away, stated so nobody has to rediscover it: a
+    # Tier 2 tail regression is caught on main within one merge, not before it
+    # lands, and not at all on a branch never pushed to main.
+    #
+    # Its own job rather than a step in `rust` so a benchmark failure reports as
+    # itself and does not withhold `package` from an otherwise green build. The
+    # extra runner is ubuntu, the cheap rate this file's concurrency note names.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Install pinned Rust toolchain
+        working-directory: rust-service
+        run: rustup show active-toolchain
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust-service
+
+      # Fails if it measures nothing, not only if a budget is exceeded.
+      - name: Measure Tier 2 latency budgets
+        run: make bench-rust
+
   swift:
     name: Swift lint, test, and release policy
     runs-on: macos-15
@@ -60,6 +106,14 @@ jobs:
           key: swiftpm-${{ runner.os }}-${{ hashFiles('swift-client/Package.resolved') }}
           restore-keys: |
             swiftpm-${{ runner.os }}-
+
+      # SwiftPM globs Sources/VelvtMac, so `swift test` is green whether or not
+      # a file is in the Xcode target, which lists its files explicitly. Without
+      # this step the omission first surfaces minutes into a DMG build, as a
+      # link error naming a symbol rather than a file -- and it has reached main
+      # three times. This is sub-second and needs no Xcode, so it runs first.
+      - name: Verify Xcode target membership
+        run: ./scripts/verify_pbxproj_membership.sh
 
       - name: Lint Swift
         run: make lint-swift

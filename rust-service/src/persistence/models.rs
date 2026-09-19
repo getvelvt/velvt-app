@@ -183,6 +183,9 @@ pub enum UploadBatchStatus {
     Sent,
     Failed,
     Rejected,
+    /// Retried until the ceiling and given up on. Terminal: nothing schedules
+    /// another attempt, and the age sweep collects it like a sent batch.
+    Abandoned,
 }
 
 impl UploadBatchStatus {
@@ -192,9 +195,36 @@ impl UploadBatchStatus {
             Self::Sent => "sent",
             Self::Failed => "failed",
             Self::Rejected => "rejected",
+            Self::Abandoned => "abandoned",
         }
     }
 }
+
+/// How many failed attempts a batch gets before it is abandoned.
+///
+/// Derived from observed recovery, not from the backoff arithmetic. The first
+/// value here was ninety-six — one day at the fifteen-minute backoff cap — on
+/// the reasoning that no outage a device comes back from lasts a day. The
+/// development device's own history falsifies that. `mark_sent` does not reset
+/// `attempt_count`, so a delivered batch carries the cumulative cost of every
+/// outage it sat through, and across 2,604 delivered batches the counts read
+/// 2,489 at zero, 39 at 1–9, 15 at 10–47, 60 at 48–95, and one at 116. That
+/// last batch was created 2026-08-21 14:42 UTC and delivered 2026-08-22 20:50
+/// UTC: a single ~30-hour outage the device fully recovered from. A ceiling of
+/// ninety-six would have abandoned it at attempt 96, 5.2 hours before the host
+/// returned, and its events would never have reached the account.
+///
+/// The 76 delivered batches with ten or more attempts retried at 3.53–3.87
+/// attempts an hour, which is the fifteen-minute cap as actually realized. 288
+/// is 74–82 hours at that rate — about three days — and 2.5× the longest
+/// recovery the device has made. A host that is simply gone reaches it in three
+/// days instead of one and stops generating retry traffic then.
+///
+/// The ceiling is the belt, not the braces: `delete_stale_queued_batch` bounds
+/// the queue by age on its own, so this errs long. The cost of a ceiling that is
+/// too high is three days of retry traffic; the cost of one that is too low is
+/// activity that will never reach the user's account.
+pub const UPLOAD_BATCH_ATTEMPT_CEILING: u32 = 288;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadBatch {

@@ -95,7 +95,33 @@ async fn main() {
     }
     let embedding_plugin = load_embedding_plugin(&config, &taxonomy)
         .or_else(|| {
-            velvt_service::abstraction::EmbeddingSimilarityPlugin::builtin(taxonomy.version()).ok()
+            // The shipped Tier 2 fallback runs on this install's salt. Without
+            // it the hash family is the one written out in `plugin.rs`, so the
+            // sketches this caches in `semantic_embedding_cache` are readable
+            // back to words by anyone holding the file and the public source,
+            // with nothing taken off the device.
+            //
+            // A salt the database cannot produce disables Tier 2 rather than
+            // falling back to `EmbeddingSalt::UNSALTED`: an unsalted classifier
+            // wired in here would keep caching recoverable sketches while
+            // migration 0031 and PRIVACY.md both describe a salted one. Tier 1
+            // and Tier 3 still classify, so the cost is classification quality
+            // rather than a property the documents assert.
+            let salt = persistence
+                .abstraction_map_repo()
+                .embedding_salt()
+                .inspect_err(|_| {
+                    tracing::warn!(
+                        error_code = "embedding_salt_unavailable",
+                        "Tier 2 classification disabled"
+                    );
+                })
+                .ok()?;
+            velvt_service::abstraction::EmbeddingSimilarityPlugin::builtin_salted(
+                taxonomy.version(),
+                salt,
+            )
+            .ok()
         })
         .map(|plugin| plugin.with_learning_store(persistence.semantic_learning_store()));
     // Tracked before the plugin is consumed below: true only when an operator

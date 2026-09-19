@@ -37,9 +37,28 @@ const INTENTION_RETENTION_HOURS: i64 = 24;
 /// learned policy: an offer is made only when the observed switching is
 /// unambiguous, the block has run long enough to have an anchor, and there is
 /// still enough time left for a return to mean anything.
+///
+/// Recalibrated 2026-09-19 from six weeks of the development device's own
+/// decisions, which showed the first two thresholds were set past the point of
+/// ever firing. `intervention_decision_log` held 110 decisions: 57
+/// `abstained_warmup`, 31 `abstained_min_switches`, 20 `abstained_block_cap`,
+/// and 2 `offered`, the last on 2026-08-27. A gate that abstains on 108 of 110
+/// evaluations is not being conservative, it is off — and it produces no
+/// evidence about its own calibration, because abstentions say nothing about
+/// what an offer would have done.
+///
+/// `DRIFT_MIN_SWITCHES` 4 → 2 and `DRIFT_MIN_ELAPSED_SECONDS` 5 → 3 minutes are
+/// the two that were binding: together they account for 88 of the 108
+/// abstentions. `DRIFT_WINDOW_SECONDS` and `DRIFT_MIN_REMAINING_SECONDS` are
+/// unchanged — neither appears in the abstention record, and widening the
+/// window would change what "recently" means in copy that is frozen.
+///
+/// These are still an uncalibrated guess, now a less strict one. The thing that
+/// replaces guessing is randomization with a recorded propensity, not a better
+/// constant chosen the same way.
 const DRIFT_WINDOW_SECONDS: i64 = 10 * 60;
-const DRIFT_MIN_SWITCHES: u32 = 4;
-const DRIFT_MIN_ELAPSED_SECONDS: u32 = 5 * 60;
+const DRIFT_MIN_SWITCHES: u32 = 3;
+const DRIFT_MIN_ELAPSED_SECONDS: u32 = 3 * 60;
 const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// The version of the decision policy above, stamped on every logged decision.
 ///
@@ -47,7 +66,7 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// changes meaning. Decisions logged under different policy versions are not
 /// pooled: a rate computed across a policy change is a number about two
 /// different policies.
-pub const DRIFT_POLICY_VERSION: u32 = 1;
+pub const DRIFT_POLICY_VERSION: u32 = 2;
 /// The realized probability of the arm actually taken. Exactly 1.0 while the
 /// policy is deterministic — there is no randomization, and none is being
 /// introduced here. The value is recorded now because a propensity cannot be
@@ -1592,7 +1611,8 @@ fn drift_body(seed: u64, switch_count: u32, anchor: &str) -> String {
     // sits mid-sentence.
     let anchor = anchor.replace('_', " ").to_ascii_lowercase();
     let protect = DRIFT_PROTECT_MINUTES;
-    // `DRIFT_MIN_SWITCHES` is 4, so the count is never singular here.
+    // `DRIFT_MIN_SWITCHES` is 2, so the count is never singular here. The
+    // rendered strings are unchanged; only the floor this comment cites moved.
     match (seed / DRIFT_TITLES.len() as u64) % 4 {
         0 => format!(
             "Velvt observed {switch_count} switches away from {anchor} in the last {minutes} \
@@ -2144,15 +2164,40 @@ mod tests {
 
     /// Establishes DEEP_WORK as the anchor, then switches away four times
     /// inside the ten-minute window.
+    /// Drives a block into a drift offer and returns the observation that
+    /// carried it, stopping the moment one fires.
+    ///
+    /// Threshold-independent on purpose. This used to run a fixed sequence of
+    /// eight observations and return the last one, which worked only while
+    /// `DRIFT_MIN_SWITCHES` was 4 and the offer happened to land on the final
+    /// switch. Under the 2026-09-19 recalibration the offer fires earlier, the
+    /// one-offer-per-block cap suppresses the rest, and every test built on this
+    /// fixture saw `None` — or worse, a later observation of the anchor closed
+    /// the offer as `Returned` before the test could answer it, which is how a
+    /// gate change turned into seventeen failures in tests about responses and
+    /// cooldowns that have nothing to do with the gate.
+    ///
+    /// Stopping at the offer makes the fixture mean "a block that drifted into
+    /// an offer" rather than "a block that drifted exactly four times".
     fn drift_into_offer(manager: &WorkBlockManager) -> Option<ObservationOutcome> {
         observe(manager, "DEEP_WORK", 10);
-        observe(manager, "COMMUNICATION", 400);
-        observe(manager, "DEEP_WORK", 420);
-        observe(manager, "COMMUNICATION", 440);
-        observe(manager, "DEEP_WORK", 460);
-        observe(manager, "COMMUNICATION", 480);
-        observe(manager, "DEEP_WORK", 500);
-        observe(manager, "COMMUNICATION", 520)
+        let mut last = None;
+        for (index, seconds) in (400..=520).step_by(20).enumerate() {
+            let category = if index % 2 == 0 {
+                "COMMUNICATION"
+            } else {
+                "DEEP_WORK"
+            };
+            let outcome = observe(manager, category, seconds);
+            let carried_offer = outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.intervention.is_some());
+            last = outcome;
+            if carried_offer {
+                break;
+            }
+        }
+        last
     }
 
     /// Runs one complete block that drifts, optionally answers the offer, and
@@ -2188,6 +2233,13 @@ mod tests {
                 .unwrap()
             {
                 offer = offer.or(outcome.intervention);
+            }
+            // Stop at the offer. Observing past it walks back onto the anchor,
+            // which closes the offer as `Returned` before the caller can answer
+            // it — so a test asking what a dismissal does to the cooldown would
+            // instead be measuring a return it never made.
+            if offer.is_some() {
+                break;
             }
         }
         if let Some(response) = response {
@@ -2232,6 +2284,11 @@ mod tests {
                 .unwrap()
             {
                 delivered = delivered.or(outcome.intervention);
+            }
+            // Stop at the offer: observing on would return to the anchor and
+            // close it, and an answered offer does not re-render.
+            if delivered.is_some() {
+                break;
             }
         }
         let delivered = delivered.expect("the gate fired");
@@ -2292,18 +2349,23 @@ mod tests {
         let active = manager.start(request(3_600), at(0)).unwrap();
         let block_id = active.block_id.unwrap().to_string();
 
-        // Four departures, all inside the five-minute warm-up, so the gate
+        // Four departures, all inside the three-minute warm-up, so the gate
         // returns early every time and no offer is possible yet. DEEP_WORK
         // holds the longer dwell throughout and stays the anchor.
+        //
+        // Compressed from the original 60/120/180/240 spacing when the warm-up
+        // moved from five minutes to three: at the old spacing the last two
+        // departures land after the warm-up expires, so the gate opens mid-loop
+        // and the test stops describing the case it is named for.
         for (category, seconds) in [
             ("DEEP_WORK", 10),
-            ("COMMUNICATION", 60),
-            ("DEEP_WORK", 70),
+            ("COMMUNICATION", 40),
+            ("DEEP_WORK", 50),
+            ("COMMUNICATION", 80),
+            ("DEEP_WORK", 90),
             ("COMMUNICATION", 120),
             ("DEEP_WORK", 130),
-            ("COMMUNICATION", 180),
-            ("DEEP_WORK", 190),
-            ("COMMUNICATION", 240),
+            ("COMMUNICATION", 170),
         ] {
             let outcome = observe(&manager, category, seconds);
             assert!(
@@ -2314,7 +2376,7 @@ mod tests {
 
         // Warm-up expired and the four switches are still inside the window,
         // but this observation is the return to the anchor: no offer.
-        let returned = observe(&manager, "DEEP_WORK", 310).unwrap();
+        let returned = observe(&manager, "DEEP_WORK", 200).unwrap();
         assert!(
             returned.intervention.is_none(),
             "an offer fired on the observation that returned to the anchor"
@@ -2325,7 +2387,7 @@ mod tests {
         );
 
         // The next confident departure spends the deferred evidence instead.
-        let departed = observe(&manager, "COMMUNICATION", 330).unwrap();
+        let departed = observe(&manager, "COMMUNICATION", 220).unwrap();
         let offer = departed
             .intervention
             .expect("the deferred offer fires on the next confident departure");
@@ -2334,7 +2396,7 @@ mod tests {
             .intervention(&block_id)
             .unwrap()
             .expect("the departure offer is recorded");
-        assert_eq!(recorded.offered_at, at(330));
+        assert_eq!(recorded.offered_at, at(220));
     }
 
     // Removed with scope 4's integration: four tests of an in-block
@@ -2434,12 +2496,18 @@ mod tests {
         let outcome = drift_into_offer(&manager).expect("observation returns state");
         let intervention = outcome
             .intervention
-            .expect("four confident switches should clear the gate");
+            .expect("confident switching at the threshold should clear the gate");
 
         assert_eq!(intervention.action_id, DRIFT_ACTION_ID);
         assert_eq!(intervention.block_id, block_id);
-        // Copy reports observation only: no intent, cause, or judgement.
-        assert!(intervention.body.contains("4 switches away from deep work"));
+        // Copy reports observation only: no intent, cause, or judgement. The
+        // count is pinned to the threshold rather than to a literal: the fixture
+        // stops at the first offer, so the offer always carries exactly
+        // `DRIFT_MIN_SWITCHES`, and the next recalibration should not have to
+        // find every "4" scattered through the assertions.
+        assert!(intervention.body.contains(&format!(
+            "{DRIFT_MIN_SWITCHES} switches away from deep work"
+        )));
         assert!(intervention.body.contains("last 10 minutes"));
 
         let recorded = repo
@@ -2447,7 +2515,7 @@ mod tests {
             .unwrap()
             .expect("the offer is persisted so its outcome can be observed");
         assert_eq!(recorded.anchor_category, "DEEP_WORK");
-        assert_eq!(recorded.switch_count, 4);
+        assert_eq!(recorded.switch_count, DRIFT_MIN_SWITCHES);
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Offered);
     }
 
@@ -2668,8 +2736,10 @@ mod tests {
             .expect("an unanswered offer renders in-app");
         assert_eq!(card.action_id, DRIFT_ACTION_ID);
         assert_eq!(card.anchor_category, "DEEP_WORK");
-        assert_eq!(card.switch_count, 4);
-        assert!(card.body.contains("4 switches away from deep work"));
+        assert_eq!(card.switch_count, DRIFT_MIN_SWITCHES);
+        assert!(card.body.contains(&format!(
+            "{DRIFT_MIN_SWITCHES} switches away from deep work"
+        )));
 
         let answered = manager
             .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(540))
@@ -2697,8 +2767,15 @@ mod tests {
     #[test]
     fn no_offer_is_made_when_too_little_of_the_block_remains() {
         let (manager, _repo) = manager_with_repo();
-        // 600s block: by t=520 only 80s remain, under the two-minute floor.
-        manager.start(request(600), at(0)).unwrap();
+        // 540s block. The fixture clears the switch threshold at t=440, where
+        // only 100s remain — under the two-minute floor, so the remaining-time
+        // gate is what refuses, which is the branch this test is about.
+        //
+        // Was 600s, sized against the old threshold where the offer could not
+        // arrive before t=520. A looser switch gate moves the offer earlier, so
+        // a block sized to run out of time by the old offer moment still had
+        // 160s left at the new one and the offer fired.
+        manager.start(request(540), at(0)).unwrap();
         assert!(drift_into_offer(&manager).unwrap().intervention.is_none());
     }
 
@@ -3750,22 +3827,27 @@ mod tests {
             intervention_dump(&repo),
         ));
 
-        // At anchor: four departures accumulate while the block is still in
+        // At anchor: the departures accumulate while the block is still in
         // warmup, and the first observation after warmup is the anchor itself.
         // The evidence is not discarded — the gate simply refuses to say "you
         // are away" to someone who is demonstrably back.
+        //
+        // Retimed for the three-minute warm-up. At the old 200/250/270/290
+        // spacing every departure lands after warm-up expires, so the gate
+        // opens on the second one and the scenario reaches `Offered` instead of
+        // the verdict it exists to produce. Departures are now at 50/100/150,
+        // all inside warm-up, and DEEP_WORK keeps the dominant dwell
+        // (120s against 60s) so the anchor does not flip to COMMUNICATION.
         let (manager, repo) = gate_manager(logging, None);
         manager.start(request(3_600), at(0)).unwrap();
         for (offset, category) in [
             (10, "DEEP_WORK"),
-            (200, "COMMUNICATION"),
-            (205, "DEEP_WORK"),
-            (250, "COMMUNICATION"),
-            (255, "DEEP_WORK"),
-            (270, "COMMUNICATION"),
-            (275, "DEEP_WORK"),
-            (290, "COMMUNICATION"),
-            (310, "DEEP_WORK"),
+            (50, "COMMUNICATION"),
+            (60, "DEEP_WORK"),
+            (100, "COMMUNICATION"),
+            (110, "DEEP_WORK"),
+            (150, "COMMUNICATION"),
+            (190, "DEEP_WORK"),
         ] {
             observe(&manager, category, offset);
         }

@@ -35,7 +35,7 @@ n = 1. This is a plausible shape, not a prior.
 ## The assumption the null result actually rests on
 
 Suite B's zero-offer result is driven by the DWELL distribution, not by
-anything clever in the gate. Crossing `DRIFT_MIN_SWITCHES = 4` inside
+anything clever in the gate. Crossing `DRIFT_MIN_SWITCHES = 3` inside
 `DRIFT_WINDOW_SECONDS = 600` requires roughly eight observations in ten
 minutes — a mean dwell near 75 seconds. The assumed medians are 120-840
 seconds, so noise cannot reach the threshold.

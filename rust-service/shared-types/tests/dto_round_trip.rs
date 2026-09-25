@@ -238,6 +238,7 @@ fn work_block_contract_round_trips_and_redacts_intention_from_debug() {
         paused_at: None,
         recovered_after_restart: false,
         current_category: Some("FOCUS_WORK".into()),
+        anchor_category: Some("FOCUS_WORK".into()),
         classification_status: ClassificationStatus::Classified,
         confidence: ClassificationConfidence::High,
         status_line: "Current category: Focus work.".into(),

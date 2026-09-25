@@ -543,6 +543,7 @@ final class WorkBlockCoordinatorTests: XCTestCase {
       pausedAt: nil,
       recoveredAfterRestart: false,
       currentCategory: "FOCUS_WORK",
+      anchorCategory: nil,
       classificationStatus: .classified,
       confidence: .high,
       statusLine: "Current category: Focus work.",
@@ -778,7 +779,8 @@ final class WorkBlockMinutesSnapshotTests: XCTestCase {
       stateVersion: 1, phase: .idle, blockID: nil, intention: nil, purpose: nil, intensity: nil,
       plannedDurationSeconds: 0, elapsedDurationSeconds: 0, remainingDurationSeconds: 0,
       startedAt: nil, endsAt: nil, pausedAt: nil, recoveredAfterRestart: false,
-      currentCategory: nil, classificationStatus: .unclassified, confidence: .none,
+      currentCategory: nil, anchorCategory: nil,
+      classificationStatus: .unclassified, confidence: .none,
       statusLine: "Choose one bounded block to begin.", result: nil, activeIntervention: nil)
   }
 
@@ -798,7 +800,8 @@ final class WorkBlockMinutesSnapshotTests: XCTestCase {
       remainingDurationSeconds: max(0, planned - elapsedAtPush),
       startedAt: startedAt, endsAt: startedAt.addingTimeInterval(TimeInterval(planned)),
       pausedAt: nil, recoveredAfterRestart: recovered,
-      currentCategory: "FOCUS_WORK", classificationStatus: .classified, confidence: .high,
+      currentCategory: "FOCUS_WORK", anchorCategory: nil,
+      classificationStatus: .classified, confidence: .high,
       statusLine: "Current category: Focus work.", result: nil, activeIntervention: nil)
   }
 
@@ -812,7 +815,8 @@ final class WorkBlockMinutesSnapshotTests: XCTestCase {
       remainingDurationSeconds: max(0, planned - elapsed),
       startedAt: now.addingTimeInterval(-TimeInterval(elapsed) - 120), endsAt: nil,
       pausedAt: now.addingTimeInterval(-120), recoveredAfterRestart: false,
-      currentCategory: "FOCUS_WORK", classificationStatus: .classified, confidence: .high,
+      currentCategory: "FOCUS_WORK", anchorCategory: nil,
+      classificationStatus: .classified, confidence: .high,
       statusLine: "Paused. Nothing is being recorded for this block.",
       result: nil, activeIntervention: nil)
   }
@@ -829,7 +833,8 @@ final class WorkBlockMinutesSnapshotTests: XCTestCase {
       remainingDurationSeconds: 0,
       startedAt: Date(timeIntervalSince1970: 1_800_000_000),
       endsAt: nil, pausedAt: nil, recoveredAfterRestart: false,
-      currentCategory: nil, classificationStatus: .classified, confidence: .high,
+      currentCategory: nil, anchorCategory: nil,
+      classificationStatus: .classified, confidence: .high,
       statusLine: "This block is finished.",
       result: WorkBlockResult(
         plannedDurationSeconds: planned, elapsedDurationSeconds: elapsed,
@@ -851,6 +856,7 @@ final class WorkBlockMinutesSnapshotTests: XCTestCase {
       remainingDurationSeconds: 1_088,
       startedAt: Date(timeIntervalSince1970: 1_800_000_000), endsAt: nil, pausedAt: nil,
       recoveredAfterRestart: false, currentCategory: nil,
+      anchorCategory: nil,
       classificationStatus: .unclassified, confidence: .none,
       statusLine: "This block ended early.", result: nil, activeIntervention: nil)
   }

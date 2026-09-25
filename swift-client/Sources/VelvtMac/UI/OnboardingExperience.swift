@@ -1063,6 +1063,14 @@ public struct OnboardingAccountExperienceView: View {
                     isSecure: true
                 )
 
+                if authViewModel.authMode == .logIn {
+                    Button("Forgot password?") {
+                        authViewModel.openForgotPasswordPage()
+                    }
+                    .buttonStyle(VelvtQuietButtonStyle())
+                    .accessibilityHint("Opens getvelvt.com in your browser")
+                }
+
                 if let error = authViewModel.errorMessage {
                     Text(error)
                         .font(VelvtType.caption())

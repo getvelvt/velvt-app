@@ -1,8 +1,19 @@
+import AppKit
 import Combine
 import Foundation
 import os.log
 
 private let authLogger = Logger(subsystem: "com.velvt.mac", category: "AuthViewModel")
+
+/// Where a signed-out user resets a forgotten password.
+///
+/// The reset happens on the web, not in the app: that page asks velvt-core to
+/// email a single-use link, and the link opens getvelvt.com's reset page. The
+/// URL carries nothing, not even the address typed into the email field,
+/// because a query string ends up in browser history and server logs.
+public enum PasswordResetPage {
+    public static let url = URL(string: "https://getvelvt.com/forgot-password/")!
+}
 
 /// Drives the signup, login, logout, and account-deletion UI flows.
 ///
@@ -31,17 +42,20 @@ public final class AuthViewModel: ObservableObject {
     private let accountStateManager: AccountStateManager
     private let ipcClient: any IPCClientProtocol
     private let authResponseTimeout: TimeInterval
+    private let openURL: (URL) -> Void
     private var cancellables = Set<AnyCancellable>()
     private var authTimeoutTask: Task<Void, Never>?
 
     public init(
         accountStateManager: AccountStateManager,
         ipcClient: any IPCClientProtocol,
-        authResponseTimeout: TimeInterval = 30
+        authResponseTimeout: TimeInterval = 30,
+        openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }
     ) {
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.authResponseTimeout = authResponseTimeout
+        self.openURL = openURL
         bindStateObservation()
     }
 
@@ -128,6 +142,12 @@ public final class AuthViewModel: ObservableObject {
     public func toggleAuthMode() {
         authMode = authMode == .signUp ? .logIn : .signUp
         errorMessage = nil
+    }
+
+    /// Opens `PasswordResetPage.url` in the default browser. The app sends
+    /// nothing itself, so this works whether or not the local service is up.
+    public func openForgotPasswordPage() {
+        openURL(PasswordResetPage.url)
     }
 
     // MARK: - Private

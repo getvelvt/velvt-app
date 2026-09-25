@@ -1,5 +1,27 @@
 # IPC Protocol Changelog
 
+## Version 31 - 2026-09-25
+
+- Added `anchor_category` to `work_block_state` (Rust to Swift), top level,
+  required and nullable like `current_category`. It is the broad category the
+  drift gate treats as the block's anchor --- the one holding the most
+  confidently observed, closed time --- computed by the same function the gate
+  calls, so it is the value the gate measures departures from and the value an
+  offer records. Null outside an active or paused block, and until a confident
+  observation has closed; a finished block's category stays
+  `result.safe_evidence_category`, which is gated on coverage.
+- Why it exists: the rule "defer while `current_category` is the anchor" could
+  not be applied by any local IPC client, because the anchor was on the wire
+  only inside `active_intervention`, which exists only while an offer is
+  pending. The workspace's Claude Code hook approximated it with "confidently
+  in focus work".
+- Compatibility: a pre-31 payload has no key at all, and both DTOs decode that
+  as `None`/`nil`. A client that reads the payload directly can tell "no anchor
+  yet" (null) from "a service older than 31" (absent).
+- A category label only, and local IPC only. It carries nothing
+  `current_category` does not already carry --- no app identity, window title,
+  URL, or intention --- and no upload DTO has a field it could occupy.
+
 ## Version 30 - 2026-09-23
 
 - Added `bundle_id` handling, `declared_app_category` and `document_type_ids`

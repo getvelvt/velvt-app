@@ -39,6 +39,16 @@ Only valid transitions are accepted through `transition(to:)`. Invalid transitio
 
 Swift does not make any HTTP request in this flow.
 
+## Forgotten Password
+
+In login mode, both the menu bar auth sheet and the onboarding account step
+show a "Forgot password?" link. `AuthViewModel.openForgotPasswordPage()` opens
+`PasswordResetPage.url` (`https://getvelvt.com/forgot-password/`) in the
+default browser. That page asks velvt-core for the reset, and velvt-core emails
+a single-use link to getvelvt.com's reset page when an email provider is
+configured. The app sends no IPC and makes no HTTP request. The URL carries no
+query or fragment, not even the email typed into the field.
+
 ## Keychain Storage
 
 Current sessions are encoded into one `velvt.auth_snapshot` Keychain item:

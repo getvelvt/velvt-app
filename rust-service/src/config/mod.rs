@@ -295,20 +295,32 @@ fn taxonomy_path() -> Result<PathBuf, ConfigError> {
 /// Inside `Velvt.app` the helper and the taxonomy are siblings in
 /// `Contents/Resources`, so a distributed build resolves this without the
 /// launcher having to inject an environment variable. `CARGO_MANIFEST_DIR`
-/// remains only as a `cargo run` convenience and must never be the path a
-/// shipped binary depends on — it points at the build machine's checkout.
+/// remains only as a debug-build `cargo run` convenience and must never be the
+/// path a shipped binary depends on — it points at the build machine's
+/// checkout. A release build does not compile it in at all: the string named
+/// the builder's home directory in every shipped helper through 1.0.11. A
+/// release binary run outside the bundle needs `VELVT_ABSTRACTION_TAXONOMY_PATH`.
 fn default_taxonomy_path() -> PathBuf {
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(directory) = executable.parent() {
-            let beside_executable = directory.join(TAXONOMY_FILE_NAME);
-            if beside_executable.is_file() {
-                return beside_executable;
-            }
+    let beside_executable = std::env::current_exe().ok().and_then(|executable| {
+        executable
+            .parent()
+            .map(|directory| directory.join(TAXONOMY_FILE_NAME))
+    });
+    if let Some(path) = &beside_executable {
+        if path.is_file() {
+            return path.clone();
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join(TAXONOMY_FILE_NAME)
+    #[cfg(debug_assertions)]
+    {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(TAXONOMY_FILE_NAME)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        beside_executable.unwrap_or_else(|| PathBuf::from(TAXONOMY_FILE_NAME))
+    }
 }
 
 /// The canonical socket path, embedded at compile time from

@@ -133,7 +133,7 @@ impl BatchAssembler {
         Some(BatchPayload::new(
             batch_id,
             "1",
-            env!("CARGO_PKG_VERSION"),
+            crate::build_info::SERVICE_VERSION,
             supported_abstraction_types,
             taxonomy,
             events,
@@ -194,6 +194,21 @@ mod tests {
             batch.supported_abstraction_types,
             vec!["document:inferred".to_owned(), "video:inferred".to_owned()]
         );
+    }
+
+    /// The backend stores `client_version` on every batch row. Cargo's fixed
+    /// 1.0.0 made every release since 1.0.0 look the same there.
+    #[test]
+    fn batches_carry_the_release_version() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let mut assembler = BatchAssembler::new("device-1", 8, Duration::from_secs(60));
+        assembler.push(event("event-1", "document:docs", "FOCUS_WORK"), now);
+
+        let batch = assembler
+            .flush_shutdown()
+            .expect("one buffered event makes a batch");
+
+        assert_eq!(batch.client_version, crate::build_info::SERVICE_VERSION);
     }
 
     /// A batch straddling a taxonomy upgrade would label one version's events

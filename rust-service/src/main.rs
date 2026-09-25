@@ -24,7 +24,11 @@ async fn main() {
                 return;
             }
             "--version" => {
-                println!("{}", env!("CARGO_PKG_VERSION"));
+                println!("{}", velvt_service::build_info::SERVICE_VERSION);
+                return;
+            }
+            "--source-commit" => {
+                println!("{}", velvt_service::build_info::SOURCE_COMMIT);
                 return;
             }
             _ => {}
@@ -71,12 +75,31 @@ async fn main() {
         return;
     }
 
-    let Ok(persistence) = SqlitePersistence::open(&config.database_path) else {
-        tracing::error!(
-            error_code = "persistence_initialization_failed",
-            "service startup halted"
-        );
-        return;
+    let persistence = match SqlitePersistence::open(&config.database_path) {
+        Ok(persistence) => persistence,
+        Err(velvt_service::persistence::PersistenceError::MigrationNameMismatch {
+            version,
+            recorded,
+            embedded,
+        }) => {
+            // Named in full: the fix is a human decision about this database,
+            // and the two file names are the whole of what that person needs.
+            tracing::error!(
+                error_code = "migration_name_mismatch",
+                version,
+                recorded = recorded.as_str(),
+                embedded,
+                "service startup halted: this database applied a different migration under the same number"
+            );
+            return;
+        }
+        Err(_) => {
+            tracing::error!(
+                error_code = "persistence_initialization_failed",
+                "service startup halted"
+            );
+            return;
+        }
     };
     let Ok(taxonomy) = Taxonomy::from_path(&config.abstraction_taxonomy_path) else {
         tracing::error!(
@@ -394,7 +417,7 @@ async fn main() {
                     retry_scan_interval,
                     upload_shutdown,
                     "1",
-                    env!("CARGO_PKG_VERSION"),
+                    velvt_service::build_info::SERVICE_VERSION,
                 )
                 .await;
         });

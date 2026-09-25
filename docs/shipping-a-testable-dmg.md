@@ -98,6 +98,16 @@ make alpha-dmg \
 Notarization usually returns in 2–15 minutes. The target fails closed at every
 stage, so if it completes, the artifact is distributable.
 
+**Build from a commit, at a new version.** Before it builds anything,
+`make alpha-dmg` refuses uncommitted or untracked changes, a version or build
+passed on the command line that differs from
+`swift-client/Configs/Version.xcconfig`, a version already tagged at another
+commit, and a build number that is not above every build in
+[`RELEASES.md`](RELEASES.md). So: raise the version and build in
+`Version.xcconfig`, commit, and build from that commit. The app and the helper
+both record the commit, and on success the target tags `v<version>` locally.
+Push the tag and add the release to `RELEASES.md`.
+
 **Pick a new `VELVT_DMG_PATH` for every attempt.** DMG outputs are treated as
 immutable and the target refuses to overwrite one.
 

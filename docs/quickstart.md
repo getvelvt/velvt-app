@@ -202,7 +202,7 @@ testing. See `CONFIGURATION.md` for the full flow.
 |---|---|---|
 | Swift app shows disconnected service | Rust service is not running, socket path mismatch, or protocol handshake failed | Confirm the service is running and both workspaces use `proto/ipc_socket_path` and `proto/version` |
 | `xcodebuild` fails with missing developer tools | Command Line Tools selected instead of full Xcode | Run `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` |
-| Rust startup exits immediately | Invalid service configuration, duplicate socket listener, or failed SQLite/taxonomy initialization | Check safe structured logs for error codes such as `duplicate_service_instance` or `persistence_initialization_failed` |
+| Rust startup exits immediately | Invalid service configuration, duplicate socket listener, or failed SQLite/taxonomy initialization | Check safe structured logs for error codes such as `duplicate_service_instance` or `persistence_initialization_failed`. `migration_name_mismatch` means the database applied a different migration file under a version number this build uses; the log names both files |
 | Auth-required UI appears | Rust service has no valid device session | Sign in through the menu bar app; Swift sends credentials to Rust over IPC, Rust handles cloud calls |
 
 ## Privacy Reminder

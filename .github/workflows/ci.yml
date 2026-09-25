@@ -2,8 +2,12 @@ name: CI
 
 on:
   pull_request:
+  # develop is where every change merges first; main only moves when develop is
+  # promoted. Without develop here, the bench and package jobs below (which
+  # skip pull requests) never ran on anything merged between promotions.
   push:
     branches:
+      - develop
       - main
   workflow_dispatch:
 
@@ -63,8 +67,8 @@ jobs:
     # runner load cannot move.
     #
     # What that timing trades away, stated so nobody has to rediscover it: a
-    # Tier 2 tail regression is caught on main within one merge, not before it
-    # lands, and not at all on a branch never pushed to main.
+    # Tier 2 tail regression is caught on develop within one merge, not before
+    # it lands, and not at all on a branch that is never merged.
     #
     # Its own job rather than a step in `rust` so a benchmark failure reports as
     # itself and does not withhold `package` from an otherwise green build. The
@@ -154,8 +158,8 @@ jobs:
   package:
     name: Package universal DMG
     # Packaging a universal Release DMG does not inform code review and is the
-    # most expensive step in this workflow. Run it on main, before a release,
-    # and on demand -- not on every pull request.
+    # most expensive step in this workflow. Run it on every push to develop and
+    # main, and on demand -- not on every pull request.
     if: github.event_name != 'pull_request'
     needs: [rust, swift]
     runs-on: macos-15

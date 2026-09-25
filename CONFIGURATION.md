@@ -17,6 +17,15 @@ builds.
 |---|---|
 | `swift-client/Configs/Debug.xcconfig` | Local development, CI Debug |
 | `swift-client/Configs/Release.xcconfig` | Distribution / production |
+| `swift-client/Configs/Version.xcconfig` | `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION`, included by both; the only place the version lives |
+
+The Makefile reads its default version and build from `Version.xcconfig`, and
+`rust-service/build.rs` stamps the helper with the same version, so the app,
+its `Info.plist` and `velvt-service --version` agree. The release targets also
+stamp the source commit into `Info.plist` as `VelvtSourceCommit` and into the
+helper (`velvt-service --source-commit`). See
+[`docs/RELEASES.md`](docs/RELEASES.md) for the release ledger and how to cut a
+release.
 
 Each xcconfig defines seven core application variables plus the updater build
 switch, feed URL, and public key described in the release section below:

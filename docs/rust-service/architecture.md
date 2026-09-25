@@ -85,7 +85,8 @@ SQLite access is centralized under `persistence/`. Repositories expose domain-or
 
 Design decisions:
 
-- Migrations are explicit SQL files in `rust-service/migrations/`.
+- Migrations are explicit SQL files in `rust-service/migrations/`, embedded by `build.rs`, which refuses two files with the same number.
+- `schema_migration` records each applied migration's version and file name. `run_migrations` refuses a database whose recorded name for a version differs from the embedded file for that version, rolls the whole run back, and startup halts with `migration_name_mismatch` naming both files. Never rename, renumber or reuse a shipped migration. Only names are compared; detecting an edited migration would need a per-migration content checksum, which needs a new column and so a numbered migration of its own.
 - Hot-path cleanup and batching use indexed queries.
 - Raw event storage is limited to privacy-safe audit/display fields after abstraction.
 - Upload DTO construction reads from persisted abstracted events and upload batches, not from original raw IPC payloads.

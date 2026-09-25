@@ -482,12 +482,12 @@ number nothing runs is not a gate:
 - Tier 2 p95 below 25 ms:
   `rust-service/tests/embedding_similarity.rs::tier2_p95_is_under_twenty_five_milliseconds_with_available_model`,
   `#[ignore]`d out of the correctness suite and run by `make bench-rust`, which
-  CI runs in the `bench` job on pushes to `main` and on demand.
+  CI runs in the `bench` job on pushes to `develop` and `main` and on demand.
 
 The tail bound is off the pull-request path on purpose: a 25 ms wall-clock
 budget on a shared runner fails under a busy neighbour about as readily as
 under a regression. What that costs is that a Tier 2 tail regression is caught
-on `main` within one merge rather than before it lands. The median bounds are
+on `develop` within one merge rather than before it lands. The median bounds are
 what the pull request carries, and runner load does not move a median of 500
 samples. All of them report p50, p95, and p99.
 
@@ -515,7 +515,11 @@ tables that hold anything drawn from your Mac, with what each one holds and for
 how long, and `MIGRATED_TABLES` in `rust-service/tests/published_claims.rs` is
 the closed inventory a test holds the migrated schema to. Time and date lookup
 columns are indexed. The migration-owned `schema_migration` table records each
-applied version, so startup never applies the same migration twice.
+applied version and its file name, so startup never applies the same migration
+twice, and refuses to open a database that applied a different file under a
+version number this build uses (a reused or renumbered migration). It compares
+names only: an edited migration keeps its name, and catching that would need a
+per-migration checksum column.
 
 The privacy invariant is narrower than this page used to state it, and the
 narrow version is the one that is true. Nothing writes a window title, a URL, a

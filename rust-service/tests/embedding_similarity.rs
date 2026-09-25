@@ -427,12 +427,12 @@ fn slow_inference_times_out_and_increments_metric() {
 // parsed per call, an artifact read from disk per call.
 //
 // The p95 is #[ignore]d and runs in `make bench-rust`, which CI runs in the
-// `bench` job on pushes to main and on demand. A 25 ms wall-clock tail bound
-// on a shared runner fails under a busy neighbour about as readily as under a
-// regression, and a required check that goes red for reasons unrelated to the
-// change teaches everyone to re-run it. The cost of putting it there, stated
-// so nobody has to rediscover it: a Tier 2 tail regression is caught on main
-// within one merge rather than before it lands.
+// `bench` job on pushes to develop and main and on demand. A 25 ms wall-clock
+// tail bound on a shared runner fails under a busy neighbour about as readily
+// as under a regression, and a required check that goes red for reasons
+// unrelated to the change teaches everyone to re-run it. The cost of putting it
+// there, stated so nobody has to rediscover it: a Tier 2 tail regression is
+// caught on develop within one merge rather than before it lands.
 fn fake_model_plugin() -> EmbeddingSimilarityPlugin {
     EmbeddingSimilarityPlugin::new(
         Arc::new(FakeEmbeddingModel {

@@ -32,5 +32,6 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Release readiness | `docs/macos-signing-and-accessibility.md` | Distribution signing, notarization, clean-Mac acceptance, hosted-backend smoke, checksum, and rollback handoff |
 | Release-readiness decision | `docs/release-readiness/RELEASE_READINESS_REPORT.md` | Integrated ship/no-ship decision, evidence, release gates, and specialist audit references |
 | Owner shipment checklist | `docs/release-readiness/WHAT_YOU_MUST_DO_TO_SHIP.md` | Only the credentials, authority, hardware, consent, and policy actions that require the release owner |
+| Release ledger | `docs/RELEASES.md` | Every notarized release with build, protocol, source commit or tag, DMG sha256 and recipients; how to cut the next one |
 | Secure application updates | `docs/updates.md` | Updater architecture, trust model, activation checklist, publishing order, and N-to-N+1 verification |
 | Local meaningful-work loop | `docs/architecture/work-block-loop.md` | Work-block ownership, state machine, evidence rules, privacy field table, lifecycle, and failure behavior |

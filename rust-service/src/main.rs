@@ -373,6 +373,9 @@ async fn main() {
             Arc::clone(&push_adapter),
             auth_state.subscribe(),
             token.subscribe(),
+        )
+        .with_quiet_hours(
+            Arc::clone(&focus) as Arc<dyn velvt_service::delivery::poll::QuietHoursSource>
         );
         let poll_task = tokio::spawn(async move { poll_scheduler.run().await });
 

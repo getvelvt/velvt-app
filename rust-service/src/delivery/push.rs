@@ -335,6 +335,7 @@ impl PushAdapter {
         title: &str,
         body: &str,
         insight_date: chrono::NaiveDate,
+        do_not_disturb_until: Option<chrono::DateTime<chrono::Utc>>,
     ) {
         self.queue
             .enqueue(ServerMessage::NotificationPayload(
@@ -343,7 +344,7 @@ impl PushAdapter {
                     title: title.to_owned(),
                     body: body.to_owned(),
                     insight_date,
-                    do_not_disturb_until: None,
+                    do_not_disturb_until,
                 },
             ))
             .await;

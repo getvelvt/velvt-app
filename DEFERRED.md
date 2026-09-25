@@ -47,13 +47,26 @@ Velvt today.
 - **Trigger condition:** a follow-up issue once a second notification type (e.g. weekly report, ad-hoc nudges) needs different scheduling semantics.
 - **Estimated complexity:** small-medium.
 
-## `do_not_disturb_until` is always sent as absent
+## ~~`do_not_disturb_until` is always sent as absent~~ — RESOLVED 2026-09-22
 
 - **Location:** [`rust-service/src/delivery/fetch.rs`](rust-service/src/delivery/fetch.rs) `push_notification` call site.
 - **What it stubs:** quiet-hours / do-not-disturb scheduling for the notification pushed after a fresh insight fetch. The field exists end-to-end in the protocol (`proto/schema/notification_payload.json`, both DTOs) and Swift's scheduler already branches on its presence, but Rust never populates a non-`nil` value.
 - **Why it's safe to defer:** the field is optional in the schema and Swift already handles its absence by scheduling immediately — there is no broken contract, just an unimplemented quiet-hours policy.
-- **Trigger condition:** a follow-up issue defining the actual quiet-hours policy (e.g. a per-user configured window) and threading it into `FetchService`.
-- **Estimated complexity:** small.
+- **Resolved 2026-09-22.** The policy already existed and was never wired up:
+  `FocusManager::in_velvt_quiet_hours` has read a per-user configured window
+  (default 22:00-07:00 local) since quiet hours shipped. What was missing was a
+  *deadline* rather than a predicate. `FocusManager::quiet_hours_end` now returns
+  the instant the current window closes, both it and the predicate derive from
+  one private helper so they cannot disagree, and `PollScheduler` carries the
+  deadline into `push_notification` through the narrow `QuietHoursSource` trait
+  (declared beside its consumer, like `work_block::FocusStateSource`).
+- **Semantics, unchanged:** `do_not_disturb_until` means *do not deliver before*.
+  An insight raised at 03:00 lands at 07:00; it is never dropped. A user who has
+  not configured quiet hours is never deferred.
+- **Not covered:** the intervention path. `InterventionNotificationScheduling`
+  is a separate seam with no DND window by design — a drift offer is only ever
+  raised inside a declared work block, and macOS Focus suppression is already
+  handled there by `DeliverySuppressedDnd`.
 
 ## Multi-instance / `SMAppService` helper lifecycle
 

@@ -266,6 +266,20 @@ A previous version also gave no account of `semantic_embedding_cache` at all —
 the words "embedding", "semantic", "prototype", and "vector" did not appear in
 this document. Corrected here on 2026-08-31.
 
+A previous version of this section said `raw_event_buffer` holds "two
+device-local columns that can name an application" and listed two. Migration 0033
+had already added three more — `app_bundle_stable_id`, `declared_app_category`,
+and `document_type_ids` — so the count and the list were both wrong. All five are
+enumerated above. Corrected here on 2026-09-24.
+
+This document and `PRIVACY_AUDIT.md` Audit 7 both said `scripts/prove_local.sh`
+"reports the two embedding columns as UNINSPECTED with a byte count." The script
+did not: it listed textual columns only, so a `BLOB` appeared nowhere but the
+table inventory's "other" count. Rather than weaken the sentence, the script was
+changed on 2026-09-24 to do what both documents say — it now names every `BLOB`
+column with a byte count, the salt included. Recorded here because the claim was
+wrong on disk in the meantime.
+
 A previous version of the storage table said a `semantic_embedding_cache` row is
 swept "on the same horizon as `raw_event_buffer`." The two clocks start at
 different instants, and the cache's is the one ordinary use pushes forward
@@ -320,9 +334,19 @@ category-scoped abstraction type; unapproved values are replaced with
 `system:unknown` before persistence, metrics, or audit metadata.
 
 **Does not preserve:** the literal window title, and no URL or file path that
-appeared in one. The stable ID is a one-way hash into a local-only mapping
-table, not a reversible encoding, so nothing about the original string can be
-read back out of the ID.
+appeared in one.
+
+**Corrected 2026-09-24.** This section previously said the stable ID "is a
+one-way hash into a local-only mapping table". That was wrong about the
+mechanism. `abstraction/engine.rs` mints it as `abs_` followed by a random
+UUIDv4 — it is not derived from the window title at all, by any function. The
+guarantee is therefore *stronger* than the sentence claimed, and the sentence
+was still false: a random identifier carries no relationship to the string it
+stands for, so there is nothing in it to reverse. What does the lookup is the
+separate stable *key*, a plain unsalted SHA-256 of (app name, window context),
+which lives in `abstraction_map` on this device and is reversible by
+enumeration to anyone holding the database file — see the hashing section
+below.
 
 **Does keep on disk, named here rather than left to be discovered:** the raw
 application name, in `raw_event_buffer.local_name_suggestion`; a digest of the
@@ -352,10 +376,14 @@ carries no comment at all, which is why the description of those columns lives
 here instead of beside the schema.
 
 `scripts/prove_local.sh` reads the same file and prints every textual column by
-name, including the ones that hold application names. It reports the two
-embedding columns as UNINSPECTED with a byte count: it is bash and sqlite3, it
-cannot decode a sketch, and a proof that silently omitted the column would be
-worth less than one that names what it could not read. The full abstraction and
+name, including the ones that hold application names, the bundle digest, and the
+declared metadata above; each of those carries a one-line note saying what it is.
+It reports every `BLOB` column — the two embedding sketch columns and the
+32-byte `embedding_salt` — as UNINSPECTED with a byte count: it is bash and
+sqlite3, it cannot decode a sketch, and a proof that silently omitted the column
+would be worth less than one that names what it could not read. What can be read
+back out of a sketch is the section above rather than anything the script
+prints. The full abstraction and
 upload code paths are open source in this repository; `PRIVACY_AUDIT.md` is the
 line-by-line verification a security reviewer would otherwise have to redo from
 scratch.

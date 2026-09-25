@@ -2,6 +2,7 @@
 
 pub mod abstraction;
 pub mod auth;
+pub mod build_info;
 pub mod config;
 pub mod dashboard;
 pub mod delivery;

@@ -24,7 +24,11 @@ async fn main() {
                 return;
             }
             "--version" => {
-                println!("{}", env!("CARGO_PKG_VERSION"));
+                println!("{}", velvt_service::build_info::SERVICE_VERSION);
+                return;
+            }
+            "--source-commit" => {
+                println!("{}", velvt_service::build_info::SOURCE_COMMIT);
                 return;
             }
             _ => {}
@@ -413,7 +417,7 @@ async fn main() {
                     retry_scan_interval,
                     upload_shutdown,
                     "1",
-                    env!("CARGO_PKG_VERSION"),
+                    velvt_service::build_info::SERVICE_VERSION,
                 )
                 .await;
         });

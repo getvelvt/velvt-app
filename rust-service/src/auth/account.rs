@@ -135,7 +135,7 @@ impl AccountAuthService {
         let mut request = HttpRequest::post("/v1/devices");
         request.authorization = Some(RedactedString::new(success.access_token.clone()));
         request.json_body =
-            Some(serde_json::json!({ "client_version": env!("CARGO_PKG_VERSION") }));
+            Some(serde_json::json!({ "client_version": crate::build_info::SERVICE_VERSION }));
         let response = match self.raw_http.send(request).await {
             Ok(response) if (200..300).contains(&response.status) => response,
             Ok(response) => {
@@ -578,6 +578,13 @@ mod tests {
                 .as_ref()
                 .map(|t| t.expose().to_owned()),
             Some("user-access".to_owned())
+        );
+        assert_eq!(
+            requests[1].json_body,
+            Some(serde_json::json!({
+                "client_version": crate::build_info::SERVICE_VERSION
+            })),
+            "the device registers under the release version, not Cargo's"
         );
         assert_eq!(
             token_store.load_device_id().unwrap(),

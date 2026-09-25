@@ -106,7 +106,10 @@ idempotent.
 `WorkBlockManager` receives safe category/status/confidence evidence after the
 abstraction engine. It alone derives coverage, longest uninterrupted stretch,
 neutral category transitions, returns, evidence category, observation copy,
-and the singular recovery action. Swift receives a ready-to-render snapshot.
+and the singular recovery action. At a block boundary it reads the reported
+dwells overlapping the block back from `raw_event_buffer` (start, duration,
+and category evidence only) to close the last observation where its dwell
+ended and to measure coverage against what was actually reported. Swift receives a ready-to-render snapshot.
 Deadline scheduling uses a replaceable one-shot sleep rather than polling. See
 `docs/architecture/work-block-loop.md` for the state machine and field boundary.
 

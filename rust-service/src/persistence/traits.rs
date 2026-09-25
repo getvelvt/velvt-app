@@ -4,8 +4,8 @@ use super::{
     DemotionStateRecord, FocusTransition, HistoryCacheEntry, InitiationInvitationOutcome,
     InitiationInvitationRecord, InsightCacheEntry, InterventionDecision, LocalDisplayAggregate,
     LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersistenceError, PersonalOverrideRecord,
-    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, UnclassifiedAppEntry,
-    UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
+    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, ReportedDwell,
+    UnclassifiedAppEntry, UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
     WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
     WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WrongInterventionCounts,
 };
@@ -429,6 +429,21 @@ pub trait WorkBlockRepo: Send + Sync {
         &self,
         block_id: &str,
     ) -> Result<Option<WorkBlockObservation>, PersistenceError>;
+    /// Every dwell reported to `raw_event_buffer` that overlaps `[from, until)`,
+    /// oldest first, including one that began before `from` and was still
+    /// running at it.
+    ///
+    /// The observation ledger records when each category began; how long it
+    /// lasted is known only here. The work-block engine reads it at a block
+    /// boundary to close the open row where its dwell ended, and at the end
+    /// to measure how much of the block was reported at all
+    /// (`00-GROUND-TRUTH.md` § 6c and § 6d). An index range scan on
+    /// `occurred_at`, never a table scan.
+    fn reported_dwells(
+        &self,
+        from: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<ReportedDwell>, PersistenceError>;
     fn finalize(
         &self,
         block_id: &str,

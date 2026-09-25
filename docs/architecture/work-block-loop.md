@@ -18,9 +18,12 @@ new notification behavior.
 - The cloud API and upload DTOs are unchanged.
 
 Rust receives only the already-abstracted category, classification status, and
-confidence from the existing abstraction engine. Category switching is counted
-as a neutral observed transition. It is never sufficient evidence of
-distraction, failure, or intent.
+confidence from the existing abstraction engine. At a block boundary it also
+reads back, from the device-local `raw_event_buffer`, the start, measured
+duration, and the same category/status/confidence of the dwells that overlap
+the block — never a label, stable ID, display name, or application identity.
+Category switching is counted as a neutral observed transition. It is never
+sufficient evidence of distraction, failure, or intent.
 
 ## State Machine
 
@@ -61,6 +64,22 @@ duration, longest uninterrupted category stretch, neutral transitions away
 from the dominant covered category, returns to it, coverage and confidence, one
 safe evidence category when supported, deterministic observation copy, and
 exactly one bounded `protect_next_10` action.
+
+Swift reports a dwell when the user leaves it, stamped with the time they
+entered it and carrying its measured duration, so an observation row's end is
+the next row's start. At a boundary — pause or sleep, a service restart, or the
+end of the block — there is no next row: the dwell the user is in has not been
+reported yet. The open row is therefore closed where its own reported dwell
+ended (from `raw_event_buffer`), never stretched to the boundary, and the
+unreported remainder stays unobserved rather than being filed under the
+category the user had already left.
+
+Coverage is measured against `raw_event_buffer`, not against the observation
+rows (which tile the block by construction): the seconds of the block that a
+reported dwell covered with confident evidence while the block was running,
+divided by elapsed time. Paused time never counts. A block that ends inside a
+long dwell that has not been reported yet therefore reports lower coverage,
+and may withhold its evidence category, instead of naming the wrong one.
 
 Ambiguous, unclassified, low-confidence, system, and unlogged spans do not
 support a confident category claim. Coverage below 25% yields `insufficient`,

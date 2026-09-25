@@ -5,8 +5,8 @@ macOS app (`swift-client/`, product `Velvt.app`) and its bundled Rust helper
 (`rust-service/`). For deep dives into individual subsystems, see
 [`docs/architecture/`](docs/architecture/); this document ties them together
 and reflects `develop` as of 2026-09-25 (IPC protocol 31 and migrations
-0001–0036; the shipped 1.0.11 build is protocol 30), not any individual issue
-branch.
+0001–0037; the shipped 1.0.11 build is protocol 30 and migration 0036), not any
+individual issue branch.
 
 ## System diagram
 
@@ -165,9 +165,13 @@ configuring one is not a degradation and does not raise it.
 Tier 2 writes: the sketch is cached in `semantic_embedding_cache`, keyed by a
 hash of `"{app_name} [SEP] {window_title}"`. Individual words are partially
 recoverable from that sketch. See `PRIVACY.md` and `PRIVACY_AUDIT.md`
-Audit 7. The sketch and the stable-key hash in `abstraction_map` (a SHA-256 of
-the app name and window context, whose threat model `PRIVACY.md` states) are
+Audit 7. The sketch and the stable-key hash in `abstraction_map` (an
+HMAC-SHA-256 of the app name and window context under the per-install
+`stable_key_salt`, migration 0037, whose threat model `PRIVACY.md` states) are
 the places a window title leaves a durable trace, and both are on disk only.
+The cached sketch expires 14 days after the window was last observed (a
+correction keeps a copy in `personal_semantic_prototype`), and so does the
+mapping, unless a correction or a buffered event still points at it.
 
 **Fallback.** `UnloggedFallbackPlugin` classifies anything unmatched as
 `UNLOGGED` rather than dropping the event. `UNLOGGED` is not confident

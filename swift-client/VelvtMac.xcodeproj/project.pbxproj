@@ -57,6 +57,7 @@
 		D4A0C4A9A65047B88055A103 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = D4A0C4A9A65047B88055A105 /* Sparkle */; };
 		FEEDFACE0FFFFF0000000002 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0FFFFF0000000001 /* Fonts */; };
 		FEEDFACE0FFFFF0000000012 /* VelvtTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0FFFFF0000000011 /* VelvtTheme.swift */; };
+		FEEDFACE0FFFFF0000000022 /* DeclaredAppMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0FFFFF0000000021 /* DeclaredAppMetadata.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -112,6 +113,7 @@
 		F30FB3399A5C45808376ACF1 /* EventRelay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelay.swift; path = Relay/EventRelay.swift; sourceTree = "<group>"; };
 		FEEDFACE0FFFFF0000000001 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fonts; path = Resources/Fonts; sourceTree = "<group>"; };
 		FEEDFACE0FFFFF0000000011 /* VelvtTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VelvtTheme.swift; path = UI/VelvtTheme.swift; sourceTree = "<group>"; };
+		FEEDFACE0FFFFF0000000021 /* DeclaredAppMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DeclaredAppMetadata.swift; path = Collection/DeclaredAppMetadata.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -205,6 +207,7 @@
 				9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */,
 				FEEDFACE0FFFFF0000000001 /* Fonts */,
 				FEEDFACE0FFFFF0000000011 /* VelvtTheme.swift */,
+				FEEDFACE0FFFFF0000000021 /* DeclaredAppMetadata.swift */,
 			);
 			name = VelvtMac;
 			path = Sources/VelvtMac;
@@ -354,6 +357,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FEEDFACE0FFFFF0000000022 /* DeclaredAppMetadata.swift in Sources */,
 				FEEDFACE0FFFFF0000000012 /* VelvtTheme.swift in Sources */,
 				55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */,
 				1597C5865C34465AA105915D /* AppMetricsStore.swift in Sources */,

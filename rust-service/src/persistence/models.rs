@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, InterventionSalience, WorkBlockIntensity,
-    WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
+    ClassificationConfidence, ClassificationStatus, CorrectionScope, InterventionSalience,
+    WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
 };
 
 #[derive(Clone, PartialEq, Eq)]
@@ -142,6 +142,12 @@ pub struct PersonalOverrideRecord {
     pub local_activity_name: Option<String>,
     pub category: String,
     pub updated_at: DateTime<Utc>,
+    /// Whether this rule covers one window or every window of an application.
+    ///
+    /// `stable_id` means different things in the two cases -- an abstraction
+    /// stable id for a window rule, the application's own key hash for an app
+    /// rule -- so a caller that removes or edits a rule has to read this first.
+    pub scope: CorrectionScope,
 }
 
 impl std::fmt::Debug for PersonalOverrideRecord {
@@ -156,6 +162,136 @@ impl std::fmt::Debug for PersonalOverrideRecord {
             )
             .field("category", &self.category)
             .field("updated_at", &self.updated_at)
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+/// One app-scoped rule as it is stored: the two identities it answers to and
+/// the answer itself.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AppScopeOverride {
+    /// Hash of the application name. The row's primary key, always present.
+    pub app_key_hash: String,
+    /// Hash of the application's bundle identifier, when one was known at the
+    /// time the rule was written. `None` for every rule taught before bundle
+    /// keying existed, and for an application macOS reported no bundle
+    /// identifier for; those rules still match by name.
+    pub bundle_key_hash: Option<String>,
+    pub category: String,
+    /// Device-local name the user typed. Never uploaded, never logged.
+    pub activity_name: Option<String>,
+    pub correction_count: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for AppScopeOverride {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AppScopeOverride")
+            .field("app_key_hash", &"[local_identifier]")
+            .field(
+                "bundle_key_hash",
+                &self.bundle_key_hash.as_ref().map(|_| "[local_identifier]"),
+            )
+            .field("category", &self.category)
+            .field(
+                "activity_name",
+                &self.activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .field("correction_count", &self.correction_count)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+/// What one application declared about itself, as read off its own bundle.
+///
+/// Facts, not conclusions: every field here is something the developer wrote
+/// into `Info.plist`, and what any of it means is decided elsewhere. An
+/// all-absent value is the pre-protocol-30 case and must classify identically.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct DeclaredAppMetadata {
+    /// Hash of the application's bundle identifier under its own domain
+    /// separator. The raw identifier is never persisted.
+    pub app_bundle_stable_id: Option<String>,
+    /// Raw `LSApplicationCategoryType`, e.g.
+    /// `public.app-category.developer-tools`. A closed vocabulary of public
+    /// Apple constants, most of which deliberately mean nothing to Velvt.
+    pub declared_app_category: Option<String>,
+    /// Declared `LSItemContentTypes`, deduplicated and sorted by the client.
+    /// Empty when the application declared none or the plist was unreadable.
+    pub document_type_ids: Vec<String>,
+}
+
+impl DeclaredAppMetadata {
+    /// The all-absent value: exactly what a client that reports no declared
+    /// metadata produces, and what every event written before protocol 30 has.
+    pub const ABSENT: Self = Self {
+        app_bundle_stable_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
+    };
+
+    /// Whether there is nothing here to record.
+    pub fn is_absent(&self) -> bool {
+        self.app_bundle_stable_id.is_none()
+            && self.declared_app_category.is_none()
+            && self.document_type_ids.is_empty()
+    }
+}
+
+impl std::fmt::Debug for DeclaredAppMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeclaredAppMetadata")
+            .field(
+                "app_bundle_stable_id",
+                &self
+                    .app_bundle_stable_id
+                    .as_ref()
+                    .map(|_| "[local_identifier]"),
+            )
+            // Redacted on the same terms as the bundle id: developer-authored
+            // metadata still identifies the application.
+            .field(
+                "declared_app_category",
+                &self.declared_app_category.as_ref().map(|_| "[redacted]"),
+            )
+            .field("document_type_count", &self.document_type_ids.len())
+            .finish()
+    }
+}
+
+/// One application Velvt observed but could not classify, ranked for triage.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UnclassifiedAppEntry {
+    /// The app-scoped key an app rule is written under.
+    pub app_stable_id: String,
+    /// The device-local name Velvt already holds for this application.
+    pub display_name: String,
+    pub seconds_observed: u64,
+    pub event_count: u64,
+    /// The bundle key hash, when the application reported a bundle identifier,
+    /// so the rule the user saves survives a rename.
+    pub app_bundle_stable_id: Option<String>,
+}
+
+impl std::fmt::Debug for UnclassifiedAppEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UnclassifiedAppEntry")
+            .field("app_stable_id", &"[local_identifier]")
+            .field("display_name", &"[redacted]")
+            .field("seconds_observed", &self.seconds_observed)
+            .field("event_count", &self.event_count)
+            .field(
+                "app_bundle_stable_id",
+                &self
+                    .app_bundle_stable_id
+                    .as_ref()
+                    .map(|_| "[local_identifier]"),
+            )
             .finish()
     }
 }

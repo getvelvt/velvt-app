@@ -659,14 +659,46 @@ fn load_embedding_plugin(
         );
         return None;
     };
-    if centroids.taxonomy_version() != taxonomy.version()
-        || centroids
-            .categories()
-            .any(|category| !taxonomy.contains_category(category))
-    {
+    // A centroid artifact is built against one taxonomy version and is not
+    // transferable to another: the prototypes are embeddings of that version's
+    // category descriptions, so a mismatch means the similarity scores are
+    // measured against the wrong reference points. Refusing to load it is
+    // correct. Refusing it quietly is not — the `mvp-1` → `mvp-2` bump disables
+    // Tier 2 on every install whose configured artifact predates it, and an
+    // operator reading only "Tier 2 classification disabled" cannot tell that
+    // from a missing file, a bad path, or a deliberate configuration. So both
+    // versions and the artifact path go in the line: it is the whole diagnosis,
+    // and it names the fix (rebuild the artifact against the loaded taxonomy).
+    if centroids.taxonomy_version() != taxonomy.version() {
         tracing::warn!(
             error_code = "tier2_centroids_invalid",
-            "Tier 2 classification disabled"
+            reason = "taxonomy_version_mismatch",
+            centroid_taxonomy_version = centroids.taxonomy_version(),
+            loaded_taxonomy_version = taxonomy.version(),
+            centroid_artifact_version = centroids.artifact_version(),
+            centroid_path,
+            "Tier 2 classification disabled: the configured centroid artifact \
+             was built against a different taxonomy version and must be rebuilt"
+        );
+        return None;
+    }
+    // A category the loaded taxonomy does not have is a different failure with
+    // the same outcome, and is worth separating: the versions agree, so the
+    // artifact or the taxonomy file has been edited by hand.
+    let unknown: Vec<String> = centroids
+        .categories()
+        .filter(|category| !taxonomy.contains_category(category))
+        .map(str::to_owned)
+        .collect();
+    if !unknown.is_empty() {
+        tracing::warn!(
+            error_code = "tier2_centroids_invalid",
+            reason = "unknown_categories",
+            unknown_categories = unknown.join(","),
+            loaded_taxonomy_version = taxonomy.version(),
+            centroid_path,
+            "Tier 2 classification disabled: the configured centroid artifact \
+             scores categories the loaded taxonomy does not contain"
         );
         return None;
     }

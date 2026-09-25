@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,6 +46,12 @@ pub enum ClientMessage {
     RemoveClassificationOverride(RemoveClassificationOverride),
     /// Removes every device-local personal rule.
     ResetClassificationOverrides(ResetClassificationOverrides),
+    /// Asks which applications Velvt could not read in the recent window, so
+    /// the user can teach it per app instead of per event.
+    RequestUnclassifiedTriage(RequestUnclassifiedTriage),
+    /// Teaches Velvt what one application is, with no source event: the user
+    /// is naming an app, not correcting a single moment.
+    SetApplicationCategory(SetApplicationCategory),
     /// Starts one bounded, device-local meaningful-work block.
     StartWorkBlock(StartWorkBlock),
     /// Pauses the current work block.
@@ -174,6 +180,8 @@ pub enum ServerMessage {
     WeeklyDigest(WeeklyDigest),
     /// Exactly one grounded sentence explaining a shown intervention.
     InterventionExplanation(InterventionExplanation),
+    /// The bounded list of applications Velvt could not read in the window.
+    UnclassifiedTriage(UnclassifiedTriage),
 }
 
 /// Server's first message on every connection.
@@ -242,10 +250,129 @@ pub struct RawEvent {
     pub window_title: String,
     /// Optional raw application bundle identifier; local-only.
     pub bundle_id: Option<String>,
+    /// The `LSApplicationCategoryType` the developer declared in the
+    /// application's own `Info.plist`; local-only.
+    ///
+    /// A fact read off disk, never a conclusion: which declared categories mean
+    /// anything at all is decided in Rust, and most of them mean nothing —
+    /// `productivity` alone covers four Velvt categories. Absent when the key
+    /// is missing or the plist could not be read, which must classify exactly
+    /// as it did before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_app_category: Option<String>,
+    /// The `LSItemContentTypes` declared across the application's
+    /// `CFBundleDocumentTypes`, flattened, deduplicated and sorted by the
+    /// client; local-only.
+    ///
+    /// Bounded by [`MAX_DOCUMENT_TYPE_IDS`] and
+    /// [`MAX_DOCUMENT_TYPE_ID_LENGTH`]. A list over the count bound is
+    /// disregarded whole rather than shortened to fit: a truncated list is a
+    /// different set of declared types, and classifying on a set the
+    /// application did not declare is worse than classifying on nothing.
+    ///
+    /// Sorted by the client, which makes truncation actively biased rather
+    /// than merely lossy: a lexicographic prefix of a long declaration is all
+    /// one vendor — every one of Xcode's first two dozen sorted UTIs is a
+    /// `com.apple.*` — and it would carry the majority rule on its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub document_type_ids: Vec<String>,
     /// Optional raw focused browser URL; local-only and consumed at the Rust
     /// privacy boundary before any event persistence or upload construction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focused_document_url: Option<String>,
+}
+
+/// The most declared document types one raw event may carry.
+///
+/// 256, which is above every application measured on a real machine: Xcode
+/// declares 152 and Preview 49. An earlier draft of the contract said 24 and
+/// refused anything longer; a census killed that number, because a 24-cap
+/// refuses precisely the richest declarations and so silences this signal for
+/// the applications it was built to read.
+///
+/// This is a sanity bound on a frame, not a filter on a signal. The client
+/// applies it first and sends an **empty list** for an application that somehow
+/// exceeds it — never the first 256 of them: abstaining is honest, a biased
+/// sample is not. A list that arrives over the bound is therefore not the set
+/// the application declared, and the only honest reading of it is none at all
+/// ([`RawEventMetadataError::TooManyDocumentTypes`]).
+///
+/// The list is cached per bundle id and sent once per application per process,
+/// so its size is not a hot-path concern.
+pub const MAX_DOCUMENT_TYPE_IDS: usize = 256;
+
+/// The longest single declared document-type identifier, in bytes.
+pub const MAX_DOCUMENT_TYPE_ID_LENGTH: usize = 64;
+
+/// Why one raw event's declared, device-local metadata was refused.
+///
+/// Refusal rather than repair. Every bound below is one the client already
+/// applies, so a frame that breaks one is a client defect or a forgery, and in
+/// neither case may this crate invent a smaller list and classify on it.
+///
+/// What refusal costs differs by variant, and the variant docs say which:
+/// an over-long *list* costs only the declared types, which is what an
+/// abstaining client would have sent anyway; a malformed *entry* is a
+/// structurally bad frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawEventMetadataError {
+    /// More than [`MAX_DOCUMENT_TYPE_IDS`] declared document types.
+    ///
+    /// The declared types are unusable, the rest of the event is not: the
+    /// honest response is to classify it as though the application declared no
+    /// document types at all — exactly the empty list a client that hit its own
+    /// cap would have sent — and to keep the observed time. Shortening the list
+    /// to the bound is the one response ruled out; see
+    /// [`MAX_DOCUMENT_TYPE_IDS`] for why a prefix is worse than nothing.
+    TooManyDocumentTypes,
+    /// One declared document type longer than [`MAX_DOCUMENT_TYPE_ID_LENGTH`].
+    ///
+    /// No real UTI is this long, and the client bounds each entry before
+    /// sending, so this is a malformed frame rather than an unusual
+    /// application.
+    DocumentTypeTooLong,
+    /// An empty declared document type, which names no type at all.
+    EmptyDocumentType,
+}
+
+impl RawEventMetadataError {
+    /// Stable, privacy-safe code for a drop reason or a log line. Carries no
+    /// fragment of the value that was refused.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::TooManyDocumentTypes => "too_many_document_types",
+            Self::DocumentTypeTooLong => "document_type_too_long",
+            Self::EmptyDocumentType => "empty_document_type",
+        }
+    }
+}
+
+impl RawEvent {
+    /// Checks the declared, device-local metadata against its published bounds.
+    ///
+    /// Reports only: nothing here shortens, sorts, or otherwise repairs the
+    /// list, so a caller that decides to disregard an over-long declaration is
+    /// disregarding all of it. Each variant's documentation says what the
+    /// refusal is supposed to cost.
+    ///
+    /// `declared_app_category` is deliberately not length-checked: it is
+    /// matched against a closed whitelist, so a value that is not on it — of
+    /// any length — already means nothing, and dropping an otherwise good event
+    /// over an unrecognised string would lose real observed time for no gain.
+    pub fn validate_declared_metadata(&self) -> Result<(), RawEventMetadataError> {
+        if self.document_type_ids.len() > MAX_DOCUMENT_TYPE_IDS {
+            return Err(RawEventMetadataError::TooManyDocumentTypes);
+        }
+        for identifier in &self.document_type_ids {
+            if identifier.is_empty() {
+                return Err(RawEventMetadataError::EmptyDocumentType);
+            }
+            if identifier.len() > MAX_DOCUMENT_TYPE_ID_LENGTH {
+                return Err(RawEventMetadataError::DocumentTypeTooLong);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for RawEvent {
@@ -258,6 +385,14 @@ impl std::fmt::Debug for RawEvent {
             .field("app_name", &"[redacted]")
             .field("window_title", &"[redacted]")
             .field("bundle_id", &self.bundle_id.as_ref().map(|_| "[redacted]"))
+            // Declared metadata identifies the application as surely as its
+            // bundle id does, so it is redacted on the same terms. The count is
+            // kept because a bound violation is diagnosed by size alone.
+            .field(
+                "declared_app_category",
+                &self.declared_app_category.as_ref().map(|_| "[redacted]"),
+            )
+            .field("document_type_count", &self.document_type_ids.len())
             .finish()
     }
 }
@@ -480,6 +615,14 @@ pub enum ClassificationSource {
     Heuristic,
     Embedding,
     UserRule,
+    /// The file types the application declares it opens
+    /// (`CFBundleDocumentTypes`). Higher precision than the declared App Store
+    /// category: an app that opens `public.source-code` is doing focus work.
+    DeclaredDocumentTypes,
+    /// The App Store category the application declares
+    /// (`LSApplicationCategoryType`), for the few values that map to exactly
+    /// one Velvt category.
+    DeclaredAppCategory,
     Fallback,
 }
 
@@ -490,6 +633,8 @@ impl ClassificationSource {
             Self::Heuristic => "heuristic",
             Self::Embedding => "embedding",
             Self::UserRule => "user_rule",
+            Self::DeclaredDocumentTypes => "declared_document_types",
+            Self::DeclaredAppCategory => "declared_app_category",
             Self::Fallback => "fallback",
         }
     }
@@ -644,6 +789,129 @@ pub struct RemoveClassificationOverride {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResetClassificationOverrides {}
+
+/// Which identity a persisted rule is keyed on.
+///
+/// The UI has to be able to say "this window" or "this app" in the user's own
+/// terms, because the two rules behave differently and a list that shows them
+/// identically cannot be trusted or edited. Defaults to [`Self::Window`]: every
+/// rule a client saw before this field existed was a window rule.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrectionScope {
+    /// One exact application-and-window pair.
+    #[default]
+    Window,
+    /// Every window of one application.
+    App,
+}
+
+impl CorrectionScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Window => "window",
+            Self::App => "app",
+        }
+    }
+}
+
+/// Asks which applications Velvt could not read in the recent window.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestUnclassifiedTriage {
+    /// How far back to look. Clamped in Rust to the published retention
+    /// window; a longer request cannot return evidence that no longer exists.
+    pub lookback_days: u32,
+}
+
+/// One application Velvt observed but could not classify.
+///
+/// Facts only: how long it was on screen and how many times it was seen. No
+/// category, no guess, and no total presented as a score.
+///
+/// `app_stable_id` is the only identifier here, and deliberately. The bundle
+/// identity of the application matters — it is what makes the saved rule
+/// survive a rename — but it is Rust's to look up from the rows it already
+/// holds, keyed by this same `app_stable_id`, and Rust does exactly that when
+/// [`SetApplicationCategory`] comes back. Sending a second
+/// application-identifying value to a client with no use for it would put an
+/// identifier on the wire to earn nothing, and an unused identifier is pure
+/// liability.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnclassifiedTriageEntry {
+    /// The app-scoped correction key, as
+    /// [`SetApplicationCategory::app_stable_id`] expects it back.
+    pub app_stable_id: String,
+    /// The device-local name Velvt already holds for this application.
+    pub display_name: String,
+    pub seconds_observed: u64,
+    pub event_count: u64,
+}
+
+impl std::fmt::Debug for UnclassifiedTriageEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UnclassifiedTriageEntry")
+            .field("app_stable_id", &"[local_identifier]")
+            .field("display_name", &"[redacted]")
+            .field("seconds_observed", &self.seconds_observed)
+            .field("event_count", &self.event_count)
+            .finish()
+    }
+}
+
+/// The bounded list of applications Velvt could not read in the window.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnclassifiedTriage {
+    /// Ranked by observed time, longest first, and bounded: a list of thirty
+    /// one-second curiosities is not a task anyone will do.
+    pub entries: Vec<UnclassifiedTriageEntry>,
+    /// The window the entries were actually computed over, after clamping.
+    pub window_days: u32,
+}
+
+impl std::fmt::Debug for UnclassifiedTriage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UnclassifiedTriage")
+            .field("entry_count", &self.entries.len())
+            .field("window_days", &self.window_days)
+            .finish()
+    }
+}
+
+/// Teaches Velvt what one application is.
+///
+/// There is no event id on purpose: the user is telling Velvt about an
+/// application, not correcting one moment of it. Saving the same answer twice
+/// is the same as saving it once.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetApplicationCategory {
+    /// The app-scoped key, exactly as [`UnclassifiedTriageEntry`] reported it.
+    pub app_stable_id: String,
+    pub category: String,
+    /// Optional device-local name for the application. Never uploaded, never
+    /// logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_name: Option<String>,
+}
+
+impl std::fmt::Debug for SetApplicationCategory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SetApplicationCategory")
+            .field("app_stable_id", &"[local_identifier]")
+            .field("category", &self.category)
+            .field(
+                "activity_name",
+                &self.activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
+}
 
 /// Version of the persisted and wire-visible work-block state machine.
 pub const WORK_BLOCK_STATE_VERSION: u32 = 1;
@@ -1493,6 +1761,15 @@ pub struct ClassificationCorrectionSummary {
     pub local_label: Option<String>,
     pub category: String,
     pub updated_at: DateTime<Utc>,
+    /// Whether this rule covers one window or a whole application.
+    ///
+    /// Until protocol 30 the history listed window rules only, so an app rule
+    /// could be neither seen nor removed: the engine fell through the removed
+    /// window rule into the surviving app rule and returned the same answer.
+    /// Defaulted rather than required so a stored or older payload still
+    /// decodes as what it was — a window rule.
+    #[serde(default)]
+    pub scope: CorrectionScope,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -1530,6 +1807,7 @@ impl std::fmt::Debug for ClassificationCorrectionSummary {
             )
             .field("category", &self.category)
             .field("updated_at", &self.updated_at)
+            .field("scope", &self.scope)
             .finish()
     }
 }
@@ -1809,7 +2087,7 @@ mod v28_demotion_receipts_probe_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 29);
+        assert_eq!(PROTOCOL_VERSION, 30);
     }
 
     #[test]
@@ -2390,5 +2668,239 @@ mod v6_auth_contract {
         );
         let decoded: ServerMessage = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, message);
+    }
+}
+
+#[cfg(test)]
+mod v30_classification_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_thirty() {
+        assert_eq!(PROTOCOL_VERSION, 30);
+    }
+
+    /// A v29 raw event — no declared metadata at all — must decode, and must
+    /// re-serialize without the new keys. Absent metadata has to classify
+    /// exactly as it did before the fields existed, and the first requirement
+    /// of that is that absence stays absence rather than becoming an empty
+    /// declaration.
+    #[test]
+    fn a_raw_event_without_declared_metadata_round_trips_unchanged() {
+        let v29 = r#"{
+            "event_id": "00000000-0000-0000-0000-000000000000",
+            "occurred_at": "2026-09-23T10:00:00Z",
+            "duration_seconds": 60,
+            "app_name": "Unknown Local App",
+            "window_title": "private title",
+            "bundle_id": null
+        }"#;
+        let decoded: RawEvent = serde_json::from_str(v29).unwrap();
+
+        assert_eq!(decoded.declared_app_category, None);
+        assert!(decoded.document_type_ids.is_empty());
+        assert_eq!(decoded.validate_declared_metadata(), Ok(()));
+
+        let encoded = serde_json::to_string(&decoded).unwrap();
+        assert!(!encoded.contains("declared_app_category"));
+        assert!(!encoded.contains("document_type_ids"));
+    }
+
+    #[test]
+    fn declared_metadata_round_trips_and_stays_out_of_debug_output() {
+        let event = RawEvent {
+            event_id: Uuid::nil(),
+            occurred_at: Utc::now(),
+            duration_seconds: 60,
+            app_name: "PRIVATE_APP".into(),
+            window_title: "PRIVATE_TITLE".into(),
+            bundle_id: Some("com.microsoft.VSCode".into()),
+            declared_app_category: Some("public.app-category.developer-tools".into()),
+            document_type_ids: vec!["public.plain-text".into(), "public.source-code".into()],
+            focused_document_url: None,
+        };
+        let encoded = serde_json::to_string(&event).unwrap();
+        let decoded: RawEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
+
+        let debug = format!("{event:?}");
+        for forbidden in [
+            "PRIVATE_APP",
+            "PRIVATE_TITLE",
+            "com.microsoft.VSCode",
+            "public.app-category.developer-tools",
+            "public.source-code",
+        ] {
+            assert!(!debug.contains(forbidden), "{debug}");
+        }
+        assert!(debug.contains("document_type_count: 2"));
+    }
+
+    /// The count bound is the census bound, and it refuses whole rather than
+    /// repairing. 256 is the last accepted list because Xcode declares 152 and
+    /// Preview 49; the 24 an earlier draft named would have refused exactly
+    /// those two. One over the bound is refused entire and left untouched,
+    /// because a truncated list is a set the application never declared.
+    #[test]
+    fn the_document_type_bounds_refuse_whole_rather_than_truncate() {
+        // Pinned against a re-narrowing: the two measured declarations this
+        // bound exists to admit are 152 and 49 entries long.
+        assert_eq!(MAX_DOCUMENT_TYPE_IDS, 256);
+        assert!(
+            MAX_DOCUMENT_TYPE_IDS >= 152,
+            "Xcode declares 152 document types; a bound under that silences \
+             this signal for the richest declarations there are"
+        );
+
+        let event = |types: Vec<String>| RawEvent {
+            event_id: Uuid::nil(),
+            occurred_at: Utc::now(),
+            duration_seconds: 0,
+            app_name: "App".into(),
+            window_title: String::new(),
+            bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: types,
+            focused_document_url: None,
+        };
+
+        let at_limit = (0..MAX_DOCUMENT_TYPE_IDS)
+            .map(|index| format!("public.type-{index}"))
+            .collect::<Vec<_>>();
+        assert_eq!(event(at_limit.clone()).validate_declared_metadata(), Ok(()));
+
+        let mut over_limit = at_limit;
+        over_limit.push("public.one-too-many".into());
+        let over = event(over_limit);
+        assert_eq!(
+            over.validate_declared_metadata(),
+            Err(RawEventMetadataError::TooManyDocumentTypes)
+        );
+        // Refused, and left exactly as it arrived: nothing here may quietly
+        // shorten the list and hand a plausible-looking set to a classifier.
+        assert_eq!(over.document_type_ids.len(), MAX_DOCUMENT_TYPE_IDS + 1);
+
+        let longest = "a".repeat(MAX_DOCUMENT_TYPE_ID_LENGTH);
+        assert_eq!(
+            event(vec![longest.clone()]).validate_declared_metadata(),
+            Ok(())
+        );
+        assert_eq!(
+            event(vec![format!("{longest}a")]).validate_declared_metadata(),
+            Err(RawEventMetadataError::DocumentTypeTooLong)
+        );
+        assert_eq!(
+            event(vec![String::new()]).validate_declared_metadata(),
+            Err(RawEventMetadataError::EmptyDocumentType)
+        );
+    }
+
+    /// An unrecognised declared category is not a reason to lose observed
+    /// time: the whitelist already ignores it.
+    #[test]
+    fn an_unrecognised_declared_category_is_accepted_and_judged_later() {
+        let event = RawEvent {
+            event_id: Uuid::nil(),
+            occurred_at: Utc::now(),
+            duration_seconds: 0,
+            app_name: "App".into(),
+            window_title: String::new(),
+            bundle_id: None,
+            declared_app_category: Some("x".repeat(512)),
+            document_type_ids: Vec::new(),
+            focused_document_url: None,
+        };
+        assert_eq!(event.validate_declared_metadata(), Ok(()));
+    }
+
+    #[test]
+    fn triage_messages_round_trip_and_match_schema_shape() {
+        let request = ClientMessage::RequestUnclassifiedTriage(RequestUnclassifiedTriage {
+            lookback_days: 7,
+        });
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"request_unclassified_triage","payload":{"lookback_days":7}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            request
+        );
+
+        let triage = ServerMessage::UnclassifiedTriage(UnclassifiedTriage {
+            entries: vec![UnclassifiedTriageEntry {
+                app_stable_id: "a".repeat(64),
+                display_name: "PRIVATE_APP_NAME".into(),
+                seconds_observed: 4_200,
+                event_count: 31,
+            }],
+            window_days: 7,
+        });
+        let encoded = serde_json::to_string(&triage).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            triage
+        );
+        assert!(!format!("{triage:?}").contains("PRIVATE_APP_NAME"));
+        // The app key is the only identifier a triage entry carries. The bundle
+        // identity is Rust's to look up when the answer comes back, so nothing
+        // named for a bundle belongs on this message at all.
+        assert!(!encoded.contains("bundle"));
+
+        let set = ClientMessage::SetApplicationCategory(SetApplicationCategory {
+            app_stable_id: "a".repeat(64),
+            category: "FOCUS_WORK".into(),
+            activity_name: Some("PRIVATE_ALIAS".into()),
+        });
+        let encoded = serde_json::to_string(&set).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            set
+        );
+        assert!(!format!("{set:?}").contains("PRIVATE_ALIAS"));
+    }
+
+    /// An empty triage list is the good state and must be representable
+    /// without ceremony — no sentinel, no "nothing to do" flag.
+    #[test]
+    fn an_empty_triage_list_is_representable() {
+        let empty = UnclassifiedTriage {
+            entries: Vec::new(),
+            window_days: 14,
+        };
+        let encoded = serde_json::to_string(&empty).unwrap();
+        assert_eq!(encoded, r#"{"entries":[],"window_days":14}"#);
+    }
+
+    #[test]
+    fn a_correction_summary_defaults_to_window_scope() {
+        let v29 = r#"{
+            "stable_id": "abs_1",
+            "label": "reference:inferred",
+            "category": "REFERENCE",
+            "updated_at": "2026-09-23T10:00:00Z"
+        }"#;
+        let decoded: ClassificationCorrectionSummary = serde_json::from_str(v29).unwrap();
+        assert_eq!(decoded.scope, CorrectionScope::Window);
+
+        let app_rule = ClassificationCorrectionSummary {
+            scope: CorrectionScope::App,
+            ..decoded
+        };
+        let encoded = serde_json::to_string(&app_rule).unwrap();
+        assert!(encoded.contains(r#""scope":"app""#));
+    }
+
+    #[test]
+    fn the_new_classification_sources_use_their_wire_vocabulary() {
+        assert_eq!(
+            ClassificationSource::DeclaredDocumentTypes.as_str(),
+            "declared_document_types"
+        );
+        assert_eq!(
+            ClassificationSource::DeclaredAppCategory.as_str(),
+            "declared_app_category"
+        );
     }
 }

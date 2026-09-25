@@ -125,6 +125,8 @@ fn raw_event(at: chrono::DateTime<Utc>, app_name: &str, window_title: &str) -> C
         app_name: app_name.into(),
         window_title: window_title.into(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
     })
 }

@@ -16,6 +16,22 @@ pub struct BatchEventPayload {
     pub duration_seconds: u64,
 }
 
+/// Hand-written, and deliberately not derived.
+///
+/// The struct above holds more than the cloud is given — a local label, a stable
+/// id, a taxonomy version — and a derive would send all of it the moment someone
+/// added a field for a local purpose. Writing the outbound shape out by hand
+/// makes the wire a decision rather than a consequence: a new field is invisible
+/// here until a person types it into `ApiBatchEvent`.
+///
+/// That is what keeps the device-local facts device-local. The bundle
+/// identifier, the declared `LSApplicationCategoryType` and the declared document
+/// types are recorded beside the event on disk (migration 0033) and never reach a
+/// DTO; there is no field here they could occupy. Two tests hold that shut:
+/// `serialized_batch_holds_exactly_the_documented_keys` below closes this key set,
+/// and `published_claims::no_declared_fact_reaches_an_upload_payload` drives a
+/// real event carrying all three through the router and asserts their *values*
+/// appear nowhere in the batch this device would have POSTed.
 impl Serialize for BatchEventPayload {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -132,6 +148,118 @@ mod tests {
     use super::{BatchEventPayload, BatchPayload};
     use chrono::{TimeZone, Utc};
     use serde_json::json;
+    use std::collections::BTreeSet;
+
+    /// Every key the upload body is allowed to carry, as a dotted path with
+    /// array elements flattened onto their field.
+    ///
+    /// Invariant 1 of the Classification v2 implementation contract fixes this
+    /// list: `event_id, occurred_at, abstraction_type, abstraction_type_version,
+    /// classification_tier, payload{duration_seconds, category}`, inside the
+    /// batch envelope the API requires. Adding a line here is the deliberate act
+    /// of deciding a new fact may leave the device, and it is the only place that
+    /// decision can be made quietly enough to matter.
+    const DOCUMENTED_WIRE_KEYS: &[&str] = &[
+        "batch_id",
+        "category_taxonomy_version",
+        "client_version",
+        "events",
+        "events.abstraction_type",
+        "events.abstraction_type_version",
+        "events.classification_tier",
+        "events.event_id",
+        "events.occurred_at",
+        "events.payload",
+        "events.payload.category",
+        "events.payload.duration_seconds",
+        "schema_version",
+        "supported_abstraction_types",
+    ];
+
+    fn collect_key_paths(value: &serde_json::Value, prefix: &str, found: &mut BTreeSet<String>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, child) in fields {
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    found.insert(path.clone());
+                    collect_key_paths(child, &path, found);
+                }
+            }
+            // An array element is the same shape repeated, so its keys belong to
+            // the field, not to an index: `events[0].event_id` and
+            // `events[1].event_id` are one key on the wire.
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_key_paths(item, prefix, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn sample_event(label: &str, category: &str) -> BatchEventPayload {
+        BatchEventPayload {
+            event_id: "event-1".into(),
+            stable_id: "stable-1".into(),
+            label: label.into(),
+            category: category.into(),
+            taxonomy_version: "mvp-2".into(),
+            classification_tier: "exact_match".into(),
+            occurred_at: Utc.timestamp_opt(1_800_000_000, 0).unwrap(),
+            duration_seconds: 120,
+        }
+    }
+
+    /// The serialized batch holds exactly the documented keys, and no others.
+    ///
+    /// The other tests in this file assert one whole value each, which catches a
+    /// field added to `ApiBatchEvent` and nothing else. This one walks the
+    /// serialized tree, so a field added to the envelope, to the event, or to the
+    /// nested payload all fail it, and it fails in the file that would have to
+    /// allow the field.
+    ///
+    /// It is a check on key names, and therefore only half the guard. A new field
+    /// fails it whatever it is called, but a device-local value folded into a
+    /// field that already exists -- a bundle digest appended to
+    /// `classification_tier`, say -- adds no key and passes. That half is
+    /// `published_claims::no_declared_fact_reaches_an_upload_payload`, which
+    /// asserts against the values.
+    #[test]
+    fn serialized_batch_holds_exactly_the_documented_keys() {
+        let batch = BatchPayload::new(
+            "batch-1",
+            "1",
+            "1.0.0",
+            Vec::new(),
+            "mvp-2",
+            vec![
+                sample_event("document:code", "FOCUS_WORK"),
+                sample_event("communication:slack", "COMMUNICATION"),
+            ],
+        );
+
+        let value = serde_json::to_value(&batch).unwrap();
+        let mut found = BTreeSet::new();
+        collect_key_paths(&value, "", &mut found);
+
+        let documented: BTreeSet<String> = DOCUMENTED_WIRE_KEYS
+            .iter()
+            .map(|key| (*key).to_owned())
+            .collect();
+        assert_eq!(
+            found, documented,
+            "the upload body's key set changed. A key on the left and not the right \
+             is a new fact crossing the wire -- Invariant 1 of the Classification v2 \
+             contract admits none, and the bundle identifier, the declared category \
+             and the declared document types are device-local by that rule. A key on \
+             the right and not the left is a field that stopped being sent, which the \
+             API contract has to agree to"
+        );
+    }
 
     #[test]
     fn batch_event_collapses_local_label_at_cloud_boundary() {

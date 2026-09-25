@@ -737,6 +737,24 @@ enum QueuedEventPresentation {
             .lowercased()
             .capitalized
     }
+
+    /// The answers a person can give when asked what something is.
+    ///
+    /// `UNLOGGED` is deliberately not among them: it is the verdict that puts
+    /// an application on the triage list in the first place, so offering it
+    /// back as an answer would be offering "leave it unread" as a category.
+    /// Correcting a single *event* is the one case that still needs it — a
+    /// window the user wants Velvt to stop counting at all — which is why the
+    /// workbench list appends it and this one does not.
+    static let teachableCategories = [
+        "FOCUS_WORK",
+        "PASSIVE_CONSUMPTION",
+        "SOCIAL_FEED",
+        "COMMUNICATION",
+        "TASK_MANAGEMENT",
+        "REFERENCE",
+        "SYSTEM",
+    ]
 }
 
 private struct QueuedEventCorrectionRow: View {
@@ -834,16 +852,9 @@ private struct QueuedEventCorrectionRow: View {
         "Applies to every window of this app. Browser windows apply to that site only. "
         + "Correcting an individual window later overrides it just there."
 
-    fileprivate static let categories = [
-        "FOCUS_WORK",
-        "PASSIVE_CONSUMPTION",
-        "SOCIAL_FEED",
-        "COMMUNICATION",
-        "TASK_MANAGEMENT",
-        "REFERENCE",
-        "SYSTEM",
-        "UNLOGGED",
-    ]
+    /// The teachable answers plus `UNLOGGED`, which only an event correction
+    /// can mean — see `QueuedEventPresentation.teachableCategories`.
+    fileprivate static let categories = QueuedEventPresentation.teachableCategories + ["UNLOGGED"]
 }
 
 private struct ClassificationCorrectionHistoryRow: View {
@@ -870,25 +881,48 @@ private struct ClassificationCorrectionHistoryRow: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(QueuedEventPresentation.activity(correction))
-                        .font(VelvtType.bodyEmphasis(11))
-                        .foregroundStyle(VelvtInk.primaryOnInk)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(QueuedEventPresentation.activity(correction))
+                            .font(VelvtType.bodyEmphasis(11))
+                            .foregroundStyle(VelvtInk.primaryOnInk)
+                            .lineLimit(1)
+                        scopeChip
+                    }
                     Text(
                         "\(QueuedEventPresentation.category(correction.category)) · Saved \(correction.updatedAt.formatted(date: .abbreviated, time: .omitted)) · Local only"
                     )
                     .font(VelvtType.caption(10))
                     .foregroundStyle(VelvtInk.tertiaryOnInk)
+                    // Spelled out for app rules only. Window scope is what
+                    // every rule was before protocol 30 and the chip says it
+                    // plainly; an app rule reaching windows the user never
+                    // touched is the part that reads as a malfunction unless
+                    // the row admits it.
+                    if correction.scope == .app {
+                        Text(Self.reach(of: correction.scope))
+                            .font(VelvtType.caption(10))
+                            .foregroundStyle(VelvtInk.tertiaryOnInk)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer(minLength: 4)
                 Button(isEditing ? "Cancel" : "Edit") { isEditing.toggle() }
                     .buttonStyle(.plain)
                     .font(VelvtType.body(10.5))
                     .foregroundStyle(VelvtInk.labelOnInk)
-                Button("Undo", action: onUndo)
+                // One control for both scopes. The service resolves which rung
+                // an id belongs to — the two key domains cannot collide — so
+                // the client does not need to, and an app rule taught from the
+                // triage list is removable from exactly the same place as a
+                // window rule. Until protocol 30 nothing could delete one.
+                Button(Self.removalLabel(for: correction.scope), action: onUndo)
                     .buttonStyle(.plain)
                     .font(VelvtType.body(10.5))
                     .foregroundStyle(VelvtInk.labelOnInk)
+                    .accessibilityLabel(
+                        "\(Self.removalLabel(for: correction.scope)) the rule for "
+                            + QueuedEventPresentation.activity(correction)
+                    )
             }
             if isEditing {
                 TextField("Local activity name", text: $activityName)
@@ -925,6 +959,51 @@ private struct ClassificationCorrectionHistoryRow: View {
         let value = activityName.trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
     }
+
+    /// Which identity the rule is keyed on, said in two words.
+    ///
+    /// The two rules behave differently, so a list that drew them identically
+    /// could not be trusted or edited: a user looking for why every window of
+    /// an app changed had no way to tell that the rule they were reading was
+    /// the app rule.
+    private var scopeChip: some View {
+        Text(Self.scopeLabel(for: correction.scope))
+            .font(VelvtType.label(9))
+            .tracking(VelvtType.labelTracking)
+            .foregroundStyle(VelvtInk.labelOnInk)
+            .padding(.horizontal, VelvtMetrics.spaceSM)
+            .padding(.vertical, 1)
+            .overlay(
+                RoundedRectangle(cornerRadius: VelvtMetrics.chipRadius, style: .continuous)
+                    .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+            )
+            .accessibilityLabel(Self.reach(of: correction.scope))
+    }
+
+    fileprivate static func scopeLabel(for scope: CorrectionScope) -> String {
+        switch scope {
+        case .window: return "THIS WINDOW"
+        case .app: return "THIS APP"
+        }
+    }
+
+    /// What the rule actually covers, in a sentence.
+    fileprivate static func reach(of scope: CorrectionScope) -> String {
+        switch scope {
+        case .window: return "Applies to this window only."
+        case .app: return "Applies to every window of this app."
+        }
+    }
+
+    /// "Undo" is the right word for a correction the user made to a moment.
+    /// An app rule was never a correction of anything — it is something they
+    /// taught Velvt — so undoing it is removing it.
+    fileprivate static func removalLabel(for scope: CorrectionScope) -> String {
+        switch scope {
+        case .window: return "Undo"
+        case .app: return "Remove"
+        }
+    }
 }
 
 struct CorrectionHistoryBrowser: View {
@@ -947,7 +1026,7 @@ struct CorrectionHistoryBrowser: View {
 
             if let page = model.correctionHistoryPage {
                 if page.items.isEmpty {
-                    Text(query.isEmpty ? "No saved corrections yet" : "No matching corrections")
+                    Text(query.isEmpty ? "Nothing saved yet" : "No matching rules")
                         .font(VelvtType.caption(10))
                         .foregroundStyle(VelvtInk.tertiaryOnInk)
                         .padding(.horizontal, 16)
@@ -2674,6 +2753,195 @@ public struct MenuBarPopoverView: View {
 /// whether the user ever saw the acknowledgement for the correction they just
 /// made came down to whether an event happened to be captured inside that
 /// window. Taking the model non-optionally here restores the subscription.
+/// The applications Velvt could not read, each one a single answer away from
+/// being understood from now on.
+///
+/// The rest of this destination corrects a *moment* Velvt got wrong. This
+/// corrects the reason it got it wrong, once, for the whole application —
+/// which is the difference between teaching that scales and teaching that
+/// never ends.
+///
+/// Nothing here is a total and nothing here is a score. The list is the work
+/// Velvt has not done yet, so an empty list is the finished state and the copy
+/// says so in those terms rather than reporting a nothing.
+struct UnclassifiedAppTriageSection: View {
+    @ObservedObject var menuStatus: MenuStatusViewModel
+
+    /// The most rows this section will draw.
+    ///
+    /// The service caps the list at eight for the reason the contract gives —
+    /// thirty one-second curiosities is not a task anyone will do — and this
+    /// holds the same line locally so a service that ever sends more cannot
+    /// turn a task back into an inventory.
+    static let maximumRows = 8
+
+    /// Contract § 5, verbatim, except that one application is "app".
+    ///
+    /// The template is `{n} apps`; rendering "1 apps" would read as a bug in
+    /// the very sentence that asks the user for help, so the singular is
+    /// spelled and nothing else about the line changes.
+    static func headline(appCount: Int) -> String {
+        "Velvt could not read \(appCount) \(appCount == 1 ? "app" : "apps") you used this week."
+    }
+
+    /// Contract § 5, verbatim.
+    static let invitationCopy = "Tell it what they are and it will know from now on."
+
+    /// The good state, said as one: what Velvt *can* do, not a count of zero.
+    static let emptyCopy =
+        "Velvt could read every app you used this week. There is nothing here to teach it."
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            content
+            // Drawn here rather than with the workbench's own banner because
+            // this section sits at the top of a long scroll: a confirmation
+            // for a tap made here would otherwise be rendered several hundred
+            // points below the row that produced it.
+            if let acknowledgment = menuStatus.correctionAcknowledgment,
+                menuStatus.acknowledgmentOrigin == .application
+            {
+                Label(acknowledgment, systemImage: "checkmark.circle")
+                    .font(VelvtType.body(11))
+                    .foregroundStyle(VelvtInk.affirmativeOnInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(acknowledgment)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+        .onAppear { menuStatus.refreshUnclassifiedTriage() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let triageError = menuStatus.triageError {
+            // A failure must not borrow the empty state's sentence: "Velvt
+            // could read every app" would be a claim the service just said it
+            // could not make.
+            Text(triageError)
+                .font(VelvtType.body(11))
+                .lineSpacing(VelvtType.bodySpacing(11))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else if let triage = menuStatus.unclassifiedTriage {
+            if triage.entries.isEmpty {
+                Text(Self.emptyCopy)
+                    .font(VelvtType.body(11))
+                    .lineSpacing(VelvtType.bodySpacing(11))
+                    .foregroundStyle(VelvtInk.affirmativeOnInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(Self.emptyCopy)
+            } else {
+                rows(Array(triage.entries.prefix(Self.maximumRows)))
+            }
+        } else {
+            // Not an empty list and not an error: the question has been asked
+            // and not yet answered.
+            Text("Checking which apps Velvt could not read…")
+                .font(VelvtType.caption(10))
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func rows(_ entries: [UnclassifiedTriageEntry]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Self.headline(appCount: entries.count))
+                    .font(VelvtType.bodyEmphasis(12))
+                    .foregroundStyle(VelvtInk.primaryOnInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(Self.invitationCopy)
+                    .font(VelvtType.body(11))
+                    .lineSpacing(VelvtType.bodySpacing(11))
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(entries) { entry in
+                    UnclassifiedAppTriageRow(
+                        entry: entry,
+                        onTeach: { category in
+                            menuStatus.teachApplication(entry, category: category)
+                        }
+                    )
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Apps Velvt could not read")
+        }
+    }
+}
+
+/// One application, the time it was on screen, and the question.
+private struct UnclassifiedAppTriageRow: View {
+    let entry: UnclassifiedTriageEntry
+    let onTeach: (String) -> Void
+
+    /// The sentinel the picker starts on.
+    ///
+    /// A `Picker` bound to a real category would arrive pre-answered, and
+    /// choosing the value it was already showing fires no change — so the one
+    /// app whose category matched the default would be untappable. An empty
+    /// tag means "not answered yet", which is also the truth.
+    private static let unanswered = ""
+
+    @State private var category = UnclassifiedAppTriageRow.unanswered
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.displayName)
+                    .font(VelvtType.bodyEmphasis(11))
+                    .foregroundStyle(VelvtInk.primaryOnInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                // Not `VelvtInk.measurementOnInk`: that is signal, which the
+                // palette's own table measures at 4.17:1 on ink and reserves
+                // for large bold type. This duration is 10.5pt.
+                Text(observedDescription)
+                    .font(VelvtType.caption(10.5).monospacedDigit())
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Picker("Category", selection: $category) {
+                Text("What is this?").tag(Self.unanswered)
+                ForEach(QueuedEventPresentation.teachableCategories, id: \.self) { value in
+                    Text(QueuedEventPresentation.category(value)).tag(value)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.small)
+            .font(VelvtType.body(11))
+            .frame(maxWidth: 150)
+            .accessibilityLabel("What \(entry.displayName) is")
+            .onChange(of: category) { value in
+                guard value != Self.unanswered else { return }
+                onTeach(value)
+            }
+        }
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(entry.displayName), \(observedDescription)")
+    }
+
+    /// Facts, in the order they matter: how long, then how often. No share of
+    /// the week — a percentage of a period is a report about the period.
+    private var observedDescription: String {
+        "\(DurationText.compact(entry.secondsObserved)) observed · \(entry.eventCount) "
+            + (entry.eventCount == 1 ? "time" : "times")
+    }
+}
+
 struct CorrectionWorkbenchView: View {
     @ObservedObject var menuStatus: MenuStatusViewModel
     @ObservedObject var localDashboard: LocalDashboardCoordinator
@@ -2688,6 +2956,14 @@ struct CorrectionWorkbenchView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             explanation
+            // First, because it is the cheapest teaching on the surface: one
+            // answer per application instead of one per event, and it removes
+            // the reason the rows below it need correcting at all.
+            sectionLabel("Apps Velvt could not read")
+            UnclassifiedAppTriageSection(menuStatus: menuStatus)
+
+            Divider().padding(.vertical, 6)
+            sectionLabel("Activities on this Mac")
             // The activity rows. They arrived here from the Patterns tab,
             // where the same data was drawn as a seven-day stacked chart with
             // a percentage column — the literal Screen Time artifact, and the
@@ -2723,7 +2999,10 @@ struct CorrectionWorkbenchView: View {
             queuedEventRows
 
             Divider().padding(.vertical, 6)
-            sectionLabel("Saved corrections")
+            // "Rules", not "corrections": the list now holds both the
+            // corrections the user made to a window and the apps they taught
+            // Velvt outright, and only one of those two is a correction.
+            sectionLabel("Saved rules")
             CorrectionHistoryBrowser(model: menuStatus)
 
             if let sendError = menuStatus.sendError {
@@ -2737,7 +3016,16 @@ struct CorrectionWorkbenchView: View {
             // The correction is already saved by the time this appears.
             // Copy comes from the service verbatim so the confirmation says
             // exactly what changed and for how long.
-            if let acknowledgment = menuStatus.correctionAcknowledgment {
+            //
+            // Protocol 30 made Remove and Reset acknowledge too, and both live
+            // in this half of the surface — Remove in the saved-corrections
+            // list directly above, Reset in the button directly below — so
+            // this is where their confirmation belongs. A teach from the
+            // triage list is confirmed up there instead, beside the row that
+            // was tapped, which is what `acknowledgmentOrigin` distinguishes.
+            if let acknowledgment = menuStatus.correctionAcknowledgment,
+                menuStatus.acknowledgmentOrigin != .application
+            {
                 Label(acknowledgment, systemImage: "checkmark.circle")
                     .font(VelvtType.body(11))
                     .foregroundStyle(VelvtInk.affirmative)
@@ -2784,7 +3072,10 @@ struct CorrectionWorkbenchView: View {
             localDashboard.refresh()
         }
         .confirmationDialog(
-            "Reset all local activity and category corrections on this Mac?",
+            // Names the apps too: since protocol 30 this also removes every
+            // rule taught from the triage list, and a dialog that only warned
+            // about "corrections" would be understating what the button does.
+            "Reset every correction and every app you have taught Velvt on this Mac?",
             isPresented: $confirmsReset,
             titleVisibility: .visible
         ) {

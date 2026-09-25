@@ -17,6 +17,7 @@ pub use models::{
     WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
     WorkBlockOrigin, WorkBlockRecord, WrongInterventionCounts,
 };
+pub use models::{ReportedDwell, MAX_REPORTED_DWELL_SECONDS};
 pub use sqlite::{PersistenceError, SqlitePersistence};
 pub use traits::{
     AbstractionMapRepo, AntecedentFindingRepo, BehaviorRepo, FocusRepo, HistoryCacheRepo,

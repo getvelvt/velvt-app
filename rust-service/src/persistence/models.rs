@@ -479,6 +479,36 @@ pub struct WorkBlockObservation {
     pub classification_confidence: ClassificationConfidence,
 }
 
+/// The longest dwell a reported event can stand for, in seconds. The router
+/// caps `duration_seconds` here before the row is written
+/// (`ipc/router.rs::handle_raw_event`), so it is also how far before a window a
+/// dwell overlapping that window can have started.
+pub const MAX_REPORTED_DWELL_SECONDS: u32 = 30 * 60;
+
+/// One dwell Swift reported, read back out of `raw_event_buffer` for the
+/// work-block engine: when it began, how long it was measured to last, and
+/// the category evidence it was classified under.
+///
+/// Deliberately narrower than [`RawEventEntry`]: no label, stable ID, display
+/// label, name suggestion, or application identity. It carries what a
+/// `work_block_observation` row already carries, plus the one fact that row
+/// does not have — the dwell's length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedDwell {
+    pub occurred_at: DateTime<Utc>,
+    pub duration_seconds: u32,
+    pub category: String,
+    pub classification_status: ClassificationStatus,
+    pub classification_confidence: ClassificationConfidence,
+}
+
+impl ReportedDwell {
+    /// When the user left this dwell.
+    pub fn ended_at(&self) -> DateTime<Utc> {
+        self.occurred_at + chrono::Duration::seconds(i64::from(self.duration_seconds))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkBlockCompletion {
     pub phase: WorkBlockPhase,

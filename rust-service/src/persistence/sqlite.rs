@@ -7,10 +7,11 @@ use super::{
     InsightCacheRepo, InterventionDecision, InterventionDemotionState, LocalDisplayAggregate,
     LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord,
     QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, RawEventRepo, ReceiptsRepo,
-    UnclassifiedAppEntry, UploadBatch, UploadBatchRepo, UploadBatchStatus, UploadQueueDiagnostics,
-    VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection, WorkBlockCompletion,
-    WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin,
-    WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
+    ReportedDwell, UnclassifiedAppEntry, UploadBatch, UploadBatchRepo, UploadBatchStatus,
+    UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection,
+    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
+    WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
+    MAX_REPORTED_DWELL_SECONDS,
 };
 // Named through the defining module because `persistence::mod` re-exports types
 // rather than constants; the retry ceiling is policy that belongs beside the
@@ -2402,6 +2403,58 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    fn reported_dwells(
+        &self,
+        from: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<ReportedDwell>, PersistenceError> {
+        if until <= from {
+            return Ok(Vec::new());
+        }
+        let connection = self.0.connection()?;
+        // The lower bound on `occurred_at` is what keeps this on
+        // `idx_raw_event_buffer_occurred_at`: no dwell longer than the cap is
+        // ever stored, so none that overlaps `from` can have begun earlier.
+        let mut statement = connection.prepare(
+            "SELECT occurred_at, MIN(MAX(duration_seconds, 0), ?4), category,
+                    classification_status, classification_confidence
+             FROM raw_event_buffer
+             WHERE occurred_at >= ?1 AND occurred_at < ?3
+               AND occurred_at + MIN(MAX(duration_seconds, 0), ?4) > ?2
+             ORDER BY occurred_at, id",
+        )?;
+        let dwells = statement
+            .query_map(
+                params![
+                    from.timestamp() - i64::from(MAX_REPORTED_DWELL_SECONDS),
+                    from.timestamp(),
+                    until.timestamp(),
+                    MAX_REPORTED_DWELL_SECONDS,
+                ],
+                |row| {
+                    // Read leniently. A vocabulary token this build does not
+                    // know supports no category claim, and that is all the
+                    // engine needs from it; failing the read instead would
+                    // leave a block that can never be finalized.
+                    let status = row.get::<_, String>(3)?;
+                    let confidence = row.get::<_, String>(4)?;
+                    Ok(ReportedDwell {
+                        occurred_at: timestamp_from_row(row, 0)?,
+                        duration_seconds: row.get(1)?,
+                        category: row.get(2)?,
+                        classification_status: parse_classification_status_value(&status)
+                            .unwrap_or(ClassificationStatus::Unclassified),
+                        classification_confidence: parse_classification_confidence_value(
+                            &confidence,
+                        )
+                        .unwrap_or(ClassificationConfidence::None),
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(dwells)
     }
 
     fn finalize(
@@ -6569,5 +6622,67 @@ mod tests {
             paired_app_key(&database, &key(0x3c)).is_none(),
             "the window rule records no pairing, because none was written"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Reported dwells for the work-block engine (00-GROUND-TRUTH § 6c, § 6d)
+    // ---------------------------------------------------------------------
+
+    /// The read returns exactly the dwells that overlap the window — including
+    /// one that began before it and was still running — reads the stored
+    /// vocabulary back as the enums the ledger uses, and treats a token it does
+    /// not know as no evidence rather than failing: a failed read here would
+    /// leave a block that can never be finalized.
+    #[test]
+    fn reported_dwells_are_the_ones_overlapping_the_window() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let at =
+            |seconds: i64| chrono::DateTime::from_timestamp(1_800_000_000 + seconds, 0).unwrap();
+        let entry = |event_id: &str, start: i64, seconds: u64, confidence: &str| {
+            let mut event = unlogged_event(event_id, &key(0x51), None, at(start), seconds);
+            event.category = "FOCUS_WORK".into();
+            event.classification_status = "classified".into();
+            event.classification_confidence = confidence.into();
+            events.insert(&event).unwrap();
+        };
+        // Ends exactly at the window start: touches it, does not overlap.
+        entry("ended-before", -100, 100, "high");
+        // Began 20 minutes before the window and runs into it.
+        entry("straddles-start", -1_200, 1_500, "high");
+        entry("inside", 400, 60, "medium");
+        entry("unknown-token", 500, 60, "certain");
+        // Begins at the window end: outside a half-open window.
+        entry("at-end", 1_000, 60, "high");
+
+        let dwells = database
+            .work_block_repo()
+            .reported_dwells(at(0), at(1_000))
+            .unwrap();
+        let starts = dwells
+            .iter()
+            .map(|dwell| dwell.occurred_at)
+            .collect::<Vec<_>>();
+        assert_eq!(starts, vec![at(-1_200), at(400), at(500)]);
+        assert_eq!(dwells[0].duration_seconds, 1_500);
+        assert_eq!(dwells[0].ended_at(), at(300));
+        assert_eq!(dwells[0].category, "FOCUS_WORK");
+        assert_eq!(
+            dwells[0].classification_status,
+            ClassificationStatus::Classified
+        );
+        assert_eq!(
+            dwells[1].classification_confidence,
+            ClassificationConfidence::Medium
+        );
+        assert_eq!(
+            dwells[2].classification_confidence,
+            ClassificationConfidence::None
+        );
+        assert!(database
+            .work_block_repo()
+            .reported_dwells(at(10), at(10))
+            .unwrap()
+            .is_empty());
     }
 }

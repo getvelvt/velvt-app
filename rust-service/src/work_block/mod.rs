@@ -22,9 +22,9 @@ use crate::{
     delivery::PushAdapter,
     persistence::{
         DemotionStateRecord, GateVerdict, InterventionDecision, InterventionDemotionState,
-        PersistenceError, WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome,
-        WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo,
-        WrongInterventionCounts,
+        PersistenceError, ReportedDwell, WorkBlockCompletion, WorkBlockIntervention,
+        WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
+        WorkBlockRepo, WrongInterventionCounts,
     },
 };
 
@@ -330,6 +330,10 @@ impl WorkBlockManager {
                 if elapsed_seconds(&record, now) >= record.planned_duration_seconds {
                     self.finish(&record, WorkBlockPhase::Expired, planned_deadline(&record))
                 } else {
+                    // The outage is a boundary like a pause: the next report
+                    // would otherwise close the open row at the restart
+                    // instant and file the whole outage under it.
+                    self.close_open_observation_at_reported_end(&record.block_id, now)?;
                     self.repo.mark_recovered(&record.block_id, now)?;
                     let recovered = self.repo.get(&record.block_id)?;
                     self.publish_deadline(Some(planned_deadline(&recovered)));
@@ -413,8 +417,7 @@ impl WorkBlockManager {
             );
         }
         let effective_now = effective_now(&record, now).min(planned_deadline(&record));
-        self.repo
-            .close_open_observation(&record.block_id, effective_now)?;
+        self.close_open_observation_at_reported_end(&record.block_id, effective_now)?;
         self.repo.set_paused(&record.block_id, effective_now)?;
         self.publish_deadline(None);
         self.snapshot_for(self.repo.get(&record.block_id)?, effective_now)
@@ -1222,8 +1225,7 @@ impl WorkBlockManager {
                 Some(result),
             );
         }
-        self.repo
-            .close_open_observation(&record.block_id, ended_at)?;
+        self.close_open_observation_at_reported_end(&record.block_id, ended_at)?;
         // Silence is a real outcome, not a gap. `resolve_intervention` only
         // moves an unanswered offer, so an explicit response already given
         // survives the block ending.
@@ -1234,7 +1236,10 @@ impl WorkBlockManager {
         )?;
         let observations = self.repo.observations(&record.block_id)?;
         let elapsed = elapsed_seconds(record, ended_at);
-        let result = aggregate_result(record, phase, elapsed, &observations);
+        let reported = self.repo.reported_dwells(record.started_at, ended_at)?;
+        let covered_seconds =
+            reported_coverage_seconds(&reported, &observations, record.started_at, ended_at);
+        let result = aggregate_result(record, phase, elapsed, &observations, covered_seconds);
         // DND evidence is decided once, at finalization, and persists with the
         // result: a block that completes while DND is active is a success, and
         // a held decision reconciles here as a count — the one calm line below
@@ -1257,6 +1262,36 @@ impl WorkBlockManager {
         )?;
         self.publish_deadline(None);
         self.snapshot_with_result(self.repo.get(&record.block_id)?, ended_at, Some(result))
+    }
+
+    /// Closes the open observation at a block boundary — a pause, a service
+    /// restart, or the end — where its own dwell ended, never at the boundary.
+    ///
+    /// A row's end is otherwise the next row's start, and at a boundary there
+    /// is no next row. Swift reports a dwell when the user leaves it, so the
+    /// dwell they are in at the boundary has not been reported yet, and the
+    /// open row belongs to the one before it. Stretching that row to the
+    /// boundary filed every unreported second under a category the user had
+    /// already left (`00-GROUND-TRUTH.md` § 6c). Its own dwell's measured
+    /// length is in `raw_event_buffer`, so the row closes there and the
+    /// unreported remainder stays unobserved: Rust has no evidence of what it
+    /// was, and an absent claim is recoverable where a wrong one is not.
+    fn close_open_observation_at_reported_end(
+        &self,
+        block_id: &str,
+        boundary: DateTime<Utc>,
+    ) -> Result<(), WorkBlockError> {
+        let Some(open) = self
+            .repo
+            .latest_observation(block_id)?
+            .filter(|observation| observation.ended_at.is_none())
+        else {
+            return Ok(());
+        };
+        let reported = self.repo.reported_dwells(open.occurred_at, boundary)?;
+        self.repo
+            .close_open_observation(block_id, reported_end(&open, &reported, boundary))?;
+        Ok(())
     }
 
     fn snapshot_for(
@@ -1480,15 +1515,132 @@ fn current_evidence(
 /// filter `aggregate_result` applies, so a switch that would not appear in the
 /// end-of-block result cannot trigger an offer either.
 fn is_confident_evidence(observation: &WorkBlockObservation) -> bool {
-    observation.classification_status == ClassificationStatus::Classified
+    is_confident(
+        &observation.category,
+        observation.classification_status,
+        observation.classification_confidence,
+    )
+}
+
+fn is_confident(
+    category: &str,
+    status: ClassificationStatus,
+    confidence: ClassificationConfidence,
+) -> bool {
+    status == ClassificationStatus::Classified
         && matches!(
-            observation.classification_confidence,
+            confidence,
             ClassificationConfidence::High | ClassificationConfidence::Medium
         )
         && !matches!(
-            observation.category.to_ascii_lowercase().as_str(),
+            category.to_ascii_lowercase().as_str(),
             "system" | "unclassified" | "unlogged"
         )
+}
+
+/// Where the open row's own dwell ended, no later than `boundary`.
+///
+/// The row was opened by a dwell with exactly its evidence, and later dwells
+/// with the same evidence extend it without opening a row (the dedupe in
+/// `observe_safe_category`), so this is the latest end among them. With none
+/// — a row whose report is missing — it closes where it opened and claims
+/// nothing.
+fn reported_end(
+    open: &WorkBlockObservation,
+    reported: &[ReportedDwell],
+    boundary: DateTime<Utc>,
+) -> DateTime<Utc> {
+    reported
+        .iter()
+        .filter(|dwell| {
+            dwell.category == open.category
+                && dwell.classification_status == open.classification_status
+                && dwell.classification_confidence == open.classification_confidence
+        })
+        .map(|dwell| dwell.ended_at().min(boundary))
+        .filter(|ended_at| *ended_at > open.occurred_at)
+        .max()
+        .unwrap_or(open.occurred_at)
+}
+
+/// Seconds of `[started_at, ended_at)` that a reported dwell covered with
+/// confident evidence while the block had a ledger row open
+/// (`00-GROUND-TRUTH.md` § 6d).
+///
+/// Coverage used to be the length of the confident ledger rows, and the rows
+/// tile the block by construction — each ends where the next begins, and the
+/// last was stretched to the end — so it measured whether the rows tiled, not
+/// whether anything was seen. The raw buffer is the evidence the ledger is
+/// built from, so it is what coverage is measured against. The ledger rows
+/// serve only as the mask of time the block was running: a pause closes the
+/// open row and nothing opens another until the block is active again, so
+/// paused time is never counted, whatever the raw buffer saw during it.
+fn reported_coverage_seconds(
+    reported: &[ReportedDwell],
+    observations: &[WorkBlockObservation],
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
+) -> u32 {
+    let seen = merged_spans(
+        reported
+            .iter()
+            .filter(|dwell| {
+                is_confident(
+                    &dwell.category,
+                    dwell.classification_status,
+                    dwell.classification_confidence,
+                )
+            })
+            .map(|dwell| (dwell.occurred_at, dwell.ended_at())),
+        started_at,
+        ended_at,
+    );
+    let running = merged_spans(
+        observations.iter().filter_map(|observation| {
+            observation
+                .ended_at
+                .map(|observation_end| (observation.occurred_at, observation_end))
+        }),
+        started_at,
+        ended_at,
+    );
+    let mut covered = 0_i64;
+    let (mut left, mut right) = (0, 0);
+    while left < seen.len() && right < running.len() {
+        let start = seen[left].0.max(running[right].0);
+        let end = seen[left].1.min(running[right].1);
+        if end > start {
+            covered += (end - start).num_seconds();
+        }
+        if seen[left].1 < running[right].1 {
+            left += 1;
+        } else {
+            right += 1;
+        }
+    }
+    covered.clamp(0, i64::from(u32::MAX)) as u32
+}
+
+/// Clips each span to `[from, until)`, drops the empty ones, and merges the
+/// rest into sorted, disjoint spans, so overlapping reports count once.
+fn merged_spans(
+    spans: impl Iterator<Item = (DateTime<Utc>, DateTime<Utc>)>,
+    from: DateTime<Utc>,
+    until: DateTime<Utc>,
+) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
+    let mut clipped = spans
+        .map(|(start, end)| (start.max(from), end.min(until)))
+        .filter(|(start, end)| end > start)
+        .collect::<Vec<_>>();
+    clipped.sort();
+    let mut merged: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::with_capacity(clipped.len());
+    for (start, end) in clipped {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
 }
 
 /// The category holding the most confidently observed time so far. Ties break
@@ -1738,7 +1890,8 @@ fn block_result_copy(
     switch_aways: u32,
     recoveries: u32,
     longest_seconds: u32,
-    observed_seconds: u32,
+    covered_seconds: u32,
+    elapsed_seconds: u32,
 ) -> String {
     // Insufficient coverage and a missing anchor are the same condition
     // (`safe_evidence_category` is `None` exactly when coverage is
@@ -1752,7 +1905,18 @@ fn block_result_copy(
     let anchor = friendly_category(anchor).to_ascii_lowercase();
     let longest = plain_minutes(rounded_minutes(longest_seconds));
     if switch_aways == 0 {
-        let covered = plain_minutes(rounded_minutes(observed_seconds));
+        let covered_minutes = rounded_minutes(covered_seconds);
+        let covered = plain_minutes(covered_minutes);
+        // "All N minutes of this block" reads as the block's length. When part
+        // of the block was never categorized — most often the dwell still open
+        // when it ended — N is shorter than the block, and the sentence says
+        // which minutes it is counting instead of implying the rest.
+        if covered_minutes < rounded_minutes(elapsed_seconds) {
+            return format!(
+                "You stayed on {anchor} for all {covered} of this block that Velvt could \
+                 categorize."
+            );
+        }
         return format!("You stayed on {anchor} for all {covered} of this block.");
     }
     let left = if switch_aways == 1 {
@@ -1795,6 +1959,7 @@ fn aggregate_result(
     phase: WorkBlockPhase,
     elapsed: u32,
     observations: &[WorkBlockObservation],
+    covered_seconds: u32,
 ) -> WorkBlockResult {
     let valid = observations
         .iter()
@@ -1813,13 +1978,12 @@ fn aggregate_result(
             (classified && seconds > 0).then(|| (observation.category.clone(), seconds))
         })
         .collect::<Vec<_>>();
-    let observed_seconds = valid
-        .iter()
-        .fold(0_u32, |total, (_, seconds)| total.saturating_add(*seconds));
+    // Measured against the raw buffer, never against these rows: see
+    // `reported_coverage_seconds`.
     let coverage_ratio = if elapsed == 0 {
         0.0
     } else {
-        (f64::from(observed_seconds) / f64::from(elapsed)).clamp(0.0, 1.0)
+        (f64::from(covered_seconds) / f64::from(elapsed)).clamp(0.0, 1.0)
     };
     let coverage = if coverage_ratio < 0.25 {
         WorkBlockCoverage::Insufficient
@@ -1886,7 +2050,8 @@ fn aggregate_result(
         switch_aways,
         recoveries,
         longest,
-        observed_seconds,
+        covered_seconds,
+        elapsed,
     );
     WorkBlockResult {
         planned_duration_seconds: record.planned_duration_seconds,
@@ -3016,12 +3181,13 @@ mod tests {
             0,
             0,
             0,
+            1_500,
         )];
         assert_eq!(registry[0], LOW_COVERAGE_RESULT_COPY);
         // A missing anchor under sufficient coverage is unreachable through
         // `aggregate_result`, but the function is total and says so.
         assert_eq!(
-            block_result_copy(WorkBlockCoverage::Good, None, 3, 1, 600, 1_500),
+            block_result_copy(WorkBlockCoverage::Good, None, 3, 1, 600, 1_500, 1_500),
             LOW_COVERAGE_RESULT_COPY
         );
 
@@ -3030,20 +3196,33 @@ mod tests {
             for anchor in ["FOCUS_WORK", "DEEP_WORK", "COMMUNICATION"] {
                 for switch_aways in 0..4u32 {
                     for recoveries in 0..=switch_aways {
-                        let copy = block_result_copy(
-                            coverage,
-                            Some(anchor),
-                            switch_aways,
-                            recoveries,
-                            60 * u32::from(switch_aways as u16 + 1),
-                            1_500,
-                        );
-                        user_subject.push(copy.clone());
-                        registry.push(copy);
+                        // Fully categorized, and a block that ended with its
+                        // last 5 minutes not yet categorized.
+                        for elapsed in [1_500, 1_800] {
+                            let copy = block_result_copy(
+                                coverage,
+                                Some(anchor),
+                                switch_aways,
+                                recoveries,
+                                60 * u32::from(switch_aways as u16 + 1),
+                                1_500,
+                                elapsed,
+                            );
+                            user_subject.push(copy.clone());
+                            registry.push(copy);
+                        }
                     }
                 }
             }
         }
+
+        assert!(user_subject
+            .contains(&"You stayed on focus work for all 25 minutes of this block.".to_owned()));
+        assert!(user_subject.contains(
+            &"You stayed on focus work for all 25 minutes of this block that Velvt could \
+              categorize."
+                .to_owned()
+        ));
 
         for copy in &user_subject {
             assert!(
@@ -3578,6 +3757,43 @@ mod tests {
         assert_eq!(result.coverage, WorkBlockCoverage::Good);
     }
 
+    /// Overlapping reports count once, unconfident ones not at all, and only
+    /// time inside a ledger row counts: the rows are the mask of when the
+    /// block was running.
+    #[test]
+    fn reported_coverage_counts_each_second_once_and_only_while_running() {
+        let dwell =
+            |start: i64, seconds: u32, confidence: ClassificationConfidence| ReportedDwell {
+                occurred_at: at(start),
+                duration_seconds: seconds,
+                category: "FOCUS_WORK".into(),
+                classification_status: ClassificationStatus::Classified,
+                classification_confidence: confidence,
+            };
+        let row = |start: i64, end: i64| WorkBlockObservation {
+            occurred_at: at(start),
+            ended_at: Some(at(end)),
+            category: "FOCUS_WORK".into(),
+            classification_status: ClassificationStatus::Classified,
+            classification_confidence: ClassificationConfidence::High,
+        };
+        let reported = [
+            dwell(-50, 150, ClassificationConfidence::High),
+            dwell(50, 100, ClassificationConfidence::Medium),
+            dwell(300, 100, ClassificationConfidence::Low),
+            dwell(500, 200, ClassificationConfidence::High),
+        ];
+        // Running 0..250 and 450..600 (a pause between).
+        let rows = [row(0, 250), row(450, 600)];
+        // 0..150 once, not 0..100 plus 50..150; 300..400 is low confidence;
+        // 500..600 of the last dwell is inside the running mask and the block.
+        assert_eq!(
+            reported_coverage_seconds(&reported, &rows, at(0), at(600)),
+            150 + 100
+        );
+        assert_eq!(reported_coverage_seconds(&reported, &[], at(0), at(600)), 0);
+    }
+
     /// A service restart mid-block is the third boundary. The first category
     /// reported after it used to close the open row at the restart instant,
     /// filing the whole outage under the category the user had already left.
@@ -3960,6 +4176,13 @@ mod tests {
             block_id: &str,
         ) -> Result<Option<WorkBlockObservation>, PersistenceError> {
             self.0.latest_observation(block_id)
+        }
+        fn reported_dwells(
+            &self,
+            from: DateTime<Utc>,
+            until: DateTime<Utc>,
+        ) -> Result<Vec<ReportedDwell>, PersistenceError> {
+            self.0.reported_dwells(from, until)
         }
         fn finalize(
             &self,

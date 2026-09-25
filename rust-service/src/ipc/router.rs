@@ -23,8 +23,8 @@ use crate::focus::FocusManager;
 use crate::initiation::InitiationManager;
 use crate::persistence::{
     AbstractionMapRepo, DeclaredAppMetadata, PersistenceError, RawEventEntry, RawEventRepo,
-    UnclassifiedAppEntry, UploadBatchRepo, UploadQueueDiagnostics, TRIAGE_MAX_ENTRIES,
-    TRIAGE_MAX_LOOKBACK_DAYS, TRIAGE_MIN_SECONDS,
+    UnclassifiedAppEntry, UploadBatchRepo, UploadQueueDiagnostics, MAX_REPORTED_DWELL_SECONDS,
+    TRIAGE_MAX_ENTRIES, TRIAGE_MAX_LOOKBACK_DAYS, TRIAGE_MIN_SECONDS,
 };
 use crate::receipts::ReceiptsManager;
 use crate::upload::EventIngestor;
@@ -2439,7 +2439,9 @@ impl R7Router {
     async fn handle_raw_event(&self, mut event: velvt_shared_types::RawEvent) -> ServerMessage {
         let event_id = event.event_id;
         let occurred_at = event.occurred_at;
-        let duration_seconds = event.duration_seconds.min(30 * 60);
+        let duration_seconds = event
+            .duration_seconds
+            .min(u64::from(MAX_REPORTED_DWELL_SECONDS));
         let upload_eligible = self.upload_eligible();
         // Before abstraction, because a frame that breaks a published bound is
         // not evidence. What is refused is the *declaration*, never the event:

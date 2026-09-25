@@ -10,7 +10,7 @@
 //! holding 9,073 raw macOS application names is called `local_name_suggestion`
 //! and matched none of them.
 //!
-//! The four tests here are the machine-checked replacements:
+//! The tests here are the machine-checked replacements:
 //!
 //! 1. `privacy_document_retention_cells_match_the_shipped_horizons` reads
 //!    `PRIVACY.md`'s storage table out of the compiled binary and compares every
@@ -29,6 +29,20 @@
 //! 4. `migrated_schema_holds_exactly_the_documented_tables` closes the table
 //!    inventory, so a new migration cannot add a store the document does not
 //!    mention.
+//! 5. `migrated_schema_holds_exactly_the_documented_columns` does the same one
+//!    level down, against the "Every column" list in `PRIVACY.md`. Test 4 alone
+//!    let migrations 0032, 0035 and 0036 add `card_seen_at`, `app_only` and
+//!    `app_key_hash` without the document naming any of them (Audit 8).
+//! 6. `privacy_document_lists_exactly_the_endpoints_the_helper_can_reach`
+//!    compares the document's "leaves the device" list with `egress::ENDPOINTS`,
+//!    which `egress_ledger.rs` already compares with the source. The list named
+//!    an endpoint that did not exist and missed four that did (Audit 8).
+//! 7. `the_sketch_is_described_as_salted_because_the_shipped_path_salts_it`
+//!    pins the document's account of the embedding salt to `main.rs`. The
+//!    document said "unsalted" for eleven days after the code stopped being so.
+//! 8. `deleted_text_does_not_survive_in_the_database_file` reads the raw file
+//!    after Clear Local Work Blocks. Without `secure_delete`, a cleared
+//!    intention stayed readable in free space (Audit 8).
 //!
 //! `persistence_contract::schema_has_no_forbidden_raw_content_columns` still
 //! exists and still checks column names. It is kept: a forbidden name is worth
@@ -57,8 +71,8 @@ use chrono::{DateTime, Utc};
 use rusqlite::{types::Value, Connection};
 use uuid::Uuid;
 use velvt_service::abstraction::{
-    app_bundle_key_for, app_stable_key_for, stable_key_for, AbstractionEngine,
-    EmbeddingSimilarityPlugin, Taxonomy,
+    app_bundle_key_for, app_stable_key_for, stable_key_for, AbstractionEngine, EmbeddingModel,
+    EmbeddingSalt, EmbeddingSimilarityPlugin, HashedEmbeddingModel, Taxonomy,
 };
 use velvt_service::auth::{
     AccountAuthService, AuthError, AuthState, AuthStateMachine, FakeTokenStore, HttpClient,
@@ -66,6 +80,7 @@ use velvt_service::auth::{
 };
 use velvt_service::config::ServiceConfig;
 use velvt_service::delivery::FakeCacheManager;
+use velvt_service::egress::ENDPOINTS;
 use velvt_service::ipc::{MessageRouter, R7Router};
 use velvt_service::persistence::{AbstractionMapping, SqlitePersistence};
 use velvt_service::retention::{
@@ -630,6 +645,7 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
         .abstraction_map_repo()
         .stable_key_salt()
         .unwrap();
+    let embedding_salt = persistence.abstraction_map_repo().embedding_salt().unwrap();
     drop(persistence);
 
     // A second connection to the same file, which is what PRIVACY.md invites a
@@ -746,9 +762,9 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
     // is -- from which individual words are partially recoverable. This
     // assertion is about the literal string only. Word-level recoverability from
     // the sketch is a different property, disclosed in the document rather than
-    // fixed: migration 0031 mints a per-install salt, but `main.rs` still builds
-    // the classifier with `EmbeddingSimilarityPlugin::builtin`, which runs on the
-    // zero salt, so the document's "the hash is unsalted" is currently accurate.
+    // fixed: the sketch is computed under this install's `embedding_salt`
+    // (asserted below), which stops an offline recovery from the source alone
+    // but not one by someone holding the file, where the salt also sits.
     assert!(
         title_sightings.is_empty(),
         "the window title reached {title_sightings:?}. PRIVACY.md states the literal \
@@ -817,6 +833,38 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
         "an unsalted key digest reached {unsalted_digest_sightings:?}. Migration 0037 \
          and PRIVACY.md state that every stored key is an HMAC under the per-install \
          salt; an unsalted digest is testable offline from the published source"
+    );
+
+    // Migration 0031, by value. The sketch cached for the sentinel window is the
+    // one this database's `embedding_salt` produces -- the positive control --
+    // and not the one the unsalted hash written out in `plugin.rs` produces,
+    // which anyone could compute from this repository and test the file against.
+    let stored_sketch: Vec<u8> = connection
+        .query_row(
+            "SELECT embedding FROM semantic_embedding_cache WHERE key_hash = ?1",
+            [&window_key],
+            |row| row.get(0),
+        )
+        .expect("the sentinel window's sketch is cached under its salted window key");
+    let sketch_input = format!("{SENTINEL_APP_NAME} [SEP] {SENTINEL_WINDOW_TITLE}");
+    let sketch_bytes = |salt: EmbeddingSalt| -> Vec<u8> {
+        HashedEmbeddingModel::new(salt)
+            .embed(&sketch_input)
+            .unwrap()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    };
+    assert_eq!(
+        stored_sketch,
+        sketch_bytes(embedding_salt),
+        "the cached sketch is not the one this install's embedding_salt produces"
+    );
+    assert_ne!(
+        stored_sketch,
+        sketch_bytes(EmbeddingSalt::UNSALTED),
+        "the cached sketch is the unsalted one. PRIVACY.md and migration 0031 state \
+         that sketches are computed under the per-install embedding_salt"
     );
 
     // The two declared facts are stored raw, each in the one column migration
@@ -1243,6 +1291,246 @@ fn migrated_schema_holds_exactly_the_documented_tables() {
 }
 
 // ---------------------------------------------------------------------------
+// 5 — The column inventory is closed
+// ---------------------------------------------------------------------------
+
+/// Every column of every table the migrations create is listed, by name, in
+/// `PRIVACY.md`'s "Every column" table, and nothing else is.
+///
+/// Test 4 closes the table list only, so a column added to an existing table
+/// passed it. Migrations 0032, 0035 and 0036 each did exactly that --
+/// `work_block_intervention.card_seen_at`, `personal_app_override.app_only`,
+/// `personal_override.app_key_hash` -- and the document named none of them
+/// until Audit 8 read the schema column by column. The document is the list
+/// rather than a constant here, so the only way to make this pass after a
+/// migration is to write the column into the published document.
+#[test]
+fn migrated_schema_holds_exactly_the_documented_columns() {
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    drop(persistence);
+    let connection = Connection::open(&scratch.path).unwrap();
+
+    let mut present = BTreeSet::new();
+    for table in table_names(&connection) {
+        let columns: Vec<String> = connection
+            .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for column in columns {
+            present.insert(format!("{table}.{column}"));
+        }
+    }
+
+    let documented = documented_columns();
+    let undocumented: Vec<&String> = present.difference(&documented).collect();
+    let phantom: Vec<&String> = documented.difference(&present).collect();
+    assert!(
+        undocumented.is_empty() && phantom.is_empty(),
+        "PRIVACY.md's \"Every column\" table no longer matches the migrated schema.\n\
+         In the schema, not in the document: {undocumented:?}\n\
+         In the document, not in the schema: {phantom:?}\n\
+         A migration that changes a column changes that table's row, and says what \
+         the column holds in the storage tables above it, in the same commit"
+    );
+}
+
+/// The `table.column` pairs of the table headed `| Table | Columns |`.
+fn documented_columns() -> BTreeSet<String> {
+    let mut lines = PRIVACY_DOCUMENT
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| !(line.starts_with('|') && table_cells(line) == ["Table", "Columns"]));
+    assert!(
+        lines.next().is_some(),
+        "PRIVACY.md no longer contains a table headed `| Table | Columns |`"
+    );
+    let separator = lines.next().unwrap_or_default();
+    assert!(
+        separator.starts_with('|') && separator.contains("---"),
+        "the column table in PRIVACY.md is not followed by a separator row"
+    );
+    let mut columns = BTreeSet::new();
+    for line in lines.take_while(|line| line.starts_with('|')) {
+        let cells = table_cells(line);
+        let tables = backticked(&cells[0]);
+        assert_eq!(
+            tables.len(),
+            1,
+            "each row of the column table names exactly one table: {line}"
+        );
+        for column in backticked(&cells[1]) {
+            assert!(
+                columns.insert(format!("{}.{column}", tables[0])),
+                "`{}.{column}` is listed twice",
+                tables[0]
+            );
+        }
+    }
+    assert!(
+        columns.len() > 200,
+        "the column table parsed to only {} columns",
+        columns.len()
+    );
+    columns
+}
+
+// ---------------------------------------------------------------------------
+// 6 — The published endpoint list is the helper's
+// ---------------------------------------------------------------------------
+
+/// The requests `PRIVACY.md` says "ever leave the device" are exactly
+/// `egress::ENDPOINTS`, as `METHOD /path` in backticks under that heading.
+///
+/// `ENDPOINTS` is itself compared with every API path literal in `src/` by
+/// `egress_ledger::the_endpoint_list_is_every_api_path_in_the_source`, so the
+/// chain from source to published sentence is closed at both links. Before
+/// Audit 8 the list named `/v1/auth/account/delete`, which nothing sends, and
+/// omitted `DELETE /v1/account`, the session check, the insight poll, the
+/// readiness check, and the classification sync.
+#[test]
+fn privacy_document_lists_exactly_the_endpoints_the_helper_can_reach() {
+    let section = document_section("## What is transmitted to the cloud");
+    let documented: BTreeSet<String> = section
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|span| {
+            ["GET ", "POST ", "PATCH ", "PUT ", "DELETE "]
+                .iter()
+                .any(|method| span.starts_with(method))
+                && span.contains(" /v1/")
+        })
+        .map(str::to_owned)
+        .collect();
+    let reachable: BTreeSet<String> = ENDPOINTS
+        .iter()
+        .map(|endpoint| format!("{} {}", endpoint.method, endpoint.path))
+        .collect();
+    assert_eq!(
+        documented, reachable,
+        "PRIVACY.md's list of what leaves the device is not egress::ENDPOINTS. Name \
+         each endpoint as `METHOD /path`, spelled as ENDPOINTS spells it"
+    );
+}
+
+/// The text of one `## ` section of `PRIVACY.md`, up to the next `## `.
+fn document_section(heading: &str) -> String {
+    let start = PRIVACY_DOCUMENT
+        .find(heading)
+        .unwrap_or_else(|| panic!("PRIVACY.md has no section `{heading}`"));
+    let body = &PRIVACY_DOCUMENT[start + heading.len()..];
+    let end = body.find("\n## ").unwrap_or(body.len());
+    body[..end].to_owned()
+}
+
+// ---------------------------------------------------------------------------
+// 7 — The salt the document describes is the salt the service uses
+// ---------------------------------------------------------------------------
+
+/// `main.rs` builds the Tier 2 classifier salted, and the published account of
+/// the sketch says so.
+///
+/// Commit `5b6ca1e` (2026-09-14) wired `EmbeddingSimilarityPlugin::builtin_salted`
+/// into `main.rs`; `PRIVACY.md` and `PRIVACY_AUDIT.md` went on saying the hash
+/// was unsalted and the salt "not in the shipped code" until Audit 8. Test 2
+/// checks by value that the sketch is salted; this one ties the sentence to the
+/// wiring, so either can only change with the other.
+#[test]
+fn the_sketch_is_described_as_salted_because_the_shipped_path_salts_it() {
+    const MAIN: &str = include_str!("../src/main.rs");
+    assert!(
+        MAIN.contains("EmbeddingSimilarityPlugin::builtin_salted("),
+        "main.rs no longer builds the classifier with builtin_salted"
+    );
+    assert!(
+        !MAIN.contains("EmbeddingSimilarityPlugin::builtin("),
+        "main.rs builds an unsalted classifier; PRIVACY.md says the sketch is salted"
+    );
+
+    let heading = "### The embedding sketch, and what can be read back out of it";
+    let start = PRIVACY_DOCUMENT
+        .find(heading)
+        .expect("PRIVACY.md keeps its embedding-sketch section");
+    let body = &PRIVACY_DOCUMENT[start + heading.len()..];
+    let section = &body[..body.find("\n### ").unwrap_or(body.len())];
+    assert!(
+        section.contains("builtin_salted") && section.contains("`embedding_salt`"),
+        "PRIVACY.md's sketch section no longer says the sketch is computed under \
+         `embedding_salt` by `builtin_salted`"
+    );
+    for stale in ["The hash is unsalted", "not in the shipped code"] {
+        assert!(
+            !section.contains(stale),
+            "PRIVACY.md's sketch section says {stale:?} again, and main.rs salts it"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8 — A deletion reaches the file, not just the table
+// ---------------------------------------------------------------------------
+
+/// After Clear Local Work Blocks, the intention text is gone from the raw bytes
+/// of the database file, not only from every query.
+///
+/// SQLite without `secure_delete` unlinks a deleted row from its page and
+/// leaves its bytes where they were until something reuses the space. Audit 8
+/// cleared a block on a throwaway database and found the intention still
+/// readable with `strings`. `PRIVACY.md` says the intention is kept for at most
+/// 24 hours and removed by Clear Local Work Blocks; this is where that stops
+/// being true only of `SELECT`.
+#[test]
+fn deleted_text_does_not_survive_in_the_database_file() {
+    const INTENTION: &str = "Quorvane filing, sentinel intention";
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let blocks = WorkBlockManager::new(persistence.work_block_repo());
+    blocks
+        .start(
+            StartWorkBlock {
+                intention: Some(INTENTION.to_owned()),
+                planned_duration_seconds: 3_600,
+                purpose: None,
+                intensity: WorkBlockIntensity::Medium,
+                invitation_id: None,
+            },
+            Utc::now(),
+        )
+        .unwrap();
+    drop(blocks);
+    drop(persistence);
+    assert!(
+        database_bytes_contain(&scratch, b"quorvane"),
+        "the intention never reached the file, so its absence below proves nothing"
+    );
+
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    WorkBlockManager::new(persistence.work_block_repo())
+        .clear_data()
+        .unwrap();
+    drop(persistence);
+    assert!(
+        !database_bytes_contain(&scratch, b"quorvane"),
+        "Clear Local Work Blocks deleted the intention's row, and its text is still \
+         in the database file's free space. The connection must enable secure_delete"
+    );
+}
+
+/// Whether any file of the scratch database -- the main file or a journal left
+/// beside it -- holds `needle`, ignoring ASCII case.
+fn database_bytes_contain(scratch: &ScratchDatabase, needle: &[u8]) -> bool {
+    std::fs::read_dir(&scratch.directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_file())
+        .any(|path| contains_ascii_ignoring_case(&std::fs::read(path).unwrap(), needle))
+}
+
+// ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
@@ -1290,7 +1578,11 @@ where
     U: BatchUploader + 'static,
 {
     let taxonomy = Taxonomy::from_builtin().unwrap();
-    let embedding = EmbeddingSimilarityPlugin::builtin(taxonomy.version())
+    // Salted with this database's own `embedding_salt`, exactly as `main.rs`
+    // builds it. The unsalted `builtin` would cache sketches the shipped
+    // service never writes.
+    let salt = persistence.abstraction_map_repo().embedding_salt().unwrap();
+    let embedding = EmbeddingSimilarityPlugin::builtin_salted(taxonomy.version(), salt)
         .unwrap()
         .with_learning_store(persistence.semantic_learning_store());
     let engine = AbstractionEngine::builder(persistence.abstraction_mapping_store(), taxonomy)

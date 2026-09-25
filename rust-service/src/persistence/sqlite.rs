@@ -245,6 +245,11 @@ impl SqlitePersistence {
                 .map_err(|_| PersistenceError::PathUnavailable)?;
         }
         connection.pragma_update(None, "foreign_keys", true)?;
+        // Without this SQLite leaves a deleted row's bytes in free space until
+        // the page is reused, so Clear Local Work Blocks, Reset Corrections and
+        // every retention sweep removed text from queries but not from the
+        // file (PRIVACY_AUDIT.md Audit 8). With it, deleted content is zeroed.
+        connection.pragma_update(None, "secure_delete", true)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let persistence = Self {
             connection: Arc::new(Mutex::new(connection)),

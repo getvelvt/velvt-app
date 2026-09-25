@@ -676,7 +676,7 @@ fn load_embedding_plugin(
             centroid_taxonomy_version = centroids.taxonomy_version(),
             loaded_taxonomy_version = taxonomy.version(),
             centroid_artifact_version = centroids.artifact_version(),
-            centroid_path,
+            centroid_path = %centroid_path.display(),
             "Tier 2 classification disabled: the configured centroid artifact \
              was built against a different taxonomy version and must be rebuilt"
         );
@@ -696,7 +696,7 @@ fn load_embedding_plugin(
             reason = "unknown_categories",
             unknown_categories = unknown.join(","),
             loaded_taxonomy_version = taxonomy.version(),
-            centroid_path,
+            centroid_path = %centroid_path.display(),
             "Tier 2 classification disabled: the configured centroid artifact \
              scores categories the loaded taxonomy does not contain"
         );

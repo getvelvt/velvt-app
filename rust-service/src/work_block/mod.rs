@@ -3174,22 +3174,15 @@ mod tests {
 
     #[test]
     fn rust_derives_stretches_switches_recoveries_and_non_accusatory_copy() {
-        let manager = manager();
+        let (manager, db) = manager_with_db();
         let active = manager.start(request(300), at(0)).unwrap();
         let id = active.block_id.unwrap();
-        for (category, second) in [
-            ("FOCUS_WORK", 0),
-            ("COMMUNICATION", 60),
-            ("FOCUS_WORK", 120),
+        for (category, second, dwell) in [
+            ("FOCUS_WORK", 0, 60),
+            ("COMMUNICATION", 60, 60),
+            ("FOCUS_WORK", 120, 180),
         ] {
-            manager
-                .observe_safe_category(
-                    category,
-                    ClassificationStatus::Classified,
-                    ClassificationConfidence::High,
-                    at(second),
-                )
-                .unwrap();
+            deliver(&db, &manager, category, second, dwell);
         }
 
         let result = manager.end(id, at(300)).unwrap().result.unwrap();
@@ -3352,6 +3345,266 @@ mod tests {
         let reread = manager.end(id, at(28_900)).unwrap();
         assert_eq!(reread.elapsed_duration_seconds, 60);
         assert_eq!(reread.result.unwrap().elapsed_duration_seconds, 60);
+    }
+
+    // -----------------------------------------------------------------------
+    // The terminal span and coverage (00-GROUND-TRUTH.md § 6c and § 6d).
+    //
+    // Swift reports a dwell when the user *leaves* it, stamped with the time
+    // they entered it and carrying its measured length. The engine sees only
+    // the start. So the dwell the user is in when a block ends has not been
+    // reported when the block is finalized, and the ledger has nothing to
+    // close the last row with except the boundary itself.
+    //
+    // These tests drive the engine the way `ipc/router.rs::handle_raw_event`
+    // does — the raw row is written first, then the category reaches the
+    // engine — because the defect lives in the gap between the two tables and
+    // cannot be seen by a test that only writes one of them.
+    // -----------------------------------------------------------------------
+
+    /// A manager over a fresh database, keeping the database so a test can
+    /// write `raw_event_buffer` rows beside the observations.
+    fn manager_with_db() -> (WorkBlockManager, SqlitePersistence) {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        (WorkBlockManager::new(db.work_block_repo()), db)
+    }
+
+    /// Reports one finished, confidently classified dwell of `seconds` that
+    /// began at `start`.
+    fn deliver(
+        db: &SqlitePersistence,
+        manager: &WorkBlockManager,
+        category: &str,
+        start: i64,
+        seconds: u64,
+    ) -> Option<ObservationOutcome> {
+        deliver_with(
+            db,
+            manager,
+            category,
+            ClassificationStatus::Classified,
+            ClassificationConfidence::High,
+            start,
+            seconds,
+        )
+    }
+
+    /// Reports one finished dwell in the router's order: `raw_event_buffer`
+    /// first, with the dwell's start and measured length, then the category
+    /// to the work-block engine stamped with the dwell's start.
+    fn deliver_with(
+        db: &SqlitePersistence,
+        manager: &WorkBlockManager,
+        category: &str,
+        status: ClassificationStatus,
+        confidence: ClassificationConfidence,
+        start: i64,
+        seconds: u64,
+    ) -> Option<ObservationOutcome> {
+        db.raw_event_repo()
+            .insert(&crate::persistence::RawEventEntry {
+                event_id: Uuid::new_v4().to_string(),
+                stable_id: "abs_terminal_span".into(),
+                label: "document:code".into(),
+                local_display_label: None,
+                local_name_suggestion: None,
+                category: category.into(),
+                taxonomy_version: "mvp-2".into(),
+                classification_tier: "exact_match".into(),
+                classification_status: status.as_str().into(),
+                classification_confidence: confidence.as_str().into(),
+                classification_source: "seed".into(),
+                occurred_at: at(start),
+                duration_seconds: seconds,
+                upload_eligible: false,
+                app_stable_id: None,
+                app_scope_eligible: false,
+            })
+            .unwrap();
+        manager
+            .observe_safe_category(category, status, confidence, at(start))
+            .unwrap()
+    }
+
+    /// Block `1c55e9b6`, the only real block when § 6c was written, replayed to
+    /// the second. The user wrote code for 1237 of its 1500 seconds; the
+    /// shipped result said COMMUNICATION, 1419 s, coverage 1.0, confidence
+    /// high — because the editor dwell was still open at the deadline and the
+    /// communication row, the last one reported, was stretched to cover it.
+    ///
+    /// Rust cannot know at the deadline what the user was doing after their
+    /// last switch; nothing has told it. The honest result is that those
+    /// seconds were not observed, which is too little to name an anchor.
+    #[test]
+    fn the_unreported_final_dwell_is_not_credited_to_the_category_the_user_left() {
+        let (manager, db) = manager_with_db();
+        let repo = db.work_block_repo();
+        let block = manager.start(request(1_500), at(0)).unwrap();
+        let block_id = block.block_id.unwrap().to_string();
+        // Focus work already open 19 s before the block; left at +81.
+        deliver(&db, &manager, "FOCUS_WORK", -19, 100);
+        // Communication, left at +263 for the editor.
+        deliver(&db, &manager, "COMMUNICATION", 81, 182);
+        // The editor dwell runs to +1598. The deadline scheduler finalizes
+        // the block at +1500, 98 s before that dwell is reported.
+        let completed = manager.request_state(at(1_500)).unwrap();
+        assert_eq!(completed.phase, WorkBlockPhase::Completed);
+        assert!(
+            deliver(&db, &manager, "FOCUS_WORK", 263, 1_335).is_none(),
+            "a dwell reported after finalization reaches no ledger"
+        );
+
+        let observations = repo.observations(&block_id).unwrap();
+        let last = observations.last().unwrap();
+        assert_eq!(last.category, "COMMUNICATION");
+        assert_eq!(
+            last.ended_at,
+            Some(at(263)),
+            "the last row closes where its own dwell ended, not at the deadline"
+        );
+
+        let result = completed.result.clone().unwrap();
+        assert_ne!(
+            result.safe_evidence_category.as_deref(),
+            Some("COMMUNICATION")
+        );
+        assert_eq!(result.longest_uninterrupted_seconds, 182);
+        // 81 + 182 reported seconds of 1500. The remainder is unobserved, not
+        // communication, and it no longer counts as coverage.
+        assert!((result.coverage_ratio - 263.0 / 1_500.0).abs() < 1e-9);
+        assert_eq!(result.coverage, WorkBlockCoverage::Insufficient);
+        assert_eq!(result.confidence, ConfidenceLevel::None);
+        assert!(result.safe_evidence_category.is_none());
+        assert_eq!(result.observation, LOW_COVERAGE_RESULT_COPY);
+        assert_eq!(
+            manager.request_state(at(1_700)).unwrap().result,
+            completed.result,
+            "the late dwell cannot rewrite a finalized result"
+        );
+    }
+
+    /// A final dwell that *was* reported before the block ended keeps exactly
+    /// its reported length. Only the unreported remainder goes unclaimed.
+    #[test]
+    fn an_ended_block_closes_its_last_run_where_the_reported_dwell_ended() {
+        let (manager, db) = manager_with_db();
+        let block = manager.start(request(1_500), at(0)).unwrap();
+        deliver(&db, &manager, "FOCUS_WORK", -30, 630);
+        deliver(&db, &manager, "COMMUNICATION", 600, 60);
+        deliver(&db, &manager, "FOCUS_WORK", 660, 700);
+        // The user leaves the editor at +1360 and ends the block at +1400.
+        let result = manager
+            .end(block.block_id.unwrap(), at(1_400))
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(result.safe_evidence_category.as_deref(), Some("FOCUS_WORK"));
+        assert_eq!(result.switch_away_count, 1);
+        assert_eq!(result.recovery_count, 1);
+        assert_eq!(
+            result.longest_uninterrupted_seconds, 700,
+            "not 740: the last 40 s were never reported as focus work"
+        );
+        assert!((result.coverage_ratio - 1_360.0 / 1_400.0).abs() < 1e-9);
+        assert_eq!(result.coverage, WorkBlockCoverage::Good);
+        assert_eq!(result.confidence, ConfidenceLevel::High);
+    }
+
+    /// § 6d: coverage is what the raw buffer saw, not whether the ledger rows
+    /// tile the block. Rows always tile — each ends where the next begins — so
+    /// a stretch with no report at all read as covered, by the category before
+    /// it. Unconfident dwells are reported but support no category, and stay
+    /// out of coverage exactly as they stayed out before.
+    #[test]
+    fn coverage_counts_reported_confident_time_not_ledger_tiling() {
+        let (manager, db) = manager_with_db();
+        manager.start(request(1_500), at(0)).unwrap();
+        deliver(&db, &manager, "FOCUS_WORK", 0, 300);
+        // Nothing at all is reported for +300..+700.
+        deliver_with(
+            &db,
+            &manager,
+            "UNCLASSIFIED",
+            ClassificationStatus::Ambiguous,
+            ClassificationConfidence::Low,
+            700,
+            300,
+        );
+        deliver(&db, &manager, "COMMUNICATION", 1_000, 100);
+        deliver(&db, &manager, "FOCUS_WORK", 1_100, 400);
+        let result = manager.request_state(at(1_500)).unwrap().result.unwrap();
+        // The ledger holds FOCUS_WORK 0..700 (the gap tiled over),
+        // UNCLASSIFIED 700..1000, COMMUNICATION 1000..1100 and FOCUS_WORK
+        // 1100..1500: 1200 confident seconds, a ratio of 0.8, "good", "high".
+        // What was reported with confidence is 300 + 100 + 400.
+        assert!((result.coverage_ratio - 800.0 / 1_500.0).abs() < 1e-9);
+        assert_eq!(result.coverage, WorkBlockCoverage::Partial);
+        assert_eq!(result.confidence, ConfidenceLevel::Low);
+    }
+
+    /// Sleep is a block boundary as well. Pausing stretched the open row to the
+    /// pause instant the same way `finish` stretched it to the deadline, and
+    /// the paused span must never count as coverage whatever the raw buffer
+    /// says, because it is not part of the block.
+    #[test]
+    fn pausing_closes_the_open_run_at_its_reported_end_and_paused_time_is_not_coverage() {
+        let (manager, db) = manager_with_db();
+        let repo = db.work_block_repo();
+        let block = manager.start(request(3_600), at(0)).unwrap();
+        let id = block.block_id.unwrap();
+        deliver(&db, &manager, "FOCUS_WORK", 0, 400);
+        deliver(&db, &manager, "COMMUNICATION", 400, 50);
+        // Back in the editor from +450. The Mac sleeps at +600.
+        manager
+            .lifecycle(WorkBlockLifecycleEvent::Sleep, at(600))
+            .unwrap();
+        let observations = repo.observations(&id.to_string()).unwrap();
+        let last = observations.last().unwrap();
+        assert_eq!(last.category, "COMMUNICATION");
+        assert_eq!(last.ended_at, Some(at(450)), "not the pause instant");
+
+        manager.resume(id, at(700)).unwrap();
+        // The editor dwell, +450..+900 with the sleep inside it, is reported
+        // on the next switch.
+        deliver(&db, &manager, "FOCUS_WORK", 450, 450);
+        deliver(&db, &manager, "COMMUNICATION", 900, 60);
+        let result = manager.end(id, at(1_000)).unwrap().result.unwrap();
+        assert_eq!(result.elapsed_duration_seconds, 900);
+        // Reported, confident, and inside a ledger row: 0..450 and 700..960.
+        // The pause is excluded. So is 450..600: it was real editor time, but
+        // its dwell was reported only after the resume, so no row holds it
+        // and it is left unclaimed rather than guessed.
+        assert!((result.coverage_ratio - 710.0 / 900.0).abs() < 1e-9);
+        assert_eq!(result.coverage, WorkBlockCoverage::Good);
+    }
+
+    /// A service restart mid-block is the third boundary. The first category
+    /// reported after it used to close the open row at the restart instant,
+    /// filing the whole outage under the category the user had already left.
+    #[test]
+    fn a_restart_does_not_stretch_the_open_run_across_the_outage() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let repo = db.work_block_repo();
+        let before = WorkBlockManager::new(db.work_block_repo());
+        let block = before.start(request(1_500), at(0)).unwrap();
+        deliver(&db, &before, "FOCUS_WORK", 0, 300);
+        deliver(&db, &before, "COMMUNICATION", 300, 60);
+        // The service is down from about +400 and back at +900.
+        let after = WorkBlockManager::new(db.work_block_repo());
+        assert_eq!(
+            after.recover_after_restart(at(900)).unwrap().phase,
+            WorkBlockPhase::Active
+        );
+        // The editor dwell from +360 is reported on the next switch.
+        deliver(&db, &after, "FOCUS_WORK", 360, 700);
+        let observations = repo
+            .observations(&block.block_id.unwrap().to_string())
+            .unwrap();
+        let communication = observations
+            .iter()
+            .find(|observation| observation.category == "COMMUNICATION")
+            .unwrap();
+        assert_eq!(communication.ended_at, Some(at(360)));
     }
 
     /// Mutable fake Focus/DND source answering from explicit active ranges,

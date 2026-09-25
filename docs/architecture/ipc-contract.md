@@ -1,9 +1,9 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 30 on 2026-09-25.** This page
+> **Reconciled with `proto/` at protocol 31 on 2026-09-25.** This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
-> reconciliation the page had last been changed on 2026-07-17 (protocol 15–17
+> reconciliation the page had last been reconciled on 2026-07-17 (protocol 15–17
 > era): its direction lists stopped at `clear_work_block_data`, and its `raw_event`
 > entry lacked `duration_seconds` (17), `focused_document_url` (23),
 > `declared_app_category` and `document_type_ids` (30).
@@ -392,7 +392,7 @@ operation uploads a raw correction target or opaque mapping key. A corrected
 event may still sync its already-safe category by event ID through the existing
 cloud correction endpoint.
 
-### Messages added from protocol 13 to protocol 30
+### Messages added from protocol 13 to protocol 31
 
 Every message below is local IPC only: none is uploaded, and no upload DTO has
 a field any of them could occupy. Field lists are in `proto/schema/`; the
@@ -435,6 +435,10 @@ version in brackets is where the message or field arrived.
   drift offer, rendered in-app and, at `normal` salience, as a notification
   with Rust-authored copy. A `quiet` offer renders the card without a
   notification.
+- `work_block_state.anchor_category` [31]: the broad category the drift gate
+  treats as the live block's anchor, computed by the gate's own function.
+  Required and nullable: null outside an active or paused block and until a
+  confident observation has closed; absent entirely from a pre-31 service.
 - `report_intervention_outcome` [24; `was_focused` 25]: Swift to Rust. The
   person's explicit answer to an offer. Silence is not representable; it is
   recorded when the block ends unanswered.

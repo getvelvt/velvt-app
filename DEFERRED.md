@@ -5,7 +5,8 @@ Each entry below was reviewed during the MVP integration pass and judged
 safe to defer — none of them block a real user installing and running
 Velvt today.
 
-**Last reviewed 2026-09-25 against `develop` (1.0.11, protocol 30).** That
+**Last reviewed 2026-09-25 against `develop` (protocol 31; the shipped 1.0.11
+is protocol 30).** That
 review rewrote three entries the shipped code had overtaken — the weekly
 report (a local weekly digest shipped in protocol 28), notification
 scheduling (there are now two notification kinds), and the helper lifecycle

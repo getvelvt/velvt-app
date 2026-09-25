@@ -4,8 +4,9 @@ This is the canonical architecture reference for this repository: the Velvt
 macOS app (`swift-client/`, product `Velvt.app`) and its bundled Rust helper
 (`rust-service/`). For deep dives into individual subsystems, see
 [`docs/architecture/`](docs/architecture/); this document ties them together
-and reflects `develop` as of 2026-09-25 (1.0.11, IPC protocol 30, migrations
-0001–0036), not any individual issue branch.
+and reflects `develop` as of 2026-09-25 (IPC protocol 31 and migrations
+0001–0036; the shipped 1.0.11 build is protocol 30), not any individual issue
+branch.
 
 ## System diagram
 
@@ -193,7 +194,7 @@ and had to be retroactively closed during this MVP integration pass).
 Unknown future server discriminators decode as `ServerMessage.unknown(type:)`
 on the Swift side so older clients degrade gracefully rather than crashing.
 [`docs/architecture/ipc-contract.md`](docs/architecture/ipc-contract.md) is the
-message catalog, reconciled through protocol 30.
+message catalog, reconciled through protocol 31.
 
 ## The auth state machine
 

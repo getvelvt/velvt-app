@@ -315,12 +315,12 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
         panel.contentMaxSize = maximumContentSize
         // The content forces `.preferredColorScheme(.dark)`. Without pinning
         // the window to match, a title bar in Light mode would sit as a pale
-        // strip above dark content. The colour is `Color.velvtSurface`, so the
-        // drag strip reads as part of the surface rather than as chrome.
+        // strip above dark content. The colour is `VelvtSurface.ground` — the
+        // brand ink the content itself sits on, which never adapts to system
+        // appearance — so the drag strip reads as part of the ground rather
+        // than as chrome.
         panel.appearance = NSAppearance(named: .darkAqua)
-        panel.backgroundColor = NSColor(
-            srgbRed: 0.09, green: 0.08, blue: 0.10, alpha: 1
-        )
+        panel.backgroundColor = NSColor(VelvtSurface.ground)
     }
 
     // MARK: PopoverPresenting

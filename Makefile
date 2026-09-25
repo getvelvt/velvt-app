@@ -94,7 +94,7 @@ test-rust: check-rust-toolchain
 # the tail bound is #[ignore]d out of test-rust so a busy shared runner cannot
 # fail a pull request on a tail sample. The pull request still carries the Tier
 # 2 median bound, which runner load does not move. CI runs this target in the
-# `bench` job, on pushes to main and on demand -- see .github/workflows/ci.yml,
+# `bench` job, on pushes to develop and main and on demand -- see .github/workflows/ci.yml,
 # which states what that timing trades away.
 #
 # --release, unlike test-rust, because a wall-clock budget for a shipped binary

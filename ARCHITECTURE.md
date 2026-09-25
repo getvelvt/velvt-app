@@ -242,7 +242,7 @@ measured in this pass:
 |---|---|---|---|
 | Tier 1 p95 < 1 ms | 4.86 µs | `make test-rust`, every pull request | PASS |
 | Tier 2 p50 < 10 ms | 21.6 µs (fake model) | `make test-rust`, every pull request, against both the fake model and the builtin one | PASS |
-| Tier 2 p95 < 25 ms | 42.3 µs (fake model) | `make bench-rust`, the `bench` job on pushes to `main` | PASS, real-model latency not independently verified |
+| Tier 2 p95 < 25 ms | 42.3 µs (fake model) | `make bench-rust`, the `bench` job on pushes to `develop` and `main` | PASS, real-model latency not independently verified |
 | Idle CPU < 0.5% | 0.0% over a 7s sample | nothing automated | PASS (shorter window than the 60s target) |
 | Rust RSS < 50 MB | 6.7–6.9 MB over a 7s sample | nothing automated | PASS (shorter window than the 10-min target) |
 | IPC round-trip p95 < 50 ms | not measured | nothing automated | infrastructure gap, not a failure |

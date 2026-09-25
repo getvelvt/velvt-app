@@ -44,7 +44,7 @@ This is the most critical invariant in the codebase. A violation here is a P0 bu
 
 **The Rust service is the enforcement boundary.** Raw fields must never appear in `upload_batch` / `batch_event` rows or any outbound HTTP payload; `BatchEventPayload`'s hand-written `Serialize` in `rust-service/src/upload/dto.rs` emits exactly six fields. The cloud rejects violations with `raw_field_rejected`. Tests in `rust-service/` must prove this invariant programmatically.
 
-Auth tokens: **Keychain only** (Swift) / **platform credential store** (Rust). Never SQLite.
+Auth tokens: **Keychain only** (Swift) / **in memory only** (Rust, `VolatileTokenStore`). Never SQLite.
 
 ***
 
@@ -81,7 +81,7 @@ The Swift client declares its supported protocol version on every socket connect
 - Sparkle 2.9.4 is the only third-party package; there is no Swift-side database
 - Unix domain socket client for IPC
 - UserNotifications, local only (drift offer and daily insight); no APNs registration
-- Permissions: Accessibility and Notifications only
+- Permissions: Accessibility and Notifications, plus optional Focus status (one boolean)
 
 ### Key constraints
 - **No polling.** Event-driven only: `NSWorkspace.didActivateApplicationNotification`, `kAXFocusedWindowChangedNotification`, `kAXTitleChangedNotification`.

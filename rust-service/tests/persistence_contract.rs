@@ -186,6 +186,9 @@ fn migrations_are_idempotent_and_create_required_indexes() {
         "idx_abstraction_map_updated_at",
         "idx_raw_event_buffer_occurred_at",
         "idx_raw_event_buffer_created_at",
+        // The `abstraction_map` sweep keeps a mapping a buffered event still
+        // names, so it looks the buffer up by `stable_id` per candidate (0037).
+        "idx_raw_event_buffer_stable_id",
         "idx_upload_batch_created_at",
         "idx_upload_batch_sent_at",
         "idx_batch_event_occurred_at",

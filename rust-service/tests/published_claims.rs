@@ -57,7 +57,8 @@ use chrono::{DateTime, Utc};
 use rusqlite::{types::Value, Connection};
 use uuid::Uuid;
 use velvt_service::abstraction::{
-    app_bundle_key_for, AbstractionEngine, EmbeddingSimilarityPlugin, Taxonomy,
+    app_bundle_key_for, app_stable_key_for, stable_key_for, AbstractionEngine,
+    EmbeddingSimilarityPlugin, Taxonomy,
 };
 use velvt_service::auth::{
     AccountAuthService, AuthError, AuthState, AuthStateMachine, FakeTokenStore, HttpClient,
@@ -67,7 +68,9 @@ use velvt_service::config::ServiceConfig;
 use velvt_service::delivery::FakeCacheManager;
 use velvt_service::ipc::{MessageRouter, R7Router};
 use velvt_service::persistence::{AbstractionMapping, SqlitePersistence};
-use velvt_service::retention::SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS;
+use velvt_service::retention::{
+    ABSTRACTION_MAP_RETENTION_DAYS, SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
+};
 use velvt_service::upload::{
     BatchAssembler, BatchPayload, BatchUploadError, BatchUploader, EventIngestor,
     FakeBatchUploader, FakePrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator,
@@ -200,7 +203,7 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
     // constant beside it does not.
     let (prototype_total_cap, prototype_per_category_cap) = measured_prototype_caps();
     let expected: Vec<(&str, Vec<u64>)> = vec![
-        ("abstraction_map", vec![]),
+        ("abstraction_map", vec![ABSTRACTION_MAP_RETENTION_DAYS]),
         ("raw_event_buffer", vec![raw_event_days]),
         // "pending and failed batches: 30 days, the same horizon as sent" is
         // literally true in the DAL: `delete_stale_queued_batch` takes the sent
@@ -576,6 +579,7 @@ const BLOB_BEARING_COLUMNS: &[&str] = &[
     "embedding_salt.salt",
     "personal_semantic_prototype.embedding",
     "semantic_embedding_cache.embedding",
+    "stable_key_salt.salt",
 ];
 
 /// A sentinel application name, window title, bundle identifier, declared
@@ -622,6 +626,10 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
         ),
         "the sentinel event was not accepted, so nothing was written to look at: {acknowledgement:?}"
     );
+    let salt = persistence
+        .abstraction_map_repo()
+        .stable_key_salt()
+        .unwrap();
     drop(persistence);
 
     // A second connection to the same file, which is what PRIVACY.md invites a
@@ -632,15 +640,35 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
     let connection = Connection::open(&scratch.path).unwrap();
 
     // The key the router is supposed to have stored in place of the bundle
-    // identifier, computed here from the same public function the engine uses --
-    // so this test asserts the stored value is that digest rather than merely
-    // something 64 characters long.
-    let bundle_digest = app_bundle_key_for(SENTINEL_BUNDLE_ID);
+    // identifier, computed here from the same public function the engine uses,
+    // under this database's salt -- so this test asserts the stored value is that
+    // digest rather than merely something 64 characters long.
+    let bundle_digest = app_bundle_key_for(&salt, SENTINEL_BUNDLE_ID);
+    // The window key, the same way. Its positive control is `abstraction_map`,
+    // the store PRIVACY.md describes as holding it.
+    let window_key = stable_key_for(&salt, SENTINEL_APP_NAME, SENTINEL_WINDOW_TITLE);
+    // And the three digests every one of those keys WAS before migration 0037,
+    // spelled out from the published domain strings rather than borrowed from
+    // `key.rs`: computable by anyone with the source and no salt, which is
+    // exactly why none of them may be on disk.
+    let unsalted_digests = [
+        unsalted_digest(
+            b"velvt:abstraction-key:v1",
+            &[SENTINEL_APP_NAME, SENTINEL_WINDOW_TITLE],
+        ),
+        unsalted_digest(b"velvt:abstraction-app-key:v1", &[SENTINEL_APP_NAME]),
+        unsalted_digest(
+            b"velvt:abstraction-app-bundle-key:v1",
+            &[SENTINEL_BUNDLE_ID],
+        ),
+    ];
 
     let mut app_sightings = BTreeSet::new();
     let mut title_sightings = BTreeSet::new();
     let mut bundle_id_sightings = BTreeSet::new();
     let mut bundle_digest_sightings = BTreeSet::new();
+    let mut window_key_sightings = BTreeSet::new();
+    let mut unsalted_digest_sightings = BTreeSet::new();
     let mut declared_category_sightings = BTreeSet::new();
     let mut document_type_sightings = BTreeSet::new();
     let mut blob_columns_holding_values = BTreeSet::new();
@@ -667,6 +695,15 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
         }
         if holds_token(value, &bundle_digest) {
             bundle_digest_sightings.insert(qualified.clone());
+        }
+        if holds_token(value, &window_key) {
+            window_key_sightings.insert(qualified.clone());
+        }
+        if unsalted_digests
+            .iter()
+            .any(|digest| holds_token(value, digest))
+        {
+            unsalted_digest_sightings.insert(qualified.clone());
         }
         if holds_token(value, SENTINEL_DECLARED_CATEGORY_TOKEN) {
             declared_category_sightings.insert(qualified.clone());
@@ -765,6 +802,23 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
          plain text"
     );
 
+    // Migration 0037, in both directions. The salted window key is where the
+    // document says it is -- the positive control that makes the absence below
+    // mean something -- and no column anywhere holds the unsalted digest of the
+    // window, the application, or the bundle: the value anyone could compute from
+    // this repository alone and test against the file.
+    assert!(
+        window_key_sightings.contains("abstraction_map.key_hash"),
+        "the salted window key is not in `abstraction_map.key_hash`, so the engine did \
+         not key this window under the database's own salt: found {window_key_sightings:?}"
+    );
+    assert!(
+        unsalted_digest_sightings.is_empty(),
+        "an unsalted key digest reached {unsalted_digest_sightings:?}. Migration 0037 \
+         and PRIVACY.md state that every stored key is an HMAC under the per-install \
+         salt; an unsalted digest is testable offline from the published source"
+    );
+
     // The two declared facts are stored raw, each in the one column migration
     // 0033 declares for it. Equality rather than a subset: a fact missing from its
     // own column means the walk never saw it, and a fact in a second column is an
@@ -825,6 +879,23 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
             .difference(&allowlisted)
             .collect::<Vec<_>>()
     );
+}
+
+/// A key as every install computed it before migration 0037: SHA-256 over a
+/// published domain string and the length-prefixed raw fields, lowercase hex.
+fn unsalted_digest(domain: &[u8], fields: &[&str]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    for field in fields {
+        hasher.update((field.len() as u64).to_be_bytes());
+        hasher.update(field.as_bytes());
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Visits every value of every column of every table in `sqlite_master`.
@@ -973,6 +1044,10 @@ impl BatchUploader for RecordingUploader {
 async fn no_declared_fact_reaches_an_upload_payload() {
     let scratch = ScratchDatabase::new();
     let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let salt = persistence
+        .abstraction_map_repo()
+        .stable_key_salt()
+        .unwrap();
     let uploader = RecordingUploader::default();
     let router = sentinel_router_with_uploader(&persistence, uploader.clone());
 
@@ -1019,7 +1094,22 @@ async fn no_declared_fact_reaches_an_upload_payload() {
         ),
         (
             "the bundle key digest",
-            app_bundle_key_for(SENTINEL_BUNDLE_ID),
+            app_bundle_key_for(&salt, SENTINEL_BUNDLE_ID),
+        ),
+        (
+            "the unsalted bundle digest",
+            unsalted_digest(
+                b"velvt:abstraction-app-bundle-key:v1",
+                &[SENTINEL_BUNDLE_ID],
+            ),
+        ),
+        (
+            "the application key",
+            app_stable_key_for(&salt, SENTINEL_APP_NAME),
+        ),
+        (
+            "the window key",
+            stable_key_for(&salt, SENTINEL_APP_NAME, SENTINEL_WINDOW_TITLE),
         ),
         (
             "the declared application category",
@@ -1103,6 +1193,7 @@ const MIGRATED_TABLES: &[&str] = &[
     "raw_event_buffer",
     "schema_migration",
     "semantic_embedding_cache",
+    "stable_key_salt",
     "upload_batch",
     "upload_host_backoff",
     "velvt_quiet_hours",

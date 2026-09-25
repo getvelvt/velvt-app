@@ -549,9 +549,14 @@ async fn local_activity_name_stays_off_cloud_and_remains_in_correction_history()
     // The app rung was still written --- without it the next window of this
     // application is unclassified again. It is unlisted, not unwritten.
     // Keyed on the application name the event reported, which is what
-    // `AbstractedEvent::app_stable_id` carries. (`events_before` does not select
-    // that column, so it is derived here rather than read back.)
-    let app_key = app_stable_key_for("Private Research App");
+    // `AbstractedEvent::app_stable_id` carries, under this database's salt
+    // (migration 0037). (`events_before` does not select that column, so it is
+    // derived here rather than read back.)
+    let salt = persistence
+        .abstraction_map_repo()
+        .stable_key_salt()
+        .unwrap();
+    let app_key = app_stable_key_for(&salt, "Private Research App");
     let app_rung = persistence
         .abstraction_map_repo()
         .app_scope_override(&app_key)

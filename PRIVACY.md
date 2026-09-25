@@ -67,7 +67,7 @@ All persistence lives in a SQLite database at
 
 | Table | Contents | Default retention |
 |---|---|---|
-| `abstraction_map` | stable-key hash → stable ID, label, category, taxonomy version, and `display_name` — the activity name you typed when you renamed a classification | the mapping: indefinite; `display_name`: until you undo that correction, or until Reset Corrections, which nulls the column on every row. No sweep expires either |
+| `abstraction_map` | stable-key hash → stable ID, label, category, taxonomy version, and `display_name` — the activity name you typed when you renamed a classification. The key is an HMAC under this install's `stable_key_salt` (migration 0037), described below | a mapping is swept once 14 days pass with no further observation of its window, unless a correction you made or an event still in `raw_event_buffer` points at it — so a window you corrected keeps its mapping until you undo that correction. `display_name` also goes when you undo that correction, or with Reset Corrections, which nulls the column on every row |
 | `raw_event_buffer` | abstracted event metadata for short-lived audit/replay and the local 14-day activity chart, plus six device-local columns that can name or identify an application, all described below (`app_stable_id`, `local_display_label`, `local_name_suggestion`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids`) | 14 days (`VELVT_RAW_EVENT_TTL_HOURS`) |
 | `upload_batch` / `batch_event` | privacy-safe events grouped into upload batches | sent batches: 30 days; rejected batches: 7 days (audit window); pending and failed batches: 30 days, the same horizon as sent |
 | `personal_override` | one correction you made to a single window: the stable-key hash, the category you chose, and `activity_name`, the name you typed for it | until you undo that correction or use Reset Corrections. No sweep expires it |
@@ -111,11 +111,13 @@ corrected on 2026-09-24 to name them:
 - **`app_bundle_stable_id`** — a SHA-256 digest of the application's **bundle
   identifier** (`com.microsoft.VSCode` and the like), computed under its own
   domain separator so it cannot collide with the name hash beside it. The column
-  holds the digest, never the identifier — but the digest is not a secret. The
-  hash is unsalted, and the set of macOS bundle identifiers is small, public and
-  enumerable, so anyone holding this file can hash a list of known identifiers
-  and read off which applications you ran. Treat this column as naming the
-  application. What it cannot reveal is anything about a document: no window
+  holds the digest, never the identifier — but the digest is not a secret. Since
+  migration 0037 it is keyed with this install's `stable_key_salt`, so it differs
+  from Mac to Mac and a list hashed from public sources matches nothing. The salt
+  sits in the same file, though, and the set of macOS bundle identifiers is
+  small, public and enumerable, so anyone holding the whole file can hash a list
+  of known identifiers under it and read off which applications you ran. Treat
+  this column as naming the application. What it cannot reveal is anything about a document: no window
   title, no URL, no file name, no path, and nothing you typed. NULL when macOS
   reported no bundle identifier, and on every row written by a client older than
   protocol 30.
@@ -203,8 +205,8 @@ reaches a pair you stopped observing; it never reaches one you keep observing.
 
 The table above is every store that holds something drawn from your Mac. It is
 not every table in the file. A database with every shipped migration applied
-holds 34 tables, plus SQLite's own `sqlite_sequence`; the 17 that are not in
-that table hold counters, settings, and feature state. They are listed here for
+holds 35 tables, plus SQLite's own `sqlite_sequence`; the 18 that are not in
+that table hold counters, settings, keys, and feature state. They are listed here for
 the same reason the three empty ones are — you will see them if you open the
 file.
 
@@ -213,6 +215,7 @@ file.
 | `classification_telemetry` | one counter per taxonomy version and classification tier: how many events that tier classified. No app identity and no label; the only time it holds is the counter's own `updated_at` | no sweep and no in-app removal; the counters persist until `~/.velvt/` is deleted |
 | `classifier_artifact_telemetry` | the same shape for the classifier artifact: one counter per artifact version, such as `builtin-hash-v1` | no sweep and no in-app removal |
 | `embedding_salt` | a 32-byte random value generated on this device by migration 0031, provisioned as the per-install key for the embedding feature hash. No activity data. What the shipped classifier does with it is the subject of the section above | singleton, and never rewritten: a second salt would invalidate every sketch stored under the first. No sweep |
+| `stable_key_salt` | a second 32-byte random value generated on this device, by migration 0037: the per-install key every stable key, application key, and bundle digest in this file is an HMAC under. It stops a guess being checked offline from this repository alone and stops two Macs' keys matching; it does not stop someone who holds this whole file, because it is in it. No activity data | singleton, and never rewritten while it exists: a second salt would orphan every correction keyed under the first, so if the row is deleted by hand Velvt mints a new one and removes the corrections and mappings it can no longer match. No sweep |
 | `upload_host_backoff` | one row per upload host — the configured API hostname, its consecutive-failure count, and the earliest time a next attempt is allowed. No event content | removed for a host as soon as a batch upload to it succeeds; otherwise it persists |
 | `work_block_intervention` | the drift offer a block received: broad anchor category, switch count, window length, salience, when it was offered, and the outcome you gave it. The block id is the primary key, so a block holds at most one. No label, app identity, window title, URL, or intention text | removed with its block, and by Clear Local Work Blocks |
 | `work_block_category_correction` | when you answer an offer with "wrong classification", the broad category that counts as focus work for that block. Categories only | removed with its block, and by Clear Local Work Blocks |
@@ -343,16 +346,20 @@ UUIDv4 — it is not derived from the window title at all, by any function. The
 guarantee is therefore *stronger* than the sentence claimed, and the sentence
 was still false: a random identifier carries no relationship to the string it
 stands for, so there is nothing in it to reverse. What does the lookup is the
-separate stable *key*, a plain unsalted SHA-256 of (app name, window context),
-which lives in `abstraction_map` on this device and is reversible by
-enumeration to anyone holding the database file — see the hashing section
-below.
+separate stable *key*, which lives in `abstraction_map` on this device. Since
+migration 0037 it is an HMAC-SHA-256 of (app name, window context) under
+`stable_key_salt`; before that it was a plain unsalted SHA-256, testable against
+any Velvt database from this repository's source alone. The salt ends that, and
+ends two Macs sharing a key, but it is stored beside the keys, so anyone holding
+the whole database file can still confirm a guessed title one hash at a time.
+What limits that is retention: a mapping is swept 14 days after its window was
+last observed, unless a correction or a buffered event still points at it.
 
 **Does keep on disk, named here rather than left to be discovered:** the raw
 application name, in `raw_event_buffer.local_name_suggestion`; a digest of the
 application's bundle identifier, in `raw_event_buffer.app_bundle_stable_id` and
-`personal_app_override.bundle_key_hash`, which a holder of the file can reverse
-by enumerating known bundle identifiers; the metadata an application publishes
+`personal_app_override.bundle_key_hash`, which a holder of the whole file can
+reverse by hashing known bundle identifiers under the salt stored beside it; the metadata an application publishes
 about itself, in `raw_event_buffer.declared_app_category` and
 `raw_event_buffer.document_type_ids`; the names you
 type when you correct a classification, in `abstraction_map.display_name`,

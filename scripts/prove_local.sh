@@ -14,12 +14,12 @@
 #      BY NAME, and its distinct values are printed. Numbers and timestamps
 #      are counted but not enumerated — they cannot carry a window title.
 #      Every `BLOB` column is named too, as UNINSPECTED with a byte count.
-#      bash and sqlite3 cannot decode one, and Velvt stores three: the
+#      bash and sqlite3 cannot decode one, and Velvt stores four: the
 #      256-number embedding sketch in `semantic_embedding_cache` and in
-#      `personal_semantic_prototype`, and the 32-byte per-install salt in
-#      `embedding_salt`. Those are the only things on this disk this script
-#      cannot read out to you, so it names them rather than leaving the
-#      columns out. What CAN be recovered from a sketch — and it is more
+#      `personal_semantic_prototype`, and the two 32-byte per-install
+#      salts in `embedding_salt` and `stable_key_salt`. Those are the only
+#      things on this disk this script cannot read out to you, so it names
+#      them rather than leaving the columns out. What CAN be recovered from a sketch — and it is more
 #      than nothing — is in PRIVACY.md, "The embedding sketch, and what can
 #      be read back out of it".
 #   3. There is no `SELECT *` in this file. Every column read is named, the
@@ -118,7 +118,7 @@ annotation_for() {
     raw_event_buffer.local_display_label)
       echo "local display string, e.g. Coding or Gmail — derived, but it can name a service" ;;
     raw_event_buffer.app_bundle_stable_id)
-      echo "SHA-256 of the app's bundle id — read as naming the app: the hash is unsalted and bundle ids are a short public list, so a holder of this file can reverse it. No title, URL or path in it" ;;
+      echo "HMAC-SHA-256 of the app's bundle id under this Mac's stable_key_salt — read as naming the app: the salt is in this file and bundle ids are a short public list, so a holder of this file can still reverse it. No title, URL or path in it" ;;
     raw_event_buffer.declared_app_category)
       echo "LSApplicationCategoryType the app's own Info.plist declares — the developer's public label for the app, not text you wrote" ;;
     raw_event_buffer.document_type_ids)
@@ -391,10 +391,10 @@ cat <<'CAVEAT'
 
   It does not read out the columns it cannot decode. Every BLOB is named above
   as UNINSPECTED with a byte count: the embedding sketches in
-  semantic_embedding_cache and personal_semantic_prototype, and the 32-byte salt
-  in embedding_salt. A sketch is not a window title, but individual words of one
-  are partially recoverable from it — PRIVACY.md says how, and PRIVACY_AUDIT.md
-  Audit 7 is the method and the numbers. This script names those columns rather
+  semantic_embedding_cache and personal_semantic_prototype, and the 32-byte
+  salts in embedding_salt and stable_key_salt. A sketch is not a window title,
+  but individual words of one are partially recoverable from it — PRIVACY.md
+  says how, and PRIVACY_AUDIT.md Audit 7 is the method and the numbers. This script names those columns rather
   than letting "bash could not read it" pass for "there is nothing in it".
 
   It does not prove what the app sends — for that, watch the network, or read

@@ -405,9 +405,11 @@ prototypes. They are limited to 12 per category and 64 total, decay over 90
 days, and require both a 0.90 similarity radius and a 0.08 winning margin.
 Remove and reset controls delete these prototypes with their exact rules.
 Only embeddings and context hashes are persisted; raw classifier input is
-never stored in the semantic-learning tables. The hashes are unsalted SHA-256
-over low-entropy inputs, so they resist a reader who does not hold the database
-file and do not resist one who does — `PRIVACY.md` states the bound precisely.
+never stored in the semantic-learning tables. The hashes are HMAC-SHA-256 over
+low-entropy inputs under a per-install salt kept in the same database file
+(migration 0037), so they resist a reader who does not hold the file, and a
+table precomputed from this source, and do not resist one who holds the file —
+`PRIVACY.md` states the bound precisely.
 They never leave the device.
 
 Install an approved model artifact bundle by placing its files together and

@@ -11,13 +11,15 @@ use std::{
 
 use chrono::Utc;
 use velvt_service::persistence::{
-    BatchEvent, GateVerdict, InterventionDecision, NewUploadBatch, RawEventEntry,
-    SqlitePersistence, UploadBatchStatus, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
+    AbstractionMapping, BatchEvent, GateVerdict, InterventionDecision, NewUploadBatch,
+    RawEventEntry, SqlitePersistence, UploadBatchStatus, WorkBlockObservation, WorkBlockOrigin,
+    WorkBlockRecord,
 };
 use velvt_service::retention::{
-    CleanupReport, InterventionDecisionOutcomeTarget, RawEventRetentionTarget, RetentionError,
-    RetentionScheduler, RetentionTarget, SemanticEmbeddingCacheRetentionTarget,
-    UploadBatchRetentionTarget, DECISION_OUTCOME_HORIZON_SECONDS,
+    AbstractionMapRetentionTarget, CleanupReport, InterventionDecisionOutcomeTarget,
+    RawEventRetentionTarget, RetentionError, RetentionScheduler, RetentionTarget,
+    SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+    ABSTRACTION_MAP_RETENTION_DAYS, DECISION_OUTCOME_HORIZON_SECONDS,
 };
 use velvt_shared_types::{
     ClassificationConfidence, ClassificationStatus, WorkBlockIntensity, WorkBlockPhase,
@@ -879,6 +881,67 @@ fn semantic_embedding_cache_expires_on_the_raw_event_horizon() {
             .unwrap()
             .is_some(),
         "a row inside the window is still a live cache entry"
+    );
+    assert_eq!(target.run_cleanup().unwrap().deleted, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Test 10 — A window's mapping expires on the raw-event horizon
+// ---------------------------------------------------------------------------
+
+fn mapping(index: u8) -> AbstractionMapping {
+    AbstractionMapping {
+        key_hash: format!("{index:064x}"),
+        stable_id: format!("abs_mapping_{index}"),
+        label: "unlogged".into(),
+        category: "UNLOGGED".into(),
+        taxonomy_version: "mvp-2".into(),
+        classification_tier: "fallback".into(),
+        classification_status: "ambiguous".into(),
+        classification_confidence: "low".into(),
+        classification_source: "fallback".into(),
+        display_name: None,
+    }
+}
+
+/// `abstraction_map` kept one row per window ever observed and had no target
+/// at all. A mapping not observed inside the horizon now expires like the
+/// raw event that produced it -- unless the user corrected that window, in
+/// which case it lives as long as the correction does.
+#[test]
+fn a_window_mapping_expires_on_the_raw_event_horizon_unless_it_was_corrected() {
+    assert_eq!(ABSTRACTION_MAP_RETENTION_DAYS, 14);
+    let db = open_db();
+    let maps = db.abstraction_map_repo();
+    for index in 0..3u8 {
+        maps.upsert(&mapping(index)).unwrap();
+    }
+    maps.save_personal_override("abs_mapping_1", "FOCUS_WORK", None)
+        .unwrap();
+    db.set_abstraction_map_updated_at_for_test(
+        &["abs_mapping_0".into(), "abs_mapping_1".into()],
+        (Utc::now() - chrono::Duration::days(15)).timestamp(),
+    )
+    .unwrap();
+
+    let target = AbstractionMapRetentionTarget::with_default_retention(maps.clone(), 500);
+    assert_eq!(target.name(), "abstraction_map");
+    assert_eq!(
+        target.run_cleanup().unwrap().deleted,
+        1,
+        "only the stale mapping nothing points at expires"
+    );
+    assert!(
+        maps.get("abs_mapping_0").is_err(),
+        "the stale mapping is gone"
+    );
+    assert!(
+        maps.get("abs_mapping_1").is_ok(),
+        "a corrected window keeps its mapping, or the rule could not be listed or removed"
+    );
+    assert!(
+        maps.get("abs_mapping_2").is_ok(),
+        "an observed window is live"
     );
     assert_eq!(target.run_cleanup().unwrap().deleted, 0);
 }

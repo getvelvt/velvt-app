@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain prepare-dmg-tool build-rust test-rust bench-rust check-rust-onnx lint-rust build-swift test-swift lint-swift build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release test-measurement verify-release verify-release-production build-app-local-core clean
+.PHONY: check-rust-toolchain check-swift-toolchain check-xcode-version prepare-dmg-tool build-rust test-rust bench-rust check-rust-onnx lint-rust build-swift test-swift lint-swift build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release test-measurement verify-release verify-release-production build-app-local-core clean
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -54,6 +54,22 @@ else
 	@echo "$(SWIFT_VERSION)"
 endif
 
+# Release builds are made with the Xcode named in .xcode-version, which CI also
+# selects, so a shipped binary and the CI run that vetted it share a compiler.
+# VELVT_ALLOW_XCODE_MISMATCH=1 builds anyway, for local verification only.
+check-xcode-version:
+	@expected="Xcode $$(cat .xcode-version)"; \
+	actual="$$(xcodebuild -version 2>$(NULL_DEVICE) | head -n 1)"; \
+	if [ "$$actual" = "$$expected" ]; then \
+		echo "$$actual"; \
+	elif [ "$(VELVT_ALLOW_XCODE_MISMATCH)" = "1" ]; then \
+		echo "WARNING: building with '$$actual', not the pinned '$$expected'. Do not distribute this build." >&2; \
+	else \
+		echo "ERROR: release builds use $$expected (.xcode-version); the selected Xcode is '$$actual'." >&2; \
+		echo "Install it and select it with sudo xcode-select -s <path to that Xcode.app>, or set VELVT_ALLOW_XCODE_MISMATCH=1 for a local-only build." >&2; \
+		exit 1; \
+	fi
+
 build-rust: check-rust-toolchain
 	cd rust-service && cargo build --release $(CARGO_ONNX_FEATURES)
 
@@ -104,9 +120,13 @@ bench-rust: check-rust-toolchain
 check-rust-onnx: check-rust-toolchain
 	cd rust-service && cargo check --features onnx --all-targets
 
+# --workspace --all-targets so shared-types, the integration tests, and every
+# #[cfg(test)] module are linted too. Plain `cargo clippy` covers only the root
+# package's lib and bin, which let a test-only lint error sit on develop
+# unnoticed.
 lint-rust: check-rust-toolchain
-	cd rust-service && cargo clippy -- -D warnings
-	cd rust-service && cargo fmt --check
+	cd rust-service && cargo clippy --workspace --all-targets -- -D warnings
+	cd rust-service && cargo fmt --all --check
 
 build-swift: check-swift-toolchain
 	rm -rf swift-client/.build/velvt-mac.app
@@ -115,8 +135,11 @@ build-swift: check-swift-toolchain
 test-swift: check-swift-toolchain
 	CLANG_MODULE_CACHE_PATH=$(PWD)/swift-client/.build/clang-module-cache swift test --package-path swift-client --scratch-path $(PWD)/swift-client/.build --disable-sandbox
 
+# A ratchet over swift-format's findings, not a bare `swift format lint`, which
+# exits 0 on any number of warnings. See scripts/lint_swift.sh and
+# docs/toolchains-and-lint.md.
 lint-swift: check-swift-toolchain
-	cd swift-client && swift format lint --recursive Sources Tests
+	./scripts/lint_swift.sh
 
 build-all: build-rust build-swift
 
@@ -130,7 +153,7 @@ test-all: test-rust test-swift test-measurement
 # Backward-compatible release entry point.
 build-app: package-release
 
-package-release: check-swift-toolchain
+package-release: check-swift-toolchain check-xcode-version
 	./scripts/preflight_distribution.sh "$(VELVT_API_BASE_URL)"
 	rm -rf dist/.derivedData-release dist/Velvt.app dist/velvt-mac.app
 	rm -f dist/notarization-result.plist

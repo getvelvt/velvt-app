@@ -25,7 +25,9 @@ final privacy enforcement boundary before any cloud request.
 Prerequisites are:
 
 - Rust/Cargo on `PATH` (`rust-service/rust-toolchain.toml` pins the toolchain).
-- Swift 5.10 or later.
+- Swift 5.10 or later. Release builds and CI use Xcode 16.3 (`.xcode-version`).
+- Python 3.13 (`.python-version`) for `scripts/`. Pins and lint gates:
+  `docs/toolchains-and-lint.md`.
 - Full Xcode selected with `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`
   for `xcodebuild`/`.app` targets. SwiftPM tests can run with Command Line
   Tools, but the Xcode targets cannot.
@@ -542,8 +544,8 @@ in `PRIVACY.md`, and shown unable to reach `upload/`.
 2. Make the migration additive and include required constraints and indexes.
 3. Do not edit the migration runner. `rust-service/build.rs` embeds all sorted
    migration files automatically.
-4. Run `cargo test`, `cargo clippy --all-targets -- -D warnings`, and
-   `cargo fmt --check` from `rust-service/`.
+4. Run `cargo test`, `cargo clippy --workspace --all-targets -- -D warnings`,
+   and `cargo fmt --all --check` from `rust-service/`.
 
 `0002_harden_indexes_and_probe.sql` is the proof migration: it was added without
 runner changes and tests verify it applies to a database containing only

@@ -7,14 +7,17 @@ Velvt is a monorepo containing two primary workspaces. Read this guide before op
 ## Repository Structure
 
 ```
-velvt/
+velvt-app/
 ├── swift-client/        # SwiftUI/AppKit macOS app (L1 capture + L4 delivery)
-├── rust-service/        # Core processing service (abstraction, persistence, upload)
+├── rust-service/        # Core processing service (abstraction, persistence, upload, local decisions)
 ├── proto/               # IPC message schema, socket path, protocol version
-├── cloud/               # Python FastAPI backend
+├── scripts/             # Build, sign, verify, release, and measurement scripts
+├── cloud/               # Empty placeholder; the backend is the separate, private velvt-core repository
 └── docs/
     └── architecture/
 ```
+
+`AGENTS.md` carries the full module trees for both workspaces.
 
 Most contributions will touch exactly one of `swift-client/` or `rust-service/`. Changes to `proto/` are cross-workspace and require coordinated updates to both (see [IPC Contract Changes](#ipc-contract-changes) below).
 
@@ -22,7 +25,7 @@ Most contributions will touch exactly one of `swift-client/` or `rust-service/`.
 
 ## Architecture in One Paragraph
 
-The Swift client captures raw macOS events (app focus, window title changes) via Accessibility APIs and forwards them over a **Unix domain socket** to the Rust service. The Rust service owns everything after that: abstraction, SQLite persistence, upload batching, and cloud sync. The Swift client never touches abstracted data or makes cloud calls — it only receives ready-to-display insight payloads back from the Rust service. This split keeps the UI layer stable and the processing layer independently updatable.
+The Swift client captures raw macOS events (app focus, window title changes) via Accessibility APIs and forwards them over a **Unix domain socket** to the Rust service. The Rust service owns everything after that: abstraction, SQLite persistence, upload batching, cloud sync, and every device-local decision (work blocks, the deterministic drift gate, invitations, the weekly digest). The Swift client never touches the database or makes cloud calls — it sends commands and renders ready-to-display snapshots and payloads from the Rust service. This split keeps the UI layer stable and the processing layer independently updatable.
 
 ***
 
@@ -34,11 +37,12 @@ This is the most critical invariant in the codebase. A violation here is a P0 bu
 |---|---|---|
 | Raw app names, bundle IDs | ✅ | ❌ |
 | Raw window titles, URLs, paths | ✅ | ❌ |
-| Abstracted labels (`document:edit`, `tab:A`) | ✅ | ✅ |
+| Local labels (`document:code`, `video:youtube`) | ✅ | ❌ |
+| One category-scoped abstraction type per event (`document:inferred`) | ✅ | ✅ |
 | Coarse categories, timestamps, durations | ✅ | ✅ |
 | Session summaries, derived metadata | ✅ | ✅ |
 
-**The Rust service is the enforcement boundary.** Raw fields must never appear in `abstracted_events`, `upload_batches`, or any outbound HTTP payload. The cloud rejects violations with `raw_field_rejected`. Tests in `rust-service/` must prove this invariant programmatically.
+**The Rust service is the enforcement boundary.** Raw fields must never appear in `upload_batch` / `batch_event` rows or any outbound HTTP payload; `BatchEventPayload`'s hand-written `Serialize` in `rust-service/src/upload/dto.rs` emits exactly six fields. The cloud rejects violations with `raw_field_rejected`. Tests in `rust-service/` must prove this invariant programmatically.
 
 Auth tokens: **Keychain only** (Swift) / **platform credential store** (Rust). Never SQLite.
 
@@ -70,13 +74,13 @@ The Swift client declares its supported protocol version on every socket connect
 
 **What it owns:** event capture, IPC relay to Rust, insight payload display, menu bar UI, onboarding, permissions.
 
-**What it does NOT own:** abstraction logic, SQLite for abstracted data, cloud uploads, analytics.
+**What it does NOT own:** abstraction logic, any SQLite, cloud uploads, and every judgement (category, drift, timing, copy) — Swift reports facts and Rust decides.
 
 ### Stack
 - Swift, SwiftUI + AppKit, `NSStatusItem`
-- GRDB.swift — UI read cache only (insight history, cached summaries)
+- Sparkle 2.9.4 is the only third-party package; there is no Swift-side database
 - Unix domain socket client for IPC
-- UserNotifications + APNs
+- UserNotifications, local only (drift offer and daily insight); no APNs registration
 - Permissions: Accessibility and Notifications only
 
 ### Key constraints
@@ -101,21 +105,21 @@ SwiftPM globs `swift-client/Sources`, so `swift test` is green whether or not a 
 
 ## Rust Service (`rust-service/`)
 
-**What it owns:** IPC server, abstraction engine, SQLite (all tables), upload batching, cloud HTTP, auth token management, insight payload delivery, and (future, feature-flagged) local analytics.
+**What it owns:** IPC server, abstraction engine, SQLite (all tables), upload batching, cloud HTTP, auth token management, insight payload delivery, and the deterministic device-local decisions (`work_block`, `focus`, `initiation`, `receipts`, `dashboard`). `src/behavior/` holds shadow models with no caller in the shipped path; see the scope note in `AGENTS.md` before touching it.
 
 **What it does NOT own:** any UI, macOS permission requests, notification scheduling.
 
 ### Stack
 - Rust (stable, version pinned in `rust-toolchain.toml`)
 - `tokio` — async runtime
-- `sqlx` or `rusqlite` — SQLite with versioned migrations
+- `rusqlite` (bundled) — SQLite with numbered, embedded migrations
 - `reqwest` — cloud HTTP client
 - `serde` / `serde_json` — serialization (proto schema is the contract)
 - `tracing` — structured logging
 
 ### Key constraints
-- **Abstraction happens before any data hits the upload queue.** No raw fields in `abstracted_events` or `upload_batches`.
-- **Analytics is a deferred stub.** `src/analytics/` exists but is feature-flagged off in all MVP builds. Do not activate it.
+- **Abstraction happens before any data hits the upload queue.** No raw fields in `upload_batch` or `batch_event`.
+- **There is no analytics module.** `src/analytics/` does not exist. New behavioral analytics or experiment machinery is out of scope without a dated founder decision (`AGENTS.md`, Scope Boundary).
 - **No full-table scans on hot paths.** Retention and batch-assembly queries must use indexed paths, including `raw_event_buffer.occurred_at` / `created_at` and batch status/time columns.
 - **Graceful shutdown.** Flush the pending upload queue and close the socket cleanly on `SIGTERM`.
 
@@ -128,7 +132,7 @@ cargo fmt --check           # format check
 ```
 
 ### Database migrations
-Migrations are versioned files in `rust-service/migrations/`. They must be **safe and additive** — no destructive schema changes without an explicit migration path. Current feature tables are `abstraction_map`, `raw_event_buffer`, `upload_batch`, `batch_event`, `history_cache`, `insight_cache`, and `upload_host_backoff`.
+Migrations are versioned files in `rust-service/migrations/` (0001–0036 on `develop` as of 2026-09-25). They must be **safe and additive** — no destructive schema changes without an explicit migration path. There is no table list here on purpose: `MIGRATED_TABLES` in `rust-service/tests/published_claims.rs` is the closed inventory the migrated schema is tested against, and `PRIVACY.md`'s storage table describes what each store holds and for how long. A new table goes in both, in the same commit.
 
 ***
 
@@ -151,7 +155,7 @@ Debug builds may enable verbose safe diagnostics. Release builds must not be noi
 - **Scope PRs to one workspace** whenever possible. Cross-workspace PRs are acceptable only for proto changes or tightly coupled fixes — explain the coupling in the PR description.
 - **Tests are required** for any change to abstraction logic, IPC message handling, upload batching, or privacy boundary enforcement. New features without tests will not be merged.
 - **No new third-party dependencies** without prior discussion in an issue. This applies to both `Package.swift` and `Cargo.toml`.
-- **Pass lint before opening PR.** `cargo clippy -- -D warnings` for Rust; Swift lint config in CI.
+- **Pass lint before opening PR.** `make lint-rust` (clippy with `-D warnings`, then `cargo fmt --check`) for Rust. CI's `swift` job builds, tests, and runs `scripts/verify_pbxproj_membership.sh`.
 - PR titles follow: `[swift-client]`, `[rust-service]`, `[proto]`, or `[cloud]` prefix.
 
 ## Adding A Classification Category
@@ -188,17 +192,25 @@ core and existing plugins must remain unchanged.
 
 ## Adding A New Abstraction Type
 
-MVP supports `document:edit` only; adding a new type (e.g. `tab:A`) is
-cross-cutting:
+There are two vocabularies. Local labels (`document:code`, `video:youtube`,
+…) come from the taxonomy seeds and plugins and never leave the Mac. The
+uploaded `abstraction_type` is one category-scoped value per event, chosen by
+`cloud_abstraction_type` in `rust-service/src/upload/dto.rs`
+(`document:inferred`, `video:inferred`, `social:inferred`,
+`communication:inferred`, `task:inferred`, `reference:inferred`,
+`system:inferred`, `unlogged`), so that an application can never be inferred
+from what is uploaded.
 
-1. Add the type identifier to the IPC contract: `proto/schema/raw_event.json`
-   if it changes what Swift sends, and confirm `BatchPayload.supported_abstraction_types`
-   in `rust-service/src/upload/dto.rs`/`assembly.rs` lists it.
-2. Implement or extend the `ClassificationPlugin` that produces it (see
-   "Adding A Classification Category" below for the category side).
-3. Add a privacy boundary test proving the new label is reachable from a
-   raw event without ever re-exposing the raw event's content.
-4. Update `ARCHITECTURE.md`'s classification pipeline section.
+- A new **local label** is data: add it to the taxonomy seeds (see
+  "Adding A Classification Category" above) or to the plugin that produces it,
+  with a test proving it is reachable from a raw event without re-exposing the
+  event's content.
+- A new **uploaded type** is cross-cutting: change `cloud_abstraction_type`,
+  keep `serialized_batch_holds_exactly_the_documented_keys` and
+  `published_claims::no_declared_fact_reaches_an_upload_payload` green, and
+  land the matching registry change in velvt-core, which resolves every
+  uploaded `abstraction_type` against its own registry.
+- Either way, update `ARCHITECTURE.md`'s classification section.
 
 ## Adding A New IPC Message Type
 
@@ -218,15 +230,20 @@ See "IPC Contract Changes" above for the five-step process. In addition:
   real field for the wire format, so the type wrapper approach
   (`RedactedString`) used internally doesn't apply at the DTO layer.
 - Add a round-trip test asserting the exact JSON shape (see
-  `v6_auth_contract`/`v7` tests in `shared-types/src/lib.rs`), not just that
+  `v6_auth_contract` in `shared-types/src/lib.rs`), not just that
   serialization succeeds.
+- Update `docs/architecture/ipc-contract.md`'s direction lists and catalog.
 
 ## Adding A New Retention Target
 
 1. Implement `RetentionTarget` in `rust-service/src/retention/targets.rs`,
-   following the existing `RawEventRetentionTarget`/`UploadBatchRetentionTarget`/`CacheRetentionTarget`
-   pattern: a `run_cleanup` method that deletes at most `batch_size` rows
-   older than a cutoff and returns the count deleted.
+   following the existing targets there (`RawEventRetentionTarget`,
+   `UploadBatchRetentionTarget`, `CacheRetentionTarget`,
+   `WorkBlockIntentionRetentionTarget`, `SemanticEmbeddingCacheRetentionTarget`,
+   `InterventionDecisionOutcomeTarget`; `behavior::OutOfBlockRunRetentionTarget`
+   is the one registered target defined elsewhere). Each has a `run_cleanup`
+   method that deletes expired rows in bounded batches and reports the count
+   deleted.
 2. Register it via `RetentionScheduler::add_target` at the call site in
    `main.rs` — do not modify `RetentionScheduler` itself.
 3. Add a test proving only expired rows are deleted and fresh rows survive
@@ -247,7 +264,9 @@ must confirm, in the PR description:
       redaction.
 - [ ] If the change adds or modifies a field on `BatchEventPayload` or
       `BatchPayload`, it is checked against the forbidden-field list in
-      `tests/upload_batching.rs::payload_serialization_contains_only_audited_safe_fields`.
+      `tests/upload_batching.rs::payload_serialization_matches_the_cloud_event_contract`
+      and the closed key set in `src/upload/dto.rs`
+      (`serialized_batch_holds_exactly_the_documented_keys`).
 - [ ] If the change adds a token- or credential-carrying type, it has
       either a `RedactedString` field (Rust-internal types) or a
       hand-written `Debug` impl that redacts it (wire DTOs — see
@@ -257,14 +276,17 @@ must confirm, in the PR description:
 
 ***
 
-## MVP Scope
+## Scope
 
-**In scope:**
-- `swift-client/`: passive event capture, IPC relay, menu bar UI, onboarding, notification display, 7-day insight history, local retention controls
-- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, insight payload delivery, work-block state and drift-intervention evidence (`work_block`), the two approved 0.1.5 display surfaces (`dashboard`)
+`AGENTS.md` § Scope Boundary is the authoritative statement, including what
+governs it. In short:
+
+**In scope (what ships in 1.0.11):**
+- `swift-client/`: passive event capture, IPC relay, menu bar UI, onboarding, work-block controls and the drift card, drift-offer and daily-insight notifications, 14-day history and daily activity, corrections and triage, the weekly digest and soft-start invitation cards, local data controls
+- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, insight payload delivery, work blocks and the deterministic drift gate (`work_block`), Focus/DND evidence (`focus`), invitations (`initiation`), the weekly digest (`receipts`), the two 0.1.5 display surfaces (`dashboard`)
 
 **Deferred — do not build in this repo:**
-- Local analytics engine or local LLM inference (no `rust-service/src/analytics/` module exists; see `DEFERRED.md`)
+- Local analytics engine, new behavioral models or experiment machinery, or local LLM inference (no `rust-service/src/analytics/` module exists; see `DEFERRED.md`)
 - Charts or streak counters beyond the two restrained 0.1.5 surfaces (Focus Fragmentation and Daily Activity)
 - Unabstracted cloud personalization
 - Cross-platform Swift client

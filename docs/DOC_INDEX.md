@@ -9,7 +9,10 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 |---|---|---|
 | Monorepo overview | `docs/architecture.md` | High-level structure, subproject relationships, privacy boundary, and data flow |
 | Quickstart | `docs/quickstart.md` | Prerequisites, install steps, build commands, tests, and local run paths |
-| Private-beta guide | `docs/private-beta-guide.md` | Canonical participant install, onboarding, privacy, recovery, account, uninstall, support, and limitations path |
+| Alpha cohort participant path | `plan/04-alpha-cohort-kit.md` in the private Velvt workspace (not in this repository) | **Canonical** for the first cohort: build choice, qualifier, consent, install and update messages, making the nudge fire, and what to collect |
+| Private-beta guide (superseded) | `docs/private-beta-guide.md` | Historical 0.1.5 participant guide; superseded by the workspace cohort kit on 2026-09-25 |
+| Closed-alpha release plan (superseded) | `docs/closed-alpha-release-plan.md` | Historical facilitation script; superseded by the workspace cohort kit on 2026-09-25 |
+| Shipping a testable DMG | `docs/shipping-a-testable-dmg.md` | Developer ID signing, notarization, `make alpha-dmg`, clean-machine check, and testing that notifications reach the user |
 | Contribution workflow | `docs/contributing.md` | Documentation-aware contribution checklist and review expectations |
 | Rust service overview | `docs/rust-service/overview.md` | Purpose and role of the Rust service |
 | Rust service internals | `docs/rust-service/architecture.md` | Module structure, startup path, persistence, abstraction, delivery, and lifecycle decisions |
@@ -19,7 +22,8 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Swift client architecture | `docs/swift-client/architecture.md` | SwiftUI/AppKit structure, composition root, event capture, IPC, and state flow |
 | Swift client settings | `docs/swift-client/settings.md` | Settings UI, persisted local preferences, menu status, and configuration sources |
 | Swift client auth | `docs/swift-client/auth.md` | Auth UI flow, session state, Keychain persistence, and IPC auth messages |
-| IPC contract deep dive | `docs/architecture/ipc-contract.md` | Existing detailed guide for IPC framing and protocol versioning |
+| IPC contract deep dive | `docs/architecture/ipc-contract.md` | IPC framing, versioning, direction lists, and the message catalog, reconciled through protocol 31 |
+| Classification v2 contract | `docs/classification-v2-contract.md` | The design behind bundle-keyed corrections, declared app metadata, triage, and the protocol-30 classifier ladder |
 | Event relay deep dive | `docs/architecture/event-relay.md` | Existing detailed guide for Swift event buffering and reconnect behavior |
 | Collection agent deep dive | `docs/architecture/collection-agent.md` | Existing detailed guide for macOS Accessibility event collection |
 | Auth and onboarding deep dive | `docs/architecture/auth-onboarding.md` | Existing detailed guide for onboarding and authentication behavior |

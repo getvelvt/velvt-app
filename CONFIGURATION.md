@@ -31,14 +31,18 @@ switch, feed URL, and public key described in the release section below:
 | `VELVT_DISTRIBUTABLE` | `YES` only for Release; activates hosted-endpoint preflight |
 | `VELVT_BUILD_CONFIGURATION` | Artifact marker verified as `Release` before distribution |
 
-These are promoted to `Info.plist` keys (`VelvtAPIBaseURL`, `VelvtAPNSEnv`,
-`VelvtSocketPath`, `VelvtProtocolVersion`, `VelvtClientVersion`) via
-`INFOPLIST_KEY_*` build settings in the same xcconfig files.
-`BundleConfigLoader` reads those keys at startup.
+These are written into `Info.plist` keys (`VelvtAPIBaseURL`, `VelvtAPNSEnv`,
+`VelvtSocketPath`, `VelvtProtocolVersion`, `VelvtClientVersion`,
+`VelvtBuildConfiguration`, `VelvtDistributable`, and the updater keys) by the
+target's "Inject Custom Info.plist Keys" run-script phase, from the same
+resolved build settings. `INFOPLIST_KEY_*` build settings cannot do this:
+Xcode's generator silently drops custom keys. `BundleConfigLoader` reads those
+keys at startup.
 
 #### Local development (`swift run`)
 
-When running via SwiftPM (`swift run --package-path swift-client velvt-mac`),
+When running via SwiftPM (`swift run --package-path swift-client Velvt` — the
+SwiftPM executable product is `Velvt`),
 there is no processed `Info.plist`, so `BundleConfigLoader` has nothing to
 read. The `#if DEBUG` branch selects `EnvironmentConfigLoader` instead, which
 reads:
@@ -47,7 +51,7 @@ reads:
 VELVT_SOCKET_PATH="$(cat proto/ipc_socket_path)" \
 VELVT_PROTOCOL_VERSION="$(cat proto/version)" \
 VELVT_CLIENT_VERSION="0.1.0" \
-swift run --package-path swift-client velvt-mac
+swift run --package-path swift-client Velvt
 ```
 
 ### Rust service
@@ -96,12 +100,14 @@ packaging target instead of editing xcconfig files:
 make build-app-local-core
 ```
 
-It builds `dist/velvt-mac.app` with
+It builds `dist/Velvt.app` (Debug) with
 `VELVT_API_BASE_URL=http://localhost:8000`. Override
 `VELVT_LOCAL_API_BASE_URL` only when your local API is listening elsewhere.
-The target signs the app ad-hoc by default. Set
-`VELVT_CODESIGN_IDENTITY="<identity>"` only when you need to test with a real
-local development certificate.
+The target signs with `VELVT_CODESIGN_IDENTITY`, which has no default. If that
+identity is unset or unavailable the target fails; it no longer falls back to
+ad-hoc signing on its own. Pass `VELVT_ALLOW_ADHOC=1` (or
+`VELVT_CODESIGN_IDENTITY=-`) to accept a bundle that runs on the build machine
+only.
 
 ### CI
 

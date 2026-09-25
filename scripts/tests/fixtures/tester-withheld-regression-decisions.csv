@@ -1,0 +1,6 @@
+decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds
+d-1a,1800000060,block-1,2,,0,60,2940,abstained_warmup,1.0,1,1800000660,1800000000,1800003000,0,3000
+d-1b,1800000600,block-1,2,FOCUS_WORK,4,600,2400,offered,1.0,1,1800001200,1800000000,1800003000,0,3000
+d-2,1800010500,block-2,2,FOCUS_WORK,5,500,2500,offered,1.0,0,1800011100,1800010000,1800013000,0,3000
+d-3,1800020700,block-3,2,FOCUS_WORK,4,700,2300,suppressed_dnd,1.0,,,1800020000,1800023000,0,3000
+d-4,1800030800,block-4,2,REFERENCE,6,800,2800,withheld_demotion,1.0,,,1800030000,1800033600,0,3600

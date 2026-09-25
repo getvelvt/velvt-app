@@ -950,6 +950,10 @@ impl MessageRouter for R7Router {
                 })
             }
 
+            ClientMessage::InterventionCardSeen(request) => self.work_block_response(|manager| {
+                manager.record_intervention_card_seen(request.block_id, Utc::now())
+            }),
+
             ClientMessage::WorkBlockLifecycle(request) => {
                 self.work_block_response(|manager| manager.lifecycle(request.event, Utc::now()))
             }

@@ -1,5 +1,24 @@
 # IPC Protocol Changelog
 
+## Version 29 - 2026-09-22
+
+- Added `intervention_card_seen` (Swift to Rust): the in-app drift card was
+  actually rendered on screen. A delivery fact and never a response --- the
+  payload carries one field and has no place a user answer could sit, so a
+  sighting cannot be widened into an outcome nobody gave. Silence is still
+  recorded only when a block ends unanswered, and is still never inferred
+  from a card or notification disappearing.
+- Why it exists: `outcome = 'no_response'` conflated a person who saw the
+  offer and said nothing with a person the offer never reached. Those are
+  evidence about the action and evidence about delivery respectively, they
+  call for opposite fixes, and the pre-registered denominator counted them
+  identically. Stored as `work_block_intervention.card_seen_at` (migration
+  0032), nullable and orthogonal to `outcome`, so no existing definition
+  changes. NULL means "never observed on screen", which includes every row
+  written before the migration --- those are unknown, not unseen.
+- Local IPC surface only. The sighting is never uploaded; no DTO has a field
+  it could occupy.
+
 ## Version 28 - 2026-08-07
 
 - Added `request_demotion_state` (Swift to Rust) and `demotion_state` (Rust

@@ -382,6 +382,17 @@ pub trait WorkBlockRepo: Send + Sync {
     fn set_demotion_state(&self, record: &DemotionStateRecord) -> Result<(), PersistenceError>;
     /// Transitions an offer to a terminal outcome. Only an `offered` row is
     /// updated, so a recorded return is never overwritten by block expiry.
+    /// Records that the in-app card for `block_id` was on screen at `at`.
+    ///
+    /// First sighting wins: a card re-rendered when the popover reopens is the
+    /// same delivery, and overwriting would misreport when the offer actually
+    /// reached the user. Returns whether this call was the first sighting.
+    fn mark_intervention_card_seen(
+        &self,
+        block_id: &str,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError>;
+
     fn resolve_intervention(
         &self,
         block_id: &str,

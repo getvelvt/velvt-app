@@ -473,6 +473,11 @@ public struct WorkBlockView: View {
 
       if let intervention = snapshot.activeIntervention {
         interventionCard(intervention)
+          // The sighting is reported from the render itself, not from the
+          // offer arriving: an offer that lands while the popover is closed
+          // has not reached anyone, and saying otherwise here would recreate
+          // the exact ambiguity this records its way out of.
+          .onAppear { coordinator.reportInterventionCardSeen() }
       }
 
       if let error = coordinator.commandError {

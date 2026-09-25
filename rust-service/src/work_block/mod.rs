@@ -592,6 +592,27 @@ impl WorkBlockManager {
     /// the detector was right, so it is recorded even if the block has already
     /// ended. Only an unanswered offer transitions: a response cannot be
     /// overwritten, and a second tap is a no-op rather than an error.
+    /// Records that the in-app drift card was on screen for `block_id`.
+    ///
+    /// Not an answer, and never treated as one. It is the delivery fact that
+    /// lets `no_response` be split afterwards into "saw it, said nothing" and
+    /// "it never reached them" — two results that call for opposite fixes.
+    /// Idempotent: the first sighting is the one that counts, and a report for
+    /// a block with no offer is a no-op rather than an error, because the card
+    /// and the offer race on separate surfaces.
+    pub fn record_intervention_card_seen(
+        &self,
+        block_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<WorkBlockSnapshot, WorkBlockError> {
+        let record = self.repo.get(&block_id.to_string())?;
+        if self.repo.intervention(&record.block_id)?.is_some() {
+            self.repo
+                .mark_intervention_card_seen(&record.block_id, now)?;
+        }
+        self.snapshot_for(record, now)
+    }
+
     pub fn report_intervention_outcome(
         &self,
         block_id: Uuid,
@@ -829,6 +850,11 @@ impl WorkBlockManager {
                     outcome: WorkBlockInterventionOutcome::WithheldDemotion,
                     outcome_at: Some(now),
                     salience: InterventionSalience::Normal,
+                    // Withheld before any surface existed, so no card was ever
+                    // drawn. Terminal at creation and excluded from delivered
+                    // counts, which is why this stays None rather than becoming
+                    // a delivery failure.
+                    card_seen_at: None,
                 },
             )?;
             return Ok(None);
@@ -867,6 +893,9 @@ impl WorkBlockManager {
                     // salience it would have had. It is excluded from the
                     // delivered count either way.
                     salience: InterventionSalience::Normal,
+                    // Held by Focus/DND and delivered by no channel, so there
+                    // was no card to see.
+                    card_seen_at: None,
                 },
             )?;
             return Ok(None);
@@ -889,6 +918,10 @@ impl WorkBlockManager {
                 outcome: WorkBlockInterventionOutcome::Offered,
                 outcome_at: None,
                 salience: backoff.salience,
+                // Offered is not seen. The client reports the sighting when it
+                // actually renders, and until then this row honestly says the
+                // offer has not been shown to reach anyone.
+                card_seen_at: None,
             },
         )?;
         // `now` is the value just recorded as `offered_at`, so the re-render
@@ -2258,6 +2291,79 @@ mod tests {
     /// are separate code paths over the same offer, so a non-deterministic pick
     /// would let a user read one sentence in the banner and a different one in
     /// the app — for the same nudge.
+    /// A sighting is a delivery fact, not an answer: it records that the card
+    /// reached the user without touching the one outcome slot, so
+    /// `no_response` can afterwards be split into "saw it, said nothing" and
+    /// "it never reached them".
+    #[test]
+    fn a_seen_card_is_recorded_without_answering_the_offer() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+
+        manager
+            .record_intervention_card_seen(block_id, at(900))
+            .unwrap();
+
+        let stored = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the offer row exists");
+        assert_eq!(stored.card_seen_at, Some(at(900)));
+        assert_eq!(
+            stored.outcome,
+            WorkBlockInterventionOutcome::Offered,
+            "a sighting must never resolve the offer"
+        );
+        assert_eq!(stored.outcome_at, None);
+    }
+
+    /// The popover can be reopened while an offer is still unanswered. That is
+    /// the same delivery, and moving the timestamp forward would report the
+    /// offer as reaching the user later than it did.
+    #[test]
+    fn re_rendering_a_seen_card_keeps_the_first_sighting() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+
+        manager
+            .record_intervention_card_seen(block_id, at(900))
+            .unwrap();
+        manager
+            .record_intervention_card_seen(block_id, at(1_500))
+            .unwrap();
+
+        let stored = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the offer row exists");
+        assert_eq!(
+            stored.card_seen_at,
+            Some(at(900)),
+            "the first sighting is the one that counts"
+        );
+    }
+
+    /// The card and the offer live on separate surfaces and can race. A
+    /// sighting reported for a block with no offer is a no-op, never an error:
+    /// failing here would surface an IPC error for something the user did
+    /// nothing wrong to cause.
+    #[test]
+    fn a_sighting_without_an_offer_is_a_no_op() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+
+        manager
+            .record_intervention_card_seen(block_id, at(600))
+            .expect("a sighting with no offer must not error");
+
+        assert!(repo.intervention(&block_id.to_string()).unwrap().is_none());
+    }
+
     #[test]
     fn the_delivered_offer_and_its_re_render_read_identically() {
         let manager = manager();
@@ -3526,6 +3632,13 @@ mod tests {
         fn latest(&self) -> Result<Option<WorkBlockRecord>, PersistenceError> {
             self.0.latest()
         }
+        fn mark_intervention_card_seen(
+            &self,
+            block_id: &str,
+            at: DateTime<Utc>,
+        ) -> Result<bool, PersistenceError> {
+            self.0.mark_intervention_card_seen(block_id, at)
+        }
         fn get(&self, block_id: &str) -> Result<WorkBlockRecord, PersistenceError> {
             self.0.get(block_id)
         }
@@ -3740,6 +3853,7 @@ mod tests {
                 outcome,
                 outcome_at: Some(offered_at + Duration::seconds(30)),
                 salience: InterventionSalience::Normal,
+                card_seen_at: None,
             },
         )
         .unwrap();

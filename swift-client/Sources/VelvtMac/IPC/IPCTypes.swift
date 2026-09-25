@@ -28,6 +28,10 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case requestLocalDashboard(RequestLocalDashboard)
     case acceptWorkBlockRecovery(AcceptWorkBlockRecovery)
     case reportInterventionOutcome(ReportInterventionOutcome)
+    /// The drift card was actually drawn on screen. A delivery fact, never a
+    /// reply — it reuses the bare identifier payload precisely because there
+    /// is nowhere in it a user answer could be smuggled.
+    case interventionCardSeen(WorkBlockIdentifier)
     case workBlockLifecycle(WorkBlockLifecycle)
     case clearWorkBlockData
     case focusStateChanged(FocusStateChanged)
@@ -97,6 +101,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .acceptWorkBlockRecovery(try AcceptWorkBlockRecovery(from: payload))
         case "report_intervention_outcome":
             self = .reportInterventionOutcome(try ReportInterventionOutcome(from: payload))
+        case "intervention_card_seen":
+            self = .interventionCardSeen(try WorkBlockIdentifier(from: payload))
         case "work_block_lifecycle":
             self = .workBlockLifecycle(try WorkBlockLifecycle(from: payload))
         case "clear_work_block_data":
@@ -206,6 +212,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .reportInterventionOutcome(value):
             try envelope.encode("report_intervention_outcome", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .interventionCardSeen(value):
+            try envelope.encode("intervention_card_seen", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .workBlockLifecycle(value):
             try envelope.encode("work_block_lifecycle", forKey: .type)

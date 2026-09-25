@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 28;
+pub const PROTOCOL_VERSION: u32 = 29;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +62,9 @@ pub enum ClientMessage {
     AcceptWorkBlockRecovery(AcceptWorkBlockRecovery),
     /// Reports the user's explicit response to an in-session drift offer.
     ReportInterventionOutcome(ReportInterventionOutcome),
+    /// Reports that the in-app drift card was actually rendered on screen.
+    /// A delivery fact, not a response: it can never become an outcome.
+    InterventionCardSeen(InterventionCardSeen),
     /// Reports an OS lifecycle boundary relevant to honest elapsed time.
     WorkBlockLifecycle(WorkBlockLifecycle),
     /// Clears local work-block state, observations, results, and intention text.
@@ -836,6 +839,17 @@ impl InterventionSalience {
 pub struct ReportInterventionOutcome {
     pub block_id: Uuid,
     pub response: InterventionResponse,
+}
+
+/// The in-app drift card for `block_id` was on screen.
+///
+/// Carries no response and no room for one: the type has a single field, so a
+/// sighting can never be widened into an answer the user did not give. The
+/// service timestamps it; the client reports only that it happened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterventionCardSeen {
+    pub block_id: Uuid,
 }
 
 /// A live drift offer, rendered in-app. Present only while unanswered.
@@ -1794,8 +1808,8 @@ mod v28_demotion_receipts_probe_contract {
     use super::*;
 
     #[test]
-    fn protocol_version_is_twenty_eight() {
-        assert_eq!(PROTOCOL_VERSION, 28);
+    fn protocol_version_is_current() {
+        assert_eq!(PROTOCOL_VERSION, 29);
     }
 
     #[test]

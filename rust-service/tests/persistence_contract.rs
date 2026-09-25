@@ -1213,6 +1213,7 @@ fn the_wrong_intervention_counter_counts_delivered_and_was_focused() {
                     outcome,
                     outcome_at: Some(start + Duration::seconds(index as i64 + 5)),
                     salience: InterventionSalience::Normal,
+                    card_seen_at: None,
                 },
             )
             .expect("intervention records");

@@ -1,0 +1,25 @@
+-- Whether the in-app drift card was ever actually on screen, and when.
+--
+-- `outcome = 'no_response'` conflates two different facts today: a person who
+-- saw the offer and chose not to answer it, and a person the offer never
+-- reached. Those call for opposite fixes -- the first is evidence about the
+-- action, the second is evidence about delivery -- and the pre-registered
+-- denominator counts them identically. `plan/03-ship-and-measure.md` already
+-- names the reading rule this column exists to make possible: "High
+-- no_response -> most likely a delivery problem, not a behaviour one. Check
+-- notification authorization and whether the in-app card was ever seen before
+-- touching any threshold."
+--
+-- Deliberately a nullable column and NOT a new `outcome` value. `outcome` is a
+-- closed vocabulary of answers a person can actually give; silence is recorded
+-- only when a block ends unanswered and is never inferred from a card or a
+-- notification disappearing. Card-seen is a delivery fact orthogonal to the
+-- answer, so it is stored beside the answer and changes no existing semantics,
+-- no CHECK constraint, and no pre-registered definition. Widening the outcome
+-- CHECK would also force a full table rebuild (see 0020), which this avoids.
+--
+-- NULL means "never observed on screen" -- which includes every row written
+-- before this migration. It does not mean "not seen": absence of evidence is
+-- not evidence, and the analysis must treat pre-0032 rows as unknown rather
+-- than as unseen.
+ALTER TABLE work_block_intervention ADD COLUMN card_seen_at INTEGER;

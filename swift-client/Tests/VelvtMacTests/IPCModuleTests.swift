@@ -39,12 +39,36 @@ final class IPCModuleTests: XCTestCase {
                 RequestCorrectionHistory(query: "Research", offset: 20, pageSize: 20)
             ),
       .errorResponse(ErrorResponse(code: "safe_error", message: "safe", relatedEventID: nil)),
+            .interventionCardSeen(
+                WorkBlockIdentifier(
+                    blockID: UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+                )
+            ),
         ]
 
         for message in messages {
             let data = try encoder.encode(message)
             XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), message)
         }
+    }
+
+    /// The sighting has to reach Rust as `intervention_card_seen` with exactly
+    /// one payload key. The single-key shape is the guarantee: there is nowhere
+    /// in this message a user answer could be carried, so a card being drawn
+    /// can never be mistaken for a reply the person did not give.
+    func testInterventionCardSeenCarriesOnlyTheBlockIdentifier() throws {
+        let blockID = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+        let data = try encoder.encode(ClientMessage.interventionCardSeen(.init(blockID: blockID)))
+        let envelope =
+            try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+
+        XCTAssertEqual(envelope["type"] as? String, "intervention_card_seen")
+        let payload = envelope["payload"] as? [String: Any] ?? [:]
+        XCTAssertEqual(payload.keys.sorted(), ["block_id"])
+        XCTAssertEqual(
+            (payload["block_id"] as? String)?.lowercased(),
+            blockID.uuidString.lowercased()
+        )
     }
 
     func testEveryServerMessageRoundTrips() throws {

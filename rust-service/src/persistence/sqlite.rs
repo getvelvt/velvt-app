@@ -1879,7 +1879,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         connection
             .query_row(
                 "SELECT offered_at, action_id, anchor_category, switch_count,
-                        window_seconds, outcome, outcome_at, salience
+                        window_seconds, outcome, outcome_at, salience, card_seen_at
                  FROM work_block_intervention WHERE block_id = ?1",
                 [block_id],
                 |row| {
@@ -1898,6 +1898,10 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                             .map(|value| timestamp_to_datetime(value, 6))
                             .transpose()?,
                         salience: parse_intervention_salience(&row.get::<_, String>(7)?)?,
+                        card_seen_at: row
+                            .get::<_, Option<i64>>(8)?
+                            .map(|value| timestamp_to_datetime(value, 8))
+                            .transpose()?,
                     })
                 },
             )
@@ -1912,7 +1916,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
             "SELECT offered_at, action_id, anchor_category, switch_count,
-                    window_seconds, outcome, outcome_at, salience
+                    window_seconds, outcome, outcome_at, salience, card_seen_at
              FROM work_block_intervention
              ORDER BY offered_at DESC LIMIT ?1",
         )?;
@@ -1930,10 +1934,33 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                     .map(|value| timestamp_to_datetime(value, 6))
                     .transpose()?,
                 salience: parse_intervention_salience(&row.get::<_, String>(7)?)?,
+                card_seen_at: row
+                    .get::<_, Option<i64>>(8)?
+                    .map(|value| timestamp_to_datetime(value, 8))
+                    .transpose()?,
             })
         })?;
         rows.map(|row| row.map_err(PersistenceError::from))
             .collect()
+    }
+
+    fn mark_intervention_card_seen(
+        &self,
+        block_id: &str,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // `card_seen_at IS NULL` makes the first sighting win. A card that
+        // re-renders when the popover is reopened is the same delivery, and
+        // moving the timestamp forward would report the offer as reaching the
+        // user later than it did.
+        let changed = connection.execute(
+            "UPDATE work_block_intervention
+             SET card_seen_at = ?2
+             WHERE block_id = ?1 AND card_seen_at IS NULL",
+            params![block_id, at.timestamp()],
+        )?;
+        Ok(changed > 0)
     }
 
     fn resolve_intervention(

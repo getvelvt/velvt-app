@@ -677,6 +677,12 @@ pub struct WorkBlockIntervention {
     /// How the offer was delivered. Recorded because an outcome cannot be read
     /// without it: an ignored quiet offer never rang.
     pub salience: InterventionSalience,
+    /// When the in-app card was first observed on screen, if it ever was.
+    ///
+    /// `None` separates "they saw it and said nothing" from "it never reached
+    /// them", which `no_response` alone cannot. Orthogonal to `outcome`: this
+    /// records delivery, never an answer.
+    pub card_seen_at: Option<DateTime<Utc>>,
 }
 
 /// The closed verdict vocabulary of the drift gate.

@@ -3347,6 +3347,12 @@ private struct MenuBarAuthenticationView: View {
         .velvtDisplay(22)
             CredentialTextField(placeholder: "Email", text: $authViewModel.email)
             CredentialTextField(placeholder: "Password", text: $authViewModel.password, isSecure: true)
+            if authViewModel.authMode == .logIn {
+                Button("Forgot password?") { authViewModel.openForgotPasswordPage() }
+                    .buttonStyle(.plain).font(VelvtType.body(11))
+                    .foregroundStyle(VelvtInk.labelOnInk)
+                    .accessibilityHint("Opens getvelvt.com in your browser")
+            }
             if let error = authViewModel.errorMessage {
                 Text(error).font(VelvtType.body(11)).foregroundStyle(VelvtPalette.signal)
             }

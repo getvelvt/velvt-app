@@ -1155,6 +1155,43 @@ final class AuthViewModelTests: XCTestCase {
         return try? JSONDecoder().decode(TestStoredAuthSnapshot.self, from: data)
     }
 
+    // MARK: forgot password
+
+    /// The reset is a web flow. The app's whole part in it is opening this
+    /// page, so the exact address is the contract: HTTPS, getvelvt.com, the
+    /// trailing slash the site's `trailingSlash` routing serves without a
+    /// redirect, and nothing in a query or fragment.
+    func testForgotPasswordPageIsTheResetPageOnGetvelvtCom() {
+        let url = PasswordResetPage.url
+        XCTAssertEqual(url.absoluteString, "https://getvelvt.com/forgot-password/")
+        XCTAssertEqual(url.scheme, "https")
+        XCTAssertEqual(url.host, "getvelvt.com")
+        XCTAssertNil(url.port)
+        XCTAssertNil(url.query)
+        XCTAssertNil(url.fragment)
+        XCTAssertNil(url.user)
+    }
+
+    func testForgotPasswordOpensThePageWithoutTheTypedEmailOrAnyIPC() {
+        let client = FakeIPCClient()
+        let manager = AccountStateManager(keychain: FakeKeychain())
+        var opened: [URL] = []
+        let sut = AuthViewModel(
+            accountStateManager: manager,
+            ipcClient: client,
+            openURL: { opened.append($0) }
+        )
+        sut.authMode = .logIn
+        sut.email = "user@example.com"
+
+        sut.openForgotPasswordPage()
+
+        XCTAssertEqual(opened, [PasswordResetPage.url])
+        XCTAssertFalse(opened.contains { $0.absoluteString.contains("example.com") })
+        XCTAssertTrue(client.sentMessages.isEmpty)
+        XCTAssertNil(sut.errorMessage)
+    }
+
     private func makeViewModelWithDependencies(
         keychain: FakeKeychain = FakeKeychain(),
         client: FakeIPCClient = FakeIPCClient(),

@@ -27,8 +27,22 @@ VELVT_PREVIOUS_RELEASE_BUILD ?=
 VELVT_UPDATER_ENABLED ?= NO
 VELVT_UPDATE_FEED_URL ?=
 VELVT_UPDATE_PUBLIC_ED_KEY ?=
-VELVT_BUILD_MARKETING_VERSION ?= 1.0.11
-VELVT_BUILD_NUMBER ?= 17
+# The version and build number live in one file, which the Xcode configurations
+# include and rust-service/build.rs reads. Overriding them here is refused by
+# alpha-dmg and release (scripts/release_provenance.sh check-release): a version
+# that only exists on a command line is how 1.0.0 through 1.0.8 shipped with no
+# commit that records their number.
+VELVT_VERSION_XCCONFIG := swift-client/Configs/Version.xcconfig
+VELVT_BUILD_MARKETING_VERSION ?= $(shell sed -n 's/^[[:space:]]*MARKETING_VERSION[[:space:]]*=[[:space:]]*//p' $(VELVT_VERSION_XCCONFIG) | head -n 1)
+VELVT_BUILD_NUMBER ?= $(shell sed -n 's/^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=[[:space:]]*//p' $(VELVT_VERSION_XCCONFIG) | head -n 1)
+# Stamped into Info.plist (VelvtSourceCommit) and the helper (--source-commit).
+# Always computed, never taken from the environment or the command line: it is
+# evidence, not a setting. Deferred, so only targets that build an app run git.
+override VELVT_SOURCE_COMMIT = $(shell ./scripts/release_provenance.sh source-commit)
+# package-release and dmg refuse a dirty tree unless this is 1. For local
+# experiments only: the build is stamped <commit>-dirty, and alpha-dmg and
+# release refuse a dirty tree regardless.
+VELVT_ALLOW_DIRTY_TREE ?= 0
 VELVT_ALLOW_LOCAL_DMG ?= 0
 VELVT_GENERATE_APPCAST_SHA256 ?=
 VELVT_SIGN_UPDATE_SHA256 ?=
@@ -154,6 +168,7 @@ test-all: test-rust test-swift test-measurement
 build-app: package-release
 
 package-release: check-swift-toolchain check-xcode-version
+	@VELVT_ALLOW_DIRTY_TREE="$(VELVT_ALLOW_DIRTY_TREE)" ./scripts/release_provenance.sh require-clean
 	./scripts/preflight_distribution.sh "$(VELVT_API_BASE_URL)"
 	rm -rf dist/.derivedData-release dist/Velvt.app dist/velvt-mac.app
 	rm -f dist/notarization-result.plist
@@ -172,6 +187,7 @@ package-release: check-swift-toolchain check-xcode-version
 		VELVT_UPDATE_PUBLIC_ED_KEY="$(VELVT_UPDATE_PUBLIC_ED_KEY)" \
 		MARKETING_VERSION="$(VELVT_BUILD_MARKETING_VERSION)" \
 		CURRENT_PROJECT_VERSION="$(VELVT_BUILD_NUMBER)" \
+		VELVT_SOURCE_COMMIT="$(VELVT_SOURCE_COMMIT)" \
 		build
 	ditto dist/.derivedData-release/Build/Products/Release/Velvt.app dist/Velvt.app
 	rm -rf dist/.derivedData-release
@@ -202,10 +218,14 @@ dmg: check-swift-toolchain
 #   make alpha-dmg \
 #     VELVT_CODESIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \
 #     VELVT_NOTARY_PROFILE=VELVT_NOTARY \
-#     VELVT_DMG_PATH=dist/Velvt-0.1.0-alpha1.dmg
+#     VELVT_DMG_PATH=dist/Velvt-1.0.12.dmg
 #
-# See docs/shipping-a-testable-dmg.md for obtaining both.
+# See docs/shipping-a-testable-dmg.md for obtaining both. It builds the version
+# in swift-client/Configs/Version.xcconfig from a clean commit, refuses a
+# version or build that already shipped (docs/RELEASES.md), and tags the commit
+# locally once the DMG is notarized and verified.
 alpha-dmg: check-swift-toolchain
+	@./scripts/release_provenance.sh check-release "$(VELVT_BUILD_MARKETING_VERSION)" "$(VELVT_BUILD_NUMBER)"
 	@$(MAKE) prepare-dmg-tool
 	@test -n "$(VELVT_CODESIGN_IDENTITY)" || (echo "ERROR: set VELVT_CODESIGN_IDENTITY to a 'Developer ID Application: NAME (TEAMID)' identity. See docs/shipping-a-testable-dmg.md." >&2; exit 1)
 	@test -n "$(VELVT_NOTARY_PROFILE)" || (echo "ERROR: set VELVT_NOTARY_PROFILE to a notarytool Keychain profile. See docs/shipping-a-testable-dmg.md." >&2; exit 1)
@@ -222,6 +242,7 @@ alpha-dmg: check-swift-toolchain
 	# entry here resolves to dist/dist/... and fails to open.
 	cd $(dir $(VELVT_DMG_PATH)) && shasum -a 256 $(notdir $(VELVT_DMG_PATH)) > $(notdir $(VELVT_DMG_PATH)).sha256
 	$(MAKE) verify-release-production
+	./scripts/release_provenance.sh tag "$(VELVT_BUILD_MARKETING_VERSION)" "$(VELVT_BUILD_NUMBER)" $(VELVT_DMG_PATH)
 	@echo ""
 	@echo "Notarized alpha DMG ready: $(VELVT_DMG_PATH)"
 	@echo "Verify on a Mac that has never built Velvt, downloaded via a browser"
@@ -230,6 +251,9 @@ alpha-dmg: check-swift-toolchain
 # Production is intentionally credential-gated. It never falls back to ad-hoc
 # signing and only succeeds after Apple accepts and the DMG is stapled.
 release: check-swift-toolchain
+	@test -n "$(VELVT_RELEASE_VERSION)" || (echo "ERROR: set VELVT_RELEASE_VERSION to CFBundleShortVersionString." >&2; exit 1)
+	@test -n "$(VELVT_RELEASE_BUILD)" || (echo "ERROR: set VELVT_RELEASE_BUILD to CFBundleVersion." >&2; exit 1)
+	@./scripts/release_provenance.sh check-release "$(VELVT_RELEASE_VERSION)" "$(VELVT_RELEASE_BUILD)"
 	@$(MAKE) prepare-dmg-tool
 	@test -n "$(VELVT_PRODUCTION_API_BASE_URL)" || (echo "ERROR: set VELVT_PRODUCTION_API_BASE_URL to the approved production endpoint." >&2; exit 1)
 	@test -n "$(VELVT_APPROVED_PRODUCTION_API_HOST)" || (echo "ERROR: set VELVT_APPROVED_PRODUCTION_API_HOST to the separately approved exact hostname." >&2; exit 1)
@@ -264,6 +288,7 @@ release: check-swift-toolchain
 	$(MAKE) update-archive
 	$(MAKE) update-appcast
 	$(MAKE) verify-update-release
+	./scripts/release_provenance.sh tag "$(VELVT_RELEASE_VERSION)" "$(VELVT_RELEASE_BUILD)" $(VELVT_DMG_PATH)
 
 update-archive:
 	./scripts/create_update_archive.sh \
@@ -292,6 +317,7 @@ verify-update-release:
 		--expected-update-version "$(VELVT_RELEASE_BUILD)"
 
 test-update-release:
+	./scripts/tests/release_provenance_test.sh
 	./scripts/tests/verify_update_readiness_test.sh
 	./scripts/tests/update_release_scripts_test.sh
 	./scripts/tests/update_local_adversarial_harness_test.sh

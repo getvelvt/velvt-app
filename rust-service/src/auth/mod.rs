@@ -13,7 +13,10 @@ pub use device::{
     DeviceRegistrar, DeviceRegistrationError, DeviceRegistrationPayload, HttpDeviceRegistrar,
     NoOpDeviceRegistrar,
 };
-pub use http::{HttpClient, HttpMethod, HttpRequest, HttpResponse, ReqwestHttpClient};
+pub use http::{
+    describe_request, encode_body, HttpClient, HttpMethod, HttpRequest, HttpResponse,
+    ReqwestHttpClient,
+};
 pub use manager::{AuthError, AuthManager, SessionValidator};
 pub use state::{AuthState, AuthStateMachine, AuthTransitionError};
 pub use store::{FakeTokenStore, TokenStore, TokenStoreError, VolatileTokenStore};

@@ -12,9 +12,10 @@ The Rust service is organized around narrow modules that own one runtime concern
 | `src/abstraction/` | Taxonomy loading, classification plugins, stable key generation, abstracted event creation |
 | `src/persistence/` | SQLite opening, migrations, repository traits, database models |
 | `src/upload/` | Batch assembly, queueing, retry/backoff, cloud upload transport |
-| `src/auth/` | Account auth relay, token store traits, auth state machine, refresh/reissue logic |
+| `src/auth/` | Account auth relay, token store traits, auth state machine, refresh/reissue logic, and `ReqwestHttpClient`, the only network client |
+| `src/egress/` | Egress-ledger hashing and chain verification, the endpoint list, and `--dry-run-egress` |
 | `src/delivery/` | Fetching history/insight, cache management, payload shaping, IPC push adapter |
-| `src/retention/` | Scheduled cleanup for raw events, sent/rejected batches, and caches |
+| `src/retention/` | Scheduled cleanup for raw events, sent/rejected batches, caches, and the egress ledger |
 | `src/work_block/` | Versioned work-block state machine, safe observation aggregation, deterministic copy, restart recovery, and one-shot deadline |
 | `src/lifecycle/` | Cancellation token used by long-running tasks |
 | `shared-types/` | IPC DTOs and protocol constants shared by service tests and Swift-equivalent schemas |

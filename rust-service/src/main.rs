@@ -31,6 +31,7 @@ async fn main() {
                 println!("{}", velvt_service::build_info::SOURCE_COMMIT);
                 return;
             }
+            "--dry-run-egress" => std::process::exit(dry_run_egress().await),
             _ => {}
         }
     }
@@ -181,9 +182,10 @@ async fn main() {
         use velvt_service::ipc::{MenuStatusProvider, R7Router, ReconnectTracker};
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
-            AbstractionMapRetentionTarget, CacheRetentionTarget, InterventionDecisionOutcomeTarget,
-            RawEventRetentionTarget, RetentionScheduler, SemanticEmbeddingCacheRetentionTarget,
-            UploadBatchRetentionTarget, WorkBlockIntentionRetentionTarget,
+            AbstractionMapRetentionTarget, CacheRetentionTarget, EgressLedgerRetentionTarget,
+            InterventionDecisionOutcomeTarget, RawEventRetentionTarget, RetentionScheduler,
+            SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+            WorkBlockIntentionRetentionTarget,
         };
         use velvt_service::upload::{
             BatchAssembler, EventIngestor, HttpBatchUploader, SharedUploadBatcher, UploadBatcher,
@@ -203,7 +205,12 @@ async fn main() {
 
         let (auth_session_tx, mut auth_session_rx) = tokio::sync::mpsc::unbounded_channel();
         let token_store = Arc::new(VolatileTokenStore::with_update_sender(auth_session_tx));
-        let raw_http = Arc::new(ReqwestHttpClient::new(config.upload_api_base_url.clone()));
+        // The only network client. It appends every request to the egress
+        // ledger before sending it, and sends nothing the ledger cannot record.
+        let raw_http = Arc::new(ReqwestHttpClient::new(
+            config.upload_api_base_url.clone(),
+            persistence.egress_ledger_repo(),
+        ));
 
         // Device registration requires a logged-in user's access token --
         // `/v1/devices` has no anonymous mode -- so it cannot happen here at
@@ -557,6 +564,13 @@ async fn main() {
             persistence.abstraction_map_repo(),
             config.retention_batch_size,
         );
+        // The ninth: the egress ledger, on its own constant bounds, pruned
+        // oldest first behind a checkpoint so the surviving chain still
+        // verifies.
+        let egress_ledger_target = EgressLedgerRetentionTarget::with_default_retention(
+            persistence.egress_ledger_repo(),
+            config.retention_batch_size,
+        );
         let retention_scheduler =
             RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
                 .add_target(raw_event_target)
@@ -568,7 +582,8 @@ async fn main() {
                 .add_target(out_of_block_run_target)
                 .add_target(semantic_embedding_cache_target)
                 .add_target(decision_outcome_target)
-                .add_target(abstraction_map_target);
+                .add_target(abstraction_map_target)
+                .add_target(egress_ledger_target);
         let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
 
         // R7 + R8 transport — shutdown-aware, reconnect-tracking.
@@ -657,6 +672,38 @@ async fn main() {
 
     #[cfg(not(unix))]
     tracing::error!("Unix domain socket transport is unavailable on this platform");
+}
+
+/// `velvt-service --dry-run-egress`: prints every request the helper would
+/// send next, and every endpoint it can reach, without sending anything or
+/// writing to the database. Reads the same `VELVT_DATABASE_PATH` and
+/// `VELVT_API_BASE_URL` the service does. Returns the process exit code.
+async fn dry_run_egress() -> i32 {
+    let config = match velvt_service::config::ServiceConfig::load() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("velvt-service: {error}");
+            return 78; // EX_CONFIG
+        }
+    };
+    let mut report = Vec::new();
+    let result = velvt_service::egress::dry_run::run(
+        &config.database_path,
+        &config.upload_api_base_url,
+        &mut report,
+    )
+    .await;
+    use std::io::Write;
+    if std::io::stdout().write_all(&report).is_err() {
+        return 74; // EX_IOERR
+    }
+    match result {
+        Ok(_) => 0,
+        Err(error) => {
+            eprintln!("velvt-service: {error}");
+            1
+        }
+    }
 }
 
 #[cfg(feature = "onnx")]

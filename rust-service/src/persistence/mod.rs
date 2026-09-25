@@ -1,9 +1,11 @@
 //! SQLite-backed persistence hidden behind consumer-specific DAL traits.
 
+mod egress_ledger;
 mod models;
 mod sqlite;
 mod traits;
 
+pub use egress_ledger::EgressLedgerRepo;
 pub use models::{out_of_block_run_bucket, OUT_OF_BLOCK_RUN_BUCKET_SECONDS};
 pub use models::{
     AbstractionMapping, AntecedentFinding, AntecedentFindingState, AntecedentRetractionReason,

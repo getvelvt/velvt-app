@@ -25,8 +25,9 @@ mod targets;
 
 pub use scheduler::RetentionScheduler;
 pub use targets::{
-    AbstractionMapRetentionTarget, CacheRetentionTarget, InterventionDecisionOutcomeTarget,
-    RawEventRetentionTarget, SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+    AbstractionMapRetentionTarget, CacheRetentionTarget, EgressLedgerRetentionTarget,
+    InterventionDecisionOutcomeTarget, RawEventRetentionTarget,
+    SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
     WorkBlockIntentionRetentionTarget, ABSTRACTION_MAP_RETENTION_DAYS,
     DECISION_OUTCOME_HORIZON_SECONDS, SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
 };

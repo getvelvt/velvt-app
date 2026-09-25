@@ -43,7 +43,7 @@ The most critical invariant of the entire project. Violations are fatal bugs.
 - **Cloud allowed:** abstracted labels, coarse categories, timestamps, durations, session summaries, derived event metadata.
 - **The Rust service owns the privacy enforcement boundary.** It is the last gate before any data leaves the device. The Swift client MUST NOT perform its own upload to the cloud — all outbound traffic flows through the Rust service.
 - **Never upload forbidden raw fields.** The cloud will reject them with `raw_field_rejected`. Unit tests in `rust-service/` must prove forbidden fields cannot appear in upload payloads.
-- Auth and refresh tokens go in **Keychain only** (Swift) or the **platform credential store** (Rust). Never SQLite.
+- Auth and refresh tokens go in the **Keychain only** (Swift, service `com.velvt.mac`). Rust holds the session Swift gives it **in memory only** (`VolatileTokenStore`) and has no credential store of its own. Never SQLite, never a log.
 
 ***
 
@@ -93,7 +93,7 @@ Passive event capture via macOS Accessibility APIs, IPC relay of raw events to t
 - **Dependencies:** Sparkle is the only third-party package (`Package.swift`, exact 2.9.4; the updater is off in alpha builds). There is no Swift-side SQLite and no GRDB — all persistence is in the Rust service.
 - **IPC:** Unix domain socket client (no URLSession for local IPC)
 - **Notifications:** UserNotifications, local only. Two kinds are posted: the in-block drift offer and the daily insight. There is no APNs registration (`registerForRemoteNotifications` is never called); the APNs environment setting and token-store protocol are unused seams.
-- **Permissions:** Accessibility and Notifications only — no screen recording, microphone, camera, or filesystem access
+- **Permissions:** Accessibility and Notifications, plus the optional Focus status permission offered at onboarding (one boolean: whether a Focus mode is on) — no screen recording, microphone, camera, or filesystem access
 
 ## Project Structure
 ```

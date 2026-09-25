@@ -170,7 +170,10 @@ Converts teaching from per-event and reactive to per-app and once.
 - `UnclassifiedTriage { entries: [...], window_days }` (Rust→Swift)
 
 Each entry: `app_stable_id`, `display_name` (the local activity name Velvt
-already holds), `seconds_observed`, `event_count`, `bundle_id` when known.
+already holds), `seconds_observed`, `event_count`. `app_stable_id` is the only
+identifier: Rust resolves the bundle key itself from the rows it holds when
+`SetApplicationCategory` comes back. (Corrected 2026-09-25: this section said
+entries carry `bundle_id` when known. The Rust type never did.)
 Rank by `seconds_observed` descending, **cap at 8**, and only include apps with
 at least 5 minutes observed in the window — a list of thirty one-second
 curiosities is not a task anyone will do.

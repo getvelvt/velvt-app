@@ -18,7 +18,7 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["date", "status", "event_count", "focus_score", "fragmentation_score", "confidence_level", "active_seconds", "focused_seconds", "meaningful_switch_count", "focus_seconds", "baseline_status", "baseline_comparison", "type_proportions"],
+            "required": ["date", "status", "event_count", "focus_score", "fragmentation_score", "confidence_level", "active_seconds", "focused_seconds", "meaningful_switch_count", "longest_uninterrupted_seconds", "baseline_status", "baseline_comparison", "type_proportions"],
             "properties": {
               "date": { "type": "string", "format": "date" },
               "status": { "enum": ["ready", "no_data"] },
@@ -29,7 +29,7 @@
               "active_seconds": { "type": "integer", "minimum": 0 },
               "focused_seconds": { "type": "integer", "minimum": 0 },
               "meaningful_switch_count": { "type": "integer", "minimum": 0 },
-              "focus_seconds": { "type": "integer", "minimum": 0 },
+              "longest_uninterrupted_seconds": { "type": "integer", "minimum": 0, "description": "Longest broad-lane stretch of the day. The cloud API calls it focus_seconds; Rust renames it when it parses the API response and has sent this name over the socket since the field was added (2026-07-18). Until 2026-09-25 this schema and the Swift decoder used focus_seconds, so Swift read 0." },
               "baseline_status": { "type": "string" },
               "baseline_comparison": { "type": "object" },
               "type_proportions": {

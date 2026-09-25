@@ -1,5 +1,29 @@
 # IPC Protocol Changelog
 
+## Schema corrections - 2026-09-25 (no wire change; the protocol stays 31)
+
+`rust-service/shared-types/tests/schema_conformance.rs` now builds a maximal and
+a minimal instance of every file in `proto/schema/`, parses each as a Rust
+message, and validates what Rust serializes back. Its first run found four
+schemas that described a wire no Rust build ever produced. Each is corrected to
+match what Rust sends; no Rust type changed, so the bytes on the socket are the
+same as before.
+
+- `unclassified_triage`: removed the optional `entries[].bundle_id`. The Rust
+  entry deliberately carries `app_stable_id` as its only identifier and never
+  sent a bundle key hash; Rust looks the bundle identity up itself when
+  `set_application_category` comes back. The Swift type no longer declares it.
+- `history_payload`: the longest-stretch field on the socket is
+  `longest_uninterrupted_seconds`, the name Rust has sent since the field was
+  added on 2026-07-18. The schema said `focus_seconds` (the cloud API's name,
+  which Rust renames when it parses the API response), and the Swift decoder
+  read `focus_seconds` too, so History showed a longest stretch of 0. The
+  Swift decoder now reads `longest_uninterrupted_seconds`.
+- `menu_status`: declared `correction_history[].scope`, which Rust has sent
+  since protocol 30 alongside `correction_history_page`'s.
+- `acknowledged`: the payload is `null`, which is how serde encodes Rust's
+  unit struct. The schema said an empty object.
+
 ## Version 31 - 2026-09-25
 
 - Added `anchor_category` to `work_block_state` (Rust to Swift), top level,
@@ -54,8 +78,9 @@
   (Rust to Swift): the bounded list of applications Velvt observed but could not
   read, so teaching it becomes per-application and once rather than per-event
   and reactive. Each entry carries only facts --- the local name Velvt already
-  holds, seconds observed, event count, and the bundle key hash when there is
-  one. Ranked by observed time, capped at 8, and floored at five minutes in the
+  holds, seconds observed, and event count. (Corrected 2026-09-25: this entry
+  and the schema also listed an optional bundle key hash, which the Rust type
+  never had and never sent.) Ranked by observed time, capped at 8, and floored at five minutes in the
   window: a list of thirty one-second curiosities is not a task anyone will do.
   An application the user has already taught leaves the list, and an empty list
   is the good state. No category, no guess, and no total presented as a score.

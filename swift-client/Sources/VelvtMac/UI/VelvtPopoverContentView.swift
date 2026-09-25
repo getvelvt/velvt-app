@@ -151,6 +151,7 @@ public struct TodayWorkspaceView: View {
         } else {
             EarlySignalProgressView(
                 signal: localDashboardCoordinator.snapshot?.earlySignal,
+                totalObservedSeconds: localDashboardCoordinator.snapshot.map(observedActivitySeconds),
                 errorMessage: localDashboardCoordinator.commandError
             )
             .padding(.horizontal, VelvtMetrics.cardPadding)
@@ -325,8 +326,76 @@ public struct TodayWorkspaceView: View {
     }
 }
 
-private struct EarlySignalProgressView: View {
+/// Every second the window observed in an app the user could teach Velvt about
+/// — readable or not. `SYSTEM` and `IDLE` are left out.
+///
+/// The early signal's own `observedSeconds` counts only meaningful categories,
+/// so it is the numerator. This is the denominator, and the gap between them is
+/// time Velvt watched in a real app and failed to classify: `UNLOGGED` and
+/// `UNCLASSIFIED`, the two states a category in Settings actually fixes.
+///
+/// Counting every second here instead — the first version of this — made idle
+/// and system time look like a classification failure, so an ordinary day with
+/// a lunch break in it was told "Velvt cannot categorize the apps you are
+/// using" and sent to Settings to fix nothing that was broken. Idle and system
+/// time are working exactly as intended; they are not evidence of anything the
+/// user needs to act on.
+///
+/// `is_meaningful_category` in rust-service/src/dashboard.rs excludes all four
+/// of `UNCLASSIFIED`, `SYSTEM`, `IDLE` and `UNLOGGED` from the numerator, which
+/// is why the split has to be made again here: only two of the four are
+/// teachable. Any other category counts in both numerator and denominator and
+/// so cancels out of the gap, which keeps the subtraction honest if the
+/// taxonomy grows.
+func observedActivitySeconds(_ snapshot: LocalDashboardSnapshot) -> Int {
+    snapshot.segments.reduce(0) { total, segment in
+        guard isTeachableActivityCategory(segment.category) else { return total }
+        return total + max(0, Int(segment.endedAt.timeIntervalSince(segment.startedAt).rounded()))
+    }
+}
+
+/// Whether time in this category is time the user could do something about.
+///
+/// Deliberately a denylist of the two categories that mean "no app was being
+/// used" rather than an allowlist of readable ones: an unrecognized category is
+/// activity in some app, and it is already inside the early signal's
+/// `observedSeconds`, so excluding it here would understate the gap.
+///
+/// Distinct from `QueuedEventPresentation.teachableCategories`, which is the
+/// list of categories a user may *assign*. This asks the opposite question:
+/// whether a stretch of observed time is the kind of thing teaching can change.
+func isTeachableActivityCategory(_ category: String) -> Bool {
+    switch category.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+    case "SYSTEM", "IDLE":
+        return false
+    default:
+        return true
+    }
+}
+
+/// Internal rather than private so the two-explanations rule can be tested
+/// directly. That rule is the whole of this view's judgement, and it was wrong
+/// once already.
+struct EarlySignalProgressView: View {
+    /// Mirrors `EARLY_SIGNAL_REQUIRED_SECONDS` in rust-service/src/dashboard.rs.
+    /// The service owns the gate; this is only used to decide which of two
+    /// explanations to give for not having cleared it.
+    static let readableSecondsRequired = 60
+
     let signal: LocalEarlySignal?
+    /// Every second of activity in the window that happened in an app — readable
+    /// or not — with idle and system time excluded. See
+    /// `observedActivitySeconds`.
+    ///
+    /// `signal.observedSeconds` counts only segments in a meaningful category,
+    /// so on its own it cannot tell "you have barely worked yet" from "you have
+    /// worked for an hour in apps I cannot read". Those need opposite advice,
+    /// and only one of them is fixed by waiting.
+    ///
+    /// Idle and system time belong to neither case: they are not a countdown
+    /// the user is waiting out and not an app they can teach, so they must not
+    /// reach the remainder below.
+    let totalObservedSeconds: Int?
     let errorMessage: String?
 
     var body: some View {
@@ -370,8 +439,33 @@ private struct EarlySignalProgressView: View {
     /// one thing that will not fix it. Distinguishing the two cases turns a
     /// stuck progress bar into something the user can act on.
     private func progressText(_ signal: LocalEarlySignal) -> String {
+        Self.progressText(signal, totalObservedSeconds: totalObservedSeconds)
+    }
+
+    /// Pure, so the choice between the two explanations is testable without
+    /// rendering anything.
+    static func progressText(
+        _ signal: LocalEarlySignal,
+        totalObservedSeconds: Int?
+    ) -> String {
+        // Previously this required `observedSeconds == 0` — every second of
+        // readable activity disabled it. One classified app was enough to put
+        // the user back on a countdown that would not move, which is the exact
+        // complaint: "it says 60 seconds every time I open it". The real
+        // question is not whether ANY activity was readable, it is whether
+        // enough was readable to ever clear the bar.
+        // `totalObservedSeconds` already excludes idle and system time, so this
+        // remainder is teachable time only: activity in a real app that
+        // classification failed on. Comparing against a total that included
+        // idle time turned a day with an ordinary break in it into an
+        // accusation, which is worse advice than the stuck countdown it
+        // replaced — it sends someone to fix something that is not broken.
+        let teachableUnreadableSeconds = max(
+            0, (totalObservedSeconds ?? 0) - signal.observedSeconds)
         let sawActivityButCouldNotUseIt =
-            signal.evidenceEventCount > 0 && signal.observedSeconds == 0
+            signal.evidenceEventCount > 0
+            && signal.observedSeconds < readableSecondsRequired
+            && teachableUnreadableSeconds >= readableSecondsRequired
         if sawActivityButCouldNotUseIt {
             return
                 "Velvt has seen activity but cannot categorize the apps you are using, so none of it counts yet. "
@@ -615,6 +709,7 @@ public struct MinimalDashboardWorkspaceView: View {
     } else {
       EarlySignalProgressView(
         signal: localDashboardCoordinator.snapshot?.earlySignal,
+        totalObservedSeconds: localDashboardCoordinator.snapshot.map(observedActivitySeconds),
         errorMessage: localDashboardCoordinator.commandError
       )
     }

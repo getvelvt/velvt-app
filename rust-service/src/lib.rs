@@ -6,6 +6,7 @@ pub mod build_info;
 pub mod config;
 pub mod dashboard;
 pub mod delivery;
+pub mod egress;
 pub mod focus;
 pub mod initiation;
 pub mod ipc;

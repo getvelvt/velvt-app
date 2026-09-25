@@ -257,6 +257,20 @@ impl SqlitePersistence {
         Self::open(":memory:")
     }
 
+    /// Opens an existing database for reading only: no migrations, no
+    /// permission changes, and SQLite itself refuses every write. For
+    /// `velvt-service --dry-run-egress`, which may run beside a live service.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, PersistenceError> {
+        let connection = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        Ok(Self {
+            connection: Arc::new(Mutex::new(connection)),
+        })
+    }
+
     pub fn run_migrations(&self) -> Result<(), PersistenceError> {
         let mut connection = self.connection()?;
         apply_embedded_migrations(&mut connection)
@@ -274,6 +288,11 @@ impl SqlitePersistence {
 
     pub fn semantic_learning_store(&self) -> Arc<dyn crate::abstraction::SemanticLearningStore> {
         Arc::new(SqliteAbstractionMapRepo(self.clone()))
+    }
+
+    /// The hash-chained record of every request sent (`egress_ledger`, 0038).
+    pub fn egress_ledger_repo(&self) -> Arc<dyn super::EgressLedgerRepo> {
+        Arc::new(super::egress_ledger::SqliteEgressLedgerRepo(self.clone()))
     }
 
     pub fn upload_batch_repo(&self) -> Arc<dyn UploadBatchRepo> {
@@ -363,7 +382,7 @@ impl SqlitePersistence {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    fn connection(&self) -> Result<MutexGuard<'_, Connection>, PersistenceError> {
+    pub(super) fn connection(&self) -> Result<MutexGuard<'_, Connection>, PersistenceError> {
         self.connection
             .lock()
             .map_err(|_| PersistenceError::LockUnavailable)

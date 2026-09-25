@@ -9,8 +9,8 @@ mod transport;
 
 pub use assembly::BatchAssembler;
 pub use coordinator::{
-    BatchRetentionPolicy, CoordinatorError, FakePrivacyAlertSink, IpcPrivacyAlertSink,
-    KeepAllBatches, PrivacyAlertSink, UploadCoordinator,
+    payload_for_queued_batch, BatchRetentionPolicy, CoordinatorError, FakePrivacyAlertSink,
+    IpcPrivacyAlertSink, KeepAllBatches, PrivacyAlertSink, UploadCoordinator,
 };
 pub use dto::{BatchEventPayload, BatchPayload};
 pub use retry::HostBackoff;

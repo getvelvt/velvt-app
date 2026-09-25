@@ -267,35 +267,8 @@ where
             if self.discard_disowned(&batch)? {
                 continue;
             }
-            let taxonomy = batch
-                .events
-                .first()
-                .map(|event| event.taxonomy_version.clone())
-                .unwrap_or_default();
-            let events: Vec<_> = batch
-                .events
-                .into_iter()
-                .map(|event| BatchEventPayload {
-                    event_id: event.event_id,
-                    stable_id: event.stable_id,
-                    label: event.label,
-                    category: event.category,
-                    taxonomy_version: event.taxonomy_version,
-                    classification_tier: event.classification_tier,
-                    occurred_at: event.occurred_at,
-                    duration_seconds: event.duration_seconds,
-                })
-                .collect();
-            let supported_abstraction_types = unique_abstraction_types(&events);
             self.upload_batch_with_backoff(
-                BatchPayload::new(
-                    batch.batch_id,
-                    schema_version,
-                    client_version,
-                    supported_abstraction_types,
-                    taxonomy,
-                    events,
-                ),
+                payload_for_queued_batch(batch, schema_version, client_version),
                 false,
             )
             .await?;
@@ -343,33 +316,10 @@ where
             if self.discard_disowned(&batch)? {
                 continue;
             }
-            let taxonomy = batch
-                .events
-                .first()
-                .map(|event| event.taxonomy_version.clone())
-                .unwrap_or_default();
-            let events: Vec<_> = batch
-                .events
-                .into_iter()
-                .map(|event| BatchEventPayload {
-                    event_id: event.event_id,
-                    stable_id: event.stable_id,
-                    label: event.label,
-                    category: event.category,
-                    taxonomy_version: event.taxonomy_version,
-                    classification_tier: event.classification_tier,
-                    occurred_at: event.occurred_at,
-                    duration_seconds: event.duration_seconds,
-                })
-                .collect();
-            let supported_abstraction_types = unique_abstraction_types(&events);
-            self.upload_batch(BatchPayload::new(
-                batch.batch_id,
+            self.upload_batch(payload_for_queued_batch(
+                batch,
                 schema_version,
                 client_version,
-                supported_abstraction_types,
-                taxonomy,
-                events,
             ))
             .await?;
         }
@@ -423,6 +373,46 @@ where
             }
         }
     }
+}
+
+/// The payload a batch already on disk is sent as.
+///
+/// `resume_pending` and `flush_all_pending` send exactly this, and
+/// `velvt-service --dry-run-egress` prints it, so the three cannot disagree
+/// about what a queued batch looks like on the wire.
+pub fn payload_for_queued_batch(
+    batch: crate::persistence::UploadBatch,
+    schema_version: &str,
+    client_version: &str,
+) -> BatchPayload {
+    let taxonomy = batch
+        .events
+        .first()
+        .map(|event| event.taxonomy_version.clone())
+        .unwrap_or_default();
+    let events: Vec<_> = batch
+        .events
+        .into_iter()
+        .map(|event| BatchEventPayload {
+            event_id: event.event_id,
+            stable_id: event.stable_id,
+            label: event.label,
+            category: event.category,
+            taxonomy_version: event.taxonomy_version,
+            classification_tier: event.classification_tier,
+            occurred_at: event.occurred_at,
+            duration_seconds: event.duration_seconds,
+        })
+        .collect();
+    let supported_abstraction_types = unique_abstraction_types(&events);
+    BatchPayload::new(
+        batch.batch_id,
+        schema_version,
+        client_version,
+        supported_abstraction_types,
+        taxonomy,
+        events,
+    )
 }
 
 fn unique_abstraction_types(events: &[BatchEventPayload]) -> Vec<String> {

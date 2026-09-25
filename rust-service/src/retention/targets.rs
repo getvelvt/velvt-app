@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Duration};
 use chrono::Utc;
 
 use crate::persistence::{
-    AbstractionMapRepo, HistoryCacheRepo, InsightCacheRepo, RawEventRepo, UploadBatchRepo,
-    WorkBlockRepo,
+    AbstractionMapRepo, EgressLedgerRepo, HistoryCacheRepo, InsightCacheRepo, RawEventRepo,
+    UploadBatchRepo, WorkBlockRepo,
 };
 
 use super::{CleanupReport, RetentionError, RetentionTarget};
@@ -305,6 +305,63 @@ impl RetentionTarget for AbstractionMapRetentionTarget {
     fn run_cleanup(&self) -> Result<CleanupReport, RetentionError> {
         let cutoff = Utc::now() - chrono::Duration::seconds(self.retention.as_secs() as i64);
         let deleted = self.repo.delete_expired_mappings(cutoff, self.batch_size)?;
+        Ok(CleanupReport { deleted })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EgressLedgerRetentionTarget
+// ---------------------------------------------------------------------------
+
+/// Prunes `egress_ledger` to `EGRESS_LEDGER_RETENTION_DAYS` and
+/// `EGRESS_LEDGER_MAX_ENTRIES`, whichever is tighter, oldest entries only.
+///
+/// Every pass that removes anything first records a checkpoint naming the last
+/// entry it removes (`EgressLedgerRepo::prune`), so the first surviving entry
+/// still links to a hash the verifier can read.
+pub struct EgressLedgerRetentionTarget {
+    repo: Arc<dyn EgressLedgerRepo>,
+    retention_days: i64,
+    max_entries: u64,
+    batch_size: usize,
+}
+
+impl EgressLedgerRetentionTarget {
+    pub fn new(
+        repo: Arc<dyn EgressLedgerRepo>,
+        retention_days: i64,
+        max_entries: u64,
+        batch_size: usize,
+    ) -> Self {
+        Self {
+            repo,
+            retention_days,
+            max_entries,
+            batch_size,
+        }
+    }
+
+    pub fn with_default_retention(repo: Arc<dyn EgressLedgerRepo>, batch_size: usize) -> Self {
+        Self::new(
+            repo,
+            crate::egress::EGRESS_LEDGER_RETENTION_DAYS,
+            crate::egress::EGRESS_LEDGER_MAX_ENTRIES,
+            batch_size,
+        )
+    }
+}
+
+impl RetentionTarget for EgressLedgerRetentionTarget {
+    fn name(&self) -> &'static str {
+        "egress_ledger"
+    }
+
+    fn run_cleanup(&self) -> Result<CleanupReport, RetentionError> {
+        let now = Utc::now();
+        let cutoff = now - chrono::Duration::days(self.retention_days);
+        let deleted = self
+            .repo
+            .prune(cutoff, self.max_entries, self.batch_size, now)?;
         Ok(CleanupReport { deleted })
     }
 }

@@ -1174,6 +1174,8 @@ const MIGRATED_TABLES: &[&str] = &[
     "block_antecedent",
     "classification_telemetry",
     "classifier_artifact_telemetry",
+    "egress_ledger",
+    "egress_ledger_checkpoint",
     "embedding_salt",
     "explain_probe_week",
     "focus_observer_state",

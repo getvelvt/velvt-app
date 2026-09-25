@@ -57,24 +57,47 @@ fn apply_embedded_migrations(connection: &mut Connection) -> Result<(), Persiste
             created_at INTEGER NOT NULL DEFAULT (unixepoch())
         );",
     )?;
+    // Idempotence is keyed on the version number, so the recorded name is the
+    // only evidence that the file applied under that number is the one this
+    // build carries. A reused or renumbered migration (0010 and 0011 were each
+    // allocated twice before build.rs refused duplicates) would otherwise be
+    // skipped silently and leave this database on a schema no other install
+    // has. Refusing to open is the loud outcome: the whole transaction rolls
+    // back, nothing is applied, and startup halts naming both files.
+    //
+    // This compares names only. An edited migration keeps its name and passes;
+    // detecting that needs a content checksum recorded per applied migration,
+    // which needs a new column and so a numbered migration of its own.
     for migration in EMBEDDED_MIGRATIONS {
-        let applied = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM schema_migration WHERE version = ?1)",
-            [migration.version],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if !applied {
-            transaction.execute_batch(migration.sql)?;
-            // Only while 0037 itself is being applied, in its transaction, and
-            // therefore exactly once per database: a second pass would HMAC
-            // keys that are already keyed and orphan every one of them.
-            if migration.version == STABLE_KEY_SALT_MIGRATION {
-                rekey_stored_digests(&transaction)?;
+        let recorded = transaction
+            .query_row(
+                "SELECT name FROM schema_migration WHERE version = ?1",
+                [migration.version],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        match recorded {
+            None => {
+                transaction.execute_batch(migration.sql)?;
+                // Only while 0037 itself is being applied, in its transaction,
+                // and therefore exactly once per database: a second pass would
+                // HMAC keys that are already keyed and orphan every one of them.
+                if migration.version == STABLE_KEY_SALT_MIGRATION {
+                    rekey_stored_digests(&transaction)?;
+                }
+                transaction.execute(
+                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                    params![migration.version, migration.name],
+                )?;
             }
-            transaction.execute(
-                "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
-                params![migration.version, migration.name],
-            )?;
+            Some(recorded) if recorded == migration.name => {}
+            Some(recorded) => {
+                return Err(PersistenceError::MigrationNameMismatch {
+                    version: migration.version,
+                    recorded,
+                    embedded: migration.name,
+                });
+            }
         }
     }
     transaction.commit()?;
@@ -182,6 +205,17 @@ pub enum PersistenceError {
     /// this is the only layer that can see it (`app_identity_for_event`).
     #[error("SQLite persistence refused an app-scoped rule for an ineligible application")]
     AppScopeIneligible,
+    /// The database applied migration `version` from a different file than the
+    /// one this build embeds for that number. Both names are migration file
+    /// names from this repository, never user data.
+    #[error(
+        "SQLite migration {version} was applied as {recorded:?}, but this build embeds {embedded:?} for that version"
+    )]
+    MigrationNameMismatch {
+        version: i64,
+        recorded: String,
+        embedded: &'static str,
+    },
 }
 
 #[derive(Clone)]
@@ -4654,6 +4688,116 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use velvt_shared_types::{ClassificationConfidence, ClassificationStatus, CorrectionScope};
 
+    /// The name the runner records for `version`. A fixture that hand-applies
+    /// a prefix of the migrations has to record what the runner would have, or
+    /// the runner refuses the database as renumbered.
+    fn embedded_migration_name(version: i64) -> &'static str {
+        super::EMBEDDED_MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == version)
+            .expect("the fixture names an embedded migration")
+            .name
+    }
+
+    fn schema_migration_rows(database: &SqlitePersistence) -> Vec<(i64, String)> {
+        let connection = database.connection().unwrap();
+        let mut statement = connection
+            .prepare("SELECT version, name FROM schema_migration ORDER BY version")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
+    }
+
+    #[test]
+    fn every_applied_migration_is_recorded_under_its_file_name() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+
+        let rows = schema_migration_rows(&database);
+
+        assert_eq!(rows.len(), super::EMBEDDED_MIGRATIONS.len());
+        for (version, name) in rows {
+            assert_eq!(name, embedded_migration_name(version));
+            assert!(name.starts_with(&format!("{version:04}_")) && name.ends_with(".sql"));
+        }
+    }
+
+    #[test]
+    fn rerunning_migrations_on_a_database_this_build_migrated_is_a_no_op() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let before = schema_migration_rows(&database);
+
+        database.run_migrations().unwrap();
+
+        assert_eq!(schema_migration_rows(&database), before);
+    }
+
+    /// 0010 was allocated twice in July 2026: main's
+    /// `0010_personal_override_activity_name.sql` and mvp-enhancements'
+    /// `0010_local_only_events.sql`, renumbered to 0012 at the merge. A
+    /// database that applied the other 0010 has never run this build's, and
+    /// used to be opened as though it had.
+    #[test]
+    fn a_migration_number_applied_from_another_file_refuses_the_database() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migration(version, name) VALUES (10, '0010_local_only_events.sql')",
+                [],
+            )
+            .unwrap();
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+
+        let error = database
+            .run_migrations()
+            .expect_err("a renumbered migration must not pass as applied");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("0010_local_only_events.sql")
+                && message.contains("0010_personal_override_activity_name.sql"),
+            "the refusal names both files: {message}"
+        );
+        match error {
+            super::PersistenceError::MigrationNameMismatch {
+                version,
+                recorded,
+                embedded,
+            } => {
+                assert_eq!(version, 10);
+                assert_eq!(recorded, "0010_local_only_events.sql");
+                assert_eq!(embedded, "0010_personal_override_activity_name.sql");
+            }
+            other => panic!("expected a migration name mismatch, got {other:?}"),
+        }
+        // Nothing before or after 0010 was applied: the refusal rolled back
+        // the whole run, so the database is exactly as it was found.
+        assert_eq!(
+            schema_migration_rows(&database),
+            vec![(10, "0010_local_only_events.sql".to_owned())]
+        );
+        assert!(!database
+            .schema_snapshot()
+            .unwrap()
+            .iter()
+            .any(|name| name == "raw_event_buffer"));
+    }
+
     #[test]
     fn newly_added_migration_applies_after_initial_schema_deploy() {
         let connection = Connection::open_in_memory().unwrap();
@@ -4814,7 +4958,7 @@ mod tests {
             connection
                 .execute(
                     "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
-                    (version, format!("migration-{version}")),
+                    (version, embedded_migration_name(version)),
                 )
                 .unwrap();
         }
@@ -4926,7 +5070,7 @@ mod tests {
             connection
                 .execute(
                     "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
-                    (version, format!("migration-{version}")),
+                    (version, embedded_migration_name(version)),
                 )
                 .unwrap();
         }

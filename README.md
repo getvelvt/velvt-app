@@ -515,7 +515,11 @@ tables that hold anything drawn from your Mac, with what each one holds and for
 how long, and `MIGRATED_TABLES` in `rust-service/tests/published_claims.rs` is
 the closed inventory a test holds the migrated schema to. Time and date lookup
 columns are indexed. The migration-owned `schema_migration` table records each
-applied version, so startup never applies the same migration twice.
+applied version and its file name, so startup never applies the same migration
+twice, and refuses to open a database that applied a different file under a
+version number this build uses (a reused or renumbered migration). It compares
+names only: an edited migration keeps its name, and catching that would need a
+per-migration checksum column.
 
 The privacy invariant is narrower than this page used to state it, and the
 narrow version is the one that is true. Nothing writes a window title, a URL, a

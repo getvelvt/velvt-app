@@ -81,6 +81,7 @@ and the block is active; the current library avoids that phrase entirely.
 | `intensity` | Yes | Yes | Never | Safe enum only | Never |
 | planned/elapsed/paused timestamps | Yes | Yes | Never | Safe timing metadata only | Never |
 | abstracted category/status/confidence | Yes | Yes, observation rows | Existing abstract-event upload remains unchanged; no work-block association | Existing safe values only | Never |
+| live anchor category (`anchor_category`, protocol 31) | Yes, local socket only | Derived on read from observation rows; not stored separately | Never | Safe category value only | Never |
 | longest stretch / switch-away / recovery counts | Result snapshot | Yes, safe result JSON | Never | Safe aggregate only | Never |
 | coverage/confidence/evidence category | Result snapshot | Yes, safe result JSON | Never | Safe aggregate only | Never |
 | Rust-authored observation | Result snapshot | Yes, safe result JSON | Never | Not logged by the work-block path | Never |

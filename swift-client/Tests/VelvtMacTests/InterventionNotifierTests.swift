@@ -25,6 +25,7 @@ final class InterventionNotifierTests: XCTestCase {
             pausedAt: nil,
             recoveredAfterRestart: false,
             currentCategory: "COMMUNICATION",
+            anchorCategory: nil,
             classificationStatus: .classified,
             confidence: .high,
             statusLine: "Current category: Communication.",

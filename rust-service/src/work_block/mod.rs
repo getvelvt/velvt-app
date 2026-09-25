@@ -1274,6 +1274,19 @@ impl WorkBlockManager {
         let remaining = record.planned_duration_seconds.saturating_sub(elapsed);
         let latest = self.repo.latest_observation(&record.block_id)?;
         let (category, status, confidence) = current_evidence(latest.as_ref());
+        // The same function the drift gate calls, so a client comparing
+        // `current_category` with this field sees the anchor the service itself
+        // measures departures from. Live blocks only: a finished block's
+        // evidence category is `result.safe_evidence_category`, which is gated
+        // on coverage, and this must not become a way around that gate.
+        let anchor_category = if matches!(
+            record.phase,
+            WorkBlockPhase::Active | WorkBlockPhase::Paused
+        ) {
+            dominant_category(&self.repo.observations(&record.block_id)?)
+        } else {
+            None
+        };
         let ends_at = (record.phase == WorkBlockPhase::Active).then(|| planned_deadline(&record));
         Ok(WorkBlockSnapshot {
             state_version: WORK_BLOCK_STATE_VERSION,
@@ -1291,6 +1304,7 @@ impl WorkBlockManager {
             paused_at: record.paused_at,
             recovered_after_restart: record.recovered_after_restart,
             current_category: category.clone(),
+            anchor_category,
             classification_status: status,
             confidence,
             status_line: status_line(record.phase, record.intensity, category.as_deref(), status),
@@ -2006,6 +2020,7 @@ fn idle_snapshot() -> WorkBlockSnapshot {
         paused_at: None,
         recovered_after_restart: false,
         current_category: None,
+        anchor_category: None,
         classification_status: ClassificationStatus::Unclassified,
         confidence: ClassificationConfidence::None,
         status_line: "Choose one bounded block to begin.".into(),
@@ -4240,5 +4255,101 @@ mod tests {
         repo.record_decision(&decision).unwrap();
 
         assert_eq!(repo.decisions("block-for-replay").unwrap().len(), 1);
+    }
+
+    /// `anchor_category` on the snapshot is the drift gate's anchor: the
+    /// category with the most confidently observed, closed time. It is absent
+    /// until one confident observation has closed, follows the dominant
+    /// category as time accumulates, survives a pause, and is withdrawn once
+    /// the block is finished.
+    #[test]
+    fn the_snapshot_carries_the_gate_anchor_only_while_the_block_is_live() {
+        let (manager, _repo) = manager_with_repo();
+        let started = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = started.block_id.unwrap();
+        assert_eq!(started.anchor_category, None);
+
+        // The open observation is not evidence yet: the gate counts closed
+        // time only, and so does the snapshot.
+        let first = observe(&manager, "DEEP_WORK", 10).unwrap();
+        assert_eq!(first.snapshot.anchor_category, None);
+
+        let away = observe(&manager, "COMMUNICATION", 400).unwrap();
+        assert_eq!(away.snapshot.anchor_category.as_deref(), Some("DEEP_WORK"));
+        assert_eq!(
+            away.snapshot.current_category.as_deref(),
+            Some("COMMUNICATION")
+        );
+
+        let back = observe(&manager, "DEEP_WORK", 450).unwrap();
+        assert_eq!(
+            back.snapshot.anchor_category,
+            back.snapshot.current_category
+        );
+
+        let polled = manager.request_state(at(500)).unwrap();
+        assert_eq!(polled.anchor_category.as_deref(), Some("DEEP_WORK"));
+
+        let paused = manager.pause(block_id, at(520)).unwrap();
+        assert_eq!(paused.phase, WorkBlockPhase::Paused);
+        assert_eq!(paused.anchor_category.as_deref(), Some("DEEP_WORK"));
+
+        let ended = manager.end(block_id, at(530)).unwrap();
+        assert_eq!(ended.phase, WorkBlockPhase::Abandoned);
+        assert_eq!(ended.anchor_category, None);
+    }
+
+    /// The anchor is whichever category holds the most time, so it moves when
+    /// another category overtakes it — exactly as the gate's does.
+    #[test]
+    fn the_snapshot_anchor_follows_the_dominant_category() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+        let early = observe(&manager, "COMMUNICATION", 100).unwrap();
+        assert_eq!(early.snapshot.anchor_category.as_deref(), Some("DEEP_WORK"));
+
+        let overtaken = observe(&manager, "DEEP_WORK", 400).unwrap();
+        assert_eq!(
+            overtaken.snapshot.anchor_category.as_deref(),
+            Some("COMMUNICATION")
+        );
+    }
+
+    /// Low-confidence and system evidence never becomes the anchor, however
+    /// long it lasts: the same bar `is_confident_evidence` sets for the gate.
+    #[test]
+    fn unconfident_or_system_time_never_becomes_the_snapshot_anchor() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3_600), at(0)).unwrap();
+        manager
+            .observe_safe_category(
+                "DEEP_WORK",
+                ClassificationStatus::Classified,
+                ClassificationConfidence::Low,
+                at(10),
+            )
+            .unwrap();
+        observe(&manager, "SYSTEM", 600);
+        let outcome = observe(&manager, "COMMUNICATION", 1_200).unwrap();
+        assert_eq!(outcome.snapshot.anchor_category, None);
+    }
+
+    /// The anchor on the snapshot and the anchor recorded on the offer are the
+    /// same value, because they are computed by the same function.
+    #[test]
+    fn the_snapshot_anchor_matches_the_offer_anchor() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3_600), at(0)).unwrap();
+        let outcome = drift_into_offer(&manager).unwrap();
+        let offer = outcome
+            .snapshot
+            .active_intervention
+            .as_ref()
+            .expect("the fixture drifts into an offer");
+        assert_eq!(
+            outcome.snapshot.anchor_category.as_deref(),
+            Some(offer.anchor_category.as_str())
+        );
     }
 }

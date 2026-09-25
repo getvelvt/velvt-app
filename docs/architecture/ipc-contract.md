@@ -96,9 +96,11 @@ recovery acceptance, lifecycle, and clear; Rust to Swift for
 `work_block_state`.
 
 Protocol state version 1 contains the persisted phase and timing, optional
-local intention/purpose/intensity, current safe classification evidence,
-Rust-authored status line, and optional terminal result. The result contains
-planned/elapsed duration, longest stretch, neutral transition and return
+local intention/purpose/intensity, current safe classification evidence, the
+live block's anchor category (protocol 31; the drift gate's own anchor, null
+until a confident observation has closed and outside an active or paused
+block), Rust-authored status line, and optional terminal result. The result
+contains planned/elapsed duration, longest stretch, neutral transition and return
 counts, confidence/coverage, safe evidence category, Rust-authored observation,
 and exactly one `protect_next_10` action. These messages are local-socket-only;
 none is an upload or notification contract. Full field constraints live in

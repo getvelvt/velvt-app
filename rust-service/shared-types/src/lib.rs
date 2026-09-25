@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 31;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1486,6 +1486,14 @@ pub struct WorkBlockSnapshot {
     pub paused_at: Option<DateTime<Utc>>,
     pub recovered_after_restart: bool,
     pub current_category: Option<String>,
+    /// The broad category the drift gate treats as this block's anchor: the
+    /// one holding the most confidently observed time so far. Set only while
+    /// the block is active or paused, and `None` until a confident
+    /// observation has closed. A category label and nothing else — no app
+    /// identity, title, URL, or intention — so it is exactly as local as
+    /// `current_category`. Absent in pre-v31 payloads, which decode as `None`.
+    #[serde(default)]
+    pub anchor_category: Option<String>,
     pub classification_status: ClassificationStatus,
     pub confidence: ClassificationConfidence,
     pub status_line: String,
@@ -1724,6 +1732,7 @@ impl std::fmt::Debug for WorkBlockSnapshot {
             .field("paused_at", &self.paused_at)
             .field("recovered_after_restart", &self.recovered_after_restart)
             .field("current_category", &self.current_category)
+            .field("anchor_category", &self.anchor_category)
             .field("classification_status", &self.classification_status)
             .field("confidence", &self.confidence)
             .field("status_line", &"[reviewed_copy]")
@@ -2087,7 +2096,7 @@ mod v28_demotion_receipts_probe_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 30);
+        assert_eq!(PROTOCOL_VERSION, 31);
     }
 
     #[test]
@@ -2676,8 +2685,8 @@ mod v30_classification_contract {
     use super::*;
 
     #[test]
-    fn protocol_version_is_thirty() {
-        assert_eq!(PROTOCOL_VERSION, 30);
+    fn protocol_version_is_current() {
+        assert_eq!(PROTOCOL_VERSION, 31);
     }
 
     /// A v29 raw event — no declared metadata at all — must decode, and must
@@ -2902,5 +2911,74 @@ mod v30_classification_contract {
             ClassificationSource::DeclaredAppCategory.as_str(),
             "declared_app_category"
         );
+    }
+}
+
+#[cfg(test)]
+mod v31_anchor_category_contract {
+    use super::*;
+
+    fn snapshot(anchor_category: Option<&str>) -> WorkBlockSnapshot {
+        WorkBlockSnapshot {
+            state_version: WORK_BLOCK_STATE_VERSION,
+            phase: WorkBlockPhase::Active,
+            block_id: Some(Uuid::nil()),
+            intention: None,
+            purpose: None,
+            intensity: Some(WorkBlockIntensity::Medium),
+            planned_duration_seconds: 1_500,
+            elapsed_duration_seconds: 600,
+            remaining_duration_seconds: 900,
+            started_at: None,
+            analysis_ended_at: None,
+            ends_at: None,
+            paused_at: None,
+            recovered_after_restart: false,
+            current_category: Some("FOCUS_WORK".into()),
+            anchor_category: anchor_category.map(str::to_owned),
+            classification_status: ClassificationStatus::Classified,
+            confidence: ClassificationConfidence::High,
+            status_line: "Current category: Focus work.".into(),
+            result: None,
+            active_intervention: None,
+        }
+    }
+
+    /// The schema lists `anchor_category` as required and nullable, so the
+    /// key is on every v31 payload: a client can tell "this block has no
+    /// anchor yet" (null) from "this service predates the field" (absent).
+    #[test]
+    fn anchor_category_is_a_top_level_key_on_every_payload() {
+        let with_anchor =
+            serde_json::to_value(ServerMessage::WorkBlockState(snapshot(Some("FOCUS_WORK"))))
+                .unwrap();
+        assert_eq!(with_anchor["payload"]["anchor_category"], "FOCUS_WORK");
+
+        let without_anchor =
+            serde_json::to_value(ServerMessage::WorkBlockState(snapshot(None))).unwrap();
+        let payload = without_anchor["payload"].as_object().unwrap();
+        assert!(payload.contains_key("anchor_category"));
+        assert!(payload["anchor_category"].is_null());
+    }
+
+    /// A v30 payload has no `anchor_category` key at all, and must still
+    /// decode, as `None`.
+    #[test]
+    fn a_v30_work_block_state_without_anchor_category_decodes_as_none() {
+        let mut v30 = serde_json::to_value(snapshot(Some("FOCUS_WORK"))).unwrap();
+        v30.as_object_mut().unwrap().remove("anchor_category");
+        let decoded: WorkBlockSnapshot = serde_json::from_value(v30).unwrap();
+        assert_eq!(decoded.anchor_category, None);
+        assert_eq!(decoded.current_category.as_deref(), Some("FOCUS_WORK"));
+    }
+
+    #[test]
+    fn anchor_category_round_trips() {
+        for anchor in [Some("FOCUS_WORK"), None] {
+            let message = ServerMessage::WorkBlockState(snapshot(anchor));
+            let encoded = serde_json::to_string(&message).unwrap();
+            let decoded: ServerMessage = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, message);
+        }
     }
 }

@@ -611,6 +611,58 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(WorkBlockResult.self, from: data), withOutcomes)
     }
 
+    /// Protocol 31: `anchor_category` is read off the wire as Rust sent it,
+    /// survives a round trip, and a v30 payload — which has no key at all —
+    /// decodes as nil rather than failing.
+    func testWorkBlockStateAnchorCategoryDecodesAndIsAbsentBeforeV31() throws {
+        func workBlockState(anchorField: String) throws -> WorkBlockSnapshot? {
+            let json = """
+                {
+                  "type": "work_block_state",
+                  "payload": {
+                    "state_version": 1,
+                    "phase": "active",
+                    "block_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "intention": null,
+                    "purpose": "deep_work",
+                    "intensity": "medium",
+                    "planned_duration_seconds": 1500,
+                    "elapsed_duration_seconds": 600,
+                    "remaining_duration_seconds": 900,
+                    "started_at": "2026-09-25T10:00:00Z",
+                    "analysis_ended_at": null,
+                    "ends_at": "2026-09-25T10:25:00Z",
+                    "paused_at": null,
+                    "recovered_after_restart": false,
+                    "current_category": "FOCUS_WORK",
+                    \(anchorField)
+                    "classification_status": "classified",
+                    "confidence": "high",
+                    "status_line": "Current category: Focus work.",
+                    "result": null
+                  }
+                }
+                """
+            let message = try decoder.decode(ServerMessage.self, from: Data(json.utf8))
+            guard case .workBlockState(let snapshot) = message else { return nil }
+            return snapshot
+        }
+
+        let v31 = try XCTUnwrap(
+            workBlockState(anchorField: #""anchor_category": "FOCUS_WORK","#))
+        XCTAssertEqual(v31.anchorCategory, "FOCUS_WORK")
+        XCTAssertEqual(v31.anchorCategory, v31.currentCategory)
+        let reencoded = try encoder.encode(ServerMessage.workBlockState(v31))
+        XCTAssertEqual(
+            try decoder.decode(ServerMessage.self, from: reencoded), .workBlockState(v31))
+
+        let noAnchorYet = try XCTUnwrap(
+            workBlockState(anchorField: #""anchor_category": null,"#))
+        XCTAssertNil(noAnchorYet.anchorCategory)
+        let v30 = try XCTUnwrap(workBlockState(anchorField: ""))
+        XCTAssertNil(v30.anchorCategory)
+    }
+
     func testEarlyLocalSignalContainsNoRawActivityFields() throws {
         let signal = LocalEarlySignal(
             status: .ready,

@@ -2607,6 +2607,11 @@ public struct WorkBlockSnapshot: Codable, Equatable, Sendable {
     public let pausedAt: Date?
     public let recoveredAfterRestart: Bool
     public let currentCategory: String?
+    /// The category the drift gate treats as this block's anchor (proto v31).
+    /// Rust computes it; Swift never derives one. `nil` outside an active or
+    /// paused block, before a confident observation has closed, and on any
+    /// pre-v31 payload, which has no key.
+    public let anchorCategory: String?
     public let classificationStatus: ClassificationStatus
     public let confidence: ClassificationConfidence
     public let statusLine: String
@@ -2626,6 +2631,7 @@ public struct WorkBlockSnapshot: Codable, Equatable, Sendable {
         case pausedAt = "paused_at"
         case recoveredAfterRestart = "recovered_after_restart"
         case currentCategory = "current_category"
+        case anchorCategory = "anchor_category"
         case classificationStatus = "classification_status"
         case statusLine = "status_line"
         case activeIntervention = "active_intervention"

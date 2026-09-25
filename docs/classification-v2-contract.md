@@ -14,6 +14,9 @@ Measured on a real machine (107 installed apps, 15 running in the foreground):
   for VS Code is literally `Code`. The taxonomy has `Visual Studio Code`,
   `Code - OSS` and `VSCodium`. Matching is strict full-string equality after
   normalisation (`plugin.rs:190`), so `Code` matches nothing.
+  *(Clarified 2026-09-25: a seed pattern may also contain `*` globs —
+  `pattern_matches` supports them, and `ARCHITECTURE.md` describes them. What
+  does not exist is fuzzy or substring matching, which is the point here.)*
 - **Accented app names can never match.** `normalize_classifier_text`
   (`normalize.rs:6`) uses `to_ascii_lowercase` then replaces every non-ASCII
   alphanumeric with a space, so `é` is destroyed rather than folded.

@@ -39,29 +39,28 @@ make lint-swift
 
 ## Run the Local MVP
 
-From the parent workspace root:
+The device-local loop — collection, classification, work blocks and the drift
+offer — needs no account and no backend. Build and open the app with
+`make build-app` (below) and it runs on its own.
+
+Sign-in, upload and cloud insights need a `velvt-core` API. `velvt-core` is a
+separate, private repository and is not part of this one. Maintainers who have
+the private Velvt workspace checkout (the directory that holds `velvt-app/` and
+`velvt-core/` side by side) can bring up both with the workspace's
+`run_velvt_local.sh`, run from that workspace root:
 
 ```sh
-cd /Users/kevinzhou/Desktop/businesses.ai/velvt.ai
 ./run_velvt_local.sh --reset-local-cache
 ```
 
-Use this when you want the local backend and packaged Mac app to come up
-together. It opens Docker Desktop if needed, starts the FastAPI backend, waits
-for readiness, clears stale display caches, and launches
-`velvt-app/dist/Velvt.app`.
-
-After changing Swift or Rust helper code, rebuild as part of startup:
-
-```sh
-./run_velvt_local.sh --rebuild --reset-local-cache
-```
-
-To smoke-test without opening the app:
-
-```sh
-./run_velvt_local.sh --no-open --smoke
-```
+It opens Docker Desktop if needed, **starts** the existing `velvt-core` Docker
+Compose containers (it never creates or rebuilds them), waits for readiness,
+clears the local history/insight caches, and launches
+`velvt-app/dist/Velvt.app`. `--rebuild` first replaces `dist/Velvt.app` with a
+Debug build pointed at the local backend (`make build-app-local-core`), and
+`--no-open --smoke` checks the artifact and backend without opening anything.
+Without that workspace, use `make build-app-local-core` against a `velvt-core`
+API you run yourself.
 
 Workspace-specific commands are also available:
 
@@ -80,7 +79,15 @@ make build-app
 
 Produces `dist/Velvt.app` — one double-clickable artifact with both the
 Swift UI and the Rust service binary embedded at
-`Contents/Resources/velvt-service`. `AppDelegate` launches the bundled helper at
+`Contents/Resources/velvt-service`. It is a universal (arm64 + x86_64) Release
+build compiled against `VELVT_API_BASE_URL` (default
+`https://dev-api.getvelvt.com`; `scripts/preflight_distribution.sh` refuses a
+non-HTTPS, local or private-network URL), then signed **ad hoc** by
+`scripts/sign_release.sh local` and checked by `scripts/verify_release.sh`. An
+ad-hoc bundle runs on the machine that built it and nowhere else; a build for
+another Mac is `make alpha-dmg` (Developer ID signing plus notarization, see
+[`docs/shipping-a-testable-dmg.md`](docs/shipping-a-testable-dmg.md)).
+`AppDelegate` launches the bundled helper at
 startup (see `ServiceProcessLauncher.swift`) and stops it on quit, so this
 is the one command a real user (or you, verifying locally) needs to get a
 working install — no exported environment variables, no separate terminal
@@ -96,11 +103,21 @@ on its default port, use:
 make build-app-local-core
 ```
 
-This bakes `VELVT_API_BASE_URL=http://localhost:8000` into the bundled Rust
-service and the app's processed `Info.plist`. The packaged app is signed
-ad-hoc by default so macOS can register it consistently for notifications,
-Keychain, TCC, and LaunchServices. Copy `dist/Velvt.app` to `/Applications`
-when you want it to appear in Launchpad.
+This bakes `VELVT_API_BASE_URL=http://localhost:8000` (override with
+`VELVT_LOCAL_API_BASE_URL`) into the bundled Rust service and the app's
+processed `Info.plist`, as a Debug build. The target then signs with
+`VELVT_CODESIGN_IDENTITY`, which has no default: if that identity is unset or
+not in your keychain the target **fails** rather than silently falling back to
+ad-hoc signing, because a silently ad-hoc bundle once ran on the build machine
+and crashed everywhere else. To accept a build-machine-only bundle, opt in:
+
+```sh
+make build-app-local-core VELVT_ALLOW_ADHOC=1
+# or, equivalently, VELVT_CODESIGN_IDENTITY=-
+```
+
+Copy `dist/Velvt.app` to `/Applications` when you want it to appear in
+Launchpad.
 
 ### Build Both Local Targets (development)
 
@@ -111,19 +128,23 @@ without changing either workspace's build configuration:
 make build-all
 ```
 
-The native macOS application target is `velvt-mac` in
-`swift-client/VelvtMac.xcodeproj`. It produces `Velvt.app` without the
-Rust binary embedded (use `make build-app` for that); SwiftPM remains the
-unit-test harness.
+The native macOS application target and scheme are named `velvt-mac` in
+`swift-client/VelvtMac.xcodeproj`; the product it builds is `Velvt.app`
+(`PRODUCT_NAME = Velvt` in `swift-client/Configs/*.xcconfig`). Its
+"Bundle Rust Service" build phase compiles the Rust helper and embeds it at
+`Contents/Resources/velvt-service`, so `make build-swift` leaves
+`swift-client/.build/Velvt.app` with the helper inside. `make build-app` is the
+packaged, signed and verified path. SwiftPM remains the unit-test harness.
 
-To run the SwiftPM development executable against the local service, source the
-canonical socket path and protocol version from `proto/`:
+To run the SwiftPM development executable against a service you started
+yourself, source the canonical socket path and protocol version from `proto/`.
+The SwiftPM executable product is `Velvt` (`swift-client/Package.swift`):
 
 ```sh
 VELVT_SOCKET_PATH="$(cat proto/ipc_socket_path)" \
 VELVT_PROTOCOL_VERSION="$(cat proto/version)" \
 VELVT_CLIENT_VERSION="0.1.0" \
-swift run --package-path swift-client velvt-mac
+swift run --package-path swift-client Velvt
 ```
 
 Build the native app directly with:
@@ -199,9 +220,11 @@ Rust reads its default socket path from `proto/ipc_socket_path`.
 `VELVT_IPC_SOCKET_PATH` overrides it, `VELVT_IPC_MAX_ERRORS` configures the
 malformed-frame threshold, and `VELVT_LOG_LEVEL` configures structured tracing.
 
-All protocol-v3 messages use a tagged `{"type": "...", "payload": {...}}`
-envelope. Rust DTOs live in `rust-service/shared-types`; Swift DTOs live in
-`swift-client/Sources/VelvtMac/IPC/IPCTypes.swift`.
+Every IPC message (since protocol 3; the current version is in
+`proto/version`) uses a tagged `{"type": "...", "payload": {...}}` envelope.
+Rust DTOs live in `rust-service/shared-types`; Swift DTOs live in
+`swift-client/Sources/VelvtMac/IPC/IPCTypes.swift`. The message catalog is
+[`docs/architecture/ipc-contract.md`](docs/architecture/ipc-contract.md).
 
 ## Event Relay
 
@@ -265,7 +288,7 @@ Tier 2 classification is optional. At startup, check the structured log:
 ## Running the Test Suite
 
 ```sh
-make test-all          # both workspaces
+make test-all          # test-rust, test-swift and test-measurement
 make test-rust         # cargo test (includes the 7-path
                         # end-to-end integration suite in
                         # rust-service/tests/e2e_integration.rs)
@@ -273,14 +296,20 @@ make test-swift         # swift test --package-path swift-client
 make bench-rust         # the #[ignore]d wall-clock latency budgets,
                         # kept out of test-rust so a loaded machine
                         # cannot fail a correctness run
+make test-measurement   # scripts/tests/run_measurement_tests.sh: the
+                        # measurement and evidence scripts and the
+                        # pbxproj membership guard (python3 + sqlite3)
 ```
 
 ## Smoke-Testing Against a Local velvt-core Instance
 
-1. Run `make build-app-local-core`, then open `dist/Velvt.app`.
+1. Run `make build-app-local-core` (with `VELVT_ALLOW_ADHOC=1` if you have no
+   signing identity; see above), then open `dist/Velvt.app`.
    This points the bundled Rust service at `http://localhost:8000`.
 2. Start your local `velvt-core-api` if it is not already running.
-3. Grant Accessibility and Notifications when prompted.
+3. Grant Accessibility and Notifications when prompted, and sign in. Events
+   collected before sign-in stay local with `upload_eligible = false` and are
+   never uploaded retroactively (protocol 23).
 4. Switch applications a few times, then check
    `~/.velvt/velvt-service.sqlite3`'s `upload_batch` table for a `sent` row,
    and your local `velvt-core` logs for the corresponding
@@ -302,28 +331,53 @@ documented in
 
 ## On-Device Classification
 
-The Rust abstraction engine applies a privacy-preserving three-tier pipeline:
+The Rust abstraction engine (`rust-service/src/abstraction/engine.rs`)
+classifies every event on the device. It was a three-tier pipeline (seed
+match, embedding, fallback) until Classification v2 (protocol 30, 1.0.11); it
+is now an ordered ladder, most specific evidence first:
 
-1. **Exact match:** the versioned taxonomy seed dictionary matches exact or
-   glob application-name patterns.
-2. **Embedding similarity:** an optional local ONNX sentence-embedding model
-   compares an app-name/window-title embedding with versioned category
-   prototypes. Multiple prototypes may represent distinct semantic modes of
-   the same canonical category.
-3. **Fallback:** unmatched or unavailable Tier 2 requests become
-   `unlogged` / `UNLOGGED`.
+1. **Your corrections.** A rule for this exact window (`personal_override`),
+   then for this application by bundle identifier, then for this application
+   by name (both `personal_app_override`). A correction always outranks a
+   classifier.
+2. **Classifier plugins**, in registry order; the first one that answers wins:
+   1. `BrowserContextPlugin` — for a browser, the focused site (a hostname
+      Rust derives from the tab URL; the URL itself is discarded) and the
+      title.
+   2. `BundleSeedPlugin` — the taxonomy's bundle-identifier seeds.
+   3. `SeedDictionaryPlugin` — the taxonomy's application-name seeds. A
+      pattern matches the whole normalized name, or a `*` glob; there is no
+      fuzzy or substring matching, which is why macOS's `Code` for VS Code
+      needed the bundle seed above.
+   4. `LocalPurposeHeuristicPlugin` — curated keyword families over the name
+      and title.
+   5. `DocumentTypePlugin` — the document types the application declares in
+      its own `Info.plist`.
+   6. `DeclaredCategoryPlugin` — the application's declared
+      `LSApplicationCategoryType`, through a whitelist of unambiguous values.
+   7. `EmbeddingSimilarityPlugin` (Tier 2) — a local embedding of name and
+      title compared with versioned category prototypes, plus the bounded
+      device-local prototypes your corrections create. Multiple prototypes
+      may represent distinct modes of one category.
+   8. `GenericBrowserPriorPlugin` — a browser whose site said nothing becomes
+      an explicitly ambiguous `REFERENCE`.
+   9. `UnloggedFallbackPlugin` — anything left is captured as `UNLOGGED`
+      rather than dropped.
 
-Plugins run in registry order and the first match wins. The built-in registry
-is in `AbstractionEngineBuilder::register_builtin_plugins_with_embedding`:
+`docs/classification-v2-contract.md` is the design this ladder implements, and
+`ARCHITECTURE.md` carries the same order. The built-in registry is in
+`AbstractionEngineBuilder::register_builtin_plugins_with_embedding`, and
+registration order is the arbitration order:
 
 ```rust
 // This is the only line to change when registering a new classification plugin.
 let builder = builder.register_plugin(NewClassificationPlugin::new(...));
 ```
 
-`AbstractedEvent` contains only a stable local ID, label, category, taxonomy
-version, timestamp, and internal-only classification tier. Raw app names and
-window titles never enter this type or its serialized output.
+`AbstractedEvent` serializes only a stable local ID, label, category, taxonomy
+version, timestamp, and classification status, confidence and source; the
+classification tier and the device-local display fields are skipped. Raw app
+names and window titles never enter this type or its serialized output.
 
 ### Model Artifacts
 
@@ -398,9 +452,11 @@ offline update process.
 
 The taxonomy is data loaded from
 `rust-service/resources/abstraction-taxonomy-mvp-1.json`, or from
-`VELVT_ABSTRACTION_TAXONOMY_PATH`. The API-expected version is currently
-`mvp-1`; a configured mismatch emits a structured warning while the configured
-version remains attached to results.
+`VELVT_ABSTRACTION_TAXONOMY_PATH`. The file name is historical: the version
+inside it is `mvp-2` (Classification v2 added bundle seeds and deleted the
+unreachable browser seeds), and `API_EXPECTED_TAXONOMY_VERSION` is `mvp-2`. A
+configured mismatch emits a structured warning while the configured version
+remains attached to results.
 
 `TitleAbstractor` is wired into `AbstractionEngine::process`, with
 `DefaultTitleAbstractor` passing titles through locally. V1 will replace
@@ -452,18 +508,23 @@ The numbered files in `rust-service/migrations/` are the schema, and they are
 the only enumeration of it that cannot go stale — this page carried a list of
 six tables for as long as there were more than six. `PRIVACY.md` lists the
 tables that hold anything drawn from your Mac, with what each one holds and for
-how long. Time and date lookup columns are indexed. The migration-owned
-`schema_migration` table records each applied version, so startup never applies
-the same migration twice.
+how long, and `MIGRATED_TABLES` in `rust-service/tests/published_claims.rs` is
+the closed inventory a test holds the migrated schema to. Time and date lookup
+columns are indexed. The migration-owned `schema_migration` table records each
+applied version, so startup never applies the same migration twice.
 
 The privacy invariant is narrower than this page used to state it, and the
 narrow version is the one that is true. Nothing writes a window title, a URL, a
-file path, a filename, or a contact into any column. Two columns hold an
-application name or a string derived from one — `local_name_suggestion`, which
-is the raw application name, and `local_display_label` — both on
-`raw_event_buffer`, both named in the header of
-`migrations/0001_initial_persistence.sql`, and both disclosed in `PRIVACY.md`.
-Four more hold text you typed yourself: `abstraction_map.display_name`,
+file path, a filename, or a contact into any column. `raw_event_buffer` holds
+six device-local columns that can name or identify an application, all
+disclosed in `PRIVACY.md`: `local_name_suggestion` (the raw application name,
+kept only when neither a seed rule nor one of your corrections matched),
+`local_display_label`, `app_stable_id` (a hash of the application name), and,
+since migration 0033, `app_bundle_stable_id` (a hash of the bundle
+identifier), `declared_app_category` and `document_type_ids` (what the
+application declares about itself in its own `Info.plist`). None of them is
+reachable from `upload/`. Four more columns hold text you typed yourself:
+`abstraction_map.display_name`,
 `personal_override.activity_name`, `personal_app_override.activity_name`, and
 `work_block.intention`. `semantic_embedding_cache` holds a hashed sketch built
 from the application name and the window title — not the title, and not

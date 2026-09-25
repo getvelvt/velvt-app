@@ -14,7 +14,7 @@ use velvt_shared_types::{
     ServerMessage, SetApplicationCategory, UnclassifiedTriage, UnclassifiedTriageEntry,
 };
 
-use crate::abstraction::{app_bundle_key_for, AbstractionEngine};
+use crate::abstraction::AbstractionEngine;
 use crate::auth::{
     AccountAuthService, AuthError, AuthState, HttpClient, HttpRequest, SessionValidator, TokenStore,
 };
@@ -272,9 +272,9 @@ fn normalized_correction_query(value: Option<&str>) -> Result<Option<String>, ()
 
 /// Accepts an application key only in the shape Velvt itself issues.
 ///
-/// Every app key Velvt hands out is a SHA-256 digest rendered as 64 lowercase
-/// hex characters (`key.rs`), and the client's only source for one is the triage
-/// list it is answering. Anything else is a defect or a forgery, and accepting
+/// Every app key Velvt hands out is an HMAC-SHA-256 digest rendered as 64
+/// lowercase hex characters (`key.rs`), and the client's only source for one is
+/// the triage list it is answering. Anything else is a defect or a forgery, and accepting
 /// it would write a rule under a key no event can ever match — invisible in the
 /// history's app rules, unreachable by removal, and impossible to explain.
 fn normalized_app_stable_id(value: &str) -> Option<&str> {
@@ -304,10 +304,29 @@ fn correction_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::abstraction::app_stable_key_for;
+    use crate::abstraction::{app_bundle_key_for, app_stable_key_for, StableKeySalt};
     use crate::auth::{FakeTokenStore, HttpResponse, TokenStore};
     use crate::persistence::SqlitePersistence;
     use std::future::Future;
+
+    /// The app key for `app_name` as this database computes it: under its own
+    /// salt (migration 0037), which is the only salt its rows can match.
+    fn app_key(persistence: &SqlitePersistence, app_name: &str) -> String {
+        let salt = persistence
+            .abstraction_map_repo()
+            .stable_key_salt()
+            .unwrap();
+        app_stable_key_for(&salt, app_name)
+    }
+
+    /// The bundle key for `bundle_id`, under the same salt.
+    fn bundle_key(persistence: &SqlitePersistence, bundle_id: &str) -> String {
+        let salt = persistence
+            .abstraction_map_repo()
+            .stable_key_salt()
+            .unwrap();
+        app_bundle_key_for(&salt, bundle_id)
+    }
 
     struct ReadyHttp;
 
@@ -415,7 +434,7 @@ mod tests {
     /// seen, or removed.
     #[test]
     fn an_application_key_is_only_accepted_in_the_shape_velvt_issues() {
-        let key = app_stable_key_for("Qwybex");
+        let key = app_stable_key_for(&StableKeySalt::from_bytes([1; 32]), "Qwybex");
 
         assert_eq!(normalized_app_stable_id(&key), Some(key.as_str()));
         assert_eq!(normalized_app_stable_id(""), None);
@@ -625,7 +644,7 @@ mod tests {
             .await
             .unwrap();
         let stable_id = only_stable_id(&persistence);
-        let app_key = app_stable_key_for("Qwybex");
+        let app_key = app_key(&persistence, "Qwybex");
 
         menu_status(&router, update(&stable_id, "FOCUS_WORK")).await;
         let first = rules.app_scope_override(&app_key).unwrap().unwrap();
@@ -638,7 +657,7 @@ mod tests {
         // identity that survives a rename.
         assert_eq!(
             second.bundle_key_hash.as_deref(),
-            Some(app_bundle_key_for("com.example.qwybex").as_str())
+            Some(bundle_key(&persistence, "com.example.qwybex").as_str())
         );
     }
 
@@ -650,11 +669,11 @@ mod tests {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
         let router = correction_router(&persistence);
         let rules = persistence.abstraction_map_repo();
-        let app_key = app_stable_key_for("Qwybex");
+        let app_key = app_key(&persistence, "Qwybex");
         rules
             .save_app_scope_override(
                 &app_key,
-                Some(&app_bundle_key_for("com.example.qwybex")),
+                Some(&bundle_key(&persistence, "com.example.qwybex")),
                 "REFERENCE",
                 Some("Qwybex"),
             )
@@ -667,7 +686,7 @@ mod tests {
         // The edit keeps the identity the rule was taught with.
         assert_eq!(
             rule.bundle_key_hash.as_deref(),
-            Some(app_bundle_key_for("com.example.qwybex").as_str())
+            Some(bundle_key(&persistence, "com.example.qwybex").as_str())
         );
         assert!(status.correction_acknowledgment.is_some());
     }
@@ -677,7 +696,7 @@ mod tests {
     async fn the_correction_history_shows_app_rules_with_their_scope() {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
         let router = correction_router(&persistence);
-        let app_key = app_stable_key_for("Qwybex");
+        let app_key = app_key(&persistence, "Qwybex");
         persistence
             .abstraction_map_repo()
             .save_app_scope_override(&app_key, None, "FOCUS_WORK", Some("Qwybex"))
@@ -715,7 +734,7 @@ mod tests {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
         let router = correction_router(&persistence);
         let rules = persistence.abstraction_map_repo();
-        let app_key = app_stable_key_for("Qwybex");
+        let app_key = app_key(&persistence, "Qwybex");
         rules
             .save_app_scope_override(&app_key, None, "FOCUS_WORK", Some("Qwybex"))
             .unwrap();
@@ -750,7 +769,7 @@ mod tests {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
         let router = correction_router(&persistence);
         let rules = persistence.abstraction_map_repo();
-        let app_key = app_stable_key_for("Qwybex");
+        let app_key = app_key(&persistence, "Qwybex");
         rules
             .save_app_scope_override(&app_key, None, "FOCUS_WORK", Some("Qwybex"))
             .unwrap();
@@ -802,7 +821,7 @@ mod tests {
         // A request past the retention window reports the window actually used.
         assert_eq!(listed.window_days, 14);
         assert_eq!(listed.entries.len(), 1);
-        assert_eq!(entry.app_stable_id, app_stable_key_for("Qwybex"));
+        assert_eq!(entry.app_stable_id, app_key(&persistence, "Qwybex"));
         assert_eq!(entry.display_name, "Qwybex");
         assert_eq!(entry.seconds_observed, 600);
         assert_eq!(entry.event_count, 1);
@@ -817,7 +836,7 @@ mod tests {
         // answers under the bundle identity too.
         assert!(persistence
             .abstraction_map_repo()
-            .bundle_app_override(&app_bundle_key_for("com.example.qwybex"))
+            .bundle_app_override(&bundle_key(&persistence, "com.example.qwybex"))
             .unwrap()
             .is_some());
         assert!(after.entries.is_empty());
@@ -842,7 +861,7 @@ mod tests {
             .unwrap();
         let teach = |category: &str| {
             ClientMessage::SetApplicationCategory(velvt_shared_types::SetApplicationCategory {
-                app_stable_id: app_stable_key_for("Qwybex"),
+                app_stable_id: app_key(&persistence, "Qwybex"),
                 category: category.to_owned(),
                 activity_name: Some("Qwybex".into()),
             })
@@ -852,13 +871,13 @@ mod tests {
         menu_status(&router, teach("REFERENCE")).await;
 
         let rule = rules
-            .app_scope_override(&app_stable_key_for("Qwybex"))
+            .app_scope_override(&app_key(&persistence, "Qwybex"))
             .unwrap()
             .unwrap();
         assert_eq!(rule.category, "REFERENCE");
         assert_eq!(
             rule.bundle_key_hash.as_deref(),
-            Some(app_bundle_key_for("com.example.qwybex").as_str())
+            Some(bundle_key(&persistence, "com.example.qwybex").as_str())
         );
         // One row, answered twice: `correction_count` starts at 1 and the
         // repeat advances it, because how often someone had to say the same
@@ -886,7 +905,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let bad_category = router
-            .route(teach(&app_stable_key_for("Qwybex"), "PROCRASTINATION"))
+            .route(teach(&app_key(&persistence, "Qwybex"), "PROCRASTINATION"))
             .await
             .unwrap()
             .unwrap();
@@ -901,7 +920,7 @@ mod tests {
         ));
         assert!(persistence
             .abstraction_map_repo()
-            .app_scope_override(&app_stable_key_for("Qwybex"))
+            .app_scope_override(&app_key(&persistence, "Qwybex"))
             .unwrap()
             .is_none());
     }
@@ -2496,7 +2515,7 @@ impl R7Router {
                 .bundle_id
                 .as_deref()
                 .filter(|bundle_id| !bundle_id.trim().is_empty())
-                .map(app_bundle_key_for),
+                .map(|bundle_id| self.abstraction_engine.app_bundle_key(bundle_id)),
             declared_app_category: event.declared_app_category.clone(),
             document_type_ids: event.document_type_ids.clone(),
         };

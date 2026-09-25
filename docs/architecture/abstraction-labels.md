@@ -42,9 +42,10 @@ top-two margin abstain.
 
 The classifier scores an embedding against every prototype and uses the best
 prototype score for each category. Explicit user corrections remain bounded,
-resettable, exact device-local rules keyed by a local mapping key (an unsalted
-SHA-256 over low-entropy input: it protects nothing from a reader holding the
-database file, and never leaves the device);
+resettable, exact device-local rules keyed by a local mapping key (an
+HMAC-SHA-256 over low-entropy input under a per-install salt stored in the same
+database file, migration 0037: it defeats a table precomputed from this source,
+protects nothing from a reader holding the file, and never leaves the device);
 raw correction context and embeddings are never uploaded.
 
 ONNX artifacts are preferred when approved and packaged. Otherwise every

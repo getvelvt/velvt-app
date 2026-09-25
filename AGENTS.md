@@ -215,7 +215,7 @@ There is no `src/analytics/` module.
 ## Development Guide
 
 ### Abstraction Engine
-- Stable keys are domain-separated SHA-256 hashes: one over (app name, window context), one over the app name, and one over the bundle identifier. The event's stable ID is a random `abs_…` identifier, not a hash.
+- Stable keys are domain-separated SHA-256 digests — one over (app name, window context), one over the app name, and one over the bundle identifier — each keyed to the install as HMAC-SHA-256 under `stable_key_salt` (migration 0037). Compute them only through `abstraction/key.rs` with the salt of the store they will be looked up in (`AbstractionMappingStore::stable_key_salt`). The event's stable ID is a random `abs_…` identifier, not a hash.
 - Classification order is: window correction → bundle correction → app-name correction → classifier plugins in registry order (`register_builtin_plugins_with_embedding`). `ARCHITECTURE.md` lists the ladder.
 - Categories are the taxonomy's (`mvp-2`): `FOCUS_WORK`, `PASSIVE_CONSUMPTION`, `SOCIAL_FEED`, `COMMUNICATION`, `TASK_MANAGEMENT`, `REFERENCE`, `SYSTEM`, and the default `UNLOGGED`. Local labels are `<type>:<behavior>` (`document:code`, `video:youtube`, …).
 - Local labels never upload. The upload serializer collapses each event to one category-scoped `abstraction_type` (`cloud_abstraction_type` in `src/upload/dto.rs`, e.g. `document:inferred`); a new uploaded type is a cloud-contract change as well as a local one.
@@ -223,10 +223,10 @@ There is no `src/analytics/` module.
 
 ### Persistence
 - Migrations must be safe and additive. Use versioned migration files.
-- The migrations are the schema (0001–0036 on `develop` as of 2026-09-25). Do not keep a table list here: `MIGRATED_TABLES` in `tests/published_claims.rs` is the closed inventory the migrated schema is tested against, and `PRIVACY.md`'s storage table describes every store that holds anything drawn from the Mac. A new table goes in both, in the same commit.
+- The migrations are the schema (0001–0037 on `develop` as of 2026-09-25). Do not keep a table list here: `MIGRATED_TABLES` in `tests/published_claims.rs` is the closed inventory the migrated schema is tested against, and `PRIVACY.md`'s storage table describes every store that holds anything drawn from the Mac. A new table goes in both, in the same commit.
 - Migration numbers are sequential and shared across branches: take the next free number when you merge, and never renumber or edit a migration that has shipped.
 - `raw_event_buffer.occurred_at` and `raw_event_buffer.created_at` must have explicit indexes. Retention cleanup must use an indexed path.
-- Default retention (`src/config/mod.rs`; `PRIVACY.md` is the per-table reference and `published_claims` pins its numbers): raw events 14 days (`VELVT_RAW_EVENT_TTL_HOURS`, tied to the 14-day activity chart); sent upload batches 30 days; rejected batches 7 days; history cache 10 minutes and insight cache 30 minutes (`VELVT_HISTORY_TTL_SECONDS` / `VELVT_INSIGHT_TTL_SECONDS`).
+- Default retention (`src/config/mod.rs`; `PRIVACY.md` is the per-table reference and `published_claims` pins its numbers): raw events 14 days (`VELVT_RAW_EVENT_TTL_HOURS`, tied to the 14-day activity chart); window mappings (`abstraction_map`) 14 days from the window's last observation unless a correction or a buffered event points at them; sent upload batches 30 days; rejected batches 7 days; history cache 10 minutes and insight cache 30 minutes (`VELVT_HISTORY_TTL_SECONDS` / `VELVT_INSIGHT_TTL_SECONDS`).
 
 ### Upload
 - Batch every 60 seconds while active, after 50 pending abstracted events, or on service shutdown signal.

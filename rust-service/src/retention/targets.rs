@@ -248,6 +248,68 @@ impl RetentionTarget for SemanticEmbeddingCacheRetentionTarget {
 }
 
 // ---------------------------------------------------------------------------
+// AbstractionMapRetentionTarget
+// ---------------------------------------------------------------------------
+
+/// Default retention for `abstraction_map`, in days, counted from the last time
+/// the window was observed.
+///
+/// A mapping holds a window's (application, title) key, so it is evidence with
+/// the same shape as a raw event and expires on the same horizon as the buffer
+/// and the embedding cache. A constant rather than a config value, for the reason
+/// `SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS` is one: widening a privacy horizon
+/// should cost a code review and a `PRIVACY.md` edit, not an environment
+/// variable.
+pub const ABSTRACTION_MAP_RETENTION_DAYS: u64 = 14;
+
+/// Expires `abstraction_map` rows not observed within the retention window that
+/// no correction and no buffered event still points at.
+///
+/// Until this existed the table kept one row per distinct window ever seen, with
+/// no sweep at all, so the file answered "was this title ever open?" for as long
+/// as Velvt had been installed. Keys are salted per install since migration 0037,
+/// which stops that answer being computed offline; this is what stops it being
+/// kept. A window the user corrected keeps its row for as long as the correction
+/// exists, because the correction history lists and removes a window rule
+/// through it (`AbstractionMapRepo::delete_expired_mappings`).
+pub struct AbstractionMapRetentionTarget {
+    repo: Arc<dyn AbstractionMapRepo>,
+    retention: Duration,
+    batch_size: usize,
+}
+
+impl AbstractionMapRetentionTarget {
+    pub fn new(repo: Arc<dyn AbstractionMapRepo>, retention: Duration, batch_size: usize) -> Self {
+        Self {
+            repo,
+            retention,
+            batch_size,
+        }
+    }
+
+    /// The registered default: the raw-event horizon.
+    pub fn with_default_retention(repo: Arc<dyn AbstractionMapRepo>, batch_size: usize) -> Self {
+        Self::new(
+            repo,
+            Duration::from_secs(ABSTRACTION_MAP_RETENTION_DAYS * 24 * 60 * 60),
+            batch_size,
+        )
+    }
+}
+
+impl RetentionTarget for AbstractionMapRetentionTarget {
+    fn name(&self) -> &'static str {
+        "abstraction_map"
+    }
+
+    fn run_cleanup(&self) -> Result<CleanupReport, RetentionError> {
+        let cutoff = Utc::now() - chrono::Duration::seconds(self.retention.as_secs() as i64);
+        let deleted = self.repo.delete_expired_mappings(cutoff, self.batch_size)?;
+        Ok(CleanupReport { deleted })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // InterventionDecisionOutcomeTarget
 // ---------------------------------------------------------------------------
 

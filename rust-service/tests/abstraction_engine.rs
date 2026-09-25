@@ -6,10 +6,11 @@ use std::{
 };
 use uuid::Uuid;
 use velvt_service::abstraction::{
-    AbstractionEngine, ClassificationConfidence, ClassificationPlugin, ClassificationResult,
-    ClassificationSource, ClassificationStatus, ClassificationTier, DefaultTitleAbstractor,
-    EmbeddingError, EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
-    InMemoryMappingStore, Taxonomy, TitleAbstractor, API_EXPECTED_TAXONOMY_VERSION,
+    AbstractionEngine, AbstractionMappingStore, ClassificationConfidence, ClassificationPlugin,
+    ClassificationResult, ClassificationSource, ClassificationStatus, ClassificationTier,
+    DefaultTitleAbstractor, EmbeddingError, EmbeddingMetrics, EmbeddingModel,
+    EmbeddingSimilarityPlugin, InMemoryMappingStore, Taxonomy, TitleAbstractor,
+    API_EXPECTED_TAXONOMY_VERSION,
 };
 use velvt_shared_types::RawEvent;
 
@@ -619,6 +620,30 @@ fn abstracted_event_serialization_excludes_raw_inputs_and_stable_key() {
     }
 }
 
+/// The per-install salt (migration 0037) changes every key on disk and must
+/// change nothing on the wire: the same event, classified on two installs with
+/// different salts, serializes to the same upload bytes.
+#[test]
+fn the_stable_key_salt_never_changes_the_upload_payload() {
+    use velvt_service::upload::BatchEventPayload;
+
+    let first_store = Arc::new(InMemoryMappingStore::default());
+    let second_store = Arc::new(InMemoryMappingStore::default());
+    assert_ne!(
+        first_store.stable_key_salt().unwrap(),
+        second_store.stable_key_salt().unwrap()
+    );
+    let wire = |store: Arc<InMemoryMappingStore>| {
+        let event = AbstractionEngine::from_builtin_taxonomy(store)
+            .unwrap()
+            .process(raw_event("Obscure Editor", "release notes"))
+            .unwrap();
+        serde_json::to_string(&BatchEventPayload::from_abstracted("event-1", &event, 60)).unwrap()
+    };
+
+    assert_eq!(wire(first_store), wire(second_store));
+}
+
 #[test]
 fn browser_context_exposes_a_specific_safe_activity_without_raw_tab_text() {
     let raw_tab = "Private launch plan — YouTube";
@@ -811,7 +836,8 @@ fn invalid_taxonomy_returns_clear_error() {
 #[test]
 fn an_app_scoped_correction_survives_a_window_title_change() {
     let store = Arc::new(InMemoryMappingStore::default());
-    let app_key = velvt_service::abstraction::app_stable_key_for("Obscure Editor");
+    let salt = store.stable_key_salt().unwrap();
+    let app_key = velvt_service::abstraction::app_stable_key_for(&salt, "Obscure Editor");
     store.set_app_override(
         &app_key,
         velvt_service::abstraction::PersonalOverride {
@@ -839,15 +865,16 @@ fn an_app_scoped_correction_survives_a_window_title_change() {
 #[test]
 fn a_window_scoped_correction_outranks_the_app_scoped_one() {
     let store = Arc::new(InMemoryMappingStore::default());
+    let salt = store.stable_key_salt().unwrap();
     store.set_app_override(
-        &velvt_service::abstraction::app_stable_key_for("Obscure Editor"),
+        &velvt_service::abstraction::app_stable_key_for(&salt, "Obscure Editor"),
         velvt_service::abstraction::PersonalOverride {
             category: "FOCUS_WORK".to_owned(),
             local_activity_name: None,
         },
     );
     store.set_override(
-        &velvt_service::abstraction::stable_key_for("Obscure Editor", "release notes"),
+        &velvt_service::abstraction::stable_key_for(&salt, "Obscure Editor", "release notes"),
         velvt_service::abstraction::PersonalOverride {
             category: "COMMUNICATION".to_owned(),
             local_activity_name: None,
@@ -879,8 +906,9 @@ fn a_window_scoped_correction_outranks_the_app_scoped_one() {
 #[test]
 fn an_app_scoped_correction_does_not_leak_across_apps() {
     let store = Arc::new(InMemoryMappingStore::default());
+    let salt = store.stable_key_salt().unwrap();
     store.set_app_override(
-        &velvt_service::abstraction::app_stable_key_for("Obscure Editor"),
+        &velvt_service::abstraction::app_stable_key_for(&salt, "Obscure Editor"),
         velvt_service::abstraction::PersonalOverride {
             category: "FOCUS_WORK".to_owned(),
             local_activity_name: None,

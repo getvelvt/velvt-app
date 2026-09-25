@@ -9,7 +9,7 @@ use super::{
     WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
     WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WrongInterventionCounts,
 };
-use crate::abstraction::EmbeddingSalt;
+use crate::abstraction::{EmbeddingSalt, StableKeySalt};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use velvt_shared_types::WorkBlockResult;
@@ -146,6 +146,44 @@ pub trait AbstractionMapRepo: Send + Sync {
     /// vector from the old one compared against a vector from the new one is a
     /// similarity score about nothing.
     fn embedding_salt(&self) -> Result<EmbeddingSalt, PersistenceError>;
+
+    /// This install's stable-key salt (migration 0037), minting one if the row
+    /// is absent.
+    ///
+    /// 0037 creates the row in the same transaction that re-keys every stored
+    /// digest under it, so the read is the only path a migrated database takes.
+    /// The row can be absent only if someone deleted it by hand, and then every
+    /// key on disk was computed under a salt nothing can reproduce: no
+    /// correction can match its window again, and a rule the history lists but
+    /// that never applies is worse than no rule. So minting also removes every
+    /// row keyed under the lost salt, in the same transaction -- the corrections,
+    /// the mappings, both vector stores, and the application keys on buffered
+    /// events -- for the reason [`Self::embedding_salt`] empties the vector
+    /// stores when it mints: a key from the old salt compared against a key from
+    /// the new one is an equality test about nothing.
+    fn stable_key_salt(&self) -> Result<StableKeySalt, PersistenceError>;
+
+    /// Deletes at most `limit` rows from `abstraction_map` that have not been
+    /// observed since `cutoff` and that nothing still points at.
+    ///
+    /// A mapping is the one place a window's (application, title) key outlives
+    /// the event that produced it, so until this existed the table held one row
+    /// for every window ever seen, forever. `updated_at` is rewritten on every
+    /// observation (`upsert`), so it is the last time the window was open, and
+    /// the horizon runs from there.
+    ///
+    /// Two references keep a row past the horizon, because deleting it would
+    /// break something the user can still do: a `personal_override` keyed on
+    /// it (the history lists a window rule through this row, and removing the
+    /// rule finds it here), and a `raw_event_buffer` row carrying its stable id
+    /// (correcting that event resolves the window through this row). The
+    /// second is what keeps a longer `VELVT_RAW_EVENT_TTL_HOURS` safe: a mapping
+    /// outlives its horizon for exactly as long as an event that needs it does.
+    fn delete_expired_mappings(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
 }
 
 pub trait UploadBatchRepo: Send + Sync {

@@ -158,9 +158,9 @@ async fn main() {
         use velvt_service::ipc::{MenuStatusProvider, R7Router, ReconnectTracker};
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
-            CacheRetentionTarget, InterventionDecisionOutcomeTarget, RawEventRetentionTarget,
-            RetentionScheduler, SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
-            WorkBlockIntentionRetentionTarget,
+            AbstractionMapRetentionTarget, CacheRetentionTarget, InterventionDecisionOutcomeTarget,
+            RawEventRetentionTarget, RetentionScheduler, SemanticEmbeddingCacheRetentionTarget,
+            UploadBatchRetentionTarget, WorkBlockIntentionRetentionTarget,
         };
         use velvt_service::upload::{
             BatchAssembler, EventIngestor, HttpBatchUploader, SharedUploadBatcher, UploadBatcher,
@@ -526,6 +526,14 @@ async fn main() {
             Arc::clone(&work_block_repo),
             config.retention_batch_size,
         );
+        // The eighth. `abstraction_map` kept one row per window ever observed,
+        // keyed on the (application, title) pair, with no sweep at all. It now
+        // expires on the raw-event horizon from the last observation, except
+        // where a correction or a buffered event still points at the row.
+        let abstraction_map_target = AbstractionMapRetentionTarget::with_default_retention(
+            persistence.abstraction_map_repo(),
+            config.retention_batch_size,
+        );
         let retention_scheduler =
             RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
                 .add_target(raw_event_target)
@@ -536,7 +544,8 @@ async fn main() {
                 ))
                 .add_target(out_of_block_run_target)
                 .add_target(semantic_embedding_cache_target)
-                .add_target(decision_outcome_target);
+                .add_target(decision_outcome_target)
+                .add_target(abstraction_map_target);
         let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
 
         // R7 + R8 transport — shutdown-aware, reconnect-tracking.

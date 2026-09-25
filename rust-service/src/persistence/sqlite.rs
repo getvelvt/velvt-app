@@ -20,7 +20,7 @@ use super::models::UPLOAD_BATCH_ATTEMPT_CEILING;
 // Same reason: the triage bounds are policy, declared once beside the trait that
 // documents them.
 use super::traits::{TRIAGE_MAX_ENTRIES, TRIAGE_MAX_LOOKBACK_DAYS, TRIAGE_MIN_SECONDS};
-use crate::abstraction::EmbeddingSalt;
+use crate::abstraction::{EmbeddingSalt, StableKeySalt};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
@@ -41,6 +41,120 @@ struct Migration {
 
 include!(concat!(env!("OUT_DIR"), "/embedded_migrations.rs"));
 
+/// The migration whose data half is Rust rather than SQL: 0037 mints the
+/// stable-key salt in SQL, and [`rekey_stored_digests`] re-keys every stored
+/// digest under it, because SQL cannot compute an HMAC.
+const STABLE_KEY_SALT_MIGRATION: i64 = 37;
+
+/// Every pending migration, in one transaction, in version order.
+fn apply_embedded_migrations(connection: &mut Connection) -> Result<(), PersistenceError> {
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migration (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version INTEGER NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );",
+    )?;
+    for migration in EMBEDDED_MIGRATIONS {
+        let applied = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migration WHERE version = ?1)",
+            [migration.version],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !applied {
+            transaction.execute_batch(migration.sql)?;
+            // Only while 0037 itself is being applied, in its transaction, and
+            // therefore exactly once per database: a second pass would HMAC
+            // keys that are already keyed and orphan every one of them.
+            if migration.version == STABLE_KEY_SALT_MIGRATION {
+                rekey_stored_digests(&transaction)?;
+            }
+            transaction.execute(
+                "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                params![migration.version, migration.name],
+            )?;
+        }
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Every column that holds a digest `abstraction/key.rs` computed, as
+/// `(table, column, optional)`. `optional` says whether the row can live
+/// without the value: a key that is the row's identity cannot.
+const KEYED_COLUMNS: &[(&str, &str, bool)] = &[
+    ("abstraction_map", "key_hash", false),
+    ("personal_override", "key_hash", false),
+    ("personal_override", "app_key_hash", true),
+    ("personal_app_override", "app_key_hash", false),
+    ("personal_app_override", "bundle_key_hash", true),
+    ("raw_event_buffer", "app_stable_id", true),
+    ("raw_event_buffer", "app_bundle_stable_id", true),
+    ("semantic_embedding_cache", "key_hash", false),
+    ("personal_semantic_prototype", "key_hash", false),
+];
+
+/// Migration 0037's data half: every digest in [`KEYED_COLUMNS`] re-keyed
+/// under the salt the migration's SQL just minted.
+///
+/// Through `StableKeySalt::rekey_stored_digest` and nothing else, which is the
+/// function the engine keys fresh events with -- so a row re-keyed here and a
+/// key computed afterwards for the same window, application or bundle are one
+/// function's output, and every correction taught under 1.0.11 still matches.
+/// One function over every column is also what keeps the pairings joining:
+/// `personal_override.app_key_hash` and the rung it names, and
+/// `raw_event_buffer.app_stable_id` and the rule it was taught under.
+///
+/// A value that is not a digest as `key.rs` writes one was never a key Velvt
+/// produced and could never have matched a lookup. It is not keyed: the row goes
+/// where the key is its identity, the value goes where it is optional. Every
+/// CHECK in the schema makes that set empty in practice; handling it here keeps
+/// an upgrade from failing -- and the service from starting -- over a row that
+/// never worked.
+fn rekey_stored_digests(transaction: &rusqlite::Transaction<'_>) -> Result<(), PersistenceError> {
+    let salt =
+        transaction.query_row("SELECT salt FROM stable_key_salt WHERE id = 1", [], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })?;
+    let salt = <[u8; StableKeySalt::LENGTH]>::try_from(salt.as_slice())
+        .map(StableKeySalt::from_bytes)
+        .map_err(|_| PersistenceError::InvalidStableKeySalt)?;
+    for (table, column, optional) in KEYED_COLUMNS {
+        let stored = transaction
+            .prepare(&format!(
+                "SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL"
+            ))?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, rusqlite::types::Value>(1)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut rekey = transaction.prepare(&format!(
+            "UPDATE {table} SET {column} = ?2 WHERE rowid = ?1"
+        ))?;
+        let mut discard = transaction.prepare(&if *optional {
+            format!("UPDATE {table} SET {column} = NULL WHERE rowid = ?1")
+        } else {
+            format!("DELETE FROM {table} WHERE rowid = ?1")
+        })?;
+        for (rowid, value) in stored {
+            let keyed = match value {
+                rusqlite::types::Value::Text(digest) => salt.rekey_stored_digest(&digest),
+                _ => None,
+            };
+            match keyed {
+                Some(keyed) => rekey.execute(params![rowid, keyed])?,
+                None => discard.execute([rowid])?,
+            };
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
     #[error("SQLite persistence unavailable")]
@@ -59,6 +173,8 @@ pub enum PersistenceError {
     InvalidSemanticEmbedding,
     #[error("SQLite persistence contains an invalid embedding salt")]
     InvalidEmbeddingSalt,
+    #[error("SQLite persistence contains an invalid stable-key salt")]
+    InvalidStableKeySalt,
     /// An app-scoped rule was asked for over an application identity whose own
     /// events say generalizing to the whole application is not meaningful -- a
     /// browser, where one tab says nothing about the next. Refused here rather
@@ -109,31 +225,7 @@ impl SqlitePersistence {
 
     pub fn run_migrations(&self) -> Result<(), PersistenceError> {
         let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
-        transaction.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_migration (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                version INTEGER NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
-            );",
-        )?;
-        for migration in EMBEDDED_MIGRATIONS {
-            let applied = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM schema_migration WHERE version = ?1)",
-                [migration.version],
-                |row| row.get::<_, bool>(0),
-            )?;
-            if !applied {
-                transaction.execute_batch(migration.sql)?;
-                transaction.execute(
-                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
-                    params![migration.version, migration.name],
-                )?;
-            }
-        }
-        transaction.commit()?;
-        Ok(())
+        apply_embedded_migrations(&mut connection)
     }
 
     pub fn abstraction_map_repo(&self) -> Arc<dyn AbstractionMapRepo> {
@@ -302,6 +394,26 @@ impl SqlitePersistence {
         })
         .map(|n| n as usize)
         .map_err(Into::into)
+    }
+
+    /// Sets `updated_at` for the named `abstraction_map` rows, by stable id.
+    /// Used in retention integration tests to simulate a window not observed
+    /// inside the horizon; `upsert` refreshes the column on every observation,
+    /// so a test cannot age a mapping by writing to it.
+    pub fn set_abstraction_map_updated_at_for_test(
+        &self,
+        stable_ids: &[String],
+        unix_ts: i64,
+    ) -> Result<usize, PersistenceError> {
+        let conn = self.connection()?;
+        let mut updated = 0;
+        for stable_id in stable_ids {
+            updated += conn.execute(
+                "UPDATE abstraction_map SET updated_at = ?2 WHERE stable_id = ?1",
+                params![stable_id, unix_ts],
+            )?;
+        }
+        Ok(updated)
     }
 
     /// Sets `updated_at` for the named `semantic_embedding_cache` rows.
@@ -675,6 +787,10 @@ impl crate::abstraction::AbstractionMappingStore for SqliteAbstractionMapRepo {
             .map(|_| ())
             .map_err(PersistenceError::from)
             .map_err(Into::into)
+    }
+
+    fn stable_key_salt(&self) -> Result<StableKeySalt, crate::abstraction::StoreError> {
+        AbstractionMapRepo::stable_key_salt(self).map_err(Into::into)
     }
 }
 
@@ -1402,6 +1518,88 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         };
         transaction.commit()?;
         Ok(EmbeddingSalt::from_bytes(bytes))
+    }
+
+    fn stable_key_salt(&self) -> Result<StableKeySalt, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let stored = transaction
+            .query_row("SELECT salt FROM stable_key_salt WHERE id = 1", [], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .optional()?;
+        let bytes = match stored {
+            // Unreachable while `CHECK(length(salt) = 32)` stands. An error rather
+            // than a re-mint for the reason `embedding_salt` gives: a row that is
+            // present but unreadable is a corrupt database, and minting over it
+            // would destroy every correction it still keys.
+            Some(bytes) => <[u8; StableKeySalt::LENGTH]>::try_from(bytes.as_slice())
+                .map_err(|_| PersistenceError::InvalidStableKeySalt)?,
+            None => {
+                let minted = transaction.query_row(
+                    "SELECT randomblob(?1)",
+                    [StableKeySalt::LENGTH as i64],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )?;
+                transaction.execute(
+                    "INSERT INTO stable_key_salt(id, salt) VALUES (1, ?1)",
+                    params![minted],
+                )?;
+                // Every key below was computed under the salt that is gone, so
+                // no lookup can reach it again. Kept, a window rule would still
+                // be listed in the history and never apply, and correcting a
+                // buffered event would write a new rule under the dead key --
+                // both silent. Removed, the state is one the user can see: no
+                // rules, and the next observation of each window keys afresh.
+                transaction.execute_batch(
+                    "DELETE FROM personal_override;
+                     DELETE FROM personal_app_override;
+                     DELETE FROM personal_semantic_prototype;
+                     DELETE FROM semantic_embedding_cache;
+                     DELETE FROM abstraction_map;
+                     UPDATE raw_event_buffer
+                        SET app_stable_id = NULL, app_bundle_stable_id = NULL
+                      WHERE app_stable_id IS NOT NULL OR app_bundle_stable_id IS NOT NULL;",
+                )?;
+                tracing::warn!(
+                    error_code = "stable_key_salt_reminted",
+                    "stable-key salt was missing; corrections keyed under it were removed"
+                );
+                <[u8; StableKeySalt::LENGTH]>::try_from(minted.as_slice())
+                    .map_err(|_| PersistenceError::InvalidStableKeySalt)?
+            }
+        };
+        transaction.commit()?;
+        Ok(StableKeySalt::from_bytes(bytes))
+    }
+
+    fn delete_expired_mappings(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Oldest first, on `idx_abstraction_map_updated_at`; each reference
+        // check is a primary-key lookup (`personal_override.key_hash`) or an
+        // index lookup (`idx_raw_event_buffer_stable_id`, migration 0037).
+        let deleted = connection.execute(
+            "DELETE FROM abstraction_map WHERE id IN (
+                 SELECT map.id FROM abstraction_map map
+                  WHERE map.updated_at < ?1
+                    AND NOT EXISTS (
+                        SELECT 1 FROM personal_override rule
+                         WHERE rule.key_hash = map.key_hash
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM raw_event_buffer event
+                         WHERE event.stable_id = map.stable_id
+                    )
+                  ORDER BY map.updated_at
+                  LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
     }
 }
 
@@ -4753,11 +4951,12 @@ mod tests {
 
         database.run_migrations().unwrap();
 
+        let rekeyed = after_0037(&database, &"a".repeat(64));
         let connection = database.connection().unwrap();
         let alias: String = connection
             .query_row(
                 "SELECT activity_name FROM personal_override WHERE key_hash = ?1",
-                ["a".repeat(64)],
+                [rekeyed],
                 |row| row.get(0),
             )
             .unwrap();
@@ -6212,12 +6411,13 @@ mod tests {
         };
         database.run_migrations().unwrap();
 
+        let rekeyed = after_0037(&database, &key(0x1f));
         let stored: i64 = database
             .connection()
             .unwrap()
             .query_row(
                 "SELECT app_only FROM personal_app_override WHERE app_key_hash = ?1",
-                [key(0x1f)],
+                [rekeyed],
                 |row| row.get(0),
             )
             .unwrap();
@@ -6238,6 +6438,18 @@ mod tests {
     // ---------------------------------------------------------------------
     // Removing a correction: both of its rungs, and only its own
     // ---------------------------------------------------------------------
+
+    /// A key written before migration 0037, as it reads after the upgrade:
+    /// re-keyed under this database's salt. For the upgrade tests of earlier
+    /// migrations, which now run through 0037 on their way to the latest schema.
+    fn after_0037(database: &SqlitePersistence, stored: &str) -> String {
+        database
+            .abstraction_map_repo()
+            .stable_key_salt()
+            .unwrap()
+            .rekey_stored_digest(stored)
+            .unwrap()
+    }
 
     /// The mapping a window rule needs in order to exist at all.
     fn window_mapping(stable_id: &str, key_hash: &str) -> AbstractionMapping {
@@ -6472,8 +6684,11 @@ mod tests {
 
         database.run_migrations().unwrap();
 
+        // 0037 re-keys both sides of the pairing with one function, so it still
+        // joins; the assertions read the keys as they are after the upgrade.
+        let app = after_0037(&database, &app);
         assert_eq!(
-            paired_app_key(&database, &key(0x31)).as_deref(),
+            paired_app_key(&database, &after_0037(&database, &key(0x31))).as_deref(),
             Some(app.as_str()),
             "the pairing is recoverable while the events are still inside the TTL"
         );
@@ -6684,5 +6899,653 @@ mod tests {
             .reported_dwells(at(10), at(10))
             .unwrap()
             .is_empty());
+    }
+}
+
+/// Migration 0037 and the two reads that depend on it: the stable-key salt, and
+/// the `abstraction_map` sweep.
+///
+/// A module of its own because the upgrade test below builds a database the way
+/// a 1.0.11 install left it -- migrations 0001 to 0036 applied, rows keyed with
+/// the unsalted digests -- and every assertion in it is about that one fixture.
+#[cfg(test)]
+mod salted_key_tests {
+    use super::{SqlitePersistence, EMBEDDED_MIGRATIONS};
+    use crate::abstraction::{
+        app_bundle_key_for, app_stable_key_for, stable_key_for, AbstractionEngine,
+        ClassificationSource,
+    };
+    use crate::persistence::AbstractionMapping;
+    use chrono::{TimeZone, Utc};
+    use rusqlite::{params, types::Value, Connection};
+    use sha2::{Digest, Sha256};
+    use std::sync::{Arc, Mutex};
+    use uuid::Uuid;
+    use velvt_shared_types::{CorrectionScope, RawEvent};
+
+    const EDITOR: &str = "Code";
+    const EDITOR_BUNDLE: &str = "com.microsoft.VSCode";
+    const EDITOR_TITLE: &str = "offer letter draft";
+    const TAUGHT_APP: &str = "Quillard";
+    const STALE_TITLE: &str = "a window from months ago";
+
+    /// A key as 1.0.11 stored it: SHA-256 over the published domain string and
+    /// the length-prefixed raw fields. Written out here rather than borrowed
+    /// from `key.rs`, so the fixture is what the shipped build wrote and not
+    /// whatever this build happens to compute.
+    fn unsalted(domain: &str, fields: &[&str]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(domain.as_bytes());
+        for field in fields {
+            hasher.update((field.len() as u64).to_be_bytes());
+            hasher.update(field.as_bytes());
+        }
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    fn unsalted_window(app: &str, title: &str) -> String {
+        unsalted("velvt:abstraction-key:v1", &[app, title])
+    }
+
+    fn unsalted_app(app: &str) -> String {
+        unsalted("velvt:abstraction-app-key:v1", &[app])
+    }
+
+    fn unsalted_bundle(bundle_id: &str) -> String {
+        unsalted("velvt:abstraction-app-bundle-key:v1", &[bundle_id])
+    }
+
+    /// A database exactly as far as 1.0.11 took it: every migration before
+    /// 0037, recorded as applied, and nothing after.
+    fn database_at_1_0_11() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", true)
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        for migration in EMBEDDED_MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version < 37)
+        {
+            connection.execute_batch(migration.sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                    params![migration.version, migration.name],
+                )
+                .unwrap();
+        }
+        connection
+    }
+
+    /// What a 1.0.11 user who had corrected one window of their editor, taught
+    /// one application from triage, and once opened a window long ago would
+    /// have on disk -- every key in its unsalted form.
+    fn seed_1_0_11_rows(connection: &Connection) {
+        let window = unsalted_window(EDITOR, EDITOR_TITLE);
+        let editor = unsalted_app(EDITOR);
+        let bundle = unsalted_bundle(EDITOR_BUNDLE);
+        let taught = unsalted_app(TAUGHT_APP);
+        let stale = unsalted_window(EDITOR, STALE_TITLE);
+        let now = Utc::now().timestamp();
+        connection
+            .execute(
+                "INSERT INTO abstraction_map(
+                     key_hash, stable_id, label, category, taxonomy_version,
+                     display_name, created_at, updated_at
+                 ) VALUES (?1, 'abs_fixture_window', 'reference:inferred', 'REFERENCE',
+                           'mvp-2', 'Offer letter', ?2, ?2)",
+                params![window, now - 3_600],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO abstraction_map(
+                     key_hash, stable_id, label, category, taxonomy_version,
+                     created_at, updated_at
+                 ) VALUES (?1, 'abs_fixture_stale', 'unlogged', 'UNLOGGED', 'mvp-2', ?2, ?2)",
+                params![stale, now - 90 * 86_400],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO personal_override(key_hash, category, activity_name, app_key_hash)
+                 VALUES (?1, 'REFERENCE', 'Offer letter', ?2)",
+                params![window, editor],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO personal_app_override(
+                     app_key_hash, bundle_key_hash, category, activity_name, app_only
+                 ) VALUES (?1, ?2, 'REFERENCE', 'Offer letter', 0)",
+                params![editor, bundle],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO personal_app_override(app_key_hash, category, activity_name, app_only)
+                 VALUES (?1, 'FOCUS_WORK', 'Quillard', 1)",
+                params![taught],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO raw_event_buffer(
+                     event_id, stable_id, label, category, taxonomy_version, occurred_at,
+                     duration_seconds, app_stable_id, app_scope_eligible, app_bundle_stable_id
+                 ) VALUES ('evt-fixture', 'abs_fixture_window', 'reference:inferred',
+                           'REFERENCE', 'mvp-2', ?1, 300, ?2, 1, ?3)",
+                params![now - 3_600, editor, bundle],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO semantic_embedding_cache(key_hash, embedding, dimensions)
+                 VALUES (?1, x'0000803f', 1)",
+                params![window],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO personal_semantic_prototype(key_hash, category, embedding, dimensions)
+                 VALUES (?1, 'REFERENCE', x'0000803f', 1)",
+                params![window],
+            )
+            .unwrap();
+        // Never keys Velvt wrote. `personal_override.key_hash` has no length
+        // CHECK at all; the bundle column checks the length and not the case.
+        connection
+            .execute(
+                "INSERT INTO raw_event_buffer(
+                     event_id, stable_id, label, category, taxonomy_version, occurred_at,
+                     app_bundle_stable_id
+                 ) VALUES ('evt-uppercase', 'abs_fixture_other', 'unlogged', 'UNLOGGED',
+                           'mvp-2', ?1, ?2)",
+                params![now, "AB".repeat(32)],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO personal_override(key_hash, category) VALUES ('NOT-A-KEY', 'SYSTEM')",
+                [],
+            )
+            .unwrap();
+    }
+
+    fn upgraded_from_1_0_11() -> SqlitePersistence {
+        let connection = database_at_1_0_11();
+        seed_1_0_11_rows(&connection);
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+        database.run_migrations().unwrap();
+        database
+    }
+
+    fn text_values(database: &SqlitePersistence) -> Vec<(String, String)> {
+        let connection = database.connection().unwrap();
+        let tables: Vec<String> = connection
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let mut values = Vec::new();
+        for table in tables {
+            let columns: Vec<String> = connection
+                .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+                .unwrap()
+                .query_map([], |row| row.get(1))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            for column in columns {
+                let mut statement = connection
+                    .prepare(&format!("SELECT \"{column}\" FROM \"{table}\""))
+                    .unwrap();
+                let rows = statement
+                    .query_map([], |row| row.get::<_, Value>(0))
+                    .unwrap()
+                    .map(Result::unwrap);
+                for value in rows {
+                    if let Value::Text(text) = value {
+                        values.push((format!("{table}.{column}"), text));
+                    }
+                }
+            }
+        }
+        values
+    }
+
+    fn raw_event(app_name: &str, window_title: &str, bundle_id: Option<&str>) -> RawEvent {
+        RawEvent {
+            event_id: Uuid::new_v4(),
+            occurred_at: Utc.with_ymd_and_hms(2026, 9, 25, 9, 0, 0).unwrap(),
+            duration_seconds: 60,
+            app_name: app_name.to_owned(),
+            window_title: window_title.to_owned(),
+            bundle_id: bundle_id.map(str::to_owned),
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
+            focused_document_url: None,
+        }
+    }
+
+    /// The upgrade itself. Every key a 1.0.11 install stored becomes the key
+    /// this build computes for the same raw inputs, under the salt 0037 minted,
+    /// and no unsalted digest survives anywhere in the file.
+    #[test]
+    fn migration_0037_re_keys_every_digest_a_1_0_11_database_holds() {
+        let database = upgraded_from_1_0_11();
+        let salt = database.abstraction_map_repo().stable_key_salt().unwrap();
+        let window = stable_key_for(&salt, EDITOR, EDITOR_TITLE);
+        let editor = app_stable_key_for(&salt, EDITOR);
+        let bundle = app_bundle_key_for(&salt, EDITOR_BUNDLE);
+        let connection = database.connection().unwrap();
+
+        let (map_key, updated_at): (String, i64) = connection
+            .query_row(
+                "SELECT key_hash, updated_at FROM abstraction_map
+                 WHERE stable_id = 'abs_fixture_window'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(map_key, window);
+        assert!(
+            updated_at < Utc::now().timestamp() - 1_800,
+            "re-keying must not look like an observation, or it restarts the sweep's clock"
+        );
+        let (rule_key, paired): (String, Option<String>) = connection
+            .query_row(
+                "SELECT key_hash, app_key_hash FROM personal_override WHERE category = 'REFERENCE'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rule_key, window);
+        assert_eq!(paired.as_deref(), Some(editor.as_str()));
+        let (app_rule, bundle_rule): (String, Option<String>) = connection
+            .query_row(
+                "SELECT app_key_hash, bundle_key_hash FROM personal_app_override
+                 WHERE app_only = 0",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(app_rule, editor);
+        assert_eq!(bundle_rule.as_deref(), Some(bundle.as_str()));
+        let (event_app, event_bundle): (String, String) = connection
+            .query_row(
+                "SELECT app_stable_id, app_bundle_stable_id FROM raw_event_buffer
+                 WHERE event_id = 'evt-fixture'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(event_app, editor);
+        assert_eq!(event_bundle, bundle);
+        let uppercase: Option<String> = connection
+            .query_row(
+                "SELECT app_bundle_stable_id FROM raw_event_buffer
+                 WHERE event_id = 'evt-uppercase'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            uppercase, None,
+            "an optional value that was never a key is cleared"
+        );
+        for table in ["semantic_embedding_cache", "personal_semantic_prototype"] {
+            let key: String = connection
+                .query_row(&format!("SELECT key_hash FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(key, window, "{table}");
+        }
+        let malformed: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM personal_override WHERE key_hash = 'NOT-A-KEY'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            malformed, 0,
+            "a value that was never a key is removed, not keyed"
+        );
+        drop(connection);
+
+        let unsalted_digests = [
+            unsalted_window(EDITOR, EDITOR_TITLE),
+            unsalted_window(EDITOR, STALE_TITLE),
+            unsalted_app(EDITOR),
+            unsalted_app(TAUGHT_APP),
+            unsalted_bundle(EDITOR_BUNDLE),
+        ];
+        let survivors: Vec<String> = text_values(&database)
+            .into_iter()
+            .filter(|(_, text)| unsalted_digests.iter().any(|digest| text.contains(digest)))
+            .map(|(column, _)| column)
+            .collect();
+        assert!(
+            survivors.is_empty(),
+            "an unsalted digest survived the upgrade in {survivors:?}"
+        );
+    }
+
+    /// What the user sees after the upgrade: every correction taught under
+    /// 1.0.11 still applies, to the same window, the same application under
+    /// either identity, and the application taught from triage -- and the
+    /// window keeps the stable id it had, so its history is one history.
+    #[test]
+    fn corrections_taught_under_1_0_11_still_apply_after_the_upgrade() {
+        let database = upgraded_from_1_0_11();
+        let engine =
+            AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store()).unwrap();
+
+        let same_window = engine
+            .process(raw_event(EDITOR, EDITOR_TITLE, Some(EDITOR_BUNDLE)))
+            .unwrap();
+        assert_eq!(same_window.category(), "REFERENCE");
+        assert_eq!(
+            same_window.classification_source(),
+            ClassificationSource::UserRule
+        );
+        assert_eq!(same_window.stable_id(), "abs_fixture_window");
+        assert_eq!(same_window.local_display_label(), Some("Offer letter"));
+
+        let other_window = engine
+            .process(raw_event(
+                EDITOR,
+                "a file never corrected",
+                Some(EDITOR_BUNDLE),
+            ))
+            .unwrap();
+        assert_eq!(other_window.category(), "REFERENCE", "the bundle rung");
+        let renamed = engine
+            .process(raw_event(
+                "Visual Studio Code",
+                "another",
+                Some(EDITOR_BUNDLE),
+            ))
+            .unwrap();
+        assert_eq!(
+            renamed.category(),
+            "REFERENCE",
+            "the bundle rung, under a new name"
+        );
+        let no_bundle = engine
+            .process(raw_event(EDITOR, "a third file", None))
+            .unwrap();
+        assert_eq!(no_bundle.category(), "REFERENCE", "the name rung");
+        let taught = engine
+            .process(raw_event(TAUGHT_APP, "anything", None))
+            .unwrap();
+        assert_eq!(taught.category(), "FOCUS_WORK");
+        assert_eq!(
+            taught.classification_source(),
+            ClassificationSource::UserRule
+        );
+
+        let rules = database.abstraction_map_repo();
+        let (listed, total) = rules.search_personal_overrides(None, 0, 20).unwrap();
+        assert_eq!(total, 2, "one window rule and one triage rule: {listed:?}");
+        assert!(listed
+            .iter()
+            .any(|rule| rule.scope == CorrectionScope::Window
+                && rule.stable_id == "abs_fixture_window"));
+        assert!(listed
+            .iter()
+            .any(|rule| rule.scope == CorrectionScope::App && rule.category == "FOCUS_WORK"));
+
+        // The pairing 0036 recorded still joins, so removing the window rule
+        // still takes the application rung it wrote with it.
+        assert!(rules
+            .remove_personal_override("abs_fixture_window")
+            .unwrap());
+        let salt = rules.stable_key_salt().unwrap();
+        assert!(rules
+            .app_scope_override(&app_stable_key_for(&salt, EDITOR))
+            .unwrap()
+            .is_none());
+        assert!(rules
+            .app_scope_override(&app_stable_key_for(&salt, TAUGHT_APP))
+            .unwrap()
+            .is_some());
+    }
+
+    /// The re-key belongs to applying 0037, not to opening the database: a
+    /// second pass would HMAC keys that are already keyed and orphan every
+    /// correction. Opening an upgraded database again changes no key.
+    #[test]
+    fn the_re_key_runs_once_per_database() {
+        let database = upgraded_from_1_0_11();
+        let keys = |database: &SqlitePersistence| -> Vec<(String, String)> {
+            text_values(database)
+                .into_iter()
+                .filter(|(column, _)| {
+                    super::KEYED_COLUMNS
+                        .iter()
+                        .any(|(table, name, _)| column == &format!("{table}.{name}"))
+                })
+                .collect()
+        };
+        let before = keys(&database);
+        assert!(!before.is_empty());
+
+        database.run_migrations().unwrap();
+
+        assert_eq!(keys(&database), before);
+    }
+
+    /// The scripts under `scripts/tests/` build their schema by replaying the
+    /// migration files with `sqlite3`, which cannot run the Rust half. The SQL
+    /// half alone must still apply and leave the salt the schema expects.
+    #[test]
+    fn migration_0037_replays_as_plain_sql() {
+        let connection = database_at_1_0_11();
+        let migration = EMBEDDED_MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 37)
+            .unwrap();
+
+        connection.execute_batch(migration.sql).unwrap();
+
+        let salt_length: i64 = connection
+            .query_row("SELECT length(salt) FROM stable_key_salt", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(salt_length, 32);
+    }
+
+    /// 0037 mints the salt, so a migrated database only ever reads it, and two
+    /// reads agree.
+    #[test]
+    fn the_stable_key_salt_is_read_back_unchanged() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.abstraction_map_repo();
+
+        assert_eq!(
+            repo.stable_key_salt().unwrap(),
+            repo.stable_key_salt().unwrap()
+        );
+        let other = SqlitePersistence::open_in_memory().unwrap();
+        assert_ne!(
+            repo.stable_key_salt().unwrap(),
+            other.abstraction_map_repo().stable_key_salt().unwrap(),
+            "two installs must not share a salt"
+        );
+    }
+
+    /// The hand-deleted row. Every key on disk was computed under a salt that
+    /// is gone, so the rows keyed under it go with it, in the same transaction
+    /// that mints the new one -- nothing is left listed that can never apply.
+    #[test]
+    fn a_minted_stable_key_salt_removes_every_row_it_orphans() {
+        let database = upgraded_from_1_0_11();
+        let before = database.abstraction_map_repo().stable_key_salt().unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute("DELETE FROM stable_key_salt", [])
+            .unwrap();
+
+        let minted = database.abstraction_map_repo().stable_key_salt().unwrap();
+
+        assert_ne!(minted, before);
+        assert_eq!(
+            minted,
+            database.abstraction_map_repo().stable_key_salt().unwrap(),
+            "the minted salt is persisted, not regenerated per call"
+        );
+        let connection = database.connection().unwrap();
+        for table in [
+            "personal_override",
+            "personal_app_override",
+            "personal_semantic_prototype",
+            "semantic_embedding_cache",
+            "abstraction_map",
+        ] {
+            let rows: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(
+                rows, 0,
+                "{table} still holds rows keyed under the lost salt"
+            );
+        }
+        let keyed_events: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM raw_event_buffer
+                 WHERE app_stable_id IS NOT NULL OR app_bundle_stable_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(keyed_events, 0);
+    }
+
+    fn mapping(key_hash: &str, stable_id: &str) -> AbstractionMapping {
+        AbstractionMapping {
+            key_hash: key_hash.to_owned(),
+            stable_id: stable_id.to_owned(),
+            label: "unlogged".into(),
+            category: "UNLOGGED".into(),
+            taxonomy_version: "mvp-2".into(),
+            classification_tier: "fallback".into(),
+            classification_status: "ambiguous".into(),
+            classification_confidence: "low".into(),
+            classification_source: "fallback".into(),
+            display_name: None,
+        }
+    }
+
+    /// The sweep: an unobserved mapping goes, and the two references that keep
+    /// one past the horizon keep it -- a correction keyed on it, and an event
+    /// still in the buffer that a correction would resolve through it.
+    #[test]
+    fn the_mapping_sweep_keeps_what_a_correction_or_an_event_still_needs() {
+        let database = upgraded_from_1_0_11();
+        let repo = database.abstraction_map_repo();
+        repo.upsert(&mapping(&"1a".repeat(32), "abs_fresh"))
+            .unwrap();
+        let old = Utc::now().timestamp() - 30 * 86_400;
+        {
+            let connection = database.connection().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO abstraction_map(key_hash, stable_id, label, category,
+                         taxonomy_version, created_at, updated_at)
+                     VALUES (?1, 'abs_buffered', 'unlogged', 'UNLOGGED', 'mvp-2', ?2, ?2)",
+                    params!["2b".repeat(32), old],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO raw_event_buffer(event_id, stable_id, label, category,
+                         taxonomy_version, occurred_at)
+                     VALUES ('evt-buffered', 'abs_buffered', 'unlogged', 'UNLOGGED', 'mvp-2', ?1)",
+                    [old],
+                )
+                .unwrap();
+            // The corrected window: last observed long ago, still ruled.
+            connection
+                .execute(
+                    "UPDATE abstraction_map SET updated_at = ?1
+                     WHERE stable_id = 'abs_fixture_window'",
+                    [old],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "DELETE FROM raw_event_buffer WHERE event_id = 'evt-fixture'",
+                    [],
+                )
+                .unwrap();
+        }
+        let cutoff = Utc::now() - chrono::Duration::days(14);
+
+        let deleted = repo.delete_expired_mappings(cutoff, 500).unwrap();
+
+        let connection = database.connection().unwrap();
+        let survivors: Vec<String> = connection
+            .prepare("SELECT stable_id FROM abstraction_map ORDER BY stable_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(deleted, 1, "only the stale, unreferenced mapping goes");
+        assert_eq!(
+            survivors,
+            vec!["abs_buffered", "abs_fixture_window", "abs_fresh"]
+        );
+        drop(connection);
+        // Batched like every other target: a limit is a limit.
+        assert_eq!(repo.delete_expired_mappings(cutoff, 0).unwrap(), 0);
+    }
+
+    /// The sweep runs on an index, not a scan of the buffer per candidate.
+    #[test]
+    fn the_mapping_sweep_reads_the_buffer_through_an_index() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let connection = database.connection().unwrap();
+        let plan: Vec<String> = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT 1 FROM raw_event_buffer event WHERE event.stable_id = 'abs_x'",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("idx_raw_event_buffer_stable_id")),
+            "{plan:?}"
+        );
     }
 }

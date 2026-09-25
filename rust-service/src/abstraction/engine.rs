@@ -15,7 +15,7 @@ use super::{
     taxonomy::is_valid_label,
     AbstractionMappingStore, ClassificationConfidence, ClassificationPlugin, ClassificationResult,
     ClassificationSource, ClassificationStatus, ClassificationTier, MappingResolution, RawKey,
-    StoreError, Taxonomy, TaxonomyError, TitleAbstractor,
+    StableKeySalt, StoreError, Taxonomy, TaxonomyError, TitleAbstractor,
 };
 
 /// Privacy-safe result. Raw fields cannot be constructed into or read from this type.
@@ -120,6 +120,9 @@ pub struct AbstractionEngine {
     title_abstractor: Arc<dyn TitleAbstractor>,
     plugins: Vec<Box<dyn ClassificationPlugin>>,
     semantic_observer: Option<Arc<super::EmbeddingSimilarityPlugin>>,
+    /// Read from `store` once, at build, so every key this engine computes is
+    /// one the store's own rows can match (migration 0037).
+    stable_key_salt: StableKeySalt,
 }
 
 impl AbstractionEngine {
@@ -145,6 +148,16 @@ impl AbstractionEngine {
         }
     }
 
+    /// The bundle-scoped key for `bundle_id`, under this engine's salt.
+    ///
+    /// For the one caller that persists a bundle key the engine did not return:
+    /// the router records it on the event row before `process` consumes the raw
+    /// frame. Computing it here rather than with a salt of the router's own is
+    /// what keeps the stored key and the engine's bundle rung the same key.
+    pub fn app_bundle_key(&self, bundle_id: &str) -> String {
+        app_bundle_key_for(&self.stable_key_salt, bundle_id)
+    }
+
     pub fn process(&self, raw_event: RawEvent) -> Result<AbstractedEvent, AbstractionError> {
         let RawEvent {
             occurred_at,
@@ -165,7 +178,7 @@ impl AbstractionEngine {
             (Some(site), true) => site.to_owned(),
             (None, _) => abstracted_title.into_owned(),
         };
-        let stable_key = raw_key.stable_key();
+        let stable_key = raw_key.stable_key(&self.stable_key_salt);
         if let Some(observer) = &self.semantic_observer {
             observer.observe(&stable_key, raw_key.app_name(), &classifier_context);
         }
@@ -188,8 +201,10 @@ impl AbstractionEngine {
         // collide, so one lookup cannot answer with the other's row. The name
         // rung stays and is consulted second so corrections recorded before
         // bundle identifiers existed keep working untouched.
-        let app_stable_key = raw_key.app_stable_key();
-        let app_bundle_key = bundle_id.as_deref().map(app_bundle_key_for);
+        let app_stable_key = raw_key.app_stable_key(&self.stable_key_salt);
+        let app_bundle_key = bundle_id
+            .as_deref()
+            .map(|bundle_id| self.app_bundle_key(bundle_id));
         let mut personal_override = self.store.personal_override(&stable_key)?;
         if personal_override.is_none() {
             if let Some(app_bundle_key) = &app_bundle_key {
@@ -474,12 +489,14 @@ impl AbstractionEngineBuilder {
         if self.plugins.is_empty() {
             return Err(AbstractionError::NoPlugins);
         }
+        let stable_key_salt = self.store.stable_key_salt()?;
         Ok(AbstractionEngine {
             store: self.store,
             taxonomy: self.taxonomy,
             title_abstractor: self.title_abstractor,
             plugins: self.plugins,
             semantic_observer: self.semantic_observer,
+            stable_key_salt,
         })
     }
 }
@@ -507,7 +524,8 @@ mod tests {
 
     use crate::abstraction::{
         app_bundle_key_for, app_stable_key_for, stable_key_for, AbstractionEngine,
-        ClassificationSource, ClassificationTier, InMemoryMappingStore, PersonalOverride,
+        AbstractionMappingStore, ClassificationSource, ClassificationTier, InMemoryMappingStore,
+        PersonalOverride,
     };
 
     fn raw_event(app_name: &str, window_title: &str) -> RawEvent {
@@ -634,8 +652,9 @@ mod tests {
     #[test]
     fn the_override_rungs_run_window_then_bundle_then_name() {
         let store = Arc::new(InMemoryMappingStore::default());
+        let salt = store.stable_key_salt().unwrap();
         store.set_app_override(
-            &app_stable_key_for("Code"),
+            &app_stable_key_for(&salt, "Code"),
             PersonalOverride {
                 category: "REFERENCE".to_owned(),
                 local_activity_name: None,
@@ -648,7 +667,7 @@ mod tests {
         let name_rung = engine.process(event.clone()).expect("the event abstracts");
 
         store.set_app_override(
-            &app_bundle_key_for("com.microsoft.VSCode"),
+            &app_bundle_key_for(&salt, "com.microsoft.VSCode"),
             PersonalOverride {
                 category: "TASK_MANAGEMENT".to_owned(),
                 local_activity_name: None,
@@ -657,7 +676,7 @@ mod tests {
         let bundle_rung = engine.process(event.clone()).expect("the event abstracts");
 
         store.set_override(
-            &stable_key_for("Code", "private project"),
+            &stable_key_for(&salt, "Code", "private project"),
             PersonalOverride {
                 category: "SOCIAL_FEED".to_owned(),
                 local_activity_name: None,
@@ -674,14 +693,45 @@ mod tests {
         );
     }
 
+    /// The engine keys under the salt of the store it looks keys up in, and
+    /// under nothing else: a correction written under a different install's salt
+    /// is a correction for some other Mac, and must not apply here.
+    #[test]
+    fn a_correction_keyed_under_another_salt_does_not_apply() {
+        let store = Arc::new(InMemoryMappingStore::default());
+        let foreign = crate::abstraction::StableKeySalt::from_bytes([7; 32]);
+        store.set_app_override(
+            &app_stable_key_for(&foreign, "Quillard"),
+            PersonalOverride {
+                category: "REFERENCE".to_owned(),
+                local_activity_name: None,
+            },
+        );
+        let engine = engine(Arc::clone(&store));
+
+        let abstracted = engine
+            .process(raw_event("Quillard", "private project"))
+            .expect("the event abstracts");
+
+        assert_ne!(
+            abstracted.classification_source(),
+            ClassificationSource::UserRule
+        );
+        assert_eq!(
+            engine.app_bundle_key("com.example.quillard"),
+            app_bundle_key_for(&store.stable_key_salt().unwrap(), "com.example.quillard")
+        );
+    }
+
     /// A correction recorded before bundle identifiers existed is keyed on the
     /// name alone. It must keep working for an event that now carries a bundle
     /// identifier, or the upgrade silently discards what the user taught.
     #[test]
     fn a_name_keyed_correction_still_applies_to_an_event_carrying_a_bundle_id() {
         let store = Arc::new(InMemoryMappingStore::default());
+        let salt = store.stable_key_salt().unwrap();
         store.set_app_override(
-            &app_stable_key_for("Code"),
+            &app_stable_key_for(&salt, "Code"),
             PersonalOverride {
                 category: "REFERENCE".to_owned(),
                 local_activity_name: None,

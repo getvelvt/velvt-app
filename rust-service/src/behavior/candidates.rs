@@ -144,9 +144,12 @@ pub const CANDIDATE_COUNT: usize = TIME_OF_DAY_BINS
 /// be wrong, and the correction has to know that.
 pub const OUTCOME_COUNT: usize = 1;
 
-/// Horizons in the family. **One** in v1: 600 seconds, the same horizon the
-/// decision log already backfills, so the antecedent layer and the policy layer
-/// cannot disagree about what "shortly afterwards" means.
+/// Horizons in the family. **One** in v1: 600 seconds, the horizon
+/// `retention::targets::InterventionDecisionOutcomeTarget` resolves the
+/// decision log on, so the antecedent layer and the policy layer cannot
+/// disagree about what "shortly afterwards" means. Naming the pass rather than
+/// asserting that one exists: this sentence read "the decision log already
+/// backfills" for the whole period during which nothing did.
 pub const HORIZON_COUNT: usize = 1;
 
 /// The logged family size: **candidates x outcomes x horizons**.

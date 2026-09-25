@@ -5,7 +5,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use velvt_service::abstraction::{
     AbstractionEngine, EmbeddingError, EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
-    Taxonomy,
+    Taxonomy, API_EXPECTED_TAXONOMY_VERSION,
 };
 use velvt_service::dashboard;
 use velvt_service::delivery::{parse_insight_with_rehydrator, LocalInsightRehydrator};
@@ -474,6 +474,8 @@ fn abstraction_engine_uses_sqlite_mapping_store_across_recreation() {
         app_name: "VS Code".into(),
         window_title: "private title".into(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
         duration_seconds: 0,
     };
@@ -501,6 +503,8 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
         app_name: "Unknown Local App".into(),
         window_title: "private title".into(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
         duration_seconds: 0,
     };
@@ -588,6 +592,8 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
                 app_name: "Unknown Local App".into(),
                 window_title: "different private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
             })
             .unwrap();
@@ -605,6 +611,8 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
             app_name: "Unknown Local App".into(),
             window_title: "private title".into(),
             bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
             focused_document_url: None,
         })
         .unwrap();
@@ -731,7 +739,7 @@ fn explicit_correction_generalizes_locally_and_remove_forgets_semantic_prototype
         let plugin = EmbeddingSimilarityPlugin::new(
             Arc::new(ConstantModel),
             HashMap::from([("FOCUS_WORK".to_owned(), vec![1.0, 0.0])]),
-            "mvp-1",
+            API_EXPECTED_TAXONOMY_VERSION,
             0.72,
             std::time::Duration::from_millis(20),
             Arc::new(EmbeddingMetrics::default()),
@@ -752,6 +760,8 @@ fn explicit_correction_generalizes_locally_and_remove_forgets_semantic_prototype
         app_name: "Novel Local Tool".into(),
         window_title: title.into(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
         duration_seconds: 0,
     };
@@ -839,6 +849,8 @@ fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_local
         app_name: "Slack".into(),
         window_title: "Private team conversation".into(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
         duration_seconds: 0,
     };
@@ -891,6 +903,8 @@ fn raw_title_never_becomes_a_local_display_label_or_ready_insight() {
             app_name: "Unknown Local App".into(),
             window_title: raw_title.into(),
             bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
             focused_document_url: None,
         })
         .unwrap();
@@ -1213,6 +1227,7 @@ fn the_wrong_intervention_counter_counts_delivered_and_was_focused() {
                     outcome,
                     outcome_at: Some(start + Duration::seconds(index as i64 + 5)),
                     salience: InterventionSalience::Normal,
+                    card_seen_at: None,
                 },
             )
             .expect("intervention records");
@@ -1274,4 +1289,103 @@ fn a_block_correction_is_recorded_once_and_keeps_its_first_timestamp() {
         "the first correction's timestamp is when the user was believed"
     );
     assert_eq!(stored[0].counts_as_category, "FOCUS_WORK");
+}
+
+/// Builds the abstraction row a correction is made against, carrying the local
+/// display name the engine mirrors the typed activity name into.
+fn mapping_with_display_name(stable_id: &str, display_name: Option<&str>) -> AbstractionMapping {
+    AbstractionMapping {
+        key_hash: format!("{:0>64}", stable_id.replace('-', "")),
+        stable_id: stable_id.to_owned(),
+        label: "document:edit".into(),
+        category: "FOCUS_WORK".into(),
+        taxonomy_version: "mvp-1".into(),
+        classification_tier: "exact_match".into(),
+        classification_status: "classified".into(),
+        classification_confidence: "high".into(),
+        classification_source: "user_rule".into(),
+        display_name: display_name.map(str::to_owned),
+    }
+}
+
+/// "Reset all local activity and category corrections on this Mac?" has to be
+/// true of every place a typed name is stored, not only the window rung. The
+/// app rung carries the same free text under the application's own hash, and
+/// `abstraction_map.display_name` mirrors it a third time behind a coalescing
+/// upsert that no later write can null.
+#[test]
+fn resetting_corrections_clears_the_app_rung_and_the_mirrored_display_name() {
+    let database = database();
+    let app_key = "d".repeat(64);
+    let maps = database.abstraction_map_repo();
+    database
+        .raw_event_repo()
+        .insert(&event_for_app("evt-reset", Some(&app_key), true))
+        .unwrap();
+    maps.upsert(&mapping_with_display_name(
+        "stable-evt-reset",
+        Some("Divorce paperwork"),
+    ))
+    .unwrap();
+    assert!(maps
+        .save_personal_app_override("evt-reset", "FOCUS_WORK", Some("Divorce paperwork"))
+        .unwrap());
+
+    maps.reset_personal_overrides().unwrap();
+
+    assert!(
+        database
+            .abstraction_mapping_store()
+            .personal_app_override(&app_key)
+            .unwrap()
+            .is_none(),
+        "the app rung is where almost every correction lands, so a reset that \
+         spares it returns the same category and the same typed name"
+    );
+    assert_eq!(
+        maps.get("stable-evt-reset").unwrap().display_name,
+        None,
+        "the typed name must not survive in the display mirror"
+    );
+}
+
+/// The per-row undo has the same three places to reach. Undoing one correction
+/// while the app rung survives leaves the engine falling straight through into
+/// it, so the row disappears from the list and nothing else changes.
+#[test]
+fn undoing_one_correction_clears_the_app_rung_it_was_generalized_into() {
+    let database = database();
+    let app_key = "e".repeat(64);
+    let maps = database.abstraction_map_repo();
+    database
+        .raw_event_repo()
+        .insert(&event_for_app("evt-undo", Some(&app_key), true))
+        .unwrap();
+    maps.upsert(&mapping_with_display_name(
+        "stable-evt-undo",
+        Some("Divorce paperwork"),
+    ))
+    .unwrap();
+    maps.save_personal_override("stable-evt-undo", "FOCUS_WORK", Some("Divorce paperwork"))
+        .unwrap();
+    assert!(maps
+        .save_personal_app_override("evt-undo", "FOCUS_WORK", Some("Divorce paperwork"))
+        .unwrap());
+
+    assert!(maps.remove_personal_override("stable-evt-undo").unwrap());
+
+    assert_eq!(maps.personal_override_count().unwrap(), 0);
+    assert!(
+        database
+            .abstraction_mapping_store()
+            .personal_app_override(&app_key)
+            .unwrap()
+            .is_none(),
+        "an undo that leaves the app rung standing is an undo the user cannot see"
+    );
+    assert_eq!(
+        maps.get("stable-evt-undo").unwrap().display_name,
+        None,
+        "the typed name must not survive in the display mirror"
+    );
 }

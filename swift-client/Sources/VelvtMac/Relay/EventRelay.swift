@@ -49,13 +49,29 @@ struct CircularBuffer<Element> {
         count -= 1
     }
 
-    /// Places an element back at the head after a failed dequeue/send attempt.
-    /// Caller must ensure the buffer has spare capacity.
-    mutating func requeueFront(_ element: Element) {
-        precondition(!isFull, "CircularBuffer must have capacity before requeueFront")
+    /// Places an element back at the head after a failed dequeue/send attempt,
+    /// returning the element evicted to make room, or `nil` when none was needed.
+    ///
+    /// A full buffer is the ordinary state here, not a caller error: the owner
+    /// releases its executor across the send, so the buffer can refill to
+    /// capacity before the failure is observed. The newest element is evicted
+    /// rather than the oldest because the element being restored is older than
+    /// everything currently held — dropping the oldest would punch a hole
+    /// immediately after it, while dropping the tail leaves the retained events
+    /// contiguous.
+    @discardableResult
+    mutating func requeueFront(_ element: Element) -> Element? {
+        var evicted: Element?
+        if isFull {
+            tail = (tail - 1 + capacity) % capacity
+            evicted = storage[tail]
+            storage[tail] = nil
+            count -= 1
+        }
         head = (head - 1 + capacity) % capacity
         storage[head] = element
         count += 1
+        return evicted
     }
 }
 
@@ -80,8 +96,10 @@ private let logger = Logger(subsystem: "com.velvt.mac", category: "EventRelay")
 /// **Buffer policy**
 /// While the IPC socket is unavailable, incoming events are held in a bounded
 /// in-memory ring buffer (`capacity`, default 500). When the buffer is full the
-/// oldest event is dropped and `droppedEventCount` is incremented. Nothing is
-/// ever written to disk; events that overflow the buffer are permanently lost.
+/// oldest event is dropped and `droppedEventCount` is incremented; the one
+/// exception is a failed flush send, which evicts the newest event to put the
+/// older in-flight one back at the head. Nothing is ever written to disk; events
+/// that overflow the buffer are permanently lost.
 ///
 /// **Reconnect sequence**
 /// On reconnect the relay logs a structured count-only metric, then flushes all
@@ -296,7 +314,9 @@ public actor EventRelay: EventRelayProtocol {
                 try await ipcClient.send(.rawEvent(toMessage(event)))
             } catch {
                 isConnected = false
-                ringBuffer.requeueFront(event)
+                if ringBuffer.requeueFront(event) != nil {
+                    droppedEventCount += 1
+                }
                 return
             }
         }
@@ -318,6 +338,10 @@ public actor EventRelay: EventRelayProtocol {
             appName: event.appName,
             windowTitle: event.windowTitle,
             bundleID: event.bundleIdentifier,
+            // Forwarded verbatim, unjudged: what the application declares about
+            // itself is a fact the service decides the meaning of.
+            declaredAppCategory: event.declaredAppCategory,
+            documentTypeIDs: event.documentTypeIDs,
             focusedDocumentURL: event.focusedDocumentURL
         )
     }

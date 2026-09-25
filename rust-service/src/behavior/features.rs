@@ -41,12 +41,57 @@ pub const CATEGORIES: [&str; 8] = [
 
 /// The taxonomy this contract was frozen against. A mismatch against the loaded
 /// taxonomy means the contract, not the taxonomy, is out of date.
-pub const CONTRACT_TAXONOMY_VERSION: &str = "mvp-1";
+pub const CONTRACT_TAXONOMY_VERSION: &str = "mvp-2";
 
 /// Version of the feature contract itself. Every model result must be logged
 /// with it: a comparison across contract versions is a comparison of two
 /// different feature spaces.
-pub const FEATURE_CONTRACT_VERSION: u32 = 1;
+///
+/// **2 since 2026-09-24, with the `mvp-2` taxonomy.** The symbols below did not
+/// change; what they *observe* did, which is the same thing for anyone
+/// comparing two rows. `mvp-2` classifies applications that `mvp-1` left
+/// `UNLOGGED` — bundle-identifier seeds, declared document types and the
+/// declared-category whitelist between them cover the 63% of installed
+/// applications that were previously invisible. `is_confident_evidence` excludes
+/// `UNLOGGED`, so every one of those runs used to be `q_t = 0` and therefore
+/// absent from `n_t`, from the anchor, and from `s_t`; now they are confident
+/// evidence with a real `c_t`. The distributions of `c_t`, `q_t`, `a_t` and
+/// `s_t` all move, in one direction, at the moment of upgrade.
+///
+/// Keeping the version at 1 through that would have been the precise failure
+/// this constant exists to prevent: a pre-registered outcome silently measured
+/// against a different feature space, with pre- and post-upgrade rows pooled as
+/// if they were comparable. They are not, and the version is how a later reader
+/// knows to separate them.
+pub const FEATURE_CONTRACT_VERSION: u32 = 2;
+
+/// The amendment ledger: every feature-contract version, the taxonomy it was
+/// frozen against, and why it was cut.
+///
+/// A taxonomy bump is not automatically a contract bump — a taxonomy can gain a
+/// label no observable reads. But a taxonomy bump that changes which runs count
+/// as confident evidence *is* one, and the two constants above cannot say so on
+/// their own. The test below asserts the last row is this version and this
+/// taxonomy, so changing `CONTRACT_TAXONOMY_VERSION` without deciding, in
+/// writing, whether `x_t` still means what it meant fails the build rather than
+/// passing quietly.
+pub const FEATURE_CONTRACT_HISTORY: [(u32, &str, &str); 2] = [
+    (
+        1,
+        "mvp-1",
+        "initial freeze: the 12 observables below, against the name-keyed \
+         taxonomy, where an application Velvt could not name was UNLOGGED and \
+         therefore not evidence",
+    ),
+    (
+        2,
+        "mvp-2",
+        "2026-09-24: bundle-identifier seeds, declared document types and the \
+         declared-category whitelist classify applications that were UNLOGGED \
+         under mvp-1. No symbol changed; c_t, q_t, a_t and s_t are all drawn \
+         from a different distribution afterwards",
+    ),
+];
 
 /// The dwell clip, in seconds, applied at collection time.
 ///
@@ -88,7 +133,9 @@ pub struct Observable {
 }
 
 /// The complete observable feature vector. Adding a row here is a contract
-/// change and requires a `FEATURE_CONTRACT_VERSION` bump.
+/// change and requires a `FEATURE_CONTRACT_VERSION` bump — and so is changing
+/// what an existing row observes while leaving its symbol alone, which is the
+/// easier one to miss and the harder one to detect afterwards.
 pub const OBSERVABLES: [Observable; 12] = [
     Observable {
         symbol: "c_t",
@@ -268,6 +315,38 @@ mod tests {
             parsed["category_taxonomy_version"].as_str(),
             Some(CONTRACT_TAXONOMY_VERSION)
         );
+    }
+
+    /// The ledger must end at the versions actually shipped. This is the guard
+    /// against the failure that caught `mvp-2`: the taxonomy moving under a
+    /// feature contract that kept its number, leaving rows from two different
+    /// feature spaces pooled under one version.
+    #[test]
+    fn the_amendment_ledger_ends_at_the_shipped_versions() {
+        let (version, taxonomy, reason) = *FEATURE_CONTRACT_HISTORY
+            .last()
+            .expect("the ledger has at least the initial freeze");
+        assert_eq!(
+            version, FEATURE_CONTRACT_VERSION,
+            "the feature contract version moved without a ledger entry"
+        );
+        assert_eq!(
+            taxonomy, CONTRACT_TAXONOMY_VERSION,
+            "the taxonomy moved without a decision recorded about what x_t now \
+             means"
+        );
+        assert!(
+            reason.len() > 40,
+            "an amendment without a stated reason is not an amendment"
+        );
+        for (index, (version, _, _)) in FEATURE_CONTRACT_HISTORY.iter().enumerate() {
+            assert_eq!(
+                *version,
+                index as u32 + 1,
+                "feature contract versions are consecutive from 1; a gap means an \
+                 amendment was cut and never recorded"
+            );
+        }
     }
 
     /// Symbols must be unique, or two features silently share a name in every

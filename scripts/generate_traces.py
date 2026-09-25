@@ -80,8 +80,8 @@ DEFAULT_SEED = 20260821
 # file must never be the thing that changes them.
 # ---------------------------------------------------------------------------
 DRIFT_WINDOW_SECONDS = 600
-DRIFT_MIN_SWITCHES = 4
-DRIFT_MIN_ELAPSED_SECONDS = 300
+DRIFT_MIN_SWITCHES = 3
+DRIFT_MIN_ELAPSED_SECONDS = 180
 DRIFT_MIN_REMAINING_SECONDS = 120
 
 # From `rust-service/resources/abstraction-taxonomy-mvp-1.json`. Do not invent
@@ -341,12 +341,20 @@ def suite_a() -> list[dict]:
 
     # ---- one step outside each threshold: the gate must abstain ------------
 
+    # Derived from the threshold, not hardcoded. This was `* 3` with the label
+    # "3 departures is below DRIFT_MIN_SWITCHES", which was true only while the
+    # threshold was 4. Lowering it to 3 turned the fixture into a legitimate hit
+    # whose own description called it a near-miss — "3 departures is below
+    # DRIFT_MIN_SWITCHES=3". A near-miss has to be defined relative to the gate
+    # it is one step outside of.
+    _below_switches = DRIFT_MIN_SWITCHES - 1
     traces.append(single_block_trace(
-        "A-NEAR-3SWITCH",
+        "A-NEAR-BELOW-MIN-SWITCHES",
         "NEAR_MISS",
-        [observation(10, "FOCUS_WORK")] + _drift_burst(400, "FOCUS_WORK", ["COMMUNICATION"] * 3),
+        [observation(10, "FOCUS_WORK")]
+        + _drift_burst(400, "FOCUS_WORK", ["COMMUNICATION"] * _below_switches),
         False,
-        f"3 departures is below DRIFT_MIN_SWITCHES={DRIFT_MIN_SWITCHES}",
+        f"{_below_switches} departures is below DRIFT_MIN_SWITCHES={DRIFT_MIN_SWITCHES}",
     ))
 
     # Four departures, all of them inside the warm-up, so the gate has no
@@ -404,10 +412,19 @@ def suite_a() -> list[dict]:
 
     # Everything happens inside the warm-up and the trace then stops, so the
     # gate never gets an evaluation point at which elapsed >= 300.
+    # The burst start is derived so the whole burst lands inside the warm-up.
+    # `_drift_burst` spans `120` seconds for four departures at `step=20`, so
+    # starting `140` before the threshold puts the last observation `20` seconds
+    # short of it. This was a hardcoded `100`, which sat inside a 300-second
+    # warm-up and outside a 180-second one — the trace then reached an
+    # evaluation point at exactly the threshold and the gate correctly fired,
+    # against a fixture asserting it could not.
+    _warmup_burst_start = DRIFT_MIN_ELAPSED_SECONDS - 140
     traces.append(single_block_trace(
         "A-NEAR-INSIDE-WARMUP",
         "NEAR_MISS",
-        [observation(5, "FOCUS_WORK")] + _drift_burst(100, "FOCUS_WORK", ["COMMUNICATION"] * 4, step=20),
+        [observation(5, "FOCUS_WORK")]
+        + _drift_burst(_warmup_burst_start, "FOCUS_WORK", ["COMMUNICATION"] * 4, step=20),
         False,
         f"every evaluation point is below DRIFT_MIN_ELAPSED_SECONDS={DRIFT_MIN_ELAPSED_SECONDS}",
     ))
@@ -1409,7 +1426,7 @@ n = 1. This is a plausible shape, not a prior.
 ## The assumption the null result actually rests on
 
 Suite B's zero-offer result is driven by the DWELL distribution, not by
-anything clever in the gate. Crossing `DRIFT_MIN_SWITCHES = 4` inside
+anything clever in the gate. Crossing `DRIFT_MIN_SWITCHES = 3` inside
 `DRIFT_WINDOW_SECONDS = 600` requires roughly eight observations in ten
 minutes — a mean dwell near 75 seconds. The assumed medians are 120-840
 seconds, so noise cannot reach the threshold.

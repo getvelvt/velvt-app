@@ -34,6 +34,8 @@ fn client_message_variants_round_trip() {
             app_name: "local-only".into(),
             window_title: "local-only".into(),
             bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
             focused_document_url: None,
             duration_seconds: 0,
         }),
@@ -119,6 +121,8 @@ fn raw_activity_fields_are_redacted_from_debug_and_error_safe_surfaces() {
         app_name: "PRIVATE_APP_SENTINEL".into(),
         window_title: "PRIVATE_WINDOW_SENTINEL".into(),
         bundle_id: Some("private.bundle.sentinel".into()),
+        declared_app_category: Some("PRIVATE_CATEGORY_SENTINEL".into()),
+        document_type_ids: vec!["PRIVATE_DOCUMENT_TYPE_SENTINEL".into()],
         focused_document_url: Some("https://PRIVATE_URL_SENTINEL.example".into()),
         duration_seconds: 30,
     };
@@ -128,6 +132,8 @@ fn raw_activity_fields_are_redacted_from_debug_and_error_safe_surfaces() {
         "PRIVATE_APP_SENTINEL",
         "PRIVATE_WINDOW_SENTINEL",
         "private.bundle.sentinel",
+        "PRIVATE_CATEGORY_SENTINEL",
+        "PRIVATE_DOCUMENT_TYPE_SENTINEL",
         "PRIVATE_URL_SENTINEL",
     ] {
         assert!(!debug.contains(forbidden));
@@ -153,6 +159,7 @@ fn correction_history_messages_are_bounded_typed_and_redacted() {
             local_label: Some("PRIVATE_ALIAS_VALUE".into()),
             category: "REFERENCE".into(),
             updated_at: timestamp(),
+            scope: velvt_shared_types::CorrectionScope::Window,
         }],
         offset: 0,
         page_size: 20,

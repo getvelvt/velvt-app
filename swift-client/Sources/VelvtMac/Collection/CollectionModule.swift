@@ -11,6 +11,14 @@ import Foundation
 public struct RawEvent: Equatable, Sendable {
     public let appName: String
     public let bundleIdentifier: String?
+    /// The `LSApplicationCategoryType` the application declares in its own
+    /// `Info.plist`, verbatim. A reported fact: this layer never decides what it
+    /// means, and most declared values mean nothing.
+    public let declaredAppCategory: String?
+    /// The `LSItemContentTypes` the application declares across
+    /// `CFBundleDocumentTypes`, flattened, deduplicated and sorted. Empty when
+    /// the application declares none or its plist could not be read.
+    public let documentTypeIDs: [String]
     public let windowTitle: String
     public let focusedDocumentURL: String?
     public let occurredAt: Date
@@ -19,6 +27,8 @@ public struct RawEvent: Equatable, Sendable {
     public init(
         appName: String,
         bundleIdentifier: String? = nil,
+        declaredAppCategory: String? = nil,
+        documentTypeIDs: [String] = [],
         windowTitle: String,
         focusedDocumentURL: String? = nil,
         occurredAt: Date,
@@ -26,6 +36,8 @@ public struct RawEvent: Equatable, Sendable {
     ) {
         self.appName = appName
         self.bundleIdentifier = bundleIdentifier
+        self.declaredAppCategory = declaredAppCategory
+        self.documentTypeIDs = documentTypeIDs
         self.windowTitle = windowTitle
         self.focusedDocumentURL = focusedDocumentURL
         self.occurredAt = occurredAt
@@ -36,6 +48,8 @@ public struct RawEvent: Equatable, Sendable {
         RawEvent(
             appName: appName,
             bundleIdentifier: bundleIdentifier,
+            declaredAppCategory: declaredAppCategory,
+            documentTypeIDs: documentTypeIDs,
             windowTitle: windowTitle,
             focusedDocumentURL: focusedDocumentURL,
             occurredAt: occurredAt,
@@ -53,6 +67,8 @@ public struct RawEvent: Equatable, Sendable {
         RawEvent(
             appName: appName,
             bundleIdentifier: bundleIdentifier,
+            declaredAppCategory: declaredAppCategory,
+            documentTypeIDs: documentTypeIDs,
             windowTitle: windowTitle,
             focusedDocumentURL: focusedDocumentURL,
             occurredAt: instant,
@@ -89,6 +105,14 @@ public enum CollectionStatus: Equatable, Sendable {
 public protocol CollectionAgentProtocol: AnyObject {
     func start() throws
     func stop()
+    /// Whether the agent is observing right now.
+    ///
+    /// `PermissionCollectionCoordinator` used to keep its own copy of this and
+    /// consult that instead. An agent stops itself when the AX observer reports
+    /// the permission was revoked, so the copy went stale exactly when it
+    /// mattered: the coordinator went on believing collection was running and
+    /// refused to start it again, and nothing on any surface said so.
+    var isRunning: Bool { get }
     var status: AnyPublisher<CollectionStatus, Never> { get }
 }
 
@@ -96,11 +120,21 @@ public struct RunningApplication: Equatable, Sendable {
     public let processIdentifier: pid_t
     public let appName: String
     public let bundleIdentifier: String?
+    /// The application bundle on disk, when macOS reports one. Carried so the
+    /// declared metadata can be read from the application's own `Info.plist`;
+    /// absent for a process that is not a bundled application.
+    public let bundleURL: URL?
 
-    public init(processIdentifier: pid_t, appName: String, bundleIdentifier: String? = nil) {
+    public init(
+        processIdentifier: pid_t,
+        appName: String,
+        bundleIdentifier: String? = nil,
+        bundleURL: URL? = nil
+    ) {
         self.processIdentifier = processIdentifier
         self.appName = appName
         self.bundleIdentifier = bundleIdentifier
+        self.bundleURL = bundleURL
     }
 }
 
@@ -146,13 +180,16 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     private let permissionChecker: any AccessibilityPermissionChecking
     private let workspaceObserver: any WorkspaceActivationObserving
     private let accessibilityObserver: any AccessibilityObserving
+    private let metadataProvider: any DeclaredAppMetadataReading
     private let now: () -> Date
     private let maximumDwellDuration: TimeInterval
     private let statusSubject = CurrentValueSubject<CollectionStatus, Never>(.idle)
     private let lock = NSLock()
-    private var isRunning = false
+    private var isRunningLocked = false
     private var activeProcessIdentifier: pid_t?
     private var pendingDwellEvent: RawEvent?
+
+    public var isRunning: Bool { lock.withLock { isRunningLocked } }
 
     public convenience init(eventSink: any EventSink) {
         self.init(
@@ -168,6 +205,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         permissionChecker: any AccessibilityPermissionChecking,
         workspaceObserver: any WorkspaceActivationObserving,
         accessibilityObserver: any AccessibilityObserving,
+        metadataProvider: any DeclaredAppMetadataReading = BundleInfoPlistMetadataProvider(),
         now: @escaping () -> Date = Date.init,
         maximumDwellDuration: TimeInterval = 30 * 60
     ) {
@@ -175,23 +213,24 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         self.permissionChecker = permissionChecker
         self.workspaceObserver = workspaceObserver
         self.accessibilityObserver = accessibilityObserver
+        self.metadataProvider = metadataProvider
         self.now = now
         self.maximumDwellDuration = maximumDwellDuration
     }
 
     public func start() throws {
-        guard lock.withLock({ !isRunning }) else {
+        guard lock.withLock({ !isRunningLocked }) else {
             return
         }
         guard permissionChecker.hasPermission() else {
             statusSubject.send(.permissionRevoked)
-            return
+            throw CollectionError.permissionRevoked
         }
         let shouldStart = lock.withLock {
-            guard !isRunning else {
+            guard !isRunningLocked else {
                 return false
             }
-            isRunning = true
+            isRunningLocked = true
             return true
         }
         guard shouldStart else {
@@ -217,10 +256,10 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
 
     public func stop() {
         let result = lock.withLock { () -> (shouldStop: Bool, finalEvent: RawEvent?) in
-            guard isRunning else {
+            guard isRunningLocked else {
                 return (false, nil)
             }
-            isRunning = false
+            isRunningLocked = false
             activeProcessIdentifier = nil
             let finalEvent = takePendingDwellLocked(at: now(), reanchor: false)
             return (true, finalEvent)
@@ -273,7 +312,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     @discardableResult
     public func flushPendingDwell(at instant: Date) -> Bool {
         let completedEvent = lock.withLock { () -> RawEvent? in
-            guard isRunning, let pending = pendingDwellEvent else {
+            guard isRunningLocked, let pending = pendingDwellEvent else {
                 return nil
             }
             guard dwellSeconds(from: pending.occurredAt, through: instant) > 0 else {
@@ -319,7 +358,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     }
 
     private func applicationDidActivate(_ application: RunningApplication) {
-        guard lock.withLock({ isRunning }) else {
+        guard lock.withLock({ isRunningLocked }) else {
             return
         }
         guard permissionChecker.hasPermission() else {
@@ -350,12 +389,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             initialActivity = try accessibilityObserver.start(
                 observing: application,
                 activityHandler: { [weak self] activity in
-                    self?.emit(
-                        processIdentifier: application.processIdentifier,
-                        appName: application.appName,
-                        bundleIdentifier: application.bundleIdentifier,
-                        activity: activity
-                    )
+                    self?.emit(application: application, activity: activity)
                 },
                 errorHandler: { [weak self] error in
                     self?.accessibilityObserverFailed(
@@ -372,39 +406,41 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             }
             throw error
         }
-        emit(
-            processIdentifier: application.processIdentifier,
-            appName: application.appName,
-            bundleIdentifier: application.bundleIdentifier,
-            activity: initialActivity
-        )
+        emit(application: application, activity: initialActivity)
     }
 
-    private func emit(
-        processIdentifier: pid_t,
-        appName: String,
-        bundleIdentifier: String?,
-        activity: FocusedActivity
-    ) {
+    private func emit(application: RunningApplication, activity: FocusedActivity) {
         guard permissionChecker.hasPermission() else {
             stopAfterPermissionRevocation()
             return
         }
+        // Read before the lock is taken, like `now()`: the provider caches per
+        // bundle identifier, so this is a dictionary lookup on every event after
+        // an application's first, and no file is touched while the lock is held.
+        let declared = metadataProvider.metadata(for: application)
         let nextEvent = RawEvent(
-            appName: appName,
-            bundleIdentifier: bundleIdentifier,
+            appName: application.appName,
+            bundleIdentifier: application.bundleIdentifier,
+            declaredAppCategory: declared.declaredAppCategory,
+            documentTypeIDs: declared.documentTypeIDs,
             windowTitle: activity.windowTitle ?? "",
             focusedDocumentURL: activity.focusedDocumentURL,
             occurredAt: now()
         )
         let completedEvent = lock.withLock { () -> RawEvent? in
-            guard isRunning && activeProcessIdentifier == processIdentifier else {
+            guard isRunningLocked && activeProcessIdentifier == application.processIdentifier else {
                 return nil
             }
             guard let previousEvent = pendingDwellEvent else {
                 pendingDwellEvent = nextEvent
                 return nil
             }
+            // Declared metadata is deliberately absent from this comparison. It
+            // is a property of the application, not of the activity, so it
+            // cannot distinguish two dwells the four identity fields agree on —
+            // and making it part of activity identity would let a first-read
+            // failure that later succeeds register as a switch the user never
+            // made.
             guard previousEvent.appName != nextEvent.appName
                 || previousEvent.bundleIdentifier != nextEvent.bundleIdentifier
                 || previousEvent.windowTitle != nextEvent.windowTitle
@@ -429,7 +465,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             return
         }
         let result = lock.withLock { () -> (shouldHandle: Bool, finalEvent: RawEvent?) in
-            guard isRunning && activeProcessIdentifier == processIdentifier else {
+            guard isRunningLocked && activeProcessIdentifier == processIdentifier else {
                 return (false, nil)
             }
             activeProcessIdentifier = nil
@@ -452,10 +488,10 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
 
     private func stopAfterPermissionRevocation() {
         let result = lock.withLock { () -> (shouldStop: Bool, finalEvent: RawEvent?) in
-            guard isRunning else {
+            guard isRunningLocked else {
                 return (false, nil)
             }
-            isRunning = false
+            isRunningLocked = false
             activeProcessIdentifier = nil
             let finalEvent = takePendingDwellLocked(at: now(), reanchor: false)
             return (true, finalEvent)
@@ -484,7 +520,7 @@ public final class FakeCollectionAgent: CollectionAgentProtocol {
 
     private weak var eventSink: (any EventSink)?
     private let statusSubject = CurrentValueSubject<CollectionStatus, Never>(.idle)
-    private var isRunning = false
+    public private(set) var isRunning = false
 
     public init(eventSink: any EventSink) {
         self.eventSink = eventSink
@@ -559,7 +595,8 @@ public final class NSWorkspaceActivationObserver: WorkspaceActivationObserving {
         return RunningApplication(
             processIdentifier: application.processIdentifier,
             appName: appName,
-            bundleIdentifier: application.bundleIdentifier
+            bundleIdentifier: application.bundleIdentifier,
+            bundleURL: application.bundleURL
         )
     }
 }

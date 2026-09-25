@@ -95,7 +95,33 @@ async fn main() {
     }
     let embedding_plugin = load_embedding_plugin(&config, &taxonomy)
         .or_else(|| {
-            velvt_service::abstraction::EmbeddingSimilarityPlugin::builtin(taxonomy.version()).ok()
+            // The shipped Tier 2 fallback runs on this install's salt. Without
+            // it the hash family is the one written out in `plugin.rs`, so the
+            // sketches this caches in `semantic_embedding_cache` are readable
+            // back to words by anyone holding the file and the public source,
+            // with nothing taken off the device.
+            //
+            // A salt the database cannot produce disables Tier 2 rather than
+            // falling back to `EmbeddingSalt::UNSALTED`: an unsalted classifier
+            // wired in here would keep caching recoverable sketches while
+            // migration 0031 and PRIVACY.md both describe a salted one. Tier 1
+            // and Tier 3 still classify, so the cost is classification quality
+            // rather than a property the documents assert.
+            let salt = persistence
+                .abstraction_map_repo()
+                .embedding_salt()
+                .inspect_err(|_| {
+                    tracing::warn!(
+                        error_code = "embedding_salt_unavailable",
+                        "Tier 2 classification disabled"
+                    );
+                })
+                .ok()?;
+            velvt_service::abstraction::EmbeddingSimilarityPlugin::builtin_salted(
+                taxonomy.version(),
+                salt,
+            )
+            .ok()
         })
         .map(|plugin| plugin.with_learning_store(persistence.semantic_learning_store()));
     // Tracked before the plugin is consumed below: true only when an operator
@@ -132,8 +158,9 @@ async fn main() {
         use velvt_service::ipc::{MenuStatusProvider, R7Router, ReconnectTracker};
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
-            CacheRetentionTarget, RawEventRetentionTarget, RetentionScheduler,
-            UploadBatchRetentionTarget, WorkBlockIntentionRetentionTarget,
+            CacheRetentionTarget, InterventionDecisionOutcomeTarget, RawEventRetentionTarget,
+            RetentionScheduler, SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+            WorkBlockIntentionRetentionTarget,
         };
         use velvt_service::upload::{
             BatchAssembler, EventIngestor, HttpBatchUploader, SharedUploadBatcher, UploadBatcher,
@@ -346,6 +373,9 @@ async fn main() {
             Arc::clone(&push_adapter),
             auth_state.subscribe(),
             token.subscribe(),
+        )
+        .with_quiet_hours(
+            Arc::clone(&focus) as Arc<dyn velvt_service::delivery::poll::QuietHoursSource>
         );
         let poll_task = tokio::spawn(async move { poll_scheduler.run().await });
 
@@ -478,6 +508,24 @@ async fn main() {
             persistence.behavior_repo(),
             config.retention_batch_size,
         );
+        // The sixth. `semantic_embedding_cache` had no target at all, and its
+        // only bound was a 512-row cap that a frequently revisited window never
+        // falls out of. It holds a sketch derived from the window title, so it
+        // expires on the raw-event horizon, as a constant for the same reason
+        // `out_of_block_run` uses one.
+        let semantic_embedding_cache_target =
+            SemanticEmbeddingCacheRetentionTarget::with_default_retention(
+                persistence.abstraction_map_repo(),
+                config.retention_batch_size,
+            );
+        // The seventh, and the only one that writes rather than deletes: the
+        // outcome pass the decision log's write site says resolves it. Batched
+        // and idempotent like the others, so it backfills all of history a
+        // tick at a time and then costs one bounded query per cycle.
+        let decision_outcome_target = InterventionDecisionOutcomeTarget::new(
+            Arc::clone(&work_block_repo),
+            config.retention_batch_size,
+        );
         let retention_scheduler =
             RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
                 .add_target(raw_event_target)
@@ -486,7 +534,9 @@ async fn main() {
                 .add_target(WorkBlockIntentionRetentionTarget::new(
                     work_block_retention_repo,
                 ))
-                .add_target(out_of_block_run_target);
+                .add_target(out_of_block_run_target)
+                .add_target(semantic_embedding_cache_target)
+                .add_target(decision_outcome_target);
         let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
 
         // R7 + R8 transport — shutdown-aware, reconnect-tracking.
@@ -609,14 +659,46 @@ fn load_embedding_plugin(
         );
         return None;
     };
-    if centroids.taxonomy_version() != taxonomy.version()
-        || centroids
-            .categories()
-            .any(|category| !taxonomy.contains_category(category))
-    {
+    // A centroid artifact is built against one taxonomy version and is not
+    // transferable to another: the prototypes are embeddings of that version's
+    // category descriptions, so a mismatch means the similarity scores are
+    // measured against the wrong reference points. Refusing to load it is
+    // correct. Refusing it quietly is not — the `mvp-1` → `mvp-2` bump disables
+    // Tier 2 on every install whose configured artifact predates it, and an
+    // operator reading only "Tier 2 classification disabled" cannot tell that
+    // from a missing file, a bad path, or a deliberate configuration. So both
+    // versions and the artifact path go in the line: it is the whole diagnosis,
+    // and it names the fix (rebuild the artifact against the loaded taxonomy).
+    if centroids.taxonomy_version() != taxonomy.version() {
         tracing::warn!(
             error_code = "tier2_centroids_invalid",
-            "Tier 2 classification disabled"
+            reason = "taxonomy_version_mismatch",
+            centroid_taxonomy_version = centroids.taxonomy_version(),
+            loaded_taxonomy_version = taxonomy.version(),
+            centroid_artifact_version = centroids.artifact_version(),
+            centroid_path = %centroid_path.display(),
+            "Tier 2 classification disabled: the configured centroid artifact \
+             was built against a different taxonomy version and must be rebuilt"
+        );
+        return None;
+    }
+    // A category the loaded taxonomy does not have is a different failure with
+    // the same outcome, and is worth separating: the versions agree, so the
+    // artifact or the taxonomy file has been edited by hand.
+    let unknown: Vec<String> = centroids
+        .categories()
+        .filter(|category| !taxonomy.contains_category(category))
+        .map(str::to_owned)
+        .collect();
+    if !unknown.is_empty() {
+        tracing::warn!(
+            error_code = "tier2_centroids_invalid",
+            reason = "unknown_categories",
+            unknown_categories = unknown.join(","),
+            loaded_taxonomy_version = taxonomy.version(),
+            centroid_path = %centroid_path.display(),
+            "Tier 2 classification disabled: the configured centroid artifact \
+             scores categories the loaded taxonomy does not contain"
         );
         return None;
     }

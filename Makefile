@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain prepare-dmg-tool build-rust test-rust lint-rust build-swift test-swift lint-swift build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release test-measurement verify-release verify-release-production build-app-local-core clean
+.PHONY: check-rust-toolchain check-swift-toolchain prepare-dmg-tool build-rust test-rust bench-rust check-rust-onnx lint-rust build-swift test-swift lint-swift build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release test-measurement verify-release verify-release-production build-app-local-core clean
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -27,8 +27,8 @@ VELVT_PREVIOUS_RELEASE_BUILD ?=
 VELVT_UPDATER_ENABLED ?= NO
 VELVT_UPDATE_FEED_URL ?=
 VELVT_UPDATE_PUBLIC_ED_KEY ?=
-VELVT_BUILD_MARKETING_VERSION ?= 1.0.0
-VELVT_BUILD_NUMBER ?= 2
+VELVT_BUILD_MARKETING_VERSION ?= 1.0.11
+VELVT_BUILD_NUMBER ?= 17
 VELVT_ALLOW_LOCAL_DMG ?= 0
 VELVT_GENERATE_APPCAST_SHA256 ?=
 VELVT_SIGN_UPDATE_SHA256 ?=
@@ -59,6 +59,50 @@ build-rust: check-rust-toolchain
 
 test-rust: check-rust-toolchain
 	cd rust-service && cargo test --workspace
+
+# Where the published Tier 2 p95 budget is measured, and the only place it is:
+# the tail bound is #[ignore]d out of test-rust so a busy shared runner cannot
+# fail a pull request on a tail sample. The pull request still carries the Tier
+# 2 median bound, which runner load does not move. CI runs this target in the
+# `bench` job, on pushes to main and on demand -- see .github/workflows/ci.yml,
+# which states what that timing trades away.
+#
+# --release, unlike test-rust, because a wall-clock budget for a shipped binary
+# has to be measured on the build that ships. It is not a detail: the builtin
+# Tier 2 model measured between seventeen and twenty-six times slower
+# unoptimized, depending on input length, and PERFORMANCE_REPORT.md's published
+# percentiles were taken in --release -- so a debug measurement is not
+# comparable to the number it is being checked against.
+#
+# CARGO_ONNX_FEATURES, unlike in test-rust, because the real-model tail test is
+# behind `#[cfg(feature = "onnx")]` and would otherwise compile nowhere a make
+# target reaches. It is empty off Apple Silicon, so CI is unaffected; where it
+# is set, the test still returns early unless VELVT_ABSTRACTION_MODEL_PATH and
+# VELVT_ABSTRACTION_CENTROIDS_PATH point at real artifacts.
+#
+# libtest exits 0 when its filter matches nothing, so a renamed or deleted
+# benchmark would leave this target green having measured nothing: the same
+# unfalsifiable gate the target exists to prevent. Require a non-zero pass
+# count. The log file is because a pipe would report tee's exit status and
+# swallow a failing benchmark, and /bin/sh on Linux has no pipefail.
+BENCH_RUST_LOG := $(CURDIR)/rust-service/target/bench-rust.log
+
+bench-rust: check-rust-toolchain
+	@mkdir -p $(dir $(BENCH_RUST_LOG))
+	cd rust-service && cargo test --release --workspace $(CARGO_ONNX_FEATURES) -- --ignored --nocapture > $(BENCH_RUST_LOG) 2>&1 || (cat $(BENCH_RUST_LOG) >&2; exit 1)
+	@cat $(BENCH_RUST_LOG)
+	@grep -qE '^test result: ok\. [1-9][0-9]* passed' $(BENCH_RUST_LOG) || (echo "ERROR: bench-rust measured nothing. The Tier 2 p95 budget published in README.md and ARCHITECTURE.md is the #[ignore]d test in rust-service/tests/embedding_similarity.rs; if it was renamed or removed, that number has no enforcement point." >&2; exit 1)
+
+# src/abstraction/onnx.rs is entirely inside `#[cfg(feature = "onnx")]`, and
+# nothing else in this Makefile enables the feature on a machine where
+# CARGO_ONNX_FEATURES is empty -- so on any non-arm64 host the module compiles
+# nowhere. Type-checking it needs no model artifacts and no ONNX Runtime at
+# link time. It does need a platform ort publishes a runtime download for:
+# Linux x86_64 (the CI rust job) or Apple Silicon, not Intel macOS.
+# --all-targets so the feature-gated tests are type-checked too, since they are
+# the only callers of some of the gated surface.
+check-rust-onnx: check-rust-toolchain
+	cd rust-service && cargo check --features onnx --all-targets
 
 lint-rust: check-rust-toolchain
 	cd rust-service && cargo clippy -- -D warnings

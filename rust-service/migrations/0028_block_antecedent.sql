@@ -1,8 +1,14 @@
--- The bounded window of activity immediately preceding a block start, recorded
--- once at block start and never updated. Categories only, from the closed
--- taxonomy. The window length is a versioned policy constant, not a user- or
--- config-widenable value, so the amount of pre-block context recorded cannot
--- grow without a migration and a privacy review.
+-- The bounded window of activity immediately preceding a block start, to be
+-- recorded once at block start and never updated. Categories only, from the
+-- closed taxonomy. The window length is a versioned policy constant, not a
+-- user- or config-widenable value, so the amount of pre-block context recorded
+-- cannot grow without a migration and a privacy review.
+--
+-- NOTHING WRITES THIS TABLE TODAY. `record_block_antecedent` has no caller
+-- outside tests, block start does not reach it, and every block started since
+-- this migration applied has produced no row. What ships is the table and its
+-- constraints. `0027` and `0029` carry the same disclosure for the same reason:
+-- a schema written in the present indicative is how a plan gets read as a fact.
 --
 -- `categories` is a set, not a sequence: a sequence would be more informative
 -- to the model and more identifying. Widening it to a sequence requires a fresh

@@ -90,14 +90,14 @@ public struct WorkBlockView: View {
           resultView(snapshot)
         }
       } else {
-        HStack(spacing: 8) {
-          ProgressView().controlSize(.small)
+        HStack(spacing: VelvtMetrics.spaceSM) {
+          ProgressView().controlSize(.small).tint(VelvtPalette.signal)
           Text("Loading local work block…")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(VelvtType.caption())
+            .foregroundStyle(VelvtInk.tertiaryOnInk)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
+        .padding(VelvtMetrics.cardPadding)
       }
     }
     .accessibilityElement(children: .contain)
@@ -116,17 +116,18 @@ public struct WorkBlockView: View {
   }
 
   private var startForm: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: VelvtMetrics.spaceMD) {
       Text("Start a focus session")
-        .font(.headline)
+        .velvtHeading()
 
       Text("Choose the time and kind of work you want to protect.")
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        .velvtBody(12)
         .fixedSize(horizontal: false, vertical: true)
 
       TextField("Intention (optional)", text: $intention)
         .textFieldStyle(.roundedBorder)
+        .font(VelvtType.body(12))
+        .tint(VelvtPalette.crimson)
         .onChange(of: intention) { value in
           intention = String(value.prefix(120)).replacingOccurrences(of: "\n", with: " ")
         }
@@ -134,8 +135,10 @@ public struct WorkBlockView: View {
         .accessibilityHint("Stored only on this Mac for a short time")
 
       Text("Duration")
-        .font(.caption.bold())
-        .foregroundStyle(.secondary)
+        .font(VelvtType.label())
+        .tracking(VelvtType.labelTracking)
+        .textCase(.uppercase)
+        .foregroundStyle(VelvtInk.labelOnInk)
 
       Picker("Duration", selection: $durationChoice) {
         Text("25 min").tag(WorkBlockDurationChoice.twentyFive)
@@ -144,21 +147,26 @@ public struct WorkBlockView: View {
       }
       .pickerStyle(.segmented)
       .labelsHidden()
+      .font(VelvtType.body(12))
+      .tint(VelvtPalette.crimson)
 
       if durationChoice == .custom {
         Stepper(
           "\(customMinutes) minutes", value: $customMinutes,
           in: WorkBlockDurationLimits.minutesRange, step: WorkBlockDurationLimits.minuteStep)
-          .font(.caption)
+          .font(VelvtType.caption())
+          .foregroundStyle(VelvtInk.secondaryOnInk)
           .accessibilityLabel("Custom duration")
           .accessibilityValue("\(customMinutes) minutes")
       }
 
-      HStack(alignment: .top, spacing: 12) {
-        VStack(alignment: .leading, spacing: 5) {
+      HStack(alignment: .top, spacing: VelvtMetrics.spaceMD) {
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
           Text("Work type")
-            .font(.caption.bold())
-            .foregroundStyle(.secondary)
+            .font(VelvtType.label())
+            .tracking(VelvtType.labelTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(VelvtInk.labelOnInk)
           Picker("Work type", selection: $purpose) {
             Text("General focus").tag(nil as WorkBlockPurpose?)
             ForEach(WorkBlockPurpose.allCases) { value in
@@ -166,32 +174,38 @@ public struct WorkBlockView: View {
             }
           }
           .labelsHidden()
+          .font(VelvtType.body(12))
+          .tint(VelvtPalette.crimson)
           .frame(maxWidth: .infinity)
         }
 
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
           Text("Guidance")
-            .font(.caption.bold())
-            .foregroundStyle(.secondary)
+            .font(VelvtType.label())
+            .tracking(VelvtType.labelTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(VelvtInk.labelOnInk)
           Picker("Guidance", selection: $intensity) {
             ForEach(WorkBlockIntensity.allCases) { value in
               Text(intensityLabel(value)).tag(value)
             }
           }
           .labelsHidden()
+          .font(VelvtType.body(12))
+          .tint(VelvtPalette.crimson)
           .frame(maxWidth: .infinity)
         }
       }
 
       Text(intensityExplanation)
-        .font(.caption2)
-        .foregroundStyle(.secondary)
+        .font(VelvtType.caption(10.5))
+        .foregroundStyle(VelvtInk.tertiaryOnInk)
         .fixedSize(horizontal: false, vertical: true)
 
       if let error = coordinator.commandError {
         Text(error)
-          .font(.caption)
-          .foregroundStyle(.red)
+          .font(VelvtType.caption())
+          .foregroundStyle(VelvtPalette.signal)
           .accessibilityLabel("Work block error: \(error)")
       }
 
@@ -203,12 +217,11 @@ public struct WorkBlockView: View {
           intensity: intensity
         )
       }
-      .buttonStyle(.borderedProminent)
-      .tint(Color.velvtPink)
+      .buttonStyle(VelvtPrimaryButtonStyle())
       .keyboardShortcut(.defaultAction)
       .accessibilityHint("Starts this bounded work block on the local service")
     }
-    .padding(16)
+    .padding(VelvtMetrics.cardPadding)
   }
 
   /// The in-app surface for a live drift offer.
@@ -221,84 +234,88 @@ public struct WorkBlockView: View {
   /// Copy comes from Rust verbatim. Swift does not reinterpret the evidence or
   /// offer an action outside the registry.
   private func interventionCard(_ intervention: ActiveIntervention) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text(intervention.title)
-        .font(.subheadline.bold())
+    // Paper stock: a drift offer is one sentence addressed to the person, not
+    // a panel of data about them, and the guide reserves paper for exactly
+    // that. The offer itself sits in the blush inset — the tint the guide
+    // keeps for a small experiment the reader is free to decline.
+    VelvtPaperCard(padding: VelvtMetrics.spaceMD) {
+      VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+        Text(intervention.title)
+          .velvtHeading(14, onPaper: true)
 
-      Text(intervention.body)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-
-      HStack(spacing: 8) {
-        Button("Back to work") {
-          coordinator.respondToIntervention(.acceptedAction)
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
-
-        Spacer(minLength: 0)
-
-        Button {
-          coordinator.respondToIntervention(.dismissed)
-        } label: {
-          Image(systemName: "xmark")
-        }
-        .buttonStyle(.plain)
-        .controlSize(.small)
-        .foregroundStyle(.secondary)
-        .accessibilityLabel("Dismiss this suggestion")
-      }
-
-      // Disagreement is evidence against the detector, so each kind of "you
-      // were wrong" is a first-class reply rather than a shrug. "I was
-      // focused" leads: it is the only reply that says the offer should never
-      // have fired, and a false positive Velvt cannot see is one it cannot
-      // stop making.
-      HStack(spacing: 12) {
-        Button("I was focused") {
-          coordinator.respondToIntervention(.wasFocused)
-        }
-        .accessibilityHint("Tells Velvt this suggestion was wrong — you were working")
-
-        Button("Wrong category") {
-          coordinator.respondToIntervention(.wrongClassification)
-        }
-
-        Button("Not helpful") {
-          coordinator.respondToIntervention(.notHelpful)
-        }
-
-        Spacer(minLength: 0)
-      }
-      .buttonStyle(.plain)
-      .font(.caption)
-      .foregroundStyle(.secondary)
-
-      // The one-tap explanation (D7): the sentence is Rust-authored from
-      // the stored evidence and rendered verbatim. One sentence, no input
-      // field, no reply, no thread — this affordance is the chat gate, not
-      // a chat.
-      if let explanation = coordinator.explanation {
-        Label(explanation.sentence, systemImage: "text.magnifyingglass")
-          .font(.caption2)
-          .foregroundStyle(.secondary)
+        Text(intervention.body)
+          .velvtBody(12, onPaper: true)
           .fixedSize(horizontal: false, vertical: true)
-          .accessibilityLabel("Explanation. \(explanation.sentence)")
-      } else {
-        Button(DigestFraming.explainLabel) {
-          coordinator.requestExplanation()
+
+        VelvtInsetPanel {
+          HStack(spacing: VelvtMetrics.spaceSM) {
+            Button("Back to work") {
+              coordinator.respondToIntervention(.acceptedAction)
+            }
+            .buttonStyle(VelvtPrimaryButtonStyle())
+
+            Spacer(minLength: 0)
+
+            // Declining carries the same weight of presence as accepting. A
+            // dismissal drawn as a faint glyph next to a filled button is
+            // pressure, and pressure is the one thing the guide rules out.
+            Button {
+              coordinator.respondToIntervention(.dismissed)
+            } label: {
+              Image(systemName: "xmark")
+            }
+            .buttonStyle(VelvtSecondaryButtonStyle(onPaper: true))
+            .accessibilityLabel("Dismiss this suggestion")
+          }
+        }
+
+        // Disagreement is evidence against the detector, so each kind of "you
+        // were wrong" is a first-class reply rather than a shrug. "I was
+        // focused" leads: it is the only reply that says the offer should never
+        // have fired, and a false positive Velvt cannot see is one it cannot
+        // stop making.
+        HStack(spacing: VelvtMetrics.spaceMD) {
+          Button("I was focused") {
+            coordinator.respondToIntervention(.wasFocused)
+          }
+          .accessibilityHint("Tells Velvt this suggestion was wrong — you were working")
+
+          Button("Wrong category") {
+            coordinator.respondToIntervention(.wrongClassification)
+          }
+
+          Button("Not helpful") {
+            coordinator.respondToIntervention(.notHelpful)
+          }
+
+          Spacer(minLength: 0)
         }
         .buttonStyle(.plain)
-        .controlSize(.small)
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .accessibilityHint("Shows one sentence about the evidence behind this nudge")
+        .font(VelvtType.caption())
+        .foregroundStyle(VelvtInk.secondaryOnPaper)
+
+        // The one-tap explanation (D7): the sentence is Rust-authored from
+        // the stored evidence and rendered verbatim. One sentence, no input
+        // field, no reply, no thread — this affordance is the chat gate, not
+        // a chat.
+        if let explanation = coordinator.explanation {
+          Label(explanation.sentence, systemImage: "text.magnifyingglass")
+            .font(VelvtType.caption(10.5))
+            .lineSpacing(VelvtType.bodySpacing(10.5))
+            .foregroundStyle(VelvtInk.tertiaryOnPaper)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel("Explanation. \(explanation.sentence)")
+        } else {
+          Button(DigestFraming.explainLabel) {
+            coordinator.requestExplanation()
+          }
+          .buttonStyle(.plain)
+          .font(VelvtType.caption(10.5))
+          .foregroundStyle(VelvtInk.labelOnPaper)
+          .accessibilityHint("Shows one sentence about the evidence behind this nudge")
+        }
       }
     }
-    .padding(10)
-    .background(Color.primary.opacity(0.06))
-    .clipShape(RoundedRectangle(cornerRadius: 8))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("\(intervention.title). \(intervention.body)")
   }
@@ -308,38 +325,35 @@ public struct WorkBlockView: View {
   /// the detail line shows the exact counts and versioned constants the
   /// deterministic rule evaluated, and the one button is the manual reset.
   private func demotionDisclosureCard(_ state: DemotionState) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Label(DigestFraming.demotionTitle, systemImage: "pause.circle")
-        .font(.subheadline.bold())
+    VelvtCard(padding: VelvtMetrics.spaceMD) {
+      VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+        Label(DigestFraming.demotionTitle, systemImage: "pause.circle")
+          .velvtHeading(14)
 
-      if let disclosure = state.disclosure {
-        Text(disclosure)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-
-      Text(DigestFraming.demotionDetail(state))
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityLabel("Demotion detail. \(DigestFraming.demotionDetail(state))")
-
-      HStack(spacing: 8) {
-        Button(DigestFraming.resumeLabel) {
-          coordinator.resetDemotion()
+        if let disclosure = state.disclosure {
+          Text(disclosure)
+            .velvtBody(12)
+            .fixedSize(horizontal: false, vertical: true)
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
-        .accessibilityHint("Resumes nudges; the evidence record is unchanged")
 
-        Spacer(minLength: 0)
+        Text(DigestFraming.demotionDetail(state))
+          .font(VelvtType.caption(10.5))
+          .foregroundStyle(VelvtInk.tertiaryOnInk)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel("Demotion detail. \(DigestFraming.demotionDetail(state))")
+
+        HStack(spacing: VelvtMetrics.spaceSM) {
+          Button(DigestFraming.resumeLabel) {
+            coordinator.resetDemotion()
+          }
+          .buttonStyle(VelvtPrimaryButtonStyle())
+          .accessibilityHint("Resumes nudges; the evidence record is unchanged")
+
+          Spacer(minLength: 0)
+        }
       }
     }
-    .padding(10)
-    .background(Color.primary.opacity(0.06))
-    .clipShape(RoundedRectangle(cornerRadius: 8))
-    .padding([.horizontal, .top], 16)
+    .padding([.horizontal, .top], VelvtMetrics.cardPadding)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(
       "Velvt has gone quiet. \(state.disclosure ?? DigestFraming.demotionDetail(state))")
@@ -350,43 +364,40 @@ public struct WorkBlockView: View {
   /// exactly once, and every number is the stored count verbatim.
   private func weeklyDigestCard(_ digest: WeeklyDigest) -> some View {
     WeeklyDigestCard(digest: digest, onAcknowledge: coordinator.acknowledgeWeeklyDigest)
-      .padding([.horizontal, .top], 16)
+      .padding([.horizontal, .top], VelvtMetrics.cardPadding)
   }
 
   /// The next-morning quiet-hours offer. One tap accepts; declining is a
   /// single calm action the service remembers. Copy comes from Rust
   /// verbatim, and the card never re-asks on its own.
   private func quietHoursOfferCard(_ offer: QuietHoursOffer) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Label("Quiet hours", systemImage: "moon")
-        .font(.subheadline.bold())
+    VelvtCard(padding: VelvtMetrics.spaceMD) {
+      VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+        Label("Quiet hours", systemImage: "moon")
+          .velvtHeading(14)
 
-      Text(offer.body)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+        Text(offer.body)
+          .velvtBody(12)
+          .fixedSize(horizontal: false, vertical: true)
 
-      HStack(spacing: 8) {
-        Button("Turn on quiet hours") {
-          coordinator.respondToQuietHoursOffer(accepted: true)
+        HStack(spacing: VelvtMetrics.spaceSM) {
+          Button("Turn on quiet hours") {
+            coordinator.respondToQuietHoursOffer(accepted: true)
+          }
+          .buttonStyle(VelvtPrimaryButtonStyle())
+          .accessibilityHint("Velvt holds its own notifications overnight")
+
+          Button("No thanks") {
+            coordinator.respondToQuietHoursOffer(accepted: false)
+          }
+          .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+          .accessibilityHint("Keeps everything exactly as it is")
+
+          Spacer(minLength: 0)
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
-        .accessibilityHint("Velvt holds its own notifications overnight")
-
-        Button("No thanks") {
-          coordinator.respondToQuietHoursOffer(accepted: false)
-        }
-        .controlSize(.small)
-        .accessibilityHint("Keeps everything exactly as it is")
-
-        Spacer(minLength: 0)
       }
     }
-    .padding(10)
-    .background(Color.primary.opacity(0.06))
-    .clipShape(RoundedRectangle(cornerRadius: 8))
-    .padding([.horizontal, .top], 16)
+    .padding([.horizontal, .top], VelvtMetrics.cardPadding)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Quiet hours offer. \(offer.body)")
   }
@@ -396,87 +407,99 @@ public struct WorkBlockView: View {
   /// only accept (a declared block through the existing start command) or
   /// dismiss. Declining is calm and costless.
   private func invitationCard(_ invitation: InitiationInvitation) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Label("Soft start", systemImage: "sunrise")
-        .font(.subheadline.bold())
+    VelvtCard(padding: VelvtMetrics.spaceMD) {
+      VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+        Label("Soft start", systemImage: "sunrise")
+          .velvtHeading(14)
 
-      Text(invitation.body)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+        Text(invitation.body)
+          .velvtBody(12)
+          .fixedSize(horizontal: false, vertical: true)
 
-      HStack(spacing: 8) {
-        Button("Start now") {
-          coordinator.acceptInvitation()
+        HStack(spacing: VelvtMetrics.spaceSM) {
+          Button("Start now") {
+            coordinator.acceptInvitation()
+          }
+          .buttonStyle(VelvtPrimaryButtonStyle())
+          .accessibilityHint("Starts a declared soft-start block on the local service")
+
+          Button("Not now") {
+            coordinator.dismissInvitation()
+          }
+          .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+          .accessibilityHint("Dismisses this invitation; future invitations only get rarer")
+
+          Spacer(minLength: 0)
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
-        .accessibilityHint("Starts a declared soft-start block on the local service")
-
-        Button("Not now") {
-          coordinator.dismissInvitation()
-        }
-        .controlSize(.small)
-        .accessibilityHint("Dismisses this invitation; future invitations only get rarer")
-
-        Spacer(minLength: 0)
       }
     }
-    .padding(10)
-    .background(Color.primary.opacity(0.06))
-    .clipShape(RoundedRectangle(cornerRadius: 8))
-    .padding([.horizontal, .top], 16)
+    .padding([.horizontal, .top], VelvtMetrics.cardPadding)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Soft start invitation. \(invitation.body)")
   }
 
   private func activeBlock(_ snapshot: WorkBlockSnapshot) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: VelvtMetrics.spaceMD) {
       HStack(alignment: .firstTextBaseline) {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
           Text(snapshot.phase == .paused ? "Work block paused" : "Work block active")
-            .font(.headline)
+            .velvtHeading()
           if let intention = snapshot.intention {
             Text(intention)
-              .font(.subheadline)
+              .velvtBody(12)
               .lineLimit(1)
               .truncationMode(.tail)
           }
         }
         Spacer()
         if snapshot.recoveredAfterRestart {
+          // Sage, the brand's one affirmative hue, and deliberately quiet:
+          // coming back is worth marking, never worth rewarding.
           Text("Recovered")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            .font(VelvtType.label(9.5))
+            .tracking(VelvtType.labelTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(VelvtInk.affirmative)
         }
       }
 
-      HStack(spacing: 20) {
+      HStack(spacing: VelvtMetrics.spaceLG) {
         timeColumn(
           "Elapsed", seconds: snapshot.elapsedDurationSeconds, snapshot: snapshot, countsDown: false
         )
         timeColumn(
           "Remaining", seconds: snapshot.remainingDurationSeconds, snapshot: snapshot,
           countsDown: true)
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Category").font(.caption2).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
+          Text("Category")
+            .font(VelvtType.label(9.5))
+            .tracking(VelvtType.labelTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(VelvtInk.tertiaryOnInk)
           Text(categoryLabel(snapshot.currentCategory))
-            .font(.caption.bold())
+            .font(VelvtType.bodyEmphasis(12))
+            .foregroundStyle(VelvtInk.primaryOnInk)
             .lineLimit(1)
         }
       }
 
       Text(snapshot.statusLine)
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        .velvtBody(12)
         .fixedSize(horizontal: false, vertical: true)
 
       if let intervention = snapshot.activeIntervention {
         interventionCard(intervention)
+          // The sighting is reported from the render itself, not from the
+          // offer arriving: an offer that lands while the popover is closed
+          // has not reached anyone, and saying otherwise here would recreate
+          // the exact ambiguity this records its way out of.
+          .onAppear { coordinator.reportInterventionCardSeen() }
       }
 
       if let error = coordinator.commandError {
-        Text(error).font(.caption).foregroundStyle(.red)
+        Text(error)
+          .font(VelvtType.caption())
+          .foregroundStyle(VelvtPalette.signal)
       }
 
       HStack {
@@ -489,36 +512,45 @@ public struct WorkBlockView: View {
         }
         Spacer()
         Button("End", role: .destructive) { coordinator.end() }
+          // A custom ButtonStyle discards SwiftUI's `role: .destructive`
+          // presentation, so on the secondary style End rendered identically
+          // to Pause beside it. The destructive style, applied closer to the
+          // button than the row's, restores the distinction.
+          .buttonStyle(VelvtDestructiveButtonStyle())
       }
-      .buttonStyle(.bordered)
+      // Pause and Resume are calm, equal choices, so neither takes the one
+      // crimson action on the surface: that slot belongs to the drift offer
+      // when there is one.
+      .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
     }
-    .padding(16)
+    .padding(VelvtMetrics.cardPadding)
   }
 
   private func resultView(_ snapshot: WorkBlockSnapshot) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: VelvtMetrics.spaceMD) {
       Text(resultTitle(snapshot.phase))
-        .font(.headline)
+        .velvtHeading()
       Text(snapshot.statusLine)
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        .velvtBody(12)
 
       if let result = snapshot.result {
         Text(result.observation)
-          .font(.body)
+          .font(VelvtType.body(13))
+          .lineSpacing(VelvtType.bodySpacing(13))
+          .foregroundStyle(VelvtInk.primaryOnInk)
           .fixedSize(horizontal: false, vertical: true)
 
         Text(evidenceLabel(result))
-          .font(.caption)
-          .foregroundStyle(.secondary)
+          .font(VelvtType.caption())
+          .foregroundStyle(VelvtInk.secondaryOnInk)
           .fixedSize(horizontal: false, vertical: true)
 
         // The one calm DND reconciliation line, authored in Rust: what
         // completed and what was held. Positive framing; never a late nudge.
         if let reconciliation = result.reconciliation {
           Label(reconciliation, systemImage: "moon")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(VelvtType.caption())
+            .foregroundStyle(VelvtInk.secondaryOnInk)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityLabel("Do Not Disturb summary. \(reconciliation)")
         }
@@ -533,8 +565,8 @@ public struct WorkBlockView: View {
         // — it is the existing one, on the other surface that shows elapsed.
         if let notice = coverageNotice(result) {
           Text(notice)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            .font(VelvtType.caption(10.5))
+            .foregroundStyle(VelvtInk.tertiaryOnInk)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityLabel(notice)
         }
@@ -543,19 +575,28 @@ public struct WorkBlockView: View {
         // can only go up cannot be lost, which is what a streak gets wrong:
         // coming back four times is the achievement, not going unbroken.
         // Switch-aways stay visible as the denominator, never as a score.
-        HStack(spacing: 14) {
-          VStack(alignment: .leading, spacing: 2) {
-            Text("Recoveries").font(.caption2).foregroundStyle(.secondary)
+        HStack(spacing: VelvtMetrics.spaceMD) {
+          VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
+            Text("Recoveries")
+              .font(VelvtType.label(9.5))
+              .tracking(VelvtType.labelTracking)
+              .textCase(.uppercase)
+              .foregroundStyle(VelvtInk.tertiaryOnInk)
             Text("\(result.recoveryCount)")
-              .font(.caption.bold().monospacedDigit())
+              .font(VelvtType.measurement(13).monospacedDigit())
+              .foregroundStyle(VelvtPalette.signal)
           }
           resultMetric("Longest stretch", result.longestUninterruptedSeconds)
           resultMetric("Elapsed", result.elapsedDurationSeconds)
-          VStack(alignment: .leading, spacing: 2) {
-            Text("Switch-aways").font(.caption2).foregroundStyle(.secondary)
+          VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
+            Text("Switch-aways")
+              .font(VelvtType.label(9.5))
+              .tracking(VelvtType.labelTracking)
+              .textCase(.uppercase)
+              .foregroundStyle(VelvtInk.tertiaryOnInk)
             Text("\(result.switchAwayCount)")
-              .font(.caption.monospacedDigit())
-              .foregroundStyle(.secondary)
+              .font(VelvtType.body(12).monospacedDigit())
+              .foregroundStyle(VelvtInk.tertiaryOnInk)
           }
         }
         .accessibilityElement(children: .combine)
@@ -564,15 +605,15 @@ public struct WorkBlockView: View {
         )
 
         Text(coverageLabel(result))
-          .font(.caption2)
-          .foregroundStyle(.secondary)
+          .font(VelvtType.caption(10.5))
+          .foregroundStyle(VelvtInk.tertiaryOnInk)
 
         // The gentle re-entry action, offered by Rust only on an invited
         // block that ended early. Label comes from the registry verbatim;
         // it takes the prominent slot and the default shortcut when shown.
         if result.nextAction.actionID == "soft_restart_10" {
           Button(result.nextAction.label) { coordinator.acceptRecovery() }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(VelvtPrimaryButtonStyle())
             .keyboardShortcut(.defaultAction)
             .accessibilityHint("Starts a ten-minute block on the local service")
 
@@ -591,21 +632,24 @@ public struct WorkBlockView: View {
       }
 
       if let error = coordinator.commandError {
-        Text(error).font(.caption).foregroundStyle(.red)
+        Text(error)
+          .font(VelvtType.caption())
+          .foregroundStyle(VelvtPalette.signal)
       }
     }
-    .padding(16)
+    .padding(VelvtMetrics.cardPadding)
   }
 
   @ViewBuilder
   private func planAnotherButton(prominent: Bool) -> some View {
     if prominent {
       Button("Plan another session") { plansAnotherSession = true }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(VelvtPrimaryButtonStyle())
         .keyboardShortcut(.defaultAction)
         .accessibilityHint("Choose the next session's work type and duration")
     } else {
       Button("Plan another session") { plansAnotherSession = true }
+        .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
         .accessibilityHint("Choose the next session's work type and duration")
     }
   }
@@ -639,19 +683,25 @@ public struct WorkBlockView: View {
     snapshot: WorkBlockSnapshot,
     countsDown: Bool
   ) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(title).font(.caption2).foregroundStyle(.secondary)
+    VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
+      Text(title)
+        .font(VelvtType.label(9.5))
+        .tracking(VelvtType.labelTracking)
+        .textCase(.uppercase)
+        .foregroundStyle(VelvtInk.tertiaryOnInk)
       if snapshot.phase == .active, let endsAt = snapshot.endsAt {
         if countsDown {
           Text(timerInterval: Date()...max(Date(), endsAt), countsDown: true)
-            .font(.caption.bold().monospacedDigit())
+            .font(VelvtType.measurement(15).monospacedDigit())
+            .foregroundStyle(VelvtInk.primaryOnInk)
         } else {
           Text(
             timerInterval: endsAt.addingTimeInterval(
               -TimeInterval(snapshot.plannedDurationSeconds))...Date.distantFuture,
             countsDown: false
           )
-          .font(.caption.bold().monospacedDigit())
+          .font(VelvtType.measurement(15).monospacedDigit())
+          .foregroundStyle(VelvtInk.primaryOnInk)
         }
       } else {
         // Paused, or an active block the service sent without a deadline.
@@ -660,15 +710,22 @@ public struct WorkBlockView: View {
         // 89:00. The old branching ran a count-*up* here whenever `ends_at`
         // was missing, including for the Remaining column.
         Text(DurationText.clock(seconds))
-          .font(.caption.bold().monospacedDigit())
+          .font(VelvtType.measurement(15).monospacedDigit())
+          .foregroundStyle(VelvtInk.primaryOnInk)
       }
     }
   }
 
   private func resultMetric(_ title: String, _ seconds: Int) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(title).font(.caption2).foregroundStyle(.secondary)
-      Text(DurationText.compact(seconds)).font(.caption.bold().monospacedDigit())
+    VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
+      Text(title)
+        .font(VelvtType.label(9.5))
+        .tracking(VelvtType.labelTracking)
+        .textCase(.uppercase)
+        .foregroundStyle(VelvtInk.tertiaryOnInk)
+      Text(DurationText.compact(seconds))
+        .font(VelvtType.measurement(13).monospacedDigit())
+        .foregroundStyle(VelvtInk.primaryOnInk)
     }
   }
 
@@ -772,33 +829,32 @@ public struct WeeklyDigestCard: View {
   }
 
   public var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Label(DigestFraming.digestTitle, systemImage: "doc.plaintext")
-        .font(.subheadline.bold())
+    VelvtCard(padding: VelvtMetrics.spaceMD) {
+      VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+        Label(DigestFraming.digestTitle, systemImage: "doc.plaintext")
+          .velvtHeading(14)
 
-      Text(digest.headline)
-        .font(.caption)
-        .fixedSize(horizontal: false, vertical: true)
+        Text(digest.headline)
+          .velvtBody(12)
+          .fixedSize(horizontal: false, vertical: true)
 
-      VStack(alignment: .leading, spacing: 3) {
-        row(DigestFraming.returnedLabel, digest.recoveries)
-        row(DigestFraming.completedLabel, digest.blocksCompleted)
-        row(DigestFraming.declaredLabel, digest.blocksDeclared)
-        row(DigestFraming.invitationsLabel, digest.invitationsAccepted)
-        row(DigestFraming.wrongLabel, digest.wrongInterventions)
-        row(DigestFraming.withheldLabel, digest.withheld)
-      }
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
+          row(DigestFraming.returnedLabel, digest.recoveries)
+          row(DigestFraming.completedLabel, digest.blocksCompleted)
+          row(DigestFraming.declaredLabel, digest.blocksDeclared)
+          row(DigestFraming.invitationsLabel, digest.invitationsAccepted)
+          row(DigestFraming.wrongLabel, digest.wrongInterventions)
+          row(DigestFraming.withheldLabel, digest.withheld)
+        }
 
-      HStack(spacing: 8) {
-        Button(DigestFraming.acknowledgeLabel, action: onAcknowledge)
-          .controlSize(.small)
-          .accessibilityHint("Closes this week's receipts")
-        Spacer(minLength: 0)
+        HStack(spacing: VelvtMetrics.spaceSM) {
+          Button(DigestFraming.acknowledgeLabel, action: onAcknowledge)
+            .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+            .accessibilityHint("Closes this week's receipts")
+          Spacer(minLength: 0)
+        }
       }
     }
-    .padding(10)
-    .background(Color.primary.opacity(0.06))
-    .clipShape(RoundedRectangle(cornerRadius: 8))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Weekly receipts. \(digest.headline)")
   }
@@ -806,11 +862,14 @@ public struct WeeklyDigestCard: View {
   private func row(_ label: String, _ count: Int) -> some View {
     HStack {
       Text(label)
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-      Spacer(minLength: 8)
+        .font(VelvtType.caption(11))
+        .foregroundStyle(VelvtInk.secondaryOnInk)
+      Spacer(minLength: VelvtMetrics.spaceSM)
+      // Every row is the stored count, drawn the same way. Nothing here is
+      // colour-coded better or worse than anything else.
       Text("\(count)")
-        .font(.caption2.bold().monospacedDigit())
+        .font(VelvtType.measurement(11.5).monospacedDigit())
+        .foregroundStyle(VelvtInk.primaryOnInk)
     }
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("\(label), \(count)")

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, InterventionSalience, WorkBlockIntensity,
-    WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
+    ClassificationConfidence, ClassificationStatus, CorrectionScope, InterventionSalience,
+    WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
 };
 
 #[derive(Clone, PartialEq, Eq)]
@@ -142,6 +142,12 @@ pub struct PersonalOverrideRecord {
     pub local_activity_name: Option<String>,
     pub category: String,
     pub updated_at: DateTime<Utc>,
+    /// Whether this rule covers one window or every window of an application.
+    ///
+    /// `stable_id` means different things in the two cases -- an abstraction
+    /// stable id for a window rule, the application's own key hash for an app
+    /// rule -- so a caller that removes or edits a rule has to read this first.
+    pub scope: CorrectionScope,
 }
 
 impl std::fmt::Debug for PersonalOverrideRecord {
@@ -156,6 +162,136 @@ impl std::fmt::Debug for PersonalOverrideRecord {
             )
             .field("category", &self.category)
             .field("updated_at", &self.updated_at)
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+/// One app-scoped rule as it is stored: the two identities it answers to and
+/// the answer itself.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AppScopeOverride {
+    /// Hash of the application name. The row's primary key, always present.
+    pub app_key_hash: String,
+    /// Hash of the application's bundle identifier, when one was known at the
+    /// time the rule was written. `None` for every rule taught before bundle
+    /// keying existed, and for an application macOS reported no bundle
+    /// identifier for; those rules still match by name.
+    pub bundle_key_hash: Option<String>,
+    pub category: String,
+    /// Device-local name the user typed. Never uploaded, never logged.
+    pub activity_name: Option<String>,
+    pub correction_count: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for AppScopeOverride {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AppScopeOverride")
+            .field("app_key_hash", &"[local_identifier]")
+            .field(
+                "bundle_key_hash",
+                &self.bundle_key_hash.as_ref().map(|_| "[local_identifier]"),
+            )
+            .field("category", &self.category)
+            .field(
+                "activity_name",
+                &self.activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .field("correction_count", &self.correction_count)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+/// What one application declared about itself, as read off its own bundle.
+///
+/// Facts, not conclusions: every field here is something the developer wrote
+/// into `Info.plist`, and what any of it means is decided elsewhere. An
+/// all-absent value is the pre-protocol-30 case and must classify identically.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct DeclaredAppMetadata {
+    /// Hash of the application's bundle identifier under its own domain
+    /// separator. The raw identifier is never persisted.
+    pub app_bundle_stable_id: Option<String>,
+    /// Raw `LSApplicationCategoryType`, e.g.
+    /// `public.app-category.developer-tools`. A closed vocabulary of public
+    /// Apple constants, most of which deliberately mean nothing to Velvt.
+    pub declared_app_category: Option<String>,
+    /// Declared `LSItemContentTypes`, deduplicated and sorted by the client.
+    /// Empty when the application declared none or the plist was unreadable.
+    pub document_type_ids: Vec<String>,
+}
+
+impl DeclaredAppMetadata {
+    /// The all-absent value: exactly what a client that reports no declared
+    /// metadata produces, and what every event written before protocol 30 has.
+    pub const ABSENT: Self = Self {
+        app_bundle_stable_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
+    };
+
+    /// Whether there is nothing here to record.
+    pub fn is_absent(&self) -> bool {
+        self.app_bundle_stable_id.is_none()
+            && self.declared_app_category.is_none()
+            && self.document_type_ids.is_empty()
+    }
+}
+
+impl std::fmt::Debug for DeclaredAppMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeclaredAppMetadata")
+            .field(
+                "app_bundle_stable_id",
+                &self
+                    .app_bundle_stable_id
+                    .as_ref()
+                    .map(|_| "[local_identifier]"),
+            )
+            // Redacted on the same terms as the bundle id: developer-authored
+            // metadata still identifies the application.
+            .field(
+                "declared_app_category",
+                &self.declared_app_category.as_ref().map(|_| "[redacted]"),
+            )
+            .field("document_type_count", &self.document_type_ids.len())
+            .finish()
+    }
+}
+
+/// One application Velvt observed but could not classify, ranked for triage.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UnclassifiedAppEntry {
+    /// The app-scoped key an app rule is written under.
+    pub app_stable_id: String,
+    /// The device-local name Velvt already holds for this application.
+    pub display_name: String,
+    pub seconds_observed: u64,
+    pub event_count: u64,
+    /// The bundle key hash, when the application reported a bundle identifier,
+    /// so the rule the user saves survives a rename.
+    pub app_bundle_stable_id: Option<String>,
+}
+
+impl std::fmt::Debug for UnclassifiedAppEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UnclassifiedAppEntry")
+            .field("app_stable_id", &"[local_identifier]")
+            .field("display_name", &"[redacted]")
+            .field("seconds_observed", &self.seconds_observed)
+            .field("event_count", &self.event_count)
+            .field(
+                "app_bundle_stable_id",
+                &self
+                    .app_bundle_stable_id
+                    .as_ref()
+                    .map(|_| "[local_identifier]"),
+            )
             .finish()
     }
 }
@@ -183,6 +319,9 @@ pub enum UploadBatchStatus {
     Sent,
     Failed,
     Rejected,
+    /// Retried until the ceiling and given up on. Terminal: nothing schedules
+    /// another attempt, and the age sweep collects it like a sent batch.
+    Abandoned,
 }
 
 impl UploadBatchStatus {
@@ -192,9 +331,36 @@ impl UploadBatchStatus {
             Self::Sent => "sent",
             Self::Failed => "failed",
             Self::Rejected => "rejected",
+            Self::Abandoned => "abandoned",
         }
     }
 }
+
+/// How many failed attempts a batch gets before it is abandoned.
+///
+/// Derived from observed recovery, not from the backoff arithmetic. The first
+/// value here was ninety-six — one day at the fifteen-minute backoff cap — on
+/// the reasoning that no outage a device comes back from lasts a day. The
+/// development device's own history falsifies that. `mark_sent` does not reset
+/// `attempt_count`, so a delivered batch carries the cumulative cost of every
+/// outage it sat through, and across 2,604 delivered batches the counts read
+/// 2,489 at zero, 39 at 1–9, 15 at 10–47, 60 at 48–95, and one at 116. That
+/// last batch was created 2026-08-21 14:42 UTC and delivered 2026-08-22 20:50
+/// UTC: a single ~30-hour outage the device fully recovered from. A ceiling of
+/// ninety-six would have abandoned it at attempt 96, 5.2 hours before the host
+/// returned, and its events would never have reached the account.
+///
+/// The 76 delivered batches with ten or more attempts retried at 3.53–3.87
+/// attempts an hour, which is the fifteen-minute cap as actually realized. 288
+/// is 74–82 hours at that rate — about three days — and 2.5× the longest
+/// recovery the device has made. A host that is simply gone reaches it in three
+/// days instead of one and stops generating retry traffic then.
+///
+/// The ceiling is the belt, not the braces: `delete_stale_queued_batch` bounds
+/// the queue by age on its own, so this errs long. The cost of a ceiling that is
+/// too high is three days of retry traffic; the cost of one that is too low is
+/// activity that will never reach the user's account.
+pub const UPLOAD_BATCH_ATTEMPT_CEILING: u32 = 288;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadBatch {
@@ -647,6 +813,12 @@ pub struct WorkBlockIntervention {
     /// How the offer was delivered. Recorded because an outcome cannot be read
     /// without it: an ignored quiet offer never rang.
     pub salience: InterventionSalience,
+    /// When the in-app card was first observed on screen, if it ever was.
+    ///
+    /// `None` separates "they saw it and said nothing" from "it never reached
+    /// them", which `no_response` alone cannot. Orthogonal to `outcome`: this
+    /// records delivery, never an answer.
+    pub card_seen_at: Option<DateTime<Utc>>,
 }
 
 /// The closed verdict vocabulary of the drift gate.

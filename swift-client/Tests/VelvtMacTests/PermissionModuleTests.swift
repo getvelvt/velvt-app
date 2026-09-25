@@ -408,6 +408,71 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(statuses.last, .permissionRequired)
     }
 
+    /// Revoke Accessibility and grant it again without activating the app in
+    /// between, which is what "toggle it off and on in System Settings" is.
+    /// `PermissionManager` never sees either edge — it only polls while the app
+    /// is active, and `publish` drops a granted-to-granted non-transition — so
+    /// nothing about the permission reaches this coordinator. The agent sees it
+    /// though, and stops itself. The coordinator used to keep its own
+    /// `isCollecting` flag, which survived that stop, so the next time anything
+    /// re-evaluated it read "already collecting" and never started the agent
+    /// again. Collection was over for the life of the process, silently.
+    func testCollectionRestartsAfterTheAgentStopsItselfWithNoPermissionTransition() {
+        let permissions = FakePermissionManager()
+        let collection = RecordingCollectionAgent()
+        let connection = CurrentValueSubject<ConnectionStatus, Never>(.connected)
+        let coordinator = PermissionCollectionCoordinator(
+            permissionManager: permissions,
+            collectionAgent: collection,
+            connectionStatus: connection.eraseToAnyPublisher()
+        )
+        var permissionStatuses: [PermissionStatus] = []
+        permissions.statusPublisher
+            .sink { permissionStatuses.append($0[.accessibility] ?? .unknown) }
+            .store(in: &cancellables)
+
+        coordinator.start()
+        permissions.setStatus(.granted, for: .accessibility)
+        XCTAssertEqual(collection.startCallCount, 1)
+        XCTAssertTrue(collection.isRunning)
+
+        // Revoked: the AX observer reports it and the agent stops itself.
+        collection.stopItself()
+        XCTAssertFalse(collection.isRunning)
+
+        // Granted again, with no activation in between, so the permission
+        // status this coordinator listens to never moves off `.granted`.
+        connection.send(.connected)
+
+        XCTAssertEqual(permissionStatuses, [.unknown, .granted])
+        XCTAssertEqual(collection.startCallCount, 2)
+        XCTAssertTrue(collection.isRunning)
+    }
+
+    /// `AXCollectionAgent.start()` is `throws` and used to return without
+    /// throwing when the permission was gone, so the coordinator recorded a
+    /// start against an agent that never began and reported `.collecting`. It
+    /// throws now, and the honest answer to a missing permission is the one the
+    /// recovery surface is keyed to rather than a generic fault.
+    func testAStartThatFailsOnTheMissingPermissionReportsPermissionRequired() {
+        let permissions = FakePermissionManager()
+        let collection = RecordingCollectionAgent()
+        collection.startError = .permissionRevoked
+        let coordinator = PermissionCollectionCoordinator(
+            permissionManager: permissions,
+            collectionAgent: collection
+        )
+        var statuses: [PermissionCollectionStatus] = []
+        coordinator.statusPublisher.sink { statuses.append($0) }.store(in: &cancellables)
+
+        coordinator.start()
+        permissions.setStatus(.granted, for: .accessibility)
+
+        XCTAssertEqual(collection.startCallCount, 1)
+        XCTAssertFalse(collection.isRunning)
+        XCTAssertEqual(statuses.last, .permissionRequired)
+    }
+
     func testCollectionStopsBeforeSleepAndRestartsAfterWake() {
         let permissions = FakePermissionManager()
         let collection = RecordingCollectionAgent()
@@ -1027,17 +1092,35 @@ private final class RecordingCollectionAgent: CollectionAgentProtocol {
     }
 
     private let statusSubject = CurrentValueSubject<CollectionStatus, Never>(.idle)
+    private(set) var isRunning = false
     private(set) var startCallCount = 0
     private(set) var stopCallCount = 0
+    /// Set to make `start()` fail the way `AXCollectionAgent` fails when the
+    /// permission has gone since whoever asked last checked.
+    var startError: CollectionError?
 
     func start() throws {
         startCallCount += 1
+        if let startError {
+            statusSubject.send(.permissionRevoked)
+            throw startError
+        }
+        isRunning = true
         statusSubject.send(.running)
     }
 
     func stop() {
         stopCallCount += 1
+        isRunning = false
         statusSubject.send(.idle)
+    }
+
+    /// The agent stopping itself, which is what `AXCollectionAgent` does when
+    /// the AX observer reports the permission is gone. It tells nobody, which
+    /// is the whole reason the coordinator cannot keep its own copy of this.
+    func stopItself() {
+        isRunning = false
+        statusSubject.send(.permissionRevoked)
     }
 }
 

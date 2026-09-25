@@ -36,34 +36,34 @@
   "files": {
     "SYNTHETIC-suite-a-recovery.jsonl": {
       "acceptance": "every trace's observed offer matches its expect_offer field",
-      "sha256": "03228dc3f06133abcfee9e16b5ca145087739d3572b666dccfec3f8d74f87b18",
+      "sha256": "4fc387c3f8c173dbe6e2a8287a39a5ccf0fe9840d5e61876d83e7377130d24a7",
       "traces": 17
     },
     "SYNTHETIC-suite-b-null-compressed.jsonl": {
       "acceptance": "at least one offer, in aggregate. Not scored per trace.",
-      "sha256": "881e680fb94800a32f4261403327eba3756d1b25dd6ec3ac4a252b45923aa106",
+      "sha256": "b0828c24cc3f3b4f99ed7c0f3affc588b6f0b808b9de1abe29ad07b5d315a2d9",
       "traces": 30
     },
     "SYNTHETIC-suite-b-null.jsonl": {
       "acceptance": "ZERO offers across every trace. Any offer is a false discovery.",
-      "sha256": "d3f876ee465b6db7ebecf3dc2dad657915eb6697ce7bc5735da93ea6e86c0cf2",
+      "sha256": "8f452c17307ef0298bda7b734182bfbe4c6a573ae482230ac9ab6829d78bf903",
       "traces": 100
     },
     "SYNTHETIC-suite-c-segmentation.jsonl": {
       "acceptance": "NULL: the change-point detector's false-alarm rate is reported at every threshold, not asserted to be zero. REGIME: the planted change point is recovered, with the lag reported in runs and in minutes. SPARSE: both models abstain, with a stated reason.",
-      "sha256": "e88b2181a8f2c2bf56edf5ecca5dfd7e679a0d47f1c1a8bfc3932e4d93033a2f",
+      "sha256": "a18b9fff2a86b8c98b7eaa1cef02aa50abae6981744183d376589f1fd27c7026",
       "traces": 188
     },
     "SYNTHETIC-suite-d-antecedents.jsonl": {
       "acceptance": "NULL: ZERO surfaced findings across every trace. Any surfaced finding is a false discovery and the acceptance fails. SATURATED: at least one surfaced finding in aggregate, so the NULL zero is falsifiable. PLANTED: the recovery fraction is REPORTED at every cell, not asserted. SPARSE: abstain, with a stated reason.",
-      "sha256": "aaa5bab968c08a8df9853e629107d636819bcd06a7027b849ad4414bbe8c9b22",
+      "sha256": "79e9d15695d77c085ee6767d4a50c816257647173eada5fa818245a3ca492eeb",
       "traces": 444
     }
   },
   "gate_constants": {
-    "DRIFT_MIN_ELAPSED_SECONDS": 300,
+    "DRIFT_MIN_ELAPSED_SECONDS": 180,
     "DRIFT_MIN_REMAINING_SECONDS": 120,
-    "DRIFT_MIN_SWITCHES": 4,
+    "DRIFT_MIN_SWITCHES": 3,
     "DRIFT_WINDOW_SECONDS": 600
   },
   "generator": "scripts/generate_traces.py",

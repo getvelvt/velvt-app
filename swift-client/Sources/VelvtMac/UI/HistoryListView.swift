@@ -27,10 +27,10 @@ private struct HistoryDashboardView: View {
     @State private var hoveredActivityDetail: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceMD) {
             dailyActivity
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, VelvtMetrics.spaceMD)
         .padding(.bottom, 10)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Daily insight history")
@@ -43,17 +43,18 @@ private struct HistoryDashboardView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Daily Activity")
-                        .font(.headline)
-                        .foregroundStyle(Color.velvtText)
+                        .velvtHeading(14)
                     Text(hoveredActivityDetail ?? "Privacy-safe cloud summaries")
-                        .font(.caption2)
-                        .foregroundStyle(Color.velvtMuted)
+                        .font(VelvtType.caption(10.5))
+                        .foregroundStyle(VelvtInk.tertiaryOnInk)
                         .lineLimit(1)
                 }
                 Spacer()
                 Text("7 days")
-                    .font(.caption2)
-                    .foregroundStyle(Color.velvtMuted)
+                    .font(VelvtType.label(9.5))
+                    .tracking(VelvtType.labelTracking)
+                    .textCase(.uppercase)
+                    .foregroundStyle(VelvtInk.labelOnInk)
             }
 
             VStack(spacing: 3) {
@@ -70,9 +71,13 @@ private struct HistoryDashboardView: View {
                     .padding(.top, 2)
             }
         }
-        .padding(10)
-        .background(Color.velvtPanel)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(VelvtMetrics.panelPadding)
+        .background(VelvtSurface.card)
+        .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
+                .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+        )
     }
 }
 
@@ -82,10 +87,10 @@ private struct DailyActivityRow: View {
     let onActivityHover: (String?) -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: VelvtMetrics.spaceSM) {
             Text(day.date)
-                .font(.caption.bold())
-                .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.5) : Color.velvtText)
+                .font(VelvtType.bodyEmphasis(11.5))
+                .foregroundStyle(day.isNoData ? VelvtInk.tertiaryOnInk : VelvtInk.primaryOnInk)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: 62, alignment: .leading)
@@ -95,8 +100,8 @@ private struct DailyActivityRow: View {
                 .frame(maxWidth: .infinity)
 
             Text(day.isNoData ? "No data" : day.activeTime)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(Color.velvtMuted)
+                .font(VelvtType.caption(11).monospacedDigit())
+                .foregroundStyle(VelvtInk.secondaryOnInk)
                 .frame(width: 48, alignment: .trailing)
         }
         .padding(.vertical, 3)
@@ -122,7 +127,7 @@ private struct SplitActivityBar: View {
             HStack(spacing: 2) {
                 if segments.isEmpty {
                         RoundedRectangle(cornerRadius: 3)
-                            .fill(Color.white.opacity(day.isNoData ? 0.06 : 0.12))
+                            .fill(VelvtPalette.paper.opacity(day.isNoData ? 0.06 : 0.12))
                             .help(emptyHelpText)
                             .onHover { hovering in
                                 onHover(hovering ? emptyHelpText : nil)
@@ -170,10 +175,11 @@ private struct SplitActivityBar: View {
 /// same thing on every row, so the assignment is computed once across all seven
 /// days and passed down rather than derived per row.
 enum ActivityPalette {
-    static let colors: [Color] = [
-        .velvtPink, .velvtGreen, .velvtBlue, .purple.opacity(0.85), .orange.opacity(0.85),
-    ]
-    static let unmatched = Color.white.opacity(0.25)
+    /// The brand's categorical ramp, derived once in `VelvtCategoryRamp` from the
+    /// six brand colours. Forwarded rather than restated so a category can never
+    /// pick up a hue the brand does not own — the old tail was purple and orange.
+    static let colors: [Color] = VelvtCategoryRamp.colors
+    static let unmatched = VelvtCategoryRamp.unmatched
 
     /// Ranks categories by observed time across the window, breaking ties on
     /// name so the mapping is stable between renders.
@@ -247,13 +253,13 @@ private struct FlowingLegend: View {
     var body: some View {
         HStack(spacing: 10) {
             ForEach(entries, id: \.category) { entry in
-                HStack(spacing: 4) {
+                HStack(spacing: VelvtMetrics.spaceXS) {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(entry.color)
                         .frame(width: 8, height: 8)
                     Text(categoryLabel(entry.category))
-                        .font(.caption2)
-                        .foregroundStyle(Color.velvtMuted)
+                        .font(VelvtType.caption(10.5))
+                        .foregroundStyle(VelvtInk.secondaryOnInk)
                         .lineLimit(1)
                 }
             }
@@ -287,15 +293,15 @@ struct HistoryDayRowView: View {
     var body: some View {
         HStack(spacing: 0) {
             Text(day.date)
-                .font(.caption)
-                .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.4) : Color.velvtMuted)
+                .font(VelvtType.caption(11.5))
+                .foregroundStyle(day.isNoData ? VelvtInk.tertiaryOnInk : VelvtInk.secondaryOnInk)
                 .frame(width: 52, alignment: .leading)
 
             Spacer()
 
             Text(day.activeTime)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.35) : Color.velvtMuted)
+                .font(VelvtType.caption(11).monospacedDigit())
+                .foregroundStyle(day.isNoData ? VelvtInk.tertiaryOnInk : VelvtInk.secondaryOnInk)
                 .frame(width: 52, alignment: .trailing)
 
             scoreCell(day.focusScore)
@@ -324,13 +330,13 @@ struct HistoryDayRowView: View {
         Group {
             if let score {
                 Text("\(score)")
-                    .foregroundStyle(Color.velvtMuted)
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
             } else {
                 Text("—")
-                    .foregroundStyle(Color.velvtMuted.opacity(0.35))
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
             }
         }
-        .font(.system(.caption2, design: .monospaced))
+        .font(VelvtType.caption(11).monospacedDigit())
         .frame(width: 34, alignment: .trailing)
     }
 }
@@ -343,19 +349,20 @@ struct HistorySkeletonView: View {
             ForEach(0 ..< 7, id: \.self) { _ in
                 HStack(spacing: 0) {
                     Text("Mon 9")
-                        .font(.caption)
+                        .font(VelvtType.caption(11.5))
                         .frame(width: 52, alignment: .leading)
                     Spacer()
                     Text("2h 15m")
-                        .font(.system(.caption2, design: .monospaced))
+                        .font(VelvtType.caption(11).monospacedDigit())
                         .frame(width: 52, alignment: .trailing)
                     Text("72")
-                        .font(.system(.caption2, design: .monospaced))
+                        .font(VelvtType.caption(11).monospacedDigit())
                         .frame(width: 34, alignment: .trailing)
                     Text("18")
-                        .font(.system(.caption2, design: .monospaced))
+                        .font(VelvtType.caption(11).monospacedDigit())
                         .frame(width: 34, alignment: .trailing)
                 }
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
                 .padding(.vertical, 5)
                 .padding(.horizontal, 14)
                 .shimmering()
@@ -376,6 +383,7 @@ struct HistoryListView_Previews: PreviewProvider {
             HistoryListView(viewModel: HistoryViewModel())
                 .previewDisplayName("Skeleton")
         }
+        .background(VelvtSurface.ground)
         .preferredColorScheme(.dark)
     }
 

@@ -38,6 +38,28 @@ impl BatchAssembler {
     }
 
     pub fn push(&mut self, event: BatchEventPayload, now: DateTime<Utc>) -> Option<BatchPayload> {
+        // A taxonomy upgrade closes the open batch. `category_taxonomy_version`
+        // is one field for the whole batch, so a batch straddling the upgrade
+        // would label some of its events with a version they were not
+        // classified under. Carrying the version per event is not the
+        // alternative: the per-event DTO is frozen and nothing new crosses the
+        // wire, so grouping here is the only honest option.
+        if self
+            .events
+            .first()
+            .is_some_and(|open| open.taxonomy_version != event.taxonomy_version)
+        {
+            let closed = self.take_batch();
+            // `get_or_insert`, not an assignment: `take_batch` clears
+            // `opened_at` only when it drained the buffer, and a remainder keeps
+            // the age it already had rather than being handed a fresh window.
+            self.opened_at.get_or_insert(now);
+            self.events.push(event);
+            // Non-`None`: the buffer held at least the event we just compared
+            // against. The new event stays open and leaves on the next push or
+            // flush, which is the same treatment any single buffered event gets.
+            return closed;
+        }
         self.opened_at.get_or_insert(now);
         self.events.push(event);
         (self.events.len() >= self.count_threshold)
@@ -74,17 +96,34 @@ impl BatchAssembler {
         };
     }
 
+    /// Drains the buffer into one batch, or — when the buffer holds more than
+    /// one taxonomy version — into the batch for the oldest event's version,
+    /// leaving the rest buffered.
+    ///
+    /// `push` closes a batch at a version boundary, so the buffer is normally
+    /// homogeneous already and this splits nothing. `requeue` is the path that
+    /// can mix versions again: a batch that failed to persist is prepended to
+    /// whatever has arrived since, and across an upgrade that is two versions in
+    /// one buffer. Splitting here rather than trusting the caller means the
+    /// batch's `category_taxonomy_version` describes every event in it no matter
+    /// how the buffer was filled.
+    ///
+    /// A remainder keeps the original `opened_at`, so it is already past the age
+    /// threshold and leaves on the next `flush_due` rather than waiting for a
+    /// fresh window. On the drain-everything paths (`flush_sleep`,
+    /// `flush_shutdown`) a remainder stays unbatched, which is the state
+    /// `recover_unbatched` exists for: retention spares unbatched eligible rows
+    /// and the next start re-ingests them.
     fn take_batch(&mut self) -> Option<BatchPayload> {
-        if self.events.is_empty() {
-            return None;
+        let taxonomy = self.events.first()?.taxonomy_version.clone();
+        let (events, remainder): (Vec<_>, Vec<_>) = std::mem::take(&mut self.events)
+            .into_iter()
+            .partition(|event| event.taxonomy_version == taxonomy);
+        if remainder.is_empty() {
+            self.opened_at = None;
         }
-        let events = std::mem::take(&mut self.events);
-        self.opened_at = None;
+        self.events = remainder;
         let batch_id = deterministic_batch_id(&self.device_id, &events);
-        let taxonomy = events
-            .first()
-            .map(|event| event.taxonomy_version.clone())
-            .unwrap_or_default();
         let mut supported_abstraction_types = Vec::new();
         for event in &events {
             if !supported_abstraction_types.contains(&event.label) {
@@ -155,5 +194,58 @@ mod tests {
             batch.supported_abstraction_types,
             vec!["document:inferred".to_owned(), "video:inferred".to_owned()]
         );
+    }
+
+    /// A batch straddling a taxonomy upgrade would label one version's events
+    /// with the other version's name, and nothing downstream could tell.
+    #[test]
+    fn a_taxonomy_upgrade_closes_the_open_batch() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let mut assembler = BatchAssembler::new("device-1", 8, Duration::from_secs(60));
+
+        assert!(assembler
+            .push(event("event-1", "document:docs", "FOCUS_WORK"), now)
+            .is_none());
+        let mut upgraded = event("event-2", "document:docs", "FOCUS_WORK");
+        upgraded.taxonomy_version = "mvp-2".into();
+
+        let closed = assembler
+            .push(upgraded, now)
+            .expect("the version change closes the batch below the count threshold");
+        assert_eq!(closed.category_taxonomy_version, "mvp-1");
+        assert_eq!(closed.events.len(), 1);
+
+        let remaining = assembler
+            .flush_shutdown()
+            .expect("the upgraded event is still buffered");
+        assert_eq!(remaining.category_taxonomy_version, "mvp-2");
+        assert_eq!(remaining.events.len(), 1);
+    }
+
+    /// `requeue` can mix versions even when `push` never does, so the split has
+    /// to hold at the point the batch is minted too.
+    #[test]
+    fn a_requeued_batch_does_not_relabel_events_of_another_version() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let mut assembler = BatchAssembler::new("device-1", 8, Duration::from_secs(60));
+
+        assembler.push(event("event-1", "document:docs", "FOCUS_WORK"), now);
+        let failed = assembler
+            .flush_shutdown()
+            .expect("one buffered event makes a batch");
+
+        let mut upgraded = event("event-2", "document:docs", "FOCUS_WORK");
+        upgraded.taxonomy_version = "mvp-2".into();
+        assembler.push(upgraded, now);
+        assembler.requeue(failed);
+
+        let first = assembler.flush_shutdown().expect("the older version first");
+        assert_eq!(first.category_taxonomy_version, "mvp-1");
+        assert_eq!(first.events.len(), 1);
+        let second = assembler
+            .flush_shutdown()
+            .expect("the remainder is still buffered, not discarded");
+        assert_eq!(second.category_taxonomy_version, "mvp-2");
+        assert_eq!(second.events.len(), 1);
     }
 }

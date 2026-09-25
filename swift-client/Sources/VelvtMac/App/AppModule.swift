@@ -1,7 +1,9 @@
 import AppKit
 import Combine
+import Darwin
 import SwiftUI
 import UserNotifications
+import os
 
 /// App module - owns application lifecycle and menu bar setup.
 /// Does NOT own event capture, IPC processing, abstraction, cloud calls, or
@@ -197,6 +199,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             restartLocalService: { [weak serviceProcessLauncher] in
                 serviceProcessLauncher?.restart()
+                // A restarted helper does not bring the socket back on its own.
+                // A versionMismatch handshake leaves the client disconnected
+                // with no reconnect armed, and this is the only other place in
+                // the app that re-dials, so it has to do both.
+                Task.detached { try? await client.connect() }
             },
             replayOnboarding: { [weak self] in
                 self?.onboardingWindowController?.presentReplay()
@@ -245,19 +252,95 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 metricsStore.setAuthenticated(Self.isLoggedIn(state))
             }
 
+        // A version mismatch on the very first dial is the upgrade path, not an
+        // exotic failure: a helper from the previous install is still holding
+        // the socket and still speaking the protocol version it shipped with.
+        // Recovery is automatic and silent when this app can positively
+        // identify that helper as its own; the alert is the fallback for when
+        // it cannot.
+        let reaper = OrphanedHelperReaper.live(
+            helperExecutablePath: serviceProcessLauncher.bundledServiceURL()?.path
+        )
+        let launcher = serviceProcessLauncher
         Task.detached {
-            do {
-                try await client.connect()
-            } catch let IPCError.versionMismatch(expected, got) {
+            await AppDelegate.connectRetryingVersionMismatch(
+                client,
+                reclaimOrphanedHelper: {
+                    guard await reaper.reclaimSocket() else { return false }
+                    // The socket is free, and this app's own helper exited on
+                    // `duplicate_service_instance` when it found it taken.
+                    // Nothing else relaunches it, so the recovery is only half
+                    // done until it is asked to start again.
+                    await MainActor.run { launcher.restart() }
+                    await reaper.waitForRelaunchedHelper()
+                    return true
+                }
+            ) { expected, got in
                 await MainActor.run {
                     let alert = NSAlert()
-                    alert.alertStyle = .critical
-                    alert.messageText = "Velvt update required"
-                    alert.informativeText = "IPC protocol version \(got) is incompatible with required version \(expected)."
-                    alert.runModal()
+                    alert.alertStyle = .warning
+                    alert.messageText = "Velvt can't reach its background service"
+                    alert.informativeText = """
+                        An older Velvt background service is still holding the \
+                        connection on this Mac. It speaks protocol version \(got); \
+                        this version of Velvt needs version \(expected).
+
+                        Retry gives it another moment to exit. Restarting the Mac \
+                        clears it for good.
+                        """
+                    alert.addButton(withTitle: "Retry")
+                    alert.addButton(withTitle: "Close")
+                    return alert.runModal() == .alertFirstButtonReturn
                 }
+            }
+        }
+    }
+
+    /// How many times a version mismatch may be answered by reclaiming the
+    /// socket before the person is told instead.
+    ///
+    /// A retry loop that can never succeed is the deadlock this exists to end,
+    /// so the automatic path is deliberately finite: one reclaim covers the
+    /// single orphan this can actually happen with, the second covers a helper
+    /// that was mid-relaunch, and after that the honest answer is the alert.
+    nonisolated static let maximumOrphanReclaimAttempts = 2
+
+    /// Dials the IPC socket, reclaiming it from an orphaned helper when that is
+    /// what is in the way, and re-dialling for as long as the person asks it to.
+    ///
+    /// `versionMismatch` is the one `IPCError` the client does not arm a
+    /// reconnect for, and `connect()` has a single call site, so without an
+    /// explicit re-dial the alert is where the app's IPC life ends until it is
+    /// relaunched. The cause is an orphaned helper from an earlier install or a
+    /// crashed prior run still holding the socket and answering the handshake
+    /// with its own protocol version — which no amount of re-dialling can
+    /// change. Retrying only helps once that process is gone, so this asks for
+    /// it to go, rather than asking the person to find it in a terminal.
+    ///
+    /// Transport failures are still left alone: the client arms its own backoff
+    /// reconnect for those, which is what carries a freshly relaunched helper
+    /// that has not finished binding the socket yet.
+    nonisolated static func connectRetryingVersionMismatch(
+        _ client: any IPCClientProtocol,
+        reclaimOrphanedHelper: @Sendable () async -> Bool = { false },
+        presentVersionMismatch: (_ expected: Int, _ got: Int) async -> Bool
+    ) async {
+        var reclaimAttempts = 0
+        while true {
+            do {
+                try await client.connect()
+                return
+            } catch let IPCError.versionMismatch(expected, got) {
+                if reclaimAttempts < maximumOrphanReclaimAttempts,
+                    await reclaimOrphanedHelper()
+                {
+                    reclaimAttempts += 1
+                    continue
+                }
+                guard await presentVersionMismatch(expected, got) else { return }
             } catch {
                 // The IPC client owns retry behavior for transport failures.
+                return
             }
         }
     }
@@ -299,6 +382,187 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             clientVersion: config.clientVersion
         )
     }
+}
+
+// MARK: - Orphaned helper recovery
+
+/// One running process, reduced to the four facts that decide whether this app
+/// is responsible for it.
+///
+/// Swift gathers facts; the rule below is the only thing that judges them, and
+/// it judges nothing else. None of this leaves the device: it is read from the
+/// local process table to answer one local question.
+struct RunningProcessFacts: Equatable, Sendable {
+    let processIdentifier: pid_t
+    let parentProcessIdentifier: pid_t
+    /// Fully resolved executable path, as `proc_pidpath` reports it.
+    let executablePath: String
+    let userIdentifier: uid_t
+}
+
+/// Decides which processes this app may terminate. Pure, and deliberately
+/// narrow.
+///
+/// Terminating a process is a real action taken on someone's machine, so the
+/// identification is positive on every axis and never a name match: a file
+/// called `velvt-service` in a Downloads folder, a copy of the helper from a
+/// *different* install, a helper belonging to another user account, and the
+/// helper this very app launched are all excluded by construction. What is left
+/// is a process running the exact executable inside this app's own bundle, as
+/// this user, that this app did not start — an orphan of an earlier run, which
+/// is the one thing holding the socket shut.
+///
+/// The deliberate consequence: an orphan launched from a bundle at a *different*
+/// path — the app was dragged to a new location between runs — is not matched,
+/// and the person gets the alert instead. Declining to act on a process this app
+/// cannot positively claim is the correct trade, not a gap to widen.
+enum OrphanedHelperRule {
+    static func terminableOrphans(
+        in processes: [RunningProcessFacts],
+        helperExecutablePath: String,
+        currentUser: uid_t,
+        ownProcessIdentifier: pid_t
+    ) -> [pid_t] {
+        guard !helperExecutablePath.isEmpty else { return [] }
+        return processes
+            .filter { process in
+                process.executablePath == helperExecutablePath
+                    && process.userIdentifier == currentUser
+                    && process.processIdentifier > 1
+                    && process.processIdentifier != ownProcessIdentifier
+                    // The helper this run started is a direct child of this
+                    // process. It is never the orphan, and killing it would
+                    // turn a recoverable state into a broken one.
+                    && process.parentProcessIdentifier != ownProcessIdentifier
+            }
+            .map(\.processIdentifier)
+    }
+}
+
+/// Frees the IPC socket by asking an orphaned Velvt helper to quit.
+///
+/// Every side effect is injected so the rule and the sequence can be tested
+/// without signalling anything real.
+struct OrphanedHelperReaper: Sendable {
+    /// The local process table, as facts.
+    var runningProcesses: @Sendable () -> [RunningProcessFacts]
+    /// The resolved path of the helper inside this app's own bundle, or nil
+    /// when this build has no bundled helper (a `swift run` development run),
+    /// in which case there is nothing this app is responsible for.
+    var helperExecutablePath: @Sendable () -> String?
+    var currentUser: @Sendable () -> uid_t
+    var ownProcessIdentifier: @Sendable () -> pid_t
+    /// `SIGTERM`, so the helper closes its database and socket on the way out.
+    /// Returns whether the signal was delivered.
+    var requestTermination: @Sendable (pid_t) -> Bool
+    var isRunning: @Sendable (pid_t) -> Bool
+    /// One polling interval while waiting for a signalled helper to exit.
+    var waitOneInterval: @Sendable () async -> Void
+    /// Long enough for a freshly relaunched helper to bind the socket. Only a
+    /// courtesy: a dial that still lands early fails as a transport error, for
+    /// which the IPC client arms its own backoff reconnect.
+    var waitForRelaunch: @Sendable () async -> Void
+
+    /// Returns whether the socket can now be expected to be free, meaning at
+    /// least one orphan was found, signalled, and observed to exit.
+    func reclaimSocket(pollAttempts: Int = 20) async -> Bool {
+        guard let helperPath = helperExecutablePath() else { return false }
+        let orphans = OrphanedHelperRule.terminableOrphans(
+            in: runningProcesses(),
+            helperExecutablePath: helperPath,
+            currentUser: currentUser(),
+            ownProcessIdentifier: ownProcessIdentifier()
+        )
+        guard !orphans.isEmpty else {
+            OrphanedHelperLog.shared.info("No orphaned velvt-service helper owned by this app")
+            return false
+        }
+        let signalled = orphans.filter { requestTermination($0) }
+        guard !signalled.isEmpty else {
+            OrphanedHelperLog.shared.error("Could not signal orphaned velvt-service helper")
+            return false
+        }
+        OrphanedHelperLog.shared.info(
+            "Asked \(signalled.count, privacy: .public) orphaned velvt-service helper(s) to quit"
+        )
+        for _ in 0..<pollAttempts {
+            if signalled.allSatisfy({ !isRunning($0) }) {
+                return true
+            }
+            await waitOneInterval()
+        }
+        let gone = signalled.allSatisfy { !isRunning($0) }
+        if !gone {
+            OrphanedHelperLog.shared.error("Orphaned velvt-service helper did not exit")
+        }
+        return gone
+    }
+
+    func waitForRelaunchedHelper() async {
+        await waitForRelaunch()
+    }
+
+    static func live(helperExecutablePath: String?) -> OrphanedHelperReaper {
+        // Resolved once, and compared as an exact string afterwards.
+        // `proc_pidpath` reports resolved paths, so the app side has to be
+        // resolved too or a `/tmp` -> `/private/tmp` style symlink would make
+        // the same executable look like a different one.
+        let resolvedPath = helperExecutablePath.map {
+            URL(fileURLWithPath: $0).resolvingSymlinksInPath().path
+        }
+        return OrphanedHelperReaper(
+            runningProcesses: { Self.localProcessTable() },
+            helperExecutablePath: { resolvedPath },
+            currentUser: { geteuid() },
+            ownProcessIdentifier: { getpid() },
+            requestTermination: { kill($0, SIGTERM) == 0 },
+            isRunning: { kill($0, 0) == 0 },
+            waitOneInterval: { try? await Task.sleep(nanoseconds: 100_000_000) },
+            waitForRelaunch: { try? await Task.sleep(nanoseconds: 2_000_000_000) }
+        )
+    }
+
+    /// Reads pid, parent pid, executable path and owning user for every process
+    /// this user can see. Nothing is recorded, uploaded or kept: the list is
+    /// filtered by `OrphanedHelperRule` and discarded.
+    private static func localProcessTable() -> [RunningProcessFacts] {
+        let pathCapacity = 4 * Int(PATH_MAX)
+        let byteCount = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
+        guard byteCount > 0 else { return [] }
+        // Headroom: processes can appear between sizing and reading.
+        let capacity = Int(byteCount) / MemoryLayout<pid_t>.size + 64
+        var pids = [pid_t](repeating: 0, count: capacity)
+        let written = proc_listpids(
+            UInt32(PROC_ALL_PIDS),
+            0,
+            &pids,
+            Int32(capacity * MemoryLayout<pid_t>.size)
+        )
+        guard written > 0 else { return [] }
+        var facts: [RunningProcessFacts] = []
+        for pid in pids.prefix(Int(written) / MemoryLayout<pid_t>.size) where pid > 0 {
+            var pathBuffer = [CChar](repeating: 0, count: pathCapacity)
+            guard proc_pidpath(pid, &pathBuffer, UInt32(pathCapacity)) > 0 else { continue }
+            var info = proc_bsdinfo()
+            let infoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, infoSize) == infoSize else {
+                continue
+            }
+            facts.append(
+                RunningProcessFacts(
+                    processIdentifier: pid,
+                    parentProcessIdentifier: pid_t(bitPattern: info.pbi_ppid),
+                    executablePath: String(cString: pathBuffer),
+                    userIdentifier: info.pbi_uid
+                )
+            )
+        }
+        return facts
+    }
+}
+
+enum OrphanedHelperLog {
+    static let shared = Logger(subsystem: "com.velvt.mac", category: "OrphanedHelperReaper")
 }
 
 private final class UnavailableIPCClient: IPCClientProtocol {

@@ -1,16 +1,25 @@
 use super::{
     AbstractionMapRepo, AbstractionMapping, AntecedentFinding, AntecedentFindingRepo,
-    AntecedentFindingState, AntecedentRetractionReason, BatchEvent, BehaviorRepo, BlockAntecedent,
-    CompletedBlockDwellSpan, DayType, DemotionStateRecord, FocusRepo, FocusTransition, GateVerdict,
-    HistoryCacheEntry, HistoryCacheRepo, InitiationInvitationOutcome, InitiationInvitationRecord,
-    InitiationRepo, InsightCacheEntry, InsightCacheRepo, InterventionDecision,
-    InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch,
-    OutOfBlockRun, PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState,
-    RawEventEntry, RawEventRepo, ReceiptsRepo, UploadBatch, UploadBatchRepo, UploadBatchStatus,
-    UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection,
-    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
-    WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
+    AntecedentFindingState, AntecedentRetractionReason, AppScopeOverride, BatchEvent, BehaviorRepo,
+    BlockAntecedent, CompletedBlockDwellSpan, DayType, DeclaredAppMetadata, DemotionStateRecord,
+    FocusRepo, FocusTransition, GateVerdict, HistoryCacheEntry, HistoryCacheRepo,
+    InitiationInvitationOutcome, InitiationInvitationRecord, InitiationRepo, InsightCacheEntry,
+    InsightCacheRepo, InterventionDecision, InterventionDemotionState, LocalDisplayAggregate,
+    LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord,
+    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, RawEventRepo, ReceiptsRepo,
+    UnclassifiedAppEntry, UploadBatch, UploadBatchRepo, UploadBatchStatus, UploadQueueDiagnostics,
+    VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection, WorkBlockCompletion,
+    WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin,
+    WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
 };
+// Named through the defining module because `persistence::mod` re-exports types
+// rather than constants; the retry ceiling is policy that belongs beside the
+// status vocabulary it extends.
+use super::models::UPLOAD_BATCH_ATTEMPT_CEILING;
+// Same reason: the triage bounds are policy, declared once beside the trait that
+// documents them.
+use super::traits::{TRIAGE_MAX_ENTRIES, TRIAGE_MAX_LOOKBACK_DAYS, TRIAGE_MIN_SECONDS};
+use crate::abstraction::EmbeddingSalt;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
@@ -19,8 +28,8 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, InterventionSalience, WorkBlockIntensity,
-    WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
+    ClassificationConfidence, ClassificationStatus, CorrectionScope, InterventionSalience,
+    WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
 };
 
 struct Migration {
@@ -47,6 +56,15 @@ pub enum PersistenceError {
     InvalidJson(#[from] serde_json::Error),
     #[error("SQLite persistence contains an invalid local semantic embedding")]
     InvalidSemanticEmbedding,
+    #[error("SQLite persistence contains an invalid embedding salt")]
+    InvalidEmbeddingSalt,
+    /// An app-scoped rule was asked for over an application identity whose own
+    /// events say generalizing to the whole application is not meaningful -- a
+    /// browser, where one tab says nothing about the next. Refused here rather
+    /// than trusted from the caller: the evidence lives in the event rows, so
+    /// this is the only layer that can see it (`app_identity_for_event`).
+    #[error("SQLite persistence refused an app-scoped rule for an ineligible application")]
+    AppScopeIneligible,
 }
 
 #[derive(Clone)]
@@ -284,6 +302,274 @@ impl SqlitePersistence {
         .map(|n| n as usize)
         .map_err(Into::into)
     }
+
+    /// Sets `updated_at` for the named `semantic_embedding_cache` rows.
+    /// Used in retention integration tests to simulate an entry that has not
+    /// been re-observed inside the window; `record_embedding` refreshes the
+    /// column on every write, so a test cannot age a row by writing to it.
+    pub fn set_semantic_embedding_updated_at_for_test(
+        &self,
+        key_hashes: &[String],
+        unix_ts: i64,
+    ) -> Result<usize, PersistenceError> {
+        let conn = self.connection()?;
+        let mut updated = 0;
+        for key_hash in key_hashes {
+            updated += conn.execute(
+                "UPDATE semantic_embedding_cache SET updated_at = ?2 WHERE key_hash = ?1",
+                params![key_hash, unix_ts],
+            )?;
+        }
+        Ok(updated)
+    }
+}
+
+/// Every persisted personal rule, window-scoped and app-scoped, in one shape.
+///
+/// The history listed window rules only until protocol 30, which made an
+/// app-scoped rule invisible and unremovable: the user could neither see what
+/// they had taught nor undo it, and removing the window rule left the engine
+/// falling through into the surviving app rule and answering exactly as before.
+/// Both rungs are read here so one list can show, edit and remove either, with
+/// `scope` saying which it is -- the `stable_id` column means an abstraction
+/// stable id for a window rule and the application's own key hash for an app
+/// rule, so a caller must read the scope before acting on the id.
+///
+/// The app rung carries no label of its own: `personal_app_override` holds a
+/// category, a typed name and two hashes, and the raw application name is gone
+/// by then. Both text columns therefore come from the most recent event of that
+/// application, which is also the only place a local name for it exists.
+const RULE_SOURCE: &str = "
+    SELECT 'window' AS scope,
+           abstraction_map.stable_id AS stable_id,
+           abstraction_map.label AS label,
+           COALESCE(personal_override.activity_name, abstraction_map.display_name) AS local_label,
+           personal_override.category AS category,
+           personal_override.updated_at AS updated_at
+      FROM personal_override
+      JOIN abstraction_map ON abstraction_map.key_hash = personal_override.key_hash
+    UNION ALL
+    SELECT 'app' AS scope,
+           rule.app_key_hash AS stable_id,
+           COALESCE(
+               (SELECT recent.label FROM raw_event_buffer recent
+                 WHERE recent.app_stable_id = rule.app_key_hash
+                 ORDER BY recent.occurred_at DESC LIMIT 1),
+               -- No event of this application survives the retention window.
+               -- A plain word rather than a label derived from the category:
+               -- mirroring `override_label_for_category` into SQL would put a
+               -- second copy of that mapping a migration away from drifting.
+               'application'
+           ) AS label,
+           COALESCE(
+               rule.activity_name,
+               (SELECT COALESCE(named.local_display_label, named.local_name_suggestion)
+                  FROM raw_event_buffer named
+                 WHERE named.app_stable_id = rule.app_key_hash
+                   AND COALESCE(named.local_display_label, named.local_name_suggestion)
+                       IS NOT NULL
+                 ORDER BY named.occurred_at DESC LIMIT 1)
+           ) AS local_label,
+           rule.category AS category,
+           rule.updated_at AS updated_at
+      FROM personal_app_override rule
+     -- Only the app rules that are a rule in their own right. A correction has
+     -- written BOTH rungs since 0017, so listing this table unfiltered showed
+     -- every past correction twice -- one action, two rows -- for every existing
+     -- user, the moment the app rung reached this list. `app_only` (0035) records
+     -- which it is at write time, because nothing can recover the pairing
+     -- afterwards: the rungs are keyed in different hash domains and the only
+     -- join between them, `raw_event_buffer`, holds 14 days. A paired row is
+     -- represented here by its window rule, which is also the row whose removal
+     -- takes both rungs with it, so what the user sees is what they can undo. A
+     -- rule taught through triage has no window rung at all and appears.
+     WHERE rule.app_only = 1
+";
+
+/// The one search predicate both the count and the page apply. `?1` is the
+/// trimmed query or NULL, and NULL means "everything" rather than "nothing".
+const RULE_FILTER: &str = "
+    ?1 IS NULL
+       OR instr(lower(COALESCE(local_label, '')), lower(?1)) > 0
+       OR instr(lower(label), lower(?1)) > 0
+       OR instr(lower(category), lower(?1)) > 0
+";
+
+fn app_scope_override_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppScopeOverride> {
+    Ok(AppScopeOverride {
+        app_key_hash: row.get(0)?,
+        bundle_key_hash: row.get(1)?,
+        category: row.get(2)?,
+        activity_name: row.get(3)?,
+        correction_count: row.get(4)?,
+        updated_at: timestamp_from_row(row, 5)?,
+    })
+}
+
+/// Writes one app-scope rule, converging on the bundle identity.
+///
+/// The one place this table is written, because the two keys on a row are
+/// constrained in two different ways and a single upsert cannot honour both:
+/// `app_key_hash` is the primary key and the conflict target, while
+/// `bundle_key_hash` carries a partial UNIQUE index (0034) that no upsert can
+/// target. An application rename is exactly a collision on the second one -- the
+/// same bundle arriving under a new name hash -- so the upsert alone aborted with
+/// SQLITE_CONSTRAINT on the case bundle keying exists to solve.
+///
+/// So the stale alias is folded first. The bundle identifier is the identity: a
+/// row claiming this bundle under a different name is this same rule under the
+/// name the application used to report, not a second rule. It is re-keyed to the
+/// current name, which keeps `correction_count` -- how often the user had to
+/// repeat themselves survives a rename -- or deleted when a rule under the new
+/// name already exists and the re-key would collide with that in turn. After
+/// either, at most one row claims the bundle and it is the row the upsert is
+/// about to touch.
+///
+/// `app_only` is raised, never lowered (`MAX`, migration 0035): a rule taught
+/// about the application itself keeps its own place in the correction history
+/// even when a later window correction touches the same row, because those are
+/// two things the user said.
+fn upsert_app_scope_rule(
+    connection: &Connection,
+    app_key_hash: &str,
+    bundle_key_hash: Option<&str>,
+    category: &str,
+    local_activity_name: Option<&str>,
+    app_only: bool,
+) -> rusqlite::Result<()> {
+    if let Some(bundle_key_hash) = bundle_key_hash {
+        connection.execute(
+            "UPDATE personal_app_override
+                SET app_key_hash = ?2, updated_at = unixepoch()
+              WHERE bundle_key_hash = ?1
+                AND app_key_hash <> ?2
+                AND NOT EXISTS (
+                    SELECT 1 FROM personal_app_override existing
+                     WHERE existing.app_key_hash = ?2
+                )",
+            params![bundle_key_hash, app_key_hash],
+        )?;
+        // Only reachable when the re-key above could not run because a rule under
+        // the new name already existed -- a rule taught while the client reported
+        // no bundle identifier, say. Two rows may not claim one bundle, and the
+        // row being written is the one that holds the current name, so the older
+        // alias goes; the category it held is about to be restated anyway.
+        connection.execute(
+            "DELETE FROM personal_app_override
+              WHERE bundle_key_hash = ?1 AND app_key_hash <> ?2",
+            params![bundle_key_hash, app_key_hash],
+        )?;
+    }
+    connection.execute(
+        "INSERT INTO personal_app_override(
+             app_key_hash, bundle_key_hash, category, activity_name, app_only
+         ) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(app_key_hash) DO UPDATE SET
+            bundle_key_hash =
+                COALESCE(excluded.bundle_key_hash, personal_app_override.bundle_key_hash),
+            category = excluded.category,
+            activity_name =
+                COALESCE(excluded.activity_name, personal_app_override.activity_name),
+            app_only = MAX(personal_app_override.app_only, excluded.app_only),
+            correction_count = personal_app_override.correction_count + 1,
+            updated_at = unixepoch()",
+        params![
+            app_key_hash,
+            bundle_key_hash,
+            category,
+            local_activity_name,
+            i64::from(app_only)
+        ],
+    )?;
+    Ok(())
+}
+
+/// The application identity an event was recorded under, when that event can be
+/// generalized to the whole application at all.
+///
+/// Sourced from the event rather than from a caller, because the raw application
+/// name is discarded after abstraction: the event row is the only place the app
+/// identity survives. `app_scope_eligible = 0` -- a browser window that carried a
+/// site context -- yields `None`, which is what keeps one tab from recolouring an
+/// entire browsing session.
+///
+/// The application behind the event is checked as well as the event, because a
+/// browser also produces windows it read no site from: one of those is eligible
+/// on its own row while the application it belongs to is not, and generalizing
+/// from it writes exactly the browser-wide rule this guarantee exists to prevent
+/// (`app_scope_identity_is_ineligible`).
+fn app_identity_for_event(
+    connection: &Connection,
+    event_id: &str,
+) -> rusqlite::Result<Option<(String, Option<String>)>> {
+    let identity: Option<(String, Option<String>)> = connection
+        .query_row(
+            "SELECT app_stable_id, app_bundle_stable_id FROM raw_event_buffer
+             WHERE event_id = ?1 AND app_stable_id IS NOT NULL AND app_scope_eligible = 1",
+            [event_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    eligible_app_identity(connection, identity)
+}
+
+/// Drops an application identity that its own events say may not carry an
+/// app-scoped rule. The one place the two reads above are combined, so every
+/// writer of `personal_app_override` answers the question the same way.
+fn eligible_app_identity(
+    connection: &Connection,
+    identity: Option<(String, Option<String>)>,
+) -> rusqlite::Result<Option<(String, Option<String>)>> {
+    match identity {
+        Some((app_key_hash, bundle_key_hash)) => {
+            if app_scope_identity_is_ineligible(
+                connection,
+                &app_key_hash,
+                bundle_key_hash.as_deref(),
+            )? {
+                return Ok(None);
+            }
+            Ok(Some((app_key_hash, bundle_key_hash)))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Whether this application's own events say it must not carry an app-scoped
+/// rule at all.
+///
+/// The same judgement `app_identity_for_event` makes for one event, asked of an
+/// application identity instead -- because the surfaces that name an application
+/// hold only its hashes, never the name, so nothing above this layer can see the
+/// evidence. `app_scope_eligible = 0` is recorded on a window whose identity came
+/// from a site rather than from the application (`abstraction/engine.rs`), and an
+/// application that has ever produced one is a browser: an app-wide rule there
+/// would classify every future tab -- a video, a forum, mail -- as whatever the
+/// user said about one of them, at High confidence and from
+/// `ClassificationSource::UserRule`, which the engine reads BEFORE the plugins
+/// and which therefore also stops `BrowserContextPlugin` ever running for that
+/// browser again.
+///
+/// Evidence of ineligibility, not proof of eligibility: an identity with no
+/// events left -- an editor whose events aged out, a rule being edited -- is not
+/// refused, because "nothing is known" is the state every rule taught before
+/// these columns existed is in, and refusing those would break editing a saved
+/// rule.
+fn app_scope_identity_is_ineligible(
+    connection: &Connection,
+    app_key_hash: &str,
+    bundle_key_hash: Option<&str>,
+) -> rusqlite::Result<bool> {
+    connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM raw_event_buffer
+              WHERE app_scope_eligible = 0
+                AND (app_stable_id = ?1
+                     OR (?2 IS NOT NULL AND app_bundle_stable_id = ?2))
+         )",
+        params![app_key_hash, bundle_key_hash],
+        |row| row.get(0),
+    )
 }
 
 #[derive(Clone)]
@@ -311,6 +597,15 @@ impl crate::abstraction::AbstractionMappingStore for SqliteAbstractionMapRepo {
             .map_err(Into::into)
     }
 
+    /// Answers for either app identity, so one call serves both rungs.
+    ///
+    /// The two keys live in different hash domains
+    /// (`velvt:abstraction-app-key:v1` and
+    /// `velvt:abstraction-app-bundle-key:v1`), so a name key can never equal a
+    /// bundle key and the `OR` cannot match the wrong rule. That is what lets
+    /// the bundle rung be an extra call with a different key rather than a
+    /// second trait method: the engine consults the window key, then the bundle
+    /// key, then the name key, and this one read resolves whichever it is given.
     fn personal_app_override(
         &self,
         app_stable_key: &str,
@@ -319,7 +614,7 @@ impl crate::abstraction::AbstractionMappingStore for SqliteAbstractionMapRepo {
         connection
             .query_row(
                 "SELECT category, activity_name FROM personal_app_override
-                 WHERE app_key_hash = ?1",
+                 WHERE app_key_hash = ?1 OR bundle_key_hash = ?1",
                 [app_stable_key],
                 |row| {
                     Ok(crate::abstraction::PersonalOverride {
@@ -586,23 +881,177 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         category: &str,
         local_activity_name: Option<&str>,
     ) -> Result<bool, PersistenceError> {
-        let connection = self.0.connection()?;
-        // Sourced from the event rather than a caller-supplied key: the raw
-        // application name is discarded after abstraction, so the event row is
-        // the only place the app identity survives. The eligibility gate keeps
-        // a single browser tab from recolouring an entire browsing session.
-        let changed = connection.execute(
-            "INSERT INTO personal_app_override(app_key_hash, category, activity_name)
-             SELECT app_stable_id, ?2, ?3 FROM raw_event_buffer
-             WHERE event_id = ?1 AND app_stable_id IS NOT NULL AND app_scope_eligible = 1
-             ON CONFLICT(app_key_hash) DO UPDATE SET
-                category = excluded.category,
-                activity_name =
-                    COALESCE(excluded.activity_name, personal_app_override.activity_name),
-                correction_count = personal_app_override.correction_count + 1,
-                updated_at = unixepoch()",
-            params![event_id, category, local_activity_name],
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        // Both identities are written where the event carried a bundle one, so
+        // the rule keeps applying after a rename or under a localized name. The
+        // keys are resolved first and written through `upsert_app_scope_rule`
+        // rather than selected straight into the INSERT, because the rename case
+        // needs the bundle key as a value: a row already claiming that bundle
+        // under the application's previous name has to be folded in before the
+        // insert, or the UNIQUE bundle index (0034) aborts the write.
+        //
+        // `app_only` is false: this write is the second rung of a correction that
+        // also writes a window rule, so the correction history shows it once,
+        // there.
+        let Some((app_key_hash, bundle_key_hash)) = app_identity_for_event(&transaction, event_id)?
+        else {
+            return Ok(false);
+        };
+        upsert_app_scope_rule(
+            &transaction,
+            &app_key_hash,
+            bundle_key_hash.as_deref(),
+            category,
+            local_activity_name,
+            false,
         )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    fn save_personal_app_override_by_stable_id(
+        &self,
+        stable_id: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<bool, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        // Resolved through the event rows for this mapping, the way
+        // `remove_personal_override` resolves the same rung: an edit arrives
+        // after its source event has left the queue, so the stable id is all the
+        // client has. The most recent eligible event wins, because that is the
+        // identity the next event of this rule will carry.
+        let identity: Option<(String, Option<String>)> = transaction
+            .query_row(
+                "SELECT app_stable_id, app_bundle_stable_id FROM raw_event_buffer
+                 WHERE stable_id = ?1 AND app_stable_id IS NOT NULL
+                   AND app_scope_eligible = 1
+                 ORDER BY occurred_at DESC LIMIT 1",
+                [stable_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        // And the application, not only the event, for the reason
+        // `app_identity_for_event` states: a browser window Velvt read no site
+        // from is eligible on its own row while the browser is not.
+        let identity = eligible_app_identity(&transaction, identity)?;
+        let Some((app_key_hash, bundle_key_hash)) = identity else {
+            return Ok(false);
+        };
+        // Paired with a window rule, like every edit of a saved rule, so
+        // `app_only` stays false and the history lists the pair once.
+        upsert_app_scope_rule(
+            &transaction,
+            &app_key_hash,
+            bundle_key_hash.as_deref(),
+            category,
+            local_activity_name,
+            false,
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    fn save_app_scope_override(
+        &self,
+        app_key_hash: &str,
+        bundle_key_hash: Option<&str>,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<(), PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        // No event is consulted: the user is naming an application, and the key
+        // came from the list Velvt itself offered. Idempotent by the conflict
+        // branch; `correction_count` still advances, because how often someone
+        // had to say the same thing is the signal that something upstream is
+        // wrong.
+        //
+        // `app_only` is true, and that is the whole difference from the paired
+        // path: there is no window rule behind this one, so the correction
+        // history has to list this row itself or the user could never see or undo
+        // what they taught here.
+        //
+        // The one thing that is checked, because the caller cannot: whether this
+        // application may carry an app-wide rule at all. `unclassified_triage`
+        // filters ineligible identities out of the list, so a well-behaved client
+        // never asks -- and that filter is a query one edit away from being
+        // widened, while the consequence of a Safari-wide rule is permanent and
+        // invisible (every tab FOCUS_WORK at High confidence, and
+        // `BrowserContextPlugin` never consulted for that browser again). The
+        // guarantee `app_identity_for_event` documents belongs to the writer, not
+        // to whoever happens to call it.
+        if app_scope_identity_is_ineligible(&transaction, app_key_hash, bundle_key_hash)? {
+            return Err(PersistenceError::AppScopeIneligible);
+        }
+        upsert_app_scope_rule(
+            &transaction,
+            app_key_hash,
+            bundle_key_hash,
+            category,
+            local_activity_name,
+            true,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn app_scope_override(
+        &self,
+        app_key_hash: &str,
+    ) -> Result<Option<AppScopeOverride>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT app_key_hash, bundle_key_hash, category, activity_name,
+                        correction_count, updated_at
+                 FROM personal_app_override WHERE app_key_hash = ?1",
+                [app_key_hash],
+                app_scope_override_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn bundle_app_override(
+        &self,
+        bundle_key_hash: &str,
+    ) -> Result<Option<AppScopeOverride>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT app_key_hash, bundle_key_hash, category, activity_name,
+                        correction_count, updated_at
+                 FROM personal_app_override WHERE bundle_key_hash = ?1",
+                [bundle_key_hash],
+                app_scope_override_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn remove_app_scope_override(&self, app_key_hash: &str) -> Result<bool, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute(
+            "DELETE FROM personal_app_override WHERE app_key_hash = ?1",
+            [app_key_hash],
+        )?;
+        // The typed name mirrored into every window of this application, for the
+        // reason `remove_personal_override` nulls it: `display_name` records no
+        // provenance, the upsert that writes it coalesces, so a name the user
+        // typed would otherwise survive its own undo. A curated label is
+        // deterministic and returns on the next observation of the window.
+        transaction.execute(
+            "UPDATE abstraction_map SET display_name = NULL
+             WHERE stable_id IN (
+                 SELECT stable_id FROM raw_event_buffer WHERE app_stable_id = ?1
+             )",
+            [app_key_hash],
+        )?;
+        transaction.commit()?;
         Ok(changed > 0)
     }
 
@@ -614,12 +1063,47 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
     ) -> Result<(), PersistenceError> {
         let mut connection = self.0.connection()?;
         let transaction = connection.transaction()?;
+        // `app_key_hash` (0036) records which app rung this correction also
+        // wrote, so `remove_personal_override` can take both rungs away by key
+        // lookup instead of re-deriving the pairing from `raw_event_buffer` --
+        // which holds fourteen days, so the derivation failed silently for every
+        // older correction and left an app rule nothing could list, remove or
+        // re-teach. Resolved from the most recent eligible event of this mapping,
+        // the same read `save_personal_app_override_by_stable_id` uses to choose
+        // the rung to write, so the column names the rung that was written.
+        //
+        // NULL where the window is not generalizable at all (`app_scope_eligible
+        // = 0`, a browser tab): no app rung was written, so there is none to
+        // remove, and pointing at the browser's rung would let removing one tab's
+        // rule delete a rule some other correction taught.
+        //
+        // COALESCE on conflict: an edit that arrives after the source events have
+        // aged out resolves NULL, and must leave a pairing that was recorded when
+        // they were still there rather than erase it.
         let changed = transaction.execute(
-            "INSERT INTO personal_override(key_hash, category, activity_name)
-             SELECT key_hash, ?2, ?3 FROM abstraction_map WHERE stable_id = ?1
+            "INSERT INTO personal_override(key_hash, category, activity_name, app_key_hash)
+             SELECT map.key_hash, ?2, ?3,
+                    (SELECT event.app_stable_id FROM raw_event_buffer event
+                      WHERE event.stable_id = map.stable_id
+                        AND event.app_stable_id IS NOT NULL
+                        AND event.app_scope_eligible = 1
+                        -- The application as well as the event, so this column
+                        -- names an identity a rung was actually written for and
+                        -- never a browser's.
+                        AND NOT EXISTS (
+                            SELECT 1 FROM raw_event_buffer ineligible
+                             WHERE ineligible.app_scope_eligible = 0
+                               AND (ineligible.app_stable_id = event.app_stable_id
+                                    OR (event.app_bundle_stable_id IS NOT NULL
+                                        AND ineligible.app_bundle_stable_id
+                                            = event.app_bundle_stable_id))
+                        )
+                      ORDER BY event.occurred_at DESC LIMIT 1)
+               FROM abstraction_map map WHERE map.stable_id = ?1
              ON CONFLICT(key_hash) DO UPDATE SET
                 category = excluded.category,
                 activity_name = COALESCE(excluded.activity_name, personal_override.activity_name),
+                app_key_hash = COALESCE(excluded.app_key_hash, personal_override.app_key_hash),
                 updated_at = unixepoch()",
             params![stable_id, category, local_activity_name],
         )?;
@@ -677,37 +1161,29 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         let query = query.map(str::trim).filter(|value| !value.is_empty());
         let connection = self.0.connection()?;
         let total = connection.query_row(
-            "SELECT COUNT(*)
-             FROM personal_override
-             JOIN abstraction_map ON abstraction_map.key_hash = personal_override.key_hash
-             WHERE ?1 IS NULL
-                OR instr(lower(COALESCE(personal_override.activity_name, abstraction_map.display_name, '')), lower(?1)) > 0
-                OR instr(lower(abstraction_map.label), lower(?1)) > 0
-                OR instr(lower(personal_override.category), lower(?1)) > 0",
+            &format!("SELECT COUNT(*) FROM ({RULE_SOURCE}) WHERE {RULE_FILTER}"),
             [query],
             |row| row.get::<_, u64>(0),
         )?;
-        let mut statement = connection.prepare(
-            "SELECT abstraction_map.stable_id, abstraction_map.label,
-                    COALESCE(personal_override.activity_name, abstraction_map.display_name),
-                    personal_override.category, personal_override.updated_at
-             FROM personal_override
-             JOIN abstraction_map ON abstraction_map.key_hash = personal_override.key_hash
-             WHERE ?1 IS NULL
-                OR instr(lower(COALESCE(personal_override.activity_name, abstraction_map.display_name, '')), lower(?1)) > 0
-                OR instr(lower(abstraction_map.label), lower(?1)) > 0
-                OR instr(lower(personal_override.category), lower(?1)) > 0
-             ORDER BY personal_override.updated_at DESC, abstraction_map.stable_id ASC
-             LIMIT ?2 OFFSET ?3",
-        )?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT scope, stable_id, label, local_label, category, updated_at
+             FROM ({RULE_SOURCE})
+             WHERE {RULE_FILTER}
+             ORDER BY updated_at DESC, stable_id ASC
+             LIMIT ?2 OFFSET ?3"
+        ))?;
         let rows = statement
             .query_map(params![query, limit as i64, offset as i64], |row| {
                 Ok(PersonalOverrideRecord {
-                    stable_id: row.get(0)?,
-                    label: row.get(1)?,
-                    local_activity_name: row.get(2)?,
-                    category: row.get(3)?,
-                    updated_at: timestamp_from_row(row, 4)?,
+                    scope: match row.get::<_, String>(0)?.as_str() {
+                        "app" => CorrectionScope::App,
+                        _ => CorrectionScope::Window,
+                    },
+                    stable_id: row.get(1)?,
+                    label: row.get(2)?,
+                    local_activity_name: row.get(3)?,
+                    category: row.get(4)?,
+                    updated_at: timestamp_from_row(row, 5)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
@@ -718,6 +1194,33 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
     fn remove_personal_override(&self, stable_id: &str) -> Result<bool, PersistenceError> {
         let mut connection = self.0.connection()?;
         let transaction = connection.transaction()?;
+        // The app rung this correction wrote, read from the window rule itself
+        // (`app_key_hash`, 0036) and read BEFORE the window rule is deleted.
+        //
+        // It used to be re-derived here by subquerying `raw_event_buffer`, and
+        // that is a fourteen-day cache: past the TTL the subquery was empty, the
+        // app rung survived, and Remove reported success having changed nothing
+        // the user could see. Worse, the surviving row is `app_only = 0`, which
+        // `RULE_SOURCE` hides from the correction history while
+        // `unclassified_triage`'s NOT EXISTS still matches it -- so the
+        // application could be neither listed, nor removed, nor taught again,
+        // short of a full Reset. Recorded at write time, this is a key lookup
+        // that does not read the event cache at all.
+        //
+        // NULL means there is no paired rung to remove: a browser tab, which
+        // never wrote one, or a rule older than 0036 whose events were gone by
+        // the time that migration could backfill it.
+        let paired_app_key: Option<String> = transaction
+            .query_row(
+                "SELECT rule.app_key_hash FROM personal_override rule
+                  WHERE rule.key_hash = (
+                      SELECT key_hash FROM abstraction_map WHERE stable_id = ?1
+                  )",
+                [stable_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
         let changed = transaction.execute(
             "DELETE FROM personal_override WHERE key_hash = (
                 SELECT key_hash FROM abstraction_map WHERE stable_id = ?1
@@ -730,6 +1233,45 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
              )",
             [stable_id],
         )?;
+        // Removing only the window rung left the engine falling through into the
+        // surviving app rung and returning the same category and the same typed
+        // name on the next event, so the undo the user asked for changed nothing
+        // they could see. Hence this delete -- and hence `app_only = 0`, which is
+        // every writer of that flag's condition read back in the delete
+        // direction: a rule taught about the application itself through triage is
+        // a rule of its own, sticky and never cleared (0035), and must survive
+        // the removal of an unrelated window rule that happens to name the same
+        // application. Without the predicate one Remove destroyed a rule the user
+        // taught somewhere else entirely.
+        if let Some(app_key_hash) = &paired_app_key {
+            transaction.execute(
+                "DELETE FROM personal_app_override
+                  WHERE app_key_hash = ?1 AND app_only = 0",
+                [app_key_hash],
+            )?;
+        }
+        // The third place the typed name lives. Nulled rather than rewritten
+        // because `display_name` records no provenance: nothing here can tell a
+        // name the user typed from one `curated_display_label` produced, and the
+        // upsert coalesces, so a later write can never null it. A curated label
+        // is derived deterministically and comes back on the next observation of
+        // that window; a typed one must not outlive its own undo. The sibling
+        // windows of the same application are included because the app rung
+        // mirrored the typed name into every one of them -- and they are found
+        // under the app rung that was just removed (`?2`, NULL when there was
+        // none), so a browser tab's undo no longer clears the local labels of
+        // every other window of the browser. `raw_event_buffer` is still the only
+        // place a window can be traced to its application, and that is sound
+        // here: a name it cannot reach is one the next observation of that window
+        // rewrites anyway.
+        transaction.execute(
+            "UPDATE abstraction_map SET display_name = NULL
+             WHERE stable_id = ?1
+                OR (?2 IS NOT NULL AND stable_id IN (
+                    SELECT stable_id FROM raw_event_buffer WHERE app_stable_id = ?2
+                 ))",
+            params![stable_id, paired_app_key],
+        )?;
         transaction.commit()?;
         Ok(changed > 0)
     }
@@ -739,6 +1281,22 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         let transaction = connection.transaction()?;
         let changed = transaction.execute("DELETE FROM personal_override", [])? as u64;
         transaction.execute("DELETE FROM personal_semantic_prototype", [])?;
+        // The app rung holds the same free-text `activity_name` under the
+        // application's own hash. Without this the reset was a no-op for every
+        // app-scoped correction — per migration 0017 the rung that carries
+        // almost all of them — because the engine falls through the emptied
+        // window rung into the app rung on the very next event.
+        transaction.execute("DELETE FROM personal_app_override", [])?;
+        // Every `display_name`, not only the rows a correction wrote. The column
+        // records no provenance, so no query can separate a name the user typed
+        // from one `curated_display_label` produced, and duplicating that
+        // allowlist in SQL would put a second copy of it a migration away from
+        // drifting. Clearing all of it is the only answer that is true for
+        // certain: a curated label is deterministic and is rewritten on the next
+        // observation of the window, so the cost is one event of a missing local
+        // label, while a typed name surviving a reset the user was told was
+        // destructive is a broken promise.
+        transaction.execute("UPDATE abstraction_map SET display_name = NULL", [])?;
         transaction.commit()?;
         Ok(changed)
     }
@@ -789,6 +1347,61 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
             .optional()
             .map_err(Into::into)
     }
+
+    fn delete_expired_semantic_embeddings(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let deleted = connection.execute(
+            "DELETE FROM semantic_embedding_cache WHERE key_hash IN (
+                 SELECT key_hash FROM semantic_embedding_cache
+                 WHERE updated_at < ?1 LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+
+    fn embedding_salt(&self) -> Result<EmbeddingSalt, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let stored = transaction
+            .query_row("SELECT salt FROM embedding_salt WHERE id = 1", [], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .optional()?;
+        let bytes = match stored {
+            Some(bytes) => <[u8; EmbeddingSalt::LENGTH]>::try_from(bytes.as_slice())
+                // Unreachable while `CHECK(length(salt) = 32)` stands, which is
+                // why this is an error rather than a silent re-mint: a row that
+                // is present but unreadable is a corrupt database, and minting
+                // over it would destroy the caches it was still keying.
+                .map_err(|_| PersistenceError::InvalidEmbeddingSalt)?,
+            None => {
+                let minted = transaction.query_row(
+                    "SELECT randomblob(?1)",
+                    [EmbeddingSalt::LENGTH as i64],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )?;
+                transaction.execute(
+                    "INSERT INTO embedding_salt(id, salt) VALUES (1, ?1)",
+                    params![minted],
+                )?;
+                // Same reason migration 0031 empties both stores in the same
+                // statement batch that mints the salt: every vector already on
+                // disk was computed in a different space, and comparing across
+                // spaces produces a similarity number that means nothing.
+                transaction.execute("DELETE FROM semantic_embedding_cache", [])?;
+                transaction.execute("DELETE FROM personal_semantic_prototype", [])?;
+                <[u8; EmbeddingSalt::LENGTH]>::try_from(minted.as_slice())
+                    .map_err(|_| PersistenceError::InvalidEmbeddingSalt)?
+            }
+        };
+        transaction.commit()?;
+        Ok(EmbeddingSalt::from_bytes(bytes))
+    }
 }
 
 #[derive(Clone)]
@@ -796,11 +1409,21 @@ struct SqliteRawEventRepo(SqlitePersistence);
 
 impl RawEventRepo for SqliteRawEventRepo {
     fn insert(&self, event: &RawEventEntry) -> Result<(), PersistenceError> {
+        // An event with no declared metadata is written exactly as it was
+        // before the columns existed: three NULLs, no other difference.
+        self.insert_with_declared_metadata(event, &DeclaredAppMetadata::ABSENT)
+    }
+
+    fn insert_with_declared_metadata(
+        &self,
+        event: &RawEventEntry,
+        metadata: &DeclaredAppMetadata,
+    ) -> Result<(), PersistenceError> {
         let connection = self.0.connection()?;
         connection.execute(
             "INSERT INTO raw_event_buffer(
-                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible, app_stable_id, app_scope_eligible
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible, app_stable_id, app_scope_eligible, app_bundle_stable_id, declared_app_category, document_type_ids
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 event.event_id,
                 event.stable_id,
@@ -817,7 +1440,10 @@ impl RawEventRepo for SqliteRawEventRepo {
                 event.duration_seconds,
                 event.upload_eligible,
                 event.app_stable_id,
-                event.app_scope_eligible
+                event.app_scope_eligible,
+                metadata.app_bundle_stable_id,
+                metadata.declared_app_category,
+                encode_document_type_ids(&metadata.document_type_ids),
             ],
         )?;
         Ok(())
@@ -970,6 +1596,130 @@ impl RawEventRepo for SqliteRawEventRepo {
         Ok(())
     }
 
+    fn unclassified_triage(
+        &self,
+        lookback_days: u32,
+        min_seconds: u64,
+        limit: usize,
+    ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError> {
+        // Clamped here rather than trusted from the caller, the way
+        // `local_display_aggregates` caps its own limit: these three bounds are
+        // what keep the list a task instead of an inventory, and a caller that
+        // could widen them could undo that from anywhere.
+        let lookback_days = lookback_days.clamp(1, TRIAGE_MAX_LOOKBACK_DAYS);
+        let min_seconds = min_seconds.max(TRIAGE_MIN_SECONDS);
+        let limit = limit.min(TRIAGE_MAX_ENTRIES);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT app_stable_id,
+                    -- An application Velvt holds no name for is still time the
+                    -- user spent, so it is named plainly rather than dropped:
+                    -- omitting the row hid real minutes from a list whose whole
+                    -- claim is \"this is the time Velvt could not read\", and the
+                    -- user can usually still answer -- they know what they had
+                    -- open for an hour, and the row carries that hour. The
+                    -- literal lives here for the reason `RULE_SOURCE`'s
+                    -- 'application' does: it is a last-resort word, not a
+                    -- category-derived label, so no mapping is duplicated into
+                    -- SQL where it could drift.
+                    COALESCE(display_name, 'Unnamed application') AS display_name,
+                    seconds_observed, event_count,
+                    app_bundle_stable_id
+             FROM (
+                 SELECT observed.app_stable_id AS app_stable_id,
+                        -- The most recent name Velvt already holds for this
+                        -- application. `local_name_suggestion` carries the raw
+                        -- application name for exactly the events that matched
+                        -- no seed and no correction (migration 0001), which is
+                        -- every event in this list.
+                        (SELECT COALESCE(named.local_display_label, named.local_name_suggestion)
+                           FROM raw_event_buffer named
+                          WHERE named.app_stable_id = observed.app_stable_id
+                            AND COALESCE(named.local_display_label, named.local_name_suggestion)
+                                IS NOT NULL
+                          ORDER BY named.occurred_at DESC
+                          LIMIT 1) AS display_name,
+                        SUM(observed.duration_seconds) AS seconds_observed,
+                        COUNT(*) AS event_count,
+                        -- One application name resolves to one bundle
+                        -- identifier, so any non-null value in the group is
+                        -- that identifier; MAX is how SQLite says \"any\".
+                        MAX(observed.app_bundle_stable_id) AS app_bundle_stable_id
+                 FROM raw_event_buffer observed
+                 WHERE observed.category = 'UNLOGGED'
+                   AND observed.app_stable_id IS NOT NULL
+                   AND observed.occurred_at >= ?1
+                   -- Offering an application here is a claim that teaching it is
+                   -- safe: the only thing the user can do with a row is write an
+                   -- app-wide rule for it. So the same gate the correction path
+                   -- applies per event (`app_identity_for_event`) applies to the
+                   -- rows that make up a group, and to the application behind
+                   -- them.
+                   --
+                   -- A browser window that carried a site context is not
+                   -- generalizable -- one tab says nothing about the next -- and
+                   -- an UNLOGGED one is exactly a site Velvt could not read, so
+                   -- these rows were most of what the list offered for a browser.
+                   -- Teaching one wrote an app-wide rule that classifies every
+                   -- future tab, mail and video alike, at High confidence and
+                   -- from `user_rule`, which the engine reads before the plugins
+                   -- and which therefore also stops `BrowserContextPlugin` from
+                   -- ever running for that browser again.
+                   AND observed.app_scope_eligible = 1
+                   -- And the application itself, not only these rows: a browser
+                   -- also produces windows it read no site from, which are
+                   -- eligible one row at a time while the application they belong
+                   -- to is not. Any ineligible event under either identity is that
+                   -- evidence, which is the same read
+                   -- `save_app_scope_override` refuses on -- this filter keeps the
+                   -- list honest, that check keeps the promise.
+                   AND NOT EXISTS (
+                       SELECT 1 FROM raw_event_buffer ineligible
+                       WHERE ineligible.app_scope_eligible = 0
+                         AND (ineligible.app_stable_id = observed.app_stable_id
+                              OR (observed.app_bundle_stable_id IS NOT NULL
+                                  AND ineligible.app_bundle_stable_id
+                                      = observed.app_bundle_stable_id))
+                   )
+                   -- An application the user has already taught must leave the
+                   -- list the moment they teach it. Past events keep their
+                   -- UNLOGGED category -- nothing here rewrites history -- so
+                   -- without this the app they just explained would be back at
+                   -- the top of the list tomorrow.
+                   AND NOT EXISTS (
+                       SELECT 1 FROM personal_app_override rule
+                       WHERE rule.app_key_hash = observed.app_stable_id
+                          OR (rule.bundle_key_hash IS NOT NULL
+                              AND rule.bundle_key_hash = observed.app_bundle_stable_id)
+                   )
+                 GROUP BY observed.app_stable_id
+             )
+             WHERE seconds_observed >= ?2
+             ORDER BY seconds_observed DESC, app_stable_id ASC
+             LIMIT ?3",
+        )?;
+        let cutoff = Utc::now() - chrono::Duration::days(i64::from(lookback_days));
+        let entries = statement
+            .query_map(
+                params![cutoff.timestamp(), min_seconds as i64, limit as i64],
+                |row| {
+                    Ok(UnclassifiedAppEntry {
+                        app_stable_id: row.get(0)?,
+                        display_name: row.get(1)?,
+                        seconds_observed: row.get(2)?,
+                        event_count: row.get(3)?,
+                        app_bundle_stable_id: row.get(4)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(PersistenceError::from)?;
+        Ok(entries)
+    }
+
     fn delete_before(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError> {
         let connection = self.0.connection()?;
         let deleted = connection.execute(
@@ -984,11 +1734,41 @@ impl RawEventRepo for SqliteRawEventRepo {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<u64, PersistenceError> {
-        // Rows the upload pipeline still owes the backend are spared, mirroring
-        // upload-batch retention, which deliberately never deletes pending or
-        // failed batches. An eligible row with no `batch_event` has been acked
-        // to Swift but not yet persisted into a batch; expiring it on the TTL
-        // deleted an accepted event that nothing could ever re-send.
+        // Rows the upload pipeline still owes the backend are spared. The
+        // predicate is character-for-character the one `unbatched_events` uses,
+        // and that is the whole rule: a row is kept exactly while
+        // `recover_unbatched` would re-queue it at the next start. An eligible
+        // row with no `batch_event` was acked to Swift and never reached a
+        // batch — the service died between the ack and the flush, or the
+        // backlog was longer than one start's recovery limit — and expiring it
+        // on the TTL deleted an accepted event that nothing could re-send.
+        //
+        // This comment used to say the rule mirrored upload-batch retention,
+        // "which deliberately never deletes pending or failed batches."
+        // `delete_stale_queued_batch` deletes exactly those, so that sentence
+        // is gone rather than softened. What the rule actually rests on is an
+        // ordering of horizons: a batched row has to be deleted here before the
+        // sweep that deletes its batch cascades the `batch_event` away, because
+        // a row whose `batch_event` disappears re-enters the spared set and is
+        // never collected again. The raw TTL is 14 days
+        // (`VELVT_RAW_EVENT_TTL_HOURS`, defaulted from `DAILY_ACTIVITY_DAYS`)
+        // against a 30-day sent-and-queued batch horizon
+        // (`VELVT_SENT_BATCH_RETENTION_DAYS`), so it holds by 16 days — and
+        // inverts the moment the TTL is raised past 720 hours.
+        // `tests/retention.rs::the_raw_event_horizon_stays_inside_the_batch_horizon`
+        // is that ordering as an assertion rather than as two numbers that
+        // happen to be in the right order.
+        //
+        // Open, found 2026-08-31, not fixed here: `delete_rejected_batch` runs
+        // at 7 days (`VELVT_REJECTED_BATCH_AUDIT_DAYS`), which is inside the
+        // raw TTL, so a rejected batch's rows do come back unbatched and
+        // `recover_unbatched` re-queues them at the next start — against the
+        // rule in `upload/coordinator.rs` that a `raw_field_rejected` batch is
+        // permanently terminal and must never re-enter retry scheduling. The
+        // development device has never held a rejected batch, so nothing has
+        // taken that path. The fix belongs in the rejected sweep or its
+        // horizon, not in this predicate, which is why it is named here instead
+        // of quietly widened.
         let connection = self.0.connection()?;
         let deleted = connection.execute(
             "DELETE FROM raw_event_buffer WHERE id IN (
@@ -1108,11 +1888,15 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
                     ))
                 },
             )?;
+        // `abandoned` belongs in this list even though it has no count of its
+        // own: the error that ended a batch's retries is the most recent thing
+        // the user has not been told, and dropping it would let a queue that
+        // failed its way to terminal report no error at all.
         let last_error_code = connection
             .query_row(
                 "SELECT last_error_code
                  FROM upload_batch
-                 WHERE status IN ('pending', 'failed', 'rejected')
+                 WHERE status IN ('pending', 'failed', 'rejected', 'abandoned')
                    AND last_error_code IS NOT NULL
                  ORDER BY created_at DESC, id DESC
                  LIMIT 1",
@@ -1146,10 +1930,9 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
         next_attempt_at: DateTime<Utc>,
         error_code: &str,
     ) -> Result<(), PersistenceError> {
-        update_batch_state(
+        update_batch_retry_state(
             &self.0,
-            "UPDATE upload_batch SET status = 'failed', attempt_count = attempt_count + 1,
-             next_attempt_at = ?2, last_error_code = ?3 WHERE batch_id = ?1",
+            "failed",
             batch_id,
             next_attempt_at.timestamp(),
             error_code,
@@ -1162,10 +1945,9 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
         next_attempt_at: DateTime<Utc>,
         error_code: &str,
     ) -> Result<(), PersistenceError> {
-        update_batch_state(
+        update_batch_retry_state(
             &self.0,
-            "UPDATE upload_batch SET status = 'pending', attempt_count = attempt_count + 1,
-             next_attempt_at = ?2, last_error_code = ?3 WHERE batch_id = ?1",
+            "pending",
             batch_id,
             next_attempt_at.timestamp(),
             error_code,
@@ -1308,6 +2090,28 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
         let deleted = connection.execute(
             "DELETE FROM upload_batch WHERE id IN (
                  SELECT id FROM upload_batch WHERE status = 'rejected' AND created_at < ?1 LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+
+    fn delete_stale_queued_batch(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Deliberately no status filter. The two statuses the other sweeps
+        // enumerate were the only ones ever collected, so a batch that never
+        // reached one of them lived forever; naming statuses here would
+        // reproduce that hole the next time the vocabulary grows. A sent batch
+        // that outlived this horizon by creation date is collected too — its
+        // events are already delivered, so removing the local copy early is
+        // never a loss.
+        let deleted = connection.execute(
+            "DELETE FROM upload_batch WHERE id IN (
+                 SELECT id FROM upload_batch WHERE created_at < ?1 LIMIT ?2
              )",
             params![cutoff.timestamp(), limit as i64],
         )?;
@@ -1694,7 +2498,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         connection
             .query_row(
                 "SELECT offered_at, action_id, anchor_category, switch_count,
-                        window_seconds, outcome, outcome_at, salience
+                        window_seconds, outcome, outcome_at, salience, card_seen_at
                  FROM work_block_intervention WHERE block_id = ?1",
                 [block_id],
                 |row| {
@@ -1713,6 +2517,10 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                             .map(|value| timestamp_to_datetime(value, 6))
                             .transpose()?,
                         salience: parse_intervention_salience(&row.get::<_, String>(7)?)?,
+                        card_seen_at: row
+                            .get::<_, Option<i64>>(8)?
+                            .map(|value| timestamp_to_datetime(value, 8))
+                            .transpose()?,
                     })
                 },
             )
@@ -1727,7 +2535,7 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
             "SELECT offered_at, action_id, anchor_category, switch_count,
-                    window_seconds, outcome, outcome_at, salience
+                    window_seconds, outcome, outcome_at, salience, card_seen_at
              FROM work_block_intervention
              ORDER BY offered_at DESC LIMIT ?1",
         )?;
@@ -1745,10 +2553,33 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                     .map(|value| timestamp_to_datetime(value, 6))
                     .transpose()?,
                 salience: parse_intervention_salience(&row.get::<_, String>(7)?)?,
+                card_seen_at: row
+                    .get::<_, Option<i64>>(8)?
+                    .map(|value| timestamp_to_datetime(value, 8))
+                    .transpose()?,
             })
         })?;
         rows.map(|row| row.map_err(PersistenceError::from))
             .collect()
+    }
+
+    fn mark_intervention_card_seen(
+        &self,
+        block_id: &str,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // `card_seen_at IS NULL` makes the first sighting win. A card that
+        // re-renders when the popover is reopened is the same delivery, and
+        // moving the timestamp forward would report the offer as reaching the
+        // user later than it did.
+        let changed = connection.execute(
+            "UPDATE work_block_intervention
+             SET card_seen_at = ?2
+             WHERE block_id = ?1 AND card_seen_at IS NULL",
+            params![block_id, at.timestamp()],
+        )?;
+        Ok(changed > 0)
     }
 
     fn resolve_intervention(
@@ -1968,6 +2799,84 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
             decisions.push(row?);
         }
         Ok(decisions)
+    }
+
+    fn unresolved_decisions(
+        &self,
+        horizon_closed_by: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<InterventionDecision>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT decision_id, occurred_at, block_id, policy_version, anchor_category,
+                    switch_count, elapsed_seconds, remaining_seconds, gate_verdict,
+                    propensity, anchor_seen_within_600s, outcome_at
+             FROM intervention_decision_log
+             WHERE anchor_seen_within_600s IS NULL
+               AND anchor_category IS NOT NULL
+               AND block_id IS NOT NULL
+               AND occurred_at <= ?1
+             ORDER BY occurred_at ASC, decision_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(
+            params![horizon_closed_by.timestamp(), limit as i64],
+            decision_from_row,
+        )?;
+        let mut decisions = Vec::new();
+        for row in rows {
+            decisions.push(row?);
+        }
+        Ok(decisions)
+    }
+
+    fn observed_category_between(
+        &self,
+        block_id: &str,
+        category: &str,
+        from: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // `occurred_at > ?3`, not `>=`. `observe_safe_category` appends the
+        // observation before it calls `evaluate_drift`, so the observation that
+        // triggered a decision is already on disk carrying the decision's own
+        // timestamp. Under `>=` the `AbstainedAtAnchor` verdict — which fires
+        // exactly when the latest confident observation IS the anchor — would
+        // read back as "the user returned" for every row of it, definitionally
+        // and without a single return having happened. The bound answers what
+        // happened after the decision, so the evidence the decision was made on
+        // is not part of the answer.
+        connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM work_block_observation
+                    WHERE block_id = ?1 AND lower(category) = lower(?2)
+                      AND occurred_at > ?3 AND occurred_at <= ?4
+                 )",
+                params![block_id, category, from.timestamp(), until.timestamp()],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    fn resolve_decision(
+        &self,
+        decision_id: &str,
+        anchor_seen: bool,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // `anchor_seen_within_600s IS NULL` is the whole idempotence guarantee:
+        // a decision answered once keeps the answer it was given, so rerunning
+        // the resolver over history cannot move a number anyone has read.
+        let updated = connection.execute(
+            "UPDATE intervention_decision_log
+             SET anchor_seen_within_600s = ?2, outcome_at = ?3
+             WHERE decision_id = ?1 AND anchor_seen_within_600s IS NULL",
+            params![decision_id, i64::from(anchor_seen), at.timestamp()],
+        )?;
+        Ok(updated > 0)
     }
 }
 
@@ -2767,6 +3676,25 @@ fn add_event_to_batch(
     Ok(())
 }
 
+/// Serializes declared document types for storage.
+///
+/// One line of space-separated identifiers, exactly as migration 0033
+/// documents. A Uniform Type Identifier is reverse-DNS -- letters, digits, dots
+/// and hyphens -- and cannot contain a space, so the delimiter is unambiguous
+/// and a single type can be matched with
+/// `instr(' ' || document_type_ids || ' ', ' public.source-code ')`.
+///
+/// The client has already deduplicated and sorted the list; nothing is re-sorted
+/// here, because the stored string should be the declaration that arrived rather
+/// than a tidied version of it.
+///
+/// An empty list stores NULL, not an empty string: "declared nothing" and
+/// "declared, and it was empty" are the same fact and must have one
+/// representation.
+fn encode_document_type_ids(document_type_ids: &[String]) -> Option<String> {
+    (!document_type_ids.is_empty()).then(|| document_type_ids.join(" "))
+}
+
 fn raw_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEventEntry> {
     Ok(RawEventEntry {
         event_id: row.get(0)?,
@@ -2984,6 +3912,7 @@ fn upload_status_from_str(status: &str) -> rusqlite::Result<UploadBatchStatus> {
         "sent" => Ok(UploadBatchStatus::Sent),
         "failed" => Ok(UploadBatchStatus::Failed),
         "rejected" => Ok(UploadBatchStatus::Rejected),
+        "abandoned" => Ok(UploadBatchStatus::Abandoned),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
@@ -2997,6 +3926,46 @@ fn update_batch_state(
 ) -> Result<(), PersistenceError> {
     let connection = persistence.connection()?;
     let updated = connection.execute(query, params![batch_id, next_attempt_at, error_code])?;
+    if updated == 0 {
+        Err(PersistenceError::NotFound {
+            entity: "upload_batch",
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// Records one spent attempt and returns the batch to the retry queue under
+/// `retry_status`, unless the attempt just spent was its last.
+///
+/// The ceiling is applied in the same statement as the increment, so there is
+/// no window in which a batch past its ceiling is still resumable. Without it a
+/// batch retries for as long as the service runs: nothing else in the queue
+/// counts attempts, and an unreachable host leaves the device upload-eligible,
+/// so the retry never stops on its own.
+fn update_batch_retry_state(
+    persistence: &SqlitePersistence,
+    retry_status: &str,
+    batch_id: &str,
+    next_attempt_at: i64,
+    error_code: &str,
+) -> Result<(), PersistenceError> {
+    let connection = persistence.connection()?;
+    let updated = connection.execute(
+        "UPDATE upload_batch
+         SET status = CASE WHEN attempt_count + 1 >= ?5 THEN 'abandoned' ELSE ?4 END,
+             attempt_count = attempt_count + 1,
+             next_attempt_at = ?2,
+             last_error_code = ?3
+         WHERE batch_id = ?1",
+        params![
+            batch_id,
+            next_attempt_at,
+            error_code,
+            retry_status,
+            UPLOAD_BATCH_ATTEMPT_CEILING
+        ],
+    )?;
     if updated == 0 {
         Err(PersistenceError::NotFound {
             entity: "upload_batch",
@@ -3424,12 +4393,15 @@ impl AntecedentFindingRepo for SqliteAntecedentFindingRepo {
 #[cfg(test)]
 mod tests {
     use super::SqlitePersistence;
+    use crate::abstraction::EmbeddingSalt;
     use crate::persistence::{
-        BlockAntecedent, DayType, GateVerdict, InterventionDecision, OutOfBlockRun,
+        AbstractionMapping, BlockAntecedent, DayType, GateVerdict, InterventionDecision,
+        OutOfBlockRun,
     };
+    use chrono::Utc;
     use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
-    use velvt_shared_types::{ClassificationConfidence, ClassificationStatus};
+    use velvt_shared_types::{ClassificationConfidence, ClassificationStatus, CorrectionScope};
 
     #[test]
     fn newly_added_migration_applies_after_initial_schema_deploy() {
@@ -4060,5 +5032,1542 @@ mod tests {
             .unwrap();
         repo.record_decision(&decision("randomized", 0.5)).unwrap();
         assert_eq!(repo.decisions("propensity-block").unwrap().len(), 2);
+    }
+
+    /// Migration 0030 widens a CHECK, which SQLite can only do by rebuilding.
+    /// `upload_batch` is the parent of `batch_event` under `ON DELETE CASCADE`,
+    /// and with foreign keys enabled a DROP of the parent performs an implicit
+    /// DELETE — so a rebuild in the wrong order silently takes every queued
+    /// event with it. The from-scratch path cannot catch that: the tables are
+    /// empty when the migration runs. This is the upgrade path a shipped device
+    /// takes, with rows on disk.
+    #[test]
+    fn migration_0030_rebuilds_the_parent_without_cascading_queued_events() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", true)
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        for migration in super::EMBEDDED_MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version < 30)
+        {
+            connection.execute_batch(migration.sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                    rusqlite::params![migration.version, migration.name],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO upload_batch(batch_id, status, attempt_count, last_error_code)
+                 VALUES ('stranded', 'failed', 7, 'transport')",
+                [],
+            )
+            .unwrap();
+        for index in 0..3 {
+            connection
+                .execute(
+                    "INSERT INTO batch_event(
+                        batch_id, event_id, stable_id, label, category, taxonomy_version, occurred_at
+                     ) VALUES ('stranded', ?1, 'abs_1', 'document:edit', 'FOCUS_WORK', 'mvp-1', 0)",
+                    rusqlite::params![format!("evt-{index}")],
+                )
+                .unwrap();
+        }
+
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+        database.run_migrations().unwrap();
+
+        let connection = database.connection().unwrap();
+        let events: i64 = connection
+            .query_row("SELECT COUNT(*) FROM batch_event", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(events, 3, "the queued events must survive the rebuild");
+        let (status, attempts): (String, i64) = connection
+            .query_row(
+                "SELECT status, attempt_count FROM upload_batch WHERE batch_id = 'stranded'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), attempts), ("failed", 7));
+        connection
+            .execute(
+                "UPDATE upload_batch SET status = 'abandoned' WHERE batch_id = 'stranded'",
+                [],
+            )
+            .expect("the widened CHECK accepts the terminal status");
+        assert!(
+            connection
+                .execute(
+                    "UPDATE upload_batch SET status = 'discarded' WHERE batch_id = 'stranded'",
+                    [],
+                )
+                .is_err(),
+            "the vocabulary is still closed"
+        );
+    }
+
+    /// Migration 0031 mints the salt, so a migrated database reads and never
+    /// writes. Two reads must agree: a salt that moved between calls would put
+    /// vectors from two spaces into one cache, and every similarity computed
+    /// across them would be a number about nothing.
+    #[test]
+    fn embedding_salt_is_read_back_unchanged_and_is_not_the_zero_salt() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.abstraction_map_repo();
+
+        let first = repo.embedding_salt().unwrap();
+        let second = repo.embedding_salt().unwrap();
+
+        assert_eq!(first, second, "the salt must be stable across reads");
+        assert_ne!(
+            first,
+            EmbeddingSalt::UNSALTED,
+            "0031 mints a random salt; the zero salt protects nothing"
+        );
+    }
+
+    /// The create path. It exists so that a startup which cannot read a salt is
+    /// never answered with `EmbeddingSalt::UNSALTED`, and it has to empty both
+    /// vector stores for the reason 0031 does: a fresh salt is a fresh vector
+    /// space, and a sketch computed under the old key is not comparable with
+    /// one computed under the new key.
+    #[test]
+    fn a_minted_embedding_salt_empties_the_stores_that_hold_vectors() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let connection = database.connection().unwrap();
+        connection
+            .execute_batch(
+                "DELETE FROM embedding_salt;
+                 INSERT INTO semantic_embedding_cache(key_hash, embedding, dimensions)
+                     VALUES (hex(randomblob(32)), x'0001', 256);
+                 INSERT INTO personal_semantic_prototype(key_hash, category, embedding, dimensions)
+                     VALUES (hex(randomblob(32)), 'FOCUS_WORK', x'0001', 256);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let repo = database.abstraction_map_repo();
+        let minted = repo.embedding_salt().unwrap();
+        assert_ne!(minted, EmbeddingSalt::UNSALTED);
+        assert_eq!(
+            minted,
+            repo.embedding_salt().unwrap(),
+            "the minted salt is persisted, not regenerated per call"
+        );
+
+        let connection = database.connection().unwrap();
+        let cached: i64 = connection
+            .query_row("SELECT COUNT(*) FROM semantic_embedding_cache", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let prototypes: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM personal_semantic_prototype",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            (cached, prototypes),
+            (0, 0),
+            "vectors from the previous space must not survive a new salt"
+        );
+    }
+
+    /// Migration 0031's header states in the present tense that the salt this
+    /// table holds is the key the shipped classifier computes under. Nothing in
+    /// the test suite runs `main`, so that sentence is pinned against the
+    /// startup source itself — the same technique `tests/published_claims.rs`
+    /// uses on PRIVACY.md, for the same reason. 0031 shipped once with the
+    /// header written and the wiring absent; this is what makes that state red
+    /// instead of quiet.
+    #[test]
+    fn startup_builds_the_builtin_classifier_under_the_device_salt() {
+        const STARTUP: &str = include_str!("../main.rs");
+        assert!(
+            STARTUP.contains(".embedding_salt()"),
+            "startup no longer reads the device salt, so migration 0031 mints a key \
+             nothing uses and pays a cache wipe for it"
+        );
+        assert!(
+            STARTUP.contains("EmbeddingSimilarityPlugin::builtin_salted("),
+            "startup no longer builds the built-in classifier under the device salt"
+        );
+        assert!(
+            !STARTUP.contains("EmbeddingSimilarityPlugin::builtin("),
+            "startup builds the built-in classifier on `EmbeddingSalt::UNSALTED`, which \
+             every reader of `plugin.rs` knows. Sketches cached under it are recoverable \
+             offline from published source, which is the exposure 0031 says it closed"
+        );
+    }
+
+    /// The ceiling is the whole point of migration 0030, and nothing exercised
+    /// it. `update_batch_retry_state` applies it in the same statement as the
+    /// increment, so the boundary is where a mistake would live: an off-by-one
+    /// either abandons a batch one attempt early or lets it retry forever.
+    ///
+    /// `>= UPLOAD_BATCH_ATTEMPT_CEILING` is checked against `attempt_count + 1`,
+    /// so the batch is abandoned by the attempt that reaches the ceiling, not
+    /// the one after it. Abandonment is terminal: `resumable_batches` must stop
+    /// returning the row in the same transition that writes the status, or the
+    /// retry loop keeps picking up a batch nothing will ever send.
+    #[test]
+    fn the_attempt_ceiling_abandons_a_batch_exactly_once_it_is_reached() {
+        use crate::persistence::UploadBatchStatus;
+        use chrono::TimeZone;
+
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.upload_batch_repo();
+        let past = chrono::Utc.timestamp_opt(1, 0).unwrap();
+
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO upload_batch(batch_id, status, attempt_count, next_attempt_at)
+                 VALUES ('ceiling', 'failed', ?1, 0)",
+                rusqlite::params![super::UPLOAD_BATCH_ATTEMPT_CEILING - 2],
+            )
+            .unwrap();
+
+        // One below the ceiling: still owed to the backend, still resumable.
+        repo.mark_failed("ceiling", past, "transport").unwrap();
+        let (status, attempts) = batch_row(&database, "ceiling");
+        assert_eq!(status, "failed");
+        assert_eq!(attempts, i64::from(super::UPLOAD_BATCH_ATTEMPT_CEILING) - 1);
+        assert!(
+            repo.resumable_batches(chrono::Utc::now())
+                .unwrap()
+                .iter()
+                .any(|batch| batch.batch_id == "ceiling"),
+            "a batch below the ceiling must still be retried"
+        );
+
+        // The attempt that reaches the ceiling is the one that abandons it.
+        repo.mark_failed("ceiling", past, "transport").unwrap();
+        let (status, attempts) = batch_row(&database, "ceiling");
+        assert_eq!(status, "abandoned");
+        assert_eq!(attempts, i64::from(super::UPLOAD_BATCH_ATTEMPT_CEILING));
+        assert!(
+            !repo
+                .resumable_batches(chrono::Utc::now())
+                .unwrap()
+                .iter()
+                .any(|batch| batch.batch_id == "ceiling"),
+            "an abandoned batch is terminal and must never be resumed"
+        );
+
+        // The status round-trips through the parser rather than only the CHECK.
+        assert_eq!(
+            super::upload_status_from_str("abandoned").unwrap(),
+            UploadBatchStatus::Abandoned
+        );
+    }
+
+    fn batch_row(database: &SqlitePersistence, batch_id: &str) -> (String, i64) {
+        database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT status, attempt_count FROM upload_batch WHERE batch_id = ?1",
+                [batch_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+    }
+
+    // ---------------------------------------------------------------------
+    // Triage: which applications Velvt could not read
+    // ---------------------------------------------------------------------
+
+    /// `key(n)` builds a distinct 64-character hex key, which is what every
+    /// identity column CHECKs for.
+    fn key(seed: u8) -> String {
+        format!("{seed:02x}").repeat(32)
+    }
+
+    fn unlogged_event(
+        event_id: &str,
+        app_key: &str,
+        local_name: Option<&str>,
+        occurred_at: chrono::DateTime<Utc>,
+        duration_seconds: u64,
+    ) -> crate::persistence::RawEventEntry {
+        crate::persistence::RawEventEntry {
+            event_id: event_id.into(),
+            stable_id: format!("abs_{event_id}"),
+            label: "unlogged".into(),
+            local_display_label: None,
+            // The raw application name, which migration 0001 documents this
+            // column as holding for exactly the events that matched no seed and
+            // no correction — every event in a triage list.
+            local_name_suggestion: local_name.map(str::to_owned),
+            category: "UNLOGGED".into(),
+            taxonomy_version: "mvp-1".into(),
+            classification_tier: "fallback".into(),
+            classification_status: "unclassified".into(),
+            classification_confidence: "none".into(),
+            classification_source: "fallback".into(),
+            occurred_at,
+            duration_seconds,
+            upload_eligible: false,
+            app_stable_id: Some(app_key.to_owned()),
+            app_scope_eligible: true,
+        }
+    }
+
+    /// Five minutes is the floor, and it is inclusive: an application observed
+    /// for exactly five minutes is on the list, one observed for a second less
+    /// is not. A list of one-second curiosities is not a task anyone will do.
+    #[test]
+    fn the_triage_floor_is_five_minutes_and_includes_the_boundary() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        // Summed across two events, so the floor is tested against observed
+        // time rather than a single dwell.
+        events
+            .insert(&unlogged_event(
+                "at-floor-a",
+                &key(1),
+                Some("Figma"),
+                now,
+                200,
+            ))
+            .unwrap();
+        events
+            .insert(&unlogged_event(
+                "at-floor-b",
+                &key(1),
+                Some("Figma"),
+                now,
+                100,
+            ))
+            .unwrap();
+        events
+            .insert(&unlogged_event(
+                "under-floor",
+                &key(2),
+                Some("Calculator"),
+                now,
+                299,
+            ))
+            .unwrap();
+
+        let entries = events.unclassified_triage(14, 300, 8).unwrap();
+
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].app_stable_id, key(1));
+        assert_eq!(entries[0].display_name, "Figma");
+        assert_eq!(entries[0].seconds_observed, 300);
+        assert_eq!(entries[0].event_count, 2);
+    }
+
+    /// The floor cannot be lowered by a caller. It is the difference between a
+    /// list of things to do and an inventory of everything installed.
+    #[test]
+    fn a_caller_cannot_ask_for_a_lower_floor_than_the_published_one() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        events
+            .insert(&unlogged_event(
+                "brief",
+                &key(3),
+                Some("Calculator"),
+                Utc::now(),
+                30,
+            ))
+            .unwrap();
+
+        assert!(events.unclassified_triage(14, 0, 8).unwrap().is_empty());
+    }
+
+    /// The window is the published retention window. An event just inside it
+    /// counts; one just outside does not, and asking for a longer window cannot
+    /// reach evidence that no longer exists.
+    #[test]
+    fn the_triage_window_is_bounded_by_the_retention_window() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        events
+            .insert(&unlogged_event(
+                "inside",
+                &key(4),
+                Some("Obsidian"),
+                now - chrono::Duration::days(13),
+                600,
+            ))
+            .unwrap();
+        events
+            .insert(&unlogged_event(
+                "outside",
+                &key(5),
+                Some("Sketch"),
+                now - chrono::Duration::days(15),
+                600,
+            ))
+            .unwrap();
+
+        let fortnight = events.unclassified_triage(14, 300, 8).unwrap();
+        assert_eq!(fortnight.len(), 1, "{fortnight:?}");
+        assert_eq!(fortnight[0].display_name, "Obsidian");
+
+        // Clamped, not honoured: a 90-day request returns the same fortnight.
+        let asked_for_more = events.unclassified_triage(90, 300, 8).unwrap();
+        assert_eq!(asked_for_more.len(), 1);
+
+        // And a narrower request is still honoured.
+        assert!(events.unclassified_triage(7, 300, 8).unwrap().is_empty());
+    }
+
+    /// Ranked by observed time, longest first, and capped at eight however many
+    /// qualify.
+    #[test]
+    fn the_triage_list_is_ranked_by_time_and_capped_at_eight() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        for index in 0..10_u8 {
+            events
+                .insert(&unlogged_event(
+                    &format!("ranked-{index}"),
+                    &key(index + 10),
+                    Some(&format!("App {index}")),
+                    now,
+                    300 + u64::from(index) * 60,
+                ))
+                .unwrap();
+        }
+
+        let entries = events.unclassified_triage(14, 300, 8).unwrap();
+
+        assert_eq!(entries.len(), 8);
+        assert_eq!(entries[0].display_name, "App 9");
+        assert!(entries
+            .windows(2)
+            .all(|pair| pair[0].seconds_observed >= pair[1].seconds_observed));
+        // Asking for more than the cap does not widen it.
+        assert_eq!(events.unclassified_triage(14, 300, 50).unwrap().len(), 8);
+    }
+
+    /// UNLOGGED only. That is the state `is_confident_evidence` excludes, so it
+    /// is the time that reaches neither the drift gate nor the anchor — which is
+    /// what makes it worth a user's attention. A classified application is not
+    /// unreadable and must never appear.
+    #[test]
+    fn only_unlogged_time_reaches_the_triage_list() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        let mut classified = unlogged_event("classified", &key(6), Some("Slack"), now, 3_600);
+        classified.category = "COMMUNICATION".into();
+        classified.classification_status = "classified".into();
+        events.insert(&classified).unwrap();
+        // An event with no app identity at all cannot be generalized to an app,
+        // so there is nothing to teach and nothing to show.
+        let mut anonymous = unlogged_event("anonymous", &key(7), Some("Ghost"), now, 3_600);
+        anonymous.app_stable_id = None;
+        events.insert(&anonymous).unwrap();
+
+        assert!(events.unclassified_triage(14, 300, 8).unwrap().is_empty());
+    }
+
+    /// An hour Velvt holds no name for is still an hour the user spent, so the
+    /// row is named plainly instead of dropped. Omitting it hid real time from
+    /// the one list whose entire claim is that it shows the time Velvt could not
+    /// read -- and the user can usually still answer, because the row carries the
+    /// time observed and they know what they had open for an hour.
+    #[test]
+    fn an_application_velvt_holds_no_name_for_is_named_plainly() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        events
+            .insert(&unlogged_event("nameless", &key(8), None, now, 3_600))
+            .unwrap();
+
+        let entries = events.unclassified_triage(14, 300, 8).unwrap();
+
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].app_stable_id, key(8));
+        assert_eq!(entries[0].display_name, "Unnamed application");
+        assert_eq!(entries[0].seconds_observed, 3_600);
+        // The floor still applies to it: unnamed does not mean exempt.
+        assert!(events.unclassified_triage(14, 7_200, 8).unwrap().is_empty());
+    }
+
+    /// Teaching an application has to remove it from the list. Nothing rewrites
+    /// the past events, so without this the application the user just explained
+    /// would be back at the top of the list tomorrow — and the one action the
+    /// surface offers would look like it did nothing.
+    #[test]
+    fn an_application_the_user_has_already_taught_leaves_the_list() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        let now = Utc::now();
+        events
+            .insert(&unlogged_event(
+                "taught",
+                &key(9),
+                Some("Linear"),
+                now,
+                3_600,
+            ))
+            .unwrap();
+        assert_eq!(events.unclassified_triage(14, 300, 8).unwrap().len(), 1);
+
+        maps.save_app_scope_override(&key(9), None, "TASK_MANAGEMENT", Some("Tickets"))
+            .unwrap();
+
+        assert!(events.unclassified_triage(14, 300, 8).unwrap().is_empty());
+    }
+
+    /// The same, when the rule was taught under the bundle identity: the name
+    /// key may differ (a rename, a localized name) while the application is the
+    /// same one, and it must still drop off the list.
+    #[test]
+    fn a_rule_taught_under_the_bundle_identity_also_clears_the_list() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        let metadata = crate::persistence::DeclaredAppMetadata {
+            app_bundle_stable_id: Some(key(0x2a)),
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
+        };
+        events
+            .insert_with_declared_metadata(
+                &unlogged_event("bundled", &key(0x1a), Some("Code"), Utc::now(), 3_600),
+                &metadata,
+            )
+            .unwrap();
+
+        let entries = events.unclassified_triage(14, 300, 8).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].app_bundle_stable_id.as_deref(),
+            Some(key(0x2a).as_str()),
+            "the bundle identity has to reach the surface that writes the rule"
+        );
+
+        // A rule under a different NAME key but the same bundle key.
+        maps.save_app_scope_override(&key(0x3a), Some(&key(0x2a)), "FOCUS_WORK", None)
+            .unwrap();
+
+        assert!(events.unclassified_triage(14, 300, 8).unwrap().is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // Declared metadata and the app rung
+    // ---------------------------------------------------------------------
+
+    /// An event with no declared metadata is written exactly as it was before
+    /// the columns existed. Absent metadata must degrade to today's behaviour,
+    /// and the first requirement of that is that absence stays NULL rather than
+    /// becoming an empty declaration.
+    #[test]
+    fn an_event_without_declared_metadata_stores_nulls() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        database
+            .raw_event_repo()
+            .insert(&unlogged_event(
+                "plain",
+                &key(0x4a),
+                Some("App"),
+                Utc::now(),
+                60,
+            ))
+            .unwrap();
+
+        let stored: (Option<String>, Option<String>, Option<String>) = database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT app_bundle_stable_id, declared_app_category, document_type_ids
+                 FROM raw_event_buffer WHERE event_id = 'plain'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(stored, (None, None, None));
+    }
+
+    /// The serialisation migration 0033 documents: one line of space-separated
+    /// identifiers, matchable with a padded `instr`.
+    #[test]
+    fn declared_document_types_store_as_one_space_separated_line() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let metadata = crate::persistence::DeclaredAppMetadata {
+            app_bundle_stable_id: Some(key(0x5a)),
+            declared_app_category: Some("public.app-category.developer-tools".into()),
+            document_type_ids: vec!["public.plain-text".into(), "public.source-code".into()],
+        };
+        database
+            .raw_event_repo()
+            .insert_with_declared_metadata(
+                &unlogged_event("declared", &key(0x6a), Some("Code"), Utc::now(), 60),
+                &metadata,
+            )
+            .unwrap();
+
+        let connection = database.connection().unwrap();
+        let stored: String = connection
+            .query_row(
+                "SELECT document_type_ids FROM raw_event_buffer WHERE event_id = 'declared'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "public.plain-text public.source-code");
+
+        // The padded match documented in 0033: one type is found, and a longer
+        // identifier that merely starts with it is not.
+        let matched: bool = connection
+            .query_row(
+                "SELECT instr(' ' || document_type_ids || ' ', ' public.source-code ') > 0
+                 FROM raw_event_buffer WHERE event_id = 'declared'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(matched);
+        let over_matched: bool = connection
+            .query_row(
+                "SELECT instr(' ' || document_type_ids || ' ', ' public.plain ') > 0
+                 FROM raw_event_buffer WHERE event_id = 'declared'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!over_matched);
+    }
+
+    /// One correction writes both identities, and a later correction made from
+    /// an event that carried no bundle id must not erase the bundle key the
+    /// rule already had.
+    #[test]
+    fn an_event_sourced_app_rule_records_both_identities() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        events
+            .insert_with_declared_metadata(
+                &unlogged_event("with-bundle", &key(0x7a), Some("Code"), Utc::now(), 60),
+                &crate::persistence::DeclaredAppMetadata {
+                    app_bundle_stable_id: Some(key(0x8a)),
+                    ..crate::persistence::DeclaredAppMetadata::ABSENT
+                },
+            )
+            .unwrap();
+
+        assert!(maps
+            .save_personal_app_override("with-bundle", "FOCUS_WORK", Some("Editing"))
+            .unwrap());
+
+        let rule = maps.app_scope_override(&key(0x7a)).unwrap().unwrap();
+        assert_eq!(rule.bundle_key_hash.as_deref(), Some(key(0x8a).as_str()));
+        assert_eq!(rule.category, "FOCUS_WORK");
+        // The same rule is reachable from either identity, which is what makes
+        // the bundle rung a rung rather than a second table.
+        assert_eq!(
+            maps.bundle_app_override(&key(0x8a))
+                .unwrap()
+                .unwrap()
+                .app_key_hash,
+            key(0x7a)
+        );
+
+        // A second correction from an event with no bundle id at all.
+        let mut later = unlogged_event("no-bundle", &key(0x7a), Some("Code"), Utc::now(), 60);
+        later.event_id = "no-bundle".into();
+        events.insert(&later).unwrap();
+        assert!(maps
+            .save_personal_app_override("no-bundle", "REFERENCE", None)
+            .unwrap());
+
+        let rule = maps.app_scope_override(&key(0x7a)).unwrap().unwrap();
+        assert_eq!(rule.category, "REFERENCE");
+        assert_eq!(
+            rule.bundle_key_hash.as_deref(),
+            Some(key(0x8a).as_str()),
+            "a correction made without a bundle id must not erase the one the rule had"
+        );
+        assert_eq!(rule.activity_name.as_deref(), Some("Editing"));
+        assert_eq!(rule.correction_count, 2);
+    }
+
+    /// Teaching the same application twice is teaching it once. The count still
+    /// advances, because how often someone had to repeat themselves is the
+    /// signal that something upstream is wrong.
+    #[test]
+    fn teaching_an_application_is_idempotent() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+
+        maps.save_app_scope_override(&key(0x9a), Some(&key(0xaa)), "FOCUS_WORK", Some("Writing"))
+            .unwrap();
+        maps.save_app_scope_override(&key(0x9a), Some(&key(0xaa)), "FOCUS_WORK", Some("Writing"))
+            .unwrap();
+
+        let rule = maps.app_scope_override(&key(0x9a)).unwrap().unwrap();
+        assert_eq!(rule.category, "FOCUS_WORK");
+        assert_eq!(rule.correction_count, 2);
+        assert_eq!(
+            database
+                .connection()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM personal_app_override", [], |row| row
+                    .get::<_, u64>(
+                    0
+                ))
+                .unwrap(),
+            1
+        );
+    }
+
+    /// The history has to show app rules, marked as app rules: until it did, a
+    /// user could neither see nor undo what they had taught at app scope, and
+    /// removing the window rule left the engine falling through into the
+    /// surviving app rule and answering exactly as before.
+    ///
+    /// Two separate things the user said here -- a window correction, and an
+    /// application taught through triage -- so two rows. The two rungs of ONE
+    /// correction are a different case and are one row:
+    /// `a_correction_that_wrote_both_rungs_is_one_rule_in_the_history`.
+    #[test]
+    fn the_correction_history_shows_both_rungs_with_their_scope() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+        let events = database.raw_event_repo();
+        events
+            .insert(&unlogged_event(
+                "shown",
+                &key(0xba),
+                Some("Figma"),
+                Utc::now(),
+                600,
+            ))
+            .unwrap();
+        maps.upsert(&AbstractionMapping {
+            key_hash: key(0xca),
+            stable_id: "abs_window".into(),
+            label: "reference:inferred".into(),
+            category: "REFERENCE".into(),
+            taxonomy_version: "mvp-1".into(),
+            classification_tier: "exact_match".into(),
+            classification_status: "classified".into(),
+            classification_confidence: "high".into(),
+            classification_source: "user_rule".into(),
+            display_name: None,
+        })
+        .unwrap();
+        maps.save_personal_override("abs_window", "REFERENCE", Some("Reading"))
+            .unwrap();
+        maps.save_app_scope_override(&key(0xba), None, "FOCUS_WORK", Some("Design work"))
+            .unwrap();
+
+        let (rules, total) = maps.search_personal_overrides(None, 0, 20).unwrap();
+
+        assert_eq!(total, 2);
+        let app_rule = rules
+            .iter()
+            .find(|rule| rule.scope == CorrectionScope::App)
+            .expect("the app rung must be listed");
+        assert_eq!(
+            app_rule.stable_id,
+            key(0xba),
+            "an app rule is addressed by its application key, which is what Remove needs"
+        );
+        assert_eq!(app_rule.local_activity_name.as_deref(), Some("Design work"));
+        assert!(rules
+            .iter()
+            .any(|rule| rule.scope == CorrectionScope::Window && rule.stable_id == "abs_window"));
+        // And it is searchable by the name the user typed, like any other rule.
+        let (matched, count) = maps
+            .search_personal_overrides(Some("design work"), 0, 20)
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(matched[0].scope, CorrectionScope::App);
+    }
+
+    /// Removing an app rule removes the typed name with it. `display_name`
+    /// records no provenance and its upsert coalesces, so a name the user typed
+    /// would otherwise survive its own undo.
+    #[test]
+    fn removing_an_app_rule_also_clears_the_mirrored_typed_name() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+        let events = database.raw_event_repo();
+        let mut event = unlogged_event("mirrored", &key(0xda), Some("Figma"), Utc::now(), 600);
+        event.stable_id = "abs_mirrored".into();
+        events.insert(&event).unwrap();
+        maps.upsert(&AbstractionMapping {
+            key_hash: key(0xea),
+            stable_id: "abs_mirrored".into(),
+            label: "document:inferred".into(),
+            category: "FOCUS_WORK".into(),
+            taxonomy_version: "mvp-1".into(),
+            classification_tier: "exact_match".into(),
+            classification_status: "classified".into(),
+            classification_confidence: "high".into(),
+            classification_source: "user_rule".into(),
+            display_name: Some("Design work".into()),
+        })
+        .unwrap();
+        maps.save_app_scope_override(&key(0xda), None, "FOCUS_WORK", Some("Design work"))
+            .unwrap();
+
+        assert!(maps.remove_app_scope_override(&key(0xda)).unwrap());
+
+        assert!(maps.app_scope_override(&key(0xda)).unwrap().is_none());
+        assert_eq!(maps.get("abs_mirrored").unwrap().display_name, None);
+        // A second removal is a no-op rather than an error: the rule is gone,
+        // which is what the caller asked for.
+        assert!(!maps.remove_app_scope_override(&key(0xda)).unwrap());
+    }
+
+    /// Editing a saved rule generalizes to the application, the way correcting
+    /// an event does. Without it the app rung kept the previous category for
+    /// every other window of that application: the window the user was looking
+    /// at changed and nothing else did.
+    #[test]
+    fn editing_a_saved_rule_can_generalize_from_the_stable_id_alone() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+        let events = database.raw_event_repo();
+        let mut event = unlogged_event("edited", &key(0xfa), Some("Cursor"), Utc::now(), 600);
+        event.stable_id = "abs_edited".into();
+        events
+            .insert_with_declared_metadata(
+                &event,
+                &crate::persistence::DeclaredAppMetadata {
+                    app_bundle_stable_id: Some(key(0x11)),
+                    ..crate::persistence::DeclaredAppMetadata::ABSENT
+                },
+            )
+            .unwrap();
+
+        assert!(maps
+            .save_personal_app_override_by_stable_id("abs_edited", "FOCUS_WORK", Some("Editing"))
+            .unwrap());
+
+        let rule = maps.app_scope_override(&key(0xfa)).unwrap().unwrap();
+        assert_eq!(rule.category, "FOCUS_WORK");
+        assert_eq!(rule.bundle_key_hash.as_deref(), Some(key(0x11).as_str()));
+
+        // A browser window carrying a site context is not generalizable: one
+        // tab says nothing about the next.
+        let mut browser = unlogged_event("tab", &key(0x12), Some("Chrome"), Utc::now(), 600);
+        browser.stable_id = "abs_tab".into();
+        browser.app_scope_eligible = false;
+        events.insert(&browser).unwrap();
+        assert!(!maps
+            .save_personal_app_override_by_stable_id("abs_tab", "REFERENCE", None)
+            .unwrap());
+        assert!(maps.app_scope_override(&key(0x12)).unwrap().is_none());
+    }
+
+    /// The engine consults the bundle rung with the same read it uses for the
+    /// name rung, which is only sound because the two keys live in different
+    /// hash domains. This is that read, answering for both.
+    #[test]
+    fn the_app_rung_answers_for_either_identity() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        database
+            .abstraction_map_repo()
+            .save_app_scope_override(&key(0x13), Some(&key(0x14)), "FOCUS_WORK", Some("Editing"))
+            .unwrap();
+        let store = database.abstraction_mapping_store();
+
+        for identity in [key(0x13), key(0x14)] {
+            let found = store.personal_app_override(&identity).unwrap().unwrap();
+            assert_eq!(found.category, "FOCUS_WORK");
+            assert_eq!(found.local_activity_name.as_deref(), Some("Editing"));
+        }
+        assert!(store.personal_app_override(&key(0x15)).unwrap().is_none());
+    }
+
+    /// Counts the rows of the app rung, which is where "one application, one
+    /// rule" either holds or does not.
+    fn app_rule_count(database: &SqlitePersistence) -> u64 {
+        database
+            .connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM personal_app_override", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+
+    /// The rename bundle keying exists to solve: the same application, the same
+    /// bundle identifier, a new name. The rule has to follow it.
+    ///
+    /// The write used to abort here with SQLITE_CONSTRAINT: the upsert conflicts
+    /// on `app_key_hash`, the new name is not in conflict, and the UNIQUE partial
+    /// index on `bundle_key_hash` (0034) is a second constraint no upsert can
+    /// target. Converging instead of erroring is the whole feature.
+    #[test]
+    fn renaming_an_application_keeps_the_rule_it_was_taught() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        let store = database.abstraction_mapping_store();
+        let bundle = key(0x16);
+        let old_name = key(0x17);
+        let new_name = key(0x18);
+        let bundled = |bundle: &str| crate::persistence::DeclaredAppMetadata {
+            app_bundle_stable_id: Some(bundle.to_owned()),
+            ..crate::persistence::DeclaredAppMetadata::ABSENT
+        };
+
+        // Taught under the name macOS reported at the time.
+        events
+            .insert_with_declared_metadata(
+                &unlogged_event("before-rename", &old_name, Some("Code"), Utc::now(), 600),
+                &bundled(&bundle),
+            )
+            .unwrap();
+        assert!(maps
+            .save_personal_app_override("before-rename", "FOCUS_WORK", Some("Editing"))
+            .unwrap());
+
+        // The next release reports a different name for the same bundle.
+        events
+            .insert_with_declared_metadata(
+                &unlogged_event(
+                    "after-rename",
+                    &new_name,
+                    Some("Visual Studio Code"),
+                    Utc::now(),
+                    600,
+                ),
+                &bundled(&bundle),
+            )
+            .unwrap();
+        assert!(
+            maps.save_personal_app_override("after-rename", "FOCUS_WORK", None)
+                .unwrap(),
+            "the app-scope write must converge on the bundle, not abort on its UNIQUE index"
+        );
+
+        // One application, one rule, now answering to the name it reports today.
+        assert_eq!(app_rule_count(&database), 1);
+        let rule = maps.bundle_app_override(&bundle).unwrap().unwrap();
+        assert_eq!(rule.app_key_hash, new_name);
+        assert_eq!(rule.category, "FOCUS_WORK");
+        assert_eq!(
+            rule.activity_name.as_deref(),
+            Some("Editing"),
+            "the name the user typed survives the rename"
+        );
+        assert_eq!(
+            rule.correction_count, 2,
+            "the re-key keeps the count: how often someone repeated themselves is the signal"
+        );
+        assert!(maps.app_scope_override(&old_name).unwrap().is_none());
+
+        // And the correction still applies to the renamed application, by either
+        // identity the next event will carry.
+        for identity in [&new_name, &bundle] {
+            let found = store.personal_app_override(identity).unwrap().unwrap();
+            assert_eq!(found.category, "FOCUS_WORK");
+            assert_eq!(found.local_activity_name.as_deref(), Some("Editing"));
+        }
+    }
+
+    /// The same rename, when a rule already exists under the new name -- taught
+    /// while the client reported no bundle identifier, so nothing tied the two
+    /// together. Two rows would then claim one bundle, which the index forbids
+    /// and which would make the applied rule depend on scan order. The
+    /// application has one identity, so it keeps one rule.
+    #[test]
+    fn a_rename_into_a_name_already_taught_converges_on_one_rule() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+        let bundle = key(0x19);
+        let old_name = key(0x1a);
+        let new_name = key(0x1b);
+
+        maps.save_app_scope_override(&old_name, Some(&bundle), "REFERENCE", None)
+            .unwrap();
+        maps.save_app_scope_override(&new_name, None, "PASSIVE_CONSUMPTION", None)
+            .unwrap();
+        assert_eq!(app_rule_count(&database), 2);
+
+        maps.save_app_scope_override(&new_name, Some(&bundle), "FOCUS_WORK", Some("Editing"))
+            .unwrap();
+
+        assert_eq!(app_rule_count(&database), 1);
+        let rule = maps.app_scope_override(&new_name).unwrap().unwrap();
+        assert_eq!(rule.bundle_key_hash.as_deref(), Some(bundle.as_str()));
+        assert_eq!(rule.category, "FOCUS_WORK");
+        assert_eq!(rule.activity_name.as_deref(), Some("Editing"));
+        assert!(maps.app_scope_override(&old_name).unwrap().is_none());
+        // Still one rule in the history, not the two it was written from.
+        let (rules, total) = maps.search_personal_overrides(None, 0, 20).unwrap();
+        assert_eq!(total, 1, "{rules:?}");
+        assert_eq!(rules[0].scope, CorrectionScope::App);
+    }
+
+    /// One correction is one rule in the history.
+    ///
+    /// `CorrectEventClassification` has written both rungs since 0017, so
+    /// listing the app table unfiltered showed every past correction twice for
+    /// every existing user. The window rule is the one that is shown, because it
+    /// is the one whose removal takes both rungs with it.
+    #[test]
+    fn a_correction_that_wrote_both_rungs_is_one_rule_in_the_history() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+        let events = database.raw_event_repo();
+        let app = key(0x1c);
+        let mut event = unlogged_event("paired", &app, Some("Code"), Utc::now(), 600);
+        event.stable_id = "abs_paired".into();
+        events.insert(&event).unwrap();
+        maps.upsert(&AbstractionMapping {
+            key_hash: key(0x1d),
+            stable_id: "abs_paired".into(),
+            label: "document:inferred".into(),
+            category: "FOCUS_WORK".into(),
+            taxonomy_version: "mvp-1".into(),
+            classification_tier: "exact_match".into(),
+            classification_status: "classified".into(),
+            classification_confidence: "high".into(),
+            classification_source: "user_rule".into(),
+            display_name: None,
+        })
+        .unwrap();
+
+        // Exactly the pair the correction path writes, in the order it writes it.
+        maps.save_personal_override("abs_paired", "FOCUS_WORK", Some("Editing"))
+            .unwrap();
+        assert!(maps
+            .save_personal_app_override("paired", "FOCUS_WORK", Some("Editing"))
+            .unwrap());
+
+        let (rules, total) = maps.search_personal_overrides(None, 0, 20).unwrap();
+        assert_eq!(total, 1, "one action reads as one rule: {rules:?}");
+        assert_eq!(rules[0].scope, CorrectionScope::Window);
+        assert_eq!(rules[0].stable_id, "abs_paired");
+
+        // Hidden from the list is not absent from the engine: the app rung is
+        // still there, still answering for every other window of that
+        // application.
+        assert_eq!(
+            maps.app_scope_override(&app).unwrap().unwrap().category,
+            "FOCUS_WORK"
+        );
+        // And removing the row the user can see removes both rungs, which is why
+        // this is the row that is shown.
+        assert!(maps.remove_personal_override("abs_paired").unwrap());
+        assert!(maps.app_scope_override(&app).unwrap().is_none());
+    }
+
+    /// A rule taught through triage has no window rung behind it, so it is a
+    /// rule of its own and stays visible -- including after a later window
+    /// correction touches the same row, because those are two separate things
+    /// the user said.
+    #[test]
+    fn a_rule_taught_about_an_application_keeps_its_own_place_in_the_history() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+        let events = database.raw_event_repo();
+        let app = key(0x1e);
+        let mut event =
+            unlogged_event("taught-then-corrected", &app, Some("Code"), Utc::now(), 600);
+        event.stable_id = "abs_taught".into();
+        events.insert(&event).unwrap();
+
+        maps.save_app_scope_override(&app, None, "FOCUS_WORK", Some("Editing"))
+            .unwrap();
+        let (rules, total) = maps.search_personal_overrides(None, 0, 20).unwrap();
+        assert_eq!(total, 1, "{rules:?}");
+        assert_eq!(rules[0].scope, CorrectionScope::App);
+
+        // A later correction of one window of that application writes the app
+        // rung again, as the paired rung. The row the user taught must not
+        // disappear underneath them.
+        assert!(maps
+            .save_personal_app_override("taught-then-corrected", "REFERENCE", None)
+            .unwrap());
+        let (rules, total) = maps.search_personal_overrides(None, 0, 20).unwrap();
+        assert_eq!(total, 1, "{rules:?}");
+        assert_eq!(rules[0].scope, CorrectionScope::App);
+        assert_eq!(rules[0].category, "REFERENCE");
+    }
+
+    /// The rules already on disk. Before 0035 the only writer of this table was
+    /// the paired correction path, so the column's default of 0 is what makes a
+    /// correction made last month stop reading as two rules -- and that can only
+    /// be checked on the upgrade path, with a row written before the column
+    /// existed.
+    #[test]
+    fn migration_0035_reads_existing_app_rules_as_the_paired_rung() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        for migration in super::EMBEDDED_MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version < 35)
+        {
+            connection.execute_batch(migration.sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                    rusqlite::params![migration.version, migration.name],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO personal_app_override(app_key_hash, category, activity_name)
+                 VALUES (?1, 'FOCUS_WORK', 'Editing')",
+                [key(0x1f)],
+            )
+            .unwrap();
+
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+        database.run_migrations().unwrap();
+
+        let stored: i64 = database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT app_only FROM personal_app_override WHERE app_key_hash = ?1",
+                [key(0x1f)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored, 0,
+            "a row that predates the column was written paired"
+        );
+        let (rules, total) = database
+            .abstraction_map_repo()
+            .search_personal_overrides(None, 0, 20)
+            .unwrap();
+        assert_eq!(
+            total, 0,
+            "a pre-0035 app rung is the second rung of a correction, not a rule of its own: {rules:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Removing a correction: both of its rungs, and only its own
+    // ---------------------------------------------------------------------
+
+    /// The mapping a window rule needs in order to exist at all.
+    fn window_mapping(stable_id: &str, key_hash: &str) -> AbstractionMapping {
+        AbstractionMapping {
+            key_hash: key_hash.to_owned(),
+            stable_id: stable_id.to_owned(),
+            label: "document:inferred".into(),
+            category: "FOCUS_WORK".into(),
+            taxonomy_version: "mvp-1".into(),
+            classification_tier: "exact_match".into(),
+            classification_status: "classified".into(),
+            classification_confidence: "high".into(),
+            classification_source: "user_rule".into(),
+            display_name: None,
+        }
+    }
+
+    /// The app rung recorded on a window rule, which is what makes removal a key
+    /// lookup rather than a guess at a fourteen-day event cache.
+    fn paired_app_key(database: &SqlitePersistence, key_hash: &str) -> Option<String> {
+        database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT app_key_hash FROM personal_override WHERE key_hash = ?1",
+                [key_hash],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// A rule the user taught about an application from the triage list is a rule
+    /// of its own (0035: sticky, never cleared) and must survive the removal of
+    /// an unrelated window rule that happens to name the same application.
+    ///
+    /// The delete carried no `app_only` predicate, so one Remove silently
+    /// destroyed something the user had taught somewhere else entirely -- the
+    /// 0035 invariant held on the write path and was broken on the delete path.
+    #[test]
+    fn removing_a_window_rule_keeps_a_rule_taught_about_the_application() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+        let events = database.raw_event_repo();
+        let app = key(0x20);
+        let mut event = unlogged_event("triaged-app", &app, Some("Linear"), Utc::now(), 600);
+        event.stable_id = "abs_window".into();
+        events.insert(&event).unwrap();
+        maps.upsert(&window_mapping("abs_window", &key(0x21)))
+            .unwrap();
+
+        // Taught from the triage list: there is no window behind this, so the app
+        // rung is the whole rule.
+        maps.save_app_scope_override(&app, None, "TASK_MANAGEMENT", Some("Tickets"))
+            .unwrap();
+        // Later, one window of the same application is corrected, which writes a
+        // window rule and touches the app rung as its paired rung.
+        maps.save_personal_override("abs_window", "FOCUS_WORK", Some("Editing"))
+            .unwrap();
+        assert!(maps
+            .save_personal_app_override("triaged-app", "FOCUS_WORK", Some("Editing"))
+            .unwrap());
+
+        assert!(maps.remove_personal_override("abs_window").unwrap());
+
+        assert!(
+            maps.app_scope_override(&app).unwrap().is_some(),
+            "removing the window rule must not destroy what the user taught about the application"
+        );
+        let (rules, total) = maps.search_personal_overrides(None, 0, 20).unwrap();
+        assert_eq!(total, 1, "{rules:?}");
+        assert_eq!(
+            rules[0].scope,
+            CorrectionScope::App,
+            "and it is still listed, so it can still be undone on its own"
+        );
+    }
+
+    /// A browser-tab correction generalizes to nothing (`app_scope_eligible = 0`,
+    /// one site says nothing about the next), so it writes no app rung -- and its
+    /// removal must not delete the browser's rung, which some other correction
+    /// wrote. The delete used to resolve the application from the event rows
+    /// regardless of eligibility and take that rule with it.
+    #[test]
+    fn removing_a_browser_tab_rule_leaves_the_app_rung_it_never_wrote() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+        let events = database.raw_event_repo();
+        let browser = key(0x22);
+        // A browser-wide rung, written before the eligibility gate below existed
+        // -- which is now the only way one can be here, and exactly the row the
+        // old delete destroyed.
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO personal_app_override(app_key_hash, category, app_only)
+                 VALUES (?1, 'REFERENCE', 0)",
+                [browser.as_str()],
+            )
+            .unwrap();
+
+        let mut tab = unlogged_event("tab", &browser, Some("Safari"), Utc::now(), 600);
+        tab.stable_id = "abs_tab".into();
+        tab.app_scope_eligible = false;
+        events.insert(&tab).unwrap();
+        maps.upsert(&window_mapping("abs_tab", &key(0x23))).unwrap();
+        maps.save_personal_override("abs_tab", "FOCUS_WORK", Some("Reading"))
+            .unwrap();
+
+        assert!(
+            paired_app_key(&database, &key(0x23)).is_none(),
+            "a tab's rule records no app rung because none was written for it"
+        );
+
+        assert!(maps.remove_personal_override("abs_tab").unwrap());
+
+        assert!(
+            maps.app_scope_override(&browser).unwrap().is_some(),
+            "removing one tab's rule must not delete a rule about the browser"
+        );
+    }
+
+    /// Remove, on a correction older than the raw-event TTL.
+    ///
+    /// The pairing used to be re-derived by subquerying `raw_event_buffer`, which
+    /// holds fourteen days: past that the subquery was empty, the window rule
+    /// went, the app rung stayed, and Remove reported success having changed
+    /// nothing the user could see. The row it left was `app_only = 0` -- hidden
+    /// from the history by `RULE_SOURCE`, still matched by the triage NOT EXISTS
+    /// -- so the application could be neither listed, removed nor taught again.
+    /// This is not a rare case: it is every removal older than the TTL.
+    #[test]
+    fn removing_a_correction_older_than_the_event_ttl_still_removes_the_app_rung() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+        let events = database.raw_event_repo();
+        let app = key(0x24);
+        let mut event = unlogged_event("aged-out", &app, Some("Code"), Utc::now(), 600);
+        event.stable_id = "abs_aged".into();
+        events.insert(&event).unwrap();
+        maps.upsert(&window_mapping("abs_aged", &key(0x25)))
+            .unwrap();
+        maps.save_personal_override("abs_aged", "FOCUS_WORK", Some("Editing"))
+            .unwrap();
+        assert!(maps
+            .save_personal_app_override("aged-out", "FOCUS_WORK", Some("Editing"))
+            .unwrap());
+        assert_eq!(
+            paired_app_key(&database, &key(0x25)).as_deref(),
+            Some(app.as_str()),
+            "the pairing is recorded while the event is still here"
+        );
+
+        // The TTL sweep, which is what makes this ordinary rather than rare.
+        events
+            .delete_expired_batch(Utc::now() + chrono::Duration::days(1), 100)
+            .unwrap();
+        assert!(events
+            .events_before(Utc::now() + chrono::Duration::days(1))
+            .unwrap()
+            .is_empty());
+
+        assert!(maps.remove_personal_override("abs_aged").unwrap());
+
+        assert!(
+            maps.app_scope_override(&app).unwrap().is_none(),
+            "the app rung goes with the rule the user removed, event cache or no event cache"
+        );
+        assert_eq!(app_rule_count(&database), 0);
+    }
+
+    /// The rules already on disk. A correction made before 0036 recorded no
+    /// pairing, and the migration recovers it for every one whose events are
+    /// still inside the TTL -- so those become removable on upgrade rather than
+    /// only from the next correction on.
+    #[test]
+    fn migration_0036_recovers_the_pairing_of_rules_already_on_disk() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        for migration in super::EMBEDDED_MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version < 36)
+        {
+            connection.execute_batch(migration.sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                    rusqlite::params![migration.version, migration.name],
+                )
+                .unwrap();
+        }
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+        let app = key(0x30);
+        let mut event = unlogged_event("legacy", &app, Some("Code"), Utc::now(), 600);
+        event.stable_id = "abs_legacy".into();
+        database.raw_event_repo().insert(&event).unwrap();
+        database
+            .abstraction_map_repo()
+            .upsert(&window_mapping("abs_legacy", &key(0x31)))
+            .unwrap();
+        // Both rungs exactly as the correction path wrote them before this column
+        // existed: written directly, because the writer now fills a column the
+        // schema at this point does not have.
+        {
+            let connection = database.connection().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO personal_override(key_hash, category, activity_name)
+                     VALUES (?1, 'FOCUS_WORK', 'Editing')",
+                    [key(0x31)],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO personal_app_override(app_key_hash, category, activity_name, app_only)
+                     VALUES (?1, 'FOCUS_WORK', 'Editing', 0)",
+                    [app.as_str()],
+                )
+                .unwrap();
+        }
+
+        database.run_migrations().unwrap();
+
+        assert_eq!(
+            paired_app_key(&database, &key(0x31)).as_deref(),
+            Some(app.as_str()),
+            "the pairing is recoverable while the events are still inside the TTL"
+        );
+        // And the point of recovering it: the rule is removable afterwards, even
+        // once those events are gone.
+        let maps = database.abstraction_map_repo();
+        database
+            .raw_event_repo()
+            .delete_expired_batch(Utc::now() + chrono::Duration::days(1), 100)
+            .unwrap();
+        assert!(maps.remove_personal_override("abs_legacy").unwrap());
+        assert!(maps.app_scope_override(&app).unwrap().is_none());
+    }
+
+    // ---------------------------------------------------------------------
+    // Triage offers only what it is safe to teach
+    // ---------------------------------------------------------------------
+
+    /// Writing an app-wide rule is the only thing the triage list lets a user
+    /// do, so offering an application there is a claim that teaching it is safe.
+    /// A browser never is: an app-wide rule would classify every future tab --
+    /// video, forum, mail -- as whatever was said about one of them, at High
+    /// confidence, and the engine reads that rung before the plugins, so
+    /// `BrowserContextPlugin` would never run for that browser again.
+    #[test]
+    fn the_triage_list_never_offers_an_application_it_is_not_safe_to_teach() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        let browser = key(0x32);
+        let bundle = key(0x33);
+        let metadata = crate::persistence::DeclaredAppMetadata {
+            app_bundle_stable_id: Some(bundle.clone()),
+            ..crate::persistence::DeclaredAppMetadata::ABSENT
+        };
+        // A tab whose site Velvt read and could not classify: UNLOGGED, and not
+        // generalizable to the application.
+        let mut site_read = unlogged_event("site-read", &browser, Some("Safari"), now, 3_600);
+        site_read.app_scope_eligible = false;
+        events
+            .insert_with_declared_metadata(&site_read, &metadata)
+            .unwrap();
+        // A window of the same browser Velvt could read no site from. Eligible on
+        // its own row -- there is no site on it to say otherwise -- which is how
+        // the browser reached this list as "Safari" in the first place.
+        let site_unread = unlogged_event("site-unread", &browser, Some("Safari"), now, 3_600);
+        events
+            .insert_with_declared_metadata(&site_unread, &metadata)
+            .unwrap();
+        // The same browser under a second name key -- a rename, a localized name
+        // -- so the bundle identity has to answer for it too.
+        let renamed = unlogged_event("renamed", &key(0x34), Some("Safari"), now, 3_600);
+        events
+            .insert_with_declared_metadata(&renamed, &metadata)
+            .unwrap();
+        // An ordinary application, so this proves a filter rather than an empty
+        // list.
+        events
+            .insert(&unlogged_event(
+                "editor",
+                &key(0x35),
+                Some("Zed"),
+                now,
+                3_600,
+            ))
+            .unwrap();
+
+        let entries = events.unclassified_triage(14, 300, 8).unwrap();
+
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].app_stable_id, key(0x35));
+    }
+
+    /// And the writer refuses the same identity, rather than trusting whoever
+    /// calls it. The filter above is a query one edit away from being widened,
+    /// while a browser-wide rule is permanent and invisible once written.
+    #[test]
+    fn teaching_an_application_its_own_events_rule_out_is_refused() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        let browser = key(0x36);
+        let bundle = key(0x37);
+        let mut tab = unlogged_event("tab", &browser, Some("Safari"), Utc::now(), 3_600);
+        tab.app_scope_eligible = false;
+        events
+            .insert_with_declared_metadata(
+                &tab,
+                &crate::persistence::DeclaredAppMetadata {
+                    app_bundle_stable_id: Some(bundle.clone()),
+                    ..crate::persistence::DeclaredAppMetadata::ABSENT
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(
+            maps.save_app_scope_override(&browser, Some(&bundle), "FOCUS_WORK", Some("Reading")),
+            Err(super::PersistenceError::AppScopeIneligible)
+        ));
+        // Under a different name key carrying the same bundle identity, which is
+        // how a rename reaches this call.
+        assert!(matches!(
+            maps.save_app_scope_override(&key(0x38), Some(&bundle), "FOCUS_WORK", None),
+            Err(super::PersistenceError::AppScopeIneligible)
+        ));
+        assert_eq!(app_rule_count(&database), 0);
+
+        // An application nothing is known about is still teachable: "no events
+        // left" is the state every rule taught before these columns existed is
+        // in, and refusing those would break editing a saved rule.
+        maps.save_app_scope_override(&key(0x39), None, "FOCUS_WORK", None)
+            .unwrap();
+        assert_eq!(app_rule_count(&database), 1);
+    }
+
+    /// The paired path answers the same question the same way: a browser window
+    /// with no site on it is eligible one row at a time, and generalizing from it
+    /// would write the browser-wide rule the gate exists to prevent.
+    #[test]
+    fn a_correction_on_a_browser_window_does_not_write_an_app_rung() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        let browser = key(0x3b);
+        let mut site_read = unlogged_event("read", &browser, Some("Safari"), Utc::now(), 600);
+        site_read.app_scope_eligible = false;
+        events.insert(&site_read).unwrap();
+        // The window the user actually corrects: same browser, no site read.
+        let mut unread = unlogged_event("unread", &browser, Some("Safari"), Utc::now(), 600);
+        unread.stable_id = "abs_unread".into();
+        events.insert(&unread).unwrap();
+        maps.upsert(&window_mapping("abs_unread", &key(0x3c)))
+            .unwrap();
+
+        assert!(!maps
+            .save_personal_app_override("unread", "FOCUS_WORK", Some("Reading"))
+            .unwrap());
+        assert!(!maps
+            .save_personal_app_override_by_stable_id("abs_unread", "FOCUS_WORK", Some("Reading"))
+            .unwrap());
+        maps.save_personal_override("abs_unread", "FOCUS_WORK", Some("Reading"))
+            .unwrap();
+
+        assert_eq!(app_rule_count(&database), 0);
+        assert!(
+            paired_app_key(&database, &key(0x3c)).is_none(),
+            "the window rule records no pairing, because none was written"
+        );
     }
 }

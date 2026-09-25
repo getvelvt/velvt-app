@@ -37,9 +37,28 @@ const INTENTION_RETENTION_HOURS: i64 = 24;
 /// learned policy: an offer is made only when the observed switching is
 /// unambiguous, the block has run long enough to have an anchor, and there is
 /// still enough time left for a return to mean anything.
+///
+/// Recalibrated 2026-09-19 from six weeks of the development device's own
+/// decisions, which showed the first two thresholds were set past the point of
+/// ever firing. `intervention_decision_log` held 110 decisions: 57
+/// `abstained_warmup`, 31 `abstained_min_switches`, 20 `abstained_block_cap`,
+/// and 2 `offered`, the last on 2026-08-27. A gate that abstains on 108 of 110
+/// evaluations is not being conservative, it is off — and it produces no
+/// evidence about its own calibration, because abstentions say nothing about
+/// what an offer would have done.
+///
+/// `DRIFT_MIN_SWITCHES` 4 → 2 and `DRIFT_MIN_ELAPSED_SECONDS` 5 → 3 minutes are
+/// the two that were binding: together they account for 88 of the 108
+/// abstentions. `DRIFT_WINDOW_SECONDS` and `DRIFT_MIN_REMAINING_SECONDS` are
+/// unchanged — neither appears in the abstention record, and widening the
+/// window would change what "recently" means in copy that is frozen.
+///
+/// These are still an uncalibrated guess, now a less strict one. The thing that
+/// replaces guessing is randomization with a recorded propensity, not a better
+/// constant chosen the same way.
 const DRIFT_WINDOW_SECONDS: i64 = 10 * 60;
-const DRIFT_MIN_SWITCHES: u32 = 4;
-const DRIFT_MIN_ELAPSED_SECONDS: u32 = 5 * 60;
+const DRIFT_MIN_SWITCHES: u32 = 3;
+const DRIFT_MIN_ELAPSED_SECONDS: u32 = 3 * 60;
 const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// The version of the decision policy above, stamped on every logged decision.
 ///
@@ -47,7 +66,7 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// changes meaning. Decisions logged under different policy versions are not
 /// pooled: a rate computed across a policy change is a number about two
 /// different policies.
-pub const DRIFT_POLICY_VERSION: u32 = 1;
+pub const DRIFT_POLICY_VERSION: u32 = 2;
 /// The realized probability of the arm actually taken. Exactly 1.0 while the
 /// policy is deterministic — there is no randomization, and none is being
 /// introduced here. The value is recorded now because a propensity cannot be
@@ -547,19 +566,18 @@ impl WorkBlockManager {
             return Ok(None);
         }
         self.repo.close_open_observation(&record.block_id, at)?;
-        self.repo.append_observation(
-            &record.block_id,
-            &WorkBlockObservation {
-                occurred_at: at,
-                ended_at: None,
-                category: category.to_owned(),
-                classification_status: status,
-                classification_confidence: confidence,
-            },
-        )?;
+        let observation = WorkBlockObservation {
+            occurred_at: at,
+            ended_at: None,
+            category: category.to_owned(),
+            classification_status: status,
+            classification_confidence: confidence,
+        };
+        self.repo
+            .append_observation(&record.block_id, &observation)?;
         // Observing the return closes the loop: an offer is only worth making
         // if its outcome is recorded.
-        self.record_return_if_pending(&record, category, at)?;
+        self.record_return_if_pending(&record, &observation, at)?;
         let intervention = self.evaluate_drift(&record, at)?;
         let snapshot = self.snapshot_for(record, at)?;
         Ok(Some(ObservationOutcome {
@@ -574,6 +592,27 @@ impl WorkBlockManager {
     /// the detector was right, so it is recorded even if the block has already
     /// ended. Only an unanswered offer transitions: a response cannot be
     /// overwritten, and a second tap is a no-op rather than an error.
+    /// Records that the in-app drift card was on screen for `block_id`.
+    ///
+    /// Not an answer, and never treated as one. It is the delivery fact that
+    /// lets `no_response` be split afterwards into "saw it, said nothing" and
+    /// "it never reached them" — two results that call for opposite fixes.
+    /// Idempotent: the first sighting is the one that counts, and a report for
+    /// a block with no offer is a no-op rather than an error, because the card
+    /// and the offer race on separate surfaces.
+    pub fn record_intervention_card_seen(
+        &self,
+        block_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<WorkBlockSnapshot, WorkBlockError> {
+        let record = self.repo.get(&block_id.to_string())?;
+        if self.repo.intervention(&record.block_id)?.is_some() {
+            self.repo
+                .mark_intervention_card_seen(&record.block_id, now)?;
+        }
+        self.snapshot_for(record, now)
+    }
+
     pub fn report_intervention_outcome(
         &self,
         block_id: Uuid,
@@ -585,7 +624,12 @@ impl WorkBlockManager {
             return Err(WorkBlockError::InvalidRequest);
         };
         if existing.outcome.is_terminal() {
-            // Already answered. Report current state rather than failing.
+            // The one outcome slot is already spoken for and cannot be
+            // rewritten. That is usually an earlier tap, but not always:
+            // `returned` and `no_response` are written by the machine, so this
+            // branch also swallows a genuine first reply that arrived after the
+            // anchor was observed again or after the block ended. Report
+            // current state rather than failing.
             return self.snapshot_for(record, now);
         }
         self.repo
@@ -595,19 +639,34 @@ impl WorkBlockManager {
 
     /// Marks a pending offer as returned once the anchor category is observed
     /// again. Only an `offered` row transitions, so this is idempotent.
+    ///
+    /// The observation has to clear `is_confident_evidence` — the same bar the
+    /// departure had to clear for the offer to exist at all. Closing on weaker
+    /// evidence than opening would let a low-confidence re-classification of
+    /// the anchor retire an offer that only confident evidence could raise, and
+    /// `Returned` is terminal: it stops `active_intervention` rendering and
+    /// makes `report_intervention_outcome` a no-op, so the user loses the reply
+    /// surface without having replied. `was_focused` is the sole numerator of
+    /// the demotion policy, so every such close biases it downward.
     fn record_return_if_pending(
         &self,
         record: &WorkBlockRecord,
-        category: &str,
+        observation: &WorkBlockObservation,
         at: DateTime<Utc>,
     ) -> Result<(), WorkBlockError> {
+        if !is_confident_evidence(observation) {
+            return Ok(());
+        }
         let Some(pending) = self.repo.intervention(&record.block_id)? else {
             return Ok(());
         };
         if pending.outcome != WorkBlockInterventionOutcome::Offered {
             return Ok(());
         }
-        if !pending.anchor_category.eq_ignore_ascii_case(category) {
+        if !pending
+            .anchor_category
+            .eq_ignore_ascii_case(&observation.category)
+        {
             return Ok(());
         }
         self.repo.resolve_intervention(
@@ -791,6 +850,11 @@ impl WorkBlockManager {
                     outcome: WorkBlockInterventionOutcome::WithheldDemotion,
                     outcome_at: Some(now),
                     salience: InterventionSalience::Normal,
+                    // Withheld before any surface existed, so no card was ever
+                    // drawn. Terminal at creation and excluded from delivered
+                    // counts, which is why this stays None rather than becoming
+                    // a delivery failure.
+                    card_seen_at: None,
                 },
             )?;
             return Ok(None);
@@ -829,6 +893,9 @@ impl WorkBlockManager {
                     // salience it would have had. It is excluded from the
                     // delivered count either way.
                     salience: InterventionSalience::Normal,
+                    // Held by Focus/DND and delivered by no channel, so there
+                    // was no card to see.
+                    card_seen_at: None,
                 },
             )?;
             return Ok(None);
@@ -851,6 +918,10 @@ impl WorkBlockManager {
                 outcome: WorkBlockInterventionOutcome::Offered,
                 outcome_at: None,
                 salience: backoff.salience,
+                // Offered is not seen. The client reports the sighting when it
+                // actually renders, and until then this row honestly says the
+                // offer has not been shown to reach anyone.
+                card_seen_at: None,
             },
         )?;
         // `now` is the value just recorded as `offered_at`, so the re-render
@@ -1573,7 +1644,8 @@ fn drift_body(seed: u64, switch_count: u32, anchor: &str) -> String {
     // sits mid-sentence.
     let anchor = anchor.replace('_', " ").to_ascii_lowercase();
     let protect = DRIFT_PROTECT_MINUTES;
-    // `DRIFT_MIN_SWITCHES` is 4, so the count is never singular here.
+    // `DRIFT_MIN_SWITCHES` is 2, so the count is never singular here. The
+    // rendered strings are unchanged; only the floor this comment cites moved.
     match (seed / DRIFT_TITLES.len() as u64) % 4 {
         0 => format!(
             "Velvt observed {switch_count} switches away from {anchor} in the last {minutes} \
@@ -2125,15 +2197,40 @@ mod tests {
 
     /// Establishes DEEP_WORK as the anchor, then switches away four times
     /// inside the ten-minute window.
+    /// Drives a block into a drift offer and returns the observation that
+    /// carried it, stopping the moment one fires.
+    ///
+    /// Threshold-independent on purpose. This used to run a fixed sequence of
+    /// eight observations and return the last one, which worked only while
+    /// `DRIFT_MIN_SWITCHES` was 4 and the offer happened to land on the final
+    /// switch. Under the 2026-09-19 recalibration the offer fires earlier, the
+    /// one-offer-per-block cap suppresses the rest, and every test built on this
+    /// fixture saw `None` — or worse, a later observation of the anchor closed
+    /// the offer as `Returned` before the test could answer it, which is how a
+    /// gate change turned into seventeen failures in tests about responses and
+    /// cooldowns that have nothing to do with the gate.
+    ///
+    /// Stopping at the offer makes the fixture mean "a block that drifted into
+    /// an offer" rather than "a block that drifted exactly four times".
     fn drift_into_offer(manager: &WorkBlockManager) -> Option<ObservationOutcome> {
         observe(manager, "DEEP_WORK", 10);
-        observe(manager, "COMMUNICATION", 400);
-        observe(manager, "DEEP_WORK", 420);
-        observe(manager, "COMMUNICATION", 440);
-        observe(manager, "DEEP_WORK", 460);
-        observe(manager, "COMMUNICATION", 480);
-        observe(manager, "DEEP_WORK", 500);
-        observe(manager, "COMMUNICATION", 520)
+        let mut last = None;
+        for (index, seconds) in (400..=520).step_by(20).enumerate() {
+            let category = if index % 2 == 0 {
+                "COMMUNICATION"
+            } else {
+                "DEEP_WORK"
+            };
+            let outcome = observe(manager, category, seconds);
+            let carried_offer = outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.intervention.is_some());
+            last = outcome;
+            if carried_offer {
+                break;
+            }
+        }
+        last
     }
 
     /// Runs one complete block that drifts, optionally answers the offer, and
@@ -2170,6 +2267,13 @@ mod tests {
             {
                 offer = offer.or(outcome.intervention);
             }
+            // Stop at the offer. Observing past it walks back onto the anchor,
+            // which closes the offer as `Returned` before the caller can answer
+            // it — so a test asking what a dismissal does to the cooldown would
+            // instead be measuring a return it never made.
+            if offer.is_some() {
+                break;
+            }
         }
         if let Some(response) = response {
             manager
@@ -2187,6 +2291,79 @@ mod tests {
     /// are separate code paths over the same offer, so a non-deterministic pick
     /// would let a user read one sentence in the banner and a different one in
     /// the app — for the same nudge.
+    /// A sighting is a delivery fact, not an answer: it records that the card
+    /// reached the user without touching the one outcome slot, so
+    /// `no_response` can afterwards be split into "saw it, said nothing" and
+    /// "it never reached them".
+    #[test]
+    fn a_seen_card_is_recorded_without_answering_the_offer() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+
+        manager
+            .record_intervention_card_seen(block_id, at(900))
+            .unwrap();
+
+        let stored = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the offer row exists");
+        assert_eq!(stored.card_seen_at, Some(at(900)));
+        assert_eq!(
+            stored.outcome,
+            WorkBlockInterventionOutcome::Offered,
+            "a sighting must never resolve the offer"
+        );
+        assert_eq!(stored.outcome_at, None);
+    }
+
+    /// The popover can be reopened while an offer is still unanswered. That is
+    /// the same delivery, and moving the timestamp forward would report the
+    /// offer as reaching the user later than it did.
+    #[test]
+    fn re_rendering_a_seen_card_keeps_the_first_sighting() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+
+        manager
+            .record_intervention_card_seen(block_id, at(900))
+            .unwrap();
+        manager
+            .record_intervention_card_seen(block_id, at(1_500))
+            .unwrap();
+
+        let stored = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the offer row exists");
+        assert_eq!(
+            stored.card_seen_at,
+            Some(at(900)),
+            "the first sighting is the one that counts"
+        );
+    }
+
+    /// The card and the offer live on separate surfaces and can race. A
+    /// sighting reported for a block with no offer is a no-op, never an error:
+    /// failing here would surface an IPC error for something the user did
+    /// nothing wrong to cause.
+    #[test]
+    fn a_sighting_without_an_offer_is_a_no_op() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+
+        manager
+            .record_intervention_card_seen(block_id, at(600))
+            .expect("a sighting with no offer must not error");
+
+        assert!(repo.intervention(&block_id.to_string()).unwrap().is_none());
+    }
+
     #[test]
     fn the_delivered_offer_and_its_re_render_read_identically() {
         let manager = manager();
@@ -2213,6 +2390,11 @@ mod tests {
                 .unwrap()
             {
                 delivered = delivered.or(outcome.intervention);
+            }
+            // Stop at the offer: observing on would return to the anchor and
+            // close it, and an answered offer does not re-render.
+            if delivered.is_some() {
+                break;
             }
         }
         let delivered = delivered.expect("the gate fired");
@@ -2273,18 +2455,23 @@ mod tests {
         let active = manager.start(request(3_600), at(0)).unwrap();
         let block_id = active.block_id.unwrap().to_string();
 
-        // Four departures, all inside the five-minute warm-up, so the gate
+        // Four departures, all inside the three-minute warm-up, so the gate
         // returns early every time and no offer is possible yet. DEEP_WORK
         // holds the longer dwell throughout and stays the anchor.
+        //
+        // Compressed from the original 60/120/180/240 spacing when the warm-up
+        // moved from five minutes to three: at the old spacing the last two
+        // departures land after the warm-up expires, so the gate opens mid-loop
+        // and the test stops describing the case it is named for.
         for (category, seconds) in [
             ("DEEP_WORK", 10),
-            ("COMMUNICATION", 60),
-            ("DEEP_WORK", 70),
+            ("COMMUNICATION", 40),
+            ("DEEP_WORK", 50),
+            ("COMMUNICATION", 80),
+            ("DEEP_WORK", 90),
             ("COMMUNICATION", 120),
             ("DEEP_WORK", 130),
-            ("COMMUNICATION", 180),
-            ("DEEP_WORK", 190),
-            ("COMMUNICATION", 240),
+            ("COMMUNICATION", 170),
         ] {
             let outcome = observe(&manager, category, seconds);
             assert!(
@@ -2295,7 +2482,7 @@ mod tests {
 
         // Warm-up expired and the four switches are still inside the window,
         // but this observation is the return to the anchor: no offer.
-        let returned = observe(&manager, "DEEP_WORK", 310).unwrap();
+        let returned = observe(&manager, "DEEP_WORK", 200).unwrap();
         assert!(
             returned.intervention.is_none(),
             "an offer fired on the observation that returned to the anchor"
@@ -2306,7 +2493,7 @@ mod tests {
         );
 
         // The next confident departure spends the deferred evidence instead.
-        let departed = observe(&manager, "COMMUNICATION", 330).unwrap();
+        let departed = observe(&manager, "COMMUNICATION", 220).unwrap();
         let offer = departed
             .intervention
             .expect("the deferred offer fires on the next confident departure");
@@ -2315,7 +2502,7 @@ mod tests {
             .intervention(&block_id)
             .unwrap()
             .expect("the departure offer is recorded");
-        assert_eq!(recorded.offered_at, at(330));
+        assert_eq!(recorded.offered_at, at(220));
     }
 
     // Removed with scope 4's integration: four tests of an in-block
@@ -2415,12 +2602,18 @@ mod tests {
         let outcome = drift_into_offer(&manager).expect("observation returns state");
         let intervention = outcome
             .intervention
-            .expect("four confident switches should clear the gate");
+            .expect("confident switching at the threshold should clear the gate");
 
         assert_eq!(intervention.action_id, DRIFT_ACTION_ID);
         assert_eq!(intervention.block_id, block_id);
-        // Copy reports observation only: no intent, cause, or judgement.
-        assert!(intervention.body.contains("4 switches away from deep work"));
+        // Copy reports observation only: no intent, cause, or judgement. The
+        // count is pinned to the threshold rather than to a literal: the fixture
+        // stops at the first offer, so the offer always carries exactly
+        // `DRIFT_MIN_SWITCHES`, and the next recalibration should not have to
+        // find every "4" scattered through the assertions.
+        assert!(intervention.body.contains(&format!(
+            "{DRIFT_MIN_SWITCHES} switches away from deep work"
+        )));
         assert!(intervention.body.contains("last 10 minutes"));
 
         let recorded = repo
@@ -2428,7 +2621,7 @@ mod tests {
             .unwrap()
             .expect("the offer is persisted so its outcome can be observed");
         assert_eq!(recorded.anchor_category, "DEEP_WORK");
-        assert_eq!(recorded.switch_count, 4);
+        assert_eq!(recorded.switch_count, DRIFT_MIN_SWITCHES);
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Offered);
     }
 
@@ -2472,6 +2665,47 @@ mod tests {
         let recorded = repo.intervention(&block_id).unwrap().unwrap();
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Returned);
         assert_eq!(recorded.outcome_at, Some(at(560)));
+    }
+
+    /// The close criterion has to match the open criterion.
+    ///
+    /// Only `is_confident_evidence` counts a departure, so only
+    /// `is_confident_evidence` may count the return. `Returned` is terminal, so
+    /// a low-confidence re-classification of the anchor closing the offer would
+    /// take away the user's only chance to answer "I was focused" — the answer
+    /// the demotion policy counts.
+    #[test]
+    fn a_low_confidence_glimpse_of_the_anchor_does_not_close_the_offer() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+
+        let outcome = manager
+            .observe_safe_category(
+                "DEEP_WORK",
+                ClassificationStatus::Classified,
+                ClassificationConfidence::Low,
+                at(560),
+            )
+            .unwrap()
+            .expect("a differently classified observation produces a snapshot");
+
+        let recorded = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Offered);
+        // The offer is still live on both surfaces the user can reach: the card
+        // in the pushed snapshot, and the reply that lands against it.
+        assert!(outcome.snapshot.active_intervention.is_some());
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::WasFocused, at(580))
+            .unwrap();
+        assert_eq!(
+            repo.intervention(&block_id.to_string())
+                .unwrap()
+                .unwrap()
+                .outcome,
+            WorkBlockInterventionOutcome::WasFocused
+        );
     }
 
     #[test]
@@ -2608,8 +2842,10 @@ mod tests {
             .expect("an unanswered offer renders in-app");
         assert_eq!(card.action_id, DRIFT_ACTION_ID);
         assert_eq!(card.anchor_category, "DEEP_WORK");
-        assert_eq!(card.switch_count, 4);
-        assert!(card.body.contains("4 switches away from deep work"));
+        assert_eq!(card.switch_count, DRIFT_MIN_SWITCHES);
+        assert!(card.body.contains(&format!(
+            "{DRIFT_MIN_SWITCHES} switches away from deep work"
+        )));
 
         let answered = manager
             .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(540))
@@ -2637,8 +2873,15 @@ mod tests {
     #[test]
     fn no_offer_is_made_when_too_little_of_the_block_remains() {
         let (manager, _repo) = manager_with_repo();
-        // 600s block: by t=520 only 80s remain, under the two-minute floor.
-        manager.start(request(600), at(0)).unwrap();
+        // 540s block. The fixture clears the switch threshold at t=440, where
+        // only 100s remain — under the two-minute floor, so the remaining-time
+        // gate is what refuses, which is the branch this test is about.
+        //
+        // Was 600s, sized against the old threshold where the offer could not
+        // arrive before t=520. A looser switch gate moves the offer earlier, so
+        // a block sized to run out of time by the old offer moment still had
+        // 160s left at the new one and the offer fired.
+        manager.start(request(540), at(0)).unwrap();
         assert!(drift_into_offer(&manager).unwrap().intervention.is_none());
     }
 
@@ -3389,6 +3632,13 @@ mod tests {
         fn latest(&self) -> Result<Option<WorkBlockRecord>, PersistenceError> {
             self.0.latest()
         }
+        fn mark_intervention_card_seen(
+            &self,
+            block_id: &str,
+            at: DateTime<Utc>,
+        ) -> Result<bool, PersistenceError> {
+            self.0.mark_intervention_card_seen(block_id, at)
+        }
         fn get(&self, block_id: &str) -> Result<WorkBlockRecord, PersistenceError> {
             self.0.get(block_id)
         }
@@ -3603,6 +3853,7 @@ mod tests {
                 outcome,
                 outcome_at: Some(offered_at + Duration::seconds(30)),
                 salience: InterventionSalience::Normal,
+                card_seen_at: None,
             },
         )
         .unwrap();
@@ -3690,22 +3941,27 @@ mod tests {
             intervention_dump(&repo),
         ));
 
-        // At anchor: four departures accumulate while the block is still in
+        // At anchor: the departures accumulate while the block is still in
         // warmup, and the first observation after warmup is the anchor itself.
         // The evidence is not discarded — the gate simply refuses to say "you
         // are away" to someone who is demonstrably back.
+        //
+        // Retimed for the three-minute warm-up. At the old 200/250/270/290
+        // spacing every departure lands after warm-up expires, so the gate
+        // opens on the second one and the scenario reaches `Offered` instead of
+        // the verdict it exists to produce. Departures are now at 50/100/150,
+        // all inside warm-up, and DEEP_WORK keeps the dominant dwell
+        // (120s against 60s) so the anchor does not flip to COMMUNICATION.
         let (manager, repo) = gate_manager(logging, None);
         manager.start(request(3_600), at(0)).unwrap();
         for (offset, category) in [
             (10, "DEEP_WORK"),
-            (200, "COMMUNICATION"),
-            (205, "DEEP_WORK"),
-            (250, "COMMUNICATION"),
-            (255, "DEEP_WORK"),
-            (270, "COMMUNICATION"),
-            (275, "DEEP_WORK"),
-            (290, "COMMUNICATION"),
-            (310, "DEEP_WORK"),
+            (50, "COMMUNICATION"),
+            (60, "DEEP_WORK"),
+            (100, "COMMUNICATION"),
+            (110, "DEEP_WORK"),
+            (150, "COMMUNICATION"),
+            (190, "DEEP_WORK"),
         ] {
             observe(&manager, category, offset);
         }

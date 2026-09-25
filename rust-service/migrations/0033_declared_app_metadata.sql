@@ -1,0 +1,108 @@
+-- What the application itself declares about what it is, recorded beside the
+-- event it was observed on.
+--
+-- WHY THESE COLUMNS EXIST. 63% of the applications installed on a real machine
+-- classify as UNLOGGED, and `is_confident_evidence` excludes UNLOGGED, so those
+-- applications are invisible to the drift gate, the anchor and the frozen
+-- feature contract. The measured reason is not weak inference, it is a weak
+-- key: `app_stable_id` (0017) hashes the name macOS reports, and that name is
+-- localized, changes between releases, and is frequently not the name anyone
+-- would recognise -- `NSRunningApplication.localizedName` for Visual Studio
+-- Code is literally `Code`, which matches no taxonomy entry at all. The three
+-- columns below record the identity and the two declarations that do not have
+-- that problem.
+--
+-- `app_bundle_stable_id` is the SHA-256 of the application's bundle identifier
+-- under its own domain separator (`velvt:abstraction-app-bundle-key:v1`), so it
+-- can never collide with `app_stable_id`'s name hash. It is a hash, not the
+-- identifier: nothing here stores `com.microsoft.VSCode`, only a digest of it.
+-- That is a storage fact and not a confidentiality claim, and 0031 is the reason
+-- to say so out loud. The hash is unsalted and bundle identifiers are a small,
+-- public, enumerable input, so anyone holding this file can hash a list of known
+-- identifiers and recover which applications ran. What the digest buys is that
+-- the identifier is not sitting here in plain text for anything that reads a row
+-- by accident -- a log line, an export, a screenshot of a query. It is not
+-- reversible by anyone WITHOUT the file, and it never leaves the device.
+-- NULL means the client reported no bundle identifier -- an older client, or an
+-- application macOS gave none for -- and such an event must classify exactly as
+-- it did before this migration. It is additive and beside `app_stable_id`
+-- rather than instead of it: every name-keyed correction already on disk keeps
+-- working untouched, and re-keying would orphan all of them.
+--
+-- `declared_app_category` is the raw `LSApplicationCategoryType` string from the
+-- application's own Info.plist, e.g. `public.app-category.developer-tools`. It
+-- is stored raw because it is a closed vocabulary of public Apple constants
+-- chosen by the developer, not text a user wrote, and because the precision
+-- problem it has is decided in Rust and may be revised: `productivity` covers
+-- four Velvt categories and `utilities` is mostly SYSTEM except Terminal, so
+-- most values are deliberately ignored. Keeping the declared value rather than a
+-- verdict means a later reading of the same evidence does not need the event
+-- again. NULL means the key was absent or the plist was unreadable.
+--
+-- `document_type_ids` is the set of `LSItemContentTypes` declared across the
+-- application's `CFBundleDocumentTypes` -- the file types it says it opens.
+-- SERIALISATION, EXACTLY: a single line of the deduplicated, sorted identifiers
+-- joined by one ASCII space, with no leading or trailing space, e.g.
+-- 'public.plain-text public.source-code'. A Uniform Type Identifier is a
+-- reverse-DNS string of letters, digits, dots and hyphens and cannot contain a
+-- space, so the delimiter is unambiguous; sorted so the same declaration always
+-- produces the same string. The count is bounded by
+-- `velvt_shared_types::MAX_DOCUMENT_TYPE_IDS` and each identifier by
+-- `MAX_DOCUMENT_TYPE_ID_LENGTH` (64); those constants are the authority, not this
+-- comment. The bound is 256 per the Classification v2 contract, which raised it
+-- from a 24-entry draft after a census found Xcode declares 152 document types
+-- and Preview 49 -- a 24-cap silenced the signal for exactly the richest apps.
+-- Over the bound the client sends an EMPTY list rather than a prefix: the first
+-- 24 of Xcode's sorted identifiers are all `com.apple.*`, so a prefix would skew
+-- the majority rule, and abstaining is honest where a biased sample is not.
+-- Match a single type with
+-- `instr(' ' || document_type_ids || ' ', ' public.source-code ') > 0` -- the
+-- padding is what stops `public.movie` matching `public.movie-thing`. NULL means
+-- the application declared no document types, or the plist could not be read;
+-- an empty string cannot occur, because a column with nothing in it is NULL.
+--
+-- PRIVACY. Migration 0001's header requires that any new column holding raw
+-- content be named there, named in PRIVACY.md, and proved unable to reach
+-- `upload/`. These two declared columns are developer-authored public metadata
+-- rather than user content, but they identify the application, so they are
+-- disclosed on the same terms.
+--
+-- DISCLOSED, NOT NARROWED -- stated plainly because the choice was open. The
+-- alternative was to keep only a verdict and drop the raw strings. That was
+-- rejected: the precision problem above is decided in Rust and will be revised,
+-- and a verdict discards the evidence a revision needs. So the columns stay as
+-- declared and the disclosure is made: PRIVACY.md, "What is stored locally",
+-- enumerates all five device-local columns of `raw_event_buffer` -- these three
+-- included -- and says for each what it can and cannot reveal. `prove_local.sh`
+-- prints all three with a one-line note each. The header used to promise that
+-- disclosure in the past tense while PRIVACY.md still described two columns; if
+-- a future column lands here, the two files move in the same commit.
+--
+-- WRITTEN, NOT YET READ, as of 2026-09-24. Classification reads the declared
+-- category and the document types off the arriving event, never back out of this
+-- table; the only column here anything selects again is `app_bundle_stable_id`
+-- (the bundle override rung and the triage query). The two declared columns are
+-- write-only in production and read only by tests. They are kept so a later
+-- reading of the same evidence does not need the event again -- and that is the
+-- whole of the reason, recorded here so nobody infers a live consumer.
+--
+-- UNUPLOADABLE. All three columns are device-local and structurally
+-- unuploadable: `upload/dto.rs` implements `Serialize` for `BatchEventPayload`
+-- by hand and emits exactly event_id, occurred_at, abstraction_type,
+-- abstraction_type_version, classification_tier and a payload of
+-- duration_seconds and category. There is no field a bundle digest, a declared
+-- category or a document type could occupy, and the batch writer selects its
+-- columns explicitly, so a new column is invisible to it by construction.
+ALTER TABLE raw_event_buffer ADD COLUMN app_bundle_stable_id TEXT
+    CHECK (app_bundle_stable_id IS NULL OR length(app_bundle_stable_id) = 64);
+
+ALTER TABLE raw_event_buffer ADD COLUMN declared_app_category TEXT;
+
+ALTER TABLE raw_event_buffer ADD COLUMN document_type_ids TEXT;
+
+-- The triage query groups UNLOGGED events by application over the retention
+-- window. Without this it is a full scan of the buffer every time Settings is
+-- opened; `idx_raw_event_buffer_occurred_at` (0001) narrows the window but not
+-- the category, and UNLOGGED is the minority of rows in the window.
+CREATE INDEX IF NOT EXISTS idx_raw_event_buffer_category_app
+    ON raw_event_buffer(category, app_stable_id, occurred_at);

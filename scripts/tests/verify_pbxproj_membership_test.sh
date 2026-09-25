@@ -103,14 +103,16 @@ rm "$work/Sources/View.swift"
 # 5. Clean again, to prove the failures above were caused by what was added.
 run_guard >/dev/null 2>&1 || fail "the tree did not return to passing"
 
-# 6. A missing pbxproj is not a failure. The file is in .gitignore, so a clone
-#    that only touches Rust must still be able to push.
-if ! VELVT_PBXPROJ_SOURCES="$work/Sources" VELVT_PBXPROJ_FILE="$work/absent.pbxproj" \
-     "$guard" > "$work/absent.txt" 2>&1; then
+# 6. A missing pbxproj is a failure, not a skip. The file is tracked, so a
+#    complete checkout has one; exiting 0 because there is nothing to compare
+#    against is the same as not running the guard at all.
+if VELVT_PBXPROJ_SOURCES="$work/Sources" VELVT_PBXPROJ_FILE="$work/absent.pbxproj" \
+   "$guard" > "$work/absent.txt" 2>&1; then
   cat "$work/absent.txt" >&2
-  fail "a missing project.pbxproj blocked the guard instead of skipping it"
+  fail "a missing project.pbxproj was skipped instead of failing the guard"
 fi
-grep -qF ".gitignore" "$work/absent.txt" || fail "the skip message does not explain itself"
+grep -qF "target membership cannot be checked" "$work/absent.txt" \
+  || fail "the failure message does not say what could not be checked"
 
 # 7. And the real tree, which is the point of the guard existing.
 "$guard" > "$work/real.txt" 2>&1 || {

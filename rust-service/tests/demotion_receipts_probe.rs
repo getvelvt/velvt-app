@@ -249,6 +249,7 @@ fn seed_intervention(
                 outcome_at: (outcome != WorkBlockInterventionOutcome::Offered)
                     .then(|| offered_at + ChronoDuration::seconds(10)),
                 salience: InterventionSalience::Normal,
+                card_seen_at: None,
             },
         )
         .unwrap();

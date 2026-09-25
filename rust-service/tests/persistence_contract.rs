@@ -5,7 +5,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use velvt_service::abstraction::{
     AbstractionEngine, EmbeddingError, EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
-    Taxonomy,
+    Taxonomy, API_EXPECTED_TAXONOMY_VERSION,
 };
 use velvt_service::dashboard;
 use velvt_service::delivery::{parse_insight_with_rehydrator, LocalInsightRehydrator};
@@ -474,6 +474,8 @@ fn abstraction_engine_uses_sqlite_mapping_store_across_recreation() {
         app_name: "VS Code".into(),
         window_title: "private title".into(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
         duration_seconds: 0,
     };
@@ -501,6 +503,8 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
         app_name: "Unknown Local App".into(),
         window_title: "private title".into(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
         duration_seconds: 0,
     };
@@ -588,6 +592,8 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
                 app_name: "Unknown Local App".into(),
                 window_title: "different private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
             })
             .unwrap();
@@ -605,6 +611,8 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
             app_name: "Unknown Local App".into(),
             window_title: "private title".into(),
             bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
             focused_document_url: None,
         })
         .unwrap();
@@ -731,7 +739,7 @@ fn explicit_correction_generalizes_locally_and_remove_forgets_semantic_prototype
         let plugin = EmbeddingSimilarityPlugin::new(
             Arc::new(ConstantModel),
             HashMap::from([("FOCUS_WORK".to_owned(), vec![1.0, 0.0])]),
-            "mvp-1",
+            API_EXPECTED_TAXONOMY_VERSION,
             0.72,
             std::time::Duration::from_millis(20),
             Arc::new(EmbeddingMetrics::default()),
@@ -752,6 +760,8 @@ fn explicit_correction_generalizes_locally_and_remove_forgets_semantic_prototype
         app_name: "Novel Local Tool".into(),
         window_title: title.into(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
         duration_seconds: 0,
     };
@@ -839,6 +849,8 @@ fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_local
         app_name: "Slack".into(),
         window_title: "Private team conversation".into(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
         duration_seconds: 0,
     };
@@ -891,6 +903,8 @@ fn raw_title_never_becomes_a_local_display_label_or_ready_insight() {
             app_name: "Unknown Local App".into(),
             window_title: raw_title.into(),
             bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
             focused_document_url: None,
         })
         .unwrap();
@@ -1213,6 +1227,7 @@ fn the_wrong_intervention_counter_counts_delivered_and_was_focused() {
                     outcome,
                     outcome_at: Some(start + Duration::seconds(index as i64 + 5)),
                     salience: InterventionSalience::Normal,
+                    card_seen_at: None,
                 },
             )
             .expect("intervention records");

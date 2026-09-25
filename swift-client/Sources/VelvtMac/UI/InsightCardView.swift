@@ -1,21 +1,6 @@
 import SwiftUI
 
-// MARK: - Brand color tokens
-
-extension Color {
-    /// Dark ambient card surface.
-    static let velvtSurface = Color(red: 0.09, green: 0.08, blue: 0.10)
-    /// Off-white primary text (#F2EDE7).
-    static let velvtText = Color(red: 0.949, green: 0.929, blue: 0.906)
-    /// Muted secondary / metadata text.
-    static let velvtMuted = Color(red: 0.949, green: 0.929, blue: 0.906).opacity(0.45)
-    static let velvtPanel = Color(red: 0.16, green: 0.11, blue: 0.13)
-    static let velvtPanelHighlight = Color(red: 0.21, green: 0.15, blue: 0.18)
-    /// Brand accent (#B20D53).
-    static let velvtPink = Color(red: 178 / 255, green: 13 / 255, blue: 83 / 255)
-    static let velvtGreen = Color(red: 0.45, green: 0.86, blue: 0.52)
-    static let velvtBlue = Color(red: 0.43, green: 0.78, blue: 0.91)
-}
+// Brand colour tokens live in `VelvtTheme.swift`.
 
 // MARK: - Shimmer modifier
 
@@ -88,97 +73,100 @@ private struct InsightCardContentView: View {
             : viewModel.observation
     }
 
+    // The daily insight is a message addressed to the person, so the guide's
+    // paper stock carries it and the proposed next step sits in the blush inset
+    // reserved for an experiment the reader can decline.
     var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 7 : 12) {
-            HStack(alignment: .center) {
-                Text(viewModel.date)
-                    .font(.caption)
-                    .foregroundStyle(Color.velvtMuted)
-                Spacer()
-                Text("Daily observation")
-                    .font(.caption2)
-                    .foregroundStyle(Color.velvtMuted)
-                if compact {
-                    Image(systemName: "info.circle")
-                        .font(.caption2)
-                        .foregroundStyle(Color.velvtMuted)
-                        .help("\(viewModel.evidenceSummary) Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
-                }
-            }
-
-            Text(primaryObservation)
-                .font(.body.weight(.medium))
-                .foregroundStyle(Color.velvtText)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineLimit(compact ? 2 : nil)
-                .help(compact ? primaryObservation : "")
-
-            if !compact {
-                Text(viewModel.baselineComparison)
-                    .font(.caption)
-                    .foregroundStyle(Color.velvtMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if compact {
-                HStack(spacing: 8) {
-                    Text(viewModel.suggestedAction)
-                        .font(.caption)
-                        .foregroundStyle(Color.velvtMuted)
-                        .lineLimit(1)
-                        .help(viewModel.suggestedAction)
-                    Spacer(minLength: 4)
-                    if let onSuggestedAction,
-                       !viewModel.suggestedActionButtonLabel.isEmpty {
-                        Button("Plan session", action: onSuggestedAction)
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
+        VelvtPaperCard(padding: compact ? VelvtMetrics.spaceMD : VelvtMetrics.cardPadding) {
+            VStack(alignment: .leading, spacing: compact ? 7 : VelvtMetrics.spaceMD) {
+                HStack(alignment: .center) {
+                    Text(viewModel.date)
+                        .font(VelvtType.caption())
+                        .foregroundStyle(VelvtInk.tertiaryOnPaper)
+                    Spacer()
+                    Text("Daily observation")
+                        .font(VelvtType.label())
+                        .tracking(VelvtType.labelTracking)
+                        .textCase(.uppercase)
+                        .foregroundStyle(VelvtInk.labelOnPaper)
+                    if compact {
+                        Image(systemName: "info.circle")
+                            .font(VelvtType.caption(10.5))
+                            .foregroundStyle(VelvtInk.tertiaryOnPaper)
+                            .help("\(viewModel.evidenceSummary) Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
                     }
                 }
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("A realistic next step")
-                        .font(.caption2.bold())
-                        .foregroundStyle(Color.velvtMuted)
-                Text(viewModel.suggestedAction)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.velvtText)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let onSuggestedAction,
-                   !viewModel.suggestedActionButtonLabel.isEmpty {
-                    Button(viewModel.suggestedActionButtonLabel, action: onSuggestedAction)
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .keyboardShortcut(.defaultAction)
-                        .padding(.top, 4)
-                        .accessibilityHint("Starts this private work block on the local service")
-                }
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.velvtPanelHighlight.opacity(0.75))
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-            }
 
-            if !compact {
-                DisclosureGroup("Why am I seeing this?", isExpanded: $showsEvidence) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.evidenceSummary)
-                    Text("Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
+                Text(primaryObservation)
+                    .font(compact ? VelvtType.heading(14) : VelvtType.display(20))
+                    .lineSpacing(compact ? VelvtType.headingSpacing(14) : VelvtType.displaySpacing(20))
+                    .foregroundStyle(VelvtInk.primaryOnPaper)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(compact ? 2 : nil)
+                    .help(compact ? primaryObservation : "")
+
+                if !compact {
+                    Text(viewModel.baselineComparison)
+                        .velvtBody(12, onPaper: true)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .font(.caption2)
-                .foregroundStyle(Color.velvtMuted)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 5)
-            }
-                .font(.caption)
-                .tint(Color.velvtText)
-                .accessibilityHint("Shows the privacy-safe numbers behind this observation")
+
+                if compact {
+                    HStack(spacing: VelvtMetrics.spaceSM) {
+                        Text(viewModel.suggestedAction)
+                            .font(VelvtType.caption())
+                            .foregroundStyle(VelvtInk.secondaryOnPaper)
+                            .lineLimit(1)
+                            .help(viewModel.suggestedAction)
+                        Spacer(minLength: VelvtMetrics.spaceXS)
+                        if let onSuggestedAction,
+                           !viewModel.suggestedActionButtonLabel.isEmpty {
+                            Button("Plan session", action: onSuggestedAction)
+                                .buttonStyle(VelvtPrimaryButtonStyle(uppercase: true))
+                        }
+                    }
+                } else {
+                    VelvtInsetPanel {
+                        VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
+                            Text("A realistic next step")
+                                .font(VelvtType.label())
+                                .tracking(VelvtType.labelTracking)
+                                .textCase(.uppercase)
+                                .foregroundStyle(VelvtInk.labelOnPaper)
+                            Text(viewModel.suggestedAction)
+                                .velvtHeading(14, onPaper: true)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let onSuggestedAction,
+                               !viewModel.suggestedActionButtonLabel.isEmpty {
+                                Button(viewModel.suggestedActionButtonLabel, action: onSuggestedAction)
+                                    .buttonStyle(VelvtPrimaryButtonStyle())
+                                    .keyboardShortcut(.defaultAction)
+                                    .padding(.top, VelvtMetrics.spaceXS)
+                                    .accessibilityHint("Starts this private work block on the local service")
+                            }
+                        }
+                    }
+                }
+
+                if !compact {
+                    DisclosureGroup("Why am I seeing this?", isExpanded: $showsEvidence) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(viewModel.evidenceSummary)
+                        Text("Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
+                    }
+                    .font(VelvtType.caption(11))
+                    .lineSpacing(VelvtType.bodySpacing(11))
+                    .foregroundStyle(VelvtInk.tertiaryOnPaper)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 5)
+                }
+                    .font(VelvtType.body(12))
+                    .foregroundStyle(VelvtInk.secondaryOnPaper)
+                    .tint(VelvtInk.labelOnPaper)
+                    .accessibilityHint("Shows the privacy-safe numbers behind this observation")
+                }
             }
         }
-        .padding(compact ? 10 : 14)
-        .background(Color.velvtSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Insight for \(viewModel.date)")
         .accessibilityValue("\(primaryObservation). \(viewModel.baselineComparison). \(viewModel.suggestedAction).")
@@ -189,22 +177,26 @@ private struct InsightCardContentView: View {
 
 struct InsightCardSkeletonView: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Monday, 16 June")
-                    .font(.caption)
-                Spacer()
-                Text("moderate")
-                    .font(.caption2)
+        VelvtPaperCard {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Monday, 16 June")
+                        .font(VelvtType.caption())
+                        .foregroundStyle(VelvtInk.tertiaryOnPaper)
+                    Spacer()
+                    Text("moderate")
+                        .font(VelvtType.label())
+                        .tracking(VelvtType.labelTracking)
+                        .textCase(.uppercase)
+                        .foregroundStyle(VelvtInk.labelOnPaper)
+                }
+                Text("Your attention stayed on a single context for the longest stretch in several weeks.")
+                    .velvtDisplay(20, onPaper: true)
+                Text("Generated 14:32")
+                    .font(VelvtType.measurement(11))
+                    .foregroundStyle(VelvtInk.measurementOnPaper)
             }
-            Text("Your attention stayed on a single context for the longest stretch in several weeks.")
-                .font(.body)
-            Text("Generated 14:32")
-                .font(.system(.caption2, design: .monospaced))
         }
-        .padding(14)
-        .background(Color.velvtSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
         .shimmering()
     }
 }
@@ -220,16 +212,18 @@ struct ConfidenceDotView: View {
                 .fill(dotColor)
                 .frame(width: 5, height: 5)
             Text(label)
-                .font(.caption2)
-                .foregroundStyle(Color.velvtMuted)
+                .font(VelvtType.caption(10.5))
+                .foregroundStyle(VelvtInk.tertiaryOnPaper)
         }
     }
 
+    // Three steps of the same ink, never three hues: confidence is a quality of
+    // the evidence, not a score to pass or fail.
     private var dotColor: Color {
         switch label {
-        case "high":       return Color.velvtMuted
-        case "moderate":   return Color.velvtMuted.opacity(0.65)
-        default:           return Color.velvtMuted.opacity(0.40) // "early data"
+        case "high":       return VelvtInk.secondaryOnPaper
+        case "moderate":   return VelvtInk.tertiaryOnPaper
+        default:           return VelvtPalette.ink.opacity(0.28) // "early data"
         }
     }
 }
@@ -247,6 +241,7 @@ struct InsightCardView_Previews: PreviewProvider {
                 .previewDisplayName("Skeleton")
         }
         .padding()
+        .background(VelvtSurface.ground)
         .preferredColorScheme(.dark)
     }
 

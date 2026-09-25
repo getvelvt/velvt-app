@@ -175,6 +175,21 @@ public final class WorkBlockCoordinator: ObservableObject {
     send(.reportInterventionOutcome(.init(blockID: blockID, response: response)))
   }
 
+  /// Reports that the drift card was actually on screen.
+  ///
+  /// Not a reply, and it must never be treated as one: it records that the
+  /// offer reached the user, so an unanswered offer can afterwards be told
+  /// apart from one that was never delivered. Guarded on an unanswered offer
+  /// for the same reason the reply path is — a stale view must not report
+  /// against a card the service has already resolved. The service keeps the
+  /// first sighting, so re-opening the popover is harmless.
+  public func reportInterventionCardSeen() {
+    guard let blockID = snapshot?.blockID,
+      snapshot?.activeIntervention != nil
+    else { return }
+    send(.interventionCardSeen(.init(blockID: blockID)))
+  }
+
   /// Sends the one-tap reply to a quiet-hours offer and dismisses the card.
   /// Declining changes nothing else; the service remembers it locally.
   public func respondToQuietHoursOffer(accepted: Bool) {

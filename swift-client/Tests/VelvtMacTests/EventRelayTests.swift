@@ -157,8 +157,22 @@ final class EventRelayTests: XCTestCase {
         let metrics = AppMetricsStore(defaults: UserDefaults(suiteName: "EventRelayTests.\(UUID().uuidString)")!)
         let relay = EventRelay(ipcClient: client, capacity: 10, metrics: metrics)
 
+        // `receive` is nonisolated and increments the counter on the calling
+        // thread. `AppMetricsStore`'s threading contract republishes the
+        // `@Published` mirror on the main queue, and this test body is not on
+        // it, so the mirror is read after that hop rather than before it --
+        // waiting on the publisher, not on a clock.
+        let reachedTwo = expectation(description: "actionsLogged mirror reaches 2")
+        reachedTwo.assertForOverFulfill = false
+        let cancellable = metrics.$actionsLogged
+            .filter { $0 == 2 }
+            .sink { _ in reachedTwo.fulfill() }
+
         relay.receive(makeEvent(index: 1))
         relay.receive(makeEvent(index: 2))
+
+        await fulfillment(of: [reachedTwo], timeout: 5)
+        cancellable.cancel()
 
         XCTAssertEqual(metrics.actionsLogged, 2)
     }

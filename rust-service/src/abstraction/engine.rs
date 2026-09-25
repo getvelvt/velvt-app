@@ -5,9 +5,11 @@ use uuid::Uuid;
 use velvt_shared_types::RawEvent;
 
 use super::{
+    app_bundle_key_for,
     browser::focused_site_context,
     plugin::{
-        BrowserContextPlugin, GenericBrowserPriorPlugin, LocalPurposeHeuristicPlugin,
+        BrowserContextPlugin, BundleSeedPlugin, DeclaredCategoryPlugin, DeclaredMetadata,
+        DocumentTypePlugin, GenericBrowserPriorPlugin, LocalPurposeHeuristicPlugin,
         SeedDictionaryPlugin, UnloggedFallbackPlugin,
     },
     taxonomy::is_valid_label,
@@ -148,6 +150,9 @@ impl AbstractionEngine {
             occurred_at,
             app_name,
             window_title,
+            bundle_id,
+            declared_app_category,
+            document_type_ids,
             focused_document_url,
             ..
         } = raw_event;
@@ -165,21 +170,35 @@ impl AbstractionEngine {
             observer.observe(&stable_key, raw_key.app_name(), &classifier_context);
         }
         // Correction precedence, most specific first:
-        //   1. this exact window        (`personal_override`)
-        //   2. this application         (`personal_app_override`)
-        //   3. classifier plugins
+        //   1. this exact window              (`personal_override`)
+        //   2. this application, by bundle id (`personal_app_override`)
+        //   3. this application, by name      (`personal_app_override`)
+        //   4. classifier plugins
         //
         // The app rung is what makes a correction stick. Without it a
         // correction binds to one (app, title) hash, so the next file opened
         // in the same editor is unclassified again and no amount of correcting
         // converges. A window-scoped correction still wins, so "all of Cursor
         // is work, except this one window" remains expressible.
+        //
+        // The bundle rung sits above the name rung because it is the identity
+        // that survives a rename, a locale change and a marketing name that
+        // differs from the reported one. Both rungs go through the same store
+        // method, which resolves either identity — the two key domains cannot
+        // collide, so one lookup cannot answer with the other's row. The name
+        // rung stays and is consulted second so corrections recorded before
+        // bundle identifiers existed keep working untouched.
         let app_stable_key = raw_key.app_stable_key();
-        let window_override = self.store.personal_override(&stable_key)?;
-        let personal_override = match window_override {
-            Some(found) => Some(found),
-            None => self.store.personal_app_override(&app_stable_key)?,
-        };
+        let app_bundle_key = bundle_id.as_deref().map(app_bundle_key_for);
+        let mut personal_override = self.store.personal_override(&stable_key)?;
+        if personal_override.is_none() {
+            if let Some(app_bundle_key) = &app_bundle_key {
+                personal_override = self.store.personal_app_override(app_bundle_key)?;
+            }
+        }
+        if personal_override.is_none() {
+            personal_override = self.store.personal_app_override(&app_stable_key)?;
+        }
         let classification = match &personal_override {
             Some(personal_override) => ClassificationResult::with_quality(
                 override_label_for_category(&personal_override.category)
@@ -191,11 +210,24 @@ impl AbstractionEngine {
                 ClassificationConfidence::High,
                 ClassificationSource::UserRule,
             ),
-            None => self
-                .plugins
-                .iter()
-                .find_map(|plugin| plugin.classify(raw_key.app_name(), &classifier_context))
-                .ok_or(AbstractionError::NoPluginMatch)?,
+            None => {
+                // What the application declared about itself, unjudged. The
+                // plugin order below is the arbitration: a tier that keys on
+                // this metadata runs where its evidence deserves to rank, and
+                // absent metadata makes every such tier abstain, leaving the
+                // pre-metadata answer.
+                let declared = DeclaredMetadata {
+                    bundle_id: bundle_id.as_deref(),
+                    declared_app_category: declared_app_category.as_deref(),
+                    document_type_ids: &document_type_ids,
+                };
+                self.plugins
+                    .iter()
+                    .find_map(|plugin| {
+                        plugin.classify_declared(raw_key.app_name(), &classifier_context, declared)
+                    })
+                    .ok_or(AbstractionError::NoPluginMatch)?
+            }
         };
         if !is_valid_label(classification.label())
             || !self.taxonomy.contains_category(classification.category())
@@ -318,6 +350,9 @@ fn curated_display_label(app_name: &str, window_title: &str, label: &str) -> Opt
         "reference:stack_overflow" => "Stack Overflow",
         "reference:wikipedia" => "Wikipedia",
         "reference:mdn" => "MDN",
+        // Reached by the bundle seed for `com.apple.AddressBook`: Contacts has
+        // no name seed because `Contacts` is too generic a name to match on.
+        "reference:contacts" => "Contacts",
         "reference:read" => "Reading",
         "reference:ai_assistant" => "AI Assistant",
         "reference:browser" => "Browser",
@@ -399,9 +434,28 @@ impl AbstractionEngineBuilder {
         let version = self.taxonomy.version().to_owned();
         let default_category = self.taxonomy.default_category().to_owned();
         let entries = self.taxonomy.seed_applications();
+        let bundles = self.taxonomy.seed_bundles();
+        // Registration order IS the arbitration order: the engine takes the
+        // first plugin that answers. It runs from the most specific identifier
+        // to the least:
+        //   browser site context  — the tab, for a browser window
+        //   bundle seed           — the identifier the developer chose
+        //   name seed            — the localized name macOS reports
+        //   name/title heuristic  — curated keyword families
+        //   declared document types — what the application says it opens
+        //   declared App Store category — a whitelist of unambiguous values
+        //   embedding             — Tier 2, when enabled
+        //   generic browser prior — an explicitly ambiguous REFERENCE
+        //   unlogged fallback     — captured, not classified
+        // The two declared-metadata tiers sit exactly where
+        // `ClassificationResult::precedence` ranks their sources, so plugin
+        // order and explicit arbitration cannot disagree.
         let builder = self.register_plugin(BrowserContextPlugin::new(version.clone()));
+        let builder = builder.register_plugin(BundleSeedPlugin::new(bundles, version.clone()));
         let builder = builder.register_plugin(SeedDictionaryPlugin::new(entries, version.clone()));
         let builder = builder.register_plugin(LocalPurposeHeuristicPlugin::new(version.clone()));
+        let builder = builder.register_plugin(DocumentTypePlugin::new(version.clone()));
+        let builder = builder.register_plugin(DeclaredCategoryPlugin::new(version.clone()));
         let builder = match embedding {
             Some(plugin) => {
                 let plugin = Arc::new(plugin);
@@ -442,4 +496,207 @@ pub enum AbstractionError {
     NoPluginMatch,
     #[error("classification plugin returned an invalid privacy-safe result")]
     InvalidPluginResult,
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone, Utc};
+    use std::sync::Arc;
+    use uuid::Uuid;
+    use velvt_shared_types::RawEvent;
+
+    use crate::abstraction::{
+        app_bundle_key_for, app_stable_key_for, stable_key_for, AbstractionEngine,
+        ClassificationSource, ClassificationTier, InMemoryMappingStore, PersonalOverride,
+    };
+
+    fn raw_event(app_name: &str, window_title: &str) -> RawEvent {
+        RawEvent {
+            event_id: Uuid::new_v4(),
+            occurred_at: Utc.with_ymd_and_hms(2026, 9, 23, 9, 0, 0).unwrap(),
+            duration_seconds: 60,
+            app_name: app_name.to_owned(),
+            window_title: window_title.to_owned(),
+            bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
+            focused_document_url: None,
+        }
+    }
+
+    fn engine(store: Arc<InMemoryMappingStore>) -> AbstractionEngine {
+        AbstractionEngine::from_builtin_taxonomy(store).expect("the shipped taxonomy loads")
+    }
+
+    /// The motivating case, end to end through the engine: macOS reports the
+    /// editor as `Code`, which matches no seed pattern and no heuristic keyword,
+    /// and the bundle identifier is what makes it focus work rather than
+    /// UNLOGGED — and UNLOGGED is what `is_confident_evidence` excludes.
+    #[test]
+    fn the_bundle_identifier_classifies_the_editor_macos_calls_code() {
+        let engine = engine(Arc::new(InMemoryMappingStore::default()));
+        let mut event = raw_event("Code", "private project");
+        event.bundle_id = Some("com.microsoft.VSCode".to_owned());
+
+        let abstracted = engine.process(event).expect("the event abstracts");
+
+        assert_eq!(abstracted.category(), "FOCUS_WORK");
+        assert_eq!(
+            abstracted.classification_tier(),
+            ClassificationTier::ExactMatch
+        );
+        assert_eq!(
+            abstracted.classification_source(),
+            ClassificationSource::Seed
+        );
+    }
+
+    /// Invariant 4 at the engine boundary. The same event without the metadata
+    /// must classify exactly as it did before protocol v30 — UNLOGGED for the
+    /// unreadable name, and unchanged for a name the taxonomy already knew.
+    #[test]
+    fn an_event_with_no_declared_metadata_classifies_exactly_as_before() {
+        let engine = engine(Arc::new(InMemoryMappingStore::default()));
+
+        let unreadable = engine
+            .process(raw_event("Code", "private project"))
+            .expect("the event abstracts");
+        let seeded = engine
+            .process(raw_event("VS Code", "private project"))
+            .expect("the event abstracts");
+
+        assert_eq!(unreadable.category(), "UNLOGGED");
+        assert_eq!(unreadable.label(), "unlogged");
+        assert_eq!(
+            unreadable.classification_tier(),
+            ClassificationTier::Fallback
+        );
+        assert_eq!(seeded.category(), "FOCUS_WORK");
+        assert_eq!(seeded.classification_tier(), ClassificationTier::ExactMatch);
+    }
+
+    /// Declared document types decide when no seed knows the application, and
+    /// the verdict is explicitly weaker than a seed's: Medium confidence, and
+    /// attributed to the declaration it came from.
+    #[test]
+    fn declared_document_types_classify_an_application_no_seed_knows() {
+        let engine = engine(Arc::new(InMemoryMappingStore::default()));
+        let mut event = raw_event("Quillard", "private project");
+        event.document_type_ids = vec![
+            "public.source-code".to_owned(),
+            "public.swift-source".to_owned(),
+        ];
+
+        let abstracted = engine.process(event).expect("the event abstracts");
+
+        assert_eq!(abstracted.category(), "FOCUS_WORK");
+        assert_eq!(
+            abstracted.classification_source(),
+            ClassificationSource::DeclaredDocumentTypes
+        );
+    }
+
+    /// The whitelisted declared category is the last word before the embedding
+    /// tier, and it only speaks when nothing more specific did.
+    #[test]
+    fn a_whitelisted_declared_category_classifies_when_nothing_else_does() {
+        let engine = engine(Arc::new(InMemoryMappingStore::default()));
+        let mut event = raw_event("Quillard", "private project");
+        event.declared_app_category = Some("public.app-category.developer-tools".to_owned());
+
+        let abstracted = engine.process(event).expect("the event abstracts");
+
+        assert_eq!(abstracted.category(), "FOCUS_WORK");
+        assert_eq!(
+            abstracted.classification_source(),
+            ClassificationSource::DeclaredAppCategory
+        );
+    }
+
+    /// An excluded declared category must leave the event exactly where it was.
+    /// Terminal declares `utilities` and is focus work; mapping that value to
+    /// SYSTEM would misclassify the most-used focus application on the machine.
+    #[test]
+    fn an_excluded_declared_category_changes_nothing() {
+        let engine = engine(Arc::new(InMemoryMappingStore::default()));
+        let mut event = raw_event("Quillard", "private project");
+        event.declared_app_category = Some("public.app-category.utilities".to_owned());
+
+        let abstracted = engine.process(event).expect("the event abstracts");
+
+        assert_eq!(abstracted.category(), "UNLOGGED");
+    }
+
+    /// The correction rungs, in order. The bundle identity outranks the name
+    /// identity because it is the one that survives a rename; the window
+    /// correction outranks both because naming one window is a more specific
+    /// statement than naming the application.
+    #[test]
+    fn the_override_rungs_run_window_then_bundle_then_name() {
+        let store = Arc::new(InMemoryMappingStore::default());
+        store.set_app_override(
+            &app_stable_key_for("Code"),
+            PersonalOverride {
+                category: "REFERENCE".to_owned(),
+                local_activity_name: None,
+            },
+        );
+        let engine = engine(Arc::clone(&store));
+        let mut event = raw_event("Code", "private project");
+        event.bundle_id = Some("com.microsoft.VSCode".to_owned());
+
+        let name_rung = engine.process(event.clone()).expect("the event abstracts");
+
+        store.set_app_override(
+            &app_bundle_key_for("com.microsoft.VSCode"),
+            PersonalOverride {
+                category: "TASK_MANAGEMENT".to_owned(),
+                local_activity_name: None,
+            },
+        );
+        let bundle_rung = engine.process(event.clone()).expect("the event abstracts");
+
+        store.set_override(
+            &stable_key_for("Code", "private project"),
+            PersonalOverride {
+                category: "SOCIAL_FEED".to_owned(),
+                local_activity_name: None,
+            },
+        );
+        let window_rung = engine.process(event).expect("the event abstracts");
+
+        assert_eq!(name_rung.category(), "REFERENCE");
+        assert_eq!(bundle_rung.category(), "TASK_MANAGEMENT");
+        assert_eq!(window_rung.category(), "SOCIAL_FEED");
+        assert_eq!(
+            window_rung.classification_source(),
+            ClassificationSource::UserRule
+        );
+    }
+
+    /// A correction recorded before bundle identifiers existed is keyed on the
+    /// name alone. It must keep working for an event that now carries a bundle
+    /// identifier, or the upgrade silently discards what the user taught.
+    #[test]
+    fn a_name_keyed_correction_still_applies_to_an_event_carrying_a_bundle_id() {
+        let store = Arc::new(InMemoryMappingStore::default());
+        store.set_app_override(
+            &app_stable_key_for("Code"),
+            PersonalOverride {
+                category: "REFERENCE".to_owned(),
+                local_activity_name: None,
+            },
+        );
+        let engine = engine(Arc::clone(&store));
+        let mut event = raw_event("Code", "private project");
+        event.bundle_id = Some("com.microsoft.VSCode".to_owned());
+
+        let abstracted = engine.process(event).expect("the event abstracts");
+
+        assert_eq!(abstracted.category(), "REFERENCE");
+        assert_eq!(
+            abstracted.classification_source(),
+            ClassificationSource::UserRule
+        );
+    }
 }

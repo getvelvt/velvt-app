@@ -307,7 +307,7 @@ final class InterventionNotifierTests: XCTestCase {
         let notifier = InterventionNotifier(scheduler: scheduler, permissionManager: permissions)
 
         // The first offer asks, and the ask never comes back.
-        let stalled = await notifier.handle(
+        let stalled = notifier.handle(
             snapshot(blockID: UUID(), offeredAt: Date(timeIntervalSince1970: 1000)))
         XCTAssertNotNil(stalled, "the first offer starts an attempt")
         try await waitUntil { permissions.requestCount == 1 }
@@ -323,7 +323,7 @@ final class InterventionNotifierTests: XCTestCase {
         // it is the interval before it does, with every offer turned away,
         // that is the defect.
         permissions.setStatus(.granted, for: .notifications)
-        _ = await notifier.handle(
+        _ = notifier.handle(
             snapshot(blockID: UUID(), offeredAt: Date(timeIntervalSince1970: 2000)))
         try await waitUntil(timeout: .seconds(2)) { center.addedRequests.count >= 1 }
 

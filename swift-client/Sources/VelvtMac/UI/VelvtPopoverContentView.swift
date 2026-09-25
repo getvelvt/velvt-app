@@ -5,8 +5,12 @@ extension View {
     func tourHighlight(_ isHighlighted: Bool) -> some View {
         overlay {
             if isHighlighted {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.velvtPink, lineWidth: 2)
+                // Signal, not crimson: this ring sits on the ink ground, where
+                // crimson measures 2.56:1 and a highlight nobody can see is not
+                // a highlight. Same substitution the destructive button style
+                // makes, for the same reason.
+                RoundedRectangle(cornerRadius: VelvtMetrics.cardRadius, style: .continuous)
+                    .strokeBorder(VelvtPalette.signal, lineWidth: 2)
                     .allowsHitTesting(false)
             }
         }
@@ -54,7 +58,7 @@ public struct VelvtPopoverContentView: View {
             switch coordinator.state {
             case .loading:
                 HistorySkeletonView()
-                    .padding(.bottom, 8)
+                    .padding(.bottom, VelvtMetrics.spaceSM)
 
             case .populated(_, let historyVM):
                 historySection(viewModel: historyVM)
@@ -74,14 +78,14 @@ public struct VelvtPopoverContentView: View {
         switch coordinator.historyAvailability {
         case .available:
             HistoryListView(viewModel: viewModel)
-                .padding(.bottom, 8)
+                .padding(.bottom, VelvtMetrics.spaceSM)
         case .notGenerated:
             EmptyDeliveryState(text: "No daily history generated yet", systemImage: "calendar")
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
+                .padding(.horizontal, VelvtMetrics.cardPadding)
+                .padding(.bottom, VelvtMetrics.spaceMD)
         case .loading:
             HistorySkeletonView()
-                .padding(.bottom, 8)
+                .padding(.bottom, VelvtMetrics.spaceSM)
         }
     }
 }
@@ -110,7 +114,7 @@ public struct TodayWorkspaceView: View {
             dailyMetrics
             observation
         }
-        .padding(.vertical, 12)
+        .padding(.vertical, VelvtMetrics.spaceMD)
     }
 
     private var baselineStatus: some View {
@@ -120,9 +124,9 @@ public struct TodayWorkspaceView: View {
                 ? "checkmark.circle"
                 : "circle.dotted"
         )
-        .font(.caption)
-        .foregroundStyle(Color.velvtMuted)
-        .padding(.horizontal, 16)
+        .font(VelvtType.caption(11))
+        .foregroundStyle(VelvtInk.tertiaryOnInk)
+        .padding(.horizontal, VelvtMetrics.cardPadding)
         .accessibilityHint("Built only from days with real privacy-safe summaries")
     }
 
@@ -137,19 +141,20 @@ public struct TodayWorkspaceView: View {
                     metricViews(for: day)
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, VelvtMetrics.cardPadding)
         } else if let signal = readyLocalSignal {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { localMetricViews(for: signal) }
                 VStack(spacing: 8) { localMetricViews(for: signal) }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, VelvtMetrics.cardPadding)
         } else {
             EarlySignalProgressView(
                 signal: localDashboardCoordinator.snapshot?.earlySignal,
+                totalObservedSeconds: localDashboardCoordinator.snapshot.map(observedActivitySeconds),
                 errorMessage: localDashboardCoordinator.commandError
             )
-            .padding(.horizontal, 16)
+            .padding(.horizontal, VelvtMetrics.cardPadding)
             .tourHighlight(highlightsEarlySignal)
         }
     }
@@ -194,19 +199,23 @@ public struct TodayWorkspaceView: View {
     }
 
     private func todayMetric(title: String, value: String, explanation: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
             Text(value)
-                .font(.title3.bold().monospacedDigit())
-                .foregroundStyle(Color.velvtText)
+                .font(VelvtType.measurement(17).monospacedDigit())
+                .foregroundStyle(VelvtInk.primaryOnInk)
             Text(title)
-                .font(.caption2)
-                .foregroundStyle(Color.velvtMuted)
+                .font(VelvtType.caption(10.5))
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(10)
         .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
-        .background(Color.velvtPanel)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(VelvtSurface.card)
+        .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
+                .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+        )
         .help(explanation)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(title)
@@ -222,7 +231,7 @@ public struct TodayWorkspaceView: View {
                 viewModel: coordinator.insightViewModel,
                 onSuggestedAction: canStartSuggestedBlock ? startSuggestedWorkBlock : nil
             )
-                .padding(.horizontal, 16)
+                .padding(.horizontal, VelvtMetrics.cardPadding)
         case .earlyLocal:
             if let signal = readyLocalSignal {
                 EarlyLocalSignalView(
@@ -231,7 +240,7 @@ public struct TodayWorkspaceView: View {
                         ? { startEarlySignalWorkBlock(signal) }
                         : nil
                 )
-                .padding(.horizontal, 16)
+                .padding(.horizontal, VelvtMetrics.cardPadding)
                 .tourHighlight(highlightsEarlySignal)
             }
         case .progress:
@@ -242,7 +251,7 @@ public struct TodayWorkspaceView: View {
                     text: todayProgressExplanation,
                     systemImage: "sparkles"
                 )
-                .padding(.horizontal, 16)
+                .padding(.horizontal, VelvtMetrics.cardPadding)
             }
         }
     }
@@ -317,45 +326,111 @@ public struct TodayWorkspaceView: View {
     }
 }
 
-private struct EarlySignalProgressView: View {
+/// Every second the window observed in an app the user could teach Velvt about
+/// — readable or not. `SYSTEM` and `IDLE` are left out.
+///
+/// The early signal's own `observedSeconds` counts only meaningful categories,
+/// so it is the numerator. This is the denominator, and the gap between them is
+/// time Velvt watched in a real app and failed to classify: `UNLOGGED` and
+/// `UNCLASSIFIED`, the two states a category in Settings actually fixes.
+///
+/// Counting every second here instead — the first version of this — made idle
+/// and system time look like a classification failure, so an ordinary day with
+/// a lunch break in it was told "Velvt cannot categorize the apps you are
+/// using" and sent to Settings to fix nothing that was broken. Idle and system
+/// time are working exactly as intended; they are not evidence of anything the
+/// user needs to act on.
+///
+/// `is_meaningful_category` in rust-service/src/dashboard.rs excludes all four
+/// of `UNCLASSIFIED`, `SYSTEM`, `IDLE` and `UNLOGGED` from the numerator, which
+/// is why the split has to be made again here: only two of the four are
+/// teachable. Any other category counts in both numerator and denominator and
+/// so cancels out of the gap, which keeps the subtraction honest if the
+/// taxonomy grows.
+func observedActivitySeconds(_ snapshot: LocalDashboardSnapshot) -> Int {
+    snapshot.segments.reduce(0) { total, segment in
+        guard isTeachableActivityCategory(segment.category) else { return total }
+        return total + max(0, Int(segment.endedAt.timeIntervalSince(segment.startedAt).rounded()))
+    }
+}
+
+/// Whether time in this category is time the user could do something about.
+///
+/// Deliberately a denylist of the two categories that mean "no app was being
+/// used" rather than an allowlist of readable ones: an unrecognized category is
+/// activity in some app, and it is already inside the early signal's
+/// `observedSeconds`, so excluding it here would understate the gap.
+///
+/// Distinct from `QueuedEventPresentation.teachableCategories`, which is the
+/// list of categories a user may *assign*. This asks the opposite question:
+/// whether a stretch of observed time is the kind of thing teaching can change.
+func isTeachableActivityCategory(_ category: String) -> Bool {
+    switch category.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+    case "SYSTEM", "IDLE":
+        return false
+    default:
+        return true
+    }
+}
+
+/// Internal rather than private so the two-explanations rule can be tested
+/// directly. That rule is the whole of this view's judgement, and it was wrong
+/// once already.
+struct EarlySignalProgressView: View {
+    /// Mirrors `EARLY_SIGNAL_REQUIRED_SECONDS` in rust-service/src/dashboard.rs.
+    /// The service owns the gate; this is only used to decide which of two
+    /// explanations to give for not having cleared it.
+    static let readableSecondsRequired = 60
+
     let signal: LocalEarlySignal?
+    /// Every second of activity in the window that happened in an app — readable
+    /// or not — with idle and system time excluded. See
+    /// `observedActivitySeconds`.
+    ///
+    /// `signal.observedSeconds` counts only segments in a meaningful category,
+    /// so on its own it cannot tell "you have barely worked yet" from "you have
+    /// worked for an hour in apps I cannot read". Those need opposite advice,
+    /// and only one of them is fixed by waiting.
+    ///
+    /// Idle and system time belong to neither case: they are not a countdown
+    /// the user is waiting out and not an app they can teach, so they must not
+    /// reach the remainder below.
+    let totalObservedSeconds: Int?
     let errorMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Building an early local signal", systemImage: "waveform.path")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.velvtText)
-            if let signal {
-                ProgressView(
-                    value: Double(signal.observedSeconds),
-                    total: Double(max(1, signal.observedSeconds + signal.requiredSeconds))
-                )
-                    .tint(Color.velvtPink)
-                Text(progressText(signal))
-                    .font(.caption)
-                    .foregroundStyle(Color.velvtMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-        Text(
-          "Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened)) · raw app names, titles, URLs, and files stay on this Mac"
-        )
-                    .font(.caption2)
-                    .foregroundStyle(Color.velvtMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-                EarlySignalBasisDisclosure(signal: signal)
-            } else {
-        Text(
-          errorMessage ?? "Waiting for the local privacy service to report this observation window."
-        )
-                    .font(.caption)
-                    .foregroundStyle(Color.velvtMuted)
-                    .fixedSize(horizontal: false, vertical: true)
+        VelvtCard(padding: VelvtMetrics.spaceMD) {
+            VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+                Label("Building an early local signal", systemImage: "waveform.path")
+                    .font(VelvtType.heading(14))
+                    .foregroundStyle(VelvtInk.primaryOnInk)
+                if let signal {
+                    ProgressView(
+                        value: Double(signal.observedSeconds),
+                        total: Double(max(1, signal.observedSeconds + signal.requiredSeconds))
+                    )
+                        // The filled track is the only thing this control says,
+                        // and crimson on ink is 2.56:1.
+                        .tint(VelvtPalette.signal)
+                    Text(progressText(signal))
+                        .velvtBody(12)
+                        .fixedSize(horizontal: false, vertical: true)
+            Text(
+              "Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened)) · raw app names, titles, URLs, and files stay on this Mac"
+            )
+                        .font(VelvtType.caption(10.5))
+                        .foregroundStyle(VelvtInk.tertiaryOnInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                    EarlySignalBasisDisclosure(signal: signal)
+                } else {
+            Text(
+              errorMessage ?? "Waiting for the local privacy service to report this observation window."
+            )
+                        .velvtBody(12)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.velvtPanel)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     /// Only "qualifying" activity counts toward the signal — an app Velvt
@@ -364,8 +439,33 @@ private struct EarlySignalProgressView: View {
     /// one thing that will not fix it. Distinguishing the two cases turns a
     /// stuck progress bar into something the user can act on.
     private func progressText(_ signal: LocalEarlySignal) -> String {
+        Self.progressText(signal, totalObservedSeconds: totalObservedSeconds)
+    }
+
+    /// Pure, so the choice between the two explanations is testable without
+    /// rendering anything.
+    static func progressText(
+        _ signal: LocalEarlySignal,
+        totalObservedSeconds: Int?
+    ) -> String {
+        // Previously this required `observedSeconds == 0` — every second of
+        // readable activity disabled it. One classified app was enough to put
+        // the user back on a countdown that would not move, which is the exact
+        // complaint: "it says 60 seconds every time I open it". The real
+        // question is not whether ANY activity was readable, it is whether
+        // enough was readable to ever clear the bar.
+        // `totalObservedSeconds` already excludes idle and system time, so this
+        // remainder is teachable time only: activity in a real app that
+        // classification failed on. Comparing against a total that included
+        // idle time turned a day with an ordinary break in it into an
+        // accusation, which is worse advice than the stuck countdown it
+        // replaced — it sends someone to fix something that is not broken.
+        let teachableUnreadableSeconds = max(
+            0, (totalObservedSeconds ?? 0) - signal.observedSeconds)
         let sawActivityButCouldNotUseIt =
-            signal.evidenceEventCount > 0 && signal.observedSeconds == 0
+            signal.evidenceEventCount > 0
+            && signal.observedSeconds < readableSecondsRequired
+            && teachableUnreadableSeconds >= readableSecondsRequired
         if sawActivityButCouldNotUseIt {
             return
                 "Velvt has seen activity but cannot categorize the apps you are using, so none of it counts yet. "
@@ -422,13 +522,12 @@ private struct EarlySignalBasisDisclosure: View {
                         + "leaves the meaning to you."
                 )
             }
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
+            .velvtBody(11)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, 5)
         }
-        .font(.caption)
-        .tint(Color.velvtText)
+        .font(VelvtType.body(12))
+        .tint(VelvtInk.primaryOnInk)
         .accessibilityHint(
             "Explains what an early local signal is and the privacy-safe numbers behind this one"
         )
@@ -468,41 +567,40 @@ private struct EarlyLocalSignalView: View {
     let onSuggestedAction: (() -> Void)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Early local signal")
-                    .font(.caption.bold())
-                    .foregroundStyle(Color.velvtPink)
-                Spacer()
-                Text(windowText)
-                    .font(.caption2)
-                    .foregroundStyle(Color.velvtMuted)
-            }
-            Text(signal.observation ?? "Your activity is still settling.")
-                .font(.body.weight(.medium))
-                .foregroundStyle(Color.velvtText)
-                .fixedSize(horizontal: false, vertical: true)
-            if let suggestion = signal.suggestedAction {
-                Text(suggestion)
-                    .font(.caption)
-                    .foregroundStyle(Color.velvtMuted)
+        VelvtCard(padding: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Early local signal")
+                        .font(VelvtType.label(9.5))
+                        .tracking(VelvtType.labelTracking)
+                        .textCase(.uppercase)
+                        .foregroundStyle(VelvtInk.labelOnInk)
+                    Spacer()
+                    Text(windowText)
+                        .font(VelvtType.caption(10.5))
+                        .foregroundStyle(VelvtInk.tertiaryOnInk)
+                }
+                Text(signal.observation ?? "Your activity is still settling.")
+                    .velvtDisplay(17)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let suggestion = signal.suggestedAction {
+                    Text(suggestion)
+                        .velvtBody(12)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let onSuggestedAction, signal.actionMinutes > 0 {
+                    Button("Protect \(signal.actionMinutes) minutes", action: onSuggestedAction)
+                        .buttonStyle(VelvtPrimaryButtonStyle())
+                }
+                EarlySignalBasisDisclosure(signal: signal)
+          Text(
+            "Computed only from abstracted categories on this Mac · Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened))"
+          )
+                    .font(VelvtType.caption(10.5))
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let onSuggestedAction, signal.actionMinutes > 0 {
-                Button("Protect \(signal.actionMinutes) minutes", action: onSuggestedAction)
-                    .buttonStyle(.borderedProminent)
-            }
-            EarlySignalBasisDisclosure(signal: signal)
-      Text(
-        "Computed only from abstracted categories on this Mac · Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened))"
-      )
-                .font(.caption2)
-                .foregroundStyle(Color.velvtMuted)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
-        .background(Color.velvtSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private var windowText: String {
@@ -518,8 +616,7 @@ struct EmptyDeliveryState: View {
 
     var body: some View {
         Label(text, systemImage: systemImage)
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .velvtBody(12)
     }
 }
 
@@ -570,7 +667,7 @@ public struct MinimalDashboardWorkspaceView: View {
       )
       .tourHighlight(highlightsFocus)
     }
-    .padding(12)
+    .padding(VelvtMetrics.spaceMD)
     .onAppear { localDashboardCoordinator.refresh() }
   }
 
@@ -612,6 +709,7 @@ public struct MinimalDashboardWorkspaceView: View {
     } else {
       EarlySignalProgressView(
         signal: localDashboardCoordinator.snapshot?.earlySignal,
+        totalObservedSeconds: localDashboardCoordinator.snapshot.map(observedActivitySeconds),
         errorMessage: localDashboardCoordinator.commandError
       )
     }
@@ -643,30 +741,31 @@ struct TodaySoFarView: View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(alignment: .firstTextBaseline) {
         Label("Today so far", systemImage: "sun.max")
-          .font(.caption.bold())
-          .foregroundStyle(Color.velvtText)
+          .font(VelvtType.heading(12))
+          .foregroundStyle(VelvtInk.primaryOnInk)
         Spacer(minLength: 8)
         Text(observedText)
-          .font(.caption.monospacedDigit())
-          .foregroundStyle(Color.velvtMuted)
+          .font(VelvtType.measurement(11).monospacedDigit())
+          // The ground-named form of the same hue: a measurement on ink.
+          .foregroundStyle(VelvtInk.measurementOnInk)
       }
 
       if slices.isEmpty {
         Text("Nothing observed yet today.")
-          .font(.caption2)
-          .foregroundStyle(Color.velvtMuted)
+          .font(VelvtType.caption(11))
+          .foregroundStyle(VelvtInk.secondaryOnInk)
       } else {
         VStack(alignment: .leading, spacing: 2) {
           ForEach(slices.prefix(3), id: \.category) { slice in
             HStack(spacing: 6) {
               Text(localCategoryLabel(slice.category))
-                .font(.caption2)
-                .foregroundStyle(Color.velvtMuted)
+                .font(VelvtType.caption(11))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
                 .lineLimit(1)
               Spacer(minLength: 8)
               Text(DaySummaryViewModel.formatActiveTime(slice.seconds))
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(Color.velvtText)
+                .font(VelvtType.caption(11).monospacedDigit())
+                .foregroundStyle(VelvtInk.primaryOnInk)
             }
           }
         }
@@ -674,8 +773,12 @@ struct TodaySoFarView: View {
     }
     .padding(10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(Color.velvtPanel)
-    .clipShape(RoundedRectangle(cornerRadius: 8))
+    .background(VelvtSurface.card)
+    .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
+        .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+    )
     .accessibilityElement(children: .contain)
     .accessibilityLabel(Self.spokenSummary(for: day))
   }
@@ -707,10 +810,10 @@ struct CompactWorkBlockControl: View {
     HStack(spacing: 10) {
       VStack(alignment: .leading, spacing: 2) {
         Text(snapshot.phase == .paused ? "Work block paused" : "Work block active")
-          .font(.caption.bold())
+          .velvtHeading(12)
         elapsedLine
-          .font(.caption2.monospacedDigit())
-          .foregroundStyle(Color.velvtMuted)
+          .font(VelvtType.caption(10.5).monospacedDigit())
+          .foregroundStyle(VelvtInk.tertiaryOnInk)
       }
       Spacer(minLength: 8)
       if snapshot.phase == .paused {
@@ -718,13 +821,21 @@ struct CompactWorkBlockControl: View {
       } else {
         Button("Pause") { coordinator.pause() }
       }
+      // A custom ButtonStyle discards `role: .destructive`'s presentation, so
+      // ending a block rendered exactly like pausing it. The style goes on the
+      // button rather than the row so it wins over the row's secondary style.
       Button("End", role: .destructive) { coordinator.end() }
+        .buttonStyle(VelvtDestructiveButtonStyle())
     }
-    .buttonStyle(.bordered)
+    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
     .controlSize(.small)
     .padding(10)
-    .background(Color.velvtPanel)
-    .clipShape(RoundedRectangle(cornerRadius: 8))
+    .background(VelvtSurface.card)
+    .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
+        .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+    )
     .accessibilityElement(children: .contain)
     .accessibilityLabel(
       snapshot.phase == .paused ? "Paused work block" : "Active work block")
@@ -1119,112 +1230,109 @@ public struct FocusFragmentationView: View {
   @FocusState private var focusedEvidenceID: String?
 
   public var body: some View {
-    VStack(alignment: .leading, spacing: 7) {
-      if let focus {
-        // Coverage is a layout variable here, not a sentence appended to one.
-        // The card renders what it knows and stops; what it does not know is
-        // not drawn faintly, it is not drawn.
-        let state = FocusEvidenceState.resolve(
-          coverage: focus.coverage, coverageRatio: focus.coverageRatio)
+    VelvtCard(padding: VelvtMetrics.spaceMD) {
+      VStack(alignment: .leading, spacing: 7) {
+        if let focus {
+          // Coverage is a layout variable here, not a sentence appended to one.
+          // The card renders what it knows and stops; what it does not know is
+          // not drawn faintly, it is not drawn.
+          let state = FocusEvidenceState.resolve(
+            coverage: focus.coverage, coverageRatio: focus.coverageRatio)
 
-        // The hero line, in every state. When coverage is thin this is the
-        // service's own low-coverage sentence, so the top of the card says
-        // the same thing whether or not there is a chart under it.
-        //
-        // Leading with the chart put the only two sentences that carry meaning
-        // at the bottom of the card in caption text, truncated, with the real
-        // wording reachable only by hovering — which is the roadmap's
-        // "one observation, one bounded action; scores never lead" inverted.
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-          Text(focus.observation)
-            .font(.subheadline)
-            .fixedSize(horizontal: false, vertical: true)
-          Spacer(minLength: 4)
-          Image(systemName: "info.circle")
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
-            .help(focusHelp(focus))
-        }
-
-        // Directly under the hero when there is no evidence section, because
-        // there it is the reason there is no evidence section. In the drawable
-        // state it moves down to sit over the numbers it qualifies.
-        if !state.showsObservedMetrics, let notice = coverageNotice(focus, state: state) {
-          Text(notice)
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityLabel(notice)
-        }
-
-        // Roadmap invariant 6: recoveries are the headline personal stat,
-        // never streaks. Every other tool can say where the time went; only
-        // Velvt knows the person came back. It is also a number that cannot be
-        // lost — it only ever goes up, so it cannot be used against them.
-        // Stated as a fact, not praise: the analyst voice does not congratulate.
-        //
-        // Gated with the rest of the observed numbers. "You came back once"
-        // is counted over the observed part like everything else, and under a
-        // sentence that has just said there is not enough here to say
-        // anything it is not a headline stat, it is the contradiction. The
-        // count only ever goes up, so withholding it costs nothing: it is
-        // there the moment there is enough of the block behind it.
-        if state.showsObservedMetrics, focus.recoveryCount > 0 {
-          Label(
-            focus.recoveryCount == 1
-              ? "You came back once." : "You came back \(focus.recoveryCount) times.",
-            systemImage: "arrow.uturn.backward"
-          )
-          .font(.callout.weight(.semibold))
-          .foregroundStyle(Color.velvtPink)
-          .fixedSize(horizontal: false, vertical: true)
-        }
-
-        Divider().opacity(0.15)
-
-        // The card is named after the work, not after the metric. The
-        // comment above this card used to say "Focus Fragmentation names a
-        // metric, not a meaning" — and the view then printed it anyway,
-        // twice, as the label over the chart and as the empty-state title.
-        // With no intention and no anchor yet there is nothing honest to put
-        // here, so the row carries the window alone rather than falling back
-        // to the metric name.
-        HStack(spacing: 6) {
-          if let header, !header.isEmpty {
-            Text(header)
-              .font(.caption2)
-              .foregroundStyle(Color.velvtMuted)
-              .lineLimit(1)
-              .truncationMode(.tail)
+          // The hero line, in every state. When coverage is thin this is the
+          // service's own low-coverage sentence, so the top of the card says
+          // the same thing whether or not there is a chart under it.
+          //
+          // Leading with the chart put the only two sentences that carry meaning
+          // at the bottom of the card in caption text, truncated, with the real
+          // wording reachable only by hovering — which is the roadmap's
+          // "one observation, one bounded action; scores never lead" inverted.
+          HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(focus.observation)
+              .velvtHeading(14)
+              .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Image(systemName: "info.circle")
+              .font(VelvtType.caption(11))
+              .foregroundStyle(VelvtInk.tertiaryOnInk)
+              .help(focusHelp(focus))
           }
-          Spacer()
-          Text(focus.windowLabel)
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
-        }
-        if state.showsTimeline {
-          focusTimeline(focus)
-        }
-        metrics(focus, state: state)
-        nextActionRow(focus)
-      } else {
-        VStack(alignment: .leading, spacing: 8) {
-          Text("Velvt only watches a block you started on purpose.")
-            .font(.headline)
+
+          // Directly under the hero when there is no evidence section, because
+          // there it is the reason there is no evidence section. In the drawable
+          // state it moves down to sit over the numbers it qualifies.
+          if !state.showsObservedMetrics, let notice = coverageNotice(focus, state: state) {
+            Text(notice)
+              .velvtBody(11)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityLabel(notice)
+          }
+
+          // Roadmap invariant 6: recoveries are the headline personal stat,
+          // never streaks. Every other tool can say where the time went; only
+          // Velvt knows the person came back. It is also a number that cannot be
+          // lost — it only ever goes up, so it cannot be used against them.
+          // Stated as a fact, not praise: the analyst voice does not congratulate.
+          //
+          // Gated with the rest of the observed numbers. "You came back once"
+          // is counted over the observed part like everything else, and under a
+          // sentence that has just said there is not enough here to say
+          // anything it is not a headline stat, it is the contradiction. The
+          // count only ever goes up, so withholding it costs nothing: it is
+          // there the moment there is enough of the block behind it.
+          if state.showsObservedMetrics, focus.recoveryCount > 0 {
+            Label(
+              focus.recoveryCount == 1
+                ? "You came back once." : "You came back \(focus.recoveryCount) times.",
+              systemImage: "arrow.uturn.backward"
+            )
+            .font(VelvtType.bodyEmphasis(13))
+            .foregroundStyle(VelvtInk.affirmativeOnInk)
             .fixedSize(horizontal: false, vertical: true)
-          Text(errorMessage ?? "Start one and it'll tell you how it went.")
-            .font(.caption)
-            .foregroundStyle(Color.velvtMuted)
-            .fixedSize(horizontal: false, vertical: true)
-          Button("Start a work block", action: onStartWorkBlock)
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+          }
+
+          Divider().overlay { VelvtPalette.paper }.opacity(0.12)
+
+          // The card is named after the work, not after the metric. The
+          // comment above this card used to say "Focus Fragmentation names a
+          // metric, not a meaning" — and the view then printed it anyway,
+          // twice, as the label over the chart and as the empty-state title.
+          // With no intention and no anchor yet there is nothing honest to put
+          // here, so the row carries the window alone rather than falling back
+          // to the metric name.
+          HStack(spacing: 6) {
+            if let header, !header.isEmpty {
+              Text(header)
+                .font(VelvtType.caption(11))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            }
+            Spacer()
+            Text(focus.windowLabel)
+              .font(VelvtType.caption(10.5))
+              .foregroundStyle(VelvtInk.tertiaryOnInk)
+          }
+          if state.showsTimeline {
+            focusTimeline(focus)
+          }
+          metrics(focus, state: state)
+          nextActionRow(focus)
+        } else {
+          VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+            Text("Velvt only watches a block you started on purpose.")
+              .velvtDisplay(17)
+              .fixedSize(horizontal: false, vertical: true)
+            Text(errorMessage ?? "Start one and it'll tell you how it went.")
+              .velvtBody(12)
+              .fixedSize(horizontal: false, vertical: true)
+            Button("Start a work block", action: onStartWorkBlock)
+              .buttonStyle(VelvtPrimaryButtonStyle())
+              .controlSize(.small)
+          }
         }
       }
     }
-    .padding(12)
-    .background(Color.velvtPanel)
-    .clipShape(RoundedRectangle(cornerRadius: 8))
     .onChange(of: focusedEvidenceID) { _ in updateFocusedDetail() }
     .accessibilityElement(children: .contain)
   }
@@ -1235,7 +1343,7 @@ public struct FocusFragmentationView: View {
       let layout = TimelineMarkerLayout.make(focus: focus, width: proxy.size.width)
       ZStack(alignment: .topLeading) {
         RoundedRectangle(cornerRadius: 4)
-          .fill(Color.white.opacity(0.08))
+          .fill(VelvtPalette.paper.opacity(0.08))
           .frame(height: TimelineMarkerLayout.trackHeight)
           .accessibilityHidden(true)
         unobservedSpans(layout)
@@ -1277,14 +1385,16 @@ public struct FocusFragmentationView: View {
     ForEach(layout.unobservedSpans) { span in
       ZStack {
         RoundedRectangle(cornerRadius: 3)
-          .fill(Color.black.opacity(0.22))
+          .fill(VelvtPalette.ink.opacity(0.22))
         Path { path in
           let midpoint = TimelineMarkerLayout.segmentHeight / 2
           path.move(to: CGPoint(x: 2, y: midpoint))
           path.addLine(to: CGPoint(x: span.width - 2, y: midpoint))
         }
         .stroke(
-          Color.velvtMuted.opacity(0.7),
+          // `tertiaryOnInk` is already paper at 0.42; dimming it again took the
+          // hatch that marks unobserved time down to an effective 0.29.
+          VelvtInk.tertiaryOnInk,
           style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
       }
       .frame(width: span.width, height: TimelineMarkerLayout.segmentHeight)
@@ -1318,8 +1428,14 @@ public struct FocusFragmentationView: View {
           .fill(categoryColor(segment?.category ?? ""))
         if bar.width >= 34, let segment {
           Text(shortCategory(segment.category))
-            .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(Color.black.opacity(0.72))
+            .font(VelvtType.bodyEmphasis(8))
+            // The ramp runs crimson-dark to paper-light, so a fixed label
+            // colour is unreadable at one end; pick per swatch.
+            .foregroundStyle(
+              VelvtCategoryRamp.legibleForeground(
+                on: categoryColor(segment.category)
+              )
+            )
             .lineLimit(1)
         }
       }
@@ -1356,7 +1472,7 @@ public struct FocusFragmentationView: View {
       ZStack {
         Color.clear
         RoundedRectangle(cornerRadius: tick.isCollapsed ? 1.5 : 0.5)
-          .fill(Color.velvtText.opacity(tick.isCollapsed ? 0.95 : 0.78))
+          .fill(VelvtInk.primaryOnInk.opacity(tick.isCollapsed ? 0.95 : 0.78))
           .frame(
             width: tick.isCollapsed
               ? TimelineMarkerLayout.collapsedTickBarWidth
@@ -1409,7 +1525,12 @@ public struct FocusFragmentationView: View {
       ZStack {
         Color.clear
         Capsule()
-          .fill(Color.velvtPink.opacity(0.6))
+          // Signal at full alpha, not crimson at 0.6: crimson is 2.56:1 on ink
+          // before any dimming, and 1.6:1 after it, which is a mark the reader
+          // cannot find. The rail stays subordinate to the ticks the way this
+          // comment says it does — by being 3pt tall and off the bar — not by
+          // being too faint to see.
+          .fill(VelvtPalette.signal)
           .frame(width: rail.width, height: TimelineMarkerLayout.clusterRailHeight)
       }
       .frame(width: rail.width, height: TimelineMarkerLayout.clusterLaneHeight)
@@ -1446,8 +1567,7 @@ public struct FocusFragmentationView: View {
       // card used to spend only inside a `.help(...)` nobody opens.
       if state.showsObservedMetrics, let notice = coverageNotice(focus, state: state) {
         Text(notice)
-          .font(.caption2)
-          .foregroundStyle(Color.velvtMuted)
+          .velvtBody(11)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityLabel(notice)
       }
@@ -1483,8 +1603,8 @@ public struct FocusFragmentationView: View {
           focus.clusters.count == 1
             ? "Underline: switching cluster." : "Underlines: switching clusters."
         )
-        .font(.caption2)
-        .foregroundStyle(Color.velvtMuted)
+        .font(VelvtType.caption(10.5))
+        .foregroundStyle(VelvtInk.tertiaryOnInk)
       }
     }
     .help(
@@ -1499,12 +1619,11 @@ public struct FocusFragmentationView: View {
     switch FocusNextActionRole.resolve(phase: focus.phase) {
     case .underway:
       Text(focus.nextAction)
-        .font(.caption)
-        .foregroundStyle(Color.velvtMuted)
+        .velvtBody(12)
         .fixedSize(horizontal: false, vertical: true)
     case .offer:
       Button(focus.nextAction, action: onStartWorkBlock)
-        .buttonStyle(.bordered)
+        .buttonStyle(VelvtPrimaryButtonStyle())
         .controlSize(.small)
         .padding(.top, 1)
         .accessibilityHint("Opens the focus session planner on this Mac")
@@ -1513,8 +1632,9 @@ public struct FocusFragmentationView: View {
 
   private func focusMetric(_ title: String, _ value: String, _ help: String) -> some View {
     VStack(alignment: .leading, spacing: 1) {
-      Text(value).font(.caption.bold().monospacedDigit())
-      Text(title).font(.system(size: 9)).foregroundStyle(Color.velvtMuted).lineLimit(1)
+      Text(value).font(VelvtType.measurement(12).monospacedDigit())
+        .foregroundStyle(VelvtInk.primaryOnInk)
+      Text(title).font(VelvtType.caption(9.5)).foregroundStyle(VelvtInk.tertiaryOnInk).lineLimit(1)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .help(help)
@@ -1591,14 +1711,26 @@ public struct FocusFragmentationView: View {
     "\(Int((focus.coverageRatio * 100).rounded()))% \(focus.coverage.rawValue.replacingOccurrences(of: "_", with: " "))"
   }
 
+  /// Category colours for this window, assigned the way every other activity
+  /// surface assigns them: `ActivityPalette`, ranked by observed time.
+  ///
+  /// This used to pin four category names to four fixed ramp slots, so
+  /// FOCUS_WORK was ramp 0 here and whatever its rank earned it on the History
+  /// tab — the same category in two colours depending on which tab you were
+  /// looking at. The ranking input is the only one this card has: the segments
+  /// of its own window, by the duration the service gave each of them.
+  private var categoryPalette: [String: Color] {
+    guard let focus else { return [:] }
+    return ActivityPalette.assign(
+      forSecondsByCategory: focus.segments.reduce(into: [String: Int]()) { totals, segment in
+        let seconds = Int(segment.endedAt.timeIntervalSince(segment.startedAt).rounded())
+        guard seconds > 0 else { return }
+        totals[segment.category, default: 0] += seconds
+      })
+  }
+
   private func categoryColor(_ category: String) -> Color {
-    switch category {
-    case "FOCUS_WORK": return .velvtGreen
-    case "COMMUNICATION": return .velvtPink
-    case "REFERENCE": return .velvtBlue
-    case "CREATIVE": return .orange.opacity(0.85)
-    default: return .gray.opacity(0.55)
-    }
+    categoryPalette[category] ?? ActivityPalette.unmatched
   }
 
   private func shortCategory(_ category: String) -> String {
@@ -1673,8 +1805,7 @@ public struct LocalActivityCorrectionList: View {
         selectionDetail
       } else {
         Text(Self.emptyStateCopy)
-          .font(.caption2)
-          .foregroundStyle(Color.velvtMuted)
+          .velvtBody(11)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
@@ -1775,7 +1906,8 @@ public struct LocalActivityCorrectionList: View {
         // to Coding, YouTube, Gmail and GitHub all rendered as "Google Chrome",
         // which is the one label the product exists not to show.
         Text(Self.rowLabel(for: segment))
-          .font(.caption)
+          .font(VelvtType.body(11.5))
+          .foregroundStyle(VelvtInk.primaryOnInk)
           .lineLimit(1)
           .truncationMode(.tail)
           .frame(width: 120, alignment: .leading)
@@ -1793,15 +1925,15 @@ public struct LocalActivityCorrectionList: View {
         }
         .frame(height: 12)
         Text(Self.plainDuration(segment.durationSeconds))
-          .font(.caption2.monospacedDigit())
-          .foregroundStyle(Color.velvtMuted)
+          .font(VelvtType.caption(11).monospacedDigit())
+          .foregroundStyle(VelvtInk.secondaryOnInk)
           .frame(width: 48, alignment: .trailing)
       }
       .contentShape(Rectangle())
       .padding(.vertical, 4)
       .padding(.horizontal, 6)
-      .background(isSelected ? Color.velvtPanelHighlight : Color.clear)
-      .clipShape(RoundedRectangle(cornerRadius: 5))
+      .background(isSelected ? VelvtPalette.paper.opacity(0.08) : Color.clear)
+      .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.chipRadius, style: .continuous))
     }
     .buttonStyle(.plain)
     .disabled(segment.stableID == nil)
@@ -1815,10 +1947,9 @@ public struct LocalActivityCorrectionList: View {
   @ViewBuilder
   private var selectionDetail: some View {
     if let segment = resolvedSegment {
-      Divider().opacity(0.18)
+      Divider().overlay { VelvtPalette.paper }.opacity(0.12)
       Text(Self.detail(for: segment))
-        .font(.caption2)
-        .foregroundStyle(Color.velvtMuted)
+        .velvtBody(11)
         .fixedSize(horizontal: false, vertical: true)
         .lineLimit(3)
         .accessibilityLabel(Self.detail(for: segment))
@@ -1826,14 +1957,14 @@ public struct LocalActivityCorrectionList: View {
         ActivityContextIcon(name: segment.suggestedName ?? segment.label)
         VStack(alignment: .leading, spacing: 1) {
           Text(segment.suggestedName ?? segment.label)
-            .font(.caption.bold())
+            .velvtHeading(12)
             .lineLimit(1)
           Label(
             segment.suggestedName == nil ? "Local only" : "Local-only suggestion",
             systemImage: "lock.fill"
           )
-          .font(.caption2)
-          .foregroundStyle(Color.velvtMuted)
+          .font(VelvtType.caption(10.5))
+          .foregroundStyle(VelvtInk.tertiaryOnInk)
         }
         Spacer(minLength: 4)
         if let suggestion = segment.suggestedName, !segment.aliasConfirmed {
@@ -1841,13 +1972,14 @@ public struct LocalActivityCorrectionList: View {
             onCorrectActivity(segment, Self.correctionCategory(segment.category), suggestion)
           }
           .controlSize(.small)
+          .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
           .accessibilityHint("Confirms this device-local name for future matching activity")
         }
         Button(segment.label == "Unclassified" ? "Name & categorize" : "Rename / Categorize") {
           isEditing.toggle()
         }
         .controlSize(.small)
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(VelvtPrimaryButtonStyle())
         .accessibilityHint("Opens local-only activity naming and category controls")
       }
       if isEditing {
@@ -1876,16 +2008,28 @@ public struct LocalActivityCorrectionList: View {
     InlineActivityCorrectionEditor.categories.contains(value) ? value : "UNLOGGED"
   }
 
+  /// Bar colours, assigned by observed time over the same days
+  /// `LocalWeekActivityView` colours — the same totals, the same ranking, so a
+  /// category is one colour on every local surface.
+  ///
+  /// The fixed ramp slots per category name that used to live here disagreed
+  /// with every view that ranks: a category was crimson in this workbench and
+  /// something else in the chart above it. Ranked over the whole delivered
+  /// window rather than over the one correctable day, because that is the input
+  /// the other local views rank over and a colour that changed with the day
+  /// would be the same defect again.
+  private var activityPalette: [String: Color] {
+    ActivityPalette.assign(
+      forSecondsByCategory: (snapshot?.dailyActivity ?? []).reduce(into: [String: Int]()) {
+        totals, day in
+        for segment in day.segments where segment.durationSeconds > 0 {
+          totals[segment.category, default: 0] += segment.durationSeconds
+        }
+      })
+  }
+
   private func barColor(_ segment: LocalDailyActivitySegment) -> Color {
-    switch segment.category {
-    case "UNCLASSIFIED": return Color.gray.opacity(0.55)
-    case "OTHER": return Color.velvtMuted.opacity(0.5)
-    case "FOCUS_WORK": return .velvtGreen
-    case "COMMUNICATION": return .velvtPink
-    case "REFERENCE": return .velvtBlue
-    case "CREATIVE": return .orange.opacity(0.85)
-    default: return .purple.opacity(0.85)
-    }
+    activityPalette[segment.category] ?? ActivityPalette.unmatched
   }
 }
 
@@ -1903,7 +2047,7 @@ private struct ActivityContextIcon: View {
           .resizable()
           .scaledToFit()
           .padding(3)
-          .foregroundStyle(Color.velvtMuted)
+          .foregroundStyle(VelvtInk.tertiaryOnInk)
       }
     }
     .frame(width: 22, height: 22)
@@ -1952,6 +2096,10 @@ struct InlineActivityCorrectionEditor: View {
     VStack(alignment: .leading, spacing: 6) {
       TextField("Local activity name", text: $name)
         .textFieldStyle(.roundedBorder)
+        .font(VelvtType.body(12))
+        // The caret and the selection sit on a dark control on the ink ground,
+        // where crimson is 2.56:1. Signal is the ink-ground form of the accent.
+        .tint(VelvtPalette.signal)
         .onChange(of: name) { value in
           if value.count > 48 { name = String(value.prefix(48)) }
         }
@@ -1965,22 +2113,30 @@ struct InlineActivityCorrectionEditor: View {
         }
         .pickerStyle(.menu)
         .controlSize(.small)
+        .tint(VelvtPalette.signal)
         Button("Save") { onSave(category, normalizedName) }
+          .buttonStyle(VelvtPrimaryButtonStyle())
           .keyboardShortcut(.return, modifiers: .command)
           .disabled(normalizedName == nil)
         Button("Cancel", action: onCancel)
+          .buttonStyle(VelvtQuietButtonStyle())
           .keyboardShortcut(.cancelAction)
         if let onUndo {
           Button("Undo saved correction", role: .destructive, action: onUndo)
+            .buttonStyle(VelvtDestructiveButtonStyle())
         }
       }
       Label("Names, suggestions, and icons stay on this Mac.", systemImage: "lock.fill")
-        .font(.caption2)
-        .foregroundStyle(Color.velvtMuted)
+        .font(VelvtType.caption(10.5))
+        .foregroundStyle(VelvtInk.tertiaryOnInk)
     }
-    .padding(8)
-    .background(Color.velvtSurface.opacity(0.75))
-    .clipShape(RoundedRectangle(cornerRadius: 7))
+    .padding(VelvtMetrics.spaceSM)
+    .background(VelvtSurface.cardRaised)
+    .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
+        .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+    )
   }
 
   private var normalizedName: String? {
@@ -2229,8 +2385,12 @@ struct IPCStatusBanner: View {
 
     var body: some View {
         Label(message, systemImage: "dot.radiowaves.left.and.right")
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted.opacity(0.55))
+            .font(VelvtType.caption(10.5))
+            // Muted, not unreadable. `tertiaryOnInk` is paper at 0.42 already,
+            // so the extra 0.55 left a real message at an effective 0.23 —
+            // about 1.9:1. This is the one sentence explaining why the rest of
+            // the popover is empty, so it gets the secondary token whole.
+            .foregroundStyle(VelvtInk.secondaryOnInk)
     }
 }
 

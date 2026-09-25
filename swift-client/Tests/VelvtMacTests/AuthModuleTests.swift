@@ -612,6 +612,68 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(sut.accountState, .pendingErasure, "normal use must be blocked during pending erasure")
     }
 
+    // MARK: Connection-status delivery
+
+    /// The real IPC client publishes `connectionStatus` from its own thread, while
+    /// the sink reads main-actor state (the cached session) before sending it back.
+    /// Delivery must hop to the main thread; `sendStoredSession` asserts it does, so
+    /// dropping the hop fails this test rather than racing in the field.
+    func testConnectionStatusFromBackgroundThreadRestoresSessionOnMainThread() async throws {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        let expiresAt = Date(timeIntervalSinceNow: 3600)
+        try seedSnapshot(
+            in: keychain,
+            userId: "u123",
+            session: AuthSession(
+                deviceId: "device-1",
+                accessToken: "stored-access",
+                refreshToken: "stored-refresh",
+                expiresAt: expiresAt
+            )
+        )
+
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                client.setConnectionStatus(.connected)
+                continuation.resume()
+            }
+        }
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        guard case .authSession(let session)? = client.sentMessages.first else {
+            return XCTFail("Expected the stored session to be restored after an off-main connect")
+        }
+        XCTAssertEqual(session.accessToken, "stored-access")
+        XCTAssertEqual(client.sentMessages.count, 1, "one connect must restore the session once")
+    }
+
+    /// Duplicate suppression must survive the main-thread hop: only a genuine
+    /// reconnect re-sends the stored session.
+    func testOffMainReconnectRestoresSessionOncePerConnect() async throws {
+        let client = FakeIPCClient()
+        let keychain = FakeKeychain()
+        try seedSnapshot(in: keychain, userId: "u123")
+
+        let sut = AccountStateManager(keychain: keychain)
+        sut.startListening(to: client)
+
+        for status in [ConnectionStatus.connected, .connected, .disconnected, .connected] {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().async {
+                    client.setConnectionStatus(status)
+                    continuation.resume()
+                }
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        XCTAssertEqual(client.sentMessages.count, 2, "two connects, two restores")
+    }
+
     // MARK: Helpers
 
     private func seedSnapshot(

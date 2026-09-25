@@ -20,6 +20,10 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case requestCorrectionHistory(RequestCorrectionHistory)
     case removeClassificationOverride(RemoveClassificationOverride)
     case resetClassificationOverrides
+    /// Asks which applications Velvt observed but could not read (proto v30).
+    case requestUnclassifiedTriage(RequestUnclassifiedTriage)
+    /// Teaches Velvt what one application is, with no event id (proto v30).
+    case setApplicationCategory(SetApplicationCategory)
     case startWorkBlock(StartWorkBlock)
     case pauseWorkBlock(WorkBlockIdentifier)
     case resumeWorkBlock(WorkBlockIdentifier)
@@ -28,6 +32,10 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case requestLocalDashboard(RequestLocalDashboard)
     case acceptWorkBlockRecovery(AcceptWorkBlockRecovery)
     case reportInterventionOutcome(ReportInterventionOutcome)
+    /// The drift card was actually drawn on screen. A delivery fact, never a
+    /// reply — it reuses the bare identifier payload precisely because there
+    /// is nowhere in it a user answer could be smuggled.
+    case interventionCardSeen(WorkBlockIdentifier)
     case workBlockLifecycle(WorkBlockLifecycle)
     case clearWorkBlockData
     case focusStateChanged(FocusStateChanged)
@@ -81,6 +89,10 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .removeClassificationOverride(try RemoveClassificationOverride(from: payload))
         case "reset_classification_overrides":
             self = .resetClassificationOverrides
+        case "request_unclassified_triage":
+            self = .requestUnclassifiedTriage(try RequestUnclassifiedTriage(from: payload))
+        case "set_application_category":
+            self = .setApplicationCategory(try SetApplicationCategory(from: payload))
         case "start_work_block":
             self = .startWorkBlock(try StartWorkBlock(from: payload))
         case "pause_work_block":
@@ -97,6 +109,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .acceptWorkBlockRecovery(try AcceptWorkBlockRecovery(from: payload))
         case "report_intervention_outcome":
             self = .reportInterventionOutcome(try ReportInterventionOutcome(from: payload))
+        case "intervention_card_seen":
+            self = .interventionCardSeen(try WorkBlockIdentifier(from: payload))
         case "work_block_lifecycle":
             self = .workBlockLifecycle(try WorkBlockLifecycle(from: payload))
         case "clear_work_block_data":
@@ -183,6 +197,12 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .resetClassificationOverrides:
             try envelope.encode("reset_classification_overrides", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
+        case let .requestUnclassifiedTriage(value):
+            try envelope.encode("request_unclassified_triage", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .setApplicationCategory(value):
+            try envelope.encode("set_application_category", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .startWorkBlock(value):
             try envelope.encode("start_work_block", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
@@ -206,6 +226,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .reportInterventionOutcome(value):
             try envelope.encode("report_intervention_outcome", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .interventionCardSeen(value):
+            try envelope.encode("intervention_card_seen", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .workBlockLifecycle(value):
             try envelope.encode("work_block_lifecycle", forKey: .type)
@@ -275,6 +298,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case notificationPayload(NotificationPayload)
     case menuStatus(MenuStatus)
     case correctionHistoryPage(CorrectionHistoryPage)
+    /// The bounded list of applications Velvt could not read (proto v30).
+    case unclassifiedTriage(UnclassifiedTriage)
     case workBlockState(WorkBlockSnapshot)
     case localDashboard(LocalDashboardSnapshot)
     /// A deterministic next-morning quiet-hours offer (rule-versioned).
@@ -340,6 +365,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .menuStatus(try MenuStatus(from: payload))
         case "correction_history_page":
             self = .correctionHistoryPage(try CorrectionHistoryPage(from: payload))
+        case "unclassified_triage":
+            self = .unclassifiedTriage(try UnclassifiedTriage(from: payload))
         case "work_block_state":
             self = .workBlockState(try WorkBlockSnapshot(from: payload))
         case "local_dashboard":
@@ -427,6 +454,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case let .correctionHistoryPage(value):
             try envelope.encode("correction_history_page", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case let .unclassifiedTriage(value):
+            try envelope.encode("unclassified_triage", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case let .workBlockState(value):
             try envelope.encode("work_block_state", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
@@ -482,6 +512,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case .notificationPayload: "notification_payload"
         case .menuStatus: "menu_status"
         case .correctionHistoryPage: "correction_history_page"
+        case .unclassifiedTriage: "unclassified_triage"
         case .workBlockState: "work_block_state"
         case .localDashboard: "local_dashboard"
         case .quietHoursOffer: "quiet_hours_offer"
@@ -625,6 +656,57 @@ public struct MalformedMessage: Codable, Equatable, Sendable {
     }
 }
 
+/// The protocol's bounds on `raw_event.document_type_ids` (proto v30).
+///
+/// Mirrors `velvt_shared_types::MAX_DOCUMENT_TYPE_IDS` and
+/// `MAX_DOCUMENT_TYPE_ID_LENGTH`, which must stay in step: a stale copy here
+/// silently abstains for exactly the applications the bound was raised for.
+///
+/// The service no longer drops an event over this — it clears the offending
+/// declaration and keeps the observed time. The bound is still applied here so
+/// the client sends what it means to send, rather than discovering on the wire
+/// that its declaration was discarded.
+public enum DeclaredDocumentTypeBounds {
+    /// The most declared document types one raw event may carry.
+    /// 256, above every application measured: Xcode declares 152 document
+    /// types and Preview 49. An earlier 24 silenced both — the precise case
+    /// the census raised the bound for.
+    public static let maximumCount = 256
+
+    /// The longest single identifier, in UTF-8 bytes (Rust checks bytes).
+    public static let maximumIdentifierLength = 64
+
+    /// The declared set as the protocol can carry it: deduplicated, sorted, and
+    /// empty when the real set does not fit.
+    ///
+    /// Abstaining rather than trimming is deliberate. A prefix of a declared set
+    /// is a set the application never declared — Xcode's first 24 sorted UTIs
+    /// are all `com.apple.*`, so a trimmed list would skew the majority rule in
+    /// the service precisely for the richest applications. An empty list says
+    /// "nothing declared", which is honest and degrades to the behaviour that
+    /// preceded this field.
+    ///
+    /// Entries that name no type at all — empty or whitespace-only strings — are
+    /// dropped rather than counted, because dropping them loses no declaration.
+    public static func representable(_ identifiers: [String]) -> [String] {
+        var unique: Set<String> = []
+        for identifier in identifiers {
+            let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                continue
+            }
+            guard trimmed.utf8.count <= maximumIdentifierLength else {
+                return []
+            }
+            unique.insert(trimmed)
+        }
+        guard unique.count <= maximumCount else {
+            return []
+        }
+        return unique.sorted()
+    }
+}
+
 /// A local-only raw activity event sent to the Rust privacy boundary.
 public struct RawEventMessage: Codable, Equatable, Sendable {
     public let eventID: UUID
@@ -633,6 +715,15 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
     public let appName: String
     public let windowTitle: String
     public let bundleID: String?
+    /// The `LSApplicationCategoryType` the application declares in its own
+    /// `Info.plist`, verbatim. A fact read off disk; which declared categories
+    /// mean anything is decided in Rust, and most of them mean nothing.
+    public let declaredAppCategory: String?
+    /// The `LSItemContentTypes` declared across `CFBundleDocumentTypes`,
+    /// flattened, deduplicated and sorted. Empty when the application declares
+    /// none, when its plist could not be read, or when the declared set exceeds
+    /// what the protocol can carry — see `DeclaredDocumentTypeBounds`.
+    public let documentTypeIDs: [String]
     public let focusedDocumentURL: String?
 
     public init(
@@ -642,6 +733,8 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         appName: String,
         windowTitle: String,
         bundleID: String?,
+        declaredAppCategory: String? = nil,
+        documentTypeIDs: [String] = [],
         focusedDocumentURL: String? = nil
     ) {
         self.eventID = eventID
@@ -650,6 +743,10 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         self.appName = appName
         self.windowTitle = windowTitle
         self.bundleID = bundleID
+        self.declaredAppCategory = declaredAppCategory
+        // Applied at the boundary as well as at collection, so no future caller
+        // can assemble a frame the service would have to refuse.
+        self.documentTypeIDs = DeclaredDocumentTypeBounds.representable(documentTypeIDs)
         self.focusedDocumentURL = focusedDocumentURL
     }
 
@@ -660,6 +757,8 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         case appName = "app_name"
         case windowTitle = "window_title"
         case bundleID = "bundle_id"
+        case declaredAppCategory = "declared_app_category"
+        case documentTypeIDs = "document_type_ids"
         case focusedDocumentURL = "focused_document_url"
     }
 
@@ -671,6 +770,9 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         appName = try container.decode(String.self, forKey: .appName)
         windowTitle = try container.decode(String.self, forKey: .windowTitle)
         bundleID = try container.decodeIfPresent(String.self, forKey: .bundleID)
+        declaredAppCategory = try container.decodeIfPresent(
+            String.self, forKey: .declaredAppCategory)
+        documentTypeIDs = try container.decodeIfPresent([String].self, forKey: .documentTypeIDs) ?? []
         focusedDocumentURL = try container.decodeIfPresent(String.self, forKey: .focusedDocumentURL)
     }
 
@@ -682,6 +784,13 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         try container.encode(appName, forKey: .appName)
         try container.encode(windowTitle, forKey: .windowTitle)
         try container.encode(bundleID, forKey: .bundleID)
+        try container.encodeIfPresent(declaredAppCategory, forKey: .declaredAppCategory)
+        // Absent rather than `[]`, matching the service's
+        // `skip_serializing_if = "Vec::is_empty"`: an older service and a client
+        // with nothing to declare then produce the same frame.
+        if !documentTypeIDs.isEmpty {
+            try container.encode(documentTypeIDs, forKey: .documentTypeIDs)
+        }
         try container.encodeIfPresent(focusedDocumentURL, forKey: .focusedDocumentURL)
     }
 }
@@ -1132,6 +1241,10 @@ public enum ClassificationSource: String, Codable, Equatable, Sendable {
     case heuristic
     case embedding
     case userRule = "user_rule"
+    /// The application's own declared `CFBundleDocumentTypes` (proto v30).
+    case declaredDocumentTypes = "declared_document_types"
+    /// The application's own declared `LSApplicationCategoryType` (proto v30).
+    case declaredAppCategory = "declared_app_category"
     case fallback
 }
 
@@ -1235,20 +1348,71 @@ public struct RemoveClassificationOverride: Codable, Equatable, Sendable {
     }
 }
 
+/// Which identity a saved rule is keyed on.
+///
+/// The two behave differently, so a list that shows them identically cannot be
+/// trusted or edited: a window rule covers one application-and-window pair, an
+/// app rule covers every window of one application. `stableID` is an
+/// abstraction stable id for a window rule and the application's own key hash
+/// for an app rule, so a client cannot act on the id without reading this.
+public enum CorrectionScope: String, Codable, Equatable, Sendable {
+    case window
+    case app
+}
+
 public struct ClassificationCorrectionSummary: Codable, Equatable, Sendable, Identifiable {
     public let stableID: String
     public let label: String
     public let localLabel: String?
     public let category: String
     public let updatedAt: Date
+    public let scope: CorrectionScope
 
     public var id: String { stableID }
 
+    public init(
+        stableID: String,
+        label: String,
+        localLabel: String?,
+        category: String,
+        updatedAt: Date,
+        scope: CorrectionScope = .window
+    ) {
+        self.stableID = stableID
+        self.label = label
+        self.localLabel = localLabel
+        self.category = category
+        self.updatedAt = updatedAt
+        self.scope = scope
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case label, category
+        case label, category, scope
         case stableID = "stable_id"
         case localLabel = "local_label"
         case updatedAt = "updated_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        stableID = try container.decode(String.self, forKey: .stableID)
+        label = try container.decode(String.self, forKey: .label)
+        localLabel = try container.decodeIfPresent(String.self, forKey: .localLabel)
+        category = try container.decode(String.self, forKey: .category)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        // Every rule written before app scope existed is a window rule, so an
+        // absent field is `window` rather than a decode failure.
+        scope = try container.decodeIfPresent(CorrectionScope.self, forKey: .scope) ?? .window
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(stableID, forKey: .stableID)
+        try container.encode(label, forKey: .label)
+        try container.encodeIfPresent(localLabel, forKey: .localLabel)
+        try container.encode(category, forKey: .category)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(scope, forKey: .scope)
     }
 }
 
@@ -1278,6 +1442,147 @@ public struct CorrectionHistoryPage: Codable, Equatable, Sendable {
         case pageSize = "page_size"
         case totalCount = "total_count"
         case hasMore = "has_more"
+    }
+}
+
+/// Asks which applications Velvt observed but could not read.
+///
+/// The window is clamped again in Rust against the published retention window;
+/// clamping here only keeps the client from asking for evidence that cannot
+/// exist.
+public struct RequestUnclassifiedTriage: Codable, Equatable, Sendable {
+    /// The longest window the service will answer over, in days.
+    public static let maximumLookbackDays = 14
+
+    public let lookbackDays: Int
+
+    public init(lookbackDays: Int) {
+        self.lookbackDays = min(max(1, lookbackDays), Self.maximumLookbackDays)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case lookbackDays = "lookback_days"
+    }
+}
+
+/// One application Velvt observed but could not classify.
+///
+/// Facts only: how long it was on screen and how many times it was seen. No
+/// category, no guess, and no total presented as a score.
+public struct UnclassifiedTriageEntry: Codable, Equatable, Sendable, Identifiable {
+    /// The app-scoped correction key, returned verbatim in
+    /// `SetApplicationCategory`.
+    public let appStableID: String
+    /// The device-local name Velvt already holds. Display text only; never
+    /// forwarded off the device.
+    public let displayName: String
+    public let secondsObserved: Int
+    public let eventCount: Int
+    /// The device-local bundle key hash when Velvt holds one — an opaque
+    /// marker for the rule Rust writes, not the raw bundle identifier and
+    /// never display text.
+    public let bundleID: String?
+
+    public var id: String { appStableID }
+
+    public init(
+        appStableID: String,
+        displayName: String,
+        secondsObserved: Int,
+        eventCount: Int,
+        bundleID: String? = nil
+    ) {
+        self.appStableID = appStableID
+        self.displayName = displayName
+        self.secondsObserved = secondsObserved
+        self.eventCount = eventCount
+        self.bundleID = bundleID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case appStableID = "app_stable_id"
+        case displayName = "display_name"
+        case secondsObserved = "seconds_observed"
+        case eventCount = "event_count"
+        case bundleID = "bundle_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        appStableID = try container.decode(String.self, forKey: .appStableID)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        secondsObserved = try container.decode(Int.self, forKey: .secondsObserved)
+        eventCount = try container.decode(Int.self, forKey: .eventCount)
+        bundleID = try container.decodeIfPresent(String.self, forKey: .bundleID)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(appStableID, forKey: .appStableID)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encode(secondsObserved, forKey: .secondsObserved)
+        try container.encode(eventCount, forKey: .eventCount)
+        try container.encodeIfPresent(bundleID, forKey: .bundleID)
+    }
+}
+
+/// The bounded list of applications Velvt could not read in the window.
+/// An empty list is the good state.
+public struct UnclassifiedTriage: Codable, Equatable, Sendable {
+    /// Ranked by observed time, longest first. The service caps and floors the
+    /// list; the client renders what it is given.
+    public let entries: [UnclassifiedTriageEntry]
+    /// The window the entries were actually computed over, after clamping.
+    public let windowDays: Int
+
+    public init(entries: [UnclassifiedTriageEntry], windowDays: Int) {
+        self.entries = entries
+        self.windowDays = windowDays
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case entries
+        case windowDays = "window_days"
+    }
+}
+
+/// Teaches Velvt what one application is.
+///
+/// There is no event id on purpose: the user is telling Velvt about an
+/// application, not correcting one moment of it. Saving the same answer twice
+/// is the same as saving it once.
+public struct SetApplicationCategory: Codable, Equatable, Sendable {
+    /// The app-scoped key, exactly as `UnclassifiedTriageEntry` reported it.
+    public let appStableID: String
+    public let category: String
+    /// Optional device-local name for the application. Never uploaded, never
+    /// logged.
+    public let activityName: String?
+
+    public init(appStableID: String, category: String, activityName: String? = nil) {
+        self.appStableID = appStableID
+        self.category = category
+        self.activityName = activityName
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case category
+        case appStableID = "app_stable_id"
+        case activityName = "activity_name"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        appStableID = try container.decode(String.self, forKey: .appStableID)
+        category = try container.decode(String.self, forKey: .category)
+        activityName = try container.decodeIfPresent(String.self, forKey: .activityName)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(appStableID, forKey: .appStableID)
+        try container.encode(category, forKey: .category)
+        try container.encodeIfPresent(activityName, forKey: .activityName)
     }
 }
 

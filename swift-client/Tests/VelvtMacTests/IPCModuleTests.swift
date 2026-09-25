@@ -226,6 +226,25 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertEqual(payload["local_activity_name"] as? String, "Research reading")
     }
 
+    /// Rust sends the day's longest stretch as `longest_uninterrupted_seconds`
+    /// (`proto/schema/history_payload.json`). This decoder read `focus_seconds`,
+    /// the cloud API's name, which never crosses the socket, so History showed 0.
+    func testHistorySummaryReadsTheLongestStretchUnderTheNameRustSends() throws {
+        let json = """
+            {"type":"history_payload","payload":{"days":1,"summaries":[
+              {"date":"2026-09-25","status":"ready","event_count":4,"focus_score":null,
+               "fragmentation_score":null,"confidence_level":"medium","active_seconds":3600,
+               "focused_seconds":2400,"meaningful_switch_count":3,
+               "longest_uninterrupted_seconds":1500,"baseline_status":"early_stage",
+               "baseline_comparison":{},"type_proportions":[]}]}}
+            """
+        let message = try decoder.decode(ServerMessage.self, from: Data(json.utf8))
+        guard case let .historyPayload(payload) = message else {
+            return XCTFail("expected a history payload, decoded \(message)")
+        }
+        XCTAssertEqual(payload.summaries.first?.longestUninterruptedSeconds, 1500)
+    }
+
     func testCorrectionHistoryWireContractIsBoundedAndLocalOnly() throws {
         let request = ClientMessage.requestCorrectionHistory(
             RequestCorrectionHistory(query: "Private alias", offset: 20, pageSize: 500)

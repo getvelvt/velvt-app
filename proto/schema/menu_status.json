@@ -99,6 +99,11 @@
                 "type": "string",
                 "description": "Device-local display label; must never be forwarded outside the device."
               },
+              "scope": {
+                "enum": ["window", "app"],
+                "default": "window",
+                "description": "Whether the rule covers one window or every window of an application, as in correction_history_page. Rust has sent it since protocol 30; this schema declared it on 2026-09-25."
+              },
               "category": { "type": "string" },
               "updated_at": { "type": "string", "format": "date-time" }
             },

@@ -7,8 +7,8 @@
   "properties": {
     "type": { "const": "acknowledged" },
     "payload": {
-      "type": "object",
-      "additionalProperties": false
+      "$comment": "Rust's Acknowledged is a unit struct, which serde encodes as null, so null is what Rust sends. Until 2026-09-25 this schema said an empty object. Clients must accept null.",
+      "type": "null"
     }
   }
 }

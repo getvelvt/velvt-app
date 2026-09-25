@@ -263,8 +263,9 @@ Each summary contains:
 - `fragmentation_score`: derived number or null
 - `confidence_level`: `none`, `low`, `medium`, or `high`
 - `active_seconds`: non-negative active duration
-- `focused_seconds`, `meaningful_switch_count`, `focus_seconds`: aggregate
-  Today-surface counts (protocol 18)
+- `focused_seconds`, `meaningful_switch_count`, `longest_uninterrupted_seconds`:
+  aggregate Today-surface counts (protocol 18). The cloud API names the last one
+  `focus_seconds`; Rust renames it when it parses the API response
 - `baseline_status`, `baseline_comparison`, `type_proportions` (per-category
   seconds and proportion)
 
@@ -411,8 +412,9 @@ version in brackets is where the message or field arrived.
 - `request_unclassified_triage` / `unclassified_triage` [30]: up to 8
   applications Velvt observed but could not classify, ranked by observed time
   and floored at five minutes, each with the local name Velvt already holds,
-  seconds observed, event count, and the bundle key hash when there is one. No
-  category and no guess. An empty list is the good state.
+  seconds observed, and event count. `app_stable_id` is the only identifier:
+  no bundle key crosses the socket. No category and no guess. An empty list is
+  the good state.
 - `set_application_category` [30]: Swift to Rust. The one-tap answer from that
   list: an app-scoped rule keyed by `app_stable_id`, with no event id.
 

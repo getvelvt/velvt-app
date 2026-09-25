@@ -18,6 +18,7 @@
           "description": "Ranked by seconds_observed, longest first. Capped at 8 and floored at 5 minutes observed: a list of thirty one-second curiosities is not a task anyone will do. An empty array is the good state.",
           "items": {
             "type": "object",
+            "$comment": "app_stable_id is the only identifier, on purpose. The bundle identity that lets a saved rule survive a rename is looked up in Rust from the rows it already holds when set_application_category comes back; sending it to the client would put a second application identifier on the socket for no use. Until 2026-09-25 this schema declared an optional bundle_id that no Rust build ever sent.",
             "additionalProperties": false,
             "required": ["app_stable_id", "display_name", "seconds_observed", "event_count"],
             "properties": {
@@ -30,11 +31,7 @@
                 "description": "Device-local application name Velvt already holds. Display text only."
               },
               "seconds_observed": { "type": "integer", "minimum": 300 },
-              "event_count": { "type": "integer", "minimum": 1 },
-              "bundle_id": {
-                "type": ["string", "null"],
-                "description": "The device-local bundle key hash when Velvt holds one, so the saved rule survives a rename. An opaque marker, not the raw bundle identifier and never display text."
-              }
+              "event_count": { "type": "integer", "minimum": 1 }
             }
           }
         },

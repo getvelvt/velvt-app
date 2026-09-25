@@ -1044,7 +1044,7 @@ public struct DailySummary: Codable, Equatable, Sendable {
         case activeSeconds = "active_seconds"
         case focusedSeconds = "focused_seconds"
         case meaningfulSwitchCount = "meaningful_switch_count"
-        case longestUninterruptedSeconds = "focus_seconds"
+        case longestUninterruptedSeconds = "longest_uninterrupted_seconds"
         case baselineStatus = "baseline_status"
         case baselineComparison = "baseline_comparison"
         case typeProportions = "type_proportions"
@@ -1478,10 +1478,6 @@ public struct UnclassifiedTriageEntry: Codable, Equatable, Sendable, Identifiabl
     public let displayName: String
     public let secondsObserved: Int
     public let eventCount: Int
-    /// The device-local bundle key hash when Velvt holds one — an opaque
-    /// marker for the rule Rust writes, not the raw bundle identifier and
-    /// never display text.
-    public let bundleID: String?
 
     public var id: String { appStableID }
 
@@ -1489,40 +1485,22 @@ public struct UnclassifiedTriageEntry: Codable, Equatable, Sendable, Identifiabl
         appStableID: String,
         displayName: String,
         secondsObserved: Int,
-        eventCount: Int,
-        bundleID: String? = nil
+        eventCount: Int
     ) {
         self.appStableID = appStableID
         self.displayName = displayName
         self.secondsObserved = secondsObserved
         self.eventCount = eventCount
-        self.bundleID = bundleID
     }
 
+    /// `app_stable_id` is the entry's only identifier, as in the Rust type and
+    /// `proto/schema/unclassified_triage.json`: Rust looks the bundle identity up
+    /// itself when `SetApplicationCategory` comes back, so none crosses the socket.
     private enum CodingKeys: String, CodingKey {
         case appStableID = "app_stable_id"
         case displayName = "display_name"
         case secondsObserved = "seconds_observed"
         case eventCount = "event_count"
-        case bundleID = "bundle_id"
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        appStableID = try container.decode(String.self, forKey: .appStableID)
-        displayName = try container.decode(String.self, forKey: .displayName)
-        secondsObserved = try container.decode(Int.self, forKey: .secondsObserved)
-        eventCount = try container.decode(Int.self, forKey: .eventCount)
-        bundleID = try container.decodeIfPresent(String.self, forKey: .bundleID)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(appStableID, forKey: .appStableID)
-        try container.encode(displayName, forKey: .displayName)
-        try container.encode(secondsObserved, forKey: .secondsObserved)
-        try container.encode(eventCount, forKey: .eventCount)
-        try container.encodeIfPresent(bundleID, forKey: .bundleID)
     }
 }
 

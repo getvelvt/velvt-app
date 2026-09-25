@@ -205,8 +205,9 @@ reaches a pair you stopped observing; it never reaches one you keep observing.
 
 The table above is every store that holds something drawn from your Mac. It is
 not every table in the file. A database with every shipped migration applied
-holds 35 tables, plus SQLite's own `sqlite_sequence`; the 18 that are not in
-that table hold counters, settings, keys, and feature state. They are listed here for
+holds 37 tables, plus SQLite's own `sqlite_sequence`; the 20 that are not in
+that table hold counters, settings, keys, feature state, and the record of what
+was sent. They are listed here for
 the same reason the three empty ones are — you will see them if you open the
 file.
 
@@ -214,6 +215,8 @@ file.
 |---|---|---|
 | `classification_telemetry` | one counter per taxonomy version and classification tier: how many events that tier classified. No app identity and no label; the only time it holds is the counter's own `updated_at` | no sweep and no in-app removal; the counters persist until `~/.velvt/` is deleted |
 | `classifier_artifact_telemetry` | the same shape for the classifier artifact: one counter per artifact version, such as `builtin-hash-v1` | no sweep and no in-app removal |
+| `egress_ledger` | one row per HTTP request the helper made, written before it was sent: when, the method and URL, the body's byte count, the SHA-256 of the body, whether an account token was attached, and a hash chaining the row to the one before. No body is stored. For the sign-up, log-in, and token-refresh bodies the hash is taken with the password or token replaced by `[redacted]`. Described under "How to audit what is sent" below | 30 days or 100,000 rows, whichever is tighter, oldest first. No in-app removal |
+| `egress_ledger_checkpoint` | the sequence number and hash of the last `egress_ledger` row retention removed, so the rows that remain still verify | the newest checkpoint only |
 | `embedding_salt` | a 32-byte random value generated on this device by migration 0031, provisioned as the per-install key for the embedding feature hash. No activity data. What the shipped classifier does with it is the subject of the section above | singleton, and never rewritten: a second salt would invalidate every sketch stored under the first. No sweep |
 | `stable_key_salt` | a second 32-byte random value generated on this device, by migration 0037: the per-install key every stable key, application key, and bundle digest in this file is an HMAC under. It stops a guess being checked offline from this repository alone and stops two Macs' keys matching; it does not stop someone who holds this whole file, because it is in it. No activity data | singleton, and never rewritten while it exists: a second salt would orphan every correction keyed under the first, so if the row is deleted by hand Velvt mints a new one and removes the corrections and mappings it can no longer match. No sweep |
 | `upload_host_backoff` | one row per upload host — the configured API hostname, its consecutive-failure count, and the earliest time a next attempt is allowed. No event content | removed for a host as soon as a batch upload to it succeeds; otherwise it persists |
@@ -394,6 +397,27 @@ prints. The full abstraction and
 upload code paths are open source in this repository; `PRIVACY_AUDIT.md` is the
 line-by-line verification a security reviewer would otherwise have to redo from
 scratch.
+
+## How to audit what is sent
+
+The helper (`velvt-service`) holds the only network client in Velvt's Rust code,
+and it appends every request to `egress_ledger` before sending it. A request
+the ledger cannot record is not sent. Velvt 1.0.11 and earlier do not have the
+ledger; it starts with the first build after 1.0.11. Two tools read it:
+
+- `scripts/prove_egress.sh` recomputes every row's hash with sqlite3 and perl,
+  reports whether the chain is intact, and prints what was sent, by endpoint
+  and row by row. An intact chain shows that no row was edited or removed from
+  the middle. It cannot show that the end was not cut off, or that someone
+  with write access to the file did not rebuild the whole chain. The head hash
+  it prints is what you write down to catch that later.
+- `/Applications/Velvt.app/Contents/Resources/velvt-service --dry-run-egress`
+  opens the database read-only and prints each queued upload byte for byte,
+  with the SHA-256 the ledger will record when it is sent. It also prints every
+  endpoint the helper can reach, and sends nothing.
+
+The ledger covers the helper's requests only. DNS lookups and TLS handshakes are
+not rows. The app's own update check, when a build enables it, is not recorded.
 
 ## How to delete all local data
 

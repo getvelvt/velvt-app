@@ -1020,6 +1020,8 @@ async fn upload_batcher_accumulates_abstracted_events_and_flushes_on_count() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
                 duration_seconds: 0,
             })
@@ -1079,6 +1081,8 @@ async fn upload_batcher_flush_now_drains_memory_and_resumes_ready_batches() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
                 duration_seconds: 0,
             })
@@ -1172,6 +1176,8 @@ async fn threshold_flush_requeues_events_after_a_persistence_failure() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
                 duration_seconds: 0,
             })
@@ -1216,6 +1222,8 @@ async fn flush_due_requeues_events_after_a_persistence_failure() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
                 duration_seconds: 0,
             })
@@ -1261,6 +1269,8 @@ async fn flush_now_requeues_events_after_a_persistence_failure() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
                 duration_seconds: 0,
             })
@@ -1302,6 +1312,8 @@ async fn flush_now_does_not_requeue_after_persisted_batch_upload_error() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
                 duration_seconds: 0,
             })
@@ -1337,6 +1349,8 @@ async fn flush_now_attempts_a_failed_batch_once() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
                 duration_seconds: 0,
             })
@@ -1371,6 +1385,8 @@ async fn flush_now_requeues_multiple_events_ahead_of_later_ingestion() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
                 duration_seconds: 0,
             })
@@ -1453,6 +1469,8 @@ async fn shared_flush_now_does_not_block_ingestion_during_persisted_replay() {
                 app_name: "VS Code".into(),
                 window_title: "private title".into(),
                 bundle_id: None,
+                declared_app_category: None,
+                document_type_ids: Vec::new(),
                 focused_document_url: None,
                 duration_seconds: 0,
             })
@@ -1621,6 +1639,8 @@ fn abstracted_event() -> velvt_service::abstraction::AbstractedEvent {
             app_name: "VS Code".into(),
             window_title: "private title".into(),
             bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
             focused_document_url: None,
             duration_seconds: 0,
         })

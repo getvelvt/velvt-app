@@ -19,7 +19,12 @@ let package = Package(
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle")
             ],
-            path: "Sources/VelvtMac"
+            path: "Sources/VelvtMac",
+            resources: [
+                // Manrope, the brand typeface. Registered process-scoped at
+                // first use by `VelvtFonts`; see Resources/Fonts/NOTICE.md.
+                .copy("Resources/Fonts")
+            ]
         ),
         .testTarget(
             name: "VelvtMacTests",

@@ -10,17 +10,23 @@
 //! holding 9,073 raw macOS application names is called `local_name_suggestion`
 //! and matched none of them.
 //!
-//! The three tests here are the machine-checked replacements:
+//! The four tests here are the machine-checked replacements:
 //!
 //! 1. `privacy_document_retention_cells_match_the_shipped_horizons` reads
 //!    `PRIVACY.md`'s storage table out of the compiled binary and compares every
 //!    number in every retention cell to the horizon the service actually runs
 //!    on. Prose may be rewritten freely; a digit may not move on one side alone.
 //! 2. `no_column_holds_the_sentinels_outside_the_documented_exceptions` drives a
-//!    sentinel application name and window title through the real router and
-//!    then reads back every value of every column of every table — by value, not
-//!    by name, and including BLOBs.
-//! 3. `migrated_schema_holds_exactly_the_documented_tables` closes the table
+//!    sentinel application name, window title, bundle identifier, declared
+//!    category and declared document types through the real router and then reads
+//!    back every value of every column of every table — by value, not by name,
+//!    and including BLOBs.
+//! 3. `no_declared_fact_reaches_an_upload_payload` drives the same event through
+//!    the real upload path and reads the batch the uploader was handed, which is
+//!    the last thing before the network. Invariant 1 of the Classification v2
+//!    contract says the bundle identifier, the declared category and the declared
+//!    document types are device-local; this is where that stops being prose.
+//! 4. `migrated_schema_holds_exactly_the_documented_tables` closes the table
 //!    inventory, so a new migration cannot add a store the document does not
 //!    mention.
 //!
@@ -50,7 +56,9 @@ use std::time::Duration as StdDuration;
 use chrono::{DateTime, Utc};
 use rusqlite::{types::Value, Connection};
 use uuid::Uuid;
-use velvt_service::abstraction::{AbstractionEngine, EmbeddingSimilarityPlugin, Taxonomy};
+use velvt_service::abstraction::{
+    app_bundle_key_for, AbstractionEngine, EmbeddingSimilarityPlugin, Taxonomy,
+};
 use velvt_service::auth::{
     AccountAuthService, AuthError, AuthState, AuthStateMachine, FakeTokenStore, HttpClient,
     HttpRequest, HttpResponse,
@@ -61,8 +69,9 @@ use velvt_service::ipc::{MessageRouter, R7Router};
 use velvt_service::persistence::{AbstractionMapping, SqlitePersistence};
 use velvt_service::retention::SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS;
 use velvt_service::upload::{
-    BatchAssembler, EventIngestor, FakeBatchUploader, FakePrivacyAlertSink, SharedUploadBatcher,
-    UploadBatcher, UploadCoordinator, UploadOutcome,
+    BatchAssembler, BatchPayload, BatchUploadError, BatchUploader, EventIngestor,
+    FakeBatchUploader, FakePrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator,
+    UploadOutcome,
 };
 use velvt_service::work_block::WorkBlockManager;
 use velvt_shared_types::{
@@ -96,6 +105,69 @@ const SENTINEL_APP_TOKEN: &str = "kervanth";
 /// name.
 const SENTINEL_WINDOW_TITLE: &str = "Brindlow settlement draft, third revision";
 const SENTINEL_TITLE_TOKEN: &str = "brindlow";
+
+/// A sentinel bundle identifier, shaped like a real one and belonging to no real
+/// application.
+///
+/// Migration 0033 claims the raw identifier is never stored: only
+/// `app_bundle_key_for`'s digest of it reaches `raw_event_buffer`. That is a
+/// claim about a value, so it is checked with a value. The digest is the positive
+/// control — it must be on disk, or the walk proves nothing about a fact that
+/// never arrived.
+const SENTINEL_BUNDLE_ID: &str = "com.thraceline.ledger";
+/// The distinctive token of the sentinel bundle identifier, lowercased. A column
+/// storing `thraceline` alone, or the identifier normalized or truncated, is
+/// still storing the identifier.
+const SENTINEL_BUNDLE_TOKEN: &str = "thraceline";
+
+/// A sentinel `LSApplicationCategoryType`, shaped like the Apple constants the
+/// whitelist matches and on no whitelist, so the classifier abstains exactly as
+/// it does for an application that declares nothing.
+///
+/// Unlike the bundle identifier this one is stored raw, in the single column
+/// migration 0033 declares for it, and only there.
+const SENTINEL_DECLARED_CATEGORY: &str = "public.app-category.glimberly";
+const SENTINEL_DECLARED_CATEGORY_TOKEN: &str = "glimberly";
+
+/// Sentinel declared document types, already deduplicated and sorted the way the
+/// client sends them, and mapping to no category — so this event classifies as
+/// it would with no declared types at all.
+///
+/// Two of them, because the column holds a set joined into one string: one
+/// identifier would not show that both survive the encoding, nor that the
+/// delimiter is the single ASCII space migration 0033 documents.
+const SENTINEL_DOCUMENT_TYPE_IDS: [&str; 2] =
+    ["com.wexcombe.sentinel-note", "public.wexcombe-draft"];
+/// The token shared by both sentinel document types, lowercased.
+const SENTINEL_DOCUMENT_TYPE_TOKEN: &str = "wexcombe";
+
+fn sentinel_document_type_ids() -> Vec<String> {
+    SENTINEL_DOCUMENT_TYPE_IDS
+        .iter()
+        .map(|identifier| (*identifier).to_owned())
+        .collect()
+}
+
+/// The raw event the two value-level tests below drive, carrying every fact
+/// Classification v2 added.
+///
+/// One constructor for both, so the upload-payload test and the column walk can
+/// never drift into asserting about different inputs — the two halves of one
+/// claim ("this fact lands here on disk, and nowhere on the wire") are only
+/// joined if the fact is the same fact.
+fn sentinel_raw_event(event_id: Uuid) -> RawEvent {
+    RawEvent {
+        event_id,
+        occurred_at: Utc::now(),
+        app_name: SENTINEL_APP_NAME.into(),
+        window_title: SENTINEL_WINDOW_TITLE.into(),
+        bundle_id: Some(SENTINEL_BUNDLE_ID.into()),
+        declared_app_category: Some(SENTINEL_DECLARED_CATEGORY.into()),
+        document_type_ids: sentinel_document_type_ids(),
+        focused_document_url: None,
+        duration_seconds: 300,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 1 — The retention cells in PRIVACY.md, against the shipped horizons
@@ -467,6 +539,30 @@ const DEVICE_LOCAL_EXCEPTION_COLUMNS: &[&str] = &[
     "raw_event_buffer.local_name_suggestion",
 ];
 
+/// The one column disclosed to hold the raw `LSApplicationCategoryType` the
+/// application declares about itself, as migration 0033 names it.
+///
+/// It is on its own list rather than added to `DEVICE_LOCAL_EXCEPTION_COLUMNS`
+/// because the two claims are different and merging them would weaken both: this
+/// column may hold the declared category, and it may not hold the application
+/// name or the window title. One list of permitted columns shared by every
+/// sentinel would say only "one of these facts is allowed in one of these
+/// columns", which is not a claim anyone published.
+const DECLARED_CATEGORY_COLUMNS: &[&str] = &["raw_event_buffer.declared_app_category"];
+
+/// The one column disclosed to hold the declared `LSItemContentTypes`, as
+/// migration 0033 names it. Same reasoning as above.
+const DOCUMENT_TYPE_COLUMNS: &[&str] = &["raw_event_buffer.document_type_ids"];
+
+/// The one column disclosed to hold the bundle *digest*, as migration 0033 names
+/// it.
+///
+/// This list is the positive control for the bundle identifier, not an exception
+/// for it: the raw identifier is permitted in no column at all, and the digest
+/// must be in exactly this one. A migration that stored the identifier instead of
+/// its hash would satisfy neither.
+const BUNDLE_DIGEST_COLUMNS: &[&str] = &["raw_event_buffer.app_bundle_stable_id"];
+
 /// Every column in the migrated schema declared `BLOB`.
 ///
 /// `scripts/prove_local.sh` filtered on `TEXT`/`CHAR`/`CLOB`, so BLOB columns
@@ -482,9 +578,10 @@ const BLOB_BEARING_COLUMNS: &[&str] = &[
     "semantic_embedding_cache.embedding",
 ];
 
-/// A sentinel application name and window title, driven through the real
-/// router, must not come back out of any column of any table except the ones
-/// this project has published as exceptions.
+/// A sentinel application name, window title, bundle identifier, declared
+/// category and declared document-type list, driven through the real router, must
+/// not come back out of any column of any table except the ones this project has
+/// published as exceptions.
 ///
 /// This is the assertion `persistence_contract::schema_has_no_forbidden_raw_content_columns`
 /// was written to make and cannot: it forbids the substrings `app_name`,
@@ -496,6 +593,15 @@ const BLOB_BEARING_COLUMNS: &[&str] = &[
 /// The positive control is load-bearing. A walk that silently visits nothing
 /// passes every negative assertion, which is precisely how the guard it replaces
 /// stayed green over 9,073 real application names.
+///
+/// Classification v2 added three facts to the raw event, so all three are
+/// sentinel-bearing inputs here. Each one has a positive control of its own,
+/// because the failure that matters is silent: a fact the router never recorded
+/// is a fact this walk cannot find, and "not found" reads identically to "never
+/// stored". The bundle identifier's control is its digest — the raw identifier is
+/// permitted in no column, and the hash of it is required in exactly one, which
+/// together are migration 0033's claim that a digest is stored *instead of* the
+/// identifier rather than beside it.
 #[tokio::test]
 async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
     let scratch = ScratchDatabase::new();
@@ -503,15 +609,7 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
     let router = sentinel_router(&persistence);
 
     let acknowledgement = router
-        .route(ClientMessage::RawEvent(RawEvent {
-            event_id: Uuid::new_v4(),
-            occurred_at: Utc::now(),
-            app_name: SENTINEL_APP_NAME.into(),
-            window_title: SENTINEL_WINDOW_TITLE.into(),
-            bundle_id: None,
-            focused_document_url: None,
-            duration_seconds: 300,
-        }))
+        .route(ClientMessage::RawEvent(sentinel_raw_event(Uuid::new_v4())))
         .await
         .unwrap();
     assert!(
@@ -533,8 +631,18 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
     // -- `SqlitePersistence::open` ran them.
     let connection = Connection::open(&scratch.path).unwrap();
 
+    // The key the router is supposed to have stored in place of the bundle
+    // identifier, computed here from the same public function the engine uses --
+    // so this test asserts the stored value is that digest rather than merely
+    // something 64 characters long.
+    let bundle_digest = app_bundle_key_for(SENTINEL_BUNDLE_ID);
+
     let mut app_sightings = BTreeSet::new();
     let mut title_sightings = BTreeSet::new();
+    let mut bundle_id_sightings = BTreeSet::new();
+    let mut bundle_digest_sightings = BTreeSet::new();
+    let mut declared_category_sightings = BTreeSet::new();
+    let mut document_type_sightings = BTreeSet::new();
     let mut blob_columns_holding_values = BTreeSet::new();
     let mut values_read = 0_usize;
     let mut values_present = 0_usize;
@@ -552,7 +660,19 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
             app_sightings.insert(qualified.clone());
         }
         if holds_token(value, SENTINEL_TITLE_TOKEN) {
-            title_sightings.insert(qualified);
+            title_sightings.insert(qualified.clone());
+        }
+        if holds_token(value, SENTINEL_BUNDLE_TOKEN) {
+            bundle_id_sightings.insert(qualified.clone());
+        }
+        if holds_token(value, &bundle_digest) {
+            bundle_digest_sightings.insert(qualified.clone());
+        }
+        if holds_token(value, SENTINEL_DECLARED_CATEGORY_TOKEN) {
+            declared_category_sightings.insert(qualified.clone());
+        }
+        if holds_token(value, SENTINEL_DOCUMENT_TYPE_TOKEN) {
+            document_type_sightings.insert(qualified);
         }
     });
 
@@ -596,6 +716,95 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
         title_sightings.is_empty(),
         "the window title reached {title_sightings:?}. PRIVACY.md states the literal \
          title is preserved nowhere and names no exception to that"
+    );
+
+    // The bar for appearing on any disclosure list in this file is being named in
+    // PRIVACY.md, and until now that bar was a comment. A column may be excepted
+    // here only if the published document says it exists, so the document is read
+    // rather than trusted -- by the bare column name, because the document
+    // describes columns under their table's heading rather than as `table.column`.
+    for column in DEVICE_LOCAL_EXCEPTION_COLUMNS
+        .iter()
+        .chain(BUNDLE_DIGEST_COLUMNS)
+        .chain(DECLARED_CATEGORY_COLUMNS)
+        .chain(DOCUMENT_TYPE_COLUMNS)
+    {
+        let qualified: &str = column;
+        let bare = qualified
+            .split_once('.')
+            .map(|(_, bare)| bare)
+            .unwrap_or(qualified);
+        assert!(
+            PRIVACY_DOCUMENT.contains(bare),
+            "`{qualified}` is excepted by this test and named nowhere in PRIVACY.md. A \
+             column this build permits to hold a device-local fact is a column the \
+             published document has to describe -- otherwise the disclosure lives only \
+             in a test nobody outside this repository can read"
+        );
+    }
+
+    // The bundle identifier, in both directions at once. The digest must be in
+    // exactly the column migration 0033 declares for it -- that is the positive
+    // control, and it is what makes the next assertion mean something -- and the
+    // identifier it was computed from must be in no column at all. A schema that
+    // stored `com.thraceline.ledger` beside its hash would pass the first
+    // assertion and fail the second, which is the point of having both.
+    assert_eq!(
+        bundle_digest_sightings,
+        column_set(BUNDLE_DIGEST_COLUMNS),
+        "the bundle key belongs in exactly {BUNDLE_DIGEST_COLUMNS:?}. An empty left \
+         side means the router never recorded the bundle identifier the client sent, \
+         so every bundle assertion here is vacuous; an extra column means a second \
+         store learned an application identity nothing discloses"
+    );
+    assert!(
+        bundle_id_sightings.is_empty(),
+        "the raw bundle identifier reached {bundle_id_sightings:?}. Migration 0033 and \
+         `app_bundle_key_for` both state that only the digest is persisted, and no \
+         column is excepted -- a bundle identifier is the application's identity in \
+         plain text"
+    );
+
+    // The two declared facts are stored raw, each in the one column migration
+    // 0033 declares for it. Equality rather than a subset: a fact missing from its
+    // own column means the walk never saw it, and a fact in a second column is an
+    // undisclosed store of what the user runs.
+    assert_eq!(
+        declared_category_sightings,
+        column_set(DECLARED_CATEGORY_COLUMNS),
+        "the declared application category belongs in exactly \
+         {DECLARED_CATEGORY_COLUMNS:?}. A missing column means the declaration never \
+         reached disk and this assertion proves nothing; an extra one belongs in \
+         PRIVACY.md and in DECLARED_CATEGORY_COLUMNS -- in that order, and in one commit"
+    );
+    assert_eq!(
+        document_type_sightings,
+        column_set(DOCUMENT_TYPE_COLUMNS),
+        "the declared document types belong in exactly {DOCUMENT_TYPE_COLUMNS:?}. A \
+         missing column means the declaration never reached disk and this assertion \
+         proves nothing; an extra one belongs in PRIVACY.md and in \
+         DOCUMENT_TYPE_COLUMNS -- in that order, and in one commit"
+    );
+
+    // Where it landed, exactly. Migration 0033 documents the encoding as the
+    // sorted identifiers joined by one ASCII space, and publishes an `instr`
+    // recipe that is only correct against that encoding. A reader following the
+    // recipe against a JSON array, a comma-separated list, or a truncated set
+    // would silently match nothing, so the published spelling is asserted rather
+    // than described.
+    let stored_document_types: Option<String> = connection
+        .query_row(
+            "SELECT document_type_ids FROM raw_event_buffer",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let expected_document_types = SENTINEL_DOCUMENT_TYPE_IDS.join(" ");
+    assert_eq!(
+        stored_document_types.as_deref(),
+        Some(expected_document_types.as_str()),
+        "`raw_event_buffer.document_type_ids` does not hold the encoding migration \
+         0033 publishes: one line of sorted identifiers joined by a single space"
     );
 
     let declared_blob_columns = declared_blob_columns(&connection);
@@ -647,6 +856,11 @@ fn scan_every_value(connection: &Connection, mut visit: impl FnMut(&str, &str, &
             }
         }
     }
+}
+
+/// One of the `table.column` disclosure lists above, as a set.
+fn column_set(columns: &[&str]) -> BTreeSet<String> {
+    columns.iter().map(|column| (*column).to_owned()).collect()
 }
 
 /// Whether a stored value carries the token, in text or in raw bytes.
@@ -701,7 +915,155 @@ fn declared_blob_columns(connection: &Connection) -> BTreeSet<String> {
 }
 
 // ---------------------------------------------------------------------------
-// 3 — The table inventory is closed
+// 3 — No declared fact on the wire, by value
+// ---------------------------------------------------------------------------
+
+/// The last thing before the network, holding what would have been POSTed.
+///
+/// `FakeBatchUploader` counts uploads and keeps the payloads to itself, and the
+/// claim under test is about their contents, so this double keeps them. It is the
+/// real `BatchUploader` seam the HTTP uploader sits in, reached through the real
+/// router, assembler and coordinator: nothing here rebuilds a payload by hand,
+/// because a payload built by the test is a payload the test cannot be surprised
+/// by.
+#[derive(Clone, Default)]
+struct RecordingUploader(Arc<Mutex<Vec<BatchPayload>>>);
+
+impl RecordingUploader {
+    fn captured(&self) -> Vec<BatchPayload> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl BatchUploader for RecordingUploader {
+    fn upload<'a>(
+        &'a self,
+        batch: &'a BatchPayload,
+    ) -> Pin<Box<dyn Future<Output = Result<UploadOutcome, BatchUploadError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.0.lock().unwrap().push(batch.clone());
+            // Refused, like the fake the sentinel walk uses, so the batch stays
+            // queued on disk and the two tests observe the same state.
+            Ok(UploadOutcome::Retryable {
+                code: "host_unreachable".into(),
+            })
+        })
+    }
+}
+
+/// No value Classification v2 added to a raw event may appear in the batch this
+/// device would have uploaded.
+///
+/// Invariant 1 of the implementation contract says the bundle identifier, the
+/// declared category and the declared document types are device-local and reach
+/// no DTO, and requires this test by name — twice. `upload/dto.rs` makes the
+/// claim structurally true by hand-writing `Serialize`, and `dto.rs`'s own
+/// `serialized_batch_holds_exactly_the_documented_keys` closes the key set. This
+/// test is the end-to-end half: a real event carrying all three facts, driven
+/// through the real router, engine, assembler and coordinator, and the payload
+/// read back at the seam the HTTP uploader occupies.
+///
+/// The assertions are about **values**, not field names. A field renamed, a fact
+/// folded into an existing string field, or a digest smuggled into
+/// `classification_tier` all still fail here, and none of them would fail a test
+/// that listed forbidden keys. The bundle *digest* is forbidden too: it is not the
+/// identifier, but it is a stable per-application identity, and the contract
+/// admits nothing new to the wire at all.
+#[tokio::test]
+async fn no_declared_fact_reaches_an_upload_payload() {
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let uploader = RecordingUploader::default();
+    let router = sentinel_router_with_uploader(&persistence, uploader.clone());
+
+    let event_id = Uuid::new_v4();
+    let acknowledgement = router
+        .route(ClientMessage::RawEvent(sentinel_raw_event(event_id)))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            acknowledgement,
+            Some(ServerMessage::RawEventAck(RawEventAck {
+                status: RawEventStatus::Accepted,
+                ..
+            }))
+        ),
+        "the sentinel event was not accepted, so no batch was assembled to inspect: \
+         {acknowledgement:?}"
+    );
+
+    // The positive control, and the reason the batch threshold is one event: an
+    // uploader that was handed nothing satisfies every assertion below it.
+    let batches = uploader.captured();
+    assert_eq!(
+        batches.len(),
+        1,
+        "the sentinel event did not reach the uploader, so this test asserts nothing \
+         about an upload payload. The router uploads only when authenticated and the \
+         assembler flushes at its event threshold -- both are set up above"
+    );
+    let wire = serde_json::to_string(&batches[0]).unwrap();
+    let wire_lowercase = wire.to_lowercase();
+    assert!(
+        wire.contains(&event_id.to_string()),
+        "the captured batch does not carry the event that was driven through it, so \
+         the absences below are absences of the wrong event: {wire}"
+    );
+
+    for (fact, value) in [
+        ("the bundle identifier", SENTINEL_BUNDLE_ID.to_owned()),
+        (
+            "a fragment of the bundle identifier",
+            SENTINEL_BUNDLE_TOKEN.to_owned(),
+        ),
+        (
+            "the bundle key digest",
+            app_bundle_key_for(SENTINEL_BUNDLE_ID),
+        ),
+        (
+            "the declared application category",
+            SENTINEL_DECLARED_CATEGORY.to_owned(),
+        ),
+        (
+            "a fragment of the declared application category",
+            SENTINEL_DECLARED_CATEGORY_TOKEN.to_owned(),
+        ),
+        (
+            "a declared document type",
+            SENTINEL_DOCUMENT_TYPE_IDS[0].to_owned(),
+        ),
+        (
+            "a declared document type",
+            SENTINEL_DOCUMENT_TYPE_IDS[1].to_owned(),
+        ),
+        (
+            "a fragment of the declared document types",
+            SENTINEL_DOCUMENT_TYPE_TOKEN.to_owned(),
+        ),
+        ("the raw application name", SENTINEL_APP_NAME.to_owned()),
+        (
+            "a fragment of the application name",
+            SENTINEL_APP_TOKEN.to_owned(),
+        ),
+        ("the window title", SENTINEL_WINDOW_TITLE.to_owned()),
+        (
+            "a fragment of the window title",
+            SENTINEL_TITLE_TOKEN.to_owned(),
+        ),
+    ] {
+        assert!(
+            !wire_lowercase.contains(&value.to_lowercase()),
+            "{fact} ({value}) appears in the batch this device would have POSTed. \
+             Invariant 1 of the Classification v2 contract admits nothing new across \
+             the wire: the field it arrived in does not matter, and renaming that \
+             field does not fix it.\nThe payload was: {wire}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4 — The table inventory is closed
 // ---------------------------------------------------------------------------
 
 /// Every table the shipped migrations create.
@@ -818,6 +1180,22 @@ impl Drop for ScratchDatabase {
 /// embedding cache is written rather than left empty and trivially clean, and an
 /// authenticated session, so the upload queue is written rather than skipped.
 fn sentinel_router(persistence: &SqlitePersistence) -> R7Router {
+    // One outcome, and a refusal: the batch is persisted and attempted, and the
+    // rows stay on disk for the walk to read.
+    sentinel_router_with_uploader(
+        persistence,
+        FakeBatchUploader::with_outcomes(vec![UploadOutcome::Retryable {
+            code: "host_unreachable".into(),
+        }]),
+    )
+}
+
+/// The same router, with the uploader chosen by the caller, so one test can read
+/// the payload it would have sent without the other losing the fake it wants.
+fn sentinel_router_with_uploader<U>(persistence: &SqlitePersistence, uploader: U) -> R7Router
+where
+    U: BatchUploader + 'static,
+{
     let taxonomy = Taxonomy::from_builtin().unwrap();
     let embedding = EmbeddingSimilarityPlugin::builtin(taxonomy.version())
         .unwrap()
@@ -828,13 +1206,10 @@ fn sentinel_router(persistence: &SqlitePersistence) -> R7Router {
         .unwrap();
 
     // One event per batch, so the batch is assembled, persisted, and attempted
-    // within this test rather than waiting on a flush interval. The upload
-    // itself is refused so the rows stay on disk to be inspected.
+    // within this test rather than waiting on a flush interval.
     let coordinator = UploadCoordinator::new(
         persistence.upload_batch_repo(),
-        FakeBatchUploader::with_outcomes(vec![UploadOutcome::Retryable {
-            code: "host_unreachable".into(),
-        }]),
+        uploader,
         FakePrivacyAlertSink::default(),
     );
     let ingestor: Arc<dyn EventIngestor> = Arc::new(SharedUploadBatcher::new(UploadBatcher::new(

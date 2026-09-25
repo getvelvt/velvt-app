@@ -55,6 +55,9 @@
 		C31D8E315B114A8B9345F301 /* OnboardingExperience.swift in Sources */ = {isa = PBXBuildFile; fileRef = C31D8E315B114A8B9345F302 /* OnboardingExperience.swift */; };
 		D4A0C4A9A65047B88055A101 /* UpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A0C4A9A65047B88055A102 /* UpdateController.swift */; };
 		D4A0C4A9A65047B88055A103 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = D4A0C4A9A65047B88055A105 /* Sparkle */; };
+		FEEDFACE0FFFFF0000000002 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0FFFFF0000000001 /* Fonts */; };
+		FEEDFACE0FFFFF0000000012 /* VelvtTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0FFFFF0000000011 /* VelvtTheme.swift */; };
+		FEEDFACE0FFFFF0000000022 /* DeclaredAppMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0FFFFF0000000021 /* DeclaredAppMetadata.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -108,6 +111,9 @@
 		ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarPopoverView.swift; path = UI/MenuBarPopoverView.swift; sourceTree = "<group>"; };
 		EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FakeIPCClient.swift; path = IPC/FakeIPCClient.swift; sourceTree = "<group>"; };
 		F30FB3399A5C45808376ACF1 /* EventRelay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelay.swift; path = Relay/EventRelay.swift; sourceTree = "<group>"; };
+		FEEDFACE0FFFFF0000000001 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fonts; path = Resources/Fonts; sourceTree = "<group>"; };
+		FEEDFACE0FFFFF0000000011 /* VelvtTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VelvtTheme.swift; path = UI/VelvtTheme.swift; sourceTree = "<group>"; };
+		FEEDFACE0FFFFF0000000021 /* DeclaredAppMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DeclaredAppMetadata.swift; path = Collection/DeclaredAppMetadata.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -199,6 +205,9 @@
 				9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */,
 				9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */,
 				9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */,
+				FEEDFACE0FFFFF0000000001 /* Fonts */,
+				FEEDFACE0FFFFF0000000011 /* VelvtTheme.swift */,
+				FEEDFACE0FFFFF0000000021 /* DeclaredAppMetadata.swift */,
 			);
 			name = VelvtMac;
 			path = Sources/VelvtMac;
@@ -275,6 +284,7 @@
 			files = (
 				9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist.template in Resources */,
 				AF894F952FE76B6B0023DA87 /* Assets.xcassets in Resources */,
+				FEEDFACE0FFFFF0000000002 /* Fonts in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -347,6 +357,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FEEDFACE0FFFFF0000000022 /* DeclaredAppMetadata.swift in Sources */,
+				FEEDFACE0FFFFF0000000012 /* VelvtTheme.swift in Sources */,
 				55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */,
 				1597C5865C34465AA105915D /* AppMetricsStore.swift in Sources */,
 				143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */,

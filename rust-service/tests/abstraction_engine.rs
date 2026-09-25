@@ -9,7 +9,7 @@ use velvt_service::abstraction::{
     AbstractionEngine, ClassificationConfidence, ClassificationPlugin, ClassificationResult,
     ClassificationSource, ClassificationStatus, ClassificationTier, DefaultTitleAbstractor,
     EmbeddingError, EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
-    InMemoryMappingStore, Taxonomy, TitleAbstractor,
+    InMemoryMappingStore, Taxonomy, TitleAbstractor, API_EXPECTED_TAXONOMY_VERSION,
 };
 use velvt_shared_types::RawEvent;
 
@@ -20,6 +20,8 @@ fn raw_event(app_name: &str, window_title: &str) -> RawEvent {
         app_name: app_name.to_owned(),
         window_title: window_title.to_owned(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
         duration_seconds: 0,
     }
@@ -56,7 +58,7 @@ fn tier1_is_deterministic_and_completes_under_one_millisecond() {
     assert_eq!(first.label(), second.label());
     assert_eq!(first.category(), second.category());
     assert_eq!(first.category(), "FOCUS_WORK");
-    assert_eq!(first.taxonomy_version(), "mvp-1");
+    assert_eq!(first.taxonomy_version(), API_EXPECTED_TAXONOMY_VERSION);
     assert_eq!(first.classification_tier(), ClassificationTier::ExactMatch);
     assert_eq!(
         first.classification_status(),
@@ -537,7 +539,7 @@ impl ClassificationPlugin for TestPlugin {
             ClassificationResult::new(
                 "test:target",
                 "UNLOGGED",
-                "mvp-1",
+                API_EXPECTED_TAXONOMY_VERSION,
                 ClassificationTier::ExactMatch,
             )
         })
@@ -551,7 +553,7 @@ impl ClassificationPlugin for UnsafePlugin {
         Some(ClassificationResult::new(
             window_title,
             "UNLOGGED",
-            "mvp-1",
+            API_EXPECTED_TAXONOMY_VERSION,
             ClassificationTier::ExactMatch,
         ))
     }

@@ -94,9 +94,21 @@ impl<H: HttpClient> PollClient<H> {
     }
 }
 
+/// Answers "when do this user's quiet hours end?" for the delivery path.
+///
+/// Declared here, beside the consumer, for the same reason
+/// `work_block::FocusStateSource` is: delivery needs one narrow question
+/// answered and must not depend on the whole focus domain to ask it.
+/// `None` means `at` is not inside a quiet window — an unconfigured user is
+/// never deferred.
+pub trait QuietHoursSource: Send + Sync {
+    fn quiet_hours_end(&self, at: DateTime<Utc>) -> Option<DateTime<Utc>>;
+}
+
 pub struct PollScheduler<H> {
     client: PollClient<H>,
     push_adapter: Arc<PushAdapter>,
+    quiet_hours: Option<Arc<dyn QuietHoursSource>>,
     auth_state: watch::Receiver<AuthState>,
     shutdown: watch::Receiver<bool>,
     dedupe: InsightDedupeGuard,
@@ -114,11 +126,20 @@ impl<H: HttpClient> PollScheduler<H> {
         Self {
             client,
             push_adapter,
+            quiet_hours: None,
             auth_state,
             shutdown,
             dedupe: InsightDedupeGuard::default(),
             backoff,
         }
+    }
+
+    /// Defer notifications raised inside the user's quiet hours until the
+    /// window closes. Absent, every notification schedules immediately, which
+    /// is the behaviour this scheduler had before quiet hours were wired up.
+    pub fn with_quiet_hours(mut self, quiet_hours: Arc<dyn QuietHoursSource>) -> Self {
+        self.quiet_hours = Some(quiet_hours);
+        self
     }
 
     pub async fn run(mut self) {
@@ -136,7 +157,17 @@ impl<H: HttpClient> PollScheduler<H> {
             match self.client.poll_once().await {
                 Ok(PollOutcome::Insight(insight)) => {
                     self.backoff.reset();
-                    deliver_polled_insight(&self.push_adapter, &mut self.dedupe, *insight).await;
+                    let quiet_until = self
+                        .quiet_hours
+                        .as_ref()
+                        .and_then(|source| source.quiet_hours_end(Utc::now()));
+                    deliver_polled_insight(
+                        &self.push_adapter,
+                        &mut self.dedupe,
+                        *insight,
+                        quiet_until,
+                    )
+                    .await;
                 }
                 Ok(PollOutcome::NoContent) => {
                     self.backoff.reset();
@@ -348,6 +379,7 @@ pub async fn deliver_polled_insight(
     push_adapter: &PushAdapter,
     dedupe: &mut InsightDedupeGuard,
     insight: PolledInsight,
+    do_not_disturb_until: Option<DateTime<Utc>>,
 ) {
     if !dedupe.should_deliver(&insight.id) {
         tracing::debug!("duplicate long-poll insight suppressed");
@@ -362,7 +394,7 @@ pub async fn deliver_polled_insight(
     push_adapter.push_insight(insight.payload).await;
     if should_notify {
         push_adapter
-            .push_notification(notification_id, title, &body, date)
+            .push_notification(notification_id, title, &body, date, do_not_disturb_until)
             .await;
     }
 }
@@ -680,6 +712,64 @@ mod tests {
         assert!(!guard.should_deliver("insight-2"));
     }
 
+    /// Quiet hours defer the notification rather than dropping it: the
+    /// deadline computed by the scheduler must survive all the way into the
+    /// payload Swift reads, because `do_not_disturb_until` is the only thing
+    /// standing between a 3am insight and a 3am ping.
+    #[tokio::test]
+    async fn quiet_hours_deadline_reaches_the_notification_payload() {
+        let queue = crate::delivery::PushQueue::new(10);
+        let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+        let mut dedupe = InsightDedupeGuard::default();
+        let insight = PolledInsight {
+            id: "insight-quiet".into(),
+            payload: crate::delivery::parser::parse_insight(daily_insight_body()).unwrap(),
+        };
+        let until = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+
+        deliver_polled_insight(&push, &mut dedupe, insight, Some(until)).await;
+
+        let mut seen = None;
+        while let Some(message) = queue.try_pop().await {
+            if let ServerMessage::NotificationPayload(payload) = message {
+                seen = Some(payload);
+            }
+        }
+        let payload = seen.expect("a notification was pushed");
+        assert_eq!(
+            payload.do_not_disturb_until,
+            Some(until),
+            "the quiet-hours deadline was dropped between scheduler and payload"
+        );
+    }
+
+    /// Outside quiet hours nothing is deferred — the field stays absent and
+    /// Swift schedules immediately, exactly as before this was wired up.
+    #[tokio::test]
+    async fn no_quiet_hours_leaves_the_payload_undeferred() {
+        let queue = crate::delivery::PushQueue::new(10);
+        let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+        let mut dedupe = InsightDedupeGuard::default();
+        let insight = PolledInsight {
+            id: "insight-loud".into(),
+            payload: crate::delivery::parser::parse_insight(daily_insight_body()).unwrap(),
+        };
+
+        deliver_polled_insight(&push, &mut dedupe, insight, None).await;
+
+        let mut seen = None;
+        while let Some(message) = queue.try_pop().await {
+            if let ServerMessage::NotificationPayload(payload) = message {
+                seen = Some(payload);
+            }
+        }
+        assert_eq!(
+            seen.expect("a notification was pushed")
+                .do_not_disturb_until,
+            None
+        );
+    }
+
     #[tokio::test]
     async fn deliver_once_for_duplicate_polled_insight() {
         let queue = crate::delivery::PushQueue::new(10);
@@ -690,8 +780,8 @@ mod tests {
             payload: crate::delivery::parser::parse_insight(daily_insight_body()).unwrap(),
         };
 
-        deliver_polled_insight(&push, &mut dedupe, insight.clone()).await;
-        deliver_polled_insight(&push, &mut dedupe, insight).await;
+        deliver_polled_insight(&push, &mut dedupe, insight.clone(), None).await;
+        deliver_polled_insight(&push, &mut dedupe, insight, None).await;
 
         let mut count = 0;
         while let Some(message) = queue.try_pop().await {
@@ -722,7 +812,7 @@ mod tests {
             },
         };
 
-        deliver_polled_insight(&push, &mut dedupe, insight).await;
+        deliver_polled_insight(&push, &mut dedupe, insight, None).await;
 
         let first = queue.try_pop().await;
         let second = queue.try_pop().await;
@@ -755,7 +845,7 @@ mod tests {
             },
         };
 
-        deliver_polled_insight(&push, &mut dedupe, insight).await;
+        deliver_polled_insight(&push, &mut dedupe, insight, None).await;
 
         assert!(matches!(
             queue.try_pop().await,

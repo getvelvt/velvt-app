@@ -13,18 +13,20 @@ struct ServiceUnavailableView: View {
     var onRetry: (() async -> Void)?
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: VelvtMetrics.cardPadding) {
+            // A state marker, not an alarm: signal is the brand's emphasis hue,
+            // and it leaves crimson to the one action on the surface. Nothing
+            // here is coloured as failure.
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 40))
-                .foregroundStyle(.orange)
+                .font(VelvtType.title(40))
+                .foregroundStyle(VelvtInk.labelOnInk)
 
             Text("Service Unavailable")
-                .font(.headline)
+                .velvtHeading()
 
             if case .failed(let error) = serviceManager.state {
                 Text(error.localizedDescription)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .velvtBody(12)
                     .multilineTextAlignment(.center)
             }
 
@@ -39,10 +41,10 @@ struct ServiceUnavailableView: View {
                     }
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(VelvtPrimaryButtonStyle())
         }
         .padding(32)
         .frame(minWidth: 320)
-        .tint(Color.velvtPink)
+        .background(VelvtSurface.ground)
     }
 }

@@ -49,6 +49,8 @@ const QUIET_HOURS_DECLINE_REASK_DAYS: i64 = 30;
 const QUIET_START_LOCAL_MINUTES: u32 = 22 * 60;
 const QUIET_END_LOCAL_MINUTES: u32 = 7 * 60;
 
+const MINUTES_PER_DAY: u32 = 24 * 60;
+
 #[derive(Debug, thiserror::Error)]
 pub enum FocusError {
     #[error("focus persistence unavailable")]
@@ -204,25 +206,53 @@ impl FocusManager {
         Ok(())
     }
 
-    /// Whether `now` falls inside Velvt's own configured quiet hours. Quiet
-    /// hours only ever reduce delivery; they never move, retry, or reroute
-    /// anything.
-    pub fn in_velvt_quiet_hours(&self, now: DateTime<Utc>) -> bool {
+    /// Minutes left in the quiet window containing `now`, or `None` when `now`
+    /// falls outside it. The single source of truth for both the predicate and
+    /// the deadline below, so the two can never disagree about the same
+    /// instant. An unset window or an unknown UTC offset is not quiet hours:
+    /// absence of configuration never suppresses anything.
+    fn quiet_hours_remaining_minutes(&self, now: DateTime<Utc>) -> Option<u32> {
         let Ok(Some(quiet_hours)) = self.repo.quiet_hours() else {
-            return false;
+            return None;
         };
         let Ok(Some(offset_seconds)) = self.repo.utc_offset_seconds() else {
-            return false;
+            return None;
         };
         let local = to_local(now, offset_seconds);
         let minutes = local.hour() * 60 + local.minute();
         let start = quiet_hours.start_local_minutes;
         let end = quiet_hours.end_local_minutes;
-        if start <= end {
+        let inside = if start <= end {
             (start..end).contains(&minutes)
         } else {
             minutes >= start || minutes < end
+        };
+        if !inside {
+            return None;
         }
+        // `end` is exclusive on both branches, so the remainder is never zero.
+        Some(if end > minutes {
+            end - minutes
+        } else {
+            (MINUTES_PER_DAY - minutes) + end
+        })
+    }
+
+    /// Whether `now` falls inside Velvt's own configured quiet hours. Quiet
+    /// hours only ever reduce delivery; they never move, retry, or reroute
+    /// anything.
+    pub fn in_velvt_quiet_hours(&self, now: DateTime<Utc>) -> bool {
+        self.quiet_hours_remaining_minutes(now).is_some()
+    }
+
+    /// The instant the quiet window containing `now` closes, or `None` when
+    /// `now` is outside it. This is the deadline a notification defers to:
+    /// `do_not_disturb_until` means "do not deliver before", so a notification
+    /// raised inside quiet hours lands the moment they end rather than being
+    /// dropped. Quiet hours delay delivery; they never cancel it.
+    pub fn quiet_hours_end(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.quiet_hours_remaining_minutes(now)
+            .map(|remaining| now + Duration::minutes(i64::from(remaining)))
     }
 
     /// Clears Focus evidence, the stored offset, and offer memory. Velvt's
@@ -231,6 +261,12 @@ impl FocusManager {
     pub fn clear_evidence(&self) -> Result<(), FocusError> {
         self.repo.clear_focus_evidence()?;
         Ok(())
+    }
+}
+
+impl crate::delivery::poll::QuietHoursSource for FocusManager {
+    fn quiet_hours_end(&self, at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        FocusManager::quiet_hours_end(self, at)
     }
 }
 
@@ -408,6 +444,56 @@ mod tests {
         assert_eq!(offer.late_night_days, 3);
         assert_eq!(offer.start_local_minutes, 22 * 60);
         assert_eq!(offer.end_local_minutes, 7 * 60);
+    }
+
+    /// The deadline and the predicate are derived from one helper, so they
+    /// must agree at every instant — including across local midnight, which is
+    /// where a hand-rolled second implementation would go wrong.
+    #[test]
+    fn quiet_hours_end_closes_the_window_across_midnight() {
+        let (manager, _repo) = manager_with_repo();
+        for back in [3, 2, 1] {
+            late_night_dnd(&manager, back);
+        }
+        manager.respond_to_offer(true, at(60)).unwrap();
+        // Window is 22:00-07:00 local, offset 0. Anchor at(0) is 08:00 local.
+
+        // 23:30 local, before midnight: the window closes at 07:00 the next
+        // local day, which is at(hours(23)).
+        let before_midnight = at(hours(15) + 30 * 60);
+        assert_eq!(
+            manager.quiet_hours_end(before_midnight),
+            Some(at(hours(23))),
+            "a window entered before midnight must close the following morning"
+        );
+
+        // 02:00 local, after midnight: the same window, so the same instant.
+        let after_midnight = at(hours(18));
+        assert_eq!(
+            manager.quiet_hours_end(after_midnight),
+            Some(at(hours(23))),
+            "both sides of midnight belong to one window and share its end"
+        );
+
+        // 08:00 local is outside; there is no deadline to defer to.
+        assert_eq!(manager.quiet_hours_end(at(0)), None);
+
+        // The predicate and the deadline never disagree.
+        for probe in [before_midnight, after_midnight, at(0), at(hours(13))] {
+            assert_eq!(
+                manager.in_velvt_quiet_hours(probe),
+                manager.quiet_hours_end(probe).is_some(),
+                "predicate and deadline disagreed at {probe}"
+            );
+        }
+    }
+
+    /// A user who never configured quiet hours is never deferred.
+    #[test]
+    fn quiet_hours_end_is_none_when_unconfigured() {
+        let (manager, _repo) = manager_with_repo();
+        assert_eq!(manager.quiet_hours_end(at(hours(15) + 30 * 60)), None);
+        assert!(!manager.in_velvt_quiet_hours(at(hours(15) + 30 * 60)));
     }
 
     #[test]

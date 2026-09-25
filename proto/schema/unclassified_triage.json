@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Local IPC only. Device-local application names and identifiers; never uploaded, logged, or included in crash diagnostics.",
+  "title": "UnclassifiedTriage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "unclassified_triage" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entries", "window_days"],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "maxItems": 8,
+          "description": "Ranked by seconds_observed, longest first. Capped at 8 and floored at 5 minutes observed: a list of thirty one-second curiosities is not a task anyone will do. An empty array is the good state.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["app_stable_id", "display_name", "seconds_observed", "event_count"],
+            "properties": {
+              "app_stable_id": {
+                "type": "string",
+                "description": "The app-scoped correction key, returned verbatim in set_application_category."
+              },
+              "display_name": {
+                "type": "string",
+                "description": "Device-local application name Velvt already holds. Display text only."
+              },
+              "seconds_observed": { "type": "integer", "minimum": 300 },
+              "event_count": { "type": "integer", "minimum": 1 },
+              "bundle_id": {
+                "type": ["string", "null"],
+                "description": "The device-local bundle key hash when Velvt holds one, so the saved rule survives a rename. An opaque marker, not the raw bundle identifier and never display text."
+              }
+            }
+          }
+        },
+        "window_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14,
+          "description": "The window the entries were computed over, after clamping."
+        }
+      }
+    }
+  }
+}

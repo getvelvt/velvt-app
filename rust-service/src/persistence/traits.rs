@@ -1,10 +1,11 @@
 use super::{
     AbstractionMapping, AntecedentFinding, AntecedentFindingState, AntecedentRetractionReason,
-    BatchEvent, BlockAntecedent, CompletedBlockDwellSpan, DemotionStateRecord, FocusTransition,
-    HistoryCacheEntry, InitiationInvitationOutcome, InitiationInvitationRecord, InsightCacheEntry,
-    InterventionDecision, LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch, OutOfBlockRun,
-    PersistenceError, PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState,
-    RawEventEntry, UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
+    AppScopeOverride, BatchEvent, BlockAntecedent, CompletedBlockDwellSpan, DeclaredAppMetadata,
+    DemotionStateRecord, FocusTransition, HistoryCacheEntry, InitiationInvitationOutcome,
+    InitiationInvitationRecord, InsightCacheEntry, InterventionDecision, LocalDisplayAggregate,
+    LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersistenceError, PersonalOverrideRecord,
+    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, UnclassifiedAppEntry,
+    UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
     WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
     WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WrongInterventionCounts,
 };
@@ -46,6 +47,68 @@ pub trait AbstractionMapRepo: Send + Sync {
         category: &str,
         local_activity_name: Option<&str>,
     ) -> Result<bool, PersistenceError>;
+
+    /// Generalizes an EDIT of a saved rule to every window of its application.
+    ///
+    /// The same generalization `save_personal_app_override` performs, reached
+    /// from a stable id instead of an event id, because an edit arrives after
+    /// the source event has left the queue and the client has only the rule.
+    /// Without it, editing a saved rule left the app rung holding the previous
+    /// category for every other window of that application: the window the user
+    /// was looking at changed and nothing else did.
+    ///
+    /// Returns `Ok(false)` when no event under this rule recorded an app
+    /// identity, or when none of them is app-scope eligible — a browser window
+    /// whose identity came from the site, where one tab says nothing about the
+    /// next.
+    fn save_personal_app_override_by_stable_id(
+        &self,
+        stable_id: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<bool, PersistenceError>;
+
+    /// Writes an app-scoped rule from its keys alone, with no source event.
+    ///
+    /// The triage surface teaches Velvt about an *application*, not about one
+    /// moment of it, so there is no event id to resolve an identity from. Pass
+    /// `bundle_key_hash` whenever one is known: the rule then also matches under
+    /// the bundle identity, which survives a rename or a localized name.
+    ///
+    /// Idempotent. Saving the same answer twice is saving it once, and a repeat
+    /// still counts as a correction so the count reflects how often the user had
+    /// to say it.
+    fn save_app_scope_override(
+        &self,
+        app_key_hash: &str,
+        bundle_key_hash: Option<&str>,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<(), PersistenceError>;
+
+    /// Reads the app-scoped rule keyed on an application name hash.
+    fn app_scope_override(
+        &self,
+        app_key_hash: &str,
+    ) -> Result<Option<AppScopeOverride>, PersistenceError>;
+
+    /// Reads the app-scoped rule keyed on an application bundle hash.
+    ///
+    /// The rung between the window rule and the name rule: it answers for the
+    /// same application under a name that has since changed, been localized, or
+    /// was never the one anyone recognised.
+    fn bundle_app_override(
+        &self,
+        bundle_key_hash: &str,
+    ) -> Result<Option<AppScopeOverride>, PersistenceError>;
+
+    /// Removes one app-scoped rule, and the typed name it mirrored.
+    ///
+    /// Until the history could show app rules, this was unreachable: a user
+    /// could neither see nor undo what they had taught at app scope, and
+    /// removing the window rule left the engine falling through into the
+    /// surviving app rule and answering exactly as before.
+    fn remove_app_scope_override(&self, app_key_hash: &str) -> Result<bool, PersistenceError>;
 
     fn remove_personal_override(&self, stable_id: &str) -> Result<bool, PersistenceError>;
     fn reset_personal_overrides(&self) -> Result<u64, PersistenceError>;
@@ -203,8 +266,35 @@ pub trait InsightCacheRepo: Send + Sync {
     ) -> Result<u64, PersistenceError>;
 }
 
+/// The longest window the triage surface may look back over.
+///
+/// The published raw-event TTL is 14 days, so a longer request cannot return
+/// evidence that still exists; it would only promise a completeness the store
+/// cannot deliver.
+pub const TRIAGE_MAX_LOOKBACK_DAYS: u32 = 14;
+
+/// The least observed time an application needs before it is worth asking
+/// about. A list of thirty one-second curiosities is not a task anyone will do.
+pub const TRIAGE_MIN_SECONDS: u64 = 300;
+
+/// The most applications one triage list may hold, for the same reason.
+pub const TRIAGE_MAX_ENTRIES: usize = 8;
+
 pub trait RawEventRepo: Send + Sync {
     fn insert(&self, event: &RawEventEntry) -> Result<(), PersistenceError>;
+    /// Inserts an event together with what its application declared about
+    /// itself.
+    ///
+    /// Separate from [`Self::insert`] rather than folded into `RawEventEntry`
+    /// because absent metadata has to behave exactly as it did before the
+    /// columns existed, and the clearest way to keep that true is for the old
+    /// call to remain the old call: `insert` writes the same row it always did,
+    /// with NULL in all three new columns.
+    fn insert_with_declared_metadata(
+        &self,
+        event: &RawEventEntry,
+        metadata: &DeclaredAppMetadata,
+    ) -> Result<(), PersistenceError>;
     fn unbatched_events(&self, limit: usize) -> Result<Vec<RawEventEntry>, PersistenceError>;
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError>;
     /// Returns at most `limit` abstracted events in a bounded time window.
@@ -232,6 +322,25 @@ pub trait RawEventRepo: Send + Sync {
         category: &str,
         local_activity_name: Option<&str>,
     ) -> Result<(), PersistenceError>;
+    /// The applications Velvt observed but could not read, ranked by observed
+    /// time, longest first.
+    ///
+    /// Only UNLOGGED events count. UNLOGGED is precisely the state that is
+    /// invisible everywhere else — `is_confident_evidence` excludes it, so those
+    /// hours reach neither the drift gate nor the anchor — which is what makes
+    /// a list of them worth a user's attention at all.
+    ///
+    /// `lookback_days` is clamped to [`TRIAGE_MAX_LOOKBACK_DAYS`],
+    /// `min_seconds` is raised to at least [`TRIAGE_MIN_SECONDS`], and `limit`
+    /// is capped at [`TRIAGE_MAX_ENTRIES`]. Applications the user has already
+    /// taught are excluded, and so are ones Velvt holds no local name for,
+    /// because neither is a task anybody can act on.
+    fn unclassified_triage(
+        &self,
+        lookback_days: u32,
+        min_seconds: u64,
+        limit: usize,
+    ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError>;
     fn delete_before(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError>;
     /// Deletes at most `limit` rows whose `created_at` is before `cutoff`.
     /// Returns the number of rows actually deleted.
@@ -382,6 +491,17 @@ pub trait WorkBlockRepo: Send + Sync {
     fn set_demotion_state(&self, record: &DemotionStateRecord) -> Result<(), PersistenceError>;
     /// Transitions an offer to a terminal outcome. Only an `offered` row is
     /// updated, so a recorded return is never overwritten by block expiry.
+    /// Records that the in-app card for `block_id` was on screen at `at`.
+    ///
+    /// First sighting wins: a card re-rendered when the popover reopens is the
+    /// same delivery, and overwriting would misreport when the offer actually
+    /// reached the user. Returns whether this call was the first sighting.
+    fn mark_intervention_card_seen(
+        &self,
+        block_id: &str,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError>;
+
     fn resolve_intervention(
         &self,
         block_id: &str,

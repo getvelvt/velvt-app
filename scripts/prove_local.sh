@@ -13,15 +13,27 @@
 #   2. For each table, every column whose declared type is textual is listed
 #      BY NAME, and its distinct values are printed. Numbers and timestamps
 #      are counted but not enumerated — they cannot carry a window title.
+#      Every `BLOB` column is named too, as UNINSPECTED with a byte count.
+#      bash and sqlite3 cannot decode one, and Velvt stores three: the
+#      256-number embedding sketch in `semantic_embedding_cache` and in
+#      `personal_semantic_prototype`, and the 32-byte per-install salt in
+#      `embedding_salt`. Those are the only things on this disk this script
+#      cannot read out to you, so it names them rather than leaving the
+#      columns out. What CAN be recovered from a sketch — and it is more
+#      than nothing — is in PRIVACY.md, "The embedding sketch, and what can
+#      be read back out of it".
 #   3. There is no `SELECT *` in this file. Every column read is named, the
 #      same discipline the cohort exporter uses.
 #
-# It will show you application names. That is not a bug and it is not a leak:
-# `raw_event_buffer.local_name_suggestion` holds the raw application name for
-# up to seven days so the app can offer you a one-tap rename instead of showing
-# you "Unclassified". It is documented in PRIVACY.md, it is redacted from logs,
-# and it exists in no upload payload. This script prints it rather than hiding
-# it, because a proof that quietly skips the awkward column proves nothing.
+# It will show you application names, a hash of each application's bundle
+# identifier, and the metadata applications publish about themselves. That is not
+# a bug and it is not a leak: `raw_event_buffer.local_name_suggestion` holds the
+# raw application name for up to 14 days (the `VELVT_RAW_EVENT_TTL_HOURS`
+# default) so the app can offer you a one-tap rename instead of showing you
+# "Unclassified", and the columns beside it are described under "What is stored
+# locally" in PRIVACY.md. All of them are redacted from logs and exist in no
+# upload payload. This script prints them rather than hiding them, because a
+# proof that quietly skips the awkward column proves nothing.
 #
 # Usage:
 #   ./scripts/prove_local.sh                        # the default database
@@ -39,7 +51,7 @@ SHOW_ALL=0
 DB_ARG=""
 
 usage() {
-  sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while (( $# )); do
@@ -102,11 +114,19 @@ fi
 annotation_for() {
   case "$1.$2" in
     raw_event_buffer.local_name_suggestion)
-      echo "RAW APPLICATION NAME — device-local, 7-day expiry, powers the one-tap rename" ;;
+      echo "RAW APPLICATION NAME — device-local, expires with the buffer (14 days by default), powers the one-tap rename" ;;
     raw_event_buffer.local_display_label)
       echo "local display string, e.g. Coding or Gmail — derived, but it can name a service" ;;
+    raw_event_buffer.app_bundle_stable_id)
+      echo "SHA-256 of the app's bundle id — read as naming the app: the hash is unsalted and bundle ids are a short public list, so a holder of this file can reverse it. No title, URL or path in it" ;;
+    raw_event_buffer.declared_app_category)
+      echo "LSApplicationCategoryType the app's own Info.plist declares — the developer's public label for the app, not text you wrote" ;;
+    raw_event_buffer.document_type_ids)
+      echo "the file types the app SAYS it opens (declared LSItemContentTypes, space-joined) — the developer's build, identical on every Mac. No file YOU opened: no name, path or count" ;;
     abstraction_map.display_name)
       echo "local display name for the activity list" ;;
+    personal_app_override.bundle_key_hash)
+      echo "the bundle-id hash of the app this rule was taught for, as under raw_event_buffer — NULL on rules taught before migration 0034" ;;
     personal_override.activity_name|personal_app_override.activity_name)
       echo "a name YOU typed when you corrected a classification" ;;
     work_block.intention)
@@ -122,6 +142,37 @@ is_text_type() {
     *TEXT*|*CHAR*|*CLOB*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+is_blob_type() {
+  case "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" in
+    *BLOB*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# A BLOB is the one kind of column this script cannot read out to you. Printing
+# an embedding sketch as hex would look like a disclosure without being one, so
+# the column is NAMED instead, with how many rows hold a value and how many
+# bytes those values occupy. A proof that silently skipped the column it could
+# not read would be worth less than one that names it.
+report_blob_columns() {
+  local table="$1" columns="$2"
+  local _cid cname ctype _rest stats non_null bytes
+  while IFS="$US" read -r _cid cname ctype _rest; do
+    [[ -n "${cname:-}" ]] || continue
+    is_blob_type "${ctype:-}" || continue
+    stats="$(q "SELECT COUNT(\"$cname\"), COALESCE(SUM(length(\"$cname\")), 0)
+                FROM \"$table\";")"
+    non_null="${stats%%$US*}"
+    bytes="${stats##*$US}"
+    printf '     %s\n' "$cname"
+    printf '       [UNINSPECTED — %s bytes in %s row(s). bash and sqlite3 cannot\n' \
+      "$bytes" "$non_null"
+    printf '        decode a BLOB; PRIVACY.md describes what this one holds]\n'
+  done <<EOF
+$columns
+EOF
 }
 
 rule() { printf '%s\n' "----------------------------------------------------------------------"; }
@@ -147,7 +198,9 @@ fi
 printf '\n'
 printf 'Numeric and timestamp columns are counted but not listed: an integer\n'
 printf 'cannot hold a window title. Every textual column is listed, including\n'
-printf 'the ones that name applications.\n'
+printf 'the ones that name applications. Every BLOB column is named as\n'
+printf 'UNINSPECTED with a byte count — bash cannot decode one, and PRIVACY.md\n'
+printf 'is where what those columns hold is written down.\n'
 
 # ---------------------------------------------------------------------------
 # Inventory first, so the reader knows the shape before the detail.
@@ -213,7 +266,8 @@ EOF
   printf '  == %s  (%s row%s)\n' "$table" "$rows" "$([[ "$rows" == "1" ]] || printf 's')"
 
   if [[ -z "$text_columns" ]]; then
-    printf '     no textual columns — numbers and timestamps only\n'
+    printf '     no textual columns — numbers, timestamps, and any BLOB below\n'
+    report_blob_columns "$table" "$columns"
     continue
   fi
   if [[ "$rows" == "0" ]]; then
@@ -224,6 +278,7 @@ EOF
     done <<EOF
 $text_columns
 EOF
+    report_blob_columns "$table" "$columns"
     continue
   fi
 
@@ -292,6 +347,8 @@ EOF
   done <<EOF
 $text_columns
 EOF
+
+  report_blob_columns "$table" "$columns"
 done <<EOF
 $tables
 EOF
@@ -331,6 +388,14 @@ rule
 cat <<'CAVEAT'
   It proves what is on disk right now, on this Mac, and it proves it by reading
   it out rather than by asserting it.
+
+  It does not read out the columns it cannot decode. Every BLOB is named above
+  as UNINSPECTED with a byte count: the embedding sketches in
+  semantic_embedding_cache and personal_semantic_prototype, and the 32-byte salt
+  in embedding_salt. A sketch is not a window title, but individual words of one
+  are partially recoverable from it — PRIVACY.md says how, and PRIVACY_AUDIT.md
+  Audit 7 is the method and the numbers. This script names those columns rather
+  than letting "bash could not read it" pass for "there is nothing in it".
 
   It does not prove what the app sends — for that, watch the network, or read
   the six-field serialiser named above. It does not prove what a future version

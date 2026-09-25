@@ -18,6 +18,16 @@
         "app_name": { "type": "string" },
         "window_title": { "type": "string" },
         "bundle_id": { "type": ["string", "null"] },
+        "declared_app_category": {
+          "type": ["string", "null"],
+          "description": "LSApplicationCategoryType declared in the application's own Info.plist. A fact read off disk; which values mean anything is decided in Rust, and most mean nothing. Local IPC only."
+        },
+        "document_type_ids": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "description": "LSItemContentTypes declared across CFBundleDocumentTypes, flattened, deduplicated and sorted by the client. An oversized list is sent empty rather than truncated: a truncated list is a set the application never declared. The bound is 256, above every measured application (Xcode declares 152). An over-bound list costs the declaration only; the event and its duration are kept. Local IPC only."
+        },
         "focused_document_url": {
           "type": ["string", "null"],
           "description": "Raw focused browser document URL. Local IPC only; Rust must normalize and discard it before persistence."

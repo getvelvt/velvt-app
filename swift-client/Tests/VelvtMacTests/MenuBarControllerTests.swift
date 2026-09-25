@@ -378,15 +378,30 @@ final class MenuBarControllerTests: XCTestCase {
 
         XCTAssertTrue(panel.canBecomeKey, "Settings text fields and Escape need key")
         XCTAssertFalse(panel.canBecomeMain, "A menu bar surface is never the main window")
+        // Amended 2026-09-23. Level and Space membership now follow the
+        // stays-open preference: a window that never dismisses must not also
+        // float above every app on every Space. This test describes the
+        // transient shape, so it asks for it explicitly rather than relying on
+        // a default that has since changed. `MenuBarPinnedWindowTests` covers
+        // the pinned shape and the default.
+        presenter.staysOpenOnFocusLoss = false
         XCTAssertEqual(panel.level, .statusBar)
         XCTAssertTrue(panel.collectionBehavior.contains(.canJoinAllSpaces))
         XCTAssertTrue(panel.collectionBehavior.contains(.fullScreenAuxiliary))
         XCTAssertTrue(panel.collectionBehavior.contains(.ignoresCycle))
         XCTAssertEqual(panel.titleVisibility, .hidden)
         XCTAssertTrue(panel.titlebarAppearsTransparent)
-        XCTAssertEqual(panel.standardWindowButton(.closeButton)?.isHidden, true)
-        XCTAssertEqual(panel.standardWindowButton(.miniaturizeButton)?.isHidden, true)
-        XCTAssertEqual(panel.standardWindowButton(.zoomButton)?.isHidden, true)
+        // Restated 2026-09-23. These three were hidden while this surface
+        // dismissed on click-away, where a close button duplicated the
+        // click-away and minimise had nothing to restore from. The window now
+        // stays open by default, so it carries the controls a window is
+        // expected to carry. Minimise is recoverable because `isShown` is
+        // `panel.isVisible`, which a miniaturised panel reports as false, so
+        // the menu-bar icon reopens it.
+        XCTAssertEqual(panel.standardWindowButton(.closeButton)?.isHidden, false)
+        XCTAssertEqual(panel.standardWindowButton(.miniaturizeButton)?.isHidden, false)
+        XCTAssertEqual(panel.standardWindowButton(.zoomButton)?.isHidden, false)
+        XCTAssertTrue(panel.styleMask.contains(.miniaturizable))
         XCTAssertFalse(panel.isRestorable)
         XCTAssertEqual(panel.animationBehavior, .none)
     }

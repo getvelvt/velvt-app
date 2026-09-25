@@ -338,6 +338,10 @@ public actor EventRelay: EventRelayProtocol {
             appName: event.appName,
             windowTitle: event.windowTitle,
             bundleID: event.bundleIdentifier,
+            // Forwarded verbatim, unjudged: what the application declares about
+            // itself is a fact the service decides the meaning of.
+            declaredAppCategory: event.declaredAppCategory,
+            documentTypeIDs: event.documentTypeIDs,
             focusedDocumentURL: event.focusedDocumentURL
         )
     }

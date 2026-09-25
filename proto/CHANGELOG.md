@@ -1,5 +1,81 @@
 # IPC Protocol Changelog
 
+## Version 30 - 2026-09-23
+
+- Added `bundle_id` handling, `declared_app_category` and `document_type_ids`
+  to `raw_event` (Swift to Rust): what the application itself declares about
+  what it is, read from its own `Info.plist`. Facts, never conclusions --- Swift
+  reports the strings and Rust decides whether any of them mean anything.
+  `document_type_ids` is bounded to 256 identifiers of at most 64 characters,
+  deduplicated and sorted by the client, and an oversized list is sent empty
+  rather than truncated: a truncated list is a set the application never
+  declared, and classifying on it would be worse than classifying on nothing.
+  256 is above every application measured --- Xcode declares 152, Preview 49.
+  An over-bound list that arrives anyway costs the declaration and nothing
+  else: the event is stored with its duration intact.
+  Absent metadata --- a missing key, an unreadable plist, an older client ---
+  must classify exactly as it did before these fields existed.
+- Why it exists: on a real machine with 107 installed applications, 63% of them
+  classify as UNLOGGED, and `is_confident_evidence` excludes UNLOGGED, so that
+  time reaches neither the drift gate nor the anchor. The measured cause was not
+  weak inference but a weak key. `app_stable_key` hashes the name macOS reports,
+  and that name is localized, changes between releases, and is often not the one
+  anyone would recognise: `NSRunningApplication.localizedName` for Visual Studio
+  Code is literally `Code`, which matched no taxonomy entry at all. A bundle
+  identifier is none of those things. Stored as a hash under its own domain
+  separator (`raw_event_buffer.app_bundle_stable_id` and
+  `personal_app_override.bundle_key_hash`, migrations 0033 and 0034), so the
+  identifier itself is never persisted, and added beside the name key rather
+  than instead of it --- every name-keyed correction already on disk keeps
+  working untouched.
+- Added `request_unclassified_triage` (Swift to Rust) and `unclassified_triage`
+  (Rust to Swift): the bounded list of applications Velvt observed but could not
+  read, so teaching it becomes per-application and once rather than per-event
+  and reactive. Each entry carries only facts --- the local name Velvt already
+  holds, seconds observed, event count, and the bundle key hash when there is
+  one. Ranked by observed time, capped at 8, and floored at five minutes in the
+  window: a list of thirty one-second curiosities is not a task anyone will do.
+  An application the user has already taught leaves the list, and an empty list
+  is the good state. No category, no guess, and no total presented as a score.
+- Added `set_application_category` (Swift to Rust): the one-tap answer from that
+  list. It carries no event id on purpose --- the user is telling Velvt what an
+  application is, not correcting one moment of it --- and saving the same answer
+  twice is the same as saving it once.
+- Added `scope` (`window` or `app`) to each `correction_history_page` item.
+  Until now the history listed window rules only, so an app-scoped rule could be
+  neither seen nor removed: removing the window rule left the engine falling
+  through into the surviving app rule and returning the same category and the
+  same typed name on the next event. `stable_id` means an abstraction stable id
+  for a window rule and the application's own key hash for an app rule, so a
+  client cannot act on the id without reading the scope. Absent on an older or
+  stored payload, where it defaults to `window` --- which is what every rule
+  listed before this version was.
+- Local IPC surface only. None of it is uploadable, structurally rather than by
+  filtering: `upload/dto.rs` implements `Serialize` for `BatchEventPayload` by
+  hand and emits exactly event_id, occurred_at, abstraction_type,
+  abstraction_type_version, classification_tier and a payload of
+  duration_seconds and category. There is no field a bundle identifier, a
+  declared category, a document type or a triage entry could occupy.
+
+## Version 29 - 2026-09-22
+
+- Added `intervention_card_seen` (Swift to Rust): the in-app drift card was
+  actually rendered on screen. A delivery fact and never a response --- the
+  payload carries one field and has no place a user answer could sit, so a
+  sighting cannot be widened into an outcome nobody gave. Silence is still
+  recorded only when a block ends unanswered, and is still never inferred
+  from a card or notification disappearing.
+- Why it exists: `outcome = 'no_response'` conflated a person who saw the
+  offer and said nothing with a person the offer never reached. Those are
+  evidence about the action and evidence about delivery respectively, they
+  call for opposite fixes, and the pre-registered denominator counted them
+  identically. Stored as `work_block_intervention.card_seen_at` (migration
+  0032), nullable and orthogonal to `outcome`, so no existing definition
+  changes. NULL means "never observed on screen", which includes every row
+  written before the migration --- those are unknown, not unseen.
+- Local IPC surface only. The sighting is never uploaded; no DTO has a field
+  it could occupy.
+
 ## Version 28 - 2026-08-07
 
 - Added `request_demotion_state` (Swift to Rust) and `demotion_state` (Rust

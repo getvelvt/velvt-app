@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 /// What a queued batch is re-sent with: the values `main.rs`'s retry loop and
 /// `UploadBatcher::flush_now` pass to the coordinator.
 const QUEUED_SCHEMA_VERSION: &str = "1";
-const QUEUED_CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const QUEUED_CLIENT_VERSION: &str = crate::build_info::SERVICE_VERSION;
 
 /// The most not-yet-batched events printed. Upload-eligible events are batched
 /// within a minute of arriving while the service runs, so more than this means

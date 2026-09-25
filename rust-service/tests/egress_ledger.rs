@@ -25,7 +25,9 @@ use velvt_service::persistence::{
     SqlitePersistence,
 };
 use velvt_service::retention::{EgressLedgerRetentionTarget, RetentionTarget};
-use velvt_service::upload::{FakePrivacyAlertSink, HttpBatchUploader, UploadCoordinator};
+use velvt_service::upload::{
+    BatchAssembler, FakePrivacyAlertSink, HttpBatchUploader, UploadBatcher, UploadCoordinator,
+};
 
 // ---------------------------------------------------------------------------
 // A one-request-per-connection HTTP server
@@ -407,7 +409,9 @@ async fn the_dry_run_prints_the_bytes_the_next_attempt_sends_and_the_hash_the_le
         );
     }
 
-    // Now send it for real, through the path the retry loop uses.
+    // Now send it for real, through "Send all now" (`UploadBatcher::flush_now`),
+    // which supplies its own schema and client version: if those ever drift
+    // from the dry run's, the bodies below stop matching.
     let ledger = persistence.egress_ledger_repo();
     let http = Arc::new(WithBearer(ReqwestHttpClient::new(
         server.base_url.clone(),
@@ -419,10 +423,11 @@ async fn the_dry_run_prints_the_bytes_the_next_attempt_sends_and_the_hash_the_le
         FakePrivacyAlertSink::default(),
     )
     .with_host("127.0.0.1");
-    coordinator
-        .flush_all_pending("1", env!("CARGO_PKG_VERSION"))
-        .await
-        .unwrap();
+    let mut batcher = UploadBatcher::new(
+        BatchAssembler::new("device-1", 50, std::time::Duration::from_secs(60)),
+        coordinator,
+    );
+    batcher.flush_now().await.unwrap();
 
     let arrival = &server.arrivals()[0];
     let entry = &ledger.entries().unwrap()[0];

@@ -14,6 +14,7 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Closed-alpha release plan (superseded) | `docs/closed-alpha-release-plan.md` | Historical facilitation script; superseded by the workspace cohort kit on 2026-09-25 |
 | Shipping a testable DMG | `docs/shipping-a-testable-dmg.md` | Developer ID signing, notarization, `make alpha-dmg`, clean-machine check, and testing that notifications reach the user |
 | Contribution workflow | `docs/contributing.md` | Documentation-aware contribution checklist and review expectations |
+| Toolchain pins and lint gates | `docs/toolchains-and-lint.md` | Rust, Xcode and Python pins and where each is enforced; what `make lint-rust` and `make lint-swift` check; the swift-format baseline and its follow-up |
 | Rust service overview | `docs/rust-service/overview.md` | Purpose and role of the Rust service |
 | Rust service internals | `docs/rust-service/architecture.md` | Module structure, startup path, persistence, abstraction, delivery, and lifecycle decisions |
 | Rust service API | `docs/rust-service/api.md` | IPC contract, cloud HTTP interfaces, message examples, and validation rules |

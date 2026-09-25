@@ -121,7 +121,7 @@ Every new `.swift` file must also join the Xcode target: run `./scripts/verify_p
 ## Key Commands
 - Build: `xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' build`
 - Tests: `swift test --package-path swift-client`
-- Lint: `cd swift-client && swift format lint --recursive Sources Tests`
+- Lint: `make lint-swift` (`scripts/lint_swift.sh`: swift-format under `swift-client/.swift-format`, failing on any finding not in `swift-client/.swift-format-baseline`)
 
 ## Development Guide
 
@@ -208,8 +208,8 @@ There is no `src/analytics/` module.
 ## Key Commands
 - Build: `cargo build --release`
 - Tests: `cargo test`
-- Lint: `cargo clippy -- -D warnings` (`make lint-rust`, which CI runs)
-- Format: `cargo fmt --check`
+- Lint: `cargo clippy --workspace --all-targets -- -D warnings` (`make lint-rust`, which CI runs)
+- Format: `cargo fmt --all --check`
 - onnx feature: `make check-rust-onnx` (type-checks `src/abstraction/onnx.rs`; CI runs it)
 
 ## Development Guide

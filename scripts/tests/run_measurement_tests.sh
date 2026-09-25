@@ -2,10 +2,11 @@
 # Every test for the measurement and evidence scripts, in one command.
 #
 # These cover `analyze_cohort.py`, `export_cohort_evidence.sh`,
-# `prove_local.sh`, `antecedent_probe.py`, `generate_traces.py`, and the
-# pbxproj target-membership guard. They need only python3 and the sqlite3 that
-# ships with macOS — no cargo, no Xcode — so they run in seconds and there is
-# no excuse for skipping them.
+# `prove_local.sh`, `antecedent_probe.py`, `generate_traces.py`, the pbxproj
+# target-membership guard, and the Swift lint gate. They need only python3 and
+# the sqlite3 that ships with macOS — no cargo, no Xcode — so they run in
+# seconds and there is no excuse for skipping them. CI runs them in the `swift`
+# job, under the Python in `.python-version`.
 #
 # The Rust half of the trace harness lives in
 # `rust-service/tests/trace_replay.rs` and runs under `cargo test`.
@@ -21,6 +22,7 @@ tests=(
   antecedent_probe_test.sh
   generate_traces_test.sh
   verify_pbxproj_membership_test.sh
+  lint_swift_test.sh
 )
 
 failed=0

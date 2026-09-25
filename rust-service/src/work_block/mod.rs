@@ -47,11 +47,15 @@ const INTENTION_RETENTION_HOURS: i64 = 24;
 /// evidence about its own calibration, because abstentions say nothing about
 /// what an offer would have done.
 ///
-/// `DRIFT_MIN_SWITCHES` 4 → 2 and `DRIFT_MIN_ELAPSED_SECONDS` 5 → 3 minutes are
+/// `DRIFT_MIN_SWITCHES` 4 → 3 and `DRIFT_MIN_ELAPSED_SECONDS` 5 → 3 minutes are
 /// the two that were binding: together they account for 88 of the 108
-/// abstentions. `DRIFT_WINDOW_SECONDS` and `DRIFT_MIN_REMAINING_SECONDS` are
-/// unchanged — neither appears in the abstention record, and widening the
-/// window would change what "recently" means in copy that is frozen.
+/// abstentions. The switch floor stops at 3, not 2: at 2 the gate made 11
+/// offers across the 100 pure-noise traces in `tests/trace_replay.rs` suite B,
+/// which accepts none. `DRIFT_WINDOW_SECONDS` and `DRIFT_MIN_REMAINING_SECONDS`
+/// are unchanged — neither appears in the abstention record, and widening the
+/// window would change what "recently" means in copy that is frozen. This is
+/// policy version 2 (`DRIFT_POLICY_VERSION`); version 1 was 4 switches after a
+/// 5-minute warm-up.
 ///
 /// These are still an uncalibrated guess, now a less strict one. The thing that
 /// replaces guessing is randomization with a recorded propensity, not a better
@@ -1658,8 +1662,12 @@ fn drift_body(seed: u64, switch_count: u32, anchor: &str) -> String {
     // sits mid-sentence.
     let anchor = anchor.replace('_', " ").to_ascii_lowercase();
     let protect = DRIFT_PROTECT_MINUTES;
-    // `DRIFT_MIN_SWITCHES` is 2, so the count is never singular here. The
-    // rendered strings are unchanged; only the floor this comment cites moved.
+    // An offer needs at least `DRIFT_MIN_SWITCHES` switches, and this holds
+    // that floor at 2 or more, so the count is never singular here.
+    const _: () = assert!(
+        DRIFT_MIN_SWITCHES >= 2,
+        "drift copy says \"switches\"; a floor of 1 would render \"1 switches\""
+    );
     match (seed / DRIFT_TITLES.len() as u64) % 4 {
         0 => format!(
             "Velvt observed {switch_count} switches away from {anchor} in the last {minutes} \
@@ -2210,10 +2218,9 @@ mod tests {
             .unwrap()
     }
 
-    /// Establishes DEEP_WORK as the anchor, then switches away four times
-    /// inside the ten-minute window.
-    /// Drives a block into a drift offer and returns the observation that
-    /// carried it, stopping the moment one fires.
+    /// Establishes DEEP_WORK as the anchor, then alternates away from it
+    /// inside the ten-minute window, and returns the observation that carried
+    /// the drift offer, stopping the moment one fires.
     ///
     /// Threshold-independent on purpose. This used to run a fixed sequence of
     /// eight observations and return the last one, which worked only while
@@ -2872,7 +2879,7 @@ mod tests {
     fn no_offer_is_made_before_the_block_has_an_anchor() {
         let (manager, _repo) = manager_with_repo();
         manager.start(request(3600), at(0)).unwrap();
-        // Same switching shape, but inside the first five minutes.
+        // Same switching shape, but inside the three-minute warm-up.
         observe(&manager, "DEEP_WORK", 10);
         for (index, seconds) in [40, 60, 80, 100, 120, 140, 160].iter().enumerate() {
             let category = if index % 2 == 0 {

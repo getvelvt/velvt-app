@@ -2755,7 +2755,8 @@ mod v30_classification_contract {
         // Pinned against a re-narrowing: the two measured declarations this
         // bound exists to admit are 152 and 49 entries long.
         assert_eq!(MAX_DOCUMENT_TYPE_IDS, 256);
-        assert!(
+        // Evaluated when the tests compile, so a bound under 152 fails the build.
+        const _: () = assert!(
             MAX_DOCUMENT_TYPE_IDS >= 152,
             "Xcode declares 152 document types; a bound under that silences \
              this signal for the richest declarations there are"

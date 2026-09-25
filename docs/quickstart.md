@@ -23,8 +23,11 @@ Velvt is a monorepo with two active local workspaces:
   sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
   ```
 
-- Swift 5.10 or later.
+- Swift 5.10 or later. Release builds and CI use Xcode 16.3, pinned in
+  `.xcode-version`; `make package-release` refuses any other unless
+  `VELVT_ALLOW_XCODE_MISMATCH=1`.
 - Rust/Cargo. The service toolchain is pinned by `rust-service/rust-toolchain.toml`.
+- Python 3.13 (`.python-version`) for the scripts under `scripts/`.
 - `make`.
 
 No SwiftPM third-party package is currently declared in `swift-client/Package.swift`. The Rust service uses Cargo dependencies declared in `rust-service/Cargo.toml`, including `tokio`, `serde`, `rusqlite`, `reqwest`, `tracing`, and optional ONNX support behind the `onnx` feature.
@@ -156,18 +159,22 @@ swift test --package-path swift-client
 Rust:
 
 ```sh
-cargo clippy --manifest-path rust-service/Cargo.toml -- -D warnings
-cargo fmt --manifest-path rust-service/Cargo.toml --check
+make lint-rust
 ```
+
+which runs `cargo clippy --workspace --all-targets -- -D warnings` and `cargo
+fmt --all --check` in `rust-service/`.
 
 Swift:
 
 ```sh
-cd swift-client
-swift format lint --recursive Sources Tests
+make lint-swift
 ```
 
-If `swift format` is not installed on your machine, use the project or CI-provided formatting path before opening a PR.
+`swift format lint` on its own exits 0 on any number of warnings. `make
+lint-swift` runs it under `swift-client/.swift-format` and fails on any finding
+not already recorded in `swift-client/.swift-format-baseline`. See
+`docs/toolchains-and-lint.md`.
 
 ## Configuration Basics
 

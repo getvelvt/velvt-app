@@ -125,11 +125,14 @@ SwiftPM globs `swift-client/Sources`, so `swift test` is green whether or not a 
 
 ### Build & test
 ```bash
-cargo build --release       # release build
-cargo test                  # all tests
-cargo clippy -- -D warnings # lint (must pass clean)
-cargo fmt --check           # format check
+cargo build --release                                   # release build
+cargo test                                              # all tests
+cargo clippy --workspace --all-targets -- -D warnings  # lint (must pass clean)
+cargo fmt --all --check                                 # format check
 ```
+
+`make lint-rust` runs the last two. `--workspace --all-targets` matters: plain
+`cargo clippy` skips `shared-types` and every test target.
 
 ### Database migrations
 Migrations are versioned files in `rust-service/migrations/` (0001–0036 on `develop` as of 2026-09-25). They must be **safe and additive** — no destructive schema changes without an explicit migration path. There is no table list here on purpose: `MIGRATED_TABLES` in `rust-service/tests/published_claims.rs` is the closed inventory the migrated schema is tested against, and `PRIVACY.md`'s storage table describes what each store holds and for how long. A new table goes in both, in the same commit.
@@ -155,7 +158,8 @@ Debug builds may enable verbose safe diagnostics. Release builds must not be noi
 - **Scope PRs to one workspace** whenever possible. Cross-workspace PRs are acceptable only for proto changes or tightly coupled fixes — explain the coupling in the PR description.
 - **Tests are required** for any change to abstraction logic, IPC message handling, upload batching, or privacy boundary enforcement. New features without tests will not be merged.
 - **No new third-party dependencies** without prior discussion in an issue. This applies to both `Package.swift` and `Cargo.toml`.
-- **Pass lint before opening PR.** `make lint-rust` (clippy with `-D warnings`, then `cargo fmt --check`) for Rust. CI's `swift` job builds, tests, and runs `scripts/verify_pbxproj_membership.sh`.
+- **Pass lint before opening PR.** `make lint-rust` (clippy over the whole workspace and all targets with `-D warnings`, then `cargo fmt --all --check`) and `make lint-swift`, the same targets CI runs. CI's `swift` job also builds, tests, and runs `scripts/verify_pbxproj_membership.sh`. `make lint-swift` fails on any swift-format finding not already listed in `swift-client/.swift-format-baseline`; see `docs/toolchains-and-lint.md`, and do not add to the baseline to get a change through.
+- **Toolchains are pinned.** Rust in `rust-service/rust-toolchain.toml`, Xcode in `.xcode-version`, Python in `.python-version`. CI uses all three, and `make package-release` refuses a different Xcode. See `docs/toolchains-and-lint.md`.
 - PR titles follow: `[swift-client]`, `[rust-service]`, `[proto]`, or `[cloud]` prefix.
 
 ## Adding A Classification Category

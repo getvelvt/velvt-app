@@ -135,8 +135,32 @@ public protocol PopoverPresenting: AnyObject {
     var contentSize: NSSize { get set }
     var isShown: Bool { get }
 
+    /// Whether the surface is not merely on screen but the thing the person is
+    /// actually looking at.
+    ///
+    /// `isShown` cannot answer that on its own any more. A window that stays
+    /// open when you click another app is an ordinary window: it can end up
+    /// completely covered, or left behind on a Space you have since moved off,
+    /// and it reports `isShown == true` throughout. The menu-bar icon has to
+    /// tell those apart — hiding what the person can see, surfacing what they
+    /// cannot.
+    var isFrontmostSurface: Bool { get }
+
+    /// Raises an already-visible surface back in front of the user's work,
+    /// without taking keyboard focus for itself.
+    func bringToFront()
+
     func show(relativeTo positioningRect: NSRect, of positioningView: NSView, preferredEdge: NSRectEdge)
     func close()
+}
+
+extension PopoverPresenting {
+    /// A shown `NSPopover` is at the top of its Space by construction, and has
+    /// no ordering of its own to change. Defaulted rather than required so the
+    /// surfaces that cannot be occluded stay conforming without boilerplate.
+    public var isFrontmostSurface: Bool { isShown }
+
+    public func bringToFront() {}
 }
 
 extension NSPopover: PopoverPresenting {}
@@ -284,7 +308,7 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
     public override init() {
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: MenuBarPopoverLayout.preferredContentSize),
-            styleMask: [.nonactivatingPanel, .titled, .closable, .resizable],
+            styleMask: [.nonactivatingPanel, .titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -293,9 +317,20 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
         panel.title = "Velvt"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        // Close, minimise and zoom are shown. They were hidden while this was
+        // a click-away surface, where a close button would have duplicated the
+        // click-away and a minimise button would have had nothing to restore
+        // from. Now that the window stays open, they are the controls a user
+        // reasonably expects a window to have.
+        //
+        // Minimise is safe here despite `.accessory` giving this app no Dock
+        // tile: `isShown` is `panel.isVisible`, a miniaturised panel reports
+        // `isVisible == false`, and `showPopover()` guards on `!isShown` — so
+        // clicking the menu-bar icon reopens a miniaturised window exactly as
+        // it reopens a closed one. The menu-bar icon is the Dock tile.
+        panel.standardWindowButton(.closeButton)?.isHidden = false
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = false
+        panel.standardWindowButton(.zoomButton)?.isHidden = false
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.isRestorable = false
@@ -308,8 +343,7 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
         // on resign-key is deterministic and matches `.transient` popover
         // dismissal, which is what the surface used to be.
         panel.hidesOnDeactivate = false
-        panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        applyPinnedWindowBehaviour()
         panel.animationBehavior = .none
         panel.contentMinSize = minimumContentSize
         panel.contentMaxSize = maximumContentSize
@@ -344,6 +378,35 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
         panel.orderOut(nil)
     }
 
+    /// Visible, on this Space, and with at least part of itself on screen.
+    ///
+    /// Both facts come from the window server and neither is disturbed by the
+    /// click that is asking about them: occlusion changes are delivered
+    /// asynchronously (`NSWindowDidChangeOcclusionStateNotification`), and
+    /// Space membership does not change because a status item was clicked.
+    ///
+    /// Deliberately *not* consulted: `isKeyWindow` and `NSApp.isActive`.
+    /// Clicking the status item takes key off this panel as part of the very
+    /// same gesture, so a key test answers "not frontmost" in exactly the case
+    /// that has to close the window — see `MenuBarController`'s note on the
+    /// two halves of one click.
+    public var isFrontmostSurface: Bool {
+        guard panel.isVisible, panel.isOnActiveSpace else { return false }
+        return panel.occlusionState.contains(.visible)
+    }
+
+    /// `orderFrontRegardless()`, not `makeKeyAndOrderFront(_:)`.
+    ///
+    /// `.nonactivatingPanel` is measured as `canBecomeKey == true` even while
+    /// the application is inactive, so making this panel key from a menu-bar
+    /// click could route the person's next keystrokes away from the document
+    /// they are typing into. Raising the window is the whole request; the
+    /// caller activates the app alongside this, and AppKit hands key back to
+    /// this panel as part of that activation.
+    public func bringToFront() {
+        panel.orderFrontRegardless()
+    }
+
     /// Recomputes the frame from wherever the status item is *now*. Called on
     /// every open, so a menu bar rearrangement, a display change or a notch
     /// moves the window with the item instead of stranding it.
@@ -375,6 +438,51 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
         onUserResize?(size)
     }
 
+    // MARK: Staying open
+
+    /// `UserDefaults` key for the click-away preference. Local to this device
+    /// and holds a single `Bool`; nothing about it is uploaded.
+    static let staysOpenDefaultsKey = "VelvtWindowStaysOpen"
+
+    /// Whether the window stays open when the user clicks another app.
+    ///
+    /// Defaults to `true`. A surface you can click away from by accident is
+    /// the wrong shape for something you are meant to read and act on, and the
+    /// window now has a close button that does the job deliberately.
+    public var staysOpenOnFocusLoss: Bool {
+        get {
+            guard UserDefaults.standard.object(forKey: Self.staysOpenDefaultsKey) != nil else {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: Self.staysOpenDefaultsKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.staysOpenDefaultsKey)
+            applyPinnedWindowBehaviour()
+        }
+    }
+
+    /// Level and Space behaviour follow the preference, and this is the part
+    /// that matters most.
+    ///
+    /// `.statusBar` level with `.canJoinAllSpaces` is correct for a transient
+    /// popover: it appears above whatever you are doing, and it leaves the
+    /// moment you click away. Keep both while *also* refusing to dismiss and
+    /// you have built an always-on-top overlay that follows the user onto
+    /// every Space and never goes away — which reads as surveillance, the one
+    /// thing this product must never feel like. So a window that stays open is
+    /// an ordinary `.normal`-level window on one Space: it sits behind the app
+    /// you switch to, exactly as a window should.
+    private func applyPinnedWindowBehaviour() {
+        if staysOpenOnFocusLoss {
+            panel.level = .normal
+            panel.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle]
+        } else {
+            panel.level = .statusBar
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        }
+    }
+
     /// Click-away dismissal, the `.transient` popover behaviour this surface
     /// replaced.
     ///
@@ -390,6 +498,11 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
     public func windowDidResignKey(_ notification: Notification) {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.panel.isVisible else { return }
+            // Gated here rather than inside `shouldDismiss` so that rule stays
+            // pure and separately testable: it answers "is this the user
+            // clicking away", which is still true when the window is pinned —
+            // we simply decline to act on it.
+            guard !self.staysOpenOnFocusLoss else { return }
             guard Self.shouldDismiss(panel: self.panel, keyWindow: NSApp.keyWindow) else { return }
             self.close()
             self.onDismissedByFocusLoss?()
@@ -662,7 +775,15 @@ public final class MenuBarController: NSObject {
 
     public func togglePopover() {
         if popover.isShown {
-            closePopover()
+            // Being on screen is not the same as being in front of the person.
+            // A window left open behind another app, or on a Space they have
+            // moved off, is one this click is asking *for* — not one it is
+            // asking to put away. Returning to Velvt takes one click.
+            if popover.isFrontmostSurface {
+                closePopover()
+            } else {
+                surfacePopover()
+            }
             return
         }
         if let dismissal = lastFocusLossDismissal,
@@ -680,7 +801,17 @@ public final class MenuBarController: NSObject {
     /// even if the app is currently hidden (e.g. via Cmd+H or a notification
     /// tap arriving while backgrounded).
     public func showPopover() {
-        guard let button = statusItemManager.button, !popover.isShown else { return }
+        if popover.isShown {
+            // Never a no-op. This is the path a notification tap arrives on,
+            // and the window it points at is routinely sitting open behind
+            // whatever the person is working in; the intervention is worth
+            // nothing if tapping it changes nothing on screen.
+            if !popover.isFrontmostSurface {
+                surfacePopover()
+            }
+            return
+        }
+        guard let button = statusItemManager.button else { return }
         lastFocusLossDismissal = nil
         popoverWillOpen.send()
         let visibleFrame = button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
@@ -701,6 +832,22 @@ public final class MenuBarController: NSObject {
 
     public func closePopover() {
         popover.close()
+    }
+
+    /// Brings a window that is already open back in front of the user's work.
+    ///
+    /// Activation is the part that makes this one click rather than two: the
+    /// panel is raised, and the app it belongs to comes forward with it, so
+    /// the window is both on top and able to take the keyboard. The panel
+    /// orders itself front without grabbing key first — see
+    /// `MenuBarPanelPresenter.bringToFront()`.
+    ///
+    /// No `popoverWillOpen` here: nothing is opening. Re-announcing an open
+    /// would reset the content the person was already looking at.
+    private func surfacePopover() {
+        lastFocusLossDismissal = nil
+        activateApp()
+        popover.bringToFront()
     }
 
     /// Drives the focus-loss dismissal path without an activation cycle, so
@@ -755,10 +902,50 @@ public final class MenuBarController: NSObject {
         }
     }
 
-    private func applyIcon(for state: MenuBarState) {
+    /// Internal rather than private so the resolved-state-to-icon path can be
+    /// driven directly in tests, the way `install()` and `observe(...)` drive
+    /// it in production.
+    func applyIcon(for state: MenuBarState) {
+        statusItemManager.button?.image = Self.statusItemImage(for: state)
+        statusItemManager.button?.toolTip = MenuBarIconProvider.accessibilityDescription(for: state)
+    }
+
+    /// The icon itself carries the state, not only the tooltip.
+    ///
+    /// `.normal` keeps the brand mark: the overwhelmingly common case should
+    /// look like Velvt and nothing else. The three states that are asking for
+    /// something render as that state's SF Symbol at `iconConfiguration`'s
+    /// fixed point size, so switching between them never shifts the item's
+    /// apparent position in the menu bar. Every image is a template, so the
+    /// menu bar tints it for the current appearance instead of the app
+    /// choosing a colour, and every image carries the state's accessibility
+    /// description so VoiceOver reads the same fact the glyph shows.
+    static func statusItemImage(for state: MenuBarState) -> NSImage? {
         let description = MenuBarIconProvider.accessibilityDescription(for: state)
-        statusItemManager.button?.image = NSImage(named: "VelvtMenuBarIcon")
-        statusItemManager.button?.image?.isTemplate = true
-        statusItemManager.button?.toolTip = description
+        if state == .normal, let brand = brandImage(description: description) {
+            return brand
+        }
+        if let symbol = NSImage(
+            systemSymbolName: MenuBarIconProvider.symbolName(for: state),
+            accessibilityDescription: description
+        )?.withSymbolConfiguration(iconConfiguration) {
+            symbol.isTemplate = true
+            symbol.accessibilityDescription = description
+            return symbol
+        }
+        // A missing symbol must not leave the menu bar empty.
+        return brandImage(description: description)
+    }
+
+    /// Copied rather than mutated in place: `NSImage(named:)` hands back a
+    /// shared cached instance, and stamping one state's accessibility
+    /// description onto it would follow the asset everywhere else it is used.
+    private static func brandImage(description: String) -> NSImage? {
+        guard let asset = NSImage(named: "VelvtMenuBarIcon"),
+            let image = asset.copy() as? NSImage
+        else { return nil }
+        image.isTemplate = true
+        image.accessibilityDescription = description
+        return image
     }
 }

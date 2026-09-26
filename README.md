@@ -515,11 +515,16 @@ tables that hold anything drawn from your Mac, with what each one holds and for
 how long, and `MIGRATED_TABLES` in `rust-service/tests/published_claims.rs` is
 the closed inventory a test holds the migrated schema to. Time and date lookup
 columns are indexed. The migration-owned `schema_migration` table records each
-applied version and its file name, so startup never applies the same migration
-twice, and refuses to open a database that applied a different file under a
-version number this build uses (a reused or renumbered migration). It compares
-names only: an edited migration keeps its name, and catching that would need a
-per-migration checksum column.
+applied version, its file name and (since migration 0039) a checksum of its
+SQL, so startup never applies the same migration twice, and refuses to open a
+database that applied a different file under a version number this build uses
+(a reused or renumbered migration). The checksum catches an edited migration,
+which keeps its name: it covers every statement and leaves comments out, so
+correcting a migration's header is not an edit. A debug build refuses a
+database whose recorded checksum differs from its own; a release build opens
+it, logs `migration_checksum_mismatch`, and reports itself degraded to the app,
+because refusing would stop local collection on a tester's Mac over a defect
+in the build.
 
 The privacy invariant is narrower than this page used to state it, and the
 narrow version is the one that is true. Nothing writes a window title, a URL, a
@@ -550,7 +555,11 @@ in `PRIVACY.md`, and shown unable to reach `upload/`.
 2. Make the migration additive and include required constraints and indexes.
 3. Do not edit the migration runner. `rust-service/build.rs` embeds all sorted
    migration files automatically.
-4. Run `cargo test`, `cargo clippy --workspace --all-targets -- -D warnings`,
+4. Add the file's line to `rust-service/migrations/CHECKSUMS`. The failing test
+   `every_migration_matches_its_line_in_checksums` prints it. Once merged, a
+   migration's statements never change: correct its comments if they are
+   wrong, and put any other change in a new migration.
+5. Run `cargo test`, `cargo clippy --workspace --all-targets -- -D warnings`,
    and `cargo fmt --all --check` from `rust-service/`.
 
 `0002_harden_indexes_and_probe.sql` is the proof migration: it was added without

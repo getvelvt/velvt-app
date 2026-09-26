@@ -135,7 +135,7 @@ cargo fmt --all --check                                 # format check
 `cargo clippy` skips `shared-types` and every test target.
 
 ### Database migrations
-Migrations are versioned files in `rust-service/migrations/` (0001–0037 on `develop` as of 2026-09-25). They must be **safe and additive** — no destructive schema changes without an explicit migration path. There is no table list here on purpose: `MIGRATED_TABLES` in `rust-service/tests/published_claims.rs` is the closed inventory the migrated schema is tested against, and `PRIVACY.md`'s storage table describes what each store holds and for how long. A new table goes in both, in the same commit.
+Migrations are versioned files in `rust-service/migrations/` (0001–0039 on `develop` as of 2026-09-25), each with a line in `rust-service/migrations/CHECKSUMS`. They must be **safe and additive** — no destructive schema changes without an explicit migration path. There is no table list here on purpose: `MIGRATED_TABLES` in `rust-service/tests/published_claims.rs` is the closed inventory the migrated schema is tested against, and `PRIVACY.md`'s storage table describes what each store holds and for how long. A new table goes in both, in the same commit.
 
 ***
 

@@ -223,8 +223,8 @@ There is no `src/analytics/` module.
 
 ### Persistence
 - Migrations must be safe and additive. Use versioned migration files.
-- The migrations are the schema (0001–0037 on `develop` as of 2026-09-25). Do not keep a table list here: `MIGRATED_TABLES` in `tests/published_claims.rs` is the closed inventory the migrated schema is tested against, and `PRIVACY.md`'s storage table describes every store that holds anything drawn from the Mac. A new table goes in both, in the same commit.
-- Migration numbers are sequential and shared across branches: take the next free number when you merge, and never renumber or edit a migration that has shipped.
+- The migrations are the schema (0001–0039 on `develop` as of 2026-09-25). Do not keep a table list here: `MIGRATED_TABLES` in `tests/published_claims.rs` is the closed inventory the migrated schema is tested against, and `PRIVACY.md`'s storage table describes every store that holds anything drawn from the Mac. A new table goes in both, in the same commit.
+- Migration numbers are sequential and shared across branches: take the next free number when you merge, and never renumber or edit a migration that has shipped. Comments may be corrected. Statements may not: `schema_migration.checksum` (0039) records each one, and `migrations/CHECKSUMS` holds every file to its line in CI. A new migration adds its line there.
 - `raw_event_buffer.occurred_at` and `raw_event_buffer.created_at` must have explicit indexes. Retention cleanup must use an indexed path.
 - Default retention (`src/config/mod.rs`; `PRIVACY.md` is the per-table reference and `published_claims` pins its numbers): raw events 14 days (`VELVT_RAW_EVENT_TTL_HOURS`, tied to the 14-day activity chart); window mappings (`abstraction_map`) 14 days from the window's last observation unless a correction or a buffered event points at them; sent upload batches 30 days; rejected batches 7 days; history cache 10 minutes and insight cache 30 minutes (`VELVT_HISTORY_TTL_SECONDS` / `VELVT_INSIGHT_TTL_SECONDS`).
 

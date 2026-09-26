@@ -373,10 +373,13 @@ async fn an_in_progress_report_pushes_the_offer_while_the_person_is_away() {
     );
 }
 
-/// The drift policy did not change, only when its evidence arrives. The same
-/// timeline sent both ways produces the same decisions, stamped at the same
-/// instants, the same offer and outcome, the same observed spans, and the
-/// same event ledger, and only closed reports reach the upload queue.
+/// With no boundary between a dwell's two reports, only when the evidence
+/// arrives changes. The same timeline sent both ways produces the same
+/// decisions, stamped at the same instants, the same offer and outcome, the
+/// same observed spans, and the same event ledger, and only closed reports
+/// reach the upload queue. Where the decisions do differ (a pause, a restart,
+/// a sleep or the end of the block in the middle of a dwell), and why that is
+/// drift policy version 3, is `drift_offer_in_progress_boundaries.rs`.
 #[tokio::test]
 async fn in_progress_reports_change_when_the_gate_decides_and_nothing_it_decides() {
     let closed_only = harness();

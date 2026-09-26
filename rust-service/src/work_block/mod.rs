@@ -560,23 +560,36 @@ impl WorkBlockManager {
                 });
         }
         let at = effective_now(&record, occurred_at).min(planned_deadline(&record));
+        let latest = self.repo.latest_observation(&record.block_id)?;
+        let same_evidence = |latest: &WorkBlockObservation| {
+            latest.category == category
+                && latest.classification_status == status
+                && latest.classification_confidence == confidence
+        };
         // A dwell is reported twice since protocol 32: in progress when it
         // begins, and closed, with the same `occurred_at`, when it ends. The
         // first report opens the row and runs the gate; the second finds its
         // own row still open with the same evidence and stops here, so one
         // dwell is one observation and one decision either way.
-        if self
-            .repo
-            .latest_observation(&record.block_id)?
-            .is_some_and(|latest| {
-                latest.ended_at.is_none()
-                    && latest.category == category
-                    && latest.classification_status == status
-                    && latest.classification_confidence == confidence
-            })
+        if latest
+            .as_ref()
+            .is_some_and(|latest| latest.ended_at.is_none() && same_evidence(latest))
         {
             return Ok(None);
         }
+        // A boundary between the two reports (a pause, a sleep, a service
+        // restart) closes the row the in-progress report opened. The closed
+        // report that follows is still the same dwell, not a new one: it began
+        // no later than that row did. It re-opens the ledger at `at`, as a
+        // closed report always did after a boundary, so the time after the
+        // boundary is still observed. It is not evaluated again: the gate
+        // decided on this dwell when it began, and a second decision for the
+        // same dwell would count one departure twice in the decision log.
+        let continues_decided_dwell = latest.as_ref().is_some_and(|latest| {
+            latest.ended_at.is_some()
+                && same_evidence(latest)
+                && latest.occurred_at.timestamp() >= occurred_at.timestamp()
+        });
         self.repo.close_open_observation(&record.block_id, at)?;
         let observation = WorkBlockObservation {
             occurred_at: at,
@@ -587,6 +600,13 @@ impl WorkBlockManager {
         };
         self.repo
             .append_observation(&record.block_id, &observation)?;
+        if continues_decided_dwell {
+            let snapshot = self.snapshot_for(record, at)?;
+            return Ok(Some(ObservationOutcome {
+                snapshot,
+                intervention: None,
+            }));
+        }
         // Observing the return closes the loop: an offer is only worth making
         // if its outcome is recorded.
         self.record_return_if_pending(&record, &observation, at)?;

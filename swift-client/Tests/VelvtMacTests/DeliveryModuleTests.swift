@@ -1,5 +1,6 @@
 import Combine
 import XCTest
+
 @testable import VelvtMac
 
 final class DeliveryModuleTests: XCTestCase {
@@ -25,11 +26,13 @@ final class DeliveryModuleTests: XCTestCase {
         let messages = PassthroughSubject<ServerMessage, Never>()
         let sut = MenuStatusViewModel(ipcClient: client, messages: messages)
 
-        messages.send(.errorResponse(ErrorResponse(
-            code: "upload_flush_failed",
-            message: "Unable to send queued events.",
-            relatedEventID: nil
-        )))
+        messages.send(
+            .errorResponse(
+                ErrorResponse(
+                    code: "upload_flush_failed",
+                    message: "Unable to send queued events.",
+                    relatedEventID: nil
+                )))
         await Task.yield()
 
         XCTAssertEqual(sut.sendError, "Unable to send queued events.")
@@ -59,13 +62,16 @@ final class DeliveryModuleTests: XCTestCase {
 
         XCTAssertEqual(
             client.sentMessages,
-            [.correctEventClassification(.init(
-                eventID: eventID,
-                stableID: "abs_safe",
-                category: "COMMUNICATION",
-                localActivityName: "Client messages"
-            )),
-            .requestCorrectionHistory(.init(query: nil, offset: 0))]
+            [
+                .correctEventClassification(
+                    .init(
+                        eventID: eventID,
+                        stableID: "abs_safe",
+                        category: "COMMUNICATION",
+                        localActivityName: "Client messages"
+                    )),
+                .requestCorrectionHistory(.init(query: nil, offset: 0)),
+            ]
         )
     }
 
@@ -165,13 +171,15 @@ final class DeliveryModuleTests: XCTestCase {
                 updatedAt: Date()
             )
         }
-        messages.send(.correctionHistoryPage(.init(
-            items: items,
-            offset: 0,
-            pageSize: 20,
-            totalCount: 41,
-            hasMore: true
-        )))
+        messages.send(
+            .correctionHistoryPage(
+                .init(
+                    items: items,
+                    offset: 0,
+                    pageSize: 20,
+                    totalCount: 41,
+                    hasMore: true
+                )))
         await Task.yield()
 
         sut.refreshCorrectionHistory(query: "Research", offset: 0)

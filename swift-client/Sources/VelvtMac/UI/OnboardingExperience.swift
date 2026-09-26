@@ -180,9 +180,11 @@ public final class NotificationPromptModel: ObservableObject {
     }
 
     public static func openNotificationSettings() {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
-        ) else { return }
+        guard
+            let url = URL(
+                string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+            )
+        else { return }
         NSWorkspace.shared.open(url)
     }
 }
@@ -532,7 +534,7 @@ public struct FirstRunExperienceView: View {
                     model.skipIntro()
                 }
             }
-                .buttonStyle(VelvtQuietButtonStyle())
+            .buttonStyle(VelvtQuietButtonStyle())
             if model.canGoBack {
                 Button("Back") { model.goBack() }
                     .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
@@ -560,14 +562,14 @@ public struct FirstRunExperienceView: View {
                     ? (continuesToTour ? "Start guided tour" : "Continue setup")
                     : "Start using Velvt"
             ) { model.finishAndStartUsing() }
-                .buttonStyle(VelvtPrimaryButtonStyle())
-                .keyboardShortcut(.defaultAction)
+            .buttonStyle(VelvtPrimaryButtonStyle())
+            .keyboardShortcut(.defaultAction)
         case .capabilities where followsLaunchSequence:
             Button(continuesToTour ? "Start guided tour" : "Continue setup") {
                 model.finishAndStartUsing()
             }
-                .buttonStyle(VelvtPrimaryButtonStyle())
-                .keyboardShortcut(.defaultAction)
+            .buttonStyle(VelvtPrimaryButtonStyle())
+            .keyboardShortcut(.defaultAction)
         default:
             Button("Continue") { model.continueForward() }
                 .buttonStyle(VelvtPrimaryButtonStyle())

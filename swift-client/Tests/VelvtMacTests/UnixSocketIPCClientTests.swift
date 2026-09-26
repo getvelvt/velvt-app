@@ -2,6 +2,7 @@ import Combine
 import Darwin
 import Network
 import XCTest
+
 @testable import VelvtMac
 
 final class UnixSocketIPCClientTests: XCTestCase {
@@ -21,7 +22,7 @@ final class UnixSocketIPCClientTests: XCTestCase {
         let transport = ScriptedIPCTransport(
             receives: [
                 .success(try frame(.serverHello(ServerHello(protocolVersion: 1)))),
-                .success(try frame(.acknowledged(Acknowledged())))
+                .success(try frame(.acknowledged(Acknowledged()))),
             ]
         )
         let client = UnixSocketIPCClient(
@@ -51,7 +52,7 @@ final class UnixSocketIPCClientTests: XCTestCase {
                 .success(try frame(.serverHello(ServerHello(protocolVersion: 2)))),
                 .success(
                     try frame(.versionMismatch(VersionMismatch(serverProtocolVersion: 2, clientProtocolVersion: 1)))
-                )
+                ),
             ]
         )
         let client = UnixSocketIPCClient(
@@ -78,7 +79,7 @@ final class UnixSocketIPCClientTests: XCTestCase {
             receives: [
                 .success(try frame(.serverHello(ServerHello(protocolVersion: 1)))),
                 .success(try frame(.acknowledged(Acknowledged()))),
-                .failure(IPCError.connectionClosed)
+                .failure(IPCError.connectionClosed),
             ]
         )
         let failed = ScriptedIPCTransport(connectError: IPCError.socket(code: 61))
@@ -231,7 +232,7 @@ final class UnixSocketIPCClientTests: XCTestCase {
                 .success(try frame(.serverHello(ServerHello(protocolVersion: 1)))),
                 .success(try frame(.acknowledged(Acknowledged()))),
                 .success(Data(#"{"type":"future_message","payload":{"raw_title":"not-retained"}}"#.utf8)),
-                .success(try frame(.serviceStatus(ServiceStatus(state: .ready, reason: nil))))
+                .success(try frame(.serviceStatus(ServiceStatus(state: .ready, reason: nil)))),
             ]
         )
         let client = UnixSocketIPCClient(
@@ -286,7 +287,7 @@ final class UnixSocketIPCClientTests: XCTestCase {
             receives: [
                 .success(try frame(.serverHello(ServerHello(protocolVersion: 1)))),
                 .success(try frame(.acknowledged(Acknowledged()))),
-                .failure(IPCError.connectionClosed)
+                .failure(IPCError.connectionClosed),
             ],
             blockPublicSend: true
         )
@@ -383,15 +384,17 @@ private actor ScriptedIPCTransport: IPCTransportProtocol {
     /// never installed a cancellation handler would still pass a test built on
     /// it.
     private func stall() async throws {
-        try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                stallGate.park(continuation)
-            }
-        }, onCancel: { [stallGate] in
-            // The production analogue is `connection.cancel()` in
-            // UnixSocketTransport's own onCancel handler.
-            stallGate.tearDown()
-        })
+        try await withTaskCancellationHandler(
+            operation: {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    stallGate.park(continuation)
+                }
+            },
+            onCancel: { [stallGate] in
+                // The production analogue is `connection.cancel()` in
+                // UnixSocketTransport's own onCancel handler.
+                stallGate.tearDown()
+            })
     }
 
     func send(frame: Data) async throws {

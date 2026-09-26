@@ -111,7 +111,7 @@ public final class PermissionManager: PermissionManagerProtocol {
         self.activityNotifications = activityNotifications
         statusSubject = CurrentValueSubject([
             .accessibility: .unknown,
-            .notifications: .unknown
+            .notifications: .unknown,
         ])
     }
 
@@ -194,7 +194,7 @@ public final class PermissionManager: PermissionManagerProtocol {
                 queue: .main
             ) { [weak self] _ in
                 self?.monitorScheduler.stop()
-            }
+            },
         ]
         lock.withLock {
             activityObservers = observers
@@ -228,7 +228,8 @@ public final class PermissionManager: PermissionManagerProtocol {
         // main-queue activation notification. Publish this first check inline
         // so activation cannot leave the UI in its stale state while an
         // unstructured task waits for the main actor.
-        let accessibilityStatus: PermissionStatus = accessibilityClient.isProcessTrusted(prompt: false)
+        let accessibilityStatus: PermissionStatus =
+            accessibilityClient.isProcessTrusted(prompt: false)
             ? .granted
             : .denied
         publish(accessibilityStatus, for: .accessibility)
@@ -333,7 +334,7 @@ public final class FakePermissionManager: PermissionManagerProtocol {
     public private(set) var requestedPermissions: [PermissionType] = []
     private let statusSubject = CurrentValueSubject<[PermissionType: PermissionStatus], Never>([
         .accessibility: .unknown,
-        .notifications: .unknown
+        .notifications: .unknown,
     ])
 
     public init() {}
@@ -358,9 +359,10 @@ public final class SystemAccessibilityPermissionClient: AccessibilityPermissionC
     public init() {}
 
     public func isProcessTrusted(prompt: Bool) -> Bool {
-        AXIsProcessTrustedWithOptions([
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt
-        ] as CFDictionary)
+        AXIsProcessTrustedWithOptions(
+            [
+                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt
+            ] as CFDictionary)
     }
 }
 

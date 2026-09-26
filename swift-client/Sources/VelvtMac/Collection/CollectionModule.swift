@@ -246,7 +246,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
                 try observe(currentApplication)
             } catch CollectionError.permissionRevoked {
                 stopAfterPermissionRevocation()
-            } catch let CollectionError.observerRegistrationFailed(code) {
+            } catch CollectionError.observerRegistrationFailed(let code) {
                 statusSubject.send(.error("ax_observer_registration_failed:\(code)"))
             } catch {
                 statusSubject.send(.error("ax_observer_registration_failed"))
@@ -372,7 +372,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             try observe(application)
         } catch CollectionError.permissionRevoked {
             stopAfterPermissionRevocation()
-        } catch let CollectionError.observerRegistrationFailed(code) {
+        } catch CollectionError.observerRegistrationFailed(let code) {
             statusSubject.send(.error("ax_observer_registration_failed:\(code)"))
         } catch {
             statusSubject.send(.error("ax_observer_registration_failed"))
@@ -441,18 +441,20 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             // and making it part of activity identity would let a first-read
             // failure that later succeeds register as a switch the user never
             // made.
-            guard previousEvent.appName != nextEvent.appName
-                || previousEvent.bundleIdentifier != nextEvent.bundleIdentifier
-                || previousEvent.windowTitle != nextEvent.windowTitle
-                || previousEvent.focusedDocumentURL != nextEvent.focusedDocumentURL
+            guard
+                previousEvent.appName != nextEvent.appName
+                    || previousEvent.bundleIdentifier != nextEvent.bundleIdentifier
+                    || previousEvent.windowTitle != nextEvent.windowTitle
+                    || previousEvent.focusedDocumentURL != nextEvent.focusedDocumentURL
             else {
                 return nil
             }
             pendingDwellEvent = nextEvent
-            return previousEvent.withDuration(seconds: dwellSeconds(
-                from: previousEvent.occurredAt,
-                through: nextEvent.occurredAt
-            ))
+            return previousEvent.withDuration(
+                seconds: dwellSeconds(
+                    from: previousEvent.occurredAt,
+                    through: nextEvent.occurredAt
+                ))
         }
         if let completedEvent {
             eventSink?.receive(completedEvent)
@@ -479,7 +481,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         if let finalEvent = result.finalEvent {
             eventSink?.receive(finalEvent)
         }
-        if case let .observerRegistrationFailed(code) = error {
+        if case .observerRegistrationFailed(let code) = error {
             statusSubject.send(.error("ax_observer_failed:\(code)"))
         } else {
             statusSubject.send(.error("ax_observer_failed"))
@@ -633,14 +635,15 @@ public final class AXApplicationObserver: AccessibilityObserving {
         }
 
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
-        guard let initialWindow = copyElement(attribute: kAXFocusedWindowAttribute, from: applicationElement)
-            ?? copyElement(attribute: kAXMainWindowAttribute, from: applicationElement)
+        guard
+            let initialWindow = copyElement(attribute: kAXFocusedWindowAttribute, from: applicationElement)
+                ?? copyElement(attribute: kAXMainWindowAttribute, from: applicationElement)
         else {
             throw CollectionError.observerRegistrationFailed(code: AXError.noValue.rawValue)
         }
         for (element, notification) in [
             (applicationElement, kAXFocusedWindowChangedNotification),
-            (initialWindow, kAXTitleChangedNotification)
+            (initialWindow, kAXTitleChangedNotification),
         ] {
             let registration = AXObserverAddNotification(
                 createdObserver,
@@ -796,9 +799,11 @@ public final class AXApplicationObserver: AccessibilityObserving {
     }
 
     private func copyFocusedDocumentURL(applicationElement: AXUIElement, window: AXUIElement) -> String? {
-        for element in [window, copyElement(attribute: kAXFocusedUIElementAttribute, from: applicationElement)].compactMap({ $0 }) {
+        for element in [window, copyElement(attribute: kAXFocusedUIElementAttribute, from: applicationElement)]
+            .compactMap({ $0 })
+        {
             var candidate: AXUIElement? = element
-            for _ in 0 ..< 5 {
+            for _ in 0..<5 {
                 guard let current = candidate else { break }
                 for attribute in [kAXDocumentAttribute, kAXURLAttribute] {
                     if let value = copyString(attribute: attribute, from: current), !value.isEmpty {
@@ -833,7 +838,7 @@ public final class AXApplicationObserver: AccessibilityObserving {
         "com.operasoftware.Opera",
         "com.operasoftware.OperaGX",
         "com.vivaldi.Vivaldi",
-        "com.kagi.kagimacOS"
+        "com.kagi.kagimacOS",
     ]
 
     static func isSupportedBrowser(bundleIdentifier: String?) -> Bool {
@@ -843,14 +848,14 @@ public final class AXApplicationObserver: AccessibilityObserving {
             "com.google.Chrome.",
             "com.microsoft.edgemac.",
             "com.brave.Browser.",
-            "org.mozilla.firefox."
+            "org.mozilla.firefox.",
         ].contains { bundleIdentifier.hasPrefix($0) }
     }
 
     private static let optionalWindowNotifications = [
         kAXValueChangedNotification,
         kAXSelectedChildrenChangedNotification,
-        kAXSelectedRowsChangedNotification
+        kAXSelectedRowsChangedNotification,
     ]
 
     private func addOptionalBrowserNotifications(
@@ -889,7 +894,7 @@ public final class AXApplicationObserver: AccessibilityObserving {
     }
 
     private func copyTitle(from element: AXUIElement) -> String? {
-        guard case let .success(title) = copyTitleResult(from: element) else {
+        guard case .success(let title) = copyTitleResult(from: element) else {
             return nil
         }
         return title

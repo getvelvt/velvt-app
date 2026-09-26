@@ -1,5 +1,6 @@
 import Combine
 import XCTest
+
 @testable import VelvtMac
 
 // MARK: - IPC version mismatch retry

@@ -347,7 +347,7 @@ final class DeclaredAppMetadataTests: XCTestCase {
         XCTAssertTrue(json.contains("\"document_type_ids\""))
 
         let decoded = try IPCMessageCodec.makeDecoder().decode(ClientMessage.self, from: data)
-        guard case let .rawEvent(roundTripped) = decoded else {
+        guard case .rawEvent(let roundTripped) = decoded else {
             return XCTFail("Expected a raw event.")
         }
         XCTAssertEqual(roundTripped, message)
@@ -388,7 +388,7 @@ final class DeclaredAppMetadataTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(100))
 
         let sent = client.sentMessages.compactMap { message -> RawEventMessage? in
-            if case let .rawEvent(raw) = message { return raw }
+            if case .rawEvent(let raw) = message { return raw }
             return nil
         }
         XCTAssertEqual(sent.count, 1)

@@ -151,7 +151,8 @@ public final class ServiceProcessLauncher {
         // derive from proto/ipc_socket_path, but a silent disagreement here
         // presents as a service that never connects, so make it explicit.
         if let socketPath = Bundle.main.object(forInfoDictionaryKey: "VelvtSocketPath") as? String,
-            !socketPath.isEmpty {
+            !socketPath.isEmpty
+        {
             serviceEnvironment["VELVT_IPC_SOCKET_PATH"] = socketPath
         }
 
@@ -317,7 +318,8 @@ public final class ServiceProcessLauncher {
     }
 
     public func restart() {
-        let environment = lastEnvironment.isEmpty
+        let environment =
+            lastEnvironment.isEmpty
             ? ProcessInfo.processInfo.environment
             : lastEnvironment
         stop()

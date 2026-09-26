@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import VelvtMac
 
 final class MenuBarStateResolverTests: XCTestCase {
@@ -6,16 +7,16 @@ final class MenuBarStateResolverTests: XCTestCase {
     private let sut = MenuBarStateResolver()
 
     private static let collectionStatuses: [CollectionStatus] = [
-        .idle, .running, .permissionRevoked, .error("boom")
+        .idle, .running, .permissionRevoked, .error("boom"),
     ]
 
     private static let connectionStatuses: [ConnectionStatus] = [
         .disconnected, .connecting, .handshaking, .connected,
-        .reconnecting(attempt: 1, nextRetryIn: 2)
+        .reconnecting(attempt: 1, nextRetryIn: 2),
     ]
 
     private static let accountStates: [AccountState] = [
-        .loggedOut, .loggingIn, .loggedIn(userId: "u1"), .loggingOut, .pendingErasure
+        .loggedOut, .loggingIn, .loggedIn(userId: "u1"), .loggingOut, .pendingErasure,
     ]
 
     /// `isDeviceRevoked` is always the most severe signal, regardless of the

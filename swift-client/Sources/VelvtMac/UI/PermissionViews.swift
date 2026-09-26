@@ -172,7 +172,7 @@ public final class PermissionPresentationModel: ObservableObject {
     @Published public private(set) var showsOnboarding: Bool
     @Published public private(set) var statuses: [PermissionType: PermissionStatus] = [
         .accessibility: .unknown,
-        .notifications: .unknown
+        .notifications: .unknown,
     ]
 
     public var showsAccessibilityRecovery: Bool {
@@ -312,9 +312,11 @@ public struct PermissionRecoveryView: View {
     }
 
     public static func openAccessibilitySettings() {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        ) else {
+        guard
+            let url = URL(
+                string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            )
+        else {
             return
         }
         NSWorkspace.shared.open(url)
@@ -463,7 +465,9 @@ public struct FirstRunOnboardingView: View {
         case .valueProposition:
             Text("See when work became fragmented — and what to protect next")
                 .velvtDisplay(20)
-            Text("Velvt shows evidence of when your work became fragmented and one realistic way to protect your next focus block.")
+            Text(
+                "Velvt shows evidence of when your work became fragmented and one realistic way to protect your next focus block."
+            )
             .velvtBody(13)
             .fixedSize(horizontal: false, vertical: true)
             Button("Set up Velvt") { presentation.acknowledgeValueProposition() }
@@ -472,7 +476,9 @@ public struct FirstRunOnboardingView: View {
         case .accessibilityExplanation:
             Label("Allow local activity collection", systemImage: "hand.raised")
                 .velvtHeading(15)
-            Text("Accessibility lets Velvt notice broad work changes on this Mac. Raw app names, window titles, URLs, and local labels never leave your device.")
+            Text(
+                "Accessibility lets Velvt notice broad work changes on this Mac. Raw app names, window titles, URLs, and local labels never leave your device."
+            )
             .velvtBody(12)
             .fixedSize(horizontal: false, vertical: true)
             Button("Continue to System Settings") {
@@ -487,7 +493,9 @@ public struct FirstRunOnboardingView: View {
         case .notificationsExplanation:
             Label("Choose whether Velvt can notify you", systemImage: "bell")
                 .velvtHeading(15)
-            Text("Notifications can surface a concise, evidence-grounded observation. Saying no will not block collection.")
+            Text(
+                "Notifications can surface a concise, evidence-grounded observation. Saying no will not block collection."
+            )
             .velvtBody(12)
             .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: VelvtMetrics.spaceSM) {
@@ -503,7 +511,9 @@ public struct FirstRunOnboardingView: View {
         case .authenticationRequired:
             Label("Cloud features are optional", systemImage: "person.crop.circle")
                 .velvtHeading(15)
-            Text("Local collection works without an account. Sign in later if you want synchronized history and cloud insight delivery.")
+            Text(
+                "Local collection works without an account. Sign in later if you want synchronized history and cloud insight delivery."
+            )
             .velvtBody(12)
 
         case .serviceStarting:
@@ -517,7 +527,7 @@ public struct FirstRunOnboardingView: View {
             Label("Local service unavailable", systemImage: "exclamationmark.triangle")
                 .velvtHeading(15)
             Text("Quit and reopen Velvt to restart the local service. Your existing local data is preserved.")
-            .velvtBody(12)
+                .velvtBody(12)
 
         case .collectionStarting:
             ProgressView("Starting local collection…")

@@ -169,8 +169,8 @@ public struct TodayWorkspaceView: View {
         todayMetric(
             title: "Meaningful switches",
             value: "\(signal.meaningfulSwitchCount)",
-      explanation:
-        "Changes between privacy-safe broad categories; system and unclassified activity are excluded."
+            explanation:
+                "Changes between privacy-safe broad categories; system and unclassified activity are excluded."
         )
         todayMetric(
             title: "Longest stretch",
@@ -231,7 +231,7 @@ public struct TodayWorkspaceView: View {
                 viewModel: coordinator.insightViewModel,
                 onSuggestedAction: canStartSuggestedBlock ? startSuggestedWorkBlock : nil
             )
-                .padding(.horizontal, VelvtMetrics.cardPadding)
+            .padding(.horizontal, VelvtMetrics.cardPadding)
         case .earlyLocal:
             if let signal = readyLocalSignal {
                 EarlyLocalSignalView(
@@ -245,8 +245,8 @@ public struct TodayWorkspaceView: View {
             }
         case .progress:
             if coordinator.insightNotReadyReason != "insufficient_evidence"
-        || coordinator.historyViewModel.baselineProgress.isComplete
-      {
+                || coordinator.historyViewModel.baselineProgress.isComplete
+            {
                 EmptyDeliveryState(
                     text: todayProgressExplanation,
                     systemImage: "sparkles"
@@ -278,8 +278,8 @@ public struct TodayWorkspaceView: View {
 
     private var readyLocalSignal: LocalEarlySignal? {
         guard let signal = localDashboardCoordinator.snapshot?.earlySignal,
-      signal.status == .ready
-    else { return nil }
+            signal.status == .ready
+        else { return nil }
         return signal
     }
 
@@ -409,25 +409,25 @@ struct EarlySignalProgressView: View {
                         value: Double(signal.observedSeconds),
                         total: Double(max(1, signal.observedSeconds + signal.requiredSeconds))
                     )
-                        // The filled track is the only thing this control says,
-                        // and crimson on ink is 2.56:1.
-                        .tint(VelvtPalette.signal)
+                    // The filled track is the only thing this control says,
+                    // and crimson on ink is 2.56:1.
+                    .tint(VelvtPalette.signal)
                     Text(progressText(signal))
                         .velvtBody(12)
                         .fixedSize(horizontal: false, vertical: true)
-            Text(
-              "Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened)) · raw app names, titles, URLs, and files stay on this Mac"
-            )
-                        .font(VelvtType.caption(10.5))
-                        .foregroundStyle(VelvtInk.tertiaryOnInk)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        "Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened)) · raw app names, titles, URLs, and files stay on this Mac"
+                    )
+                    .font(VelvtType.caption(10.5))
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
+                    .fixedSize(horizontal: false, vertical: true)
                     EarlySignalBasisDisclosure(signal: signal)
                 } else {
-            Text(
-              errorMessage ?? "Waiting for the local privacy service to report this observation window."
-            )
-                        .velvtBody(12)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        errorMessage ?? "Waiting for the local privacy service to report this observation window."
+                    )
+                    .velvtBody(12)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -593,20 +593,20 @@ private struct EarlyLocalSignalView: View {
                         .buttonStyle(VelvtPrimaryButtonStyle())
                 }
                 EarlySignalBasisDisclosure(signal: signal)
-          Text(
-            "Computed only from abstracted categories on this Mac · Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened))"
-          )
-                    .font(VelvtType.caption(10.5))
-                    .foregroundStyle(VelvtInk.tertiaryOnInk)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    "Computed only from abstracted categories on this Mac · Updated \(signal.observedThrough.formatted(date: .omitted, time: .shortened))"
+                )
+                .font(VelvtType.caption(10.5))
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
     private var windowText: String {
         guard let start = signal.observedFrom else { return "Current window" }
-    return
-      "\(start.formatted(date: .omitted, time: .shortened))–\(signal.observedThrough.formatted(date: .omitted, time: .shortened))"
+        return
+            "\(start.formatted(date: .omitted, time: .shortened))–\(signal.observedThrough.formatted(date: .omitted, time: .shortened))"
     }
 }
 
@@ -623,97 +623,97 @@ struct EmptyDeliveryState: View {
 /// The Now workspace. Seven-day activity belongs in Patterns so the same
 /// monitor is not repeated in two tabs.
 public struct MinimalDashboardWorkspaceView: View {
-  @ObservedObject private var coordinator: ConcreteDisplayDataCoordinator
-  @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
-  @ObservedObject private var localDashboardCoordinator: LocalDashboardCoordinator
-  private let onStartWorkBlock: () -> Void
-  private let highlightsInsight: Bool
-  private let highlightsFocus: Bool
+    @ObservedObject private var coordinator: ConcreteDisplayDataCoordinator
+    @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
+    @ObservedObject private var localDashboardCoordinator: LocalDashboardCoordinator
+    private let onStartWorkBlock: () -> Void
+    private let highlightsInsight: Bool
+    private let highlightsFocus: Bool
 
-  public init(
-    coordinator: ConcreteDisplayDataCoordinator,
-    workBlockCoordinator: WorkBlockCoordinator,
-    localDashboardCoordinator: LocalDashboardCoordinator,
-    onStartWorkBlock: @escaping () -> Void,
-    highlightsInsight: Bool = false,
-    highlightsFocus: Bool = false
-  ) {
-    self.coordinator = coordinator
-    self.workBlockCoordinator = workBlockCoordinator
-    self.localDashboardCoordinator = localDashboardCoordinator
-    self.onStartWorkBlock = onStartWorkBlock
-    self.highlightsInsight = highlightsInsight
-    self.highlightsFocus = highlightsFocus
-  }
-
-  public var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      if let snapshot = workBlockCoordinator.snapshot,
-        snapshot.phase == .active || snapshot.phase == .paused
-      {
-        CompactWorkBlockControl(snapshot: snapshot, coordinator: workBlockCoordinator)
-      }
-
-      TodaySoFarView(day: localDashboardCoordinator.snapshot?.dailyActivity.last)
-
-      latestInsight
-        .tourHighlight(highlightsInsight)
-
-      FocusFragmentationView(
-        focus: localDashboardCoordinator.snapshot?.focusFragmentation,
-        errorMessage: localDashboardCoordinator.commandError,
-        onStartWorkBlock: onStartWorkBlock,
-        header: workBlockCardHeader
-      )
-      .tourHighlight(highlightsFocus)
+    public init(
+        coordinator: ConcreteDisplayDataCoordinator,
+        workBlockCoordinator: WorkBlockCoordinator,
+        localDashboardCoordinator: LocalDashboardCoordinator,
+        onStartWorkBlock: @escaping () -> Void,
+        highlightsInsight: Bool = false,
+        highlightsFocus: Bool = false
+    ) {
+        self.coordinator = coordinator
+        self.workBlockCoordinator = workBlockCoordinator
+        self.localDashboardCoordinator = localDashboardCoordinator
+        self.onStartWorkBlock = onStartWorkBlock
+        self.highlightsInsight = highlightsInsight
+        self.highlightsFocus = highlightsFocus
     }
-    .padding(VelvtMetrics.spaceMD)
-    .onAppear { localDashboardCoordinator.refresh() }
-  }
 
-  /// The intention the user typed when they declared this block, else the
-  /// anchor category Rust derived for it. Both are values already on the
-  /// snapshot; this chooses between two given strings and derives neither.
-  private var workBlockCardHeader: String? {
-    guard let snapshot = workBlockCoordinator.snapshot else { return nil }
-    if let intention = snapshot.intention,
-      !intention.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    {
-      return intention
-    }
-    guard let anchor = snapshot.result?.safeEvidenceCategory ?? snapshot.currentCategory else {
-      return nil
-    }
-    return friendlyCategory(anchor)
-  }
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let snapshot = workBlockCoordinator.snapshot,
+                snapshot.phase == .active || snapshot.phase == .paused
+            {
+                CompactWorkBlockControl(snapshot: snapshot, coordinator: workBlockCoordinator)
+            }
 
-  @ViewBuilder
-  private var latestInsight: some View {
-    if coordinator.insightAvailability == .available {
-      InsightCardView(
-        viewModel: coordinator.insightViewModel,
-        onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
-          ? onStartWorkBlock
-          : nil,
-        compact: true
-      )
-    } else if let signal = localDashboardCoordinator.snapshot?.earlySignal,
-      signal.status == .ready
-    {
-      EarlyLocalSignalView(
-        signal: signal,
-        onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
-          ? onStartWorkBlock
-          : nil
-      )
-    } else {
-      EarlySignalProgressView(
-        signal: localDashboardCoordinator.snapshot?.earlySignal,
-        totalObservedSeconds: localDashboardCoordinator.snapshot.map(observedActivitySeconds),
-        errorMessage: localDashboardCoordinator.commandError
-      )
+            TodaySoFarView(day: localDashboardCoordinator.snapshot?.dailyActivity.last)
+
+            latestInsight
+                .tourHighlight(highlightsInsight)
+
+            FocusFragmentationView(
+                focus: localDashboardCoordinator.snapshot?.focusFragmentation,
+                errorMessage: localDashboardCoordinator.commandError,
+                onStartWorkBlock: onStartWorkBlock,
+                header: workBlockCardHeader
+            )
+            .tourHighlight(highlightsFocus)
+        }
+        .padding(VelvtMetrics.spaceMD)
+        .onAppear { localDashboardCoordinator.refresh() }
     }
-  }
+
+    /// The intention the user typed when they declared this block, else the
+    /// anchor category Rust derived for it. Both are values already on the
+    /// snapshot; this chooses between two given strings and derives neither.
+    private var workBlockCardHeader: String? {
+        guard let snapshot = workBlockCoordinator.snapshot else { return nil }
+        if let intention = snapshot.intention,
+            !intention.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return intention
+        }
+        guard let anchor = snapshot.result?.safeEvidenceCategory ?? snapshot.currentCategory else {
+            return nil
+        }
+        return friendlyCategory(anchor)
+    }
+
+    @ViewBuilder
+    private var latestInsight: some View {
+        if coordinator.insightAvailability == .available {
+            InsightCardView(
+                viewModel: coordinator.insightViewModel,
+                onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
+                    ? onStartWorkBlock
+                    : nil,
+                compact: true
+            )
+        } else if let signal = localDashboardCoordinator.snapshot?.earlySignal,
+            signal.status == .ready
+        {
+            EarlyLocalSignalView(
+                signal: signal,
+                onSuggestedAction: workBlockCoordinator.snapshot?.phase == .idle
+                    ? onStartWorkBlock
+                    : nil
+            )
+        } else {
+            EarlySignalProgressView(
+                signal: localDashboardCoordinator.snapshot?.earlySignal,
+                totalObservedSeconds: localDashboardCoordinator.snapshot.map(observedActivitySeconds),
+                errorMessage: localDashboardCoordinator.commandError
+            )
+        }
+    }
 
 }
 
@@ -730,153 +730,153 @@ public struct MinimalDashboardWorkspaceView: View {
 /// compare it to another day, or say whether it was good, because none of those
 /// are things this evidence supports.
 struct TodaySoFarView: View {
-  let day: LocalDailyActivityDay?
+    let day: LocalDailyActivityDay?
 
-  private var slices: [(category: String, seconds: Int)] {
-    guard let day else { return [] }
-    return LocalWeekActivityView.slices(for: day)
-  }
+    private var slices: [(category: String, seconds: Int)] {
+        guard let day else { return [] }
+        return LocalWeekActivityView.slices(for: day)
+    }
 
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .firstTextBaseline) {
-        Label("Today so far", systemImage: "sun.max")
-          .font(VelvtType.heading(12))
-          .foregroundStyle(VelvtInk.primaryOnInk)
-        Spacer(minLength: 8)
-        Text(observedText)
-          .font(VelvtType.measurement(11).monospacedDigit())
-          // The ground-named form of the same hue: a measurement on ink.
-          .foregroundStyle(VelvtInk.measurementOnInk)
-      }
-
-      if slices.isEmpty {
-        Text("Nothing observed yet today.")
-          .font(VelvtType.caption(11))
-          .foregroundStyle(VelvtInk.secondaryOnInk)
-      } else {
-        VStack(alignment: .leading, spacing: 2) {
-          ForEach(slices.prefix(3), id: \.category) { slice in
-            HStack(spacing: 6) {
-              Text(localCategoryLabel(slice.category))
-                .font(VelvtType.caption(11))
-                .foregroundStyle(VelvtInk.secondaryOnInk)
-                .lineLimit(1)
-              Spacer(minLength: 8)
-              Text(DaySummaryViewModel.formatActiveTime(slice.seconds))
-                .font(VelvtType.caption(11).monospacedDigit())
-                .foregroundStyle(VelvtInk.primaryOnInk)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Today so far", systemImage: "sun.max")
+                    .font(VelvtType.heading(12))
+                    .foregroundStyle(VelvtInk.primaryOnInk)
+                Spacer(minLength: 8)
+                Text(observedText)
+                    .font(VelvtType.measurement(11).monospacedDigit())
+                    // The ground-named form of the same hue: a measurement on ink.
+                    .foregroundStyle(VelvtInk.measurementOnInk)
             }
-          }
+
+            if slices.isEmpty {
+                Text("Nothing observed yet today.")
+                    .font(VelvtType.caption(11))
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(slices.prefix(3), id: \.category) { slice in
+                        HStack(spacing: 6) {
+                            Text(localCategoryLabel(slice.category))
+                                .font(VelvtType.caption(11))
+                                .foregroundStyle(VelvtInk.secondaryOnInk)
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            Text(DaySummaryViewModel.formatActiveTime(slice.seconds))
+                                .font(VelvtType.caption(11).monospacedDigit())
+                                .foregroundStyle(VelvtInk.primaryOnInk)
+                        }
+                    }
+                }
+            }
         }
-      }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(VelvtSurface.card)
+        .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
+                .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Self.spokenSummary(for: day))
     }
-    .padding(10)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(VelvtSurface.card)
-    .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
-        .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
-    )
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel(Self.spokenSummary(for: day))
-  }
 
-  private var observedText: String {
-    guard let day, day.activeSeconds > 0 else { return "—" }
-    return "\(DaySummaryViewModel.formatActiveTime(day.activeSeconds)) observed"
-  }
-
-  /// One sentence carrying the same three facts the card shows.
-  static func spokenSummary(for day: LocalDailyActivityDay?) -> String {
-    guard let day, day.activeSeconds > 0 else { return "Today so far, nothing observed yet" }
-    let time = DaySummaryViewModel.formatActiveTime(day.activeSeconds)
-    guard let top = LocalWeekActivityView.slices(for: day).first else {
-      return "Today so far, \(time) observed"
+    private var observedText: String {
+        guard let day, day.activeSeconds > 0 else { return "—" }
+        return "\(DaySummaryViewModel.formatActiveTime(day.activeSeconds)) observed"
     }
-    return "Today so far, \(time) observed, mostly \(localCategoryLabel(top.category))"
-  }
+
+    /// One sentence carrying the same three facts the card shows.
+    static func spokenSummary(for day: LocalDailyActivityDay?) -> String {
+        guard let day, day.activeSeconds > 0 else { return "Today so far, nothing observed yet" }
+        let time = DaySummaryViewModel.formatActiveTime(day.activeSeconds)
+        guard let top = LocalWeekActivityView.slices(for: day).first else {
+            return "Today so far, \(time) observed"
+        }
+        return "Today so far, \(time) observed, mostly \(localCategoryLabel(top.category))"
+    }
 }
 
 /// The one-line live control that sits above the evidence card while a block
 /// is running. Internal rather than file-private so the env-gated snapshot
 /// renderer can put the live row on screen on its own.
 struct CompactWorkBlockControl: View {
-  let snapshot: WorkBlockSnapshot
-  @ObservedObject var coordinator: WorkBlockCoordinator
+    let snapshot: WorkBlockSnapshot
+    @ObservedObject var coordinator: WorkBlockCoordinator
 
-  var body: some View {
-    HStack(spacing: 10) {
-      VStack(alignment: .leading, spacing: 2) {
-        Text(snapshot.phase == .paused ? "Work block paused" : "Work block active")
-          .velvtHeading(12)
-        elapsedLine
-          .font(VelvtType.caption(10.5).monospacedDigit())
-          .foregroundStyle(VelvtInk.tertiaryOnInk)
-      }
-      Spacer(minLength: 8)
-      if snapshot.phase == .paused {
-        Button("Resume") { coordinator.resume() }
-      } else {
-        Button("Pause") { coordinator.pause() }
-      }
-      // A custom ButtonStyle discards `role: .destructive`'s presentation, so
-      // ending a block rendered exactly like pausing it. The style goes on the
-      // button rather than the row so it wins over the row's secondary style.
-      Button("End", role: .destructive) { coordinator.end() }
-        .buttonStyle(VelvtDestructiveButtonStyle())
-    }
-    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
-    .controlSize(.small)
-    .padding(10)
-    .background(VelvtSurface.card)
-    .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
-        .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
-    )
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel(
-      snapshot.phase == .paused ? "Paused work block" : "Active work block")
-  }
-
-  /// The service publishes work-block state on commands and on one deadline
-  /// sleep — `run_deadline_scheduler` says so in as many words: "there is no
-  /// periodic timer or state polling." So `elapsed_duration_seconds` is true
-  /// at the instant it was sent and at no instant after. Open the panel ten
-  /// minutes into a block whose start command was the last push and this row
-  /// read "0m elapsed of 25m planned".
-  ///
-  /// The live value is not re-derived here. The service defines
-  /// `ends_at = started_at + planned + total_paused` and
-  /// `remaining = planned - elapsed`, so `ends_at - planned` is the exact
-  /// instant its own elapsed count starts from — including across pauses,
-  /// which is why `ends_at` and not `started_at`. The ticking text is the
-  /// service's own number, continued.
-  @ViewBuilder
-  private var elapsedLine: some View {
-    if snapshot.phase == .active, let endsAt = snapshot.endsAt {
-      HStack(spacing: 0) {
-        Text(
-          timerInterval: endsAt.addingTimeInterval(
-            -TimeInterval(snapshot.plannedDurationSeconds))...Date.distantFuture,
-          countsDown: false
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(snapshot.phase == .paused ? "Work block paused" : "Work block active")
+                    .velvtHeading(12)
+                elapsedLine
+                    .font(VelvtType.caption(10.5).monospacedDigit())
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
+            }
+            Spacer(minLength: 8)
+            if snapshot.phase == .paused {
+                Button("Resume") { coordinator.resume() }
+            } else {
+                Button("Pause") { coordinator.pause() }
+            }
+            // A custom ButtonStyle discards `role: .destructive`'s presentation, so
+            // ending a block rendered exactly like pausing it. The style goes on the
+            // button rather than the row so it wins over the row's secondary style.
+            Button("End", role: .destructive) { coordinator.end() }
+                .buttonStyle(VelvtDestructiveButtonStyle())
+        }
+        .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+        .controlSize(.small)
+        .padding(10)
+        .background(VelvtSurface.card)
+        .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
+                .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
         )
-        Text(" elapsed of \(duration(snapshot.plannedDurationSeconds)) planned")
-      }
-      .accessibilityElement(children: .combine)
-    } else {
-      // Clock, not compact, so a pause cannot change the shape of the number
-      // that was ticking a second ago. One rule across the minutes surfaces:
-      // while a block is running or paused, a counted time is a clock; once
-      // it is over, every number on the result card is a duration. A chosen
-      // duration — the plan — is always a duration.
-      Text(
-        "\(DurationText.clock(snapshot.elapsedDurationSeconds)) elapsed of \(duration(snapshot.plannedDurationSeconds)) planned"
-      )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            snapshot.phase == .paused ? "Paused work block" : "Active work block")
     }
-  }
+
+    /// The service publishes work-block state on commands and on one deadline
+    /// sleep — `run_deadline_scheduler` says so in as many words: "there is no
+    /// periodic timer or state polling." So `elapsed_duration_seconds` is true
+    /// at the instant it was sent and at no instant after. Open the panel ten
+    /// minutes into a block whose start command was the last push and this row
+    /// read "0m elapsed of 25m planned".
+    ///
+    /// The live value is not re-derived here. The service defines
+    /// `ends_at = started_at + planned + total_paused` and
+    /// `remaining = planned - elapsed`, so `ends_at - planned` is the exact
+    /// instant its own elapsed count starts from — including across pauses,
+    /// which is why `ends_at` and not `started_at`. The ticking text is the
+    /// service's own number, continued.
+    @ViewBuilder
+    private var elapsedLine: some View {
+        if snapshot.phase == .active, let endsAt = snapshot.endsAt {
+            HStack(spacing: 0) {
+                Text(
+                    timerInterval: endsAt.addingTimeInterval(
+                        -TimeInterval(snapshot.plannedDurationSeconds))...Date.distantFuture,
+                    countsDown: false
+                )
+                Text(" elapsed of \(duration(snapshot.plannedDurationSeconds)) planned")
+            }
+            .accessibilityElement(children: .combine)
+        } else {
+            // Clock, not compact, so a pause cannot change the shape of the number
+            // that was ticking a second ago. One rule across the minutes surfaces:
+            // while a block is running or paused, a counted time is a clock; once
+            // it is over, every number on the result card is a duration. A chosen
+            // duration — the plan — is always a duration.
+            Text(
+                "\(DurationText.clock(snapshot.elapsedDurationSeconds)) elapsed of \(duration(snapshot.plannedDurationSeconds)) planned"
+            )
+        }
+    }
 }
 
 /// Where every mark on the work-block evidence timeline goes, for a track of
@@ -919,829 +919,831 @@ struct CompactWorkBlockControl: View {
 /// clusters Rust already sent and decides only where they can be drawn.
 struct TimelineMarkerLayout: Equatable {
 
-  // MARK: Vertical metrics
+    // MARK: Vertical metrics
 
-  /// The bar itself: background, segments, and transition ticks.
-  static let trackHeight: CGFloat = 22
-  static let segmentHeight: CGFloat = 18
-  static var segmentTopInset: CGFloat { (trackHeight - segmentHeight) / 2 }
-  static let tickHeight: CGFloat = 22
-  /// Clusters get their own lane below the bar so a cluster can never sit on
-  /// top of the transitions it is made of.
-  static let clusterLaneGap: CGFloat = 2
-  static let clusterLaneHeight: CGFloat = 8
-  static let clusterRailHeight: CGFloat = 3
-  static var clusterLaneTop: CGFloat { trackHeight + clusterLaneGap }
-  static var trackHeightWithClusterLane: CGFloat { clusterLaneTop + clusterLaneHeight }
+    /// The bar itself: background, segments, and transition ticks.
+    static let trackHeight: CGFloat = 22
+    static let segmentHeight: CGFloat = 18
+    static var segmentTopInset: CGFloat { (trackHeight - segmentHeight) / 2 }
+    static let tickHeight: CGFloat = 22
+    /// Clusters get their own lane below the bar so a cluster can never sit on
+    /// top of the transitions it is made of.
+    static let clusterLaneGap: CGFloat = 2
+    static let clusterLaneHeight: CGFloat = 8
+    static let clusterRailHeight: CGFloat = 3
+    static var clusterLaneTop: CGFloat { trackHeight + clusterLaneGap }
+    static var trackHeightWithClusterLane: CGFloat { clusterLaneTop + clusterLaneHeight }
 
-  // MARK: Horizontal metrics
+    // MARK: Horizontal metrics
 
-  /// Hit target and clamping box for one tick. The visible bar is narrower
-  /// and centred inside it, so a tick clamped hard against either end of the
-  /// track is still visibly inside the track rather than flush with its edge.
-  static let tickGlyphWidth: CGFloat = 6
-  static let singleTickBarWidth: CGFloat = 2
-  /// A collapsed run is drawn wider than a single tick so density is legible
-  /// without hovering, even though the exact count is not.
-  static let collapsedTickBarWidth: CGFloat = 4
-  /// Two tick centres closer than this cannot be read as two marks, so the
-  /// run collapses into one. It is also the cap on how much of the timeline
-  /// a single collapsed mark is allowed to stand for.
-  static let minimumTickSpacing: CGFloat = 7
-  /// A cluster whose start and end land on the same point still has to be
-  /// visible and still has to be clickable.
-  static let minimumClusterRailWidth: CGFloat = 8
-  /// A short segment is widened to this so it is visible — but only into
-  /// space no other segment wants. See `segmentBars`.
-  static let minimumSegmentWidth: CGFloat = 5
-  /// The floor below which a segment is not drawn at all, because it has no
-  /// room left to be drawn in.
-  static let hairlineSegmentWidth: CGFloat = 1
-  /// The floor below which a stretch with no segment on it is left alone.
-  ///
-  /// Two adjacent segments always leave a sub-point hole between them, and
-  /// hatching every one of those would turn a fully observed bar into a
-  /// dotted line. Only a hole wide enough to read as a hole is marked as one.
-  static let minimumUnobservedSpanWidth: CGFloat = 6
+    /// Hit target and clamping box for one tick. The visible bar is narrower
+    /// and centred inside it, so a tick clamped hard against either end of the
+    /// track is still visibly inside the track rather than flush with its edge.
+    static let tickGlyphWidth: CGFloat = 6
+    static let singleTickBarWidth: CGFloat = 2
+    /// A collapsed run is drawn wider than a single tick so density is legible
+    /// without hovering, even though the exact count is not.
+    static let collapsedTickBarWidth: CGFloat = 4
+    /// Two tick centres closer than this cannot be read as two marks, so the
+    /// run collapses into one. It is also the cap on how much of the timeline
+    /// a single collapsed mark is allowed to stand for.
+    static let minimumTickSpacing: CGFloat = 7
+    /// A cluster whose start and end land on the same point still has to be
+    /// visible and still has to be clickable.
+    static let minimumClusterRailWidth: CGFloat = 8
+    /// A short segment is widened to this so it is visible — but only into
+    /// space no other segment wants. See `segmentBars`.
+    static let minimumSegmentWidth: CGFloat = 5
+    /// The floor below which a segment is not drawn at all, because it has no
+    /// room left to be drawn in.
+    static let hairlineSegmentWidth: CGFloat = 1
+    /// The floor below which a stretch with no segment on it is left alone.
+    ///
+    /// Two adjacent segments always leave a sub-point hole between them, and
+    /// hatching every one of those would turn a fully observed bar into a
+    /// dotted line. Only a hole wide enough to read as a hole is marked as one.
+    static let minimumUnobservedSpanWidth: CGFloat = 6
 
-  struct Tick: Equatable, Identifiable {
-    /// The first transition in the run, which is stable for a given width.
-    let id: String
-    /// Leading edge of a `tickGlyphWidth`-wide glyph, already clamped.
-    let offset: CGFloat
-    /// Every transition this one mark stands for, in time order. Never empty.
-    let transitionIDs: [String]
+    struct Tick: Equatable, Identifiable {
+        /// The first transition in the run, which is stable for a given width.
+        let id: String
+        /// Leading edge of a `tickGlyphWidth`-wide glyph, already clamped.
+        let offset: CGFloat
+        /// Every transition this one mark stands for, in time order. Never empty.
+        let transitionIDs: [String]
 
-    var transitionCount: Int { transitionIDs.count }
-    var isCollapsed: Bool { transitionIDs.count > 1 }
-    var center: CGFloat { offset + TimelineMarkerLayout.tickGlyphWidth / 2 }
-  }
-
-  struct ClusterRail: Equatable, Identifiable {
-    let id: String
-    /// Leading edge, already clamped so `offset + width <= trackWidth`.
-    let offset: CGFloat
-    let width: CGFloat
-  }
-
-  struct SegmentBar: Equatable, Identifiable {
-    let id: String
-    /// Leading edge, already clamped so `offset + width <= trackWidth`.
-    let offset: CGFloat
-    let width: CGFloat
-  }
-
-  /// A stretch of the track that no segment covers.
-  ///
-  /// This is the difference between "one category the whole time" and "the
-  /// instrument was off", which on a bare track are the same pixels. At full
-  /// coverage there are none of these; at partial coverage they are most of
-  /// the bar, and drawing them is what keeps the axis from claiming the
-  /// unobserved part was quiet.
-  struct UnobservedSpan: Equatable, Identifiable {
-    let id: String
-    let offset: CGFloat
-    let width: CGFloat
-  }
-
-  let ticks: [Tick]
-  let clusterRails: [ClusterRail]
-  let segmentBars: [SegmentBar]
-  let unobservedSpans: [UnobservedSpan]
-
-  static let empty = TimelineMarkerLayout(
-    ticks: [], clusterRails: [], segmentBars: [], unobservedSpans: [])
-
-  static func make(focus: LocalFocusFragmentation, width: CGFloat) -> TimelineMarkerLayout {
-    make(
-      transitions: focus.transitions,
-      clusters: focus.clusters,
-      segments: focus.segments,
-      windowStartedAt: focus.windowStartedAt,
-      windowEndedAt: focus.windowEndedAt,
-      width: width
-    )
-  }
-
-  static func make(
-    transitions: [LocalTransitionMarker],
-    clusters: [LocalSwitchingCluster],
-    segments: [LocalTimelineSegment] = [],
-    windowStartedAt: Date,
-    windowEndedAt: Date,
-    width: CGFloat
-  ) -> TimelineMarkerLayout {
-    guard width > 0 else { return .empty }
-
-    // Runs are closed on extent, not on gap-to-previous. Chaining on the gap
-    // would let a long, evenly-dense sequence collapse into one mark spanning
-    // most of the bar, which is a worse lie than the overlap it fixed.
-    var runs: [(first: CGFloat, last: CGFloat, ids: [String])] = []
-    for transition in transitions.sorted(by: { $0.occurredAt < $1.occurredAt }) {
-      let center = position(
-        transition.occurredAt,
-        windowStartedAt: windowStartedAt,
-        windowEndedAt: windowEndedAt,
-        width: width
-      )
-      if var run = runs.last, center - run.first < minimumTickSpacing {
-        run.last = center
-        run.ids.append(transition.id)
-        runs[runs.count - 1] = run
-      } else {
-        runs.append((first: center, last: center, ids: [transition.id]))
-      }
+        var transitionCount: Int { transitionIDs.count }
+        var isCollapsed: Bool { transitionIDs.count > 1 }
+        var center: CGFloat { offset + TimelineMarkerLayout.tickGlyphWidth / 2 }
     }
 
-    var ticks: [Tick] = []
-    var previousCenter: CGFloat?
-    for run in runs {
-      // Sit in the middle of the run's own extent, then hold the minimum
-      // spacing against the previous mark. Because a run spans less than
-      // `minimumTickSpacing`, this pass can move a mark by at most half that
-      // — under four points, a few seconds of a 25-minute window.
-      var center = (run.first + run.last) / 2
-      if let previous = previousCenter { center = max(center, previous + minimumTickSpacing) }
-      previousCenter = center
-      ticks.append(
-        Tick(
-          id: run.ids[0],
-          offset: clampedCenter(center, glyphWidth: tickGlyphWidth, trackWidth: width),
-          transitionIDs: run.ids
-        ))
+    struct ClusterRail: Equatable, Identifiable {
+        let id: String
+        /// Leading edge, already clamped so `offset + width <= trackWidth`.
+        let offset: CGFloat
+        let width: CGFloat
     }
 
-    let rails = clusters.map { cluster -> ClusterRail in
-      let start = position(
-        cluster.startedAt,
-        windowStartedAt: windowStartedAt,
-        windowEndedAt: windowEndedAt,
-        width: width
-      )
-      let end = position(
-        cluster.endedAt,
-        windowStartedAt: windowStartedAt,
-        windowEndedAt: windowEndedAt,
-        width: width
-      )
-      let railWidth = min(width, max(minimumClusterRailWidth, end - start))
-      return ClusterRail(
-        id: cluster.id,
-        offset: clampedLeading(start, glyphWidth: railWidth, trackWidth: width),
-        width: railWidth
-      )
+    struct SegmentBar: Equatable, Identifiable {
+        let id: String
+        /// Leading edge, already clamped so `offset + width <= trackWidth`.
+        let offset: CGFloat
+        let width: CGFloat
     }
 
-    return TimelineMarkerLayout(
-      ticks: ticks,
-      clusterRails: rails,
-      segmentBars: segmentBars(
-        segments,
-        windowStartedAt: windowStartedAt,
-        windowEndedAt: windowEndedAt,
-        width: width
-      ),
-      unobservedSpans: unobservedSpans(
-        segments,
-        windowStartedAt: windowStartedAt,
-        windowEndedAt: windowEndedAt,
-        width: width
-      )
-    )
-  }
-
-  /// The complement of the segments: every stretch of the window the service
-  /// sent nothing for, in track coordinates.
-  ///
-  /// Derives no number for display. It walks the segments the service already
-  /// sent, in time order, and reports the holes — the same thing `segmentBars`
-  /// does with the segments themselves.
-  static func unobservedSpans(
-    _ segments: [LocalTimelineSegment],
-    windowStartedAt: Date,
-    windowEndedAt: Date,
-    width: CGFloat
-  ) -> [UnobservedSpan] {
-    guard width > 0 else { return [] }
-    var spans: [UnobservedSpan] = []
-    var cursor: CGFloat = 0
-    func close(_ upTo: CGFloat) {
-      guard upTo - cursor >= minimumUnobservedSpanWidth else { return }
-      spans.append(
-        UnobservedSpan(id: "unobserved-\(spans.count)", offset: cursor, width: upTo - cursor))
+    /// A stretch of the track that no segment covers.
+    ///
+    /// This is the difference between "one category the whole time" and "the
+    /// instrument was off", which on a bare track are the same pixels. At full
+    /// coverage there are none of these; at partial coverage they are most of
+    /// the bar, and drawing them is what keeps the axis from claiming the
+    /// unobserved part was quiet.
+    struct UnobservedSpan: Equatable, Identifiable {
+        let id: String
+        let offset: CGFloat
+        let width: CGFloat
     }
-    for segment in segments.sorted(by: { $0.startedAt < $1.startedAt }) {
-      let start = position(
-        segment.startedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
-        width: width)
-      let end = position(
-        segment.endedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
-        width: width)
-      close(start)
-      cursor = max(cursor, end)
+
+    let ticks: [Tick]
+    let clusterRails: [ClusterRail]
+    let segmentBars: [SegmentBar]
+    let unobservedSpans: [UnobservedSpan]
+
+    static let empty = TimelineMarkerLayout(
+        ticks: [], clusterRails: [], segmentBars: [], unobservedSpans: [])
+
+    static func make(focus: LocalFocusFragmentation, width: CGFloat) -> TimelineMarkerLayout {
+        make(
+            transitions: focus.transitions,
+            clusters: focus.clusters,
+            segments: focus.segments,
+            windowStartedAt: focus.windowStartedAt,
+            windowEndedAt: focus.windowEndedAt,
+            width: width
+        )
     }
-    close(width)
-    return spans
-  }
 
-  /// A segment is only widened into space the next segment does not want.
-  ///
-  /// The old rule was `max(5, width * proportion)` with each bar positioned
-  /// independently at its own start, which is fine while segments are long
-  /// and silently destructive once they are not: on a dead-collection block
-  /// whose longest meaningful stretch was seventeen seconds, a dozen
-  /// sub-five-point segments each inflated to five points and drew over
-  /// their neighbours, so what looked like four blocks of colour was twelve
-  /// segments with eight of them buried. Now the floor applies only where
-  /// there is room for it, and where there is not, each bar gets exactly the
-  /// space between its own start and the next one's. The transition ticks
-  /// carry "a switch happened here" in the dense case, which is what the
-  /// five-point floor was standing in for.
-  static func segmentBars(
-    _ segments: [LocalTimelineSegment],
-    windowStartedAt: Date,
-    windowEndedAt: Date,
-    width: CGFloat
-  ) -> [SegmentBar] {
-    guard width > 0 else { return [] }
-    let ordered = segments.sorted { $0.startedAt < $1.startedAt }
-    let starts = ordered.map {
-      position($0.startedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
-        width: width)
+    static func make(
+        transitions: [LocalTransitionMarker],
+        clusters: [LocalSwitchingCluster],
+        segments: [LocalTimelineSegment] = [],
+        windowStartedAt: Date,
+        windowEndedAt: Date,
+        width: CGFloat
+    ) -> TimelineMarkerLayout {
+        guard width > 0 else { return .empty }
+
+        // Runs are closed on extent, not on gap-to-previous. Chaining on the gap
+        // would let a long, evenly-dense sequence collapse into one mark spanning
+        // most of the bar, which is a worse lie than the overlap it fixed.
+        var runs: [(first: CGFloat, last: CGFloat, ids: [String])] = []
+        for transition in transitions.sorted(by: { $0.occurredAt < $1.occurredAt }) {
+            let center = position(
+                transition.occurredAt,
+                windowStartedAt: windowStartedAt,
+                windowEndedAt: windowEndedAt,
+                width: width
+            )
+            if var run = runs.last, center - run.first < minimumTickSpacing {
+                run.last = center
+                run.ids.append(transition.id)
+                runs[runs.count - 1] = run
+            } else {
+                runs.append((first: center, last: center, ids: [transition.id]))
+            }
+        }
+
+        var ticks: [Tick] = []
+        var previousCenter: CGFloat?
+        for run in runs {
+            // Sit in the middle of the run's own extent, then hold the minimum
+            // spacing against the previous mark. Because a run spans less than
+            // `minimumTickSpacing`, this pass can move a mark by at most half that
+            // — under four points, a few seconds of a 25-minute window.
+            var center = (run.first + run.last) / 2
+            if let previous = previousCenter { center = max(center, previous + minimumTickSpacing) }
+            previousCenter = center
+            ticks.append(
+                Tick(
+                    id: run.ids[0],
+                    offset: clampedCenter(center, glyphWidth: tickGlyphWidth, trackWidth: width),
+                    transitionIDs: run.ids
+                ))
+        }
+
+        let rails = clusters.map { cluster -> ClusterRail in
+            let start = position(
+                cluster.startedAt,
+                windowStartedAt: windowStartedAt,
+                windowEndedAt: windowEndedAt,
+                width: width
+            )
+            let end = position(
+                cluster.endedAt,
+                windowStartedAt: windowStartedAt,
+                windowEndedAt: windowEndedAt,
+                width: width
+            )
+            let railWidth = min(width, max(minimumClusterRailWidth, end - start))
+            return ClusterRail(
+                id: cluster.id,
+                offset: clampedLeading(start, glyphWidth: railWidth, trackWidth: width),
+                width: railWidth
+            )
+        }
+
+        return TimelineMarkerLayout(
+            ticks: ticks,
+            clusterRails: rails,
+            segmentBars: segmentBars(
+                segments,
+                windowStartedAt: windowStartedAt,
+                windowEndedAt: windowEndedAt,
+                width: width
+            ),
+            unobservedSpans: unobservedSpans(
+                segments,
+                windowStartedAt: windowStartedAt,
+                windowEndedAt: windowEndedAt,
+                width: width
+            )
+        )
     }
-    return ordered.enumerated().compactMap { index, segment -> SegmentBar? in
-      let start = starts[index]
-      let end = position(
-        segment.endedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
-        width: width)
-      let available = max(0, (index + 1 < starts.count ? starts[index + 1] : width) - start)
-      guard available >= hairlineSegmentWidth else { return nil }
-      let barWidth = min(max(minimumSegmentWidth, end - start), available)
-      return SegmentBar(
-        id: segment.id,
-        offset: clampedLeading(start, glyphWidth: barWidth, trackWidth: width),
-        width: barWidth
-      )
+
+    /// The complement of the segments: every stretch of the window the service
+    /// sent nothing for, in track coordinates.
+    ///
+    /// Derives no number for display. It walks the segments the service already
+    /// sent, in time order, and reports the holes — the same thing `segmentBars`
+    /// does with the segments themselves.
+    static func unobservedSpans(
+        _ segments: [LocalTimelineSegment],
+        windowStartedAt: Date,
+        windowEndedAt: Date,
+        width: CGFloat
+    ) -> [UnobservedSpan] {
+        guard width > 0 else { return [] }
+        var spans: [UnobservedSpan] = []
+        var cursor: CGFloat = 0
+        func close(_ upTo: CGFloat) {
+            guard upTo - cursor >= minimumUnobservedSpanWidth else { return }
+            spans.append(
+                UnobservedSpan(id: "unobserved-\(spans.count)", offset: cursor, width: upTo - cursor))
+        }
+        for segment in segments.sorted(by: { $0.startedAt < $1.startedAt }) {
+            let start = position(
+                segment.startedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
+                width: width)
+            let end = position(
+                segment.endedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
+                width: width)
+            close(start)
+            cursor = max(cursor, end)
+        }
+        close(width)
+        return spans
     }
-  }
 
-  /// Centre point on the track for an instant in the window, clamped to the
-  /// window so an out-of-window timestamp cannot escape the track.
-  static func position(
-    _ date: Date, windowStartedAt: Date, windowEndedAt: Date, width: CGFloat
-  ) -> CGFloat {
-    let total = max(1, windowEndedAt.timeIntervalSince(windowStartedAt))
-    let ratio = date.timeIntervalSince(windowStartedAt) / total
-    return width * CGFloat(min(1, max(0, ratio)))
-  }
+    /// A segment is only widened into space the next segment does not want.
+    ///
+    /// The old rule was `max(5, width * proportion)` with each bar positioned
+    /// independently at its own start, which is fine while segments are long
+    /// and silently destructive once they are not: on a dead-collection block
+    /// whose longest meaningful stretch was seventeen seconds, a dozen
+    /// sub-five-point segments each inflated to five points and drew over
+    /// their neighbours, so what looked like four blocks of colour was twelve
+    /// segments with eight of them buried. Now the floor applies only where
+    /// there is room for it, and where there is not, each bar gets exactly the
+    /// space between its own start and the next one's. The transition ticks
+    /// carry "a switch happened here" in the dense case, which is what the
+    /// five-point floor was standing in for.
+    static func segmentBars(
+        _ segments: [LocalTimelineSegment],
+        windowStartedAt: Date,
+        windowEndedAt: Date,
+        width: CGFloat
+    ) -> [SegmentBar] {
+        guard width > 0 else { return [] }
+        let ordered = segments.sorted { $0.startedAt < $1.startedAt }
+        let starts = ordered.map {
+            position(
+                $0.startedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
+                width: width)
+        }
+        return ordered.enumerated().compactMap { index, segment -> SegmentBar? in
+            let start = starts[index]
+            let end = position(
+                segment.endedAt, windowStartedAt: windowStartedAt, windowEndedAt: windowEndedAt,
+                width: width)
+            let available = max(0, (index + 1 < starts.count ? starts[index + 1] : width) - start)
+            guard available >= hairlineSegmentWidth else { return nil }
+            let barWidth = min(max(minimumSegmentWidth, end - start), available)
+            return SegmentBar(
+                id: segment.id,
+                offset: clampedLeading(start, glyphWidth: barWidth, trackWidth: width),
+                width: barWidth
+            )
+        }
+    }
 
-  /// Leading edge for a glyph of `glyphWidth` centred on `center`, clamped so
-  /// the whole glyph is inside `0 ... trackWidth`.
-  static func clampedCenter(
-    _ center: CGFloat, glyphWidth: CGFloat, trackWidth: CGFloat
-  ) -> CGFloat {
-    clampedLeading(center - glyphWidth / 2, glyphWidth: glyphWidth, trackWidth: trackWidth)
-  }
+    /// Centre point on the track for an instant in the window, clamped to the
+    /// window so an out-of-window timestamp cannot escape the track.
+    static func position(
+        _ date: Date, windowStartedAt: Date, windowEndedAt: Date, width: CGFloat
+    ) -> CGFloat {
+        let total = max(1, windowEndedAt.timeIntervalSince(windowStartedAt))
+        let ratio = date.timeIntervalSince(windowStartedAt) / total
+        return width * CGFloat(min(1, max(0, ratio)))
+    }
 
-  static func clampedLeading(
-    _ leading: CGFloat, glyphWidth: CGFloat, trackWidth: CGFloat
-  ) -> CGFloat {
-    min(max(0, trackWidth - glyphWidth), max(0, leading))
-  }
+    /// Leading edge for a glyph of `glyphWidth` centred on `center`, clamped so
+    /// the whole glyph is inside `0 ... trackWidth`.
+    static func clampedCenter(
+        _ center: CGFloat, glyphWidth: CGFloat, trackWidth: CGFloat
+    ) -> CGFloat {
+        clampedLeading(center - glyphWidth / 2, glyphWidth: glyphWidth, trackWidth: trackWidth)
+    }
+
+    static func clampedLeading(
+        _ leading: CGFloat, glyphWidth: CGFloat, trackWidth: CGFloat
+    ) -> CGFloat {
+        min(max(0, trackWidth - glyphWidth), max(0, leading))
+    }
 }
 
 public struct FocusFragmentationView: View {
-  let focus: LocalFocusFragmentation?
-  let errorMessage: String?
-  let onStartWorkBlock: () -> Void
-  /// What this block is about, in the user's own words if they gave any, and
-  /// otherwise the anchor category Rust already derived for it. Passed in
-  /// rather than computed: Swift renders derivations, it does not perform
-  /// them, and neither the intention nor the anchor is on this DTO.
-  var header: String?
-  @State private var hoveredDetail: String?
-  /// The last laid-out track width, kept so keyboard focus can resolve which
-  /// mark an id belongs to. A collapsed tick's id is its run's first
-  /// transition, and which transitions share a run depends on the width, so
-  /// `updateFocusedDetail` cannot answer "how many switches is this mark?"
-  /// without it — and answering "one" would be the exact lie the collapse
-  /// exists to avoid.
-  @State private var trackWidth: CGFloat = 0
-  @FocusState private var focusedEvidenceID: String?
+    let focus: LocalFocusFragmentation?
+    let errorMessage: String?
+    let onStartWorkBlock: () -> Void
+    /// What this block is about, in the user's own words if they gave any, and
+    /// otherwise the anchor category Rust already derived for it. Passed in
+    /// rather than computed: Swift renders derivations, it does not perform
+    /// them, and neither the intention nor the anchor is on this DTO.
+    var header: String?
+    @State private var hoveredDetail: String?
+    /// The last laid-out track width, kept so keyboard focus can resolve which
+    /// mark an id belongs to. A collapsed tick's id is its run's first
+    /// transition, and which transitions share a run depends on the width, so
+    /// `updateFocusedDetail` cannot answer "how many switches is this mark?"
+    /// without it — and answering "one" would be the exact lie the collapse
+    /// exists to avoid.
+    @State private var trackWidth: CGFloat = 0
+    @FocusState private var focusedEvidenceID: String?
 
-  public var body: some View {
-    VelvtCard(padding: VelvtMetrics.spaceMD) {
-      VStack(alignment: .leading, spacing: 7) {
-        if let focus {
-          // Coverage is a layout variable here, not a sentence appended to one.
-          // The card renders what it knows and stops; what it does not know is
-          // not drawn faintly, it is not drawn.
-          let state = FocusEvidenceState.resolve(
-            coverage: focus.coverage, coverageRatio: focus.coverageRatio)
+    public var body: some View {
+        VelvtCard(padding: VelvtMetrics.spaceMD) {
+            VStack(alignment: .leading, spacing: 7) {
+                if let focus {
+                    // Coverage is a layout variable here, not a sentence appended to one.
+                    // The card renders what it knows and stops; what it does not know is
+                    // not drawn faintly, it is not drawn.
+                    let state = FocusEvidenceState.resolve(
+                        coverage: focus.coverage, coverageRatio: focus.coverageRatio)
 
-          // The hero line, in every state. When coverage is thin this is the
-          // service's own low-coverage sentence, so the top of the card says
-          // the same thing whether or not there is a chart under it.
-          //
-          // Leading with the chart put the only two sentences that carry meaning
-          // at the bottom of the card in caption text, truncated, with the real
-          // wording reachable only by hovering — which is the roadmap's
-          // "one observation, one bounded action; scores never lead" inverted.
-          HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(focus.observation)
-              .velvtHeading(14)
-              .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 4)
-            Image(systemName: "info.circle")
-              .font(VelvtType.caption(11))
-              .foregroundStyle(VelvtInk.tertiaryOnInk)
-              .help(focusHelp(focus))
-          }
+                    // The hero line, in every state. When coverage is thin this is the
+                    // service's own low-coverage sentence, so the top of the card says
+                    // the same thing whether or not there is a chart under it.
+                    //
+                    // Leading with the chart put the only two sentences that carry meaning
+                    // at the bottom of the card in caption text, truncated, with the real
+                    // wording reachable only by hovering — which is the roadmap's
+                    // "one observation, one bounded action; scores never lead" inverted.
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(focus.observation)
+                            .velvtHeading(14)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 4)
+                        Image(systemName: "info.circle")
+                            .font(VelvtType.caption(11))
+                            .foregroundStyle(VelvtInk.tertiaryOnInk)
+                            .help(focusHelp(focus))
+                    }
 
-          // Directly under the hero when there is no evidence section, because
-          // there it is the reason there is no evidence section. In the drawable
-          // state it moves down to sit over the numbers it qualifies.
-          if !state.showsObservedMetrics, let notice = coverageNotice(focus, state: state) {
-            Text(notice)
-              .velvtBody(11)
-              .fixedSize(horizontal: false, vertical: true)
-              .accessibilityLabel(notice)
-          }
+                    // Directly under the hero when there is no evidence section, because
+                    // there it is the reason there is no evidence section. In the drawable
+                    // state it moves down to sit over the numbers it qualifies.
+                    if !state.showsObservedMetrics, let notice = coverageNotice(focus, state: state) {
+                        Text(notice)
+                            .velvtBody(11)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityLabel(notice)
+                    }
 
-          // Roadmap invariant 6: recoveries are the headline personal stat,
-          // never streaks. Every other tool can say where the time went; only
-          // Velvt knows the person came back. It is also a number that cannot be
-          // lost — it only ever goes up, so it cannot be used against them.
-          // Stated as a fact, not praise: the analyst voice does not congratulate.
-          //
-          // Gated with the rest of the observed numbers. "You came back once"
-          // is counted over the observed part like everything else, and under a
-          // sentence that has just said there is not enough here to say
-          // anything it is not a headline stat, it is the contradiction. The
-          // count only ever goes up, so withholding it costs nothing: it is
-          // there the moment there is enough of the block behind it.
-          if state.showsObservedMetrics, focus.recoveryCount > 0 {
-            Label(
-              focus.recoveryCount == 1
-                ? "You came back once." : "You came back \(focus.recoveryCount) times.",
-              systemImage: "arrow.uturn.backward"
-            )
-            .font(VelvtType.bodyEmphasis(13))
-            .foregroundStyle(VelvtInk.affirmativeOnInk)
-            .fixedSize(horizontal: false, vertical: true)
-          }
+                    // Roadmap invariant 6: recoveries are the headline personal stat,
+                    // never streaks. Every other tool can say where the time went; only
+                    // Velvt knows the person came back. It is also a number that cannot be
+                    // lost — it only ever goes up, so it cannot be used against them.
+                    // Stated as a fact, not praise: the analyst voice does not congratulate.
+                    //
+                    // Gated with the rest of the observed numbers. "You came back once"
+                    // is counted over the observed part like everything else, and under a
+                    // sentence that has just said there is not enough here to say
+                    // anything it is not a headline stat, it is the contradiction. The
+                    // count only ever goes up, so withholding it costs nothing: it is
+                    // there the moment there is enough of the block behind it.
+                    if state.showsObservedMetrics, focus.recoveryCount > 0 {
+                        Label(
+                            focus.recoveryCount == 1
+                                ? "You came back once." : "You came back \(focus.recoveryCount) times.",
+                            systemImage: "arrow.uturn.backward"
+                        )
+                        .font(VelvtType.bodyEmphasis(13))
+                        .foregroundStyle(VelvtInk.affirmativeOnInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
 
-          Divider().overlay { VelvtPalette.paper }.opacity(0.12)
+                    Divider().overlay { VelvtPalette.paper }.opacity(0.12)
 
-          // The card is named after the work, not after the metric. The
-          // comment above this card used to say "Focus Fragmentation names a
-          // metric, not a meaning" — and the view then printed it anyway,
-          // twice, as the label over the chart and as the empty-state title.
-          // With no intention and no anchor yet there is nothing honest to put
-          // here, so the row carries the window alone rather than falling back
-          // to the metric name.
-          HStack(spacing: 6) {
-            if let header, !header.isEmpty {
-              Text(header)
-                .font(VelvtType.caption(11))
-                .foregroundStyle(VelvtInk.secondaryOnInk)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                    // The card is named after the work, not after the metric. The
+                    // comment above this card used to say "Focus Fragmentation names a
+                    // metric, not a meaning" — and the view then printed it anyway,
+                    // twice, as the label over the chart and as the empty-state title.
+                    // With no intention and no anchor yet there is nothing honest to put
+                    // here, so the row carries the window alone rather than falling back
+                    // to the metric name.
+                    HStack(spacing: 6) {
+                        if let header, !header.isEmpty {
+                            Text(header)
+                                .font(VelvtType.caption(11))
+                                .foregroundStyle(VelvtInk.secondaryOnInk)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        Spacer()
+                        Text(focus.windowLabel)
+                            .font(VelvtType.caption(10.5))
+                            .foregroundStyle(VelvtInk.tertiaryOnInk)
+                    }
+                    if state.showsTimeline {
+                        focusTimeline(focus)
+                    }
+                    metrics(focus, state: state)
+                    nextActionRow(focus)
+                } else {
+                    VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+                        Text("Velvt only watches a block you started on purpose.")
+                            .velvtDisplay(17)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(errorMessage ?? "Start one and it'll tell you how it went.")
+                            .velvtBody(12)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("Start a work block", action: onStartWorkBlock)
+                            .buttonStyle(VelvtPrimaryButtonStyle())
+                            .controlSize(.small)
+                    }
+                }
             }
-            Spacer()
-            Text(focus.windowLabel)
-              .font(VelvtType.caption(10.5))
-              .foregroundStyle(VelvtInk.tertiaryOnInk)
-          }
-          if state.showsTimeline {
-            focusTimeline(focus)
-          }
-          metrics(focus, state: state)
-          nextActionRow(focus)
-        } else {
-          VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
-            Text("Velvt only watches a block you started on purpose.")
-              .velvtDisplay(17)
-              .fixedSize(horizontal: false, vertical: true)
-            Text(errorMessage ?? "Start one and it'll tell you how it went.")
-              .velvtBody(12)
-              .fixedSize(horizontal: false, vertical: true)
-            Button("Start a work block", action: onStartWorkBlock)
-              .buttonStyle(VelvtPrimaryButtonStyle())
-              .controlSize(.small)
-          }
         }
-      }
+        .onChange(of: focusedEvidenceID) { _ in updateFocusedDetail() }
+        .accessibilityElement(children: .contain)
     }
-    .onChange(of: focusedEvidenceID) { _ in updateFocusedDetail() }
-    .accessibilityElement(children: .contain)
-  }
 
-  private func focusTimeline(_ focus: LocalFocusFragmentation) -> some View {
-    let hasClusters = !focus.clusters.isEmpty
-    return GeometryReader { proxy in
-      let layout = TimelineMarkerLayout.make(focus: focus, width: proxy.size.width)
-      ZStack(alignment: .topLeading) {
-        RoundedRectangle(cornerRadius: 4)
-          .fill(VelvtPalette.paper.opacity(0.08))
-          .frame(height: TimelineMarkerLayout.trackHeight)
-          .accessibilityHidden(true)
-        unobservedSpans(layout)
-        timelineSegments(layout, focus: focus)
-        transitionTicks(layout, focus: focus)
-        clusterRails(layout, focus: focus)
-      }
-      .onAppear { trackWidth = proxy.size.width }
-      .onChange(of: proxy.size.width) { newWidth in trackWidth = newWidth }
-    }
-    .frame(
-      height: hasClusters
-        ? TimelineMarkerLayout.trackHeightWithClusterLane
-        : TimelineMarkerLayout.trackHeight
-    )
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("Attention timeline, \(focus.windowLabel)")
-    // The dashed stretches are hidden from the accessibility tree
-    // individually — a reader does not need eleven "not observed" nodes to
-    // learn one fact about the window — so the encoding is named once here.
-    .accessibilityHint("Dashed stretches are time no activity was observed in")
-  }
-
-  /// The stretches with no segment on them, drawn as unobserved rather than
-  /// left as bare track.
-  ///
-  /// On a full-coverage bar an empty stretch means one category held the
-  /// whole time. On a partial one it means the instrument was not looking.
-  /// Those are opposite facts and they were the same pixels. Hatching them
-  /// is the alternative to the other repair available here — rescaling the
-  /// axis onto the observed extent — which was rejected for three reasons:
-  /// horizontal position on this bar means elapsed time into the block, and
-  /// re-basing changes that meaning silently; partial coverage is usually
-  /// interior holes, so re-basing moves the emptiness inward instead of
-  /// removing it; and saying what the new axis covered would mean deriving
-  /// and printing a duration in Swift, which is the service's job. Marking
-  /// the fiction is cheaper and more honest than shrinking it.
-  private func unobservedSpans(_ layout: TimelineMarkerLayout) -> some View {
-    ForEach(layout.unobservedSpans) { span in
-      ZStack {
-        RoundedRectangle(cornerRadius: 3)
-          .fill(VelvtPalette.ink.opacity(0.22))
-        Path { path in
-          let midpoint = TimelineMarkerLayout.segmentHeight / 2
-          path.move(to: CGPoint(x: 2, y: midpoint))
-          path.addLine(to: CGPoint(x: span.width - 2, y: midpoint))
+    private func focusTimeline(_ focus: LocalFocusFragmentation) -> some View {
+        let hasClusters = !focus.clusters.isEmpty
+        return GeometryReader { proxy in
+            let layout = TimelineMarkerLayout.make(focus: focus, width: proxy.size.width)
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(VelvtPalette.paper.opacity(0.08))
+                    .frame(height: TimelineMarkerLayout.trackHeight)
+                    .accessibilityHidden(true)
+                unobservedSpans(layout)
+                timelineSegments(layout, focus: focus)
+                transitionTicks(layout, focus: focus)
+                clusterRails(layout, focus: focus)
+            }
+            .onAppear { trackWidth = proxy.size.width }
+            .onChange(of: proxy.size.width) { newWidth in trackWidth = newWidth }
         }
-        .stroke(
-          // `tertiaryOnInk` is already paper at 0.42; dimming it again took the
-          // hatch that marks unobserved time down to an effective 0.29.
-          VelvtInk.tertiaryOnInk,
-          style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-      }
-      .frame(width: span.width, height: TimelineMarkerLayout.segmentHeight)
-      .offset(x: span.offset, y: TimelineMarkerLayout.segmentTopInset)
-      .help("No activity was observed in this part of the window.")
-      .accessibilityHidden(true)
-    }
-  }
-
-  private func timelineSegments(
-    _ layout: TimelineMarkerLayout, focus: LocalFocusFragmentation
-  ) -> some View {
-    ZStack(alignment: .topLeading) {
-      ForEach(layout.segmentBars) { bar in
-        timelineSegment(bar, focus: focus)
-      }
-    }
-  }
-
-  private func timelineSegment(
-    _ bar: TimelineMarkerLayout.SegmentBar,
-    focus: LocalFocusFragmentation
-  ) -> some View {
-    let segment = focus.segments.first { $0.id == bar.id }
-    let detail = segment.map(segmentDetail) ?? ""
-    return Button {
-      hoveredDetail = detail
-    } label: {
-      ZStack {
-        RoundedRectangle(cornerRadius: 3)
-          .fill(categoryColor(segment?.category ?? ""))
-        if bar.width >= 34, let segment {
-          Text(shortCategory(segment.category))
-            .font(VelvtType.bodyEmphasis(8))
-            // The ramp runs crimson-dark to paper-light, so a fixed label
-            // colour is unreadable at one end; pick per swatch.
-            .foregroundStyle(
-              VelvtCategoryRamp.legibleForeground(
-                on: categoryColor(segment.category)
-              )
-            )
-            .lineLimit(1)
-        }
-      }
-      .frame(width: bar.width, height: TimelineMarkerLayout.segmentHeight)
-    }
-    .buttonStyle(.plain)
-    .offset(x: bar.offset, y: TimelineMarkerLayout.segmentTopInset)
-    .help(detail)
-    .focused($focusedEvidenceID, equals: bar.id)
-    .onHover { hoveredDetail = $0 ? detail : nil }
-    .accessibilityLabel(detail)
-  }
-
-  private func transitionTicks(
-    _ layout: TimelineMarkerLayout, focus: LocalFocusFragmentation
-  ) -> some View {
-    ForEach(layout.ticks) { tick in
-      transitionTick(tick, focus: focus)
-    }
-  }
-
-  /// One tick stands for one *or more* transitions. `TimelineMarkerLayout`
-  /// decides which, and the label says how many — a collapsed mark that
-  /// claimed to be a single switch would be the same lie the stacked markers
-  /// told visually.
-  private func transitionTick(
-    _ tick: TimelineMarkerLayout.Tick,
-    focus: LocalFocusFragmentation
-  ) -> some View {
-    let detail = tickDetail(tick, focus: focus)
-    return Button {
-      hoveredDetail = detail
-    } label: {
-      ZStack {
-        Color.clear
-        RoundedRectangle(cornerRadius: tick.isCollapsed ? 1.5 : 0.5)
-          .fill(VelvtInk.primaryOnInk.opacity(tick.isCollapsed ? 0.95 : 0.78))
-          .frame(
-            width: tick.isCollapsed
-              ? TimelineMarkerLayout.collapsedTickBarWidth
-              : TimelineMarkerLayout.singleTickBarWidth,
-            height: TimelineMarkerLayout.tickHeight
-          )
-      }
-      .frame(
-        width: TimelineMarkerLayout.tickGlyphWidth,
-        height: TimelineMarkerLayout.tickHeight
-      )
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .offset(x: tick.offset)
-    .help(detail)
-    .focused($focusedEvidenceID, equals: tick.id)
-    .onHover { hoveredDetail = $0 ? detail : nil }
-    .accessibilityLabel(detail)
-  }
-
-  private func clusterRails(
-    _ layout: TimelineMarkerLayout, focus: LocalFocusFragmentation
-  ) -> some View {
-    ForEach(layout.clusterRails) { rail in
-      clusterRail(rail, focus: focus)
-    }
-  }
-
-  /// A cluster is a span with a start and an end, so it is drawn as one: a
-  /// thin rail in its own lane under the bar, covering the time it actually
-  /// covers.
-  ///
-  /// It used to be a 9pt bold `circle.grid.cross` on a filled circle sitting
-  /// on the bar itself — a glyph heavier than the segment bar it annotated,
-  /// pinned to the cluster's start instant as though a cluster happened at a
-  /// moment, and offset by a hard-coded −6 that pushed it outside the track's
-  /// leading edge whenever the cluster began near the top of the window. The
-  /// rail is subordinate to the ticks by construction: it is 3pt tall, it is
-  /// not on the bar, and it cannot cover a tick.
-  private func clusterRail(
-    _ rail: TimelineMarkerLayout.ClusterRail,
-    focus: LocalFocusFragmentation
-  ) -> some View {
-    let cluster = focus.clusters.first { $0.id == rail.id }
-    let detail = cluster.map(clusterDetail) ?? ""
-    return Button {
-      hoveredDetail = detail
-    } label: {
-      ZStack {
-        Color.clear
-        Capsule()
-          // Signal at full alpha, not crimson at 0.6: crimson is 2.56:1 on ink
-          // before any dimming, and 1.6:1 after it, which is a mark the reader
-          // cannot find. The rail stays subordinate to the ticks the way this
-          // comment says it does — by being 3pt tall and off the bar — not by
-          // being too faint to see.
-          .fill(VelvtPalette.signal)
-          .frame(width: rail.width, height: TimelineMarkerLayout.clusterRailHeight)
-      }
-      .frame(width: rail.width, height: TimelineMarkerLayout.clusterLaneHeight)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .offset(x: rail.offset, y: TimelineMarkerLayout.clusterLaneTop)
-    .help(detail)
-    .focused($focusedEvidenceID, equals: rail.id)
-    .onHover { hoveredDetail = $0 ? detail : nil }
-    .accessibilityLabel(detail)
-    .accessibilityHint(
-      "A cluster means at least three category transitions inside five minutes; it does not imply harm"
-    )
-  }
-
-  /// The numbers, and only the ones the coverage behind them supports.
-  ///
-  /// Planned and elapsed are on the card in every state: neither is measured
-  /// by the classifier. The user chose the plan and the service timed the
-  /// block, so a collection outage cannot make either of them wrong. Longest
-  /// stretch and switches are the opposite — they exist only inside the
-  /// observed fraction — so they appear only when that fraction is large
-  /// enough to be worth reading, and when it is not, the row is one metric
-  /// wide rather than three metrics wide with two of them describing an
-  /// outage.
-  private func metrics(_ focus: LocalFocusFragmentation, state: FocusEvidenceState) -> some View {
-    VStack(alignment: .leading, spacing: 5) {
-      // The qualifier goes above the numbers, not in a tooltip under them.
-      // A block whose collection died three minutes into twenty-five reports
-      // a 17-second longest stretch, and that number is only readable next
-      // to how much of the window was actually observed — which Rust already
-      // sends on this DTO as `coverage` and `coverage_ratio`, and which this
-      // card used to spend only inside a `.help(...)` nobody opens.
-      if state.showsObservedMetrics, let notice = coverageNotice(focus, state: state) {
-        Text(notice)
-          .velvtBody(11)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityLabel(notice)
-      }
-      LazyVGrid(
-        columns: Array(
-          repeating: GridItem(.flexible(), spacing: 8),
-          count: state.showsObservedMetrics ? 3 : 1),
-        alignment: .leading,
-        spacing: 4
-      ) {
-        focusMetric(
-          "Planned / elapsed",
-          "\(duration(focus.plannedDurationSeconds)) / \(duration(focus.elapsedDurationSeconds))",
-          "Planned duration and recorded elapsed duration for this explicit work block.")
-        if state.showsObservedMetrics {
-          focusMetric(
-            "Longest stretch", duration(focus.longestUninterruptedSeconds),
-            metricEvidenceHelp(
-              "Longest uninterrupted classified category stretch in this window.", focus: focus))
-          focusMetric(
-            "Switches", "\(focus.observedSwitchCount)",
-            metricEvidenceHelp(
-              "Observed movement between classified categories; idle, system, duplicates, and unclassified movement are excluded.",
-              focus: focus)
-          )
-        }
-      }
-      // A legend for an encoding that is on screen. When the timeline is
-      // withheld the underlines are withheld with it, and a line naming them
-      // would be a key to a chart that is not there.
-      if state.showsTimeline, !focus.clusters.isEmpty {
-        Text(
-          focus.clusters.count == 1
-            ? "Underline: switching cluster." : "Underlines: switching clusters."
+        .frame(
+            height: hasClusters
+                ? TimelineMarkerLayout.trackHeightWithClusterLane
+                : TimelineMarkerLayout.trackHeight
         )
-        .font(VelvtType.caption(10.5))
-        .foregroundStyle(VelvtInk.tertiaryOnInk)
-      }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Attention timeline, \(focus.windowLabel)")
+        // The dashed stretches are hidden from the accessibility tree
+        // individually — a reader does not need eleven "not observed" nodes to
+        // learn one fact about the window — so the encoding is named once here.
+        .accessibilityHint("Dashed stretches are time no activity was observed in")
     }
-    .help(
-      "\(focus.recoveryCount) recoveries · \(focus.clusters.count) switching clusters · \(coverageLabel(focus)) coverage"
-    )
-  }
 
-  /// The service's next-action label, rendered as whatever it currently is.
-  /// See `FocusNextActionRole` for why it is not always bold body text.
-  @ViewBuilder
-  private func nextActionRow(_ focus: LocalFocusFragmentation) -> some View {
-    switch FocusNextActionRole.resolve(phase: focus.phase) {
-    case .underway:
-      Text(focus.nextAction)
-        .velvtBody(12)
-        .fixedSize(horizontal: false, vertical: true)
-    case .offer:
-      Button(focus.nextAction, action: onStartWorkBlock)
-        .buttonStyle(VelvtPrimaryButtonStyle())
-        .controlSize(.small)
-        .padding(.top, 1)
-        .accessibilityHint("Opens the focus session planner on this Mac")
+    /// The stretches with no segment on them, drawn as unobserved rather than
+    /// left as bare track.
+    ///
+    /// On a full-coverage bar an empty stretch means one category held the
+    /// whole time. On a partial one it means the instrument was not looking.
+    /// Those are opposite facts and they were the same pixels. Hatching them
+    /// is the alternative to the other repair available here — rescaling the
+    /// axis onto the observed extent — which was rejected for three reasons:
+    /// horizontal position on this bar means elapsed time into the block, and
+    /// re-basing changes that meaning silently; partial coverage is usually
+    /// interior holes, so re-basing moves the emptiness inward instead of
+    /// removing it; and saying what the new axis covered would mean deriving
+    /// and printing a duration in Swift, which is the service's job. Marking
+    /// the fiction is cheaper and more honest than shrinking it.
+    private func unobservedSpans(_ layout: TimelineMarkerLayout) -> some View {
+        ForEach(layout.unobservedSpans) { span in
+            ZStack {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(VelvtPalette.ink.opacity(0.22))
+                Path { path in
+                    let midpoint = TimelineMarkerLayout.segmentHeight / 2
+                    path.move(to: CGPoint(x: 2, y: midpoint))
+                    path.addLine(to: CGPoint(x: span.width - 2, y: midpoint))
+                }
+                .stroke(
+                    // `tertiaryOnInk` is already paper at 0.42; dimming it again took the
+                    // hatch that marks unobserved time down to an effective 0.29.
+                    VelvtInk.tertiaryOnInk,
+                    style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
+            .frame(width: span.width, height: TimelineMarkerLayout.segmentHeight)
+            .offset(x: span.offset, y: TimelineMarkerLayout.segmentTopInset)
+            .help("No activity was observed in this part of the window.")
+            .accessibilityHidden(true)
+        }
     }
-  }
 
-  private func focusMetric(_ title: String, _ value: String, _ help: String) -> some View {
-    VStack(alignment: .leading, spacing: 1) {
-      Text(value).font(VelvtType.measurement(12).monospacedDigit())
-        .foregroundStyle(VelvtInk.primaryOnInk)
-      Text(title).font(VelvtType.caption(9.5)).foregroundStyle(VelvtInk.tertiaryOnInk).lineLimit(1)
+    private func timelineSegments(
+        _ layout: TimelineMarkerLayout, focus: LocalFocusFragmentation
+    ) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(layout.segmentBars) { bar in
+                timelineSegment(bar, focus: focus)
+            }
+        }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .help(help)
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel("\(title), \(value)")
-    .accessibilityHint(help)
-  }
 
-  /// States the coverage Rust already reported. It reports a fraction and
-  /// stops — the reading of that fraction is the person's, and a card that
-  /// warned them about their own block would be inventing a finding out of a
-  /// collection outage.
-  private func coverageNotice(
-    _ focus: LocalFocusFragmentation, state: FocusEvidenceState
-  ) -> String? {
-    CoverageNotice.sentence(
-      isGood: focus.coverage == .good,
-      isEmpty: state == .noObservation,
-      coverageRatio: focus.coverageRatio,
-      switchLabel: state.showsObservedMetrics ? "switches" : nil)
-  }
-
-  private func metricEvidenceHelp(_ base: String, focus: LocalFocusFragmentation) -> String {
-    guard focus.coverage != .good else { return base }
-    return "\(base) Measured over the \(coveragePercent(focus))% of this window with observed activity."
-  }
-
-  private func coveragePercent(_ focus: LocalFocusFragmentation) -> Int {
-    Int((focus.coverageRatio * 100).rounded())
-  }
-
-  private func updateFocusedDetail() {
-    guard let focus, let id = focusedEvidenceID else { return }
-    if let segment = focus.segments.first(where: { $0.id == id }) {
-      hoveredDetail = segmentDetail(segment)
-    } else if let tick = TimelineMarkerLayout.make(focus: focus, width: trackWidth)
-      .ticks.first(where: { $0.id == id })
-    {
-      hoveredDetail = tickDetail(tick, focus: focus)
-    } else if let transition = focus.transitions.first(where: { $0.id == id }) {
-      hoveredDetail = transitionDetail(transition)
-    } else if let cluster = focus.clusters.first(where: { $0.id == id }) {
-      hoveredDetail = clusterDetail(cluster)
+    private func timelineSegment(
+        _ bar: TimelineMarkerLayout.SegmentBar,
+        focus: LocalFocusFragmentation
+    ) -> some View {
+        let segment = focus.segments.first { $0.id == bar.id }
+        let detail = segment.map(segmentDetail) ?? ""
+        return Button {
+            hoveredDetail = detail
+        } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(categoryColor(segment?.category ?? ""))
+                if bar.width >= 34, let segment {
+                    Text(shortCategory(segment.category))
+                        .font(VelvtType.bodyEmphasis(8))
+                        // The ramp runs crimson-dark to paper-light, so a fixed label
+                        // colour is unreadable at one end; pick per swatch.
+                        .foregroundStyle(
+                            VelvtCategoryRamp.legibleForeground(
+                                on: categoryColor(segment.category)
+                            )
+                        )
+                        .lineLimit(1)
+                }
+            }
+            .frame(width: bar.width, height: TimelineMarkerLayout.segmentHeight)
+        }
+        .buttonStyle(.plain)
+        .offset(x: bar.offset, y: TimelineMarkerLayout.segmentTopInset)
+        .help(detail)
+        .focused($focusedEvidenceID, equals: bar.id)
+        .onHover { hoveredDetail = $0 ? detail : nil }
+        .accessibilityLabel(detail)
     }
-  }
 
-  private func focusHelp(_ focus: LocalFocusFragmentation) -> String {
-    let comparison = focus.comparison.map { "\($0.label): \($0.explanation)" }
-      ?? "Not enough comparable activity."
-    return "Most recent explicit work-block window. \(comparison) \(focus.recoveryCount) recoveries, \(focus.clusters.count) clusters, \(coverageLabel(focus)) coverage."
-  }
-
-  private func segmentDetail(_ segment: LocalTimelineSegment) -> String {
-    "\(friendlyCategory(segment.category)), \(duration(Int(segment.endedAt.timeIntervalSince(segment.startedAt)))), \(segment.confidence.rawValue) confidence."
-  }
-
-  private func transitionDetail(_ transition: LocalTransitionMarker) -> String {
-    transitionEvidenceLabel(transition)
-  }
-
-  private func clusterDetail(_ cluster: LocalSwitchingCluster) -> String {
-    clusterEvidenceLabel(cluster)
-  }
-
-  private func tickDetail(
-    _ tick: TimelineMarkerLayout.Tick, focus: LocalFocusFragmentation
-  ) -> String {
-    tickEvidenceLabel(
-      tick, transitions: focus.transitions, windowStartedAt: focus.windowStartedAt)
-  }
-
-
-  private func coverageLabel(_ focus: LocalFocusFragmentation) -> String {
-    "\(Int((focus.coverageRatio * 100).rounded()))% \(focus.coverage.rawValue.replacingOccurrences(of: "_", with: " "))"
-  }
-
-  /// Category colours for this window, assigned the way every other activity
-  /// surface assigns them: `ActivityPalette`, ranked by observed time.
-  ///
-  /// This used to pin four category names to four fixed ramp slots, so
-  /// FOCUS_WORK was ramp 0 here and whatever its rank earned it on the History
-  /// tab — the same category in two colours depending on which tab you were
-  /// looking at. The ranking input is the only one this card has: the segments
-  /// of its own window, by the duration the service gave each of them.
-  private var categoryPalette: [String: Color] {
-    guard let focus else { return [:] }
-    return ActivityPalette.assign(
-      forSecondsByCategory: focus.segments.reduce(into: [String: Int]()) { totals, segment in
-        let seconds = Int(segment.endedAt.timeIntervalSince(segment.startedAt).rounded())
-        guard seconds > 0 else { return }
-        totals[segment.category, default: 0] += seconds
-      })
-  }
-
-  private func categoryColor(_ category: String) -> Color {
-    categoryPalette[category] ?? ActivityPalette.unmatched
-  }
-
-  private func shortCategory(_ category: String) -> String {
-    switch category {
-    case "FOCUS_WORK": return "Focus"
-    case "COMMUNICATION": return "Comms"
-    case "REFERENCE": return "Reference"
-    case "CREATIVE": return "Creative"
-    default: return "Unclassified"
+    private func transitionTicks(
+        _ layout: TimelineMarkerLayout, focus: LocalFocusFragmentation
+    ) -> some View {
+        ForEach(layout.ticks) { tick in
+            transitionTick(tick, focus: focus)
+        }
     }
-  }
+
+    /// One tick stands for one *or more* transitions. `TimelineMarkerLayout`
+    /// decides which, and the label says how many — a collapsed mark that
+    /// claimed to be a single switch would be the same lie the stacked markers
+    /// told visually.
+    private func transitionTick(
+        _ tick: TimelineMarkerLayout.Tick,
+        focus: LocalFocusFragmentation
+    ) -> some View {
+        let detail = tickDetail(tick, focus: focus)
+        return Button {
+            hoveredDetail = detail
+        } label: {
+            ZStack {
+                Color.clear
+                RoundedRectangle(cornerRadius: tick.isCollapsed ? 1.5 : 0.5)
+                    .fill(VelvtInk.primaryOnInk.opacity(tick.isCollapsed ? 0.95 : 0.78))
+                    .frame(
+                        width: tick.isCollapsed
+                            ? TimelineMarkerLayout.collapsedTickBarWidth
+                            : TimelineMarkerLayout.singleTickBarWidth,
+                        height: TimelineMarkerLayout.tickHeight
+                    )
+            }
+            .frame(
+                width: TimelineMarkerLayout.tickGlyphWidth,
+                height: TimelineMarkerLayout.tickHeight
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .offset(x: tick.offset)
+        .help(detail)
+        .focused($focusedEvidenceID, equals: tick.id)
+        .onHover { hoveredDetail = $0 ? detail : nil }
+        .accessibilityLabel(detail)
+    }
+
+    private func clusterRails(
+        _ layout: TimelineMarkerLayout, focus: LocalFocusFragmentation
+    ) -> some View {
+        ForEach(layout.clusterRails) { rail in
+            clusterRail(rail, focus: focus)
+        }
+    }
+
+    /// A cluster is a span with a start and an end, so it is drawn as one: a
+    /// thin rail in its own lane under the bar, covering the time it actually
+    /// covers.
+    ///
+    /// It used to be a 9pt bold `circle.grid.cross` on a filled circle sitting
+    /// on the bar itself — a glyph heavier than the segment bar it annotated,
+    /// pinned to the cluster's start instant as though a cluster happened at a
+    /// moment, and offset by a hard-coded −6 that pushed it outside the track's
+    /// leading edge whenever the cluster began near the top of the window. The
+    /// rail is subordinate to the ticks by construction: it is 3pt tall, it is
+    /// not on the bar, and it cannot cover a tick.
+    private func clusterRail(
+        _ rail: TimelineMarkerLayout.ClusterRail,
+        focus: LocalFocusFragmentation
+    ) -> some View {
+        let cluster = focus.clusters.first { $0.id == rail.id }
+        let detail = cluster.map(clusterDetail) ?? ""
+        return Button {
+            hoveredDetail = detail
+        } label: {
+            ZStack {
+                Color.clear
+                Capsule()
+                    // Signal at full alpha, not crimson at 0.6: crimson is 2.56:1 on ink
+                    // before any dimming, and 1.6:1 after it, which is a mark the reader
+                    // cannot find. The rail stays subordinate to the ticks the way this
+                    // comment says it does — by being 3pt tall and off the bar — not by
+                    // being too faint to see.
+                    .fill(VelvtPalette.signal)
+                    .frame(width: rail.width, height: TimelineMarkerLayout.clusterRailHeight)
+            }
+            .frame(width: rail.width, height: TimelineMarkerLayout.clusterLaneHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .offset(x: rail.offset, y: TimelineMarkerLayout.clusterLaneTop)
+        .help(detail)
+        .focused($focusedEvidenceID, equals: rail.id)
+        .onHover { hoveredDetail = $0 ? detail : nil }
+        .accessibilityLabel(detail)
+        .accessibilityHint(
+            "A cluster means at least three category transitions inside five minutes; it does not imply harm"
+        )
+    }
+
+    /// The numbers, and only the ones the coverage behind them supports.
+    ///
+    /// Planned and elapsed are on the card in every state: neither is measured
+    /// by the classifier. The user chose the plan and the service timed the
+    /// block, so a collection outage cannot make either of them wrong. Longest
+    /// stretch and switches are the opposite — they exist only inside the
+    /// observed fraction — so they appear only when that fraction is large
+    /// enough to be worth reading, and when it is not, the row is one metric
+    /// wide rather than three metrics wide with two of them describing an
+    /// outage.
+    private func metrics(_ focus: LocalFocusFragmentation, state: FocusEvidenceState) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            // The qualifier goes above the numbers, not in a tooltip under them.
+            // A block whose collection died three minutes into twenty-five reports
+            // a 17-second longest stretch, and that number is only readable next
+            // to how much of the window was actually observed — which Rust already
+            // sends on this DTO as `coverage` and `coverage_ratio`, and which this
+            // card used to spend only inside a `.help(...)` nobody opens.
+            if state.showsObservedMetrics, let notice = coverageNotice(focus, state: state) {
+                Text(notice)
+                    .velvtBody(11)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(notice)
+            }
+            LazyVGrid(
+                columns: Array(
+                    repeating: GridItem(.flexible(), spacing: 8),
+                    count: state.showsObservedMetrics ? 3 : 1),
+                alignment: .leading,
+                spacing: 4
+            ) {
+                focusMetric(
+                    "Planned / elapsed",
+                    "\(duration(focus.plannedDurationSeconds)) / \(duration(focus.elapsedDurationSeconds))",
+                    "Planned duration and recorded elapsed duration for this explicit work block.")
+                if state.showsObservedMetrics {
+                    focusMetric(
+                        "Longest stretch", duration(focus.longestUninterruptedSeconds),
+                        metricEvidenceHelp(
+                            "Longest uninterrupted classified category stretch in this window.", focus: focus))
+                    focusMetric(
+                        "Switches", "\(focus.observedSwitchCount)",
+                        metricEvidenceHelp(
+                            "Observed movement between classified categories; idle, system, duplicates, and unclassified movement are excluded.",
+                            focus: focus)
+                    )
+                }
+            }
+            // A legend for an encoding that is on screen. When the timeline is
+            // withheld the underlines are withheld with it, and a line naming them
+            // would be a key to a chart that is not there.
+            if state.showsTimeline, !focus.clusters.isEmpty {
+                Text(
+                    focus.clusters.count == 1
+                        ? "Underline: switching cluster." : "Underlines: switching clusters."
+                )
+                .font(VelvtType.caption(10.5))
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
+            }
+        }
+        .help(
+            "\(focus.recoveryCount) recoveries · \(focus.clusters.count) switching clusters · \(coverageLabel(focus)) coverage"
+        )
+    }
+
+    /// The service's next-action label, rendered as whatever it currently is.
+    /// See `FocusNextActionRole` for why it is not always bold body text.
+    @ViewBuilder
+    private func nextActionRow(_ focus: LocalFocusFragmentation) -> some View {
+        switch FocusNextActionRole.resolve(phase: focus.phase) {
+        case .underway:
+            Text(focus.nextAction)
+                .velvtBody(12)
+                .fixedSize(horizontal: false, vertical: true)
+        case .offer:
+            Button(focus.nextAction, action: onStartWorkBlock)
+                .buttonStyle(VelvtPrimaryButtonStyle())
+                .controlSize(.small)
+                .padding(.top, 1)
+                .accessibilityHint("Opens the focus session planner on this Mac")
+        }
+    }
+
+    private func focusMetric(_ title: String, _ value: String, _ help: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(value).font(VelvtType.measurement(12).monospacedDigit())
+                .foregroundStyle(VelvtInk.primaryOnInk)
+            Text(title).font(VelvtType.caption(9.5)).foregroundStyle(VelvtInk.tertiaryOnInk).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title), \(value)")
+        .accessibilityHint(help)
+    }
+
+    /// States the coverage Rust already reported. It reports a fraction and
+    /// stops — the reading of that fraction is the person's, and a card that
+    /// warned them about their own block would be inventing a finding out of a
+    /// collection outage.
+    private func coverageNotice(
+        _ focus: LocalFocusFragmentation, state: FocusEvidenceState
+    ) -> String? {
+        CoverageNotice.sentence(
+            isGood: focus.coverage == .good,
+            isEmpty: state == .noObservation,
+            coverageRatio: focus.coverageRatio,
+            switchLabel: state.showsObservedMetrics ? "switches" : nil)
+    }
+
+    private func metricEvidenceHelp(_ base: String, focus: LocalFocusFragmentation) -> String {
+        guard focus.coverage != .good else { return base }
+        return "\(base) Measured over the \(coveragePercent(focus))% of this window with observed activity."
+    }
+
+    private func coveragePercent(_ focus: LocalFocusFragmentation) -> Int {
+        Int((focus.coverageRatio * 100).rounded())
+    }
+
+    private func updateFocusedDetail() {
+        guard let focus, let id = focusedEvidenceID else { return }
+        if let segment = focus.segments.first(where: { $0.id == id }) {
+            hoveredDetail = segmentDetail(segment)
+        } else if let tick = TimelineMarkerLayout.make(focus: focus, width: trackWidth)
+            .ticks.first(where: { $0.id == id })
+        {
+            hoveredDetail = tickDetail(tick, focus: focus)
+        } else if let transition = focus.transitions.first(where: { $0.id == id }) {
+            hoveredDetail = transitionDetail(transition)
+        } else if let cluster = focus.clusters.first(where: { $0.id == id }) {
+            hoveredDetail = clusterDetail(cluster)
+        }
+    }
+
+    private func focusHelp(_ focus: LocalFocusFragmentation) -> String {
+        let comparison =
+            focus.comparison.map { "\($0.label): \($0.explanation)" }
+            ?? "Not enough comparable activity."
+        return
+            "Most recent explicit work-block window. \(comparison) \(focus.recoveryCount) recoveries, \(focus.clusters.count) clusters, \(coverageLabel(focus)) coverage."
+    }
+
+    private func segmentDetail(_ segment: LocalTimelineSegment) -> String {
+        "\(friendlyCategory(segment.category)), \(duration(Int(segment.endedAt.timeIntervalSince(segment.startedAt)))), \(segment.confidence.rawValue) confidence."
+    }
+
+    private func transitionDetail(_ transition: LocalTransitionMarker) -> String {
+        transitionEvidenceLabel(transition)
+    }
+
+    private func clusterDetail(_ cluster: LocalSwitchingCluster) -> String {
+        clusterEvidenceLabel(cluster)
+    }
+
+    private func tickDetail(
+        _ tick: TimelineMarkerLayout.Tick, focus: LocalFocusFragmentation
+    ) -> String {
+        tickEvidenceLabel(
+            tick, transitions: focus.transitions, windowStartedAt: focus.windowStartedAt)
+    }
+
+    private func coverageLabel(_ focus: LocalFocusFragmentation) -> String {
+        "\(Int((focus.coverageRatio * 100).rounded()))% \(focus.coverage.rawValue.replacingOccurrences(of: "_", with: " "))"
+    }
+
+    /// Category colours for this window, assigned the way every other activity
+    /// surface assigns them: `ActivityPalette`, ranked by observed time.
+    ///
+    /// This used to pin four category names to four fixed ramp slots, so
+    /// FOCUS_WORK was ramp 0 here and whatever its rank earned it on the History
+    /// tab — the same category in two colours depending on which tab you were
+    /// looking at. The ranking input is the only one this card has: the segments
+    /// of its own window, by the duration the service gave each of them.
+    private var categoryPalette: [String: Color] {
+        guard let focus else { return [:] }
+        return ActivityPalette.assign(
+            forSecondsByCategory: focus.segments.reduce(into: [String: Int]()) { totals, segment in
+                let seconds = Int(segment.endedAt.timeIntervalSince(segment.startedAt).rounded())
+                guard seconds > 0 else { return }
+                totals[segment.category, default: 0] += seconds
+            })
+    }
+
+    private func categoryColor(_ category: String) -> Color {
+        categoryPalette[category] ?? ActivityPalette.unmatched
+    }
+
+    private func shortCategory(_ category: String) -> String {
+        switch category {
+        case "FOCUS_WORK": return "Focus"
+        case "COMMUNICATION": return "Comms"
+        case "REFERENCE": return "Reference"
+        case "CREATIVE": return "Creative"
+        default: return "Unclassified"
+        }
+    }
 }
 
 /// The correction workbench: one row per activity the local service has
@@ -1763,393 +1765,393 @@ public struct FocusFragmentationView: View {
 /// which is Rust's job; doing it properly needs a payload that does not exist
 /// at protocol v28.
 public struct LocalActivityCorrectionList: View {
-  let snapshot: LocalDashboardSnapshot?
-  var onCorrectActivity: (LocalDailyActivitySegment, String, String?) -> Void = { _, _, _ in }
-  var onUndoActivity: (LocalDailyActivitySegment) -> Void = { _ in }
+    let snapshot: LocalDashboardSnapshot?
+    var onCorrectActivity: (LocalDailyActivitySegment, String, String?) -> Void = { _, _, _ in }
+    var onUndoActivity: (LocalDailyActivitySegment) -> Void = { _ in }
 
-  /// Keyed on `stableID`, never on `LocalDailyActivitySegment.id`.
-  ///
-  /// The service builds that id as `{date}-segment-{index}-{category}`, so it
-  /// encodes both the category and the segment's rank by duration. A
-  /// correction changes the category, which re-buckets the activity and
-  /// re-sorts the day — so the id of the thing the user just corrected does
-  /// not exist in the next snapshot. Keyed on the id, the selection silently
-  /// evaporated at the exact moment the user acted on it: the row they were
-  /// working in disappeared and the evidence line kept asserting the
-  /// classification they had just replaced. `stableID` is the abstraction
-  /// identity the correction itself is written against, so it survives.
-  @State private var selectedStableID: String?
-  @State private var isEditing = false
-  @FocusState private var focusedRowID: String?
+    /// Keyed on `stableID`, never on `LocalDailyActivitySegment.id`.
+    ///
+    /// The service builds that id as `{date}-segment-{index}-{category}`, so it
+    /// encodes both the category and the segment's rank by duration. A
+    /// correction changes the category, which re-buckets the activity and
+    /// re-sorts the day — so the id of the thing the user just corrected does
+    /// not exist in the next snapshot. Keyed on the id, the selection silently
+    /// evaporated at the exact moment the user acted on it: the row they were
+    /// working in disappeared and the evidence line kept asserting the
+    /// classification they had just replaced. `stableID` is the abstraction
+    /// identity the correction itself is written against, so it survives.
+    @State private var selectedStableID: String?
+    @State private var isEditing = false
+    @FocusState private var focusedRowID: String?
 
-  public init(
-    snapshot: LocalDashboardSnapshot?,
-    onCorrectActivity: @escaping (LocalDailyActivitySegment, String, String?) -> Void = {
-      _, _, _ in
-    },
-    onUndoActivity: @escaping (LocalDailyActivitySegment) -> Void = { _ in }
-  ) {
-    self.snapshot = snapshot
-    self.onCorrectActivity = onCorrectActivity
-    self.onUndoActivity = onUndoActivity
-  }
-
-  public var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      if let day = Self.correctableDay(in: snapshot), !day.segments.isEmpty {
-        VStack(alignment: .leading, spacing: 3) {
-          ForEach(day.segments) { segment in
-            activityRow(segment)
-          }
-        }
-        selectionDetail
-      } else {
-        Text(Self.emptyStateCopy)
-          .velvtBody(11)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
+    public init(
+        snapshot: LocalDashboardSnapshot?,
+        onCorrectActivity: @escaping (LocalDailyActivitySegment, String, String?) -> Void = {
+            _, _, _ in
+        },
+        onUndoActivity: @escaping (LocalDailyActivitySegment) -> Void = { _ in }
+    ) {
+        self.snapshot = snapshot
+        self.onCorrectActivity = onCorrectActivity
+        self.onUndoActivity = onUndoActivity
     }
-    .onChange(of: focusedRowID) { id in
-      guard let id else { return }
-      selectedStableID = id
-      isEditing = false
-    }
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("Activities Velvt has categorized on this Mac")
-  }
 
-  static let emptyStateCopy =
-    "Velvt has not categorized anything on this Mac yet. Once it has, the activities show up here and you can fix any it got wrong."
-
-  /// The most recent day the service sent that actually has activity in it.
-  ///
-  /// A filter over the delivered payload, not a computation on it. Picking the
-  /// most recent non-empty day rather than "today" means the workbench is
-  /// never empty at nine in the morning, and it costs nothing: a correction is
-  /// written against the activity's `stableID`, not against a date, so fixing
-  /// yesterday's label fixes the label everywhere including today.
-  static func correctableDay(in snapshot: LocalDashboardSnapshot?) -> LocalDailyActivityDay? {
-    snapshot?.dailyActivity.last(where: { !$0.segments.isEmpty })
-  }
-
-  /// Resolves the selected row against the current snapshot.
-  ///
-  /// Called on every render rather than captured, so a correction that changes
-  /// the label, the category or the confidence is on screen the moment the
-  /// next snapshot lands.
-  static func selectedSegment(
-    stableID: String?,
-    in snapshot: LocalDashboardSnapshot?
-  ) -> LocalDailyActivitySegment? {
-    guard let stableID else { return nil }
-    guard let day = correctableDay(in: snapshot) else { return nil }
-    return day.segments.first(where: { $0.stableID == stableID })
-  }
-
-  /// The evidence sentence for a row, derived from the segment in hand.
-  ///
-  /// No percentage: a share of a period is a report about the period. A
-  /// duration and a confidence are facts about the thing being corrected.
-  static func detail(for segment: LocalDailyActivitySegment) -> String {
-    let base =
-      "\(segment.label), \(plainDuration(segment.durationSeconds)), \(segment.confidence.rawValue) confidence."
-    return [base, segment.explanation].compactMap { $0 }.joined(separator: " ")
-  }
-
-  static func plainDuration(_ seconds: Int) -> String {
-    let minutes = max(0, seconds) / 60
-    if minutes < 60 { return "\(minutes)m" }
-    return "\(minutes / 60)h \(minutes % 60)m"
-  }
-
-  private var resolvedSegment: LocalDailyActivitySegment? {
-    Self.selectedSegment(stableID: selectedStableID, in: snapshot)
-  }
-
-  /// What this row calls the activity.
-  ///
-  /// The classified label, not `suggestedName`. `suggestedName` is the raw
-  /// macOS application name, offered in the detail pane as something the user
-  /// may adopt — the "Use suggestion" button exists precisely because it has
-  /// not been adopted yet, and the detail pane labels it "Local-only
-  /// suggestion" rather than a name. Preferring it here overwrote the point of
-  /// the classifier: on a real machine 5,285 events the service had resolved to
-  /// Coding, YouTube, Gmail and GitHub all rendered as "Google Chrome", which is
-  /// both wrong and the single label this product exists not to show. Once the
-  /// user confirms the alias it becomes the name, and then it is shown.
-  static func rowLabel(for segment: LocalDailyActivitySegment) -> String {
-    guard segment.aliasConfirmed, let confirmed = segment.suggestedName else {
-      return segment.label
-    }
-    return confirmed
-  }
-
-  private func activityRow(_ segment: LocalDailyActivitySegment) -> some View {
-    let isSelected = segment.stableID != nil && segment.stableID == selectedStableID
-    return Button {
-      guard let stableID = segment.stableID else { return }
-      if selectedStableID == stableID {
-        selectedStableID = nil
-        isEditing = false
-      } else {
-        selectedStableID = stableID
-        isEditing = false
-      }
-    } label: {
-      HStack(spacing: 8) {
-        // The classified label, not the suggestion. `suggestedName` is the raw
-        // macOS application name, offered in the detail pane as something the
-        // user may adopt — the "Use suggestion" button exists precisely because
-        // it has not been adopted yet. Preferring it here overwrote the whole
-        // point of the classifier: 5,285 events that the service had resolved
-        // to Coding, YouTube, Gmail and GitHub all rendered as "Google Chrome",
-        // which is the one label the product exists not to show.
-        Text(Self.rowLabel(for: segment))
-          .font(VelvtType.body(11.5))
-          .foregroundStyle(VelvtInk.primaryOnInk)
-          .lineLimit(1)
-          .truncationMode(.tail)
-          .frame(width: 120, alignment: .leading)
-        GeometryReader { proxy in
-          // Width comes from the share the service computed. It is used as a
-          // bar length and never printed, so the workbench shows a magnitude
-          // without making a claim about a proportion of anyone's week.
-          RoundedRectangle(cornerRadius: 3)
-            .fill(barColor(segment))
-            .frame(
-              width: max(4, proxy.size.width * CGFloat(min(100, max(0, segment.percentage))) / 100),
-              height: 12
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(height: 12)
-        Text(Self.plainDuration(segment.durationSeconds))
-          .font(VelvtType.caption(11).monospacedDigit())
-          .foregroundStyle(VelvtInk.secondaryOnInk)
-          .frame(width: 48, alignment: .trailing)
-      }
-      .contentShape(Rectangle())
-      .padding(.vertical, 4)
-      .padding(.horizontal, 6)
-      .background(isSelected ? VelvtPalette.paper.opacity(0.08) : Color.clear)
-      .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.chipRadius, style: .continuous))
-    }
-    .buttonStyle(.plain)
-    .disabled(segment.stableID == nil)
-    .focused($focusedRowID, equals: segment.stableID ?? segment.id)
-    .help(Self.detail(for: segment))
-    .accessibilityLabel(Self.detail(for: segment))
-    .accessibilityAddTraits(isSelected ? .isSelected : [])
-    .accessibilityHint("Select to rename or recategorize this activity")
-  }
-
-  @ViewBuilder
-  private var selectionDetail: some View {
-    if let segment = resolvedSegment {
-      Divider().overlay { VelvtPalette.paper }.opacity(0.12)
-      Text(Self.detail(for: segment))
-        .velvtBody(11)
-        .fixedSize(horizontal: false, vertical: true)
-        .lineLimit(3)
-        .accessibilityLabel(Self.detail(for: segment))
-      HStack(spacing: 7) {
-        ActivityContextIcon(name: segment.suggestedName ?? segment.label)
-        VStack(alignment: .leading, spacing: 1) {
-          Text(segment.suggestedName ?? segment.label)
-            .velvtHeading(12)
-            .lineLimit(1)
-          Label(
-            segment.suggestedName == nil ? "Local only" : "Local-only suggestion",
-            systemImage: "lock.fill"
-          )
-          .font(VelvtType.caption(10.5))
-          .foregroundStyle(VelvtInk.tertiaryOnInk)
-        }
-        Spacer(minLength: 4)
-        if let suggestion = segment.suggestedName, !segment.aliasConfirmed {
-          Button("Use suggestion") {
-            onCorrectActivity(segment, Self.correctionCategory(segment.category), suggestion)
-          }
-          .controlSize(.small)
-          .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
-          .accessibilityHint("Confirms this device-local name for future matching activity")
-        }
-        Button(segment.label == "Unclassified" ? "Name & categorize" : "Rename / Categorize") {
-          isEditing.toggle()
-        }
-        .controlSize(.small)
-        .buttonStyle(VelvtPrimaryButtonStyle())
-        .accessibilityHint("Opens local-only activity naming and category controls")
-      }
-      if isEditing {
-        InlineActivityCorrectionEditor(
-          segment: segment,
-          onSave: { category, name in
-            onCorrectActivity(segment, category, name)
-            isEditing = false
-          },
-          onCancel: { isEditing = false },
-          onUndo: segment.aliasConfirmed
-            ? {
-              onUndoActivity(segment)
-              isEditing = false
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let day = Self.correctableDay(in: snapshot), !day.segments.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(day.segments) { segment in
+                        activityRow(segment)
+                    }
+                }
+                selectionDetail
+            } else {
+                Text(Self.emptyStateCopy)
+                    .velvtBody(11)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            : nil
-        )
-        // Keyed on the abstraction, so the editor is not torn down and rebuilt
-        // when a correction changes the segment's category.
-        .id(segment.stableID)
-      }
-    }
-  }
-
-  static func correctionCategory(_ value: String) -> String {
-    InlineActivityCorrectionEditor.categories.contains(value) ? value : "UNLOGGED"
-  }
-
-  /// Bar colours, assigned by observed time over the same days
-  /// `LocalWeekActivityView` colours — the same totals, the same ranking, so a
-  /// category is one colour on every local surface.
-  ///
-  /// The fixed ramp slots per category name that used to live here disagreed
-  /// with every view that ranks: a category was crimson in this workbench and
-  /// something else in the chart above it. Ranked over the whole delivered
-  /// window rather than over the one correctable day, because that is the input
-  /// the other local views rank over and a colour that changed with the day
-  /// would be the same defect again.
-  private var activityPalette: [String: Color] {
-    ActivityPalette.assign(
-      forSecondsByCategory: (snapshot?.dailyActivity ?? []).reduce(into: [String: Int]()) {
-        totals, day in
-        for segment in day.segments where segment.durationSeconds > 0 {
-          totals[segment.category, default: 0] += segment.durationSeconds
         }
-      })
-  }
+        .onChange(of: focusedRowID) { id in
+            guard let id else { return }
+            selectedStableID = id
+            isEditing = false
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Activities Velvt has categorized on this Mac")
+    }
 
-  private func barColor(_ segment: LocalDailyActivitySegment) -> Color {
-    activityPalette[segment.category] ?? ActivityPalette.unmatched
-  }
+    static let emptyStateCopy =
+        "Velvt has not categorized anything on this Mac yet. Once it has, the activities show up here and you can fix any it got wrong."
+
+    /// The most recent day the service sent that actually has activity in it.
+    ///
+    /// A filter over the delivered payload, not a computation on it. Picking the
+    /// most recent non-empty day rather than "today" means the workbench is
+    /// never empty at nine in the morning, and it costs nothing: a correction is
+    /// written against the activity's `stableID`, not against a date, so fixing
+    /// yesterday's label fixes the label everywhere including today.
+    static func correctableDay(in snapshot: LocalDashboardSnapshot?) -> LocalDailyActivityDay? {
+        snapshot?.dailyActivity.last(where: { !$0.segments.isEmpty })
+    }
+
+    /// Resolves the selected row against the current snapshot.
+    ///
+    /// Called on every render rather than captured, so a correction that changes
+    /// the label, the category or the confidence is on screen the moment the
+    /// next snapshot lands.
+    static func selectedSegment(
+        stableID: String?,
+        in snapshot: LocalDashboardSnapshot?
+    ) -> LocalDailyActivitySegment? {
+        guard let stableID else { return nil }
+        guard let day = correctableDay(in: snapshot) else { return nil }
+        return day.segments.first(where: { $0.stableID == stableID })
+    }
+
+    /// The evidence sentence for a row, derived from the segment in hand.
+    ///
+    /// No percentage: a share of a period is a report about the period. A
+    /// duration and a confidence are facts about the thing being corrected.
+    static func detail(for segment: LocalDailyActivitySegment) -> String {
+        let base =
+            "\(segment.label), \(plainDuration(segment.durationSeconds)), \(segment.confidence.rawValue) confidence."
+        return [base, segment.explanation].compactMap { $0 }.joined(separator: " ")
+    }
+
+    static func plainDuration(_ seconds: Int) -> String {
+        let minutes = max(0, seconds) / 60
+        if minutes < 60 { return "\(minutes)m" }
+        return "\(minutes / 60)h \(minutes % 60)m"
+    }
+
+    private var resolvedSegment: LocalDailyActivitySegment? {
+        Self.selectedSegment(stableID: selectedStableID, in: snapshot)
+    }
+
+    /// What this row calls the activity.
+    ///
+    /// The classified label, not `suggestedName`. `suggestedName` is the raw
+    /// macOS application name, offered in the detail pane as something the user
+    /// may adopt — the "Use suggestion" button exists precisely because it has
+    /// not been adopted yet, and the detail pane labels it "Local-only
+    /// suggestion" rather than a name. Preferring it here overwrote the point of
+    /// the classifier: on a real machine 5,285 events the service had resolved to
+    /// Coding, YouTube, Gmail and GitHub all rendered as "Google Chrome", which is
+    /// both wrong and the single label this product exists not to show. Once the
+    /// user confirms the alias it becomes the name, and then it is shown.
+    static func rowLabel(for segment: LocalDailyActivitySegment) -> String {
+        guard segment.aliasConfirmed, let confirmed = segment.suggestedName else {
+            return segment.label
+        }
+        return confirmed
+    }
+
+    private func activityRow(_ segment: LocalDailyActivitySegment) -> some View {
+        let isSelected = segment.stableID != nil && segment.stableID == selectedStableID
+        return Button {
+            guard let stableID = segment.stableID else { return }
+            if selectedStableID == stableID {
+                selectedStableID = nil
+                isEditing = false
+            } else {
+                selectedStableID = stableID
+                isEditing = false
+            }
+        } label: {
+            HStack(spacing: 8) {
+                // The classified label, not the suggestion. `suggestedName` is the raw
+                // macOS application name, offered in the detail pane as something the
+                // user may adopt — the "Use suggestion" button exists precisely because
+                // it has not been adopted yet. Preferring it here overwrote the whole
+                // point of the classifier: 5,285 events that the service had resolved
+                // to Coding, YouTube, Gmail and GitHub all rendered as "Google Chrome",
+                // which is the one label the product exists not to show.
+                Text(Self.rowLabel(for: segment))
+                    .font(VelvtType.body(11.5))
+                    .foregroundStyle(VelvtInk.primaryOnInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: 120, alignment: .leading)
+                GeometryReader { proxy in
+                    // Width comes from the share the service computed. It is used as a
+                    // bar length and never printed, so the workbench shows a magnitude
+                    // without making a claim about a proportion of anyone's week.
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(barColor(segment))
+                        .frame(
+                            width: max(4, proxy.size.width * CGFloat(min(100, max(0, segment.percentage))) / 100),
+                            height: 12
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: 12)
+                Text(Self.plainDuration(segment.durationSeconds))
+                    .font(VelvtType.caption(11).monospacedDigit())
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
+                    .frame(width: 48, alignment: .trailing)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .background(isSelected ? VelvtPalette.paper.opacity(0.08) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.chipRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(segment.stableID == nil)
+        .focused($focusedRowID, equals: segment.stableID ?? segment.id)
+        .help(Self.detail(for: segment))
+        .accessibilityLabel(Self.detail(for: segment))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityHint("Select to rename or recategorize this activity")
+    }
+
+    @ViewBuilder
+    private var selectionDetail: some View {
+        if let segment = resolvedSegment {
+            Divider().overlay { VelvtPalette.paper }.opacity(0.12)
+            Text(Self.detail(for: segment))
+                .velvtBody(11)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(3)
+                .accessibilityLabel(Self.detail(for: segment))
+            HStack(spacing: 7) {
+                ActivityContextIcon(name: segment.suggestedName ?? segment.label)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(segment.suggestedName ?? segment.label)
+                        .velvtHeading(12)
+                        .lineLimit(1)
+                    Label(
+                        segment.suggestedName == nil ? "Local only" : "Local-only suggestion",
+                        systemImage: "lock.fill"
+                    )
+                    .font(VelvtType.caption(10.5))
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
+                }
+                Spacer(minLength: 4)
+                if let suggestion = segment.suggestedName, !segment.aliasConfirmed {
+                    Button("Use suggestion") {
+                        onCorrectActivity(segment, Self.correctionCategory(segment.category), suggestion)
+                    }
+                    .controlSize(.small)
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+                    .accessibilityHint("Confirms this device-local name for future matching activity")
+                }
+                Button(segment.label == "Unclassified" ? "Name & categorize" : "Rename / Categorize") {
+                    isEditing.toggle()
+                }
+                .controlSize(.small)
+                .buttonStyle(VelvtPrimaryButtonStyle())
+                .accessibilityHint("Opens local-only activity naming and category controls")
+            }
+            if isEditing {
+                InlineActivityCorrectionEditor(
+                    segment: segment,
+                    onSave: { category, name in
+                        onCorrectActivity(segment, category, name)
+                        isEditing = false
+                    },
+                    onCancel: { isEditing = false },
+                    onUndo: segment.aliasConfirmed
+                        ? {
+                            onUndoActivity(segment)
+                            isEditing = false
+                        }
+                        : nil
+                )
+                // Keyed on the abstraction, so the editor is not torn down and rebuilt
+                // when a correction changes the segment's category.
+                .id(segment.stableID)
+            }
+        }
+    }
+
+    static func correctionCategory(_ value: String) -> String {
+        InlineActivityCorrectionEditor.categories.contains(value) ? value : "UNLOGGED"
+    }
+
+    /// Bar colours, assigned by observed time over the same days
+    /// `LocalWeekActivityView` colours — the same totals, the same ranking, so a
+    /// category is one colour on every local surface.
+    ///
+    /// The fixed ramp slots per category name that used to live here disagreed
+    /// with every view that ranks: a category was crimson in this workbench and
+    /// something else in the chart above it. Ranked over the whole delivered
+    /// window rather than over the one correctable day, because that is the input
+    /// the other local views rank over and a colour that changed with the day
+    /// would be the same defect again.
+    private var activityPalette: [String: Color] {
+        ActivityPalette.assign(
+            forSecondsByCategory: (snapshot?.dailyActivity ?? []).reduce(into: [String: Int]()) {
+                totals, day in
+                for segment in day.segments where segment.durationSeconds > 0 {
+                    totals[segment.category, default: 0] += segment.durationSeconds
+                }
+            })
+    }
+
+    private func barColor(_ segment: LocalDailyActivitySegment) -> Color {
+        activityPalette[segment.category] ?? ActivityPalette.unmatched
+    }
 }
 
 private struct ActivityContextIcon: View {
-  let name: String
+    let name: String
 
-  var body: some View {
-    Group {
-      if let image = appImage {
-        Image(nsImage: image)
-          .resizable()
-          .scaledToFit()
-      } else {
-        Image(systemName: "app.dashed")
-          .resizable()
-          .scaledToFit()
-          .padding(3)
-          .foregroundStyle(VelvtInk.tertiaryOnInk)
-      }
+    var body: some View {
+        Group {
+            if let image = appImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Image(systemName: "app.dashed")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(3)
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
+            }
+        }
+        .frame(width: 22, height: 22)
+        .accessibilityHidden(true)
     }
-    .frame(width: 22, height: 22)
-    .accessibilityHidden(true)
-  }
 
-  private var appImage: NSImage? {
-    guard
-      let url = NSWorkspace.shared.runningApplications.first(where: {
-        $0.localizedName?.localizedCaseInsensitiveCompare(name) == .orderedSame
-      })?.bundleURL
-    else { return nil }
-    return NSWorkspace.shared.icon(forFile: url.path)
-  }
+    private var appImage: NSImage? {
+        guard
+            let url = NSWorkspace.shared.runningApplications.first(where: {
+                $0.localizedName?.localizedCaseInsensitiveCompare(name) == .orderedSame
+            })?.bundleURL
+        else { return nil }
+        return NSWorkspace.shared.icon(forFile: url.path)
+    }
 }
 
 struct InlineActivityCorrectionEditor: View {
-  static let categories = [
-    "FOCUS_WORK", "PASSIVE_CONSUMPTION", "SOCIAL_FEED", "COMMUNICATION",
-    "TASK_MANAGEMENT", "REFERENCE", "SYSTEM", "UNLOGGED",
-  ]
+    static let categories = [
+        "FOCUS_WORK", "PASSIVE_CONSUMPTION", "SOCIAL_FEED", "COMMUNICATION",
+        "TASK_MANAGEMENT", "REFERENCE", "SYSTEM", "UNLOGGED",
+    ]
 
-  let segment: LocalDailyActivitySegment
-  let onSave: (String, String?) -> Void
-  let onCancel: () -> Void
-  let onUndo: (() -> Void)?
-  @State private var name: String
-  @State private var category: String
+    let segment: LocalDailyActivitySegment
+    let onSave: (String, String?) -> Void
+    let onCancel: () -> Void
+    let onUndo: (() -> Void)?
+    @State private var name: String
+    @State private var category: String
 
-  init(
-    segment: LocalDailyActivitySegment,
-    onSave: @escaping (String, String?) -> Void,
-    onCancel: @escaping () -> Void,
-    onUndo: (() -> Void)?
-  ) {
-    self.segment = segment
-    self.onSave = onSave
-    self.onCancel = onCancel
-    self.onUndo = onUndo
-    _name = State(initialValue: segment.suggestedName ?? (segment.label == "Unclassified" ? "" : segment.label))
-    _category = State(
-      initialValue: Self.categories.contains(segment.category) ? segment.category : "UNLOGGED")
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      TextField("Local activity name", text: $name)
-        .textFieldStyle(.roundedBorder)
-        .font(VelvtType.body(12))
-        // The caret and the selection sit on a dark control on the ink ground,
-        // where crimson is 2.56:1. Signal is the ink-ground form of the accent.
-        .tint(VelvtPalette.signal)
-        .onChange(of: name) { value in
-          if value.count > 48 { name = String(value.prefix(48)) }
-        }
-        .accessibilityLabel("Local-only activity name")
-        .accessibilityHint("This name stays on this Mac")
-      HStack(spacing: 6) {
-        Picker("Category", selection: $category) {
-          ForEach(Self.categories, id: \.self) { value in
-            Text(categoryLabel(value)).tag(value)
-          }
-        }
-        .pickerStyle(.menu)
-        .controlSize(.small)
-        .tint(VelvtPalette.signal)
-        Button("Save") { onSave(category, normalizedName) }
-          .buttonStyle(VelvtPrimaryButtonStyle())
-          .keyboardShortcut(.return, modifiers: .command)
-          .disabled(normalizedName == nil)
-        Button("Cancel", action: onCancel)
-          .buttonStyle(VelvtQuietButtonStyle())
-          .keyboardShortcut(.cancelAction)
-        if let onUndo {
-          Button("Undo saved correction", role: .destructive, action: onUndo)
-            .buttonStyle(VelvtDestructiveButtonStyle())
-        }
-      }
-      Label("Names, suggestions, and icons stay on this Mac.", systemImage: "lock.fill")
-        .font(VelvtType.caption(10.5))
-        .foregroundStyle(VelvtInk.tertiaryOnInk)
+    init(
+        segment: LocalDailyActivitySegment,
+        onSave: @escaping (String, String?) -> Void,
+        onCancel: @escaping () -> Void,
+        onUndo: (() -> Void)?
+    ) {
+        self.segment = segment
+        self.onSave = onSave
+        self.onCancel = onCancel
+        self.onUndo = onUndo
+        _name = State(initialValue: segment.suggestedName ?? (segment.label == "Unclassified" ? "" : segment.label))
+        _category = State(
+            initialValue: Self.categories.contains(segment.category) ? segment.category : "UNLOGGED")
     }
-    .padding(VelvtMetrics.spaceSM)
-    .background(VelvtSurface.cardRaised)
-    .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
-        .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
-    )
-  }
 
-  private var normalizedName: String? {
-    let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
-    return value.isEmpty ? nil : value
-  }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("Local activity name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .font(VelvtType.body(12))
+                // The caret and the selection sit on a dark control on the ink ground,
+                // where crimson is 2.56:1. Signal is the ink-ground form of the accent.
+                .tint(VelvtPalette.signal)
+                .onChange(of: name) { value in
+                    if value.count > 48 { name = String(value.prefix(48)) }
+                }
+                .accessibilityLabel("Local-only activity name")
+                .accessibilityHint("This name stays on this Mac")
+            HStack(spacing: 6) {
+                Picker("Category", selection: $category) {
+                    ForEach(Self.categories, id: \.self) { value in
+                        Text(categoryLabel(value)).tag(value)
+                    }
+                }
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .tint(VelvtPalette.signal)
+                Button("Save") { onSave(category, normalizedName) }
+                    .buttonStyle(VelvtPrimaryButtonStyle())
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(normalizedName == nil)
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(VelvtQuietButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                if let onUndo {
+                    Button("Undo saved correction", role: .destructive, action: onUndo)
+                        .buttonStyle(VelvtDestructiveButtonStyle())
+                }
+            }
+            Label("Names, suggestions, and icons stay on this Mac.", systemImage: "lock.fill")
+                .font(VelvtType.caption(10.5))
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
+        }
+        .padding(VelvtMetrics.spaceSM)
+        .background(VelvtSurface.cardRaised)
+        .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
+                .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+        )
+    }
 
-  private func categoryLabel(_ value: String) -> String {
-    value
-      .replacingOccurrences(of: "_", with: " ")
-      .lowercased()
-      .capitalized
-  }
+    private var normalizedName: String? {
+        let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private func categoryLabel(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "_", with: " ")
+            .lowercased()
+            .capitalized
+    }
 }
 
 /// The one duration vocabulary for the work-block minutes surfaces.
@@ -2173,24 +2175,24 @@ struct InlineActivityCorrectionEditor: View {
 ///   SwiftUI's own `Text(timerInterval:)` draws beside it, so pausing a block
 ///   cannot change the shape of the number.
 enum DurationText {
-  static func compact(_ seconds: Int) -> String {
-    let value = max(0, seconds)
-    let hours = value / 3600
-    let minutes = (value % 3600) / 60
-    let remainder = value % 60
-    if hours > 0 { return minutes > 0 ? "\(hours)h \(minutes)m" : "\(hours)h" }
-    if minutes > 0 { return remainder > 0 ? "\(minutes)m \(remainder)s" : "\(minutes)m" }
-    return "\(value)s"
-  }
+    static func compact(_ seconds: Int) -> String {
+        let value = max(0, seconds)
+        let hours = value / 3600
+        let minutes = (value % 3600) / 60
+        let remainder = value % 60
+        if hours > 0 { return minutes > 0 ? "\(hours)h \(minutes)m" : "\(hours)h" }
+        if minutes > 0 { return remainder > 0 ? "\(minutes)m \(remainder)s" : "\(minutes)m" }
+        return "\(value)s"
+    }
 
-  static func clock(_ seconds: Int) -> String {
-    let value = max(0, seconds)
-    let hours = value / 3600
-    let minutes = (value % 3600) / 60
-    let remainder = value % 60
-    if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, remainder) }
-    return String(format: "%d:%02d", minutes, remainder)
-  }
+    static func clock(_ seconds: Int) -> String {
+        let value = max(0, seconds)
+        let hours = value / 3600
+        let minutes = (value % 3600) / 60
+        let remainder = value % 60
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, remainder) }
+        return String(format: "%d:%02d", minutes, remainder)
+    }
 }
 
 /// The one sentence that states how much of a work-block window was actually
@@ -2206,24 +2208,24 @@ enum DurationText {
 /// `switchLabel` is the name the calling card gives its own switch metric, so
 /// the sentence points at a label the reader can see.
 enum CoverageNotice {
-  /// `switchLabel` is `nil` on a card that is not showing those numbers at
-  /// all. The second clause is a pointer at two labels on screen; on a card
-  /// that withheld them it would point at nothing, so the sentence stops
-  /// after the fraction — the same claim, minus a reference that no longer
-  /// resolves.
-  static func sentence(
-    isGood: Bool,
-    isEmpty: Bool,
-    coverageRatio: Double,
-    switchLabel: String?
-  ) -> String? {
-    if isGood { return nil }
-    if isEmpty { return "No activity was observed inside this window." }
-    let percent = Int((coverageRatio * 100).rounded())
-    let covered = "Observed activity covers \(percent)% of this window."
-    guard let switchLabel else { return covered }
-    return "\(covered) Longest stretch and \(switchLabel) count only that part."
-  }
+    /// `switchLabel` is `nil` on a card that is not showing those numbers at
+    /// all. The second clause is a pointer at two labels on screen; on a card
+    /// that withheld them it would point at nothing, so the sentence stops
+    /// after the fraction — the same claim, minus a reference that no longer
+    /// resolves.
+    static func sentence(
+        isGood: Bool,
+        isEmpty: Bool,
+        coverageRatio: Double,
+        switchLabel: String?
+    ) -> String? {
+        if isGood { return nil }
+        if isEmpty { return "No activity was observed inside this window." }
+        let percent = Int((coverageRatio * 100).rounded())
+        let covered = "Observed activity covers \(percent)% of this window."
+        guard let switchLabel else { return covered }
+        return "\(covered) Longest stretch and \(switchLabel) count only that part."
+    }
 }
 
 /// The one place a coverage number becomes a layout decision.
@@ -2235,30 +2237,30 @@ enum CoverageNotice {
 /// whether there is enough observed material for a drawing of it to carry
 /// anything a sentence does not.
 enum FocusCardCoverage {
-  /// At or below this fraction the window holds no observed activity at all.
-  ///
-  /// The one coverage number Swift compares against anything. The service
-  /// reports an empty window as `.noData`, and this is checked beside that
-  /// label so a zero-ratio window arriving as `partial` is still treated as
-  /// empty rather than drawn as a chart of nothing.
-  static let empty: Double = 0
+    /// At or below this fraction the window holds no observed activity at all.
+    ///
+    /// The one coverage number Swift compares against anything. The service
+    /// reports an empty window as `.noData`, and this is checked beside that
+    /// label so a zero-ratio window arriving as `partial` is still treated as
+    /// empty rather than drawn as a chart of nothing.
+    static let empty: Double = 0
 
-  // There is deliberately no second threshold beside it.
-  //
-  // The obvious design is a Swift-side "enough to draw" line — a quarter of
-  // the window, say — so a 30%-covered block still gets a timeline. It was
-  // built, rendered, and thrown away, because of what the render showed: at
-  // 30% the service still sends `LOW_COVERAGE_BLOCK_COPY` as the observation,
-  // so the card read "Velvt hasn't seen enough of this block yet to say
-  // anything" above a chart, a recovery count and two metrics. That is the
-  // reported bug at a larger number.
-  //
-  // The sufficiency line lives in one place, `SUFFICIENT_COVERAGE_RATIO` in
-  // `rust-service/src/dashboard.rs`, and it already decides whether the
-  // service is willing to speak about a block: at `.good` it sends a real
-  // observation, otherwise it sends the low-coverage sentence. So the card
-  // draws its evidence exactly when the service was willing to speak, and a
-  // threshold on this side could only ever disagree with that one.
+    // There is deliberately no second threshold beside it.
+    //
+    // The obvious design is a Swift-side "enough to draw" line — a quarter of
+    // the window, say — so a 30%-covered block still gets a timeline. It was
+    // built, rendered, and thrown away, because of what the render showed: at
+    // 30% the service still sends `LOW_COVERAGE_BLOCK_COPY` as the observation,
+    // so the card read "Velvt hasn't seen enough of this block yet to say
+    // anything" above a chart, a recovery count and two metrics. That is the
+    // reported bug at a larger number.
+    //
+    // The sufficiency line lives in one place, `SUFFICIENT_COVERAGE_RATIO` in
+    // `rust-service/src/dashboard.rs`, and it already decides whether the
+    // service is willing to speak about a block: at `.good` it sends a real
+    // observation, otherwise it sends the low-coverage sentence. So the card
+    // draws its evidence exactly when the service was willing to speak, and a
+    // threshold on this side could only ever disagree with that one.
 }
 
 /// What a work-block card is entitled to put on screen, given how much of its
@@ -2275,39 +2277,39 @@ enum FocusCardCoverage {
 /// existed. Coverage decides which of those exist. It does not decide whether
 /// a sentence is appended to them.
 enum FocusEvidenceState: Equatable {
-  /// Nothing was observed. There is no evidence, so there is no evidence
-  /// section: the window it covers, the duration that was planned, and the
-  /// way out.
-  case noObservation
-  /// Something was observed, but too little of the window to draw. Same
-  /// shape as `.noObservation`, with the fraction stated instead of the
-  /// absence.
-  case tooLittleToDraw
-  /// The service was willing to speak about this block, so the card is
-  /// willing to draw it. The timeline still marks the part of the window it
-  /// did not see rather than leaving it as bare track — `.good` is three
-  /// quarters, not all of it.
-  case drawable
+    /// Nothing was observed. There is no evidence, so there is no evidence
+    /// section: the window it covers, the duration that was planned, and the
+    /// way out.
+    case noObservation
+    /// Something was observed, but too little of the window to draw. Same
+    /// shape as `.noObservation`, with the fraction stated instead of the
+    /// absence.
+    case tooLittleToDraw
+    /// The service was willing to speak about this block, so the card is
+    /// willing to draw it. The timeline still marks the part of the window it
+    /// did not see rather than leaving it as bare track — `.good` is three
+    /// quarters, not all of it.
+    case drawable
 
-  static func resolve(
-    coverage: LocalDashboardCoverage,
-    coverageRatio: Double
-  ) -> FocusEvidenceState {
-    if coverage == .noData || coverageRatio <= FocusCardCoverage.empty { return .noObservation }
-    if coverage == .good { return .drawable }
-    return .tooLittleToDraw
-  }
+    static func resolve(
+        coverage: LocalDashboardCoverage,
+        coverageRatio: Double
+    ) -> FocusEvidenceState {
+        if coverage == .noData || coverageRatio <= FocusCardCoverage.empty { return .noObservation }
+        if coverage == .good { return .drawable }
+        return .tooLittleToDraw
+    }
 
-  /// The timeline, and with it the cluster lane and the legend that explains
-  /// the lane.
-  var showsTimeline: Bool { self == .drawable }
+    /// The timeline, and with it the cluster lane and the legend that explains
+    /// the lane.
+    var showsTimeline: Bool { self == .drawable }
 
-  /// Every number measured over the observed part only — longest stretch,
-  /// switch count, recoveries. They are on the card exactly when the observed
-  /// part is large enough to stand behind them. A 17-second longest stretch
-  /// inside a 25-minute block is a statement about missing data; printing it
-  /// in the same row as "25m / 25m" makes it a statement about the person.
-  var showsObservedMetrics: Bool { self == .drawable }
+    /// Every number measured over the observed part only — longest stretch,
+    /// switch count, recoveries. They are on the card exactly when the observed
+    /// part is large enough to stand behind them. A 17-second longest stretch
+    /// inside a 25-minute block is a statement about missing data; printing it
+    /// in the same row as "25m / 25m" makes it a statement about the person.
+    var showsObservedMetrics: Bool { self == .drawable }
 }
 
 /// What the service's `next_action` label is, on this card, right now.
@@ -2320,23 +2322,23 @@ enum FocusEvidenceState: Equatable {
 /// or it stops shouting, and which of those depends only on whether the block
 /// it is talking about is still running.
 enum FocusNextActionRole: Equatable {
-  /// The block is over. The label is an offer, so it goes in the control that
-  /// can accept it.
-  case offer
-  /// The block is running or paused. The offer is already being taken, and
-  /// the controls for that block are in the live row above this card, so the
-  /// label is a standing instruction stated quietly.
-  case underway
+    /// The block is over. The label is an offer, so it goes in the control that
+    /// can accept it.
+    case offer
+    /// The block is running or paused. The offer is already being taken, and
+    /// the controls for that block are in the live row above this card, so the
+    /// label is a standing instruction stated quietly.
+    case underway
 
-  static func resolve(phase: WorkBlockPhase) -> FocusNextActionRole {
-    phase == .active || phase == .paused ? .underway : .offer
-  }
+    static func resolve(phase: WorkBlockPhase) -> FocusNextActionRole {
+        phase == .active || phase == .paused ? .underway : .offer
+    }
 }
 
 private func duration(_ seconds: Int) -> String { DurationText.compact(seconds) }
 
 private func friendlyCategory(_ category: String) -> String {
-  category.replacingOccurrences(of: "_", with: " ").lowercased().capitalized
+    category.replacingOccurrences(of: "_", with: " ").lowercased().capitalized
 }
 
 // MARK: - Evidence-marker labels
@@ -2351,27 +2353,27 @@ private func friendlyCategory(_ category: String) -> String {
 /// moved from the pixels into the accessibility tree.
 
 func transitionEvidenceLabel(_ transition: LocalTransitionMarker) -> String {
-  "Observed category switch from \(friendlyCategory(transition.fromCategory)) to \(friendlyCategory(transition.toCategory)), \(transition.confidence.rawValue) confidence."
+    "Observed category switch from \(friendlyCategory(transition.fromCategory)) to \(friendlyCategory(transition.toCategory)), \(transition.confidence.rawValue) confidence."
 }
 
 func clusterEvidenceLabel(_ cluster: LocalSwitchingCluster) -> String {
-  "Switching cluster, \(cluster.transitionCount) transitions. \(cluster.explanation) Confidence \(cluster.confidence.rawValue)."
+    "Switching cluster, \(cluster.transitionCount) transitions. \(cluster.explanation) Confidence \(cluster.confidence.rawValue)."
 }
 
 func tickEvidenceLabel(
-  _ tick: TimelineMarkerLayout.Tick,
-  transitions: [LocalTransitionMarker],
-  windowStartedAt: Date
+    _ tick: TimelineMarkerLayout.Tick,
+    transitions: [LocalTransitionMarker],
+    windowStartedAt: Date
 ) -> String {
-  let members = tick.transitionIDs.compactMap { id in
-    transitions.first { $0.id == id }
-  }
-  guard let first = members.first, let last = members.last else { return "" }
-  guard members.count > 1 else { return transitionEvidenceLabel(first) }
-  let firstElapsed = duration(Int(first.occurredAt.timeIntervalSince(windowStartedAt).rounded()))
-  let lastElapsed = duration(Int(last.occurredAt.timeIntervalSince(windowStartedAt).rounded()))
-  return
-    "\(members.count) observed category switches, too close together to draw apart: from \(friendlyCategory(first.fromCategory)) at \(firstElapsed) through \(friendlyCategory(last.toCategory)) at \(lastElapsed)."
+    let members = tick.transitionIDs.compactMap { id in
+        transitions.first { $0.id == id }
+    }
+    guard let first = members.first, let last = members.last else { return "" }
+    guard members.count > 1 else { return transitionEvidenceLabel(first) }
+    let firstElapsed = duration(Int(first.occurredAt.timeIntervalSince(windowStartedAt).rounded()))
+    let lastElapsed = duration(Int(last.occurredAt.timeIntervalSince(windowStartedAt).rounded()))
+    return
+        "\(members.count) observed category switches, too close together to draw apart: from \(friendlyCategory(first.fromCategory)) at \(firstElapsed) through \(friendlyCategory(last.toCategory)) at \(lastElapsed)."
 }
 
 // MARK: - IPCStatusBanner
@@ -2397,46 +2399,46 @@ struct IPCStatusBanner: View {
 // MARK: - Preview
 
 #if DEBUG
-@MainActor
-struct VelvtPopoverContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        Group {
-            VelvtPopoverContentView(coordinator: loadingCoordinator)
-                .frame(width: 280)
-                .previewDisplayName("Loading")
-            VelvtPopoverContentView(coordinator: populatedCoordinator)
-                .frame(width: 280)
-                .previewDisplayName("Populated")
-            VelvtPopoverContentView(coordinator: errorCoordinator)
-                .frame(width: 280)
-                .previewDisplayName("Error")
+    @MainActor
+    struct VelvtPopoverContentView_Previews: PreviewProvider {
+        static var previews: some View {
+            Group {
+                VelvtPopoverContentView(coordinator: loadingCoordinator)
+                    .frame(width: 280)
+                    .previewDisplayName("Loading")
+                VelvtPopoverContentView(coordinator: populatedCoordinator)
+                    .frame(width: 280)
+                    .previewDisplayName("Populated")
+                VelvtPopoverContentView(coordinator: errorCoordinator)
+                    .frame(width: 280)
+                    .previewDisplayName("Error")
+            }
+            .preferredColorScheme(.dark)
         }
-        .preferredColorScheme(.dark)
-    }
 
-    static var loadingCoordinator: ConcreteDisplayDataCoordinator {
-        ConcreteDisplayDataCoordinator()
-    }
+        static var loadingCoordinator: ConcreteDisplayDataCoordinator {
+            ConcreteDisplayDataCoordinator()
+        }
 
-    static var populatedCoordinator: ConcreteDisplayDataCoordinator {
-        let c = ConcreteDisplayDataCoordinator()
-      c.updateInsight(
-        InsightPayload(
-            date: "2026-06-15",
-          text:
-            "Your focus held steady across the morning block, with fewer context switches than the previous week.",
-            confidenceLevel: .high,
-            lowConfidence: false,
-            generatedAt: Date()
-        ))
-        c.updateHistory(HistoryPayload(days: 7, summaries: HistoryListView_Previews.previewSummaries))
-        return c
-    }
+        static var populatedCoordinator: ConcreteDisplayDataCoordinator {
+            let c = ConcreteDisplayDataCoordinator()
+            c.updateInsight(
+                InsightPayload(
+                    date: "2026-06-15",
+                    text:
+                        "Your focus held steady across the morning block, with fewer context switches than the previous week.",
+                    confidenceLevel: .high,
+                    lowConfidence: false,
+                    generatedAt: Date()
+                ))
+            c.updateHistory(HistoryPayload(days: 7, summaries: HistoryListView_Previews.previewSummaries))
+            return c
+        }
 
-    static var errorCoordinator: ConcreteDisplayDataCoordinator {
-        let c = ConcreteDisplayDataCoordinator()
-        // Simulate the error state the coordinator would reach after disconnect.
-        return c
+        static var errorCoordinator: ConcreteDisplayDataCoordinator {
+            let c = ConcreteDisplayDataCoordinator()
+            // Simulate the error state the coordinator would reach after disconnect.
+            return c
+        }
     }
-}
 #endif

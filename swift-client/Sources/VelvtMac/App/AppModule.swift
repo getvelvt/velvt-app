@@ -188,7 +188,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     displayCoord.updateInsight(
                         InsightPayload(
                             date: HistoryViewModel.localDateString(),
-                            text: "Your simulated insight is working. This preview follows the same UI path as a delivered insight.",
+                            text:
+                                "Your simulated insight is working. This preview follows the same UI path as a delivered insight.",
                             confidenceLevel: .medium,
                             lowConfidence: false,
                             generatedAt: Date()
@@ -330,7 +331,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await client.connect()
                 return
-            } catch let IPCError.versionMismatch(expected, got) {
+            } catch IPCError.versionMismatch(let expected, let got) {
                 if reclaimAttempts < maximumOrphanReclaimAttempts,
                     await reclaimOrphanedHelper()
                 {
@@ -424,7 +425,8 @@ enum OrphanedHelperRule {
         ownProcessIdentifier: pid_t
     ) -> [pid_t] {
         guard !helperExecutablePath.isEmpty else { return [] }
-        return processes
+        return
+            processes
             .filter { process in
                 process.executablePath == helperExecutablePath
                     && process.userIdentifier == currentUser

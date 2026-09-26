@@ -138,36 +138,36 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case "request_intervention_explanation":
             self = .requestInterventionExplanation(try RequestInterventionExplanation(from: payload))
         default:
-      throw DecodingError.dataCorrupted(
-        .init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "Unknown client message type"))
         }
     }
 
     public func encode(to encoder: Encoder) throws {
         var envelope = encoder.container(keyedBy: EnvelopeCodingKeys.self)
         switch self {
-        case let .clientHello(value):
+        case .clientHello(let value):
             try envelope.encode("client_hello", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .rawEvent(value):
+        case .rawEvent(let value):
             try envelope.encode("raw_event", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .errorResponse(value):
+        case .errorResponse(let value):
             try envelope.encode("error_response", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .requestLatestInsight(value):
+        case .requestLatestInsight(let value):
             try envelope.encode("request_latest_insight", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .requestLatestHistory(value):
+        case .requestLatestHistory(let value):
             try envelope.encode("request_latest_history", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .signUp(value):
+        case .signUp(let value):
             try envelope.encode("sign_up", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .logIn(value):
+        case .logIn(let value):
             try envelope.encode("log_in", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .authSession(value):
+        case .authSession(let value):
             try envelope.encode("auth_session", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .logOut:
@@ -182,73 +182,73 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .flushUploadQueue:
             try envelope.encode("flush_upload_queue", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
-        case let .correctEventClassification(value):
+        case .correctEventClassification(let value):
             try envelope.encode("correct_event_classification", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .updateClassificationOverride(value):
+        case .updateClassificationOverride(let value):
             try envelope.encode("update_classification_override", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .requestCorrectionHistory(value):
+        case .requestCorrectionHistory(let value):
             try envelope.encode("request_correction_history", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .removeClassificationOverride(value):
+        case .removeClassificationOverride(let value):
             try envelope.encode("remove_classification_override", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .resetClassificationOverrides:
             try envelope.encode("reset_classification_overrides", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
-        case let .requestUnclassifiedTriage(value):
+        case .requestUnclassifiedTriage(let value):
             try envelope.encode("request_unclassified_triage", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .setApplicationCategory(value):
+        case .setApplicationCategory(let value):
             try envelope.encode("set_application_category", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .startWorkBlock(value):
+        case .startWorkBlock(let value):
             try envelope.encode("start_work_block", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .pauseWorkBlock(value):
+        case .pauseWorkBlock(let value):
             try envelope.encode("pause_work_block", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .resumeWorkBlock(value):
+        case .resumeWorkBlock(let value):
             try envelope.encode("resume_work_block", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .endWorkBlock(value):
+        case .endWorkBlock(let value):
             try envelope.encode("end_work_block", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .requestWorkBlockState:
             try envelope.encode("request_work_block_state", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
-        case let .requestLocalDashboard(value):
+        case .requestLocalDashboard(let value):
             try envelope.encode("request_local_dashboard", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .acceptWorkBlockRecovery(value):
+        case .acceptWorkBlockRecovery(let value):
             try envelope.encode("accept_work_block_recovery", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .reportInterventionOutcome(value):
+        case .reportInterventionOutcome(let value):
             try envelope.encode("report_intervention_outcome", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .interventionCardSeen(value):
+        case .interventionCardSeen(let value):
             try envelope.encode("intervention_card_seen", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .workBlockLifecycle(value):
+        case .workBlockLifecycle(let value):
             try envelope.encode("work_block_lifecycle", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .clearWorkBlockData:
             try envelope.encode("clear_work_block_data", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
-        case let .focusStateChanged(value):
+        case .focusStateChanged(let value):
             try envelope.encode("focus_state_changed", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .respondQuietHoursOffer(value):
+        case .respondQuietHoursOffer(let value):
             try envelope.encode("respond_quiet_hours_offer", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .requestInitiationInvitation(value):
+        case .requestInitiationInvitation(let value):
             try envelope.encode("request_initiation_invitation", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .dismissInitiationInvitation(value):
+        case .dismissInitiationInvitation(let value):
             try envelope.encode("dismiss_initiation_invitation", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .setInitiationSettings(value):
+        case .setInitiationSettings(let value):
             try envelope.encode("set_initiation_settings", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .requestInitiationSettings:
@@ -260,13 +260,13 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .resetInterventionDemotion:
             try envelope.encode("reset_intervention_demotion", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
-        case let .requestWeeklyDigest(value):
+        case .requestWeeklyDigest(let value):
             try envelope.encode("request_weekly_digest", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .acknowledgeWeeklyDigest(value):
+        case .acknowledgeWeeklyDigest(let value):
             try envelope.encode("acknowledge_weekly_digest", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .requestInterventionExplanation(value):
+        case .requestInterventionExplanation(let value):
             try envelope.encode("request_intervention_explanation", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         }
@@ -391,97 +391,97 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var envelope = encoder.container(keyedBy: EnvelopeCodingKeys.self)
         switch self {
-        case let .serverHello(value):
+        case .serverHello(let value):
             try envelope.encode("server_hello", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .acknowledged(value):
+        case .acknowledged(let value):
             try envelope.encode("acknowledged", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .versionMismatch(value):
+        case .versionMismatch(let value):
             try envelope.encode("version_mismatch", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .malformedMessage(value):
+        case .malformedMessage(let value):
             try envelope.encode("malformed_message", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .rawEventAck(value):
+        case .rawEventAck(let value):
             try envelope.encode("raw_event_ack", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .insightPayload(value):
+        case .insightPayload(let value):
             try envelope.encode("insight_payload", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .historyPayload(value):
+        case .historyPayload(let value):
             try envelope.encode("history_payload", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .serviceStatus(value):
+        case .serviceStatus(let value):
             try envelope.encode("service_status", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .privacyViolationAlert(value):
+        case .privacyViolationAlert(let value):
             try envelope.encode("privacy_violation_alert", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .errorResponse(value):
+        case .errorResponse(let value):
             try envelope.encode("error_response", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .cacheEmpty(value):
+        case .cacheEmpty(let value):
             try envelope.encode("cache_empty", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .shuttingDown(value):
+        case .shuttingDown(let value):
             try envelope.encode("shutting_down", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .authSuccess(value):
+        case .authSuccess(let value):
             try envelope.encode("auth_success", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .authSessionUpdated(value):
+        case .authSessionUpdated(let value):
             try envelope.encode("auth_session_updated", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .authFailure(value):
+        case .authFailure(let value):
             try envelope.encode("auth_failure", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .accountDeletionAccepted:
             try envelope.encode("account_deletion_accepted", forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
-        case let .needsReauth(value):
+        case .needsReauth(let value):
             try envelope.encode("needs_reauth", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .deviceRevoked(value):
+        case .deviceRevoked(let value):
             try envelope.encode("device_revoked", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .notificationPayload(value):
+        case .notificationPayload(let value):
             try envelope.encode("notification_payload", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .menuStatus(value):
+        case .menuStatus(let value):
             try envelope.encode("menu_status", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .correctionHistoryPage(value):
+        case .correctionHistoryPage(let value):
             try envelope.encode("correction_history_page", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .unclassifiedTriage(value):
+        case .unclassifiedTriage(let value):
             try envelope.encode("unclassified_triage", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .workBlockState(value):
+        case .workBlockState(let value):
             try envelope.encode("work_block_state", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .localDashboard(value):
+        case .localDashboard(let value):
             try envelope.encode("local_dashboard", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .quietHoursOffer(value):
+        case .quietHoursOffer(let value):
             try envelope.encode("quiet_hours_offer", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .initiationInvitation(value):
+        case .initiationInvitation(let value):
             try envelope.encode("initiation_invitation", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .initiationSettings(value):
+        case .initiationSettings(let value):
             try envelope.encode("initiation_settings", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .demotionState(value):
+        case .demotionState(let value):
             try envelope.encode("demotion_state", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .weeklyDigest(value):
+        case .weeklyDigest(let value):
             try envelope.encode("weekly_digest", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .interventionExplanation(value):
+        case .interventionExplanation(let value):
             try envelope.encode("intervention_explanation", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
-        case let .unknown(type):
+        case .unknown(let type):
             try envelope.encode(type, forKey: .type)
             try EmptyPayload().encode(to: envelope.superEncoder(forKey: .payload))
         }
@@ -994,8 +994,8 @@ public struct InsightPayload: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         date = try container.decode(String.self, forKey: .date)
         text = try container.decode(String.self, forKey: .text)
-    evidence =
-      try container.decodeIfPresent(InsightEvidence.self, forKey: .evidence) ?? .unavailable
+        evidence =
+            try container.decodeIfPresent(InsightEvidence.self, forKey: .evidence) ?? .unavailable
         confidenceLevel = try container.decode(ConfidenceLevel.self, forKey: .confidenceLevel)
         lowConfidence = try container.decode(Bool.self, forKey: .lowConfidence)
         generatedAt = try container.decode(Date.self, forKey: .generatedAt)
@@ -1090,16 +1090,16 @@ public struct DailySummary: Codable, Equatable, Sendable {
         confidenceLevel = try container.decode(ConfidenceLevel.self, forKey: .confidenceLevel)
         activeSeconds = try container.decode(Int.self, forKey: .activeSeconds)
         focusedSeconds = try container.decodeIfPresent(Int.self, forKey: .focusedSeconds) ?? 0
-    meaningfulSwitchCount =
-      try container.decodeIfPresent(Int.self, forKey: .meaningfulSwitchCount) ?? 0
-    longestUninterruptedSeconds =
-      try container.decodeIfPresent(Int.self, forKey: .longestUninterruptedSeconds) ?? 0
-    baselineStatus =
-      try container.decodeIfPresent(String.self, forKey: .baselineStatus) ?? "unknown"
-    baselineComparison = try container.decodeIfPresent(
-      BaselineComparison.self, forKey: .baselineComparison)
-    typeProportions =
-      try container.decodeIfPresent([ActivityProportion].self, forKey: .typeProportions) ?? []
+        meaningfulSwitchCount =
+            try container.decodeIfPresent(Int.self, forKey: .meaningfulSwitchCount) ?? 0
+        longestUninterruptedSeconds =
+            try container.decodeIfPresent(Int.self, forKey: .longestUninterruptedSeconds) ?? 0
+        baselineStatus =
+            try container.decodeIfPresent(String.self, forKey: .baselineStatus) ?? "unknown"
+        baselineComparison = try container.decodeIfPresent(
+            BaselineComparison.self, forKey: .baselineComparison)
+        typeProportions =
+            try container.decodeIfPresent([ActivityProportion].self, forKey: .typeProportions) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1633,18 +1633,18 @@ public struct MenuStatus: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
         cloudReady = try container.decode(Bool.self, forKey: .cloudReady)
-    uploadStatus =
-      try container.decodeIfPresent(String.self, forKey: .uploadStatus)
-      ?? (cloudReady ? "ready" : "network_unavailable")
+        uploadStatus =
+            try container.decodeIfPresent(String.self, forKey: .uploadStatus)
+            ?? (cloudReady ? "ready" : "network_unavailable")
         lastUploadErrorCode = try container.decodeIfPresent(String.self, forKey: .lastUploadErrorCode)
         nextUploadAttemptAt = try container.decodeIfPresent(Date.self, forKey: .nextUploadAttemptAt)
         lastSuccessfulSyncAt = try container.decodeIfPresent(Date.self, forKey: .lastSuccessfulSyncAt)
-    pendingUploadBatchCount =
-      try container.decodeIfPresent(Int.self, forKey: .pendingUploadBatchCount) ?? 0
-    failedUploadBatchCount =
-      try container.decodeIfPresent(Int.self, forKey: .failedUploadBatchCount) ?? 0
-    rejectedUploadBatchCount =
-      try container.decodeIfPresent(Int.self, forKey: .rejectedUploadBatchCount) ?? 0
+        pendingUploadBatchCount =
+            try container.decodeIfPresent(Int.self, forKey: .pendingUploadBatchCount) ?? 0
+        failedUploadBatchCount =
+            try container.decodeIfPresent(Int.self, forKey: .failedUploadBatchCount) ?? 0
+        rejectedUploadBatchCount =
+            try container.decodeIfPresent(Int.self, forKey: .rejectedUploadBatchCount) ?? 0
         queuedEventCount = try container.decode(Int.self, forKey: .queuedEventCount)
         queuedEvents = try container.decode([QueuedEventSummary].self, forKey: .queuedEvents)
         correctionHistory =
@@ -1661,17 +1661,16 @@ public struct MenuStatus: Codable, Equatable, Sendable {
 
 public struct RequestLocalDashboard: Codable, Equatable, Sendable {
     public let windowSeconds: Int
-  public let utcOffsetSeconds: Int
+    public let utcOffsetSeconds: Int
 
-  public init(windowSeconds: Int = 3600, utcOffsetSeconds: Int = TimeZone.current.secondsFromGMT())
-  {
+    public init(windowSeconds: Int = 3600, utcOffsetSeconds: Int = TimeZone.current.secondsFromGMT()) {
         self.windowSeconds = windowSeconds
-    self.utcOffsetSeconds = utcOffsetSeconds
+        self.utcOffsetSeconds = utcOffsetSeconds
     }
 
     private enum CodingKeys: String, CodingKey {
         case windowSeconds = "window_seconds"
-    case utcOffsetSeconds = "utc_offset_seconds"
+        case utcOffsetSeconds = "utc_offset_seconds"
     }
 }
 
@@ -1682,173 +1681,173 @@ public enum LocalDashboardCoverage: String, Codable, Equatable, Sendable {
 }
 
 public struct LocalTimelineSegment: Codable, Equatable, Sendable, Identifiable {
-  public let id: String
+    public let id: String
     public let startedAt: Date
     public let endedAt: Date
     public let category: String
     public let confidence: ClassificationConfidence
 
-  private enum CodingKeys: String, CodingKey {
-    case id, category, confidence
-    case startedAt = "started_at"
-    case endedAt = "ended_at"
-  }
+    private enum CodingKeys: String, CodingKey {
+        case id, category, confidence
+        case startedAt = "started_at"
+        case endedAt = "ended_at"
+    }
 }
 
 public struct LocalTransitionMarker: Codable, Equatable, Sendable, Identifiable {
-  public let id: String
-  public let occurredAt: Date
-  public let fromCategory: String
-  public let toCategory: String
-  public let confidence: ClassificationConfidence
+    public let id: String
+    public let occurredAt: Date
+    public let fromCategory: String
+    public let toCategory: String
+    public let confidence: ClassificationConfidence
 
-  private enum CodingKeys: String, CodingKey {
-    case id, confidence
-    case occurredAt = "occurred_at"
-    case fromCategory = "from_category"
-    case toCategory = "to_category"
-  }
+    private enum CodingKeys: String, CodingKey {
+        case id, confidence
+        case occurredAt = "occurred_at"
+        case fromCategory = "from_category"
+        case toCategory = "to_category"
+    }
 }
 
 public struct LocalSwitchingCluster: Codable, Equatable, Sendable, Identifiable {
-  public let id: String
-  public let ruleVersion: Int
-  public let startedAt: Date
-  public let endedAt: Date
-  public let transitionCount: Int
-  public let categories: [String]
-  public let confidence: ClassificationConfidence
-  public let explanation: String
+    public let id: String
+    public let ruleVersion: Int
+    public let startedAt: Date
+    public let endedAt: Date
+    public let transitionCount: Int
+    public let categories: [String]
+    public let confidence: ClassificationConfidence
+    public let explanation: String
 
     private enum CodingKeys: String, CodingKey {
-    case id, categories, confidence, explanation
-    case ruleVersion = "rule_version"
+        case id, categories, confidence, explanation
+        case ruleVersion = "rule_version"
         case startedAt = "started_at"
         case endedAt = "ended_at"
-    case transitionCount = "transition_count"
-  }
+        case transitionCount = "transition_count"
+    }
 }
 
 public enum LocalComparisonKind: String, Codable, Equatable, Sendable {
-  case earlierToday = "earlier_today"
-  case sevenDayPattern = "seven_day_pattern"
+    case earlierToday = "earlier_today"
+    case sevenDayPattern = "seven_day_pattern"
 }
 
 public struct LocalFocusComparison: Codable, Equatable, Sendable {
-  public let kind: LocalComparisonKind
-  public let label: String
-  public let switchDelta: Int
-  public let explanation: String
+    public let kind: LocalComparisonKind
+    public let label: String
+    public let switchDelta: Int
+    public let explanation: String
 
-  private enum CodingKeys: String, CodingKey {
-    case kind, label, explanation
-    case switchDelta = "switch_delta"
-  }
+    private enum CodingKeys: String, CodingKey {
+        case kind, label, explanation
+        case switchDelta = "switch_delta"
+    }
 }
 
 public struct LocalFocusFragmentation: Codable, Equatable, Sendable {
-  public let blockID: UUID
-  public let phase: WorkBlockPhase
-  public let windowLabel: String
-  public let windowStartedAt: Date
-  public let windowEndedAt: Date
-  public let plannedDurationSeconds: Int
-  public let elapsedDurationSeconds: Int
-  public let longestUninterruptedSeconds: Int
-  public let observedSwitchCount: Int
-  public let recoveryCount: Int
-  public let coverage: LocalDashboardCoverage
-  public let coverageRatio: Double
-  public let comparison: LocalFocusComparison?
-  public let observation: String
-  public let nextAction: String
-  public let segments: [LocalTimelineSegment]
-  public let transitions: [LocalTransitionMarker]
-  public let clusters: [LocalSwitchingCluster]
+    public let blockID: UUID
+    public let phase: WorkBlockPhase
+    public let windowLabel: String
+    public let windowStartedAt: Date
+    public let windowEndedAt: Date
+    public let plannedDurationSeconds: Int
+    public let elapsedDurationSeconds: Int
+    public let longestUninterruptedSeconds: Int
+    public let observedSwitchCount: Int
+    public let recoveryCount: Int
+    public let coverage: LocalDashboardCoverage
+    public let coverageRatio: Double
+    public let comparison: LocalFocusComparison?
+    public let observation: String
+    public let nextAction: String
+    public let segments: [LocalTimelineSegment]
+    public let transitions: [LocalTransitionMarker]
+    public let clusters: [LocalSwitchingCluster]
 
-  private enum CodingKeys: String, CodingKey {
-    case phase, coverage, comparison, observation, segments, transitions, clusters
-    case blockID = "block_id"
-    case windowLabel = "window_label"
-    case windowStartedAt = "window_started_at"
-    case windowEndedAt = "window_ended_at"
-    case plannedDurationSeconds = "planned_duration_seconds"
-    case elapsedDurationSeconds = "elapsed_duration_seconds"
-    case longestUninterruptedSeconds = "longest_uninterrupted_seconds"
-    case observedSwitchCount = "observed_switch_count"
-    case recoveryCount = "recovery_count"
-    case coverageRatio = "coverage_ratio"
-    case nextAction = "next_action"
-  }
+    private enum CodingKeys: String, CodingKey {
+        case phase, coverage, comparison, observation, segments, transitions, clusters
+        case blockID = "block_id"
+        case windowLabel = "window_label"
+        case windowStartedAt = "window_started_at"
+        case windowEndedAt = "window_ended_at"
+        case plannedDurationSeconds = "planned_duration_seconds"
+        case elapsedDurationSeconds = "elapsed_duration_seconds"
+        case longestUninterruptedSeconds = "longest_uninterrupted_seconds"
+        case observedSwitchCount = "observed_switch_count"
+        case recoveryCount = "recovery_count"
+        case coverageRatio = "coverage_ratio"
+        case nextAction = "next_action"
+    }
 }
 
 public enum LocalDailyActivityState: String, Codable, Equatable, Sendable {
-  case noData = "no_data"
-  case lowConfidence = "low_confidence"
-  case ready
-  case stillBuilding = "still_building"
+    case noData = "no_data"
+    case lowConfidence = "low_confidence"
+    case ready
+    case stillBuilding = "still_building"
 }
 
 public struct LocalDailyActivitySegment: Codable, Equatable, Sendable, Identifiable {
-  public let id: String
-  public let label: String
-  public let representativeEventID: UUID?
-  public let stableID: String?
-  public let suggestedName: String?
-  public let aliasConfirmed: Bool
-  public let category: String
-  public let durationSeconds: Int
-  public let percentage: Int
-  public let confidence: ClassificationConfidence
-  public let explanation: String?
+    public let id: String
+    public let label: String
+    public let representativeEventID: UUID?
+    public let stableID: String?
+    public let suggestedName: String?
+    public let aliasConfirmed: Bool
+    public let category: String
+    public let durationSeconds: Int
+    public let percentage: Int
+    public let confidence: ClassificationConfidence
+    public let explanation: String?
 
-  public init(
-    id: String,
-    label: String,
-    representativeEventID: UUID? = nil,
-    stableID: String? = nil,
-    suggestedName: String? = nil,
-    aliasConfirmed: Bool = false,
-    category: String,
-    durationSeconds: Int,
-    percentage: Int,
-    confidence: ClassificationConfidence,
-    explanation: String?
-  ) {
-    self.id = id
-    self.label = label
-    self.representativeEventID = representativeEventID
-    self.stableID = stableID
-    self.suggestedName = suggestedName
-    self.aliasConfirmed = aliasConfirmed
-    self.category = category
-    self.durationSeconds = durationSeconds
-    self.percentage = percentage
-    self.confidence = confidence
-    self.explanation = explanation
-  }
+    public init(
+        id: String,
+        label: String,
+        representativeEventID: UUID? = nil,
+        stableID: String? = nil,
+        suggestedName: String? = nil,
+        aliasConfirmed: Bool = false,
+        category: String,
+        durationSeconds: Int,
+        percentage: Int,
+        confidence: ClassificationConfidence,
+        explanation: String?
+    ) {
+        self.id = id
+        self.label = label
+        self.representativeEventID = representativeEventID
+        self.stableID = stableID
+        self.suggestedName = suggestedName
+        self.aliasConfirmed = aliasConfirmed
+        self.category = category
+        self.durationSeconds = durationSeconds
+        self.percentage = percentage
+        self.confidence = confidence
+        self.explanation = explanation
+    }
 
-  private enum CodingKeys: String, CodingKey {
-    case id, label, category, percentage, confidence, explanation
-    case representativeEventID = "representative_event_id"
-    case stableID = "stable_id"
-    case suggestedName = "suggested_name"
-    case aliasConfirmed = "alias_confirmed"
-    case durationSeconds = "duration_seconds"
-  }
+    private enum CodingKeys: String, CodingKey {
+        case id, label, category, percentage, confidence, explanation
+        case representativeEventID = "representative_event_id"
+        case stableID = "stable_id"
+        case suggestedName = "suggested_name"
+        case aliasConfirmed = "alias_confirmed"
+        case durationSeconds = "duration_seconds"
+    }
 }
 
 public struct LocalDailyActivityDay: Codable, Equatable, Sendable, Identifiable {
-  public let id: String
-  public let date: String
-  public let state: LocalDailyActivityState
-  public let activeSeconds: Int
-  public let coverage: LocalDashboardCoverage
-  public let segments: [LocalDailyActivitySegment]
+    public let id: String
+    public let date: String
+    public let state: LocalDailyActivityState
+    public let activeSeconds: Int
+    public let coverage: LocalDashboardCoverage
+    public let segments: [LocalDailyActivitySegment]
 
-  private enum CodingKeys: String, CodingKey {
-    case id, date, state, coverage, segments
-    case activeSeconds = "active_seconds"
+    private enum CodingKeys: String, CodingKey {
+        case id, date, state, coverage, segments
+        case activeSeconds = "active_seconds"
     }
 }
 
@@ -1923,14 +1922,14 @@ public struct LocalDashboardSnapshot: Codable, Equatable, Sendable {
     public let coverage: LocalDashboardCoverage
     public let earlySignal: LocalEarlySignal
     public let segments: [LocalTimelineSegment]
-  public let focusFragmentation: LocalFocusFragmentation?
-  public let dailyActivity: [LocalDailyActivityDay]
+    public let focusFragmentation: LocalFocusFragmentation?
+    public let dailyActivity: [LocalDailyActivityDay]
 
     private enum CodingKeys: String, CodingKey {
         case coverage, segments
         case earlySignal = "early_signal"
-    case focusFragmentation = "focus_fragmentation"
-    case dailyActivity = "daily_activity"
+        case focusFragmentation = "focus_fragmentation"
+        case dailyActivity = "daily_activity"
         case generatedAt = "generated_at"
         case windowStart = "window_start"
         case windowEnd = "window_end"

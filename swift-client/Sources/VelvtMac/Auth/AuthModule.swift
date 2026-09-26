@@ -1,7 +1,7 @@
 import Combine
 import Foundation
-import os.log
 import Security
+import os.log
 
 /// Auth module - owns account state, Keychain token storage, and IPC message
 /// routing for auth-related server pushes.
@@ -143,9 +143,10 @@ public final class KeychainService: KeychainProtocol {
         var values: [KeychainKey: String] = [:]
         for item in items {
             guard let account = item[kSecAttrAccount as String] as? String,
-                  let key = KeychainKey(rawValue: account),
-                  let data = item[kSecValueData as String] as? Data,
-                  let token = String(data: data, encoding: .utf8) else {
+                let key = KeychainKey(rawValue: account),
+                let data = item[kSecValueData as String] as? Data,
+                let token = String(data: data, encoding: .utf8)
+            else {
                 continue
             }
             values[key] = token
@@ -348,7 +349,8 @@ public final class AccountStateManager: ObservableObject {
     /// failed and the session is still valid. Requires knowing the current userId.
     public func cancelPendingErasure() {
         guard case .pendingErasure = accountState,
-              var snapshot = cachedSnapshot else { return }
+            var snapshot = cachedSnapshot
+        else { return }
         snapshot.pendingDeletion = false
         try? store(snapshot: snapshot)
         accountState = .loggedIn(userId: snapshot.userId)
@@ -513,7 +515,8 @@ public final class AccountStateManager: ObservableObject {
         guard session != cachedSession else { return }
         do {
             guard let userId = currentUserId,
-                  let existing = cachedSnapshot else {
+                let existing = cachedSnapshot
+            else {
                 authLogger.warning("auth.storeSession: received session update without a known userId")
                 return
             }

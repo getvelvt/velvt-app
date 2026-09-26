@@ -38,4 +38,3 @@ public enum DeviceError: Error, Equatable {
     case identityUnavailable
     case tokenStorageFailed(code: Int)
 }
-

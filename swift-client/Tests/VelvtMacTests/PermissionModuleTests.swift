@@ -1,5 +1,6 @@
 import Combine
 import XCTest
+
 @testable import VelvtMac
 
 final class PermissionModuleTests: XCTestCase {
@@ -61,7 +62,7 @@ final class PermissionModuleTests: XCTestCase {
             (.provisional, .granted),
             (.ephemeral, .granted),
             (.denied, .denied),
-            (.restricted, .restricted)
+            (.restricted, .restricted),
         ] {
             notifications.status = authorizationStatus
             let actual = await manager.checkStatus(for: .notifications)
@@ -1046,10 +1047,10 @@ final class PermissionModuleTests: XCTestCase {
     }
 }
 
-private extension PermissionType {
+extension PermissionType {
     // Swift extensions cannot add enum cases; this verifies extension helpers
     // cannot expand the compile-time permission allowlist.
-    static var testOnlyAuditedCases: [PermissionType] {
+    fileprivate static var testOnlyAuditedCases: [PermissionType] {
         [.accessibility, .notifications]
     }
 }

@@ -1,5 +1,6 @@
 import Combine
 import XCTest
+
 @testable import VelvtMac
 
 private struct TestStoredAuthSnapshot: Codable {
@@ -67,13 +68,15 @@ final class AccountStateManagerTests: XCTestCase {
             }
         }
 
-        client.inject(.authSuccess(AuthSuccess(
-            userId: "u123",
-            deviceId: "device-1",
-            accessToken: "tok-access",
-            refreshToken: "tok-refresh",
-            expiresAt: Date(timeIntervalSinceNow: 3600)
-        )))
+        client.inject(
+            .authSuccess(
+                AuthSuccess(
+                    userId: "u123",
+                    deviceId: "device-1",
+                    accessToken: "tok-access",
+                    refreshToken: "tok-refresh",
+                    expiresAt: Date(timeIntervalSinceNow: 3600)
+                )))
 
         await fulfillment(of: [settled], timeout: 1)
         XCTAssertEqual(sut.accountState, .loggedIn(userId: "u123"))
@@ -95,16 +98,18 @@ final class AccountStateManagerTests: XCTestCase {
         let deviceExpiresAt = Date(timeIntervalSinceNow: 3600)
         let userExpiresAt = Date(timeIntervalSinceNow: 1800)
 
-        client.inject(.authSuccess(AuthSuccess(
-            userId: "u123",
-            deviceId: "device-1",
-            accessToken: "device-access",
-            refreshToken: "device-refresh",
-            expiresAt: deviceExpiresAt,
-            userAccessToken: "user-access",
-            userRefreshToken: "user-refresh",
-            userExpiresAt: userExpiresAt
-        )))
+        client.inject(
+            .authSuccess(
+                AuthSuccess(
+                    userId: "u123",
+                    deviceId: "device-1",
+                    accessToken: "device-access",
+                    refreshToken: "device-refresh",
+                    expiresAt: deviceExpiresAt,
+                    userAccessToken: "user-access",
+                    userRefreshToken: "user-refresh",
+                    userExpiresAt: userExpiresAt
+                )))
 
         try? await Task.sleep(nanoseconds: 10_000_000)
         let snapshot = try XCTUnwrap(decodeSnapshot(from: keychain))
@@ -112,7 +117,9 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(snapshot.session.refreshToken, "device-refresh")
         XCTAssertEqual(snapshot.session.userAccessToken, "user-access")
         XCTAssertEqual(snapshot.session.userRefreshToken, "user-refresh")
-        XCTAssertEqual(snapshot.session.userExpiresAt?.timeIntervalSince1970 ?? 0, userExpiresAt.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(
+            snapshot.session.userExpiresAt?.timeIntervalSince1970 ?? 0, userExpiresAt.timeIntervalSince1970,
+            accuracy: 0.001)
     }
 
     func testStartListeningSendsStoredAuthSessionToRust() async throws {
@@ -177,17 +184,18 @@ final class AccountStateManagerTests: XCTestCase {
     func testInitializationReadsOnlySingleAuthSnapshotKey() async throws {
         let client = FakeIPCClient()
         let expiresAt = Date(timeIntervalSinceNow: 3600)
-        let rawSnapshot = try encodeSnapshot(TestStoredAuthSnapshot(
-            userId: "u123",
-            email: nil,
-            pendingDeletion: false,
-            session: AuthSession(
-                deviceId: "device-1",
-                accessToken: "stored-access",
-                refreshToken: "stored-refresh",
-                expiresAt: expiresAt
-            )
-        ))
+        let rawSnapshot = try encodeSnapshot(
+            TestStoredAuthSnapshot(
+                userId: "u123",
+                email: nil,
+                pendingDeletion: false,
+                session: AuthSession(
+                    deviceId: "device-1",
+                    accessToken: "stored-access",
+                    refreshToken: "stored-refresh",
+                    expiresAt: expiresAt
+                )
+            ))
         let keychain = SnapshotCountingKeychain(values: [.authSnapshot: rawSnapshot])
 
         let sut = AccountStateManager(keychain: keychain)
@@ -210,12 +218,13 @@ final class AccountStateManagerTests: XCTestCase {
             refreshToken: "stored-refresh",
             expiresAt: Date(timeIntervalSinceNow: 3600)
         )
-        let rawSnapshot = try encodeSnapshot(TestStoredAuthSnapshot(
-            userId: "u123",
-            email: "ada@example.com",
-            pendingDeletion: false,
-            session: session
-        ))
+        let rawSnapshot = try encodeSnapshot(
+            TestStoredAuthSnapshot(
+                userId: "u123",
+                email: "ada@example.com",
+                pendingDeletion: false,
+                session: session
+            ))
         let keychain = SnapshotCountingKeychain(values: [.authSnapshot: rawSnapshot])
         let sut = AccountStateManager(keychain: keychain)
         sut.startListening(to: client)
@@ -235,12 +244,13 @@ final class AccountStateManagerTests: XCTestCase {
             refreshToken: "stored-refresh",
             expiresAt: Date(timeIntervalSinceNow: 3600)
         )
-        let rawSnapshot = try encodeSnapshot(TestStoredAuthSnapshot(
-            userId: "u123",
-            email: "ada@example.com",
-            pendingDeletion: false,
-            session: initialSession
-        ))
+        let rawSnapshot = try encodeSnapshot(
+            TestStoredAuthSnapshot(
+                userId: "u123",
+                email: "ada@example.com",
+                pendingDeletion: false,
+                session: initialSession
+            ))
         let keychain = SnapshotCountingKeychain(values: [.authSnapshot: rawSnapshot])
         let sut = AccountStateManager(keychain: keychain)
         sut.startListening(to: client)
@@ -265,10 +275,12 @@ final class AccountStateManagerTests: XCTestCase {
         sut.startListening(to: client)
 
         XCTAssertTrue(sut.beginAuthentication(email: "ada@example.com"))
-        client.inject(.authSuccess(AuthSuccess(
-            userId: "u123", deviceId: "device-1", accessToken: "tok-access", refreshToken: "tok-refresh",
-            expiresAt: Date(timeIntervalSinceNow: 3600)
-        )))
+        client.inject(
+            .authSuccess(
+                AuthSuccess(
+                    userId: "u123", deviceId: "device-1", accessToken: "tok-access", refreshToken: "tok-refresh",
+                    expiresAt: Date(timeIntervalSinceNow: 3600)
+                )))
 
         try? await Task.sleep(nanoseconds: 10_000_000)
         XCTAssertEqual(decodeSnapshot(from: keychain)?.email, "ada@example.com")
@@ -325,7 +337,10 @@ final class AccountStateManagerTests: XCTestCase {
         let settled = expectation(description: "loggedOut")
         var cancellable: AnyCancellable?
         cancellable = sut.$accountState.dropFirst().sink { state in
-            if case .loggedOut = state { settled.fulfill(); cancellable?.cancel() }
+            if case .loggedOut = state {
+                settled.fulfill()
+                cancellable?.cancel()
+            }
         }
 
         client.inject(.authFailure(AuthFailure(code: .invalidCredentials, message: "Bad creds")))
@@ -362,7 +377,10 @@ final class AccountStateManagerTests: XCTestCase {
         let settled = expectation(description: "loggedOut")
         var cancellable: AnyCancellable?
         cancellable = sut.$accountState.dropFirst().sink { state in
-            if case .loggedOut = state { settled.fulfill(); cancellable?.cancel() }
+            if case .loggedOut = state {
+                settled.fulfill()
+                cancellable?.cancel()
+            }
         }
 
         client.inject(.accountDeletionAccepted)
@@ -378,7 +396,9 @@ final class AccountStateManagerTests: XCTestCase {
     func testLoggedInToLoggingInIsRejected() {
         let sut = makeLoggedInManager()
         sut.transition(to: .loggingIn)
-        if case .loggedIn = sut.accountState { /* expected */ } else {
+        if case .loggedIn = sut.accountState {
+            // expected
+        } else {
             XCTFail("Expected .loggedIn to be preserved; got \(sut.accountState)")
         }
     }
@@ -412,7 +432,10 @@ final class AccountStateManagerTests: XCTestCase {
         let settled = expectation(description: "loggedOut")
         var cancellable: AnyCancellable?
         cancellable = sut.$accountState.dropFirst().sink { state in
-            if case .loggedOut = state { settled.fulfill(); cancellable?.cancel() }
+            if case .loggedOut = state {
+                settled.fulfill()
+                cancellable?.cancel()
+            }
         }
 
         client.inject(.needsReauth(NeedsReauth(reason: "token_expired")))
@@ -433,7 +456,10 @@ final class AccountStateManagerTests: XCTestCase {
         let flagSet = expectation(description: "isDeviceRevoked")
         var cancellable: AnyCancellable?
         cancellable = sut.$isDeviceRevoked.dropFirst().sink { revoked in
-            if revoked { flagSet.fulfill(); cancellable?.cancel() }
+            if revoked {
+                flagSet.fulfill()
+                cancellable?.cancel()
+            }
         }
 
         client.inject(.deviceRevoked(DeviceRevoked(message: "Device was revoked")))
@@ -450,7 +476,12 @@ final class AccountStateManagerTests: XCTestCase {
 
         let flagSet = expectation(description: "flagSet")
         var cancellable: AnyCancellable?
-        cancellable = sut.$isDeviceRevoked.dropFirst().sink { if $0 { flagSet.fulfill(); cancellable?.cancel() } }
+        cancellable = sut.$isDeviceRevoked.dropFirst().sink {
+            if $0 {
+                flagSet.fulfill()
+                cancellable?.cancel()
+            }
+        }
         client.inject(.deviceRevoked(DeviceRevoked(message: "revoked")))
         await fulfillment(of: [flagSet], timeout: 1)
 
@@ -502,7 +533,10 @@ final class AccountStateManagerTests: XCTestCase {
         let reverted = expectation(description: "reverted to loggedOut")
         var cancellable: AnyCancellable?
         cancellable = sut.$accountState.dropFirst().sink { state in
-            if case .loggedOut = state { reverted.fulfill(); cancellable?.cancel() }
+            if case .loggedOut = state {
+                reverted.fulfill()
+                cancellable?.cancel()
+            }
         }
 
         client.closeStream()
@@ -519,7 +553,10 @@ final class AccountStateManagerTests: XCTestCase {
         let reverted = expectation(description: "reverted to loggedOut")
         var cancellable: AnyCancellable?
         cancellable = sut.$accountState.dropFirst().sink { state in
-            if case .loggedOut = state { reverted.fulfill(); cancellable?.cancel() }
+            if case .loggedOut = state {
+                reverted.fulfill()
+                cancellable?.cancel()
+            }
         }
 
         client.closeStream()
@@ -593,7 +630,10 @@ final class AccountStateManagerTests: XCTestCase {
         let settled = expectation(description: "loggedOut")
         var cancellable: AnyCancellable?
         cancellable = sut.$accountState.dropFirst().sink { state in
-            if case .loggedOut = state { settled.fulfill(); cancellable?.cancel() }
+            if case .loggedOut = state {
+                settled.fulfill()
+                cancellable?.cancel()
+            }
         }
         client.inject(.accountDeletionAccepted)
         await fulfillment(of: [settled], timeout: 1)
@@ -699,7 +739,8 @@ final class AccountStateManagerTests: XCTestCase {
 
     private func decodeSnapshot(from keychain: FakeKeychain) -> TestStoredAuthSnapshot? {
         guard let rawSnapshot = keychain.storedValue(for: .authSnapshot),
-              let data = rawSnapshot.data(using: .utf8) else {
+            let data = rawSnapshot.data(using: .utf8)
+        else {
             return nil
         }
         return try? JSONDecoder().decode(TestStoredAuthSnapshot.self, from: data)
@@ -796,18 +837,23 @@ final class AuthViewModelTests: XCTestCase {
         let loggedIn = expectation(description: "loggedIn")
         var cancellable: AnyCancellable?
         cancellable = manager.$accountState.dropFirst().sink { state in
-            if case .loggedIn = state { loggedIn.fulfill(); cancellable?.cancel() }
+            if case .loggedIn = state {
+                loggedIn.fulfill()
+                cancellable?.cancel()
+            }
         }
 
         // signUp() sends the IPC message and returns; response arrives asynchronously.
         await sut.signUp()
-        client.inject(.authSuccess(AuthSuccess(
-            userId: "u-001",
-            deviceId: "device-1",
-            accessToken: "at-x",
-            refreshToken: "rt-x",
-            expiresAt: Date(timeIntervalSinceNow: 3600)
-        )))
+        client.inject(
+            .authSuccess(
+                AuthSuccess(
+                    userId: "u-001",
+                    deviceId: "device-1",
+                    accessToken: "at-x",
+                    refreshToken: "rt-x",
+                    expiresAt: Date(timeIntervalSinceNow: 3600)
+                )))
 
         await fulfillment(of: [loggedIn], timeout: 2)
 
@@ -833,7 +879,8 @@ final class AuthViewModelTests: XCTestCase {
         let errorSet = expectation(description: "errorMessage")
         var cancellable: AnyCancellable?
         cancellable = sut.$errorMessage.compactMap { $0 }.sink { _ in
-            errorSet.fulfill(); cancellable?.cancel()
+            errorSet.fulfill()
+            cancellable?.cancel()
         }
 
         await sut.logIn()
@@ -916,7 +963,11 @@ final class AuthViewModelTests: XCTestCase {
         sut.password = "secret"
         await sut.signUp()
         XCTAssertEqual(manager.accountState, .loggedOut, "must not leave loggedOut")
-        XCTAssertFalse(client.sentMessages.contains(where: { if case .signUp = $0 { return true }; return false }))
+        XCTAssertFalse(
+            client.sentMessages.contains(where: {
+                if case .signUp = $0 { return true }
+                return false
+            }))
         XCTAssertNotNil(sut.errorMessage)
         XCTAssertFalse(sut.isLoading)
     }
@@ -1005,7 +1056,11 @@ final class AuthViewModelTests: XCTestCase {
         await sut.signUp()
 
         XCTAssertEqual(manager.accountState, .loggingIn)
-        XCTAssertFalse(client.sentMessages.contains(where: { if case .signUp = $0 { return true }; return false }))
+        XCTAssertFalse(
+            client.sentMessages.contains(where: {
+                if case .signUp = $0 { return true }
+                return false
+            }))
         XCTAssertEqual(sut.errorMessage, "Authentication is already in progress.")
         XCTAssertFalse(sut.isLoading)
     }
@@ -1024,11 +1079,14 @@ final class AuthViewModelTests: XCTestCase {
         let reverted = expectation(description: "state reverted to loggedOut")
         var cancellable: AnyCancellable?
         cancellable = manager.$accountState.dropFirst().sink { state in
-            if case .loggedOut = state { reverted.fulfill(); cancellable?.cancel() }
+            if case .loggedOut = state {
+                reverted.fulfill()
+                cancellable?.cancel()
+            }
         }
 
-        await sut.signUp()           // transitions to .loggingIn, sends IPC
-        client.closeStream()         // simulate hard disconnect — authSuccess never arrives
+        await sut.signUp()  // transitions to .loggingIn, sends IPC
+        client.closeStream()  // simulate hard disconnect — authSuccess never arrives
 
         await fulfillment(of: [reverted], timeout: 2)
 
@@ -1080,13 +1138,15 @@ final class AuthViewModelTests: XCTestCase {
         }
 
         await sut.logIn()
-        client.inject(.authSuccess(AuthSuccess(
-            userId: "u-001",
-            deviceId: "device-1",
-            accessToken: "at-x",
-            refreshToken: "rt-x",
-            expiresAt: Date(timeIntervalSinceNow: 3600)
-        )))
+        client.inject(
+            .authSuccess(
+                AuthSuccess(
+                    userId: "u-001",
+                    deviceId: "device-1",
+                    accessToken: "at-x",
+                    refreshToken: "rt-x",
+                    expiresAt: Date(timeIntervalSinceNow: 3600)
+                )))
 
         await fulfillment(of: [loggedIn], timeout: 1)
         try? await Task.sleep(nanoseconds: 100_000_000)
@@ -1113,8 +1173,9 @@ final class AuthViewModelTests: XCTestCase {
         await sut.confirmAccountDeletion()
 
         // After a failed send the state must return to loggedIn — not pendingErasure.
-        XCTAssertEqual(manager.accountState, .loggedIn(userId: "u1"),
-                       "state must revert when send fails")
+        XCTAssertEqual(
+            manager.accountState, .loggedIn(userId: "u1"),
+            "state must revert when send fails")
         XCTAssertNotNil(sut.errorMessage, "retry message must be shown")
         XCTAssertFalse(sut.showDeleteConfirmation)
         // Keychain must be intact — no data lost due to a failed request.
@@ -1149,7 +1210,8 @@ final class AuthViewModelTests: XCTestCase {
 
     private func decodeSnapshot(from keychain: FakeKeychain) -> TestStoredAuthSnapshot? {
         guard let rawSnapshot = keychain.storedValue(for: .authSnapshot),
-              let data = rawSnapshot.data(using: .utf8) else {
+            let data = rawSnapshot.data(using: .utf8)
+        else {
             return nil
         }
         return try? JSONDecoder().decode(TestStoredAuthSnapshot.self, from: data)

@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import VelvtMac
 
 final class MenuBarIconProviderTests: XCTestCase {

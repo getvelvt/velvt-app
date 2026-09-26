@@ -241,7 +241,8 @@ private struct LocalSplitActivityBar: View {
                             .frame(
                                 width: max(
                                     5,
-                                    proxy.size.width * CGFloat(slice.seconds) / CGFloat(total)))
+                                    proxy.size.width * CGFloat(slice.seconds) / CGFloat(total))
+                            )
                             // `.help` is delivered through the accessibility
                             // tree, so hiding the slice from that tree silences
                             // the tooltip along with it. The row above already
@@ -328,10 +329,10 @@ struct WeekOverWeekCoachingView: View {
                     viewModel.progressiveInsight?.tier.label ?? "Progressive insights",
                     systemImage: "chart.line.uptrend.xyaxis"
                 )
-                    .font(VelvtType.label(11))
-                    .tracking(VelvtType.labelTracking)
-                    .textCase(.uppercase)
-                    .foregroundStyle(VelvtInk.labelOnPaper)
+                .font(VelvtType.label(11))
+                .tracking(VelvtType.labelTracking)
+                .textCase(.uppercase)
+                .foregroundStyle(VelvtInk.labelOnPaper)
                 Spacer()
                 if let insight = viewModel.progressiveInsight {
                     Text(insight.confidenceSummary)
@@ -481,8 +482,8 @@ public enum LocalServiceConnectionPhase: Equatable, Sendable {
 
 @MainActor
 public protocol ConnectionGraceScheduling: AnyObject {
-  func schedule(after interval: TimeInterval, action: @escaping @MainActor () -> Void)
-    -> AnyCancellable
+    func schedule(after interval: TimeInterval, action: @escaping @MainActor () -> Void)
+        -> AnyCancellable
 }
 
 @MainActor
@@ -505,8 +506,8 @@ public final class CollectionActivityStatusModel: ObservableObject {
     private var cancellable: AnyCancellable?
 
     public init(collectionStatus: AnyPublisher<CollectionStatus, Never>) {
-    cancellable = collectionStatus.receive(on: RunLoop.main).sink { [weak self] in self?.status = $0
-    }
+        cancellable = collectionStatus.receive(on: RunLoop.main).sink { [weak self] in self?.status = $0
+        }
     }
 }
 
@@ -733,9 +734,11 @@ enum QueuedEventPresentation {
         guard event.label != "unlogged" else {
             return "Unclassified activity"
         }
-        let component = event.label.split(separator: ":", maxSplits: 1).last.map(String.init)
+        let component =
+            event.label.split(separator: ":", maxSplits: 1).last.map(String.init)
             ?? event.label
-        return component
+        return
+            component
             .replacingOccurrences(of: "_", with: " ")
             .lowercased()
             .capitalized
@@ -749,9 +752,11 @@ enum QueuedEventPresentation {
         if let localLabel = correction.localLabel?.nilIfBlank {
             return localLabel
         }
-        let component = correction.label.split(separator: ":", maxSplits: 1).last.map(String.init)
+        let component =
+            correction.label.split(separator: ":", maxSplits: 1).last.map(String.init)
             ?? correction.label
-        return component
+        return
+            component
             .replacingOccurrences(of: "_", with: " ")
             .lowercased()
             .capitalized
@@ -1305,9 +1310,10 @@ public enum MenuBarPopoverLayout {
     ) -> CGRect {
         let size = CGSize(width: contentSize.width, height: contentSize.height + titleBarHeight)
         guard let visibleFrame else {
-            let origin = statusItemFrame.map {
-                CGPoint(x: $0.midX - size.width / 2, y: $0.minY - statusItemGap - size.height)
-            } ?? .zero
+            let origin =
+                statusItemFrame.map {
+                    CGPoint(x: $0.midX - size.width / 2, y: $0.minY - statusItemGap - size.height)
+                } ?? .zero
             return CGRect(origin: origin, size: size)
         }
 
@@ -1333,7 +1339,8 @@ public enum MenuBarPopoverLayout {
         for visibleFrame: CGRect?,
         includesWalkthrough: Bool = false
     ) -> CGSize {
-        let preferredSize = includesWalkthrough
+        let preferredSize =
+            includesWalkthrough
             ? walkthroughContentSize
             : preferredContentSize
         guard let visibleFrame else { return preferredSize }
@@ -1663,7 +1670,7 @@ public struct MenuBarPopoverView: View {
     /// Whether this panel is on screen, from the window server. The drift
     /// card's sighting is reported only while it is.
     @State private var panelIsOnScreen = false
-  @State private var showsSystemState = false
+    @State private var showsSystemState = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -1686,8 +1693,8 @@ public struct MenuBarPopoverView: View {
         startGuidedTour: (() -> Void)? = nil,
         updateController: AppUpdateController,
         guidedTour: GuidedTourModel = GuidedTourModel(),
-    metricsStore: AppMetricsStore = AppMetricsStore(
-      defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
+        metricsStore: AppMetricsStore = AppMetricsStore(
+            defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
         popoverWillOpen: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher(),
         onEscape: @escaping () -> Void,
         onTerminate: @escaping () -> Void = {}
@@ -1700,11 +1707,11 @@ public struct MenuBarPopoverView: View {
         self.currentActivity = currentActivity
         self.serviceAlertModel = serviceAlertModel
         self.collectionSettings = collectionSettings
-    self.workBlockCoordinator =
-      workBlockCoordinator ?? WorkBlockCoordinator(ipcClient: UnavailableWorkBlockIPCClient())
-    self.localDashboardCoordinator =
-      localDashboardCoordinator
-      ?? LocalDashboardCoordinator(ipcClient: UnavailableLocalDashboardIPCClient())
+        self.workBlockCoordinator =
+            workBlockCoordinator ?? WorkBlockCoordinator(ipcClient: UnavailableWorkBlockIPCClient())
+        self.localDashboardCoordinator =
+            localDashboardCoordinator
+            ?? LocalDashboardCoordinator(ipcClient: UnavailableLocalDashboardIPCClient())
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
@@ -2438,10 +2445,10 @@ public struct MenuBarPopoverView: View {
             VStack(spacing: 0) {
                 submenuTitle(submenu.title)
                 Toggle("Offline Event Collection", isOn: $collectionSettings.offlineEventCollectionEnabled)
-                .toggleStyle(.switch)
-                .font(VelvtType.body(12))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                    .toggleStyle(.switch)
+                    .font(VelvtType.body(12))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                 // The single invitation opt-out. The Rust service owns and
                 // enforces the setting; this toggle renders the reported
                 // state and sends the change. Off means silence — nothing
@@ -2777,8 +2784,8 @@ public struct MenuBarPopoverView: View {
         } else {
             accountStatus = "signed_out"
         }
-    let protocolVersion =
-      Bundle.main.object(
+        let protocolVersion =
+            Bundle.main.object(
                 forInfoDictionaryKey: "VelvtProtocolVersion"
             ) as? String ?? "unknown"
         let lines = [
@@ -2831,11 +2838,11 @@ public struct MenuBarPopoverView: View {
     }
 
     private func infoRow(_ title: String, _ value: String) -> some View {
-    HStack {
-      Text(title).foregroundStyle(VelvtInk.secondaryOnInk)
-      Spacer()
-      Text(value).lineLimit(1).truncationMode(.middle).foregroundStyle(VelvtInk.primaryOnInk)
-    }
+        HStack {
+            Text(title).foregroundStyle(VelvtInk.secondaryOnInk)
+            Spacer()
+            Text(value).lineLimit(1).truncationMode(.middle).foregroundStyle(VelvtInk.primaryOnInk)
+        }
         .font(VelvtType.body(11)).padding(.horizontal, 16).padding(.vertical, 7)
     }
     private func authenticationInfoRow() -> some View {
@@ -2857,9 +2864,9 @@ public struct MenuBarPopoverView: View {
         }
         .font(VelvtType.body(11)).padding(.horizontal, 16).padding(.vertical, 7)
     }
-  private func statusRow(
-    _ title: String, presentation: PopoverConnectionPresentation, refresh: @escaping () -> Void
-  ) -> some View {
+    private func statusRow(
+        _ title: String, presentation: PopoverConnectionPresentation, refresh: @escaping () -> Void
+    ) -> some View {
         HStack(spacing: 7) {
             Text(title).foregroundStyle(VelvtInk.secondaryOnInk)
             Spacer()
@@ -3301,13 +3308,13 @@ struct CorrectionWorkbenchUnavailableView: View {
             Text(
                 "The local privacy service is not connected, so there is nothing to correct yet."
             )
-                .font(VelvtType.body(11))
-                .lineSpacing(VelvtType.bodySpacing(11))
-                .foregroundStyle(VelvtInk.secondaryOnInk)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
+            .font(VelvtType.body(11))
+            .lineSpacing(VelvtType.bodySpacing(11))
+            .foregroundStyle(VelvtInk.secondaryOnInk)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
         }
     }
 }
@@ -3363,8 +3370,8 @@ private struct GuidedTourBar: View {
     }
 }
 
-private extension String {
-    var nilIfBlank: String? {
+extension String {
+    fileprivate var nilIfBlank: String? {
         trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
     }
 }
@@ -3376,25 +3383,25 @@ private struct MenuBarAccountControls: View {
     @State private var showsAuthentication = false
     init(accountStateManager: AccountStateManager, ipcClient: any IPCClientProtocol) {
         self.accountStateManager = accountStateManager
-    _authViewModel = StateObject(
-      wrappedValue: AuthViewModel(accountStateManager: accountStateManager, ipcClient: ipcClient))
+        _authViewModel = StateObject(
+            wrappedValue: AuthViewModel(accountStateManager: accountStateManager, ipcClient: ipcClient))
     }
     var body: some View {
         Group {
             switch accountStateManager.accountState {
             case .loggingIn: ProgressView("Signing in").controlSize(.small)
             case .loggingOut: ProgressView("Signing out").controlSize(.small)
-      case .pendingErasure:
-        Text("Account deletion in progress").font(VelvtType.body(11)).foregroundStyle(
-          VelvtInk.secondaryOnInk)
+            case .pendingErasure:
+                Text("Account deletion in progress").font(VelvtType.body(11)).foregroundStyle(
+                    VelvtInk.secondaryOnInk)
             default:
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 8) {
-            ForEach(
-              Array(
-                MenuBarAccountActionResolver.actions(for: accountStateManager.accountState)
-                  .enumerated()), id: \.offset
-            ) { _, action in actionButton(for: action) }
+                        ForEach(
+                            Array(
+                                MenuBarAccountActionResolver.actions(for: accountStateManager.accountState)
+                                    .enumerated()), id: \.offset
+                        ) { _, action in actionButton(for: action) }
                     }
                     if let error = authViewModel.errorMessage {
                         Text(error)
@@ -3405,27 +3412,27 @@ private struct MenuBarAccountControls: View {
             }
         }
         .sheet(isPresented: $showsAuthentication) {
-      MenuBarAuthenticationView(
-        authViewModel: authViewModel, accountStateManager: accountStateManager,
-        initialMode: authenticationMode, dismiss: { showsAuthentication = false })
+            MenuBarAuthenticationView(
+                authViewModel: authViewModel, accountStateManager: accountStateManager,
+                initialMode: authenticationMode, dismiss: { showsAuthentication = false })
         }
     }
     @ViewBuilder private func actionButton(for action: MenuBarAccountAction) -> some View {
         switch action {
-    case .authenticate(let mode):
-      Button(mode == .logIn ? signInLabel : "Sign Up") {
-        authenticationMode = mode
-        authViewModel.authMode = mode
-        showsAuthentication = true
-      }
-      // The guide allows one crimson action per surface. Sign in is the
-      // returning path and leads; sign up sits beside it as the alternative.
-      // Presentation only — both buttons do exactly what they did before.
-      .buttonStyle(
-        mode == .logIn
-          ? AnyButtonStyle(VelvtPrimaryButtonStyle())
-          : AnyButtonStyle(VelvtSecondaryButtonStyle(onPaper: false))
-      )
+        case .authenticate(let mode):
+            Button(mode == .logIn ? signInLabel : "Sign Up") {
+                authenticationMode = mode
+                authViewModel.authMode = mode
+                showsAuthentication = true
+            }
+            // The guide allows one crimson action per surface. Sign in is the
+            // returning path and leads; sign up sits beside it as the alternative.
+            // Presentation only — both buttons do exactly what they did before.
+            .buttonStyle(
+                mode == .logIn
+                    ? AnyButtonStyle(VelvtPrimaryButtonStyle())
+                    : AnyButtonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+            )
         case .logOut:
             Button("Log Out", role: .destructive) { authViewModel.logOut() }
                 .buttonStyle(VelvtDestructiveButtonStyle())
@@ -3485,8 +3492,8 @@ private struct MenuBarAuthenticationView: View {
     let dismiss: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-      Text(authViewModel.authMode == .signUp ? "Create your account" : "Welcome back")
-        .velvtDisplay(22)
+            Text(authViewModel.authMode == .signUp ? "Create your account" : "Welcome back")
+                .velvtDisplay(22)
             CredentialTextField(placeholder: "Email", text: $authViewModel.email)
             CredentialTextField(placeholder: "Password", text: $authViewModel.password, isSecure: true)
             if authViewModel.authMode == .logIn {
@@ -3498,29 +3505,29 @@ private struct MenuBarAuthenticationView: View {
             if let error = authViewModel.errorMessage {
                 Text(error).font(VelvtType.body(11)).foregroundStyle(VelvtPalette.signal)
             }
-      HStack {
-        Button("Cancel", action: dismiss)
-          .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
-        Spacer()
-        Button(authViewModel.authMode == .signUp ? "Create Account" : "Sign In") {
-          Task {
-            if authViewModel.authMode == .signUp {
-              await authViewModel.signUp()
-            } else {
-              await authViewModel.logIn()
+            HStack {
+                Button("Cancel", action: dismiss)
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+                Spacer()
+                Button(authViewModel.authMode == .signUp ? "Create Account" : "Sign In") {
+                    Task {
+                        if authViewModel.authMode == .signUp {
+                            await authViewModel.signUp()
+                        } else {
+                            await authViewModel.logIn()
+                        }
+                    }
+                }
+                .buttonStyle(VelvtPrimaryButtonStyle())
+                .disabled(!authViewModel.canSubmitCredentials)
             }
-          }
-        }
-        .buttonStyle(VelvtPrimaryButtonStyle())
-        .disabled(!authViewModel.canSubmitCredentials)
-      }
-      Button(
-        authViewModel.authMode == .signUp ? "I already have an account" : "Create a new account"
-      ) { authViewModel.toggleAuthMode() }.buttonStyle(.plain).font(VelvtType.body(11))
-        .foregroundStyle(VelvtInk.labelOnInk)
-    }.padding(24).frame(width: 360).background(VelvtSurface.ground)
-      .onAppear { authViewModel.authMode = initialMode }.onChange(
-      of: accountStateManager.accountState
-    ) { if case .loggedIn = $0 { dismiss() } }
+            Button(
+                authViewModel.authMode == .signUp ? "I already have an account" : "Create a new account"
+            ) { authViewModel.toggleAuthMode() }.buttonStyle(.plain).font(VelvtType.body(11))
+                .foregroundStyle(VelvtInk.labelOnInk)
+        }.padding(24).frame(width: 360).background(VelvtSurface.ground)
+            .onAppear { authViewModel.authMode = initialMode }.onChange(
+                of: accountStateManager.accountState
+            ) { if case .loggedIn = $0 { dismiss() } }
     }
 }

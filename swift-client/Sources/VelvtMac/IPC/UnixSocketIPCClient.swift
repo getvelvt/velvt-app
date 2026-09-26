@@ -161,7 +161,7 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
         switch response {
         case .acknowledged:
             publish(.connected)
-        case let .versionMismatch(mismatch):
+        case .versionMismatch(let mismatch):
             throw IPCError.versionMismatch(
                 expected: mismatch.serverProtocolVersion,
                 got: mismatch.clientProtocolVersion
@@ -298,24 +298,26 @@ actor UnixSocketTransport: IPCTransportProtocol {
         let connection = NWConnection(to: .unix(path: path), using: .tcp)
         self.connection = connection
         defer { connection.stateUpdateHandler = nil }
-        try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                let gate = ContinuationGate(continuation)
-                connection.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready:
-                        gate.resume()
-                    default:
-                        if let error = Self.connectionError(for: state) {
-                            gate.resume(throwing: error)
+        try await withTaskCancellationHandler(
+            operation: {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    let gate = ContinuationGate(continuation)
+                    connection.stateUpdateHandler = { state in
+                        switch state {
+                        case .ready:
+                            gate.resume()
+                        default:
+                            if let error = Self.connectionError(for: state) {
+                                gate.resume(throwing: error)
+                            }
                         }
                     }
+                    connection.start(queue: DispatchQueue(label: "com.velvt.mac.ipc.socket"))
                 }
-                connection.start(queue: DispatchQueue(label: "com.velvt.mac.ipc.socket"))
-            }
-        }, onCancel: {
-            connection.cancel()
-        })
+            },
+            onCancel: {
+                connection.cancel()
+            })
     }
 
     func send(frame: Data) async throws {
@@ -328,19 +330,23 @@ actor UnixSocketTransport: IPCTransportProtocol {
         // cancellation, so tearing the socket down is the only thing that
         // resumes this continuation. Without that the connect timeout cannot
         // fire during the handshake: its task group waits for every child.
-        try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                connection.send(content: framed, completion: .contentProcessed { error in
-                    if let error {
-                        continuation.resume(throwing: IPCError.socket(code: error.safeCode))
-                    } else {
-                        continuation.resume()
-                    }
-                })
-            }
-        }, onCancel: {
-            connection.cancel()
-        })
+        try await withTaskCancellationHandler(
+            operation: {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    connection.send(
+                        content: framed,
+                        completion: .contentProcessed { error in
+                            if let error {
+                                continuation.resume(throwing: IPCError.socket(code: error.safeCode))
+                            } else {
+                                continuation.resume()
+                            }
+                        })
+                }
+            },
+            onCancel: {
+                connection.cancel()
+            })
     }
 
     func receiveFrame() async throws -> Data {
@@ -356,21 +362,24 @@ actor UnixSocketTransport: IPCTransportProtocol {
             // A peer that accepted the connection and then went silent parks
             // this read forever, and the completion handler is deaf to task
             // cancellation. Cancelling the socket is what resumes it.
-            let chunk = try await withTaskCancellationHandler(operation: {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-                    connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, complete, error in
-                        if let error {
-                            continuation.resume(throwing: IPCError.socket(code: error.safeCode))
-                        } else if complete, data?.isEmpty != false {
-                            continuation.resume(throwing: IPCError.connectionClosed)
-                        } else {
-                            continuation.resume(returning: data ?? Data())
+            let chunk = try await withTaskCancellationHandler(
+                operation: {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
+                            data, _, complete, error in
+                            if let error {
+                                continuation.resume(throwing: IPCError.socket(code: error.safeCode))
+                            } else if complete, data?.isEmpty != false {
+                                continuation.resume(throwing: IPCError.connectionClosed)
+                            } else {
+                                continuation.resume(returning: data ?? Data())
+                            }
                         }
                     }
-                }
-            }, onCancel: {
-                connection.cancel()
-            })
+                },
+                onCancel: {
+                    connection.cancel()
+                })
             bufferedData.append(chunk)
         }
     }
@@ -387,7 +396,7 @@ actor UnixSocketTransport: IPCTransportProtocol {
     /// of holding the startup UI until the five-second safety timeout.
     static func connectionError(for state: NWConnection.State) -> IPCError? {
         switch state {
-        case let .waiting(error), let .failed(error):
+        case .waiting(let error), .failed(let error):
             .socket(code: error.safeCode)
         case .cancelled:
             .connectionClosed
@@ -421,14 +430,14 @@ private final class ContinuationGate: @unchecked Sendable {
     }
 }
 
-private extension NWError {
-    var safeCode: Int32 {
+extension NWError {
+    fileprivate var safeCode: Int32 {
         switch self {
-        case let .posix(code):
+        case .posix(let code):
             return code.rawValue
-        case let .dns(code):
+        case .dns(let code):
             return Int32(code)
-        case let .tls(code):
+        case .tls(let code):
             return Int32(code)
         @unknown default:
             return -1

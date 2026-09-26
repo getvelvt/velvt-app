@@ -230,6 +230,17 @@ public struct FocusedActivity: Equatable, Sendable {
     }
 }
 
+/// What registering for an application found.
+public enum AccessibilityRegistration: Equatable, Sendable {
+    /// Registered at window level. The focused window's activity right now.
+    case window(FocusedActivity)
+    /// Registered for the application, which has no focused or main window
+    /// yet (`kAXErrorNoValue`): one still launching, one whose windows are all
+    /// closed, a panel not yet key. The activity handler reports the first
+    /// window that gains focus.
+    case awaitingWindow
+}
+
 public protocol AccessibilityPermissionChecking: AnyObject {
     func hasPermission() -> Bool
 }
@@ -240,11 +251,12 @@ public protocol WorkspaceActivationObserving: AnyObject {
 }
 
 public protocol AccessibilityObserving: AnyObject {
+    /// Throws when the application cannot be observed at all.
     func start(
         observing application: RunningApplication,
         activityHandler: @escaping (FocusedActivity) -> Void,
         errorHandler: @escaping (CollectionError) -> Void
-    ) throws -> FocusedActivity
+    ) throws -> AccessibilityRegistration
     func stop()
 }
 
@@ -269,7 +281,14 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     private let reportStatusTransition: (CollectionStatus, CollectionStatus) -> Void
     private let lock = NSLock()
     private var isRunningLocked = false
+    /// The application the AX observer is registered for, if any.
     private var activeProcessIdentifier: pid_t?
+    /// The application the workspace last reported in front, whether or not
+    /// the AX observer could be registered for it. The open dwell is its own.
+    private var frontmostApplication: RunningApplication?
+    /// Whether the registration for `activeProcessIdentifier` reaches a
+    /// window. False while it waits for one, and while nothing is registered.
+    private var observesWindow = false
     private var pendingDwellEvent: RawEvent?
     /// Guards `publishedStatus` and every send, and nothing else. Activations
     /// report on the main thread and AX observer failures on the callback
@@ -334,7 +353,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         }
         publish(.running)
         if let currentApplication {
-            observeReportingFailure(currentApplication)
+            observeReportingFailure(currentApplication, activatedAt: now())
         }
     }
 
@@ -344,7 +363,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
                 return (false, nil)
             }
             isRunningLocked = false
-            activeProcessIdentifier = nil
+            clearApplicationLocked()
             let finalEvent = takePendingDwellLocked(at: now(), reanchor: false)
             return (true, finalEvent)
         }
@@ -449,28 +468,48 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             stopAfterPermissionRevocation()
             return
         }
-        guard lock.withLock({ activeProcessIdentifier != application.processIdentifier }) else {
+        // Only an application already observed at window level has nothing
+        // left to register. Another activation of one that is not, including
+        // the one already in front, is a retry.
+        guard
+            lock.withLock({
+                !(activeProcessIdentifier == application.processIdentifier && observesWindow)
+            })
+        else {
             return
         }
-        observeReportingFailure(application)
+        observeReportingFailure(application, activatedAt: now())
     }
 
     /// Registers for `application` and reports how that went.
     ///
+    /// Whatever the registration finds, the application activated at
+    /// `activatedAt` has its own dwell from that instant: at window level when
+    /// the observer reached a window, at application level when it did not.
+    ///
     /// A registration that fails for one application leaves the workspace
     /// observer running, so it is `.limited`, not a stop, and the next one that
-    /// succeeds is `.running` again. Only `start()` used to report `.running`,
-    /// so a single application that could not be observed left the status on
-    /// an error for the rest of the session.
-    private func observeReportingFailure(_ application: RunningApplication) {
+    /// reaches a window is `.running` again. Only `start()` used to report
+    /// `.running`, so a single application that could not be observed left the
+    /// status on an error for the rest of the session.
+    private func observeReportingFailure(_ application: RunningApplication, activatedAt: Date) {
         do {
-            try observe(application)
-            publish(.running, observing: application.processIdentifier)
+            switch try observe(application, activatedAt: activatedAt) {
+            case .window:
+                publish(.running, observing: application.processIdentifier)
+            case .awaitingWindow:
+                publish(
+                    .limited("ax_observer_registration_failed:\(AXError.noValue.rawValue)"),
+                    observing: application.processIdentifier
+                )
+            }
         } catch CollectionError.permissionRevoked {
             stopAfterPermissionRevocation()
         } catch CollectionError.observerRegistrationFailed(let code) {
+            beginApplicationDwell(application, at: activatedAt)
             publish(.limited("ax_observer_registration_failed:\(code)"))
         } catch {
+            beginApplicationDwell(application, at: activatedAt)
             publish(.limited("ax_observer_registration_failed"))
         }
     }
@@ -484,16 +523,18 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     /// `.running` must not paper over that stop.
     ///
     /// `processIdentifier` names the application a registration's report is
-    /// about. The report is dropped once that application is no longer the one
-    /// observed: its observer can fail on the callback queue before the
-    /// activation that registered it reports, and the failure's `.limited` is
-    /// the newer fact. Checked under `statusLock`, so in either order the
-    /// failure's report is the one left standing.
+    /// about. The report is dropped once that registration no longer says what
+    /// it did: the application is no longer the one observed, or its window
+    /// was reached (for `.limited`) or lost (for `.running`) since. Its observer
+    /// can fail, or reach its first window, on the callback queue before the
+    /// activation that registered it reports, and that is the newer fact.
+    /// Checked under `statusLock`, so in either order the newer report is the
+    /// one left standing.
     ///
     /// Never called with `lock` held: it takes it.
     private func publish(_ status: CollectionStatus, observing processIdentifier: pid_t? = nil) {
         statusLock.withLock {
-            guard !status.isCollecting || isStillCollecting(observing: processIdentifier) else {
+            guard !status.isCollecting || isStillCurrent(status, observing: processIdentifier) else {
                 return
             }
             let previous = publishedStatus
@@ -506,7 +547,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         }
     }
 
-    private func isStillCollecting(observing processIdentifier: pid_t?) -> Bool {
+    private func isStillCurrent(_ status: CollectionStatus, observing processIdentifier: pid_t?) -> Bool {
         lock.withLock {
             guard isRunningLocked else {
                 return false
@@ -514,18 +555,23 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             guard let processIdentifier else {
                 return true
             }
-            return activeProcessIdentifier == processIdentifier
+            return activeProcessIdentifier == processIdentifier && observesWindow == (status == .running)
         }
     }
 
-    private func observe(_ application: RunningApplication) throws {
+    private func observe(
+        _ application: RunningApplication,
+        activatedAt: Date
+    ) throws -> AccessibilityRegistration {
         accessibilityObserver.stop()
         lock.withLock {
             activeProcessIdentifier = application.processIdentifier
+            frontmostApplication = application
+            observesWindow = false
         }
-        let initialActivity: FocusedActivity
+        let registration: AccessibilityRegistration
         do {
-            initialActivity = try accessibilityObserver.start(
+            registration = try accessibilityObserver.start(
                 observing: application,
                 activityHandler: { [weak self] activity in
                     self?.emit(application: application, activity: activity)
@@ -545,10 +591,18 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             }
             throw error
         }
-        emit(application: application, activity: initialActivity)
+        switch registration {
+        case .window(let activity):
+            emit(application: application, activity: activity, at: activatedAt)
+        case .awaitingWindow:
+            beginApplicationDwell(application, at: activatedAt)
+        }
+        return registration
     }
 
-    private func emit(application: RunningApplication, activity: FocusedActivity) {
+    /// Reports window-level activity for `application`: at `instant` for the
+    /// window a registration found, at `now()` for a later notification.
+    private func emit(application: RunningApplication, activity: FocusedActivity, at instant: Date? = nil) {
         guard permissionChecker.hasPermission() else {
             stopAfterPermissionRevocation()
             return
@@ -564,40 +618,107 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             documentTypeIDs: declared.documentTypeIDs,
             windowTitle: activity.windowTitle ?? "",
             focusedDocumentURL: activity.focusedDocumentURL,
-            occurredAt: now()
+            occurredAt: instant ?? now()
         )
-        let (completedEvent, beganEvent) = lock.withLock { () -> (RawEvent?, RawEvent?) in
+        let outcome = lock.withLock { () -> (report: DwellReport, reachedWindow: Bool)? in
             guard isRunningLocked && activeProcessIdentifier == application.processIdentifier else {
-                return (nil, nil)
+                return nil
             }
-            guard let previousEvent = pendingDwellEvent else {
-                pendingDwellEvent = nextEvent
-                return (nil, nextEvent)
-            }
-            // Declared metadata is deliberately absent from this comparison. It
-            // is a property of the application, not of the activity, so it
-            // cannot distinguish two dwells the four identity fields agree on —
-            // and making it part of activity identity would let a first-read
-            // failure that later succeeds register as a switch the user never
-            // made.
-            guard
-                previousEvent.appName != nextEvent.appName
-                    || previousEvent.bundleIdentifier != nextEvent.bundleIdentifier
-                    || previousEvent.windowTitle != nextEvent.windowTitle
-                    || previousEvent.focusedDocumentURL != nextEvent.focusedDocumentURL
-            else {
-                return (nil, nil)
-            }
-            pendingDwellEvent = nextEvent
-            let completed = previousEvent.withDuration(
-                seconds: dwellSeconds(
-                    from: previousEvent.occurredAt,
-                    through: nextEvent.occurredAt
-                ))
-            return (completed, nextEvent)
+            let reachedWindow = !observesWindow
+            observesWindow = true
+            return (replacePendingDwellLocked(with: nextEvent), reachedWindow)
         }
-        if let completedEvent {
-            eventSink?.receive(completedEvent)
+        guard let outcome else {
+            return
+        }
+        deliver(outcome.report)
+        // The first window of an application that had none when it was
+        // activated: the observer registered for it has now reached one.
+        if outcome.reachedWindow {
+            publish(.running, observing: application.processIdentifier)
+        }
+    }
+
+    /// Opens a dwell for `application` from what the workspace reports about
+    /// it: its name, its bundle identifier and what it declares about itself.
+    /// No window title, because none could be read, and none is made up.
+    ///
+    /// For an application in front that cannot be observed at window level.
+    /// Nothing used to be reported for one: the dwell before it stayed open
+    /// and absorbed its time at the next switch, so the time went to the wrong
+    /// application, and a departure to it never reached the drift gate. The
+    /// workspace always knows which application is in front; only the window
+    /// needs the AX observer.
+    ///
+    /// A no-op once the application is observed at window level, so a window
+    /// the observer reached first is never replaced by less.
+    private func beginApplicationDwell(_ application: RunningApplication, at instant: Date) {
+        let declared = metadataProvider.metadata(for: application)
+        let event = RawEvent(
+            appName: application.appName,
+            bundleIdentifier: application.bundleIdentifier,
+            declaredAppCategory: declared.declaredAppCategory,
+            documentTypeIDs: declared.documentTypeIDs,
+            windowTitle: "",
+            focusedDocumentURL: nil,
+            occurredAt: instant
+        )
+        let report = lock.withLock { () -> DwellReport in
+            guard
+                isRunningLocked,
+                frontmostApplication?.processIdentifier == application.processIdentifier,
+                !observesWindow
+            else {
+                return DwellReport()
+            }
+            return replacePendingDwellLocked(with: event)
+        }
+        deliver(report)
+    }
+
+    /// The dwell a change of activity closed, and the one it began.
+    private struct DwellReport {
+        var closed: RawEvent?
+        var began: RawEvent?
+    }
+
+    /// Makes `next` the open dwell unless it is the activity already open.
+    ///
+    /// The caller must already hold `lock`.
+    private func replacePendingDwellLocked(with next: RawEvent) -> DwellReport {
+        guard let previous = pendingDwellEvent else {
+            pendingDwellEvent = next
+            return DwellReport(closed: nil, began: next)
+        }
+        // Declared metadata is deliberately absent from this comparison. It
+        // is a property of the application, not of the activity, so it
+        // cannot distinguish two dwells the four identity fields agree on —
+        // and making it part of activity identity would let a first-read
+        // failure that later succeeds register as a switch the user never
+        // made.
+        guard
+            previous.appName != next.appName
+                || previous.bundleIdentifier != next.bundleIdentifier
+                || previous.windowTitle != next.windowTitle
+                || previous.focusedDocumentURL != next.focusedDocumentURL
+        else {
+            return DwellReport()
+        }
+        // Never before the dwell it closes, so spans abut and never overlap: a
+        // registration's first window can be reported after an AX callback for
+        // the same application already opened a later one.
+        let next = next.occurredAt < previous.occurredAt ? next.reanchored(at: previous.occurredAt) : next
+        pendingDwellEvent = next
+        return DwellReport(
+            closed: previous.withDuration(
+                seconds: dwellSeconds(from: previous.occurredAt, through: next.occurredAt)),
+            began: next
+        )
+    }
+
+    private func deliver(_ report: DwellReport) {
+        if let closed = report.closed {
+            eventSink?.receive(closed)
         }
         // After the dwell it replaces, never before. The service reads the
         // two in order: the closed report lands on the row its own in-progress
@@ -605,8 +726,8 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         // Reported at the start because that is when a departure is still
         // true; reported only when it ended, a departure reached the drift
         // gate at the moment the person came back.
-        if let beganEvent {
-            eventSink?.activityBegan(beganEvent)
+        if let began = report.began {
+            eventSink?.activityBegan(began)
         }
     }
 
@@ -615,24 +736,24 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             stopAfterPermissionRevocation()
             return
         }
-        let result = lock.withLock { () -> (shouldHandle: Bool, finalEvent: RawEvent?) in
+        let application = lock.withLock { () -> RunningApplication? in
             guard isRunningLocked && activeProcessIdentifier == processIdentifier else {
-                return (false, nil)
+                return nil
             }
             activeProcessIdentifier = nil
-            let finalEvent = takePendingDwellLocked(at: now(), reanchor: false)
-            return (true, finalEvent)
+            observesWindow = false
+            return frontmostApplication
         }
-        guard result.shouldHandle else {
+        guard let application else {
             return
         }
         accessibilityObserver.stop()
-        if let finalEvent = result.finalEvent {
-            eventSink?.receive(finalEvent)
-        }
-        // The observer for this application is gone, but the workspace
-        // observer is not: the next activation registers afresh, because
+        // The observer for this application is gone, but the application is
+        // still in front and the workspace observer still running. Its window
+        // can no longer be read, so the rest of its time is an application-level
+        // dwell until the next activation, which registers afresh because
         // `activeProcessIdentifier` no longer matches anything.
+        beginApplicationDwell(application, at: now())
         if case .observerRegistrationFailed(let code) = error {
             publish(.limited("ax_observer_failed:\(code)"))
         } else {
@@ -646,7 +767,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
                 return (false, nil)
             }
             isRunningLocked = false
-            activeProcessIdentifier = nil
+            clearApplicationLocked()
             let finalEvent = takePendingDwellLocked(at: now(), reanchor: false)
             return (true, finalEvent)
         }
@@ -659,6 +780,13 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         accessibilityObserver.stop()
         workspaceObserver.stop()
         publish(.permissionRevoked)
+    }
+
+    /// The caller must already hold `lock`.
+    private func clearApplicationLocked() {
+        activeProcessIdentifier = nil
+        frontmostApplication = nil
+        observesWindow = false
     }
 
     private func dwellSeconds(from start: Date, through end: Date) -> Int {
@@ -775,7 +903,7 @@ public final class AXApplicationObserver: AccessibilityObserving {
         observing application: RunningApplication,
         activityHandler: @escaping (FocusedActivity) -> Void,
         errorHandler: @escaping (CollectionError) -> Void
-    ) throws -> FocusedActivity {
+    ) throws -> AccessibilityRegistration {
         stop()
         var createdObserver: AXObserver?
         let result = AXObserverCreate(application.processIdentifier, Self.callback, &createdObserver)
@@ -787,28 +915,17 @@ public final class AXApplicationObserver: AccessibilityObserving {
         }
 
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
-        guard
-            let initialWindow = copyElement(attribute: kAXFocusedWindowAttribute, from: applicationElement)
-                ?? copyElement(attribute: kAXMainWindowAttribute, from: applicationElement)
-        else {
-            throw CollectionError.observerRegistrationFailed(code: AXError.noValue.rawValue)
-        }
-        for (element, notification) in [
-            (applicationElement, kAXFocusedWindowChangedNotification),
-            (initialWindow, kAXTitleChangedNotification),
-        ] {
-            let registration = AXObserverAddNotification(
-                createdObserver,
-                element,
-                notification as CFString,
-                Unmanaged.passUnretained(self).toOpaque()
-            )
-            guard registration != .apiDisabled else {
-                throw CollectionError.permissionRevoked
-            }
-            guard registration == .success else {
-                throw CollectionError.observerRegistrationFailed(code: registration.rawValue)
-            }
+        // An application can be in front with no focused or main window. It is
+        // registered all the same: the focused-window notification on the
+        // application element is what reports its first window, without
+        // polling. This used to throw `kAXErrorNoValue` instead, and nothing
+        // was observed until the next activation.
+        let initialWindow =
+            copyElement(attribute: kAXFocusedWindowAttribute, from: applicationElement)
+            ?? copyElement(attribute: kAXMainWindowAttribute, from: applicationElement)
+        try addNotification(kAXFocusedWindowChangedNotification, to: applicationElement, of: createdObserver)
+        if let initialWindow {
+            try addNotification(kAXTitleChangedNotification, to: initialWindow, of: createdObserver)
         }
         addOptionalBrowserNotifications(
             observer: createdObserver,
@@ -845,7 +962,25 @@ public final class AXApplicationObserver: AccessibilityObserving {
         thread.name = "com.velvt.collection.ax-run-loop"
         thread.start()
         started.wait()
-        return snapshot(applicationElement: applicationElement, window: initialWindow)
+        guard let initialWindow else {
+            return .awaitingWindow
+        }
+        return .window(snapshot(applicationElement: applicationElement, window: initialWindow))
+    }
+
+    private func addNotification(_ notification: String, to element: AXUIElement, of observer: AXObserver) throws {
+        let registration = AXObserverAddNotification(
+            observer,
+            element,
+            notification as CFString,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        guard registration != .apiDisabled else {
+            throw CollectionError.permissionRevoked
+        }
+        guard registration == .success else {
+            throw CollectionError.observerRegistrationFailed(code: registration.rawValue)
+        }
     }
 
     public func stop() {
@@ -872,21 +1007,23 @@ public final class AXApplicationObserver: AccessibilityObserving {
         stop()
     }
 
-    private static let callback: AXObserverCallback = { _, element, notification, context in
+    private static let callback: AXObserverCallback = { _, _, notification, context in
         guard let context else {
             return
         }
         // The context is safe because AXApplicationObserver owns the AXObserver
         // and removes its run-loop source before the controller can deallocate.
         let controller = Unmanaged<AXApplicationObserver>.fromOpaque(context).takeUnretainedValue()
-        controller.handle(element, notification: notification as String)
+        controller.handle(notification: notification as String)
     }
 
-    private func handle(_ element: AXUIElement, notification: String) {
+    private func handle(notification: String) {
         // AX callbacks run on a private CFRunLoop. Delivery crosses explicitly
         // onto a serial dispatch queue; no AXUIElement leaves the callback.
         do {
-            let activity = try refreshSnapshot(notification: notification, notifiedElement: element)
+            guard let activity = try refreshSnapshot(notification: notification) else {
+                return
+            }
             let handler = lock.withLock { activityHandler }
             callbackQueue.async { handler?(activity) }
         } catch let error as CollectionError {
@@ -898,12 +1035,14 @@ public final class AXApplicationObserver: AccessibilityObserving {
         }
     }
 
-    private func refreshSnapshot(notification: String, notifiedElement: AXUIElement) throws -> FocusedActivity {
+    /// The focused window's activity, or `nil` while the application has no
+    /// window to describe.
+    private func refreshSnapshot(notification: String) throws -> FocusedActivity? {
         let resources = lock.withLock { (observer, applicationElement, focusedWindow) }
         guard let applicationElement = resources.1 else {
             throw CollectionError.observerRegistrationFailed(code: AXError.invalidUIElement.rawValue)
         }
-        var window = resources.2 ?? notifiedElement
+        var window = resources.2
         if notification == kAXFocusedWindowChangedNotification,
             let nextWindow = copyElement(attribute: kAXFocusedWindowAttribute, from: applicationElement)
         {
@@ -937,6 +1076,12 @@ public final class AXApplicationObserver: AccessibilityObserving {
                 }
             }
             lock.withLock { focusedWindow = nextWindow }
+        }
+        // Until a window has gained focus there is nothing to describe. The
+        // element a notification names may then be the application itself or
+        // a control inside it, and its title is not a window title.
+        guard let window else {
+            return nil
         }
         return snapshot(applicationElement: applicationElement, window: window)
     }
@@ -1013,7 +1158,7 @@ public final class AXApplicationObserver: AccessibilityObserving {
     private func addOptionalBrowserNotifications(
         observer: AXObserver,
         applicationElement: AXUIElement,
-        window: AXUIElement,
+        window: AXUIElement?,
         bundleIdentifier: String?
     ) {
         guard Self.isSupportedBrowser(bundleIdentifier: bundleIdentifier) else { return }
@@ -1023,6 +1168,9 @@ public final class AXApplicationObserver: AccessibilityObserving {
             kAXFocusedUIElementChangedNotification as CFString,
             Unmanaged.passUnretained(self).toOpaque()
         )
+        // Without a window yet, the focused-window change adds these to the
+        // first one that gains focus.
+        guard let window else { return }
         for notification in Self.optionalWindowNotifications {
             _ = AXObserverAddNotification(
                 observer,

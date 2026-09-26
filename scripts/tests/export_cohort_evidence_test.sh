@@ -56,7 +56,7 @@ INSTALLED_AT=$((T0 - 86400))
 # The drift policy the seeded decisions were made under: the one
 # analyze_cohort.py analyses (ANALYSED_POLICY_VERSION). The exporter copies
 # whatever is stored, so the value only matters to the round trips.
-POLICY=3
+POLICY=4
 
 S_INTENTION='ZZSENTINELINTENTIONZZ'
 S_APPNAME='ZZSENTINELAPPNAMEZZ'
@@ -302,7 +302,7 @@ import csv, sys
 rows = {r["decision_id"]: r for r in csv.DictReader(open(sys.argv[1]))}
 T0 = 1800000000
 assert sorted(rows) == [f"d-0{i}" for i in range(1, 8)], sorted(rows)
-assert {r["policy_version"] for r in rows.values()} == {"3"}, rows
+assert {r["policy_version"] for r in rows.values()} == {"4"}, rows
 assert rows["d-01"]["gate_verdict"] == "abstained_warmup", rows["d-01"]
 assert rows["d-05"]["anchor_seen_within_600s"] == "", rows["d-05"]
 assert rows["d-02"]["anchor_seen_within_600s"] == "1", rows["d-02"]
@@ -393,8 +393,8 @@ import json, sys
 r = json.load(open(sys.argv[1]))
 assert r["data_quality"]["malformed"] == [], r["data_quality"]
 assert r["participants"]["analysed"] == 1, r["participants"]
-assert r["policy"]["decisions_by_policy_version"] == {"3": 7}, r["policy"]
-assert r["policy"]["interventions_by_attribution"] == {"3": 5}, r["policy"]
+assert r["policy"]["decisions_by_policy_version"] == {"4": 7}, r["policy"]
+assert r["policy"]["interventions_by_attribution"] == {"4": 5}, r["policy"]
 d = r["decisions_recorded"]
 assert (d["total"], d["delivered"], d["withheld"]) == (5, 3, 2), d
 assert r["primary_outcome"]["eligible_decision_points"] == 3, r["primary_outcome"]

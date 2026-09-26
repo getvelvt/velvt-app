@@ -614,9 +614,9 @@ private final class StubAccessibilityObserver: AccessibilityObserving {
         observing application: RunningApplication,
         activityHandler: @escaping (FocusedActivity) -> Void,
         errorHandler: @escaping (CollectionError) -> Void
-    ) throws -> FocusedActivity {
+    ) throws -> AccessibilityRegistration {
         self.activityHandler = activityHandler
-        return FocusedActivity(windowTitle: initialTitle)
+        return .window(FocusedActivity(windowTitle: initialTitle))
     }
 
     func stop() {

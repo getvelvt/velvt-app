@@ -249,6 +249,9 @@ final class CollectionModuleTests: XCTestCase {
 
         XCTAssertTrue(statuses.contains(.limited("ax_observer_failed:\(AXError.invalidUIElement.rawValue)")))
         XCTAssertEqual(statuses.last, .running)
+        // The window dwell closes where the observer failed. Until the next
+        // activation the application is still the one in front, so the rest
+        // of its time is its own at application level, not unobserved.
         XCTAssertEqual(
             sink.events,
             [
@@ -257,7 +260,13 @@ final class CollectionModuleTests: XCTestCase {
                     windowTitle: "Before",
                     occurredAt: Date(timeIntervalSince1970: 10),
                     durationSeconds: 15
-                )
+                ),
+                RawEvent(
+                    appName: "One",
+                    windowTitle: "",
+                    occurredAt: Date(timeIntervalSince1970: 25),
+                    durationSeconds: 5
+                ),
             ]
         )
         XCTAssertEqual(accessibility.maximumActiveObserverCount, 1)
@@ -501,7 +510,8 @@ final class CollectionModuleTests: XCTestCase {
             10: .observerRegistrationFailed(code: AXError.noValue.rawValue)
         ]
         accessibility.initialTitles = [20: "Next Window"]
-        let agent = makeAgent(sink: sink, workspace: workspace, accessibility: accessibility)
+        let dates = DateQueue([100, 130, 160].map { Date(timeIntervalSince1970: $0) })
+        let agent = makeAgent(sink: sink, workspace: workspace, accessibility: accessibility, now: dates.next)
         var statuses: [CollectionStatus] = []
         agent.status.sink { statuses.append($0) }.store(in: &cancellables)
 
@@ -518,7 +528,20 @@ final class CollectionModuleTests: XCTestCase {
             ]
         )
         XCTAssertEqual(workspace.stopCallCount, 0)
-        XCTAssertTrue(sink.events.isEmpty)
+        // The application in front at start has its dwell from the start, at
+        // application level, like one activated later.
+        XCTAssertEqual(
+            sink.events,
+            [
+                RawEvent(
+                    appName: "Unobservable",
+                    windowTitle: "",
+                    occurredAt: Date(timeIntervalSince1970: 100),
+                    durationSeconds: 30
+                )
+            ]
+        )
+        withExtendedLifetime(agent) {}
     }
 
     /// The founder's Mac on 2026-09-26: collection ran all day and the window
@@ -701,6 +724,243 @@ final class CollectionModuleTests: XCTestCase {
         workspace.activate(.init(processIdentifier: 20, appName: "Mail"))
 
         XCTAssertEqual(statuses, [.idle, .running, limited, .running])
+    }
+
+    // MARK: - Applications that cannot be observed at window level
+    //
+    // Found by PR #59's review. When the window-level observer could not be
+    // registered for the application just activated (most often -25212, no
+    // focused or main window yet), the agent reported nothing for it. The dwell
+    // before it stayed open and absorbed its time at the next switch, so the
+    // time went to the wrong application, and a departure from the anchor to it
+    // never reached the service's drift gate.
+
+    func testAnApplicationThatCannotBeObservedAtWindowLevelGetsADwellOfItsOwn() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "main.swift"]
+        accessibility.startErrors = [20: .observerRegistrationFailed(code: AXError.noValue.rawValue)]
+        let declared = DeclaredAppMetadata(
+            declaredAppCategory: "public.app-category.social-networking",
+            documentTypeIDs: ["public.vcard"]
+        )
+        let metadata = StubMetadataProvider(["com.apple.MobileSMS": declared])
+        let dates = DateQueue([100, 320, 368, 400].map { Date(timeIntervalSince1970: $0) })
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            metadata: metadata,
+            now: dates.next
+        )
+        let xcode = RunningApplication(processIdentifier: 10, appName: "Xcode", bundleIdentifier: "com.apple.dt.Xcode")
+        let messages = RunningApplication(
+            processIdentifier: 20, appName: "Messages", bundleIdentifier: "com.apple.MobileSMS")
+
+        try agent.start()
+        workspace.activate(xcode)
+        workspace.activate(messages)
+        workspace.activate(xcode)
+
+        let at = { (seconds: TimeInterval) in Date(timeIntervalSince1970: seconds) }
+        let anchor = RawEvent(
+            appName: "Xcode", bundleIdentifier: "com.apple.dt.Xcode", windowTitle: "main.swift", occurredAt: at(100))
+        // Application-level identity only: the name, the bundle identifier and
+        // what the application declares about itself. No title is invented,
+        // and there is no document URL to report.
+        let away = RawEvent(
+            appName: "Messages",
+            bundleIdentifier: "com.apple.MobileSMS",
+            declaredAppCategory: "public.app-category.social-networking",
+            documentTypeIDs: ["public.vcard"],
+            windowTitle: "",
+            focusedDocumentURL: nil,
+            occurredAt: at(320)
+        )
+        let back = anchor.reanchored(at: at(368))
+        XCTAssertEqual(
+            sink.journal,
+            [
+                .began(anchor),
+                .closed(anchor.withDuration(seconds: 220)),
+                .began(away),
+                .closed(away.withDuration(seconds: 48)),
+                .began(back),
+            ],
+            "the anchor closes at the activation instant and the unobservable application's dwell is reported "
+                + "in progress when it begins and closed at the return"
+        )
+        withExtendedLifetime(agent) {}
+    }
+
+    /// An application in front with no window yet is registered all the same,
+    /// and its first window to gain focus is the later retry: no polling, and
+    /// no wait for the next activation.
+    func testAnApplicationWithNoWindowYetIsObservedAtWindowLevelOnceOneGainsFocus() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "main.swift"]
+        accessibility.awaitingWindow = [30]
+        let dates = DateQueue([100, 200, 230, 300].map { Date(timeIntervalSince1970: $0) })
+        let agent = makeAgent(sink: sink, workspace: workspace, accessibility: accessibility, now: dates.next)
+        var statuses: [CollectionStatus] = []
+        agent.status.sink { statuses.append($0) }.store(in: &cancellables)
+        let noWindow = CollectionStatus.limited("ax_observer_registration_failed:\(AXError.noValue.rawValue)")
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Xcode"))
+        workspace.activate(.init(processIdentifier: 30, appName: "Finder", bundleIdentifier: "com.apple.finder"))
+
+        XCTAssertEqual(statuses, [.idle, .running, noWindow])
+        XCTAssertEqual(accessibility.activeObserverCount, 1, "registered for the application, waiting for a window")
+
+        accessibility.emitTitle("Downloads")
+
+        let at = { (seconds: TimeInterval) in Date(timeIntervalSince1970: seconds) }
+        let anchor = RawEvent(appName: "Xcode", windowTitle: "main.swift", occurredAt: at(100))
+        let finder = RawEvent(
+            appName: "Finder", bundleIdentifier: "com.apple.finder", windowTitle: "", occurredAt: at(200))
+        let window = RawEvent(
+            appName: "Finder", bundleIdentifier: "com.apple.finder", windowTitle: "Downloads", occurredAt: at(230))
+        XCTAssertEqual(
+            sink.journal,
+            [
+                .began(anchor),
+                .closed(anchor.withDuration(seconds: 100)),
+                .began(finder),
+                .closed(finder.withDuration(seconds: 30)),
+                .began(window),
+            ]
+        )
+        XCTAssertEqual(statuses, [.idle, .running, noWindow, .running])
+        XCTAssertEqual(accessibility.operations.filter { $0 == .start(30) }.count, 1)
+        withExtendedLifetime(agent) {}
+    }
+
+    /// Another activation of an application that could not be observed
+    /// registers again. When that reaches a window, the window-level dwell
+    /// takes over from the activation instant; when it does not, the dwell
+    /// already open carries on and nothing is reported twice.
+    func testReactivatingAnApplicationThatCouldNotBeObservedRetriesTheRegistration() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.startErrors = [20: .observerRegistrationFailed(code: AXError.cannotComplete.rawValue)]
+        let dates = DateQueue([200, 210, 250, 300].map { Date(timeIntervalSince1970: $0) })
+        let agent = makeAgent(sink: sink, workspace: workspace, accessibility: accessibility, now: dates.next)
+        var statuses: [CollectionStatus] = []
+        agent.status.sink { statuses.append($0) }.store(in: &cancellables)
+        let mail = RunningApplication(processIdentifier: 20, appName: "Mail")
+
+        try agent.start()
+        workspace.activate(mail)
+        workspace.activate(mail)
+
+        let at = { (seconds: TimeInterval) in Date(timeIntervalSince1970: seconds) }
+        let applicationLevel = RawEvent(appName: "Mail", windowTitle: "", occurredAt: at(200))
+        XCTAssertEqual(sink.journal, [.began(applicationLevel)], "a failed retry reports nothing new")
+
+        accessibility.startErrors = [:]
+        accessibility.initialTitles = [20: "Inbox"]
+        workspace.activate(mail)
+
+        let inbox = RawEvent(appName: "Mail", windowTitle: "Inbox", occurredAt: at(250))
+        XCTAssertEqual(
+            sink.journal,
+            [
+                .began(applicationLevel),
+                .closed(applicationLevel.withDuration(seconds: 50)),
+                .began(inbox),
+            ]
+        )
+        XCTAssertEqual(accessibility.operations.filter { $0 == .start(20) }.count, 3)
+        XCTAssertEqual(
+            statuses,
+            [.idle, .running, .limited("ax_observer_registration_failed:\(AXError.cannotComplete.rawValue)"), .running]
+        )
+
+        workspace.activate(mail)
+        XCTAssertEqual(
+            accessibility.operations.filter { $0 == .start(20) }.count, 3,
+            "observed at window level: a repeated activation registers nothing")
+        withExtendedLifetime(agent) {}
+    }
+
+    /// A window can gain focus, and its callback report, before the
+    /// registration that found no window has reported. The window is the
+    /// newer fact: it is not replaced by an application-level dwell, and the
+    /// status is not set back to limited.
+    func testAWindowReachedBeforeTheRegistrationReportsIsNotReplacedByLess() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "main.swift"]
+        accessibility.awaitingWindow = [30]
+        accessibility.onRegistered = { processIdentifier in
+            if processIdentifier == 30 {
+                accessibility.emitTitle("Downloads")
+            }
+        }
+        let dates = DateQueue([100, 200, 201, 300].map { Date(timeIntervalSince1970: $0) })
+        let agent = makeAgent(sink: sink, workspace: workspace, accessibility: accessibility, now: dates.next)
+        var statuses: [CollectionStatus] = []
+        agent.status.sink { statuses.append($0) }.store(in: &cancellables)
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Xcode"))
+        workspace.activate(.init(processIdentifier: 30, appName: "Finder"))
+
+        let at = { (seconds: TimeInterval) in Date(timeIntervalSince1970: seconds) }
+        let anchor = RawEvent(appName: "Xcode", windowTitle: "main.swift", occurredAt: at(100))
+        let window = RawEvent(appName: "Finder", windowTitle: "Downloads", occurredAt: at(201))
+        XCTAssertEqual(
+            sink.journal,
+            [
+                .began(anchor),
+                .closed(anchor.withDuration(seconds: 101)),
+                .began(window),
+            ]
+        )
+        XCTAssertEqual(statuses, [.idle, .running])
+        withExtendedLifetime(agent) {}
+    }
+
+    /// Velvt's own window is observed like any other application's, and the
+    /// service classifies Velvt as SYSTEM, which the drift gate never counts.
+    /// When its panel is activated before it is key, it gets an
+    /// application-level dwell like any other application, where it used to
+    /// be folded into the dwell before it.
+    func testVelvtActivatedBeforeItsPanelIsKeyIsAnApplicationLevelDwellLikeAnyOther() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "main.swift"]
+        accessibility.awaitingWindow = [99]
+        let dates = DateQueue([100, 150, 152, 300].map { Date(timeIntervalSince1970: $0) })
+        let agent = makeAgent(sink: sink, workspace: workspace, accessibility: accessibility, now: dates.next)
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Xcode"))
+        workspace.activate(.init(processIdentifier: 99, appName: "Velvt", bundleIdentifier: "com.velvt.mac"))
+        accessibility.emitTitle("Velvt")
+
+        let at = { (seconds: TimeInterval) in Date(timeIntervalSince1970: seconds) }
+        let velvt = RawEvent(appName: "Velvt", bundleIdentifier: "com.velvt.mac", windowTitle: "", occurredAt: at(150))
+        XCTAssertEqual(
+            Array(sink.journal.suffix(4)),
+            [
+                .closed(
+                    RawEvent(appName: "Xcode", windowTitle: "main.swift", occurredAt: at(100), durationSeconds: 50)),
+                .began(velvt),
+                .closed(velvt.withDuration(seconds: 2)),
+                .began(
+                    RawEvent(
+                        appName: "Velvt", bundleIdentifier: "com.velvt.mac", windowTitle: "Velvt", occurredAt: at(152))),
+            ]
+        )
+        withExtendedLifetime(agent) {}
     }
 
     func testStatusLogLinesArePersistedAndCarryOnlyFixedCodes() {
@@ -1027,6 +1287,7 @@ final class CollectionModuleTests: XCTestCase {
         permission: FakePermissionChecker = FakePermissionChecker(isTrusted: true),
         workspace: FakeWorkspaceObserver = FakeWorkspaceObserver(),
         accessibility: FakeAccessibilityObserver = FakeAccessibilityObserver(),
+        metadata: any DeclaredAppMetadataReading = StubMetadataProvider([:]),
         now: @escaping () -> Date = Date.init,
         reportStatusTransition: @escaping (CollectionStatus, CollectionStatus) -> Void = { _, _ in }
     ) -> AXCollectionAgent {
@@ -1035,6 +1296,7 @@ final class CollectionModuleTests: XCTestCase {
             permissionChecker: permission,
             workspaceObserver: workspace,
             accessibilityObserver: accessibility,
+            metadataProvider: metadata,
             now: now,
             reportStatusTransition: reportStatusTransition
         )
@@ -1121,6 +1383,9 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
 
     var initialTitles: [pid_t: String] = [:]
     var initialDocumentURLs: [pid_t: String] = [:]
+    /// Applications registered without a window: in front, but with no
+    /// focused or main window yet.
+    var awaitingWindow: Set<pid_t> = []
     var startError: CollectionError?
     var startErrors: [pid_t: CollectionError] = [:]
     var onStart: ((pid_t) -> Void)?
@@ -1139,7 +1404,7 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
         observing application: RunningApplication,
         activityHandler: @escaping (FocusedActivity) -> Void,
         errorHandler: @escaping (CollectionError) -> Void
-    ) throws -> FocusedActivity {
+    ) throws -> AccessibilityRegistration {
         operations.append(.start(application.processIdentifier))
         startCallCount += 1
         onStart?(application.processIdentifier)
@@ -1154,10 +1419,14 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
         self.activityHandler = activityHandler
         self.errorHandler = errorHandler
         onRegistered?(application.processIdentifier)
-        return FocusedActivity(
-            windowTitle: initialTitles[application.processIdentifier],
-            focusedDocumentURL: initialDocumentURLs[application.processIdentifier]
-        )
+        if awaitingWindow.contains(application.processIdentifier) {
+            return .awaitingWindow
+        }
+        return .window(
+            FocusedActivity(
+                windowTitle: initialTitles[application.processIdentifier],
+                focusedDocumentURL: initialDocumentURLs[application.processIdentifier]
+            ))
     }
 
     func stop() {
@@ -1180,6 +1449,18 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
 
     func emitError(_ error: CollectionError) {
         errorHandler?(error)
+    }
+}
+
+private final class StubMetadataProvider: DeclaredAppMetadataReading {
+    private let declared: [String: DeclaredAppMetadata]
+
+    init(_ declared: [String: DeclaredAppMetadata]) {
+        self.declared = declared
+    }
+
+    func metadata(for application: RunningApplication) -> DeclaredAppMetadata {
+        application.bundleIdentifier.flatMap { declared[$0] } ?? .absent
     }
 }
 

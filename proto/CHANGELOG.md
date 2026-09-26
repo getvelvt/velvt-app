@@ -1,5 +1,25 @@
 # IPC Protocol Changelog
 
+## Application-level dwells - 2026-09-26 (no wire change; the protocol stays 32)
+
+- Swift now reports a dwell for an application it cannot observe at window
+  level, most often one with no focused or main window when it is activated
+  (AX error -25212). The `raw_event` carries the application's `app_name`,
+  `bundle_id` and declared metadata, an empty `window_title` and no
+  `focused_document_url`, in progress when the dwell begins and closed when it
+  ends, like any other. Before, Swift sent nothing for such an application, and
+  the dwell before it stayed open and absorbed its time.
+- Every field and bound is unchanged: `window_title` was always a string that
+  could be empty (an untitled window), and Rust has always classified an empty
+  title through the application-level rungs. The schema now says so.
+- Drift policy version 4 (`DRIFT_POLICY_VERSION` 3 → 4). The gate's constants,
+  branches and timing are version 3's. It now receives a departure to such an
+  application as an observation, so the decision points, switch counts and
+  anchor differ from version 3, and the two are never pooled.
+- Privacy: nothing new is sent or stored. The raw values are ones `raw_event`
+  already carries, over the local socket only, and what Rust stores and
+  uploads for the dwell is what it stores and uploads for any other.
+
 ## Version 32 - 2026-09-26
 
 - Added optional `in_progress` (boolean) to `raw_event` (Swift to Rust). True

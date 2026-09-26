@@ -208,7 +208,11 @@ for abstraction.
 - `duration_seconds`: locally measured dwell, integer 0–1800 (protocol 17);
   both sides enforce the 1,800-second cap
 - `app_name`: raw local-only application name
-- `window_title`: raw local-only focused-window title
+- `window_title`: raw local-only focused-window title. Empty when there is
+  none to read: an untitled window, or an application Swift cannot observe at
+  window level, which it reports with the application's identity only (and no
+  `focused_document_url`) rather than not at all. Rust classifies an empty
+  title through the application-level rungs and never substitutes one
 - `bundle_id`: required, nullable raw local-only bundle identifier. Rust
   stores only a domain-separated hash of it (`app_bundle_stable_id`)
 - `focused_document_url`: optional nullable raw browser document URL
@@ -231,7 +235,8 @@ for abstraction.
   classified outside an active block. Without it the gate saw a departure
   only when the person came back, and the offer it made was withdrawn before a
   notification could be posted. Absent on a closed dwell. The gate deciding
-  on each dwell as it begins is drift policy version 3.
+  on each dwell as it begins is drift policy version 3; version 4 adds the
+  application-level dwells described under `window_title`.
 
 ### `raw_event_ack`
 

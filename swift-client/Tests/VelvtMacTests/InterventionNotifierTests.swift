@@ -468,6 +468,48 @@ final class InterventionNotifierTests: XCTestCase {
         )
     }
 
+    /// A withdrawn offer's attempt can still be waiting on its settings query
+    /// when the next offer arrives and starts its own. When the stale one
+    /// finally returns it must leave that attempt alone. It used to free the
+    /// one-at-a-time slot, so the new offer got a second attempt and the first
+    /// was orphaned: withdrawing the new offer then cancelled only the second,
+    /// and the orphan posted a banner for an offer that was no longer true.
+    func test_a_withdrawn_attempt_that_returns_late_leaves_the_next_offers_attempt_alone() async throws {
+        let center = FakeUNUserNotificationCenter()
+        let permissions = GatedPermissionManager()
+        let reporter = RecordingNotificationDeliveryReporter()
+        let notifier = InterventionNotifier(
+            scheduler: UNNotificationScheduler(center: center),
+            permissionManager: permissions,
+            reporter: reporter
+        )
+        let block = UUID()
+
+        let first = notifier.handle(snapshot(blockID: block, offeredAt: Date(timeIntervalSince1970: 1000)))
+        try await waitUntil { permissions.checkCount == 1 }
+        XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: nil)))
+        let second = notifier.handle(snapshot(blockID: block, offeredAt: Date(timeIntervalSince1970: 2000)))
+        XCTAssertNotNil(second, "the withdrawn offer's attempt no longer holds the slot")
+        try await waitUntil { permissions.checkCount == 2 }
+
+        permissions.release(with: .granted)
+        await first?.value
+        XCTAssertEqual(permissions.checkCount, 2, "the late return starts no second attempt for the new offer")
+
+        XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: nil)))
+        permissions.release(with: .granted)
+        await second?.value
+
+        XCTAssertTrue(center.addedRequests.isEmpty, "neither withdrawn offer is posted")
+        XCTAssertEqual(
+            reporter.entries,
+            [
+                .init(outcome: .withdrawnBeforeDelivery, surface: .driftOffer),
+                .init(outcome: .withdrawnBeforeDelivery, surface: .driftOffer),
+            ]
+        )
+    }
+
     /// With in-progress reports (proto v32) the offer arrives while the person
     /// is away and is withdrawn when they come back. The two pushes, decoded
     /// from the wire, through the coordinator the app wires: the banner is
@@ -643,13 +685,16 @@ private final class HangingPermissionManager: PermissionManagerProtocol, @unchec
     }
 }
 
-/// A notification-settings query that answers only when the test says so, so
-/// an offer can be withdrawn while it is in flight.
+/// Notification-settings queries that answer only when the test says so,
+/// oldest first, so an offer can be withdrawn while its query is in flight.
 private final class GatedPermissionManager: PermissionManagerProtocol, @unchecked Sendable {
     private let subject = CurrentValueSubject<[PermissionType: PermissionStatus], Never>(
         [.notifications: .granted])
-    private var pending: CheckedContinuation<PermissionStatus, Never>?
-    private(set) var checkCount = 0
+    private let lock = NSLock()
+    private var pending: [CheckedContinuation<PermissionStatus, Never>] = []
+    private var checks = 0
+
+    var checkCount: Int { lock.withLock { checks } }
 
     var statusPublisher: AnyPublisher<[PermissionType: PermissionStatus], Never> {
         subject.eraseToAnyPublisher()
@@ -657,8 +702,10 @@ private final class GatedPermissionManager: PermissionManagerProtocol, @unchecke
 
     func checkStatus(for permission: PermissionType) async -> PermissionStatus {
         await withCheckedContinuation { continuation in
-            pending = continuation
-            checkCount += 1
+            lock.withLock {
+                pending.append(continuation)
+                checks += 1
+            }
         }
     }
 
@@ -666,9 +713,10 @@ private final class GatedPermissionManager: PermissionManagerProtocol, @unchecke
         .granted
     }
 
+    /// Answers the oldest query still waiting.
     func release(with status: PermissionStatus) {
-        pending?.resume(returning: status)
-        pending = nil
+        let oldest = lock.withLock { pending.isEmpty ? nil : pending.removeFirst() }
+        oldest?.resume(returning: status)
     }
 }
 

@@ -126,7 +126,6 @@ Tests/VelvtMacTests/Scope3SyntheticSnapshotTests.swift Indentation
 Tests/VelvtMacTests/Scope4SyntheticSnapshotTests.swift Indentation
 Tests/VelvtMacTests/ServiceManagerTests.swift AddLines
 Tests/VelvtMacTests/ServiceManagerTests.swift Indentation
-Tests/VelvtMacTests/ServiceManagerTests.swift OrderedImports
 Tests/VelvtMacTests/ServiceManagerTests.swift Spacing
 Tests/VelvtMacTests/UIModuleTests.swift AddLines
 Tests/VelvtMacTests/UIModuleTests.swift Indentation

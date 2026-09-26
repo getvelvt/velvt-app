@@ -148,6 +148,13 @@ jobs:
         with:
           python-version-file: .python-version
 
+      # Every shipped Swift and Rust string literal, checked for the capability
+      # claims the product cannot make ("learns", "adapts", "predicts", "gets
+      # smarter"). The Swift client shipped "Learning from your recent
+      # sessions" with a test pinning it, because nothing checked Swift copy.
+      - name: Check copy for banned capability claims
+        run: make lint-copy
+
       # The cohort export, the analysis harness, the boundary proof, the trace
       # generator, and the guards' own tests. Seconds. No CI job ran them
       # before, and they were committed without executable bits, so `make

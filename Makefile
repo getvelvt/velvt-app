@@ -1,4 +1,4 @@
-.PHONY: check-rust-toolchain check-swift-toolchain check-xcode-version prepare-dmg-tool build-rust test-rust bench-rust check-rust-onnx lint-rust build-swift test-swift lint-swift build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release test-measurement verify-release verify-release-production build-app-local-core clean
+.PHONY: check-rust-toolchain check-swift-toolchain check-xcode-version prepare-dmg-tool build-rust test-rust bench-rust check-rust-onnx lint-rust build-swift test-swift lint-swift lint-copy build-all test-all build-app package-release dmg alpha-dmg release update-archive update-appcast verify-update-release test-update-release test-dmg-release test-measurement verify-release verify-release-production build-app-local-core clean
 
 ifeq ($(OS),Windows_NT)
 NULL_DEVICE := NUL
@@ -154,6 +154,13 @@ test-swift: check-swift-toolchain
 # docs/toolchains-and-lint.md.
 lint-swift: check-swift-toolchain
 	./scripts/lint_swift.sh
+
+# Every shipped Swift and Rust string literal, checked for the capability
+# claims the product cannot make: learns, adapts, predicts, gets smarter,
+# behavioural modelling. Needs only python3. See scripts/check_banned_copy.py
+# for what is scanned, what is not, and the allowlist.
+lint-copy:
+	./scripts/check_banned_copy.py
 
 build-all: build-rust build-swift
 

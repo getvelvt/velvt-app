@@ -7,8 +7,9 @@
 > (`plan/04-alpha-cohort-kit.md`), against notarized 1.0.11 (or 1.0.9 as the
 > fallback), and the kit differs from this guide where it matters: testers do
 > not sign up or sign in, they are asked to allow notifications because the
-> drift offer is the thing being tested, and the drift gate is policy v2
-> (≥ 3 switches after a 3-minute warm-up). Where the two disagree, the kit is
+> drift offer is the thing being tested, and the drift gate is policy v3
+> (≥ 3 switches after a 3-minute warm-up, decided as each switch happens).
+> Where the two disagree, the kit is
 > right. The one correction made here is the app's name: it installs as
 > **Velvt.app**, not `velvt-mac.app`.
 

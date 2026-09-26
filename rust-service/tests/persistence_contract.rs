@@ -480,6 +480,7 @@ fn abstraction_engine_uses_sqlite_mapping_store_across_recreation() {
         declared_app_category: None,
         document_type_ids: Vec::new(),
         focused_document_url: None,
+        in_progress: false,
         duration_seconds: 0,
     };
     let first = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
@@ -509,6 +510,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
         declared_app_category: None,
         document_type_ids: Vec::new(),
         focused_document_url: None,
+        in_progress: false,
         duration_seconds: 0,
     };
     let initial = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
@@ -598,6 +600,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
                 declared_app_category: None,
                 document_type_ids: Vec::new(),
                 focused_document_url: None,
+                in_progress: false,
             })
             .unwrap();
     assert_eq!(different_title.classification_source().as_str(), "fallback");
@@ -617,6 +620,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
             declared_app_category: None,
             document_type_ids: Vec::new(),
             focused_document_url: None,
+            in_progress: false,
         })
         .unwrap();
     assert_eq!(reverted.classification_source().as_str(), "fallback");
@@ -766,6 +770,7 @@ fn explicit_correction_generalizes_locally_and_remove_forgets_semantic_prototype
         declared_app_category: None,
         document_type_ids: Vec::new(),
         focused_document_url: None,
+        in_progress: false,
         duration_seconds: 0,
     };
 
@@ -855,6 +860,7 @@ fn event_upload_and_structured_insight_round_trip_rehydrates_real_app_name_local
         declared_app_category: None,
         document_type_ids: Vec::new(),
         focused_document_url: None,
+        in_progress: false,
         duration_seconds: 0,
     };
     let abstracted = AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store())
@@ -909,6 +915,7 @@ fn raw_title_never_becomes_a_local_display_label_or_ready_insight() {
             declared_app_category: None,
             document_type_ids: Vec::new(),
             focused_document_url: None,
+            in_progress: false,
         })
         .unwrap();
 

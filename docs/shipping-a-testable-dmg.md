@@ -200,11 +200,15 @@ a Release build, so this is unavailable in the DMG.
 Device-local, deterministic, and independent of the cloud, so it works on a
 fresh install with no account and no baseline history:
 
-This is drift policy v2 (`DRIFT_POLICY_VERSION = 2`, velvt-app PR #40, in
-1.0.9 and later). The gate constants are in `rust-service/src/work_block/mod.rs`:
+This is drift policy v3 (`DRIFT_POLICY_VERSION = 3`, protocol 32, velvt-app
+PR #56). The gate constants are in `rust-service/src/work_block/mod.rs`:
 ≥ 3 confident switches away from the anchor inside a rolling 10-minute window,
-after ≥ 3 minutes elapsed, with ≥ 2 minutes remaining. The previous gate, v1,
-was ≥ 4 switches after 5 minutes; it no longer ships.
+after ≥ 3 minutes elapsed, with ≥ 2 minutes remaining. They are v2's (PR #40,
+1.0.9 to 1.0.11); v3 changes when a switch reaches the gate, which is now the
+moment it happens. Under v2 the gate heard of a switch only when you came back,
+and the offer was withdrawn at your next switch, often before a notification
+was posted. The first
+gate, v1, was ≥ 4 switches after 5 minutes; it no longer ships.
 
 1. Start a work block of **25 minutes** (anything that leaves 2 minutes after
    the switches works).
@@ -214,8 +218,10 @@ was ≥ 4 switches after 5 minutes; it no longer ships.
    minutes**, spending long enough in each for a confident classification.
    COMMUNICATION, SOCIAL_FEED and PASSIVE_CONSUMPTION all count; a one-second
    flick does not.
-4. A notification and an in-app card should appear. The body is one of four
-   frozen wordings, for example:
+4. On the third switch away, stay in the other app. A notification and an
+   in-app card should appear while you are still there, within a second or
+   two of arriving. Coming back to the anchor withdraws the offer. The body is
+   one of four frozen wordings, for example:
 
    > Velvt observed 3 switches away from focus work in the last 10 minutes.
    > Protect the next 10 minutes for the work you chose.
@@ -234,7 +240,7 @@ delivered later).
 | Focus / DND not suppressing it | Control Centre → Focus |
 | Service running and connected | Menu bar shows a connected state, not "Collection paused" |
 | Accessibility granted | System Settings → Privacy & Security → Accessibility |
-| Gates actually met | ≥3 confident switches in 10 min, ≥3 min elapsed, ≥2 min remaining (policy v2) |
+| Gates actually met | ≥3 confident switches in 10 min, ≥3 min elapsed, ≥2 min remaining (policy v3) |
 | Delivery outcome | `bash scripts/watch_notifications.sh` reports `notification_delivered` or why it was not |
 | Already offered this block | One per block — start a new one |
 

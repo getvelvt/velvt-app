@@ -102,6 +102,7 @@ fn raw_event(seconds: i64, app_name: &str, window_title: &str) -> RawEvent {
         declared_app_category: None,
         document_type_ids: Vec::new(),
         focused_document_url: None,
+        in_progress: false,
         duration_seconds: 0,
     }
 }

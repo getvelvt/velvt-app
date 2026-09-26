@@ -13,8 +13,9 @@ ratio on its own is not reportable evidence.
 This script computes. It does not decide. Every threshold and definition here
 is read from that file's pre-registration (2026-08-09), its additions
 (2026-08-17), the amendment that replaced the primary outcome (2026-08-21), the
-correction of 2026-08-31, and the drift policy v2 amendment and 0.1.6 metrics
-(both 2026-09-25), all written before any cohort data existed. Nothing may be
+correction of 2026-08-31, the drift policy v2 amendment and 0.1.6 metrics
+(both 2026-09-25), and the drift policy v3 note (2026-09-26), all written
+before any cohort data existed. Nothing may be
 added after seeing results. If a definition turns out to be wrong, amend it in
 a dated note stating what was known at the time.
 
@@ -85,7 +86,16 @@ WARMUP_EXCLUSION_SECONDS = 180
 
 # Amendment, dated 2026-09-25: rows from drift policy v1 and v2 are never
 # pooled, and every cohort result uses policy_version 2 only.
-ANALYSED_POLICY_VERSION = 2
+#
+# Note, dated 2026-09-26: drift policy v3 (velvt-app PR #56, protocol 32)
+# keeps every v2 constant, so the warm-up exclusion above stands, but each
+# dwell now reaches the gate when it begins instead of when it ends. The set of
+# decision points differs from v2, and an offer now reaches the person while
+# they are away instead of being withdrawn as they come back. Rows from v1, v2
+# and v3 are never pooled, and every cohort result uses policy_version 3 only.
+# The note is `pitch-deck-inputs/evidence/drafts/2026-09-26-policy-v3-note.md`
+# until the founder appends it to traction-summary.md.
+ANALYSED_POLICY_VERSION = 3
 
 # A `work_block_intervention` row has no policy column. It takes the
 # policy_version of the decision-log row for the same block_id whose verdict is
@@ -271,7 +281,7 @@ class Cohort:
     # Policy bookkeeping (2026-09-25 amendment).
     decisions_by_policy: Counter = field(default_factory=Counter)
     offers_by_attribution: Counter = field(default_factory=Counter)
-    v2_decisions: list = field(default_factory=list)
+    analysed_decisions: list = field(default_factory=list)
     eligible: list = field(default_factory=list)
     era_excluded: Counter = field(default_factory=Counter)
     non_monotonic_policy: list[str] = field(default_factory=list)
@@ -281,7 +291,8 @@ class Cohort:
     explain: dict = field(default_factory=dict)
     # Correction counts per participant. They carry no timestamp, so they
     # cannot be split at a policy upgrade; `corrections_span_policy_change`
-    # names the participants whose counts include time before policy v2.
+    # names the participants whose counts include time before the analysed
+    # policy.
     corrections: dict = field(default_factory=dict)
     corrections_span_policy_change: list[str] = field(default_factory=list)
 
@@ -549,8 +560,8 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
 
     # --- Decisions, and the attribution map --------------------------------
     attribution: dict[str, set[int]] = {}
-    non_v2_times: list[int] = []
-    v2_times: list[int] = []
+    other_policy_times: list[int] = []
+    analysed_times: list[int] = []
     for row in participant.decision_rows:
         version = _int(row, "policy_version")
         verdict = _text(row, "gate_verdict")
@@ -567,11 +578,11 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
         if verdict in ATTRIBUTING_VERDICTS and block_id:
             attribution.setdefault(block_id, set()).add(version)
         if version != ANALYSED_POLICY_VERSION:
-            non_v2_times.append(occurred)
+            other_policy_times.append(occurred)
             continue
-        v2_times.append(occurred)
+        analysed_times.append(occurred)
         record = {"participant": name, "row": row}
-        cohort.v2_decisions.append(record)
+        cohort.analysed_decisions.append(record)
         if verdict != "offered":
             continue
         elapsed = _elapsed(
@@ -589,17 +600,17 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
         cohort.eligible.append({"participant": name, "row": row, "meta": participant.meta})
 
     # Rows with no policy column of their own (blocks, invitations, explain
-    # weeks) are counted under policy 2 only if they come after this Mac's last
-    # decision under any other policy. Conservative on purpose: a row from
-    # before an upgrade cannot be told apart from one just after it.
-    non_v2_until = max(non_v2_times) if non_v2_times else None
-    if non_v2_times and v2_times and max(non_v2_times) > min(v2_times):
+    # weeks) are counted under the analysed policy only if they come after this
+    # Mac's last decision under any other policy. Conservative on purpose: a row
+    # from before an upgrade cannot be told apart from one just after it.
+    other_policy_until = max(other_policy_times) if other_policy_times else None
+    if other_policy_times and analysed_times and max(other_policy_times) > min(analysed_times):
         cohort.non_monotonic_policy.append(name)
 
-    def in_v2_era(timestamp: int | None) -> bool:
-        if non_v2_until is None:
+    def in_analysed_era(timestamp: int | None) -> bool:
+        if other_policy_until is None:
             return True
-        return timestamp is not None and timestamp > non_v2_until
+        return timestamp is not None and timestamp > other_policy_until
 
     # --- Interventions -------------------------------------------------------
     if not participant.offer_rows:
@@ -633,7 +644,8 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
         cohort.offers_by_attribution[str(version)] += 1
         if version != ANALYSED_POLICY_VERSION:
             cohort.excluded.append(
-                Excluded(name, f"offer {block_id}", f"policy_version {version}, never pooled with 2",
+                Excluded(name, f"offer {block_id}",
+                         f"policy_version {version}, never pooled with {ANALYSED_POLICY_VERSION}",
                          f"intervention under policy_version {version}")
             )
             continue
@@ -704,7 +716,7 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             if origin and origin not in BLOCK_ORIGINS:
                 cohort.malformed.append(f"{name}: block origin {origin!r}")
                 continue
-            if not in_v2_era(started):
+            if not in_analysed_era(started):
                 cohort.era_excluded["blocks"] += 1
                 continue
             kept.append({"phase": phase, "origin": origin, "started_at": started})
@@ -719,7 +731,7 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             if outcome not in INVITATION_TERMINAL_OUTCOMES + INVITATION_OPEN_OUTCOMES:
                 cohort.malformed.append(f"{name}: invitation outcome {outcome!r}")
                 continue
-            if not in_v2_era(offered):
+            if not in_analysed_era(offered):
                 cohort.era_excluded["invitations"] += 1
                 continue
             kept.append({"outcome": outcome, "policy_version": _text(row, "policy_version")})
@@ -728,12 +740,12 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
     # --- Explain probe weeks ----------------------------------------------------
     if participant.explain_rows is not None:
         # A local Monday key cannot be placed on the UTC axis exactly, so the
-        # week holding the last non-v2 decision and the day after it are both
-        # treated as possibly mixed.
+        # week holding the last decision under another policy and the day
+        # after it are both treated as possibly mixed.
         cutoff = None
-        if non_v2_until is not None:
+        if other_policy_until is not None:
             cutoff = (
-                datetime.fromtimestamp(non_v2_until, tz=timezone.utc).date()
+                datetime.fromtimestamp(other_policy_until, tz=timezone.utc).date()
                 + timedelta(days=1)
             ).isoformat()
         kept = []
@@ -782,7 +794,7 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             else:
                 window[category] = rules
         cohort.corrections[name] = {"app": app, "window": window}
-        if non_v2_until is not None:
+        if other_policy_until is not None:
             cohort.corrections_span_policy_change.append(name)
 
 
@@ -830,7 +842,7 @@ def _primary(cohort: Cohort) -> dict:
         ),
         "eligible_decision_points": eligible,
         "eligible_definition": (
-            "policy_version 2 decision-log rows with gate_verdict 'offered', after "
+            f"policy_version {ANALYSED_POLICY_VERSION} decision-log rows with gate_verdict 'offered', after "
             "the warm-up exclusion. With propensity fixed at 1.0 the shipped "
             "gate_verdict CHECK has no eligible-but-silent value, so the eligible "
             "set and the offered set are the same (2026-08-31 correction)."
@@ -1043,7 +1055,7 @@ def _corrections(cohort: Cohort) -> dict:
         ],
         "total_app_scoped_corrections": sum(by_category.values()),
         "app_scoped_corrections_by_category": dict(sorted(by_category.items())),
-        "includes_history_before_policy_v2": sorted(cohort.corrections_span_policy_change),
+        "includes_history_before_analysed_policy": sorted(cohort.corrections_span_policy_change),
         "not_measurable_for": sorted(
             p.name for p in cohort.analysed if p.name not in cohort.corrections
         ),
@@ -1054,7 +1066,7 @@ def _integrity(cohort: Cohort) -> dict:
     verdicts = Counter()
     deviations = 0
     anchor_seen = Counter()
-    for record in cohort.v2_decisions:
+    for record in cohort.analysed_decisions:
         row = record["row"]
         verdicts[_text(row, "gate_verdict")] += 1
         propensity = _float(row, "propensity")
@@ -1064,10 +1076,10 @@ def _integrity(cohort: Cohort) -> dict:
         anchor_seen[value if value in ("0", "1") else "NULL"] += 1
     return {
         "definition": (
-            "Every policy_version 2 decision-log row of the analysed participants. "
+            f"Every policy_version {ANALYSED_POLICY_VERSION} decision-log row of the analysed participants. "
             "No warm-up exclusion: this describes the log, not an outcome."
         ),
-        "rows": len(cohort.v2_decisions),
+        "rows": len(cohort.analysed_decisions),
         "by_gate_verdict": dict(sorted(verdicts.items())),
         "propensity_not_1_0_protocol_deviations": deviations,
         "anchor_seen_within_600s": {
@@ -1104,9 +1116,13 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
     if cohort.excluded_whole:
         excluded_reasons["participant excluded whole"] += len(cohort.excluded_whole)
     if cohort.decisions_by_policy:
-        non_v2 = sum(n for v, n in cohort.decisions_by_policy.items() if v != ANALYSED_POLICY_VERSION)
-        if non_v2:
-            excluded_reasons["decision rows not under policy_version 2"] += non_v2
+        other_policy = sum(
+            n for v, n in cohort.decisions_by_policy.items() if v != ANALYSED_POLICY_VERSION
+        )
+        if other_policy:
+            excluded_reasons[
+                f"decision rows not under policy_version {ANALYSED_POLICY_VERSION}"
+            ] += other_policy
 
     return {
         "participants": {
@@ -1120,8 +1136,9 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
         "policy": {
             "analysed_policy_version": ANALYSED_POLICY_VERSION,
             "rule": (
-                "2026-09-25 amendment: policy_version 1 and 2 are never pooled and "
-                "every result uses policy_version 2 only. An intervention row takes "
+                "2026-09-25 amendment and 2026-09-26 note: policy_version 1, 2 and 3 "
+                "are never pooled and every result uses policy_version "
+                f"{ANALYSED_POLICY_VERSION} only. An intervention row takes "
                 "the policy_version of the decision-log row for the same block_id "
                 "whose gate_verdict is offered, withheld_demotion or suppressed_dnd; "
                 "one with no such row is counted and excluded."
@@ -1130,12 +1147,14 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
                 str(k): v for k, v in sorted(cohort.decisions_by_policy.items())
             },
             "interventions_by_attribution": dict(sorted(cohort.offers_by_attribution.items())),
-            "rows_before_last_non_v2_decision_excluded": dict(sorted(cohort.era_excluded.items())),
+            "rows_before_last_other_policy_decision_excluded": dict(
+                sorted(cohort.era_excluded.items())
+            ),
             "non_monotonic_policy_history": sorted(cohort.non_monotonic_policy),
         },
         "decisions_recorded": {
             "definition": (
-                "Every policy-2 intervention row the gate wrote, delivered or not, "
+                f"Every policy-{ANALYSED_POLICY_VERSION} intervention row the gate wrote, delivered or not, "
                 "after exclusions. Reported so the delivered denominator can be "
                 "audited against it."
             ),
@@ -1149,7 +1168,7 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
             "assumptions": POWER_ASSUMPTIONS,
             "sufficient": eligible >= POWER_REQUIRED_DECISION_POINTS,
             "note": (
-                "Counts policy_version 2 eligible decision points only, before "
+                f"Counts policy_version {ANALYSED_POLICY_VERSION} eligible decision points only, before "
                 "censoring, so it is an upper bound on how close this data gets."
             ),
         },
@@ -1225,12 +1244,12 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
         "exclusions": {
             "declared_in_advance": [
                 f"blocks whose elapsed time (ended_at - started_at - total_paused_seconds) "
-                f"is under {WARMUP_EXCLUSION_SECONDS}s, below the policy v2 warm-up "
+                f"is under {WARMUP_EXCLUSION_SECONDS}s, below the policy v2 and v3 warm-up "
                 "(2026-09-25; was 300 s)",
                 "the founder's own device",
                 "any participant who reinstalled mid-cohort (local history resets with the database)",
-                "rows not attributable to policy_version 2, and exports without the "
-                "decision log (2026-09-25)",
+                f"rows not attributable to policy_version {ANALYSED_POLICY_VERSION}, and "
+                "exports without the decision log (2026-09-25, 2026-09-26)",
             ],
             "applied_here": sum(excluded_reasons.values()),
             "by_reason": dict(sorted(excluded_reasons.items())),
@@ -1272,7 +1291,7 @@ def render(result: dict) -> str:
         add(textwrap.fill(text, width=76, initial_indent=indent, subsequent_indent=indent))
 
     p = result["participants"]
-    add("COHORT ANALYSIS (drift policy v2 only)")
+    add(f"COHORT ANALYSIS (drift policy v{ANALYSED_POLICY_VERSION} only)")
     add("=" * 64)
     add(f"exports received:        {p['exports_received']}")
     add(f"  analysed:              {p['analysed']}")
@@ -1293,9 +1312,9 @@ def render(result: dict) -> str:
     para(policy["rule"])
     add(f"  decision rows by policy_version: {policy['decisions_by_policy_version'] or '{}'}")
     add(f"  interventions by attribution:    {policy['interventions_by_attribution'] or '{}'}")
-    if policy["rows_before_last_non_v2_decision_excluded"]:
-        add(f"  rows before a Mac's last non-v2 decision, excluded: "
-            f"{policy['rows_before_last_non_v2_decision_excluded']}")
+    if policy["rows_before_last_other_policy_decision_excluded"]:
+        add(f"  rows before a Mac's last decision under another policy, excluded: "
+            f"{policy['rows_before_last_other_policy_decision_excluded']}")
     if policy["non_monotonic_policy_history"]:
         add(f"  ! policy history goes back and forth on: {policy['non_monotonic_policy_history']}")
 
@@ -1306,7 +1325,7 @@ def render(result: dict) -> str:
     add("  points, under assumptions none of which are measured:")
     para(f"{power['assumptions']}.", "    ")
     add(f"  This data carries {power['observed_eligible_decision_points']} "
-        "(policy_version 2, before censoring).")
+        f"(policy_version {ANALYSED_POLICY_VERSION}, before censoring).")
     if not power["sufficient"]:
         add("  Every ratio below is reported for completeness and is not a finding.")
 
@@ -1456,12 +1475,12 @@ def render(result: dict) -> str:
         add("  not measurable from the cohort export (no corrections file)")
     if corrections["not_measurable_for"]:
         add(f"  no corrections file: {corrections['not_measurable_for']}")
-    if corrections["includes_history_before_policy_v2"]:
-        add(f"  ! counts include time before policy v2, not separable: "
-            f"{corrections['includes_history_before_policy_v2']}")
+    if corrections["includes_history_before_analysed_policy"]:
+        add(f"  ! counts include time before policy v{ANALYSED_POLICY_VERSION}, not separable: "
+            f"{corrections['includes_history_before_analysed_policy']}")
 
     integrity = result["decision_log_integrity"]
-    heading("DECISION-LOG INTEGRITY (policy_version 2 rows)")
+    heading(f"DECISION-LOG INTEGRITY (policy_version {ANALYSED_POLICY_VERSION} rows)")
     add(f"  rows: {integrity['rows']}")
     for verdict, count in integrity["by_gate_verdict"].items():
         add(f"  {verdict:24} {count}")

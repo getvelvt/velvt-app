@@ -53,9 +53,10 @@ const INTENTION_RETENTION_HOURS: i64 = 24;
 /// offers across the 100 pure-noise traces in `tests/trace_replay.rs` suite B,
 /// which accepts none. `DRIFT_WINDOW_SECONDS` and `DRIFT_MIN_REMAINING_SECONDS`
 /// are unchanged — neither appears in the abstention record, and widening the
-/// window would change what "recently" means in copy that is frozen. This is
-/// policy version 2 (`DRIFT_POLICY_VERSION`); version 1 was 4 switches after a
-/// 5-minute warm-up.
+/// window would change what "recently" means in copy that is frozen. These
+/// constants are policy version 2 and, unchanged, version 3
+/// (`DRIFT_POLICY_VERSION`); version 1 was 4 switches after a 5-minute
+/// warm-up.
 ///
 /// These are still an uncalibrated guess, now a less strict one. The thing that
 /// replaces guessing is randomization with a recorded propensity, not a better
@@ -67,10 +68,21 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// The version of the decision policy above, stamped on every logged decision.
 ///
 /// Bump it whenever a gate constant, a branch, or the order of the branches
-/// changes meaning. Decisions logged under different policy versions are not
-/// pooled: a rate computed across a policy change is a number about two
-/// different policies.
-pub const DRIFT_POLICY_VERSION: u32 = 2;
+/// changes meaning, or when the evidence the gate decides on changes. Decisions
+/// logged under different policy versions are not pooled: a rate computed
+/// across a policy change is a number about two different policies.
+///
+/// Version 3 (protocol 32, 2026-09-26) keeps every constant and branch of
+/// version 2 and changes when a dwell reaches the gate. Version 2 saw a dwell
+/// only when the person left it, so a departure was decided on only once they
+/// had come back, and the offer lasted until their next switch (one second on
+/// the founder's Mac on 2026-09-25, too short to be posted); a departure
+/// still in progress when the block ended, or when the Mac slept, was never
+/// decided on at all; and a dwell interrupted by a pause or a restart was
+/// decided on at the resume. Version 3 decides on each dwell once, when it
+/// begins. The set of decision points differs, and so does what an `offered`
+/// row means for the person, so the two are never pooled.
+pub const DRIFT_POLICY_VERSION: u32 = 3;
 /// The realized probability of the arm actually taken. Exactly 1.0 while the
 /// policy is deterministic — there is no randomization, and none is being
 /// introduced here. The value is recorded now because a propensity cannot be
@@ -574,18 +586,36 @@ impl WorkBlockManager {
                 });
         }
         let at = effective_now(&record, occurred_at).min(planned_deadline(&record));
-        if self
-            .repo
-            .latest_observation(&record.block_id)?
-            .is_some_and(|latest| {
-                latest.ended_at.is_none()
-                    && latest.category == category
-                    && latest.classification_status == status
-                    && latest.classification_confidence == confidence
-            })
+        let latest = self.repo.latest_observation(&record.block_id)?;
+        let same_evidence = |latest: &WorkBlockObservation| {
+            latest.category == category
+                && latest.classification_status == status
+                && latest.classification_confidence == confidence
+        };
+        // A dwell is reported twice since protocol 32: in progress when it
+        // begins, and closed, with the same `occurred_at`, when it ends. The
+        // first report opens the row and runs the gate; the second finds its
+        // own row still open with the same evidence and stops here, so one
+        // dwell is one observation and one decision either way.
+        if latest
+            .as_ref()
+            .is_some_and(|latest| latest.ended_at.is_none() && same_evidence(latest))
         {
             return Ok(None);
         }
+        // A boundary between the two reports (a pause, a sleep, a service
+        // restart) closes the row the in-progress report opened. The closed
+        // report that follows is still the same dwell, not a new one: it began
+        // no later than that row did. It re-opens the ledger at `at`, as a
+        // closed report always did after a boundary, so the time after the
+        // boundary is still observed. It is not evaluated again: the gate
+        // decided on this dwell when it began, and a second decision for the
+        // same dwell would count one departure twice in the decision log.
+        let continues_decided_dwell = latest.as_ref().is_some_and(|latest| {
+            latest.ended_at.is_some()
+                && same_evidence(latest)
+                && latest.occurred_at.timestamp() >= occurred_at.timestamp()
+        });
         self.repo.close_open_observation(&record.block_id, at)?;
         let observation = WorkBlockObservation {
             occurred_at: at,
@@ -596,6 +626,13 @@ impl WorkBlockManager {
         };
         self.repo
             .append_observation(&record.block_id, &observation)?;
+        if continues_decided_dwell {
+            let snapshot = self.snapshot_for(record, at)?;
+            return Ok(Some(ObservationOutcome {
+                snapshot,
+                intervention: None,
+            }));
+        }
         // Observing the return closes the loop: an offer is only worth making
         // if its outcome is recorded.
         self.record_return_if_pending(&record, &observation, at)?;
@@ -1282,14 +1319,18 @@ impl WorkBlockManager {
     /// restart, or the end — where its own dwell ended, never at the boundary.
     ///
     /// A row's end is otherwise the next row's start, and at a boundary there
-    /// is no next row. Swift reports a dwell when the user leaves it, so the
-    /// dwell they are in at the boundary has not been reported yet, and the
-    /// open row belongs to the one before it. Stretching that row to the
-    /// boundary filed every unreported second under a category the user had
-    /// already left (`00-GROUND-TRUTH.md` § 6c). Its own dwell's measured
-    /// length is in `raw_event_buffer`, so the row closes there and the
-    /// unreported remainder stays unobserved: Rust has no evidence of what it
-    /// was, and an absent claim is recoverable where a wrong one is not.
+    /// is no next row. Swift reports a dwell's length only when the user
+    /// leaves it, so the dwell they are in at the boundary has not been
+    /// measured yet. Either the open row belongs to the dwell before it, or,
+    /// since protocol 32, it was opened by the current dwell's in-progress
+    /// report and has no measured length at all. Stretching it to the
+    /// boundary filed every unmeasured second under a category the user had
+    /// already left, or claimed seconds nobody measured (`00-GROUND-TRUTH.md`
+    /// § 6c). A row's own measured length is in `raw_event_buffer` once its
+    /// closed report arrives, so the row closes there, or where it opened when
+    /// there is none, and the unmeasured remainder stays unobserved: Rust has
+    /// no evidence of what it was, and an absent claim is recoverable where a
+    /// wrong one is not.
     fn close_open_observation_at_reported_end(
         &self,
         block_id: &str,

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 31;
+pub const PROTOCOL_VERSION: u32 = 32;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -280,6 +280,20 @@ pub struct RawEvent {
     /// privacy boundary before any event persistence or upload construction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focused_document_url: Option<String>,
+    /// True when this dwell has only just begun: the activity became
+    /// frontmost at `occurred_at` and nothing has been measured yet, so
+    /// `duration_seconds` carries no information (protocol 32).
+    ///
+    /// Swift reports every dwell when it ends, because only then is its
+    /// length known, and that made every in-block decision retrospective: the
+    /// drift gate learned about a departure at the moment the person came
+    /// back, so the offer it made was withdrawn by the next observation
+    /// before anyone could see it. An in-progress report carries the same
+    /// facts at the start, for the work-block gate only. It is never stored
+    /// and never uploaded; the same dwell arrives again, closed, with its
+    /// measured duration, and that report is the only one the ledger keeps.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_progress: bool,
 }
 
 /// The most declared document types one raw event may carry.
@@ -393,6 +407,7 @@ impl std::fmt::Debug for RawEvent {
                 &self.declared_app_category.as_ref().map(|_| "[redacted]"),
             )
             .field("document_type_count", &self.document_type_ids.len())
+            .field("in_progress", &self.in_progress)
             .finish()
     }
 }
@@ -2097,7 +2112,7 @@ mod v28_demotion_receipts_probe_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 31);
+        assert_eq!(PROTOCOL_VERSION, 32);
     }
 
     #[test]
@@ -2687,7 +2702,7 @@ mod v30_classification_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 31);
+        assert_eq!(PROTOCOL_VERSION, 32);
     }
 
     /// A v29 raw event — no declared metadata at all — must decode, and must
@@ -2728,6 +2743,7 @@ mod v30_classification_contract {
             declared_app_category: Some("public.app-category.developer-tools".into()),
             document_type_ids: vec!["public.plain-text".into(), "public.source-code".into()],
             focused_document_url: None,
+            in_progress: false,
         };
         let encoded = serde_json::to_string(&event).unwrap();
         let decoded: RawEvent = serde_json::from_str(&encoded).unwrap();
@@ -2773,6 +2789,7 @@ mod v30_classification_contract {
             declared_app_category: None,
             document_type_ids: types,
             focused_document_url: None,
+            in_progress: false,
         };
 
         let at_limit = (0..MAX_DOCUMENT_TYPE_IDS)
@@ -2820,6 +2837,7 @@ mod v30_classification_contract {
             declared_app_category: Some("x".repeat(512)),
             document_type_ids: Vec::new(),
             focused_document_url: None,
+            in_progress: false,
         };
         assert_eq!(event.validate_declared_metadata(), Ok(()));
     }
@@ -2981,6 +2999,67 @@ mod v31_anchor_category_contract {
             let encoded = serde_json::to_string(&message).unwrap();
             let decoded: ServerMessage = serde_json::from_str(&encoded).unwrap();
             assert_eq!(decoded, message);
+        }
+    }
+}
+
+#[cfg(test)]
+mod v32_in_progress_contract {
+    use super::*;
+
+    fn event(in_progress: bool) -> RawEvent {
+        RawEvent {
+            event_id: Uuid::nil(),
+            occurred_at: "2026-09-25T22:02:37Z".parse().unwrap(),
+            duration_seconds: 0,
+            app_name: "PRIVATE_APP".into(),
+            window_title: "PRIVATE_TITLE".into(),
+            bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
+            focused_document_url: None,
+            in_progress,
+        }
+    }
+
+    #[test]
+    fn protocol_version_is_current() {
+        assert_eq!(PROTOCOL_VERSION, 32);
+    }
+
+    /// A closed dwell is the only thing a pre-32 client ever sent, and it has
+    /// no `in_progress` key. It must still decode, as a closed dwell, and a
+    /// closed dwell must still encode without the key, so the ledger path sees
+    /// byte-for-byte the frame it always did.
+    #[test]
+    fn a_closed_dwell_has_no_in_progress_key_either_way() {
+        let v31 = r#"{
+            "event_id": "00000000-0000-0000-0000-000000000000",
+            "occurred_at": "2026-09-25T22:02:37Z",
+            "duration_seconds": 48,
+            "app_name": "App",
+            "window_title": "",
+            "bundle_id": null
+        }"#;
+        let decoded: RawEvent = serde_json::from_str(v31).unwrap();
+        assert!(!decoded.in_progress);
+
+        let encoded = serde_json::to_string(&event(false)).unwrap();
+        assert!(!encoded.contains("in_progress"), "{encoded}");
+    }
+
+    #[test]
+    fn an_in_progress_dwell_round_trips_and_stays_redacted() {
+        let message = ClientMessage::RawEvent(event(true));
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert!(encoded.contains(r#""in_progress":true"#), "{encoded}");
+        let decoded: ClientMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+
+        let debug = format!("{:?}", event(true));
+        assert!(debug.contains("in_progress: true"), "{debug}");
+        for forbidden in ["PRIVATE_APP", "PRIVATE_TITLE"] {
+            assert!(!debug.contains(forbidden), "{debug}");
         }
     }
 }

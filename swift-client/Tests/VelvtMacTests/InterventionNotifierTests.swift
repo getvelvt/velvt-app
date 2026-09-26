@@ -418,6 +418,202 @@ final class InterventionNotifierTests: XCTestCase {
         )
     }
 
+    /// The founder's Mac on 2026-09-25: one notification-settings query, no
+    /// request added, and nothing on the log. The offer had been withdrawn
+    /// while the query was in flight, and that exit was the only one that
+    /// reported nothing. Not posting is right — the offer was no longer true —
+    /// but it has to be said.
+    func test_an_offer_withdrawn_during_the_permission_check_is_reported_as_withdrawn() async throws {
+        let center = FakeUNUserNotificationCenter()
+        let permissions = GatedPermissionManager()
+        let reporter = RecordingNotificationDeliveryReporter()
+        let notifier = InterventionNotifier(
+            scheduler: UNNotificationScheduler(center: center),
+            permissionManager: permissions,
+            reporter: reporter
+        )
+        let block = UUID()
+
+        let attempt = notifier.handle(snapshot(blockID: block, offeredAt: Date(timeIntervalSince1970: 1000)))
+        try await waitUntil { permissions.checkCount == 1 }
+        XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: nil)))
+        permissions.release(with: .granted)
+        await attempt?.value
+
+        XCTAssertTrue(center.addedRequests.isEmpty, "a withdrawn offer is not posted")
+        XCTAssertEqual(
+            reporter.entries,
+            [.init(outcome: .withdrawnBeforeDelivery, surface: .driftOffer)]
+        )
+    }
+
+    /// Withdrawn while the system alert was up is still withdrawn. It used to
+    /// be logged as `notification_permission_blocked`, with whatever status
+    /// the interrupted request came back with.
+    func test_an_offer_withdrawn_during_the_permission_request_is_not_reported_as_blocked() async throws {
+        let permissions = HangingPermissionManager()
+        let reporter = RecordingNotificationDeliveryReporter()
+        let notifier = InterventionNotifier(
+            scheduler: FakeNotificationScheduler(), permissionManager: permissions, reporter: reporter)
+        let block = UUID()
+
+        let attempt = notifier.handle(snapshot(blockID: block, offeredAt: Date(timeIntervalSince1970: 1000)))
+        try await waitUntil { permissions.requestCount == 1 }
+        XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: nil)))
+        await attempt?.value
+
+        XCTAssertEqual(
+            reporter.entries,
+            [.init(outcome: .withdrawnBeforeDelivery, surface: .driftOffer)]
+        )
+    }
+
+    /// A withdrawn offer's attempt can still be waiting on its settings query
+    /// when the next offer arrives and starts its own. When the stale one
+    /// finally returns it must leave that attempt alone. It used to free the
+    /// one-at-a-time slot, so the new offer got a second attempt and the first
+    /// was orphaned: withdrawing the new offer then cancelled only the second,
+    /// and the orphan posted a banner for an offer that was no longer true.
+    func test_a_withdrawn_attempt_that_returns_late_leaves_the_next_offers_attempt_alone() async throws {
+        let center = FakeUNUserNotificationCenter()
+        let permissions = GatedPermissionManager()
+        let reporter = RecordingNotificationDeliveryReporter()
+        let notifier = InterventionNotifier(
+            scheduler: UNNotificationScheduler(center: center),
+            permissionManager: permissions,
+            reporter: reporter
+        )
+        let block = UUID()
+
+        let first = notifier.handle(snapshot(blockID: block, offeredAt: Date(timeIntervalSince1970: 1000)))
+        try await waitUntil { permissions.checkCount == 1 }
+        XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: nil)))
+        let second = notifier.handle(snapshot(blockID: block, offeredAt: Date(timeIntervalSince1970: 2000)))
+        XCTAssertNotNil(second, "the withdrawn offer's attempt no longer holds the slot")
+        try await waitUntil { permissions.checkCount == 2 }
+
+        permissions.release(with: .granted)
+        await first?.value
+        XCTAssertEqual(permissions.checkCount, 2, "the late return starts no second attempt for the new offer")
+
+        XCTAssertNil(notifier.handle(snapshot(blockID: block, offeredAt: nil)))
+        permissions.release(with: .granted)
+        await second?.value
+
+        XCTAssertTrue(center.addedRequests.isEmpty, "neither withdrawn offer is posted")
+        XCTAssertEqual(
+            reporter.entries,
+            [
+                .init(outcome: .withdrawnBeforeDelivery, surface: .driftOffer),
+                .init(outcome: .withdrawnBeforeDelivery, surface: .driftOffer),
+            ]
+        )
+    }
+
+    /// With in-progress reports (proto v32) the offer arrives while the person
+    /// is away and is withdrawn when they come back. The two pushes, decoded
+    /// from the wire, through the coordinator the app wires: the banner is
+    /// posted in between, once.
+    func test_an_offer_pushed_while_away_is_posted_before_the_return_withdraws_it() async throws {
+        let wired = wiredNotifier(permissionManager: StubPermissionManager(status: .granted))
+        let block = UUID()
+
+        wired.messages.send(try driftOfferPush(blockID: block, offeredAtEpoch: 1_790_388_157))
+        try await waitUntil { wired.center.addedRequests.count == 1 }
+
+        wired.messages.send(.workBlockState(snapshot(blockID: block, offeredAt: nil)))
+        try await waitUntil { wired.coordinator.snapshot?.activeIntervention == nil }
+
+        XCTAssertEqual(wired.center.addedRequests.count, 1)
+        XCTAssertEqual(wired.reporter.entries, [.init(outcome: .delivered, surface: .driftOffer)])
+    }
+
+    /// On the Mac the report that withdrew the offer came about a second after
+    /// the push that made it (22:03:26 to 22:03:27), and the settings query in
+    /// between took about 5 ms (22:03:26.293 to .298). Posting waits on that
+    /// one round trip and nothing else, so an offer withdrawn a second after
+    /// its push has already been posted. The withdrawal is sent on a timer,
+    /// not after the post is seen, so any debounce, coalescing or delay added
+    /// between the socket and the notification centre fails here.
+    func test_an_offer_withdrawn_a_second_after_its_push_was_already_posted() async throws {
+        let permissions = LatencyPermissionManager(latency: .milliseconds(5))
+        let wired = wiredNotifier(permissionManager: permissions)
+        let block = UUID()
+
+        wired.messages.send(try driftOfferPush(blockID: block, offeredAtEpoch: 1_790_388_157))
+        try await Task.sleep(for: .seconds(1))
+        wired.messages.send(.workBlockState(snapshot(blockID: block, offeredAt: nil)))
+        try await waitUntil { wired.coordinator.snapshot?.activeIntervention == nil }
+
+        XCTAssertEqual(
+            wired.center.addedRequests.map(\.identifier),
+            ["velvt.intervention.\(block.uuidString).1790388157"]
+        )
+        XCTAssertEqual(wired.reporter.entries, [.init(outcome: .delivered, surface: .driftOffer)])
+        XCTAssertEqual(permissions.checkCount, 1)
+    }
+
+    /// The Mac's pair, offer and withdrawal back to back, still happens under
+    /// protocol 32 for a glance away shorter than the settings round trip.
+    /// Fed through the coordinator, with a settings query that, like the real
+    /// XPC call, ignores cancellation and answers a few milliseconds later.
+    /// Nothing can be posted. The attempt still has to end in a line on the
+    /// log, and not in the one settings query and silence the Mac showed.
+    func test_an_offer_withdrawn_right_behind_its_push_is_reported_rather_than_dropped() async throws {
+        let permissions = LatencyPermissionManager(latency: .milliseconds(5))
+        let wired = wiredNotifier(permissionManager: permissions)
+        let block = UUID()
+
+        wired.messages.send(try driftOfferPush(blockID: block, offeredAtEpoch: 1_790_388_157))
+        wired.messages.send(.workBlockState(snapshot(blockID: block, offeredAt: nil)))
+        try await waitUntil { !wired.reporter.entries.isEmpty }
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(permissions.checkCount, 1, "one settings query, as on the Mac")
+        XCTAssertTrue(wired.center.addedRequests.isEmpty, "a withdrawn offer is not posted")
+        XCTAssertEqual(
+            wired.reporter.entries,
+            [.init(outcome: .withdrawnBeforeDelivery, surface: .driftOffer)]
+        )
+        XCTAssertNil(wired.coordinator.snapshot?.activeIntervention)
+    }
+
+    private struct WiredNotifier {
+        let messages: PassthroughSubject<ServerMessage, Never>
+        let coordinator: WorkBlockCoordinator
+        let notifier: InterventionNotifier
+        let center: FakeUNUserNotificationCenter
+        let reporter: RecordingNotificationDeliveryReporter
+    }
+
+    /// The notifier fed from the coordinator's snapshot, as `AppModule` wires
+    /// it, with pushes sent in as the socket delivers them.
+    private func wiredNotifier(permissionManager: any PermissionManagerProtocol) -> WiredNotifier {
+        let center = FakeUNUserNotificationCenter()
+        let reporter = RecordingNotificationDeliveryReporter()
+        let notifier = InterventionNotifier(
+            scheduler: UNNotificationScheduler(center: center),
+            permissionManager: permissionManager,
+            reporter: reporter
+        )
+        let coordinator = WorkBlockCoordinator(ipcClient: FakeIPCClient())
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        coordinator.start(
+            messages: messages,
+            connectionStatus: Empty<ConnectionStatus, Never>(),
+            workspaceNotifications: NotificationCenter(),
+            systemNotifications: NotificationCenter()
+        )
+        notifier.start(snapshots: coordinator.$snapshot)
+        return WiredNotifier(
+            messages: messages,
+            coordinator: coordinator,
+            notifier: notifier,
+            center: center,
+            reporter: reporter
+        )
+    }
+
     /// Retrying must not become a way to re-ask for authorization: the system
     /// prompt is worth at most one appearance per offer.
     func test_a_retried_offer_asks_for_authorization_at_most_once() async {
@@ -486,5 +682,73 @@ private final class HangingPermissionManager: PermissionManagerProtocol, @unchec
         var statuses = subject.value
         statuses[permission] = status
         subject.send(statuses)
+    }
+}
+
+/// Notification-settings queries that answer only when the test says so,
+/// oldest first, so an offer can be withdrawn while its query is in flight.
+private final class GatedPermissionManager: PermissionManagerProtocol, @unchecked Sendable {
+    private let subject = CurrentValueSubject<[PermissionType: PermissionStatus], Never>(
+        [.notifications: .granted])
+    private let lock = NSLock()
+    private var pending: [CheckedContinuation<PermissionStatus, Never>] = []
+    private var checks = 0
+
+    var checkCount: Int { lock.withLock { checks } }
+
+    var statusPublisher: AnyPublisher<[PermissionType: PermissionStatus], Never> {
+        subject.eraseToAnyPublisher()
+    }
+
+    func checkStatus(for permission: PermissionType) async -> PermissionStatus {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                pending.append(continuation)
+                checks += 1
+            }
+        }
+    }
+
+    func requestPermission(for permission: PermissionType) async -> PermissionStatus {
+        .granted
+    }
+
+    /// Answers the oldest query still waiting.
+    func release(with status: PermissionStatus) {
+        let oldest = lock.withLock { pending.isEmpty ? nil : pending.removeFirst() }
+        oldest?.resume(returning: status)
+    }
+}
+
+/// A notification-settings query that answers `.granted` after a fixed
+/// latency. Like the real `notificationSettings()` XPC call, it does not
+/// observe task cancellation: a withdrawn offer's attempt still waits it out.
+private final class LatencyPermissionManager: PermissionManagerProtocol, @unchecked Sendable {
+    private let latency: DispatchTimeInterval
+    private let lock = NSLock()
+    private var checks = 0
+
+    init(latency: DispatchTimeInterval) {
+        self.latency = latency
+    }
+
+    var checkCount: Int { lock.withLock { checks } }
+
+    var statusPublisher: AnyPublisher<[PermissionType: PermissionStatus], Never> {
+        Just([.notifications: .granted]).eraseToAnyPublisher()
+    }
+
+    func checkStatus(for permission: PermissionType) async -> PermissionStatus {
+        lock.withLock { checks += 1 }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().asyncAfter(deadline: .now() + latency) {
+                continuation.resume()
+            }
+        }
+        return .granted
+    }
+
+    func requestPermission(for permission: PermissionType) async -> PermissionStatus {
+        .granted
     }
 }

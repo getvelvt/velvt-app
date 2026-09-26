@@ -246,7 +246,8 @@ OFFER_ROWS="$(rows_in "$OUT")"
 # primary outcome's denominator is that log. A `work_block_intervention` row
 # has no policy column, so the analysis attributes each one to the policy
 # version of this log's row for the same block. Without this file no row can
-# be attributed to drift policy v2, and the 2026-09-25 amendment excludes it.
+# be attributed to a drift policy version, and the 2026-09-25 amendment
+# excludes it.
 #
 # The block columns come from a LEFT JOIN because the log's block_id is
 # nullable, and the analysis needs the block's end to apply the warm-up

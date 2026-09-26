@@ -120,6 +120,85 @@ final class EventRelayTests: XCTestCase {
         }
     }
 
+    // MARK: In-progress reports (proto v32)
+
+    /// A dwell that has just begun goes out live, flagged, behind the closed
+    /// dwell it follows — the order the service needs to land the closed report
+    /// on its own row before the next activity opens one.
+    func testABeginningIsSentLiveFlaggedAndAfterTheDwellItFollows() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+
+        var closed = makeEvent(index: 1)
+        closed = RawEvent(
+            appName: closed.appName, windowTitle: closed.windowTitle,
+            occurredAt: closed.occurredAt, durationSeconds: 48)
+        relay.receive(closed)
+        relay.activityBegan(makeEvent(index: 2))
+        await drain()
+
+        let sent = sentRawEvents(client)
+        XCTAssertEqual(sent.map(\.appName), ["App1", "App2"])
+        XCTAssertEqual(sent.map(\.inProgress), [false, true])
+        XCTAssertEqual(sent.map(\.durationSeconds), [48, 0])
+        XCTAssertEqual(sent.last?.occurredAt, Date(timeIntervalSince1970: 2))
+    }
+
+    /// Offline, a beginning is dropped rather than buffered: by the time the
+    /// socket is back the activity may be over, and its closed report is
+    /// buffered and carries the same facts. Nothing is lost but timeliness.
+    func testABeginningIsNeverBufferedOrReplayedAfterReconnect() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        await drain()
+
+        relay.activityBegan(makeEvent(index: 1))
+        relay.receive(makeEvent(index: 1))
+        await drain()
+        let buffered = await relay.bufferedEventCount
+        XCTAssertEqual(buffered, 1, "only the closed dwell waits for the socket")
+
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+        XCTAssertEqual(sentRawEvents(client).map(\.inProgress), [false])
+        let dropped = await relay.droppedEventCount
+        XCTAssertEqual(dropped, 0, "a live report that could not go is not a dropped event")
+    }
+
+    /// Before the relay starts there is no socket to be live on.
+    func testABeginningBeforeStartIsNotHeld() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+
+        relay.activityBegan(makeEvent(index: 1))
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+
+        XCTAssertTrue(sentRawEvents(client).isEmpty)
+    }
+
+    /// A beginning is not an action: the counter tracks measured dwells.
+    func testABeginningDoesNotCountAsAnAction() async throws {
+        let client = FakeIPCClient()
+        let metrics = AppMetricsStore(defaults: UserDefaults(suiteName: "EventRelayTests.\(UUID().uuidString)")!)
+        let relay = EventRelay(ipcClient: client, capacity: 10, metrics: metrics)
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+
+        relay.activityBegan(makeEvent(index: 1))
+        await drain()
+
+        XCTAssertEqual(sentRawEvents(client).count, 1)
+        XCTAssertEqual(metrics.actionsLogged, 0)
+    }
+
     // MARK: Buffer fill and drop-oldest policy
 
     func testEventReceivedBeforeStartIsBufferedAndSentAfterConnect() async throws {

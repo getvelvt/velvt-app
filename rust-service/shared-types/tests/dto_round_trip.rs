@@ -37,6 +37,7 @@ fn client_message_variants_round_trip() {
             declared_app_category: None,
             document_type_ids: Vec::new(),
             focused_document_url: None,
+            in_progress: false,
             duration_seconds: 0,
         }),
         ClientMessage::ErrorResponse(ErrorResponse {
@@ -124,6 +125,7 @@ fn raw_activity_fields_are_redacted_from_debug_and_error_safe_surfaces() {
         declared_app_category: Some("PRIVATE_CATEGORY_SENTINEL".into()),
         document_type_ids: vec!["PRIVATE_DOCUMENT_TYPE_SENTINEL".into()],
         focused_document_url: Some("https://PRIVATE_URL_SENTINEL.example".into()),
+        in_progress: false,
         duration_seconds: 30,
     };
     let debug = format!("{event:?}");

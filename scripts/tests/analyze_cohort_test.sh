@@ -16,10 +16,10 @@
 #   5. The warm-up exclusion compared planned_duration_seconds with 300, which
 #      the schema makes impossible to trigger. Since 2026-09-25 it is 180 s of
 #      ELAPSED time: ended_at - started_at - total_paused_seconds.
-#   6. Policy v1 and v2 are never pooled (2026-09-25). An intervention takes the
-#      policy of its block's offered/withheld_demotion/suppressed_dnd decision;
-#      without one it is counted and excluded. Exports without a decision log
-#      are excluded whole.
+#   6. Policy v1, v2 and v3 are never pooled (2026-09-25, 2026-09-26), and only
+#      v3 is analysed. An intervention takes the policy of its block's
+#      offered/withheld_demotion/suppressed_dnd decision; without one it is
+#      counted and excluded. Exports without a decision log are excluded whole.
 #   7. no_response is split by card_seen_at into seen / unseen / unknown, and
 #      unknown is never folded into unseen.
 #   8. Every declared block counts, including blocks with no offer; a
@@ -126,7 +126,8 @@ if spec.get("decisions") is not None:
         rows.append(dict(
             decision_id=d.get("decision_id", f"{name}-d{i}"),
             occurred_at=d.get("occurred_at", b.get("started_at", T0) + 600),
-            block_id=d.get("block_id"), policy_version=d.get("policy_version", 2),
+            # Unless a row says otherwise, it is under the analysed policy.
+            block_id=d.get("block_id"), policy_version=d.get("policy_version", 3),
             anchor_category="FOCUS_WORK", switch_count=3, elapsed_seconds=600,
             remaining_seconds=600, gate_verdict=d["gate_verdict"],
             propensity=d.get("propensity", "1.0"),
@@ -383,30 +384,30 @@ PY
 make_export "$work/policy/p-policy" <<'JSON'
 {"blocks": [
    {"block_id": "v1-offer",      "started_at": 1800000000},
-   {"block_id": "v2-offer",      "started_at": 1800100000},
+   {"block_id": "v3-offer",      "started_at": 1800100000},
    {"block_id": "no-decision",   "started_at": 1800200000},
    {"block_id": "abstained-only","started_at": 1800300000},
    {"block_id": "conflicting",   "started_at": 1800400000},
-   {"block_id": "v2-dnd",        "started_at": 1800500000},
+   {"block_id": "v3-dnd",        "started_at": 1800500000},
    {"block_id": "v1-era-block",  "started_at": 1800050000, "ended_at": 1800050600, "phase": "abandoned"}
  ],
  "offers": [
    {"block_id": "v1-offer",       "outcome": "returned", "outcome_at": 1800000700},
-   {"block_id": "v2-offer",       "outcome": "no_response", "card_seen": "seen", "card_seen_at": 1800100601},
+   {"block_id": "v3-offer",       "outcome": "no_response", "card_seen": "seen", "card_seen_at": 1800100601},
    {"block_id": "no-decision",    "outcome": "no_response"},
    {"block_id": "abstained-only", "outcome": "no_response"},
    {"block_id": "conflicting",    "outcome": "dismissed"},
-   {"block_id": "v2-dnd",         "outcome": "delivery_suppressed_dnd"}
+   {"block_id": "v3-dnd",         "outcome": "delivery_suppressed_dnd"}
  ],
  "decisions": [
    {"block_id": "v1-offer", "gate_verdict": "abstained_warmup", "policy_version": 1, "occurred_at": 1800000100},
    {"block_id": "v1-offer", "gate_verdict": "offered", "policy_version": 1, "occurred_at": 1800060000},
-   {"block_id": "v2-offer", "gate_verdict": "abstained_min_switches"},
-   {"block_id": "v2-offer", "gate_verdict": "offered", "anchor_seen_within_600s": 1},
+   {"block_id": "v3-offer", "gate_verdict": "abstained_min_switches"},
+   {"block_id": "v3-offer", "gate_verdict": "offered", "anchor_seen_within_600s": 1},
    {"block_id": "abstained-only", "gate_verdict": "abstained_min_switches"},
    {"block_id": "conflicting", "gate_verdict": "offered", "policy_version": 1, "occurred_at": 1800000200},
-   {"block_id": "conflicting", "gate_verdict": "offered", "policy_version": 2},
-   {"block_id": "v2-dnd", "gate_verdict": "suppressed_dnd", "anchor_seen_within_600s": 0}
+   {"block_id": "conflicting", "gate_verdict": "offered", "policy_version": 3},
+   {"block_id": "v3-dnd", "gate_verdict": "suppressed_dnd", "anchor_seen_within_600s": 0}
  ],
  "invitations": [
    {"offered_at": 1800040000, "outcome": "accepted"},
@@ -420,23 +421,24 @@ JSON
 "$analyze" --json "$work/policy/p-policy" > "$work/policy.json"
 check "$work/policy.json" "policy attribution and the never-pooled rule" <<'PY'
 p = r["policy"]
-assert p["decisions_by_policy_version"] == {"1": 3, "2": 5}, p
-# v1-offer -> 1; v2-offer, v2-dnd -> 2; no-decision and abstained-only have no
+assert p["analysed_policy_version"] == 3, p
+assert p["decisions_by_policy_version"] == {"1": 3, "3": 5}, p
+# v1-offer -> 1; v3-offer, v3-dnd -> 3; no-decision and abstained-only have no
 # attributing verdict; conflicting has both.
-assert p["interventions_by_attribution"] == {"1": 1, "2": 2, "conflicting": 1, "unattributed": 2}, p
+assert p["interventions_by_attribution"] == {"1": 1, "3": 2, "conflicting": 1, "unattributed": 2}, p
 d = r["decisions_recorded"]
 assert (d["delivered"], d["withheld"]) == (1, 1), d
 assert r["retired_return_within_10min"]["numerator"] == 0, r["retired_return_within_10min"]
 assert r["card_seen"]["no_response"] == {"seen": 1, "unseen": 0, "unknown": 0}, r["card_seen"]
-# Eligible: v2 'offered' rows only (v2-offer, conflicting's v2 row).
+# Eligible: v3 'offered' rows only (v3-offer, conflicting's v3 row).
 assert r["power"]["observed_eligible_decision_points"] == 2, r["power"]
 integrity = r["decision_log_integrity"]
 assert integrity["rows"] == 5, integrity
 assert integrity["by_gate_verdict"] == {"abstained_min_switches": 2, "offered": 2, "suppressed_dnd": 1}, integrity
-# Rows with no policy column are v2 only after this Mac's last v1 decision
-# (1800060000): the v1-era block and the first invitation are excluded, and
-# the explain week holding that decision is too.
-assert p["rows_before_last_non_v2_decision_excluded"] == {"blocks": 2, "explain_weeks": 1, "invitations": 1}, p
+# Rows with no policy column are v3 only after this Mac's last decision under
+# another policy (1800060000): the v1-era block and the first invitation are
+# excluded, and the explain week holding that decision is too.
+assert p["rows_before_last_other_policy_decision_excluded"] == {"blocks": 2, "explain_weeks": 1, "invitations": 1}, p
 assert r["blocks_per_participant"]["per_participant"]["p-policy"]["blocks_declared"] == 5, r["blocks_per_participant"]
 inv = r["invitation_acceptance"]
 assert (inv["accepted"], inv["terminal"]) == (0, 1), inv
@@ -446,7 +448,49 @@ assert p["non_monotonic_policy_history"] == [], p
 PY
 
 # ===========================================================================
-# 8. An export without the decision log cannot be attributed to policy v2 and
+# 7b. A Mac upgraded from a policy-v2 build (1.0.9 to 1.0.11) to a policy-v3
+#     build (protocol 32). v2 decided on a departure only once the person had
+#     left it, so its decision points and its offers mean something else: its
+#     rows are counted and excluded, never pooled with v3.
+# ===========================================================================
+make_export "$work/upgraded/p-v2-to-v3" <<'JSON'
+{"blocks": [
+   {"block_id": "v2-block", "started_at": 1800000000},
+   {"block_id": "v3-block", "started_at": 1800200000}
+ ],
+ "offers": [
+   {"block_id": "v2-block", "outcome": "returned", "outcome_at": 1800000650},
+   {"block_id": "v3-block", "outcome": "returned", "outcome_at": 1800200650}
+ ],
+ "decisions": [
+   {"block_id": "v2-block", "gate_verdict": "abstained_min_switches", "policy_version": 2, "occurred_at": 1800000300},
+   {"block_id": "v2-block", "gate_verdict": "offered", "policy_version": 2, "occurred_at": 1800000600},
+   {"block_id": "v3-block", "gate_verdict": "abstained_min_switches"},
+   {"block_id": "v3-block", "gate_verdict": "offered"}
+ ]}
+JSON
+"$analyze" --json "$work/upgraded/p-v2-to-v3" > "$work/upgraded.json"
+check "$work/upgraded.json" "policy v2 rows pooled with v3" <<'PY'
+p = r["policy"]
+assert p["decisions_by_policy_version"] == {"2": 2, "3": 2}, p
+assert p["interventions_by_attribution"] == {"2": 1, "3": 1}, p
+assert r["power"]["observed_eligible_decision_points"] == 1, r["power"]
+assert r["decision_log_integrity"]["rows"] == 2, r["decision_log_integrity"]
+assert r["decisions_recorded"]["total"] == 1, r["decisions_recorded"]
+assert p["rows_before_last_other_policy_decision_excluded"] == {"blocks": 1}, p
+reasons = r["exclusions"]["by_reason"]
+assert reasons["intervention under policy_version 2"] == 1, reasons
+assert reasons["decision rows not under policy_version 3"] == 2, reasons
+PY
+upgraded_report="$("$analyze" "$work/upgraded/p-v2-to-v3")"
+for needle in "COHORT ANALYSIS (drift policy v3 only)" \
+              "every result uses policy_version 3 only" \
+              "DECISION-LOG INTEGRITY (policy_version 3 rows)"; do
+  grep -qF -- "$needle" <<<"$upgraded_report" || fail "upgraded report omits: $needle"
+done
+
+# ===========================================================================
+# 8. An export without the decision log cannot be attributed to a policy and
 #    is excluded whole, with the reason, whichever way the log went missing.
 # ===========================================================================
 make_export "$work/nolog/p-absent" <<'JSON'
@@ -680,7 +724,7 @@ assert any("p-lost: the export wrote a corrections file" in m
            for m in r["data_quality"]["malformed"]), r["data_quality"]
 assert not any(m.startswith("p-older:") for m in r["data_quality"]["malformed"]), r["data_quality"]
 # No timestamp, so counts cannot be cut at a policy upgrade: said, not hidden.
-assert c["includes_history_before_policy_v2"] == ["p-upgraded"], c
+assert c["includes_history_before_analysed_policy"] == ["p-upgraded"], c
 assert c["total_app_scoped_corrections"] == 6 + 0 + 4 + 2, c
 assert c["app_scoped_corrections_by_category"] == {
     "COMMUNICATION": 1, "FOCUS_WORK": 7, "REFERENCE": 4}, c
@@ -690,7 +734,7 @@ corr_report="$("$analyze" "$work/corr"/*/)"
 check_power_markers "$corr_report"
 for needle in "p-teacher                   6 app-scoped correction(s) on 3 app(s); 3 window rule(s)" \
               "no corrections file: ['p-lost', 'p-older']" \
-              "counts include time before policy v2, not separable: ['p-upgraded']" \
+              "counts include time before policy v3, not separable: ['p-upgraded']" \
               "Each count is a lower bound."; do
   grep -qF -- "$needle" <<<"$corr_report" || fail "corrections report omits: $needle"
 done

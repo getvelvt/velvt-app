@@ -1023,6 +1023,7 @@ async fn upload_batcher_accumulates_abstracted_events_and_flushes_on_count() {
                 declared_app_category: None,
                 document_type_ids: Vec::new(),
                 focused_document_url: None,
+                in_progress: false,
                 duration_seconds: 0,
             })
             .unwrap();
@@ -1084,6 +1085,7 @@ async fn upload_batcher_flush_now_drains_memory_and_resumes_ready_batches() {
                 declared_app_category: None,
                 document_type_ids: Vec::new(),
                 focused_document_url: None,
+                in_progress: false,
                 duration_seconds: 0,
             })
             .unwrap();
@@ -1179,6 +1181,7 @@ async fn threshold_flush_requeues_events_after_a_persistence_failure() {
                 declared_app_category: None,
                 document_type_ids: Vec::new(),
                 focused_document_url: None,
+                in_progress: false,
                 duration_seconds: 0,
             })
             .unwrap();
@@ -1225,6 +1228,7 @@ async fn flush_due_requeues_events_after_a_persistence_failure() {
                 declared_app_category: None,
                 document_type_ids: Vec::new(),
                 focused_document_url: None,
+                in_progress: false,
                 duration_seconds: 0,
             })
             .unwrap();
@@ -1272,6 +1276,7 @@ async fn flush_now_requeues_events_after_a_persistence_failure() {
                 declared_app_category: None,
                 document_type_ids: Vec::new(),
                 focused_document_url: None,
+                in_progress: false,
                 duration_seconds: 0,
             })
             .unwrap();
@@ -1315,6 +1320,7 @@ async fn flush_now_does_not_requeue_after_persisted_batch_upload_error() {
                 declared_app_category: None,
                 document_type_ids: Vec::new(),
                 focused_document_url: None,
+                in_progress: false,
                 duration_seconds: 0,
             })
             .unwrap();
@@ -1352,6 +1358,7 @@ async fn flush_now_attempts_a_failed_batch_once() {
                 declared_app_category: None,
                 document_type_ids: Vec::new(),
                 focused_document_url: None,
+                in_progress: false,
                 duration_seconds: 0,
             })
             .unwrap();
@@ -1388,6 +1395,7 @@ async fn flush_now_requeues_multiple_events_ahead_of_later_ingestion() {
                 declared_app_category: None,
                 document_type_ids: Vec::new(),
                 focused_document_url: None,
+                in_progress: false,
                 duration_seconds: 0,
             })
             .unwrap();
@@ -1472,6 +1480,7 @@ async fn shared_flush_now_does_not_block_ingestion_during_persisted_replay() {
                 declared_app_category: None,
                 document_type_ids: Vec::new(),
                 focused_document_url: None,
+                in_progress: false,
                 duration_seconds: 0,
             })
             .unwrap();
@@ -1642,6 +1651,7 @@ fn abstracted_event() -> velvt_service::abstraction::AbstractedEvent {
             declared_app_category: None,
             document_type_ids: Vec::new(),
             focused_document_url: None,
+            in_progress: false,
             duration_seconds: 0,
         })
         .unwrap()

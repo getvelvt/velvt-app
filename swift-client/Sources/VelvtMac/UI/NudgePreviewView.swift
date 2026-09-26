@@ -3,7 +3,7 @@ import SwiftUI
 /// Shows the one thing Velvt does, before the user has to earn it.
 ///
 /// The drift offer is the product, and it is gated behind evidence (drift
-/// policy version 2): a block running past a three-minute warm-up, three
+/// policy version 3): a block running past a three-minute warm-up, three
 /// confident switches inside ten minutes, and two minutes still remaining.
 /// Plenty of people will use Velvt for a week without ever meeting those
 /// conditions, and conclude it does nothing — the app is inert until it is

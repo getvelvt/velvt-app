@@ -236,7 +236,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let responseRouter = NotificationResponseRouter(
             openPopover: { [weak menuBar] in menuBar?.showPopover() },
-            scrollToDate: displayCoord.historyViewModel.scrollToDateAction
+            scrollToDate: displayCoord.historyViewModel.scrollToDateAction,
+            isDriftCardInFront: { [weak menuBar] in menuBar?.isPopoverInFront ?? false },
+            reporter: deliveryReporter
         )
         UNUserNotificationCenter.current().delegate = responseRouter
         notificationResponseRouter = responseRouter

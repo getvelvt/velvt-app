@@ -79,6 +79,15 @@ struct CircularBuffer<Element> {
 
 private let logger = Logger(subsystem: "com.velvt.mac", category: "EventRelay")
 
+/// What the collection agent handed the relay, in the order it handed it.
+private enum RelayItem: Sendable {
+    /// A dwell that has ended. The ledger: buffered while the socket is down
+    /// and lost only to overflow.
+    case closed(RawEvent)
+    /// A dwell that has just begun (proto v32). Sent live or not at all.
+    case began(RawEvent)
+}
+
 /// Routes `RawEvent`s from the collection agent to the Rust service over IPC.
 ///
 /// **Threading model**
@@ -104,6 +113,14 @@ private let logger = Logger(subsystem: "com.velvt.mac", category: "EventRelay")
 /// **Reconnect sequence**
 /// On reconnect the relay logs a structured count-only metric, then flushes all
 /// buffered events in chronological order before forwarding new ones.
+///
+/// **In-progress reports**
+/// A dwell that has just begun is reported once, live, with `in_progress`
+/// set, so the service's drift gate sees a departure while it is happening
+/// rather than when the person comes back. It is never buffered and never
+/// replayed: it travels on the same ordered stream as the closed dwells, and
+/// is sent only when nothing older is waiting, so the service always reads a
+/// dwell's closed report before the next dwell's in-progress one.
 public actor EventRelay: EventRelayProtocol {
 
     // MARK: Ingest channel
@@ -112,7 +129,7 @@ public actor EventRelay: EventRelayProtocol {
     // `nonisolated(unsafe)` is safe because `continuationLock` provides the
     // required mutual exclusion.
     private let continuationLock = NSLock()
-    private nonisolated(unsafe) var _ingestContinuation: AsyncStream<RawEvent>.Continuation?
+    private nonisolated(unsafe) var _ingestContinuation: AsyncStream<RelayItem>.Continuation?
     private let startupBufferLock = NSLock()
     private nonisolated(unsafe) var startupBuffer: [RawEvent] = []
     private nonisolated(unsafe) var startupDroppedEventCount = 0
@@ -158,7 +175,7 @@ public actor EventRelay: EventRelayProtocol {
             guard let continuation = _ingestContinuation else {
                 return false
             }
-            _ = continuation.yield(event)
+            _ = continuation.yield(.closed(event))
             return true
         }
         guard !didYield else {
@@ -173,6 +190,15 @@ public actor EventRelay: EventRelayProtocol {
                 startupDroppedEventCount += 1
             }
             startupBuffer.append(event)
+        }
+    }
+
+    /// Not counted as an action and never held for later: before the relay has
+    /// started there is no socket to be live on, and the dwell's closed report
+    /// will carry the same facts.
+    public nonisolated func activityBegan(_ event: RawEvent) {
+        continuationLock.withLock {
+            _ = _ingestContinuation?.yield(.began(event))
         }
     }
 
@@ -194,13 +220,13 @@ public actor EventRelay: EventRelayProtocol {
         }
     }
 
-    private nonisolated func enqueue(_ events: [RawEvent], into continuation: AsyncStream<RawEvent>.Continuation) {
+    private nonisolated func enqueue(_ events: [RawEvent], into continuation: AsyncStream<RelayItem>.Continuation) {
         for event in events {
-            _ = continuation.yield(event)
+            _ = continuation.yield(.closed(event))
         }
     }
 
-    private nonisolated func installContinuation(_ continuation: AsyncStream<RawEvent>.Continuation) {
+    private nonisolated func installContinuation(_ continuation: AsyncStream<RelayItem>.Continuation) {
         continuationLock.withLock {
             _ingestContinuation = continuation
         }
@@ -214,8 +240,8 @@ public actor EventRelay: EventRelayProtocol {
     public func start() async {
         guard sendLoopTask == nil else { return }
 
-        var cont: AsyncStream<RawEvent>.Continuation!
-        let stream = AsyncStream<RawEvent> { cont = $0 }
+        var cont: AsyncStream<RelayItem>.Continuation!
+        let stream = AsyncStream<RelayItem> { cont = $0 }
         installContinuation(cont)
         let startup = drainStartupBuffer()
         droppedEventCount += startup.dropped
@@ -266,18 +292,39 @@ public actor EventRelay: EventRelayProtocol {
 
     // MARK: Private
 
-    private func runSendLoop(stream: AsyncStream<RawEvent>) async {
-        for await event in stream {
-            if isConnected && !isFlushing {
-                do {
-                    try await ipcClient.send(.rawEvent(toMessage(event)))
-                } catch {
-                    isConnected = false
+    private func runSendLoop(stream: AsyncStream<RelayItem>) async {
+        for await item in stream {
+            switch item {
+            case .closed(let event):
+                if isConnected && !isFlushing {
+                    do {
+                        try await ipcClient.send(.rawEvent(toMessage(event)))
+                    } catch {
+                        isConnected = false
+                        bufferEvent(event)
+                    }
+                } else {
                     bufferEvent(event)
                 }
-            } else {
-                bufferEvent(event)
+            case .began(let event):
+                await sendLive(event)
             }
+        }
+    }
+
+    /// Sends an in-progress report if it can go now, and drops it otherwise.
+    ///
+    /// It describes the present, so it is worth sending only while it is still
+    /// true, and only behind every closed dwell older than it: a backlog means
+    /// the service has not yet read the dwell this one follows. Dropping it
+    /// costs timeliness, never data — the closed report is buffered as usual
+    /// and carries the same facts, and the service decides on it as before.
+    private func sendLive(_ event: RawEvent) async {
+        guard isConnected, !isFlushing, ringBuffer.isEmpty else { return }
+        do {
+            try await ipcClient.send(.rawEvent(toMessage(event, inProgress: true)))
+        } catch {
+            isConnected = false
         }
     }
 
@@ -330,11 +377,11 @@ public actor EventRelay: EventRelayProtocol {
         ringBuffer.enqueue(event)
     }
 
-    private nonisolated func toMessage(_ event: RawEvent) -> RawEventMessage {
+    private nonisolated func toMessage(_ event: RawEvent, inProgress: Bool = false) -> RawEventMessage {
         RawEventMessage(
             eventID: UUID(),
             occurredAt: event.occurredAt,
-            durationSeconds: event.durationSeconds,
+            durationSeconds: inProgress ? 0 : event.durationSeconds,
             appName: event.appName,
             windowTitle: event.windowTitle,
             bundleID: event.bundleIdentifier,
@@ -342,7 +389,8 @@ public actor EventRelay: EventRelayProtocol {
             // itself is a fact the service decides the meaning of.
             declaredAppCategory: event.declaredAppCategory,
             documentTypeIDs: event.documentTypeIDs,
-            focusedDocumentURL: event.focusedDocumentURL
+            focusedDocumentURL: event.focusedDocumentURL,
+            inProgress: inProgress
         )
     }
 }

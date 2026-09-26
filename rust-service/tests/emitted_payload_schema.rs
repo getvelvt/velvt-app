@@ -159,6 +159,7 @@ fn raw_event(
         declared_app_category: None,
         document_type_ids: Vec::new(),
         focused_document_url: None,
+        in_progress: false,
     })
 }
 

@@ -13,8 +13,8 @@
 > - **Notifications:** testers are asked to allow them; the drift offer is
 >   what is being measured.
 > - **Instrument:** the pre-registered outcome is sustained anchor engagement
->   under drift policy v2 (`DRIFT_POLICY_VERSION = 2`), analysed on
->   policy-v2 rows only, from the exported CSVs — not the insight-centred
+>   under drift policy v3 (`DRIFT_POLICY_VERSION = 3`, protocol 32), analysed
+>   on policy-v3 rows only, from the exported CSVs — not the insight-centred
 >   interview and weekly-review measures below.
 > - **Privacy explanation:** use the kit's consent wording. Velvt reads app
 >   names and window titles on the Mac to classify them (web addresses are

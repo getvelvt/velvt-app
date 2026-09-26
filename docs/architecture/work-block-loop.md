@@ -65,14 +65,44 @@ from the dominant covered category, returns to it, coverage and confidence, one
 safe evidence category when supported, deterministic observation copy, and
 exactly one bounded `protect_next_10` action.
 
-Swift reports a dwell when the user leaves it, stamped with the time they
-entered it and carrying its measured duration, so an observation row's end is
-the next row's start. At a boundary — pause or sleep, a service restart, or the
-end of the block — there is no next row: the dwell the user is in has not been
-reported yet. The open row is therefore closed where its own reported dwell
-ended (from `raw_event_buffer`), never stretched to the boundary, and the
-unreported remainder stays unobserved rather than being filed under the
-category the user had already left.
+Swift reports each dwell twice, both stamped with the time the user entered
+it: in progress the moment it begins (protocol 32), and closed, carrying its
+measured duration, when the user leaves it. The in-progress report opens the
+observation row and runs the drift gate while the departure is still true; the
+closed report of the same dwell finds that row open with the same evidence and
+changes nothing. Before protocol 32 only the closed report existed, so the gate
+learned of a departure at the moment the user came back, and the offer it made
+was withdrawn as `returned` by the next report: one second later on the
+founder's Mac on 2026-09-25, before any notification was posted. A closed report whose in-progress report never arrived (the socket
+was down) opens the row itself, as before.
+
+This is drift policy version 3 (`DRIFT_POLICY_VERSION`). The gate's constants
+and branches are version 2's, and on a stretch of dwells that all close inside
+the block with no boundary between their two reports, the decisions and their
+timestamps are the same both ways; only the wall-clock moment moves. The set of
+decision points is not the same everywhere, which is why the version changed:
+
+- A dwell still in progress when the block ends, or when the Mac sleeps and the
+  block pauses, is now decided on when it begins. Version 2 never saw it, so a
+  person who left and did not come back before the end was never offered
+  anything.
+- A dwell interrupted by a pause or a service restart is decided on once, when
+  it begins. Version 2 decided on it when its closed report arrived after the
+  resume, against a window that had moved on. A boundary closes the row the
+  in-progress report opened; the closed report that follows re-opens the
+  ledger at the resume and is not evaluated again, so one dwell is never two
+  decisions.
+
+`tests/drift_offer_in_progress_boundaries.rs` pins each case against a
+closed-only client.
+
+An observation row's end is the next row's start. At a boundary — pause or
+sleep, a service restart, or the end of the block — there is no next row, and
+the dwell the user is in has not been measured yet. The open row is therefore
+closed where its own reported dwell ended (from `raw_event_buffer`), or where
+it opened when that dwell has no closed report yet, never stretched to the
+boundary, and the unmeasured remainder stays unobserved rather than being filed
+under a category the user had already left.
 
 Coverage is measured against `raw_event_buffer`, not against the observation
 rows (which tile the block by construction): the seconds of the block that a

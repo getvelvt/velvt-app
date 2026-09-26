@@ -62,6 +62,10 @@ public final class InterventionNotifier {
     /// cannot turn one offer into repeated authorization requests.
     private var hasRequestedPermission = false
     private var isAttempting = false
+    /// Numbers each attempt, so one that `forgetCurrentOffer` cancelled can
+    /// tell, when its await finally returns, that it no longer owns the
+    /// one-at-a-time slot.
+    private var attemptNumber = 0
 
     /// The most recent delivery task. Exposed so tests can await the
     /// permission-check/schedule work rather than racing it.
@@ -171,6 +175,8 @@ public final class InterventionNotifier {
         // the same offer more than once.
         guard !isAttempting else { return nil }
         isAttempting = true
+        attemptNumber += 1
+        let attempt = attemptNumber
 
         let task = Task { @MainActor [weak self, scheduler, permissionManager, reporter] in
             // `notDetermined` maps to `.unknown`. Onboarding can reach a first
@@ -178,8 +184,13 @@ public final class InterventionNotifier {
             // checking alone would drop the offer in silence. Ask once, at the
             // moment there is something worth showing.
             let checked = await permissionManager.checkStatus(for: .notifications)
+            // Cancelled means the service withdrew the offer while the check
+            // was in flight. Said out loud: this used to be the one exit that
+            // left nothing on the log, which is exactly what the founder's Mac
+            // showed on 2026-09-25 — one settings query, then silence.
             guard !Task.isCancelled else {
-                self?.finishAttempt(key: key, disposition: .undelivered)
+                self?.finishAttempt(attempt, key: key, disposition: .undelivered)
+                reporter.report(.withdrawnBeforeDelivery, surface: .driftOffer)
                 return
             }
             var status = checked
@@ -187,10 +198,15 @@ public final class InterventionNotifier {
                 self?.hasRequestedPermission = true
                 status = await permissionManager.requestPermission(for: .notifications)
             }
-            guard status == .granted, !Task.isCancelled else {
+            guard !Task.isCancelled else {
+                self?.finishAttempt(attempt, key: key, disposition: .undelivered)
+                reporter.report(.withdrawnBeforeDelivery, surface: .driftOffer)
+                return
+            }
+            guard status == .granted else {
                 // Not a decision this app made, so the offer is not spent:
                 // it stays eligible while it is still on screen.
-                self?.finishAttempt(key: key, disposition: .undelivered)
+                self?.finishAttempt(attempt, key: key, disposition: .undelivered)
                 reporter.report(.blockedByPermission(status), surface: .driftOffer)
                 return
             }
@@ -199,7 +215,7 @@ public final class InterventionNotifier {
                 title: offer.title,
                 body: offer.body
             )
-            self?.finishAttempt(key: key, disposition: scheduled ? .delivered : .undelivered)
+            self?.finishAttempt(attempt, key: key, disposition: scheduled ? .delivered : .undelivered)
             reporter.report(
                 scheduled ? .delivered : .rejectedByNotificationCentre, surface: .driftOffer)
         }
@@ -207,7 +223,14 @@ public final class InterventionNotifier {
         return task
     }
 
-    private func finishAttempt(key: OfferKey, disposition attempted: Disposition) {
+    private func finishAttempt(_ attempt: Int, key: OfferKey, disposition attempted: Disposition) {
+        // An attempt `forgetCurrentOffer` cancelled still comes back here,
+        // once the await it was in returns: the settings query and the system
+        // alert both ignore cancellation. By then its slot was freed, and the
+        // next offer's attempt may hold it. Clearing the slot here let that
+        // offer start a second attempt and orphan the first, which could then
+        // post after that offer was withdrawn too.
+        guard attempt == attemptNumber, isAttempting else { return }
         isAttempting = false
         // The offer may have been answered or replaced while the permission
         // round trip was in flight; that newer state wins.

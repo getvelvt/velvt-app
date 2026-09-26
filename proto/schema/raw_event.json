@@ -31,6 +31,10 @@
         "focused_document_url": {
           "type": ["string", "null"],
           "description": "Raw focused browser document URL. Local IPC only; Rust must normalize and discard it before persistence."
+        },
+        "in_progress": {
+          "type": "boolean",
+          "description": "Protocol 32. True when the dwell has only just begun: the activity became frontmost at occurred_at and nothing has been measured yet, so duration_seconds carries no information. Rust feeds it to the in-block drift gate and nothing else: it is never stored and never uploaded. The same dwell is sent again, closed, with its measured duration when the person leaves it. Absent or false: a closed dwell, which is all a pre-32 client ever sent."
         }
       }
     }

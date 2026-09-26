@@ -1,6 +1,6 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 31 on 2026-09-25.** This page
+> **Reconciled with `proto/` at protocol 32 on 2026-09-26.** This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
 > reconciliation the page had last been reconciled on 2026-07-17 (protocol 15–17
@@ -220,6 +220,18 @@ for abstraction.
   application declares, deduplicated and sorted, at most 256 identifiers of at
   most 64 characters; an oversized list is sent empty rather than truncated
   (protocol 30)
+- `in_progress`: optional boolean (protocol 32). True when the dwell has only
+  just begun and `duration_seconds` is 0 because nothing has been measured.
+  Swift reports every dwell twice: in progress when it begins, and closed,
+  with its measured duration, when the next one begins, always in that order.
+  The in-progress report goes only live, while the socket is up and no older
+  closed report is waiting; it is never buffered or replayed.
+  Rust feeds an in-progress report to the in-block drift gate only: it is
+  never stored in `raw_event_buffer` and never uploaded, and it is not even
+  classified outside an active block. Without it the gate saw a departure
+  only when the person came back, and the offer it made was withdrawn before a
+  notification could be posted. Absent on a closed dwell. The gate deciding
+  on each dwell as it begins is drift policy version 3.
 
 ### `raw_event_ack`
 

@@ -1,5 +1,54 @@
 # IPC Protocol Changelog
 
+## Version 32 - 2026-09-26
+
+- Added optional `in_progress` (boolean) to `raw_event` (Swift to Rust). True
+  when the dwell has only just begun: the activity became frontmost at
+  `occurred_at` and nothing has been measured yet, so `duration_seconds` is 0
+  and means nothing. The client sends each dwell twice: in progress when it
+  begins, and closed, with its measured duration, when the next one begins.
+  The closed report of one dwell always precedes the in-progress report of the
+  next. An in-progress report is sent live or not at all: it is never buffered
+  while the socket is down and never replayed.
+- Why it exists: a dwell was reported only when it ended, so the in-block drift
+  gate learned about a departure at the moment the person came back, and the
+  offer it pushed was withdrawn as `returned` by the very next report. On the
+  founder's Mac on 2026-09-25 the offer existed for about one second of wall
+  time, and the notification was never posted. With the in-progress report the
+  gate sees the departure while it is happening.
+- Rust: an in-progress report is fed to the work-block gate and nothing else.
+  It is never written to `raw_event_buffer` and never enqueued for upload, and
+  outside an active block it is not even classified. Its classification is
+  kept in memory until the closed report of the same dwell arrives and is
+  reused there, so each dwell is still classified exactly once. The gate
+  evaluates at the dwell's `occurred_at`, which the closed report carried too,
+  and the closed report then lands on the observation the in-progress one
+  opened and is a no-op there. When a pause, a sleep or a service restart
+  closed that observation first, the closed report re-opens the ledger at the
+  resume and is not evaluated again, so one dwell is one decision.
+- Drift policy version 3 (`DRIFT_POLICY_VERSION` 2 → 3). The gate's constants
+  and branches are unchanged, and on dwells that close inside the block with
+  no boundary between their two reports the decisions and their timestamps
+  are too; only the wall-clock moment moves. Elsewhere the decision points
+  differ: a dwell still in progress when the block ends or the Mac sleeps is
+  now decided on (version 2 never saw it), and a dwell interrupted by a pause
+  or a restart is decided on when it began rather than at the resume. An
+  offer now reaches the person while they are away. Decisions under the two
+  versions are never pooled.
+- Acknowledged like any `raw_event` (`raw_event_ack`, `accepted`).
+- Compatibility: a closed dwell carries no `in_progress` key, byte for byte
+  what a protocol-31 client sent. A pre-32 service rejects the key
+  (`deny_unknown_fields`), which is why this is a protocol bump.
+- Privacy: no new field carries raw data. The raw values are the ones
+  `raw_event` already carries, sent at the start of the dwell as well as at its
+  end, over the local socket only.
+- Transport, no wire change: the service's frame reader is now cancel-safe.
+  It ran inside a `select!` against pushes, and a frame that was half read
+  when a push arrived was dropped, so the rest of it was answered with
+  `malformed_message`. Two frames sent back to back lost the second whenever
+  the first queued a push, which is the shape the in-progress report creates at
+  every activity switch.
+
 ## Schema corrections: what the service emits - 2026-09-25 (no wire change; the protocol stays 31)
 
 - `local_dashboard.daily_activity` declared `minItems`/`maxItems` 7, the count protocol 20

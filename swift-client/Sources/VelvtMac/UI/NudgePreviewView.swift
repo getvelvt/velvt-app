@@ -2,12 +2,12 @@ import SwiftUI
 
 /// Shows the one thing Velvt does, before the user has to earn it.
 ///
-/// The drift offer is the product, and it is gated behind evidence: a block
-/// running past a five-minute warm-up, four confident switches inside ten
-/// minutes, and two minutes still remaining. Plenty of people will use Velvt
-/// for a week without ever meeting those conditions, and conclude it does
-/// nothing — the app is inert until it is not, and there is no way to tell the
-/// difference from the outside.
+/// The drift offer is the product, and it is gated behind evidence (drift
+/// policy version 3): a block running past a three-minute warm-up, three
+/// confident switches inside ten minutes, and two minutes still remaining.
+/// Plenty of people will use Velvt for a week without ever meeting those
+/// conditions, and conclude it does nothing — the app is inert until it is
+/// not, and there is no way to tell the difference from the outside.
 ///
 /// So this shows the offer once, up front, clearly labelled as an example.
 /// Nobody can judge an intervention they have never seen, and "here is the one
@@ -34,78 +34,84 @@ public struct NudgePreviewView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("This is the whole product")
-                .font(.title2.weight(.semibold))
+                .velvtDisplay(24)
 
             Text(
                 "When Velvt is confident you have drifted from a block you started, "
                     + "it says so once. This is what that looks like."
             )
-            .foregroundStyle(.secondary)
+            .velvtBody(13)
             .fixedSize(horizontal: false, vertical: true)
 
             exampleCard
                 .overlay(alignment: .topTrailing) {
                     Text("Example")
-                        .font(.caption2.weight(.semibold))
+                        .font(VelvtType.label(9.5))
+                        .tracking(VelvtType.labelTracking)
+                        .textCase(.uppercase)
+                        .foregroundStyle(VelvtInk.labelOnPaper)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
-                        .padding(8)
+                        .background(VelvtSurface.blushInset, in: Capsule())
+                        .padding(VelvtMetrics.spaceSM)
                 }
 
             Text(
                 "At most one per block, and never outside one. Whichever reply is honest "
                     + "is the right one — telling Velvt it was wrong is how it stops being wrong."
             )
-            .font(.callout)
-            .foregroundStyle(.secondary)
+            .velvtBody(12)
             .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 Spacer()
                 Button("Got it") { onContinue() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(VelvtPrimaryButtonStyle(uppercase: true))
                     .keyboardShortcut(.defaultAction)
             }
         }
         .frame(maxWidth: 460, alignment: .leading)
         .padding(28)
+        // The ground is ink and never adapts to system appearance, so the
+        // window carries it rather than borrowing whatever the OS proposes.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(VelvtSurface.ground)
     }
 
     /// Inert by construction: no coordinator, no bindings, nothing to press.
     /// The buttons are shown disabled so the shape and the reply vocabulary
     /// read true without implying a live offer is waiting.
+    ///
+    /// Paper stock, because a drift offer is a sentence addressed to the person.
     private var exampleCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(Self.exampleTitle)
-                .font(.subheadline.bold())
+        VelvtPaperCard(padding: VelvtMetrics.spaceMD) {
+            VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+                Text(Self.exampleTitle)
+                    .velvtHeading(14, onPaper: true)
 
-            Text(Self.exampleBody)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(Self.exampleBody)
+                    .velvtBody(12, onPaper: true)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 8) {
-                Button("Back to work") {}
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                Spacer(minLength: 0)
-                Image(systemName: "xmark")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: VelvtMetrics.spaceSM) {
+                    Button("Back to work") {}
+                        .buttonStyle(VelvtPrimaryButtonStyle(uppercase: true))
+                    Spacer(minLength: 0)
+                    Image(systemName: "xmark")
+                        .font(VelvtType.caption())
+                        .foregroundStyle(VelvtInk.tertiaryOnPaper)
+                }
+
+                HStack(spacing: VelvtMetrics.spaceMD) {
+                    Text("I was focused")
+                    Text("Wrong category")
+                    Text("Not helpful")
+                }
+                .font(VelvtType.caption())
+                .foregroundStyle(VelvtInk.secondaryOnPaper)
             }
-
-            HStack(spacing: 12) {
-                Text("I was focused")
-                Text("Wrong category")
-                Text("Not helpful")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
         .disabled(true)
-        .padding(12)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             "Example drift offer. \(Self.exampleTitle). \(Self.exampleBody) "

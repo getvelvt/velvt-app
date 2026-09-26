@@ -35,7 +35,7 @@ public struct BundleConfigLoader: ConfigLoading {
         }
 
         guard let apnsRaw = info["VelvtAPNSEnv"] as? String,
-              let apnsEnvironment = APNSEnvironment(rawValue: apnsRaw)
+            let apnsEnvironment = APNSEnvironment(rawValue: apnsRaw)
         else {
             throw ConfigError.invalidValue(name: "VelvtAPNSEnv")
         }

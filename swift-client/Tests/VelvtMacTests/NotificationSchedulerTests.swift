@@ -1,12 +1,15 @@
+import Combine
 import UserNotifications
 import XCTest
+
 @testable import VelvtMac
 
 final class UNNotificationSchedulerTests: XCTestCase {
 
     func testSchedulesImmediatelyWhenNoDoNotDisturb() async {
         let center = FakeUNUserNotificationCenter()
-        let metrics = AppMetricsStore(defaults: UserDefaults(suiteName: "NotificationSchedulerTests.\(UUID().uuidString)")!)
+        let metrics = AppMetricsStore(
+            defaults: UserDefaults(suiteName: "NotificationSchedulerTests.\(UUID().uuidString)")!)
         let sut = UNNotificationScheduler(
             center: center,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },
@@ -20,11 +23,25 @@ final class UNNotificationSchedulerTests: XCTestCase {
             doNotDisturbUntil: nil
         )
 
+        // `AppMetricsStore` republishes its `@Published` mirror on the main
+        // queue, and `schedule` does not run there, so the mirror is read after
+        // that hop rather than before it -- waiting on the publisher, not on a
+        // clock.
+        let reachedOne = expectation(description: "interventions mirror reaches 1")
+        reachedOne.assertForOverFulfill = false
+        let cancellable = metrics.$interventions
+            .filter { $0 == 1 }
+            .sink { _ in reachedOne.fulfill() }
+
         await sut.schedule(payload)
 
         XCTAssertEqual(center.addedRequests.count, 1)
         XCTAssertNil(center.addedRequests.first?.trigger)
         XCTAssertEqual(center.addedRequests.first?.identifier, payload.notificationID.uuidString)
+
+        await fulfillment(of: [reachedOne], timeout: 5)
+        cancellable.cancel()
+
         XCTAssertEqual(metrics.interventions, 1)
     }
 

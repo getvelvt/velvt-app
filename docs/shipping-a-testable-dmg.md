@@ -98,6 +98,16 @@ make alpha-dmg \
 Notarization usually returns in 2–15 minutes. The target fails closed at every
 stage, so if it completes, the artifact is distributable.
 
+**Build from a commit, at a new version.** Before it builds anything,
+`make alpha-dmg` refuses uncommitted or untracked changes, a version or build
+passed on the command line that differs from
+`swift-client/Configs/Version.xcconfig`, a version already tagged at another
+commit, and a build number that is not above every build in
+[`RELEASES.md`](RELEASES.md). So: raise the version and build in
+`Version.xcconfig`, commit, and build from that commit. The app and the helper
+both record the commit, and on success the target tags `v<version>` locally.
+Push the tag and add the release to `RELEASES.md`.
+
 **Pick a new `VELVT_DMG_PATH` for every attempt.** DMG outputs are treated as
 immutable and the target refuses to overwrite one.
 
@@ -159,8 +169,14 @@ chain, and every link has to hold.
 
 ### The chain
 
-1. Rust decides something is worth saying and pushes a `notification_payload`
-   over the local IPC socket.
+There are two notification kinds and they take different paths. The daily
+insight: Rust pushes a `notification_payload` over the local IPC socket. The
+drift offer: Rust sets `active_intervention` on the `work_block_state`
+snapshot and Swift posts its Rust-authored copy immediately through
+`InterventionNotificationScheduling`. Both reach macOS the same way:
+
+1. Rust decides something is worth saying and sends it over the local IPC
+   socket.
 2. `NotificationDeliveryCoordinator.handle` checks notification authorization,
    requesting it if the user has never been asked.
 3. `NotificationScheduler` hands it to `UNUserNotificationCenter`.
@@ -184,17 +200,37 @@ a Release build, so this is unavailable in the DMG.
 Device-local, deterministic, and independent of the cloud, so it works on a
 fresh install with no account and no baseline history:
 
-1. Start a work block of **20 minutes or more**.
-2. Work in one category for at least **5 minutes** — this establishes the anchor
-   and clears the minimum-elapsed gate.
-3. Switch away and back **four or more times within 10 minutes**, spending long
-   enough in each for a confident classification.
-4. A notification should appear:
+This is drift policy v3 (`DRIFT_POLICY_VERSION = 3`, protocol 32, velvt-app
+PR #56). The gate constants are in `rust-service/src/work_block/mod.rs`:
+≥ 3 confident switches away from the anchor inside a rolling 10-minute window,
+after ≥ 3 minutes elapsed, with ≥ 2 minutes remaining. They are v2's (PR #40,
+1.0.9 to 1.0.11); v3 changes when a switch reaches the gate, which is now the
+moment it happens. Under v2 the gate heard of a switch only when you came back,
+and the offer was withdrawn at your next switch, often before a notification
+was posted. The first
+gate, v1, was ≥ 4 switches after 5 minutes; it no longer ships.
 
-   > Velvt observed 4 switches away from deep work in the last 10 minutes.
+1. Start a work block of **25 minutes** (anything that leaves 2 minutes after
+   the switches works).
+2. Work in one **FOCUS_WORK** app (VS Code, Xcode, Cursor, Zed) for at least
+   **3 minutes** — this establishes the anchor and clears the warm-up.
+3. Switch to a different category and back **three or more times within 10
+   minutes**, spending long enough in each for a confident classification.
+   COMMUNICATION, SOCIAL_FEED and PASSIVE_CONSUMPTION all count; a one-second
+   flick does not.
+4. On the third switch away, stay in the other app. A notification and an
+   in-app card should appear while you are still there, within a second or
+   two of arriving. Coming back to the anchor withdraws the offer. The body is
+   one of four frozen wordings, for example:
+
+   > Velvt observed 3 switches away from focus work in the last 10 minutes.
    > Protect the next 10 minutes for the work you chose.
 
-At most **one** offer is made per block, by design.
+   The number is the count actually observed, so it is 3 or more.
+
+At most **one** offer is made per block, by design. An offer is also held back
+while Velvt is demoted and while Focus/DND is on (recorded as suppressed, not
+delivered later).
 
 ### When nothing appears
 
@@ -204,7 +240,8 @@ At most **one** offer is made per block, by design.
 | Focus / DND not suppressing it | Control Centre → Focus |
 | Service running and connected | Menu bar shows a connected state, not "Collection paused" |
 | Accessibility granted | System Settings → Privacy & Security → Accessibility |
-| Gates actually met | ≥4 confident switches, ≥5 min elapsed, ≥2 min remaining |
+| Gates actually met | ≥3 confident switches in 10 min, ≥3 min elapsed, ≥2 min remaining (policy v3) |
+| Delivery outcome | `bash scripts/watch_notifications.sh` reports `notification_delivered` or why it was not |
 | Already offered this block | One per block — start a new one |
 
 If authorization was denied once, macOS will not prompt again. Re-enable it in

@@ -1,10 +1,23 @@
 # Velvt 0.1.5 private-beta guide
 
+> **Superseded 2026-09-25 — historical.** This guide describes the 0.1.5
+> private beta, which asked participants to sign in and treated notifications
+> as optional. It is not the participant path for the first alpha cohort.
+> That cohort is run from the cohort kit in the private Velvt workspace
+> (`plan/04-alpha-cohort-kit.md`), against notarized 1.0.11 (or 1.0.9 as the
+> fallback), and the kit differs from this guide where it matters: testers do
+> not sign up or sign in, they are asked to allow notifications because the
+> drift offer is the thing being tested, and the drift gate is policy v3
+> (≥ 3 switches after a 3-minute warm-up, decided as each switch happens).
+> Where the two disagree, the kit is
+> right. The one correction made here is the app's name: it installs as
+> **Velvt.app**, not `velvt-mac.app`.
+
 Velvt supports macOS 13 Ventura and later. Use only the build and SHA-256 checksum supplied by the beta coordinator; do not redistribute either one.
 
 ## Install and begin
 
-1. Confirm the downloaded app matches the supplied checksum, move **velvt-mac.app** to `/Applications`, and open it from Finder.
+1. Confirm the downloaded app matches the supplied checksum, move **Velvt.app** to `/Applications`, and open it from Finder.
 2. Read the optional intro, or choose **Skip intro** for the 30-second summary. Established launches continue from the intro into the live guided tour. Both also remain available under **Settings → Onboarding & Tour**.
 3. On the privacy step, choose **Allow Accessibility** only when ready. macOS opens its permission flow only after that action. If access is denied, use **Open Accessibility Settings** in Velvt to recover.
 4. Velvt begins local collection after Accessibility is granted. Open **Today**, enter an optional local intention, and choose **Start Work Block**; no account or notification permission is required for this first value. End the block from the same control.
@@ -35,7 +48,7 @@ Velvt does not add product analytics or telemetry. Diagnostics copied from **Set
 
 ## Uninstall
 
-First sign out or request account deletion as appropriate, then quit Velvt and move `/Applications/velvt-mac.app` to the Trash. Remove Velvt from **System Settings → Privacy & Security → Accessibility** and **Notifications**. App removal does not itself erase local service data or Keychain state. For a complete local reset, remove `~/.velvt` only after quitting Velvt and only if permanent deletion of local history is intended; contact beta support before doing so if evidence is needed for an open bug.
+First sign out or request account deletion as appropriate, then quit Velvt and move `/Applications/Velvt.app` to the Trash. Remove Velvt from **System Settings → Privacy & Security → Accessibility** and **Notifications**. App removal does not itself erase local service data or Keychain state. For a complete local reset, remove `~/.velvt` only after quitting Velvt and only if permanent deletion of local history is intended; contact beta support before doing so if evidence is needed for an open bug.
 
 ## Support and known limitations
 

@@ -1,8 +1,40 @@
 import Combine
 import Foundation
 
+/// Which control earned the acknowledgement currently on screen.
+///
+/// Not a judgement about the correction — the service authors every word of
+/// the sentence — only a record of what the client last asked for, so the
+/// confirmation can be drawn beside the control that caused it. Protocol 30
+/// made Remove and Reset acknowledge too, and the workbench is a long scroll:
+/// one banner pinned to one end of it is off screen for half the actions that
+/// now produce one.
+public enum CorrectionAcknowledgmentOrigin: Equatable, Sendable {
+    /// A rule surface: correct, edit, remove, reset.
+    case rule
+    /// Teaching Velvt what a whole application is, from the triage list.
+    case application
+}
+
 @MainActor
 public final class MenuStatusViewModel: ObservableObject {
+    /// The window the triage list is asked for, and the reason its copy can
+    /// say "this week". Clamped again by `RequestUnclassifiedTriage` and once
+    /// more inside the query.
+    // `nonisolated` because callers read it to build a request before hopping
+    // to the main actor; it is a constant, so isolation buys nothing and costs
+    // a hard error under the Swift 6 language mode.
+    public nonisolated static let triageLookbackDays = 7
+
+    /// The codes the classification and teaching handlers refuse a command
+    /// with, other than the `classification_correction_*` family.
+    private static let classificationRejectionCodes: Set<String> = [
+        "invalid_classification_category",
+        "invalid_app_stable_id",
+        "invalid_local_activity_name",
+        "invalid_correction_history_query",
+    ]
+
     @Published public private(set) var status: MenuStatus?
     @Published public private(set) var correctionHistoryPage: CorrectionHistoryPage?
     @Published public private(set) var correctionHistoryQuery = ""
@@ -13,12 +45,38 @@ public final class MenuStatusViewModel: ObservableObject {
     /// refreshed on a timer and the confirmation would otherwise disappear
     /// within seconds of the correction that earned it.
     @Published public private(set) var correctionAcknowledgment: String?
+    /// Where to draw `correctionAcknowledgment`. Latched with it and cleared
+    /// with it, so the two can never disagree.
+    @Published public private(set) var acknowledgmentOrigin: CorrectionAcknowledgmentOrigin?
+    /// The applications Velvt observed but could not read.
+    ///
+    /// `nil` until the service answers: an empty list is the good state and
+    /// must not be shown before the question has been asked.
+    @Published public private(set) var unclassifiedTriage: UnclassifiedTriage?
+    /// Why the triage list could not be read.
+    ///
+    /// Held apart from `unclassifiedTriage` for the reason the service states
+    /// at `router.rs` `triage_error`: an empty list is the good state, so a
+    /// failure must not borrow that sentence.
+    @Published public private(set) var triageError: String?
     private let ipcClient: any IPCClientProtocol
     private var cancellables = Set<AnyCancellable>()
     private var timer: AnyCancellable?
     private var classificationCommand: Task<Void, Never>?
     private var correctionHistoryRequest: Task<Void, Never>?
+    private var triageRequest: Task<Void, Never>?
     private var acknowledgmentDismissal: Task<Void, Never>?
+    /// Set when a command that could produce an acknowledgement is sent, read
+    /// when one arrives. The acknowledgement itself carries no origin — it is
+    /// one string on a status snapshot — so this is the only thing that knows
+    /// which control the user pressed.
+    private var pendingAcknowledgmentOrigin: CorrectionAcknowledgmentOrigin = .rule
+    /// Whether the triage surface has ever been opened in this session.
+    ///
+    /// Every rule write changes the triage list, so each one refreshes it —
+    /// but only once something is actually showing it. A user who never opens
+    /// the section never pays for the query.
+    private var wantsTriageUpdates = false
 
     public init(ipcClient: any IPCClientProtocol, messages: some Publisher<ServerMessage, Never>) {
         self.ipcClient = ipcClient
@@ -33,10 +91,25 @@ public final class MenuStatusViewModel: ObservableObject {
             case .correctionHistoryPage(let page):
                 self?.correctionHistoryPage = page
                 self?.sendError = nil
+            case .unclassifiedTriage(let triage):
+                self?.unclassifiedTriage = triage
+                self?.triageError = nil
             case .errorResponse(let error) where error.code == "upload_flush_failed":
                 self?.sendError = error.message
-            case .errorResponse(let error) where error.code.hasPrefix("classification_correction_"):
+            case .errorResponse(let error) where error.code == "unclassified_triage_failed":
+                self?.triageError = error.message
+            // The rejection codes are listed rather than prefix-matched.
+            // `SetApplicationCategory` refuses a malformed id, category or
+            // name under `invalid_*` codes, and a teach that was refused had
+            // already taken its row off the list — so those must be caught
+            // here or the row vanishes and nothing is said. A prefix would
+            // also catch `invalid_credentials` and `invalid_work_block_*`,
+            // which have nothing to do with this surface.
+            case .errorResponse(let error)
+            where error.code.hasPrefix("classification_correction_")
+                || Self.classificationRejectionCodes.contains(error.code):
                 self?.sendError = error.message
+                self?.refreshUnclassifiedTriageIfWanted()
             default:
                 break
             }
@@ -56,6 +129,42 @@ public final class MenuStatusViewModel: ObservableObject {
         }
         let targetOffset = max(0, offset ?? correctionHistoryPage?.offset ?? 0)
         requestCorrectionHistory(offset: targetOffset)
+    }
+
+    /// Asks which applications Velvt could not read, and keeps the answer
+    /// current from then on.
+    public func refreshUnclassifiedTriage(lookbackDays: Int = MenuStatusViewModel.triageLookbackDays) {
+        wantsTriageUpdates = true
+        requestUnclassifiedTriage(lookbackDays: lookbackDays)
+    }
+
+    /// Teaches Velvt what one application is.
+    ///
+    /// `activityName` is the name the service itself reported for the
+    /// application, handed straight back: it is the device-local name Velvt
+    /// already holds, so returning it names the saved rule and lets the
+    /// service's acknowledgement say the application's name instead of "This
+    /// app". Nothing is decided here — the category is the user's answer and
+    /// the sentence is the service's.
+    public func teachApplication(_ entry: UnclassifiedTriageEntry, category: String) {
+        // The row goes now, not when the service answers. This is the user's
+        // own action on their own list, and a row that sits there looking
+        // unpressed for a round trip reads as a control that does not work.
+        // The refresh inside `enqueueClassificationCommand` is authoritative
+        // either way: the service excludes an application the moment a rule
+        // exists for it, and a refused teach brings the row straight back.
+        removeTriageEntry(entry.appStableID)
+        enqueueClassificationCommand(
+            .setApplicationCategory(
+                .init(
+                    appStableID: entry.appStableID,
+                    category: category,
+                    activityName: entry.displayName
+                )
+            ),
+            failureMessage: "Unable to save this app. Try again later.",
+            origin: .application
+        )
     }
 
     public func nextCorrectionHistoryPage() {
@@ -138,10 +247,13 @@ public final class MenuStatusViewModel: ObservableObject {
         )
     }
 
+    /// Removes every correction and application rule the person set. The
+    /// method name is historical; what it resets is a list of stored
+    /// corrections, not anything learned, and the copy says so.
     public func resetClassificationLearning() {
         enqueueClassificationCommand(
             .resetClassificationOverrides,
-            failureMessage: "Unable to reset classification learning. Try again later."
+            failureMessage: "Unable to reset your category corrections. Try again later."
         )
     }
 
@@ -151,29 +263,79 @@ public final class MenuStatusViewModel: ObservableObject {
     /// screen stops reading as a response to what the user just did.
     private func acknowledgeCorrection(_ acknowledgment: String) {
         correctionAcknowledgment = acknowledgment
+        acknowledgmentOrigin = pendingAcknowledgmentOrigin
+        // Back to the default the moment it has been read. An acknowledgement
+        // that arrives without a command behind it — a status pushed by the
+        // service — belongs to the rule surfaces, not to the triage list.
+        pendingAcknowledgmentOrigin = .rule
         acknowledgmentDismissal?.cancel()
         acknowledgmentDismissal = Task { [weak self] in
             try? await Task.sleep(for: .seconds(6))
             guard !Task.isCancelled else { return }
             self?.correctionAcknowledgment = nil
+            self?.acknowledgmentOrigin = nil
         }
     }
 
     private func enqueueClassificationCommand(
         _ message: ClientMessage,
-        failureMessage: String
+        failureMessage: String,
+        origin: CorrectionAcknowledgmentOrigin = .rule
     ) {
         let previous = classificationCommand
         classificationCommand = Task { [weak self] in
             _ = await previous?.value
             guard let self else { return }
             do {
+                // Set immediately before the send rather than when the command
+                // was queued, so two commands issued in one breath produce
+                // acknowledgements in the order they were actually sent.
+                pendingAcknowledgmentOrigin = origin
                 try await ipcClient.send(message)
                 requestCorrectionHistory(offset: correctionHistoryPage?.offset ?? 0)
+                // Every rule write can change the triage list, not just a
+                // teach: removing an app rule puts the application back on it,
+                // a reset puts them all back, and a window correction that
+                // generalizes takes one off. Requested after the write on the
+                // same chained task, so it cannot read the list back before
+                // the write that changed it.
+                refreshUnclassifiedTriageIfWanted()
             } catch {
                 sendError = failureMessage
+                refreshUnclassifiedTriageIfWanted()
             }
         }
+    }
+
+    /// Re-asks for the triage list, but only if something is showing it.
+    private func refreshUnclassifiedTriageIfWanted() {
+        guard wantsTriageUpdates else { return }
+        requestUnclassifiedTriage(lookbackDays: Self.triageLookbackDays)
+    }
+
+    private func requestUnclassifiedTriage(lookbackDays: Int) {
+        let previous = triageRequest
+        triageRequest = Task { [weak self] in
+            _ = await previous?.value
+            guard let self else { return }
+            do {
+                try await ipcClient.send(
+                    .requestUnclassifiedTriage(.init(lookbackDays: lookbackDays))
+                )
+            } catch {
+                triageError = "Unable to list the apps Velvt could not read. Try again later."
+            }
+        }
+    }
+
+    /// Takes one application off the list in hand, preserving the window the
+    /// service computed it over.
+    private func removeTriageEntry(_ appStableID: String) {
+        guard let triage = unclassifiedTriage else { return }
+        unclassifiedTriage = UnclassifiedTriage(
+            entries: triage.entries.filter { $0.appStableID != appStableID },
+            windowDays: triage.windowDays
+        )
     }
 
     private func requestCorrectionHistory(offset: Int) {
@@ -205,9 +367,12 @@ final class MenuBarDataLoader {
     private var requestInFlight = false
     private var canRequest = false
 
-    init(ipcClient: any IPCClientProtocol, currentLocalInsightDate: @escaping () -> String = {
-        MenuBarDataLoader.currentUTCDateString()
-    }, retryDelayNanoseconds: UInt64 = 2_000_000_000) {
+    init(
+        ipcClient: any IPCClientProtocol,
+        currentLocalInsightDate: @escaping () -> String = {
+            MenuBarDataLoader.currentUTCDateString()
+        }, retryDelayNanoseconds: UInt64 = 2_000_000_000
+    ) {
         self.ipcClient = ipcClient
         self.currentLocalInsightDate = currentLocalInsightDate
         self.retryDelayNanoseconds = retryDelayNanoseconds
@@ -330,6 +495,24 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     @Published public private(set) var insightAvailability: InsightAvailability = .loading
     @Published public private(set) var historyAvailability: DeliveryAvailability = .loading
     @Published public private(set) var insightNotReadyReason: String?
+    /// Why history is not ready, kept for the same reason the insight one is.
+    /// Rust already distinguishes "the backend could not be reached" from
+    /// "there is nothing to show" (`router.rs` emits `backend_unavailable` and
+    /// `invalid_cached_payload`), and discarding it made a network failure
+    /// render as advice to keep working — the app blaming the user for its
+    /// own outage.
+    @Published public private(set) var historyNotReadyReason: String?
+
+    /// The service's own account of its health, which the client used to
+    /// decode and drop on the floor.
+    ///
+    /// Rust reports this on every connection — derived from auth state at
+    /// `ipc/connection.rs:381` — and on health transitions such as Tier 2
+    /// classification becoming unavailable (`delivery/push.rs:354`). Nothing in
+    /// Swift referenced it outside its own decoder, so an app running degraded,
+    /// signed out, or with uploads paused looked exactly like one running
+    /// perfectly.
+    @Published public private(set) var serviceStatus: ServiceStatus?
 
     public var displayState: AnyPublisher<DisplayState, Never> {
         $state.eraseToAnyPublisher()
@@ -381,6 +564,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
                 case .insightPayload(let p): self.updateInsight(p)
                 case .historyPayload(let p): self.updateHistory(p)
                 case .cacheEmpty(let empty): self.handleCacheEmpty(empty)
+                case .serviceStatus(let status): self.serviceStatus = status
                 default: break
                 }
             }
@@ -422,6 +606,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
             insightNotReadyReason = payload.reason
         case "history_payload":
             historyAvailability = .notGenerated
+            historyNotReadyReason = payload.reason
         default:
             return
         }
@@ -440,6 +625,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
         historyViewModel.reset()
         insightAvailability = .loading
         insightNotReadyReason = nil
+        historyNotReadyReason = nil
         historyAvailability = .loading
         state = .loading
     }

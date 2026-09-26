@@ -1,5 +1,205 @@
 # IPC Protocol Changelog
 
+## Version 32 - 2026-09-26
+
+- Added optional `in_progress` (boolean) to `raw_event` (Swift to Rust). True
+  when the dwell has only just begun: the activity became frontmost at
+  `occurred_at` and nothing has been measured yet, so `duration_seconds` is 0
+  and means nothing. The client sends each dwell twice: in progress when it
+  begins, and closed, with its measured duration, when the next one begins.
+  The closed report of one dwell always precedes the in-progress report of the
+  next. An in-progress report is sent live or not at all: it is never buffered
+  while the socket is down and never replayed.
+- Why it exists: a dwell was reported only when it ended, so the in-block drift
+  gate learned about a departure at the moment the person came back, and the
+  offer it pushed was withdrawn as `returned` by the very next report. On the
+  founder's Mac on 2026-09-25 the offer existed for about one second of wall
+  time, and the notification was never posted. With the in-progress report the
+  gate sees the departure while it is happening.
+- Rust: an in-progress report is fed to the work-block gate and nothing else.
+  It is never written to `raw_event_buffer` and never enqueued for upload, and
+  outside an active block it is not even classified. Its classification is
+  kept in memory until the closed report of the same dwell arrives and is
+  reused there, so each dwell is still classified exactly once. The gate
+  evaluates at the dwell's `occurred_at`, which the closed report carried too,
+  and the closed report then lands on the observation the in-progress one
+  opened and is a no-op there. When a pause, a sleep or a service restart
+  closed that observation first, the closed report re-opens the ledger at the
+  resume and is not evaluated again, so one dwell is one decision.
+- Drift policy version 3 (`DRIFT_POLICY_VERSION` 2 → 3). The gate's constants
+  and branches are unchanged, and on dwells that close inside the block with
+  no boundary between their two reports the decisions and their timestamps
+  are too; only the wall-clock moment moves. Elsewhere the decision points
+  differ: a dwell still in progress when the block ends or the Mac sleeps is
+  now decided on (version 2 never saw it), and a dwell interrupted by a pause
+  or a restart is decided on when it began rather than at the resume. An
+  offer now reaches the person while they are away. Decisions under the two
+  versions are never pooled.
+- Acknowledged like any `raw_event` (`raw_event_ack`, `accepted`).
+- Compatibility: a closed dwell carries no `in_progress` key, byte for byte
+  what a protocol-31 client sent. A pre-32 service rejects the key
+  (`deny_unknown_fields`), which is why this is a protocol bump.
+- Privacy: no new field carries raw data. The raw values are the ones
+  `raw_event` already carries, sent at the start of the dwell as well as at its
+  end, over the local socket only.
+- Transport, no wire change: the service's frame reader is now cancel-safe.
+  It ran inside a `select!` against pushes, and a frame that was half read
+  when a push arrived was dropped, so the rest of it was answered with
+  `malformed_message`. Two frames sent back to back lost the second whenever
+  the first queued a push, which is the shape the in-progress report creates at
+  every activity switch.
+
+## Schema corrections: what the service emits - 2026-09-25 (no wire change; the protocol stays 31)
+
+- `local_dashboard.daily_activity` declared `minItems`/`maxItems` 7, the count protocol 20
+  introduced. Rust has sent `DAILY_ACTIVITY_DAYS` = 14 rows since 2026-08-27
+  (`rust-service/src/dashboard.rs`; shipped in 1.0.9 and 1.0.11 at protocols
+  28 and 30), and the outbound shaper rejects any other count. The schema now
+  says 14. No Rust or Swift type changed and the bytes on the socket are the
+  same as before; the Swift client renders whatever count it receives.
+- A `daily_activity` segment listed `representative_event_id`, `stable_id` and
+  `suggested_name` as required. Rust omits each of them when it has no value
+  (`skip_serializing_if` on `LocalDailyActivitySegment`), and a segment for a
+  seed-matched application has no `suggested_name`, so a real payload broke
+  the schema on the first day with focus work in it. They are now optional.
+- `work_block_state` listed `active_intervention` as required, while its own
+  `$comment` said it is present only while an offer is unanswered, which is
+  what Rust does (`skip_serializing_if`). It is now optional.
+- The Swift decoders already read all four as optionals, so nothing on either
+  side changes.
+- Why the conformance test below missed these: it validates instances
+  generated from the schema, so a 7-row instance agreed with a 7-row schema
+  and every generated instance filled in every optional field.
+  `rust-service/tests/emitted_payload_schema.rs` now drives the real router
+  (real events, an active block), validates the `local_dashboard` and
+  `work_block_state` payloads it emits against the schemas, and fails if the
+  schema's row bounds and `DAILY_ACTIVITY_DAYS` differ. The validator it uses
+  is the one `schema_conformance.rs` uses, moved to
+  `shared-types/tests/support/json_schema.rs` so both share it.
+
+## Schema corrections - 2026-09-25 (no wire change; the protocol stays 31)
+
+`rust-service/shared-types/tests/schema_conformance.rs` now builds a maximal and
+a minimal instance of every file in `proto/schema/`, parses each as a Rust
+message, and validates what Rust serializes back. Its first run found four
+schemas that described a wire no Rust build ever produced. Each is corrected to
+match what Rust sends; no Rust type changed, so the bytes on the socket are the
+same as before.
+
+- `unclassified_triage`: removed the optional `entries[].bundle_id`. The Rust
+  entry deliberately carries `app_stable_id` as its only identifier and never
+  sent a bundle key hash; Rust looks the bundle identity up itself when
+  `set_application_category` comes back. The Swift type no longer declares it.
+- `history_payload`: the longest-stretch field on the socket is
+  `longest_uninterrupted_seconds`, the name Rust has sent since the field was
+  added on 2026-07-18. The schema said `focus_seconds` (the cloud API's name,
+  which Rust renames when it parses the API response), and the Swift decoder
+  read `focus_seconds` too, so History showed a longest stretch of 0. The
+  Swift decoder now reads `longest_uninterrupted_seconds`.
+- `menu_status`: declared `correction_history[].scope`, which Rust has sent
+  since protocol 30 alongside `correction_history_page`'s.
+- `acknowledged`: the payload is `null`, which is how serde encodes Rust's
+  unit struct. The schema said an empty object.
+
+## Version 31 - 2026-09-25
+
+- Added `anchor_category` to `work_block_state` (Rust to Swift), top level,
+  required and nullable like `current_category`. It is the broad category the
+  drift gate treats as the block's anchor --- the one holding the most
+  confidently observed, closed time --- computed by the same function the gate
+  calls, so it is the value the gate measures departures from and the value an
+  offer records. Null outside an active or paused block, and until a confident
+  observation has closed; a finished block's category stays
+  `result.safe_evidence_category`, which is gated on coverage.
+- Why it exists: the rule "defer while `current_category` is the anchor" could
+  not be applied by any local IPC client, because the anchor was on the wire
+  only inside `active_intervention`, which exists only while an offer is
+  pending. The workspace's Claude Code hook approximated it with "confidently
+  in focus work".
+- Compatibility: a pre-31 payload has no key at all, and both DTOs decode that
+  as `None`/`nil`. A client that reads the payload directly can tell "no anchor
+  yet" (null) from "a service older than 31" (absent).
+- A category label only, and local IPC only. It carries nothing
+  `current_category` does not already carry --- no app identity, window title,
+  URL, or intention --- and no upload DTO has a field it could occupy.
+
+## Version 30 - 2026-09-23
+
+- Added `bundle_id` handling, `declared_app_category` and `document_type_ids`
+  to `raw_event` (Swift to Rust): what the application itself declares about
+  what it is, read from its own `Info.plist`. Facts, never conclusions --- Swift
+  reports the strings and Rust decides whether any of them mean anything.
+  `document_type_ids` is bounded to 256 identifiers of at most 64 characters,
+  deduplicated and sorted by the client, and an oversized list is sent empty
+  rather than truncated: a truncated list is a set the application never
+  declared, and classifying on it would be worse than classifying on nothing.
+  256 is above every application measured --- Xcode declares 152, Preview 49.
+  An over-bound list that arrives anyway costs the declaration and nothing
+  else: the event is stored with its duration intact.
+  Absent metadata --- a missing key, an unreadable plist, an older client ---
+  must classify exactly as it did before these fields existed.
+- Why it exists: on a real machine with 107 installed applications, 63% of them
+  classify as UNLOGGED, and `is_confident_evidence` excludes UNLOGGED, so that
+  time reaches neither the drift gate nor the anchor. The measured cause was not
+  weak inference but a weak key. `app_stable_key` hashes the name macOS reports,
+  and that name is localized, changes between releases, and is often not the one
+  anyone would recognise: `NSRunningApplication.localizedName` for Visual Studio
+  Code is literally `Code`, which matched no taxonomy entry at all. A bundle
+  identifier is none of those things. Stored as a hash under its own domain
+  separator (`raw_event_buffer.app_bundle_stable_id` and
+  `personal_app_override.bundle_key_hash`, migrations 0033 and 0034), so the
+  identifier itself is never persisted, and added beside the name key rather
+  than instead of it --- every name-keyed correction already on disk keeps
+  working untouched.
+- Added `request_unclassified_triage` (Swift to Rust) and `unclassified_triage`
+  (Rust to Swift): the bounded list of applications Velvt observed but could not
+  read, so teaching it becomes per-application and once rather than per-event
+  and reactive. Each entry carries only facts --- the local name Velvt already
+  holds, seconds observed, and event count. (Corrected 2026-09-25: this entry
+  and the schema also listed an optional bundle key hash, which the Rust type
+  never had and never sent.) Ranked by observed time, capped at 8, and floored at five minutes in the
+  window: a list of thirty one-second curiosities is not a task anyone will do.
+  An application the user has already taught leaves the list, and an empty list
+  is the good state. No category, no guess, and no total presented as a score.
+- Added `set_application_category` (Swift to Rust): the one-tap answer from that
+  list. It carries no event id on purpose --- the user is telling Velvt what an
+  application is, not correcting one moment of it --- and saving the same answer
+  twice is the same as saving it once.
+- Added `scope` (`window` or `app`) to each `correction_history_page` item.
+  Until now the history listed window rules only, so an app-scoped rule could be
+  neither seen nor removed: removing the window rule left the engine falling
+  through into the surviving app rule and returning the same category and the
+  same typed name on the next event. `stable_id` means an abstraction stable id
+  for a window rule and the application's own key hash for an app rule, so a
+  client cannot act on the id without reading the scope. Absent on an older or
+  stored payload, where it defaults to `window` --- which is what every rule
+  listed before this version was.
+- Local IPC surface only. None of it is uploadable, structurally rather than by
+  filtering: `upload/dto.rs` implements `Serialize` for `BatchEventPayload` by
+  hand and emits exactly event_id, occurred_at, abstraction_type,
+  abstraction_type_version, classification_tier and a payload of
+  duration_seconds and category. There is no field a bundle identifier, a
+  declared category, a document type or a triage entry could occupy.
+
+## Version 29 - 2026-09-22
+
+- Added `intervention_card_seen` (Swift to Rust): the in-app drift card was
+  actually rendered on screen. A delivery fact and never a response --- the
+  payload carries one field and has no place a user answer could sit, so a
+  sighting cannot be widened into an outcome nobody gave. Silence is still
+  recorded only when a block ends unanswered, and is still never inferred
+  from a card or notification disappearing.
+- Why it exists: `outcome = 'no_response'` conflated a person who saw the
+  offer and said nothing with a person the offer never reached. Those are
+  evidence about the action and evidence about delivery respectively, they
+  call for opposite fixes, and the pre-registered denominator counted them
+  identically. Stored as `work_block_intervention.card_seen_at` (migration
+  0032), nullable and orthogonal to `outcome`, so no existing definition
+  changes. NULL means "never observed on screen", which includes every row
+  written before the migration --- those are unknown, not unseen.
+- Local IPC surface only. The sighting is never uploaded; no DTO has a field
+  it could occupy.
+
 ## Version 28 - 2026-08-07
 
 - Added `request_demotion_state` (Swift to Rust) and `demotion_state` (Rust

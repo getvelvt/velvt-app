@@ -38,13 +38,62 @@ final class IPCModuleTests: XCTestCase {
             .requestCorrectionHistory(
                 RequestCorrectionHistory(query: "Research", offset: 20, pageSize: 20)
             ),
-      .errorResponse(ErrorResponse(code: "safe_error", message: "safe", relatedEventID: nil)),
+            .errorResponse(ErrorResponse(code: "safe_error", message: "safe", relatedEventID: nil)),
+            .interventionCardSeen(
+                WorkBlockIdentifier(
+                    blockID: UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+                )
+            ),
         ]
 
         for message in messages {
             let data = try encoder.encode(message)
             XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), message)
         }
+    }
+
+    /// Proto v32. A closed dwell's frame carries no `in_progress` key, byte for
+    /// byte what a v31 client sent, so the ledger path cannot tell the
+    /// difference; only a dwell that has just begun says so.
+    func testInProgressIsOnTheWireOnlyWhenTrue() throws {
+        func payload(inProgress: Bool) throws -> [String: Any] {
+            let message = ClientMessage.rawEvent(
+                RawEventMessage(
+                    eventID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
+                    occurredAt: Date(timeIntervalSince1970: 1_790_388_157),
+                    appName: "local-only",
+                    windowTitle: "local-only",
+                    bundleID: nil,
+                    inProgress: inProgress
+                ))
+            let data = try encoder.encode(message)
+            XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), message)
+            let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            XCTAssertEqual(envelope["type"] as? String, "raw_event")
+            return envelope["payload"] as? [String: Any] ?? [:]
+        }
+
+        XCTAssertNil(try payload(inProgress: false)["in_progress"])
+        XCTAssertEqual(try payload(inProgress: true)["in_progress"] as? Bool, true)
+    }
+
+    /// The sighting has to reach Rust as `intervention_card_seen` with exactly
+    /// one payload key. The single-key shape is the guarantee: there is nowhere
+    /// in this message a user answer could be carried, so a card being drawn
+    /// can never be mistaken for a reply the person did not give.
+    func testInterventionCardSeenCarriesOnlyTheBlockIdentifier() throws {
+        let blockID = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+        let data = try encoder.encode(ClientMessage.interventionCardSeen(.init(blockID: blockID)))
+        let envelope =
+            try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+
+        XCTAssertEqual(envelope["type"] as? String, "intervention_card_seen")
+        let payload = envelope["payload"] as? [String: Any] ?? [:]
+        XCTAssertEqual(payload.keys.sorted(), ["block_id"])
+        XCTAssertEqual(
+            (payload["block_id"] as? String)?.lowercased(),
+            blockID.uuidString.lowercased()
+        )
     }
 
     func testEveryServerMessageRoundTrips() throws {
@@ -141,10 +190,10 @@ final class IPCModuleTests: XCTestCase {
                     hasMore: true
                 )
             ),
-      .privacyViolationAlert(
-        PrivacyViolationAlert(code: "raw_field_rejected", message: "safe rejection")),
+            .privacyViolationAlert(
+                PrivacyViolationAlert(code: "raw_field_rejected", message: "safe rejection")),
             .errorResponse(ErrorResponse(code: "safe_error", message: "safe", relatedEventID: nil)),
-      .unknown(type: "future_message"),
+            .unknown(type: "future_message"),
         ]
 
         for message in messages {
@@ -202,6 +251,25 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertEqual(payload["local_activity_name"] as? String, "Research reading")
     }
 
+    /// Rust sends the day's longest stretch as `longest_uninterrupted_seconds`
+    /// (`proto/schema/history_payload.json`). This decoder read `focus_seconds`,
+    /// the cloud API's name, which never crosses the socket, so History showed 0.
+    func testHistorySummaryReadsTheLongestStretchUnderTheNameRustSends() throws {
+        let json = """
+            {"type":"history_payload","payload":{"days":1,"summaries":[
+              {"date":"2026-09-25","status":"ready","event_count":4,"focus_score":null,
+               "fragmentation_score":null,"confidence_level":"medium","active_seconds":3600,
+               "focused_seconds":2400,"meaningful_switch_count":3,
+               "longest_uninterrupted_seconds":1500,"baseline_status":"early_stage",
+               "baseline_comparison":{},"type_proportions":[]}]}}
+            """
+        let message = try decoder.decode(ServerMessage.self, from: Data(json.utf8))
+        guard case .historyPayload(let payload) = message else {
+            return XCTFail("expected a history payload, decoded \(message)")
+        }
+        XCTAssertEqual(payload.summaries.first?.longestUninterruptedSeconds, 1500)
+    }
+
     func testCorrectionHistoryWireContractIsBoundedAndLocalOnly() throws {
         let request = ClientMessage.requestCorrectionHistory(
             RequestCorrectionHistory(query: "Private alias", offset: 20, pageSize: 500)
@@ -238,13 +306,13 @@ final class IPCModuleTests: XCTestCase {
     func testWorkBlockCommandsUseTypedLocalProtocolShapes() throws {
         let blockID = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
         let messages: [ClientMessage] = [
-      .startWorkBlock(
-        .init(
-                intention: "Private local intention",
-                plannedDurationSeconds: 1_500,
-                purpose: .deepWork,
-                intensity: .medium
-            )),
+            .startWorkBlock(
+                .init(
+                    intention: "Private local intention",
+                    plannedDurationSeconds: 1_500,
+                    purpose: .deepWork,
+                    intensity: .medium
+                )),
             .pauseWorkBlock(.init(blockID: blockID)),
             .resumeWorkBlock(.init(blockID: blockID)),
             .endWorkBlock(.init(blockID: blockID)),
@@ -257,56 +325,56 @@ final class IPCModuleTests: XCTestCase {
         for message in messages {
             XCTAssertEqual(try decoder.decode(ClientMessage.self, from: encoder.encode(message)), message)
         }
-    let start = try XCTUnwrap(
-      JSONSerialization.jsonObject(with: encoder.encode(messages[0])) as? [String: Any])
+        let start = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoder.encode(messages[0])) as? [String: Any])
         XCTAssertEqual(start["type"] as? String, "start_work_block")
     }
 
-  func testLocalDashboardRequestCarriesOnlyBoundedWindowAndTimeZoneOffset() throws {
-    let message = ClientMessage.requestLocalDashboard(
-      .init(windowSeconds: 3_600, utcOffsetSeconds: -14_400)
-    )
-    let data = try encoder.encode(message)
-    let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-    let payload = try XCTUnwrap(object["payload"] as? [String: Any])
+    func testLocalDashboardRequestCarriesOnlyBoundedWindowAndTimeZoneOffset() throws {
+        let message = ClientMessage.requestLocalDashboard(
+            .init(windowSeconds: 3_600, utcOffsetSeconds: -14_400)
+        )
+        let data = try encoder.encode(message)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
 
-    XCTAssertEqual(object["type"] as? String, "request_local_dashboard")
-    XCTAssertEqual(payload["window_seconds"] as? Int, 3_600)
-    XCTAssertEqual(payload["utc_offset_seconds"] as? Int, -14_400)
-    XCTAssertEqual(Set(payload.keys), ["window_seconds", "utc_offset_seconds"])
-  }
+        XCTAssertEqual(object["type"] as? String, "request_local_dashboard")
+        XCTAssertEqual(payload["window_seconds"] as? Int, 3_600)
+        XCTAssertEqual(payload["utc_offset_seconds"] as? Int, -14_400)
+        XCTAssertEqual(Set(payload.keys), ["window_seconds", "utc_offset_seconds"])
+    }
 
-  func testFocusFragmentationPreservesExactWindowBoundsOnTheWire() throws {
-    let startedAt = Date(timeIntervalSince1970: 1_800_000_000)
-    let endedAt = startedAt.addingTimeInterval(3_600)
-    let focus = LocalFocusFragmentation(
-      blockID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
-      phase: .active,
-      windowLabel: "Most recent 60 work-block minutes",
-      windowStartedAt: startedAt,
-      windowEndedAt: endedAt,
-      plannedDurationSeconds: 3_600,
-      elapsedDurationSeconds: 3_600,
-      longestUninterruptedSeconds: 3_600,
-      observedSwitchCount: 0,
-      recoveryCount: 0,
-      coverage: .good,
-      coverageRatio: 1,
-      comparison: nil,
-      observation: "No category switches were observed.",
-      nextAction: "Protect the next 10 minutes.",
-      segments: [],
-      transitions: [],
-      clusters: []
-    )
+    func testFocusFragmentationPreservesExactWindowBoundsOnTheWire() throws {
+        let startedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let endedAt = startedAt.addingTimeInterval(3_600)
+        let focus = LocalFocusFragmentation(
+            blockID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
+            phase: .active,
+            windowLabel: "Most recent 60 work-block minutes",
+            windowStartedAt: startedAt,
+            windowEndedAt: endedAt,
+            plannedDurationSeconds: 3_600,
+            elapsedDurationSeconds: 3_600,
+            longestUninterruptedSeconds: 3_600,
+            observedSwitchCount: 0,
+            recoveryCount: 0,
+            coverage: .good,
+            coverageRatio: 1,
+            comparison: nil,
+            observation: "No category switches were observed.",
+            nextAction: "Protect the next 10 minutes.",
+            segments: [],
+            transitions: [],
+            clusters: []
+        )
 
-    let data = try encoder.encode(focus)
-    let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let data = try encoder.encode(focus)
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-    XCTAssertNotNil(payload["window_started_at"])
-    XCTAssertNotNil(payload["window_ended_at"])
-    XCTAssertEqual(try decoder.decode(LocalFocusFragmentation.self, from: data), focus)
-  }
+        XCTAssertNotNil(payload["window_started_at"])
+        XCTAssertNotNil(payload["window_ended_at"])
+        XCTAssertEqual(try decoder.decode(LocalFocusFragmentation.self, from: data), focus)
+    }
 
     func testWorkBlockResultHasExactlyOneActionAndNoIntention() throws {
         let result = WorkBlockResult(
@@ -326,8 +394,8 @@ final class IPCModuleTests: XCTestCase {
                 durationSeconds: 600
             )
         )
-    let value = try XCTUnwrap(
-      JSONSerialization.jsonObject(with: encoder.encode(result)) as? [String: Any])
+        let value = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoder.encode(result)) as? [String: Any])
         XCTAssertNotNil(value["next_action"] as? [String: Any])
         XCTAssertNil(value["next_actions"])
         XCTAssertNil(value["intention"])
@@ -427,7 +495,7 @@ final class IPCModuleTests: XCTestCase {
             {"type":"start_work_block","payload":{"intention":null,"planned_duration_seconds":1500,"purpose":null,"intensity":"medium"}}
             """.utf8)
         let decoded = try decoder.decode(ClientMessage.self, from: v26)
-        guard case let .startWorkBlock(request) = decoded else {
+        guard case .startWorkBlock(let request) = decoded else {
             return XCTFail("expected start_work_block")
         }
         XCTAssertNil(request.invitationID)
@@ -523,7 +591,7 @@ final class IPCModuleTests: XCTestCase {
             {"type":"demotion_state","payload":{"state":"active","wrong_count":0,"delivered_count":4,"threshold_percent":15,"minimum_sample":10,"window_days":14,"threshold_policy_version":1,"repromotion_policy_version":1}}
             """.utf8)
         let decoded = try decoder.decode(ServerMessage.self, from: active)
-        guard case let .demotionState(state) = decoded else {
+        guard case .demotionState(let state) = decoded else {
             return XCTFail("expected demotion_state")
         }
         XCTAssertEqual(state.state, .active)
@@ -587,6 +655,58 @@ final class IPCModuleTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(WorkBlockResult.self, from: data), withOutcomes)
     }
 
+    /// Protocol 31: `anchor_category` is read off the wire as Rust sent it,
+    /// survives a round trip, and a v30 payload — which has no key at all —
+    /// decodes as nil rather than failing.
+    func testWorkBlockStateAnchorCategoryDecodesAndIsAbsentBeforeV31() throws {
+        func workBlockState(anchorField: String) throws -> WorkBlockSnapshot? {
+            let json = """
+                {
+                  "type": "work_block_state",
+                  "payload": {
+                    "state_version": 1,
+                    "phase": "active",
+                    "block_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "intention": null,
+                    "purpose": "deep_work",
+                    "intensity": "medium",
+                    "planned_duration_seconds": 1500,
+                    "elapsed_duration_seconds": 600,
+                    "remaining_duration_seconds": 900,
+                    "started_at": "2026-09-25T10:00:00Z",
+                    "analysis_ended_at": null,
+                    "ends_at": "2026-09-25T10:25:00Z",
+                    "paused_at": null,
+                    "recovered_after_restart": false,
+                    "current_category": "FOCUS_WORK",
+                    \(anchorField)
+                    "classification_status": "classified",
+                    "confidence": "high",
+                    "status_line": "Current category: Focus work.",
+                    "result": null
+                  }
+                }
+                """
+            let message = try decoder.decode(ServerMessage.self, from: Data(json.utf8))
+            guard case .workBlockState(let snapshot) = message else { return nil }
+            return snapshot
+        }
+
+        let v31 = try XCTUnwrap(
+            workBlockState(anchorField: #""anchor_category": "FOCUS_WORK","#))
+        XCTAssertEqual(v31.anchorCategory, "FOCUS_WORK")
+        XCTAssertEqual(v31.anchorCategory, v31.currentCategory)
+        let reencoded = try encoder.encode(ServerMessage.workBlockState(v31))
+        XCTAssertEqual(
+            try decoder.decode(ServerMessage.self, from: reencoded), .workBlockState(v31))
+
+        let noAnchorYet = try XCTUnwrap(
+            workBlockState(anchorField: #""anchor_category": null,"#))
+        XCTAssertNil(noAnchorYet.anchorCategory)
+        let v30 = try XCTUnwrap(workBlockState(anchorField: ""))
+        XCTAssertNil(v30.anchorCategory)
+    }
+
     func testEarlyLocalSignalContainsNoRawActivityFields() throws {
         let signal = LocalEarlySignal(
             status: .ready,
@@ -624,11 +744,11 @@ final class IPCModuleTests: XCTestCase {
     }
 
     func testUnknownServerMessageDecodesWithoutPayloadValues() throws {
-    let data = Data(
-      #"{"type":"future_message","payload":{"raw_title":"must-not-be-retained"}}"#.utf8)
+        let data = Data(
+            #"{"type":"future_message","payload":{"raw_title":"must-not-be-retained"}}"#.utf8)
 
-    XCTAssertEqual(
-      try decoder.decode(ServerMessage.self, from: data), .unknown(type: "future_message"))
+        XCTAssertEqual(
+            try decoder.decode(ServerMessage.self, from: data), .unknown(type: "future_message"))
     }
 
     func testFakeClientDispatchesInjectedMessage() async throws {
@@ -687,8 +807,8 @@ final class AuthIPCContractTests: XCTestCase {
     }
 
     func testSignUpDiscriminator() throws {
-    let data = try encoder.encode(
-      ClientMessage.signUp(SignUpRequest(email: "a@b.com", password: "pw")))
+        let data = try encoder.encode(
+            ClientMessage.signUp(SignUpRequest(email: "a@b.com", password: "pw")))
         let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(obj["type"] as? String, "sign_up")
         let payload = try XCTUnwrap(obj["payload"] as? [String: Any])
@@ -704,8 +824,8 @@ final class AuthIPCContractTests: XCTestCase {
     }
 
     func testLogInDiscriminator() throws {
-    let data = try encoder.encode(
-      ClientMessage.logIn(LogInRequest(email: "x@y.com", password: "s")))
+        let data = try encoder.encode(
+            ClientMessage.logIn(LogInRequest(email: "x@y.com", password: "s")))
         let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(obj["type"] as? String, "log_in")
     }
@@ -737,9 +857,9 @@ final class AuthIPCContractTests: XCTestCase {
     func testAuthSuccessRoundTrip() throws {
         let expires = Date(timeIntervalSince1970: 1_750_000_000)
         let msg = ServerMessage.authSuccess(
-      AuthSuccess(
-        userId: "u1", deviceId: "device-1", accessToken: "at", refreshToken: "rt",
-        expiresAt: expires)
+            AuthSuccess(
+                userId: "u1", deviceId: "device-1", accessToken: "at", refreshToken: "rt",
+                expiresAt: expires)
         )
         let data = try encoder.encode(msg)
         XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg)
@@ -758,9 +878,9 @@ final class AuthIPCContractTests: XCTestCase {
     /// emits fractional seconds itself).
     func testAuthSuccessWithFractionalSecondsFromRealServerDecodesSuccessfully() throws {
         let wire = """
-        {"type":"auth_success","payload":{"user_id":"f14e0762-cc11-44c3-92f3-302e1762719f",\
-        "device_id":"device-1","access_token":"at","refresh_token":"rt","expires_at":"2026-06-19T21:36:13.182093Z"}}
-        """.data(using: .utf8)!
+            {"type":"auth_success","payload":{"user_id":"f14e0762-cc11-44c3-92f3-302e1762719f",\
+            "device_id":"device-1","access_token":"at","refresh_token":"rt","expires_at":"2026-06-19T21:36:13.182093Z"}}
+            """.data(using: .utf8)!
 
         let message = try decoder.decode(ServerMessage.self, from: wire)
 
@@ -778,9 +898,9 @@ final class AuthIPCContractTests: XCTestCase {
 
     func testAuthSuccessPayloadUsesSnakeCaseKeys() throws {
         let msg = ServerMessage.authSuccess(
-      AuthSuccess(
-        userId: "u1", deviceId: "device-1", accessToken: "at", refreshToken: "rt",
-                        expiresAt: Date(timeIntervalSince1970: 1_750_000_000))
+            AuthSuccess(
+                userId: "u1", deviceId: "device-1", accessToken: "at", refreshToken: "rt",
+                expiresAt: Date(timeIntervalSince1970: 1_750_000_000))
         )
         let data = try encoder.encode(msg)
         let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -797,8 +917,8 @@ final class AuthIPCContractTests: XCTestCase {
     }
 
     func testAuthFailureRoundTrip() throws {
-    let msg = ServerMessage.authFailure(
-      AuthFailure(code: .invalidCredentials, message: "Bad creds"))
+        let msg = ServerMessage.authFailure(
+            AuthFailure(code: .invalidCredentials, message: "Bad creds"))
         let data = try encoder.encode(msg)
         XCTAssertEqual(try decoder.decode(ServerMessage.self, from: data), msg)
     }
@@ -867,9 +987,9 @@ final class AuthIPCContractTests: XCTestCase {
     func testNotificationPayloadDiscriminator() throws {
         let data = try encoder.encode(
             ServerMessage.notificationPayload(
-        NotificationPayload(
-          notificationID: UUID(), title: "t", body: "b", insightDate: "2026-06-15",
-          doNotDisturbUntil: nil)
+                NotificationPayload(
+                    notificationID: UUID(), title: "t", body: "b", insightDate: "2026-06-15",
+                    doNotDisturbUntil: nil)
             )
         )
         let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -877,8 +997,8 @@ final class AuthIPCContractTests: XCTestCase {
     }
 
     func testAuthSuccessDoesNotDecodeAsUnknown() throws {
-    let raw =
-      #"{"type":"auth_success","payload":{"user_id":"u","device_id":"device-1","access_token":"a","refresh_token":"r","expires_at":"2026-06-15T00:00:00Z"}}"#
+        let raw =
+            #"{"type":"auth_success","payload":{"user_id":"u","device_id":"device-1","access_token":"a","refresh_token":"r","expires_at":"2026-06-15T00:00:00Z"}}"#
         let decoded = try decoder.decode(ServerMessage.self, from: Data(raw.utf8))
         guard case .authSuccess(let s) = decoded else {
             XCTFail("Expected .authSuccess, got \(decoded)")
@@ -891,13 +1011,13 @@ final class AuthIPCContractTests: XCTestCase {
         let messages: [ClientMessage] = [
             .signUp(SignUpRequest(email: "a@b.com", password: "pw")),
             .logIn(LogInRequest(email: "x@y.com", password: "s")),
-      .authSession(
-        AuthSession(
-                deviceId: "device-1",
-                accessToken: "a",
-                refreshToken: "r",
-                expiresAt: Date(timeIntervalSince1970: 1_750_000_000)
-            )),
+            .authSession(
+                AuthSession(
+                    deviceId: "device-1",
+                    accessToken: "a",
+                    refreshToken: "r",
+                    expiresAt: Date(timeIntervalSince1970: 1_750_000_000)
+                )),
             .logOut,
             .deleteAccount,
             .removeClassificationOverride(.init(stableID: "abs_safe")),
@@ -905,9 +1025,9 @@ final class AuthIPCContractTests: XCTestCase {
         ]
         for msg in messages {
             let data = try encoder.encode(msg)
-      XCTAssertEqual(
-        try decoder.decode(ClientMessage.self, from: data), msg,
-                           "Round-trip failed for \(msg)")
+            XCTAssertEqual(
+                try decoder.decode(ClientMessage.self, from: data), msg,
+                "Round-trip failed for \(msg)")
         }
     }
 
@@ -917,8 +1037,8 @@ final class AuthIPCContractTests: XCTestCase {
         // Any future server message type the Swift client doesn't know about must
         // produce .unknown(type:) and must not crash or corrupt state. This is the
         // forward-compatibility guarantee for proto extensibility.
-    let raw =
-      #"{"type":"future_server_feature","payload":{"sensitive_field":"must-not-be-retained"}}"#
+        let raw =
+            #"{"type":"future_server_feature","payload":{"sensitive_field":"must-not-be-retained"}}"#
         let decoded = try decoder.decode(ServerMessage.self, from: Data(raw.utf8))
         guard case .unknown(let t) = decoded else {
             XCTFail("Expected .unknown; got \(decoded)")
@@ -932,35 +1052,35 @@ final class AuthIPCContractTests: XCTestCase {
         // authoritative source of client messages and should never receive unknown
         // ones. Decoding an unknown type must throw rather than silently succeed.
         let raw = #"{"type":"unknown_client_cmd","payload":{}}"#
-    XCTAssertThrowsError(
-      try decoder.decode(ClientMessage.self, from: Data(raw.utf8)),
-                             "Unknown ClientMessage types must throw DecodingError")
+        XCTAssertThrowsError(
+            try decoder.decode(ClientMessage.self, from: Data(raw.utf8)),
+            "Unknown ClientMessage types must throw DecodingError")
     }
 
     func testAllNewServerMessagesRoundTripTogether() throws {
         let expires = Date(timeIntervalSince1970: 1_750_000_000)
         let messages: [ServerMessage] = [
-      .authSuccess(
-        AuthSuccess(
-          userId: "u", deviceId: "device-1", accessToken: "a", refreshToken: "r", expiresAt: expires
-        )),
-      .authSessionUpdated(
-        AuthSession(deviceId: "device-1", accessToken: "a", refreshToken: "r", expiresAt: expires)),
+            .authSuccess(
+                AuthSuccess(
+                    userId: "u", deviceId: "device-1", accessToken: "a", refreshToken: "r", expiresAt: expires
+                )),
+            .authSessionUpdated(
+                AuthSession(deviceId: "device-1", accessToken: "a", refreshToken: "r", expiresAt: expires)),
             .authFailure(AuthFailure(code: .serverError, message: "oops")),
             .accountDeletionAccepted,
             .needsReauth(NeedsReauth(reason: "expired")),
             .deviceRevoked(DeviceRevoked(message: "revoked")),
             .notificationPayload(
-        NotificationPayload(
-          notificationID: UUID(), title: "t", body: "b", insightDate: "2026-06-15",
-          doNotDisturbUntil: nil)
+                NotificationPayload(
+                    notificationID: UUID(), title: "t", body: "b", insightDate: "2026-06-15",
+                    doNotDisturbUntil: nil)
             ),
         ]
         for msg in messages {
             let data = try encoder.encode(msg)
-      XCTAssertEqual(
-        try decoder.decode(ServerMessage.self, from: data), msg,
-                           "Round-trip failed for \(msg)")
+            XCTAssertEqual(
+                try decoder.decode(ServerMessage.self, from: data), msg,
+                "Round-trip failed for \(msg)")
         }
     }
 }

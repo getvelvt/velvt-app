@@ -172,7 +172,7 @@ public final class PermissionPresentationModel: ObservableObject {
     @Published public private(set) var showsOnboarding: Bool
     @Published public private(set) var statuses: [PermissionType: PermissionStatus] = [
         .accessibility: .unknown,
-        .notifications: .unknown
+        .notifications: .unknown,
     ]
 
     public var showsAccessibilityRecovery: Bool {
@@ -295,20 +295,28 @@ public struct PermissionRecoveryView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
             Label("Accessibility permission required", systemImage: "exclamationmark.triangle")
-                .font(.headline)
+                .velvtHeading(14)
             Text("Collection is paused. Re-grant Accessibility access in System Settings.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .velvtBody(12)
+                // The window is user-resizable down to a 500pt content width.
+                // Without this the caption takes its ideal single-line width
+                // and truncates to "...access in System..." at every width
+                // below ~590pt, dropping the one noun that says where to go.
+                // Wrapping costs a second line and keeps the sentence.
+                .fixedSize(horizontal: false, vertical: true)
             Button("Open Accessibility Settings", action: openSettings)
+                .buttonStyle(VelvtPrimaryButtonStyle())
         }
     }
 
     public static func openAccessibilitySettings() {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        ) else {
+        guard
+            let url = URL(
+                string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            )
+        else {
             return
         }
         NSWorkspace.shared.open(url)
@@ -327,7 +335,7 @@ public struct GoalOnboardingView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Set your Velvt mode")
-                .font(.headline)
+                .velvtHeading(15)
             Picker("Intensity", selection: $intensity) {
                 ForEach(AttentionIntensity.allCases) { option in
                     Text(option.label).tag(option)
@@ -341,10 +349,12 @@ public struct GoalOnboardingView: View {
             Button("Continue") {
                 save(intensity, purpose)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(VelvtPrimaryButtonStyle())
         }
         .pickerStyle(.menu)
-        .tint(Color.velvtPink)
+        .font(VelvtType.body(12))
+        .foregroundStyle(VelvtInk.primaryOnInk)
+        .tint(VelvtPalette.crimson)
     }
 }
 
@@ -421,10 +431,17 @@ public struct FirstRunOnboardingView: View {
         VStack(alignment: .leading, spacing: 14) {
             content
         }
-        .padding(18)
+        .padding(VelvtMetrics.spaceLG)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.velvtPanel, in: RoundedRectangle(cornerRadius: 10))
-        .tint(Color.velvtPink)
+        .background(
+            VelvtSurface.card,
+            in: RoundedRectangle(cornerRadius: VelvtMetrics.cardRadius, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: VelvtMetrics.cardRadius, style: .continuous)
+                .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+        )
+        .tint(VelvtPalette.crimson)
         .accessibilityElement(children: .contain)
     }
 
@@ -447,79 +464,84 @@ public struct FirstRunOnboardingView: View {
         switch state {
         case .valueProposition:
             Text("See when work became fragmented — and what to protect next")
-                .font(.title3.bold())
-            Text("Velvt shows evidence of when your work became fragmented and one realistic way to protect your next focus block.")
-            .font(.body)
+                .velvtDisplay(20)
+            Text(
+                "Velvt shows evidence of when your work became fragmented and one realistic way to protect your next focus block."
+            )
+            .velvtBody(13)
             .fixedSize(horizontal: false, vertical: true)
             Button("Set up Velvt") { presentation.acknowledgeValueProposition() }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(VelvtPrimaryButtonStyle())
 
         case .accessibilityExplanation:
             Label("Allow local activity collection", systemImage: "hand.raised")
-                .font(.headline)
-            Text("Accessibility lets Velvt notice broad work changes on this Mac. Raw app names, window titles, URLs, and local labels never leave your device.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+                .velvtHeading(15)
+            Text(
+                "Accessibility lets Velvt notice broad work changes on this Mac. Raw app names, window titles, URLs, and local labels never leave your device."
+            )
+            .velvtBody(12)
             .fixedSize(horizontal: false, vertical: true)
             Button("Continue to System Settings") {
                 presentation.markPermissionRequested(.accessibility)
                 Task { _ = await permissionManager?.requestPermission(for: .accessibility) }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(VelvtPrimaryButtonStyle())
 
         case .accessibilityDenied:
             PermissionRecoveryView()
 
         case .notificationsExplanation:
             Label("Choose whether Velvt can notify you", systemImage: "bell")
-                .font(.headline)
-            Text("Notifications can surface a concise, evidence-grounded observation. Saying no will not block collection.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+                .velvtHeading(15)
+            Text(
+                "Notifications can surface a concise, evidence-grounded observation. Saying no will not block collection."
+            )
+            .velvtBody(12)
             .fixedSize(horizontal: false, vertical: true)
-            HStack {
+            HStack(spacing: VelvtMetrics.spaceSM) {
                 Button("Not now") { presentation.markPermissionRequested(.notifications) }
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
                 Button("Allow Notifications") {
                     presentation.markPermissionRequested(.notifications)
                     Task { _ = await permissionManager?.requestPermission(for: .notifications) }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(VelvtPrimaryButtonStyle())
             }
 
         case .authenticationRequired:
             Label("Cloud features are optional", systemImage: "person.crop.circle")
-                .font(.headline)
-            Text("Local collection works without an account. Sign in later if you want synchronized history and cloud insight delivery.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+                .velvtHeading(15)
+            Text(
+                "Local collection works without an account. Sign in later if you want synchronized history and cloud insight delivery."
+            )
+            .velvtBody(12)
 
         case .serviceStarting:
             ProgressView("Starting local service…")
                 .controlSize(.small)
+                .font(VelvtType.body(12))
             Text("This normally takes only a moment.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .velvtBody(12)
 
         case .serviceUnavailable:
             Label("Local service unavailable", systemImage: "exclamationmark.triangle")
-                .font(.headline)
+                .velvtHeading(15)
             Text("Quit and reopen Velvt to restart the local service. Your existing local data is preserved.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+                .velvtBody(12)
 
         case .collectionStarting:
             ProgressView("Starting local collection…")
                 .controlSize(.small)
+                .font(VelvtType.body(12))
 
         case .collectionActive(let progress):
             Label("Local collection has started", systemImage: "checkmark.circle.fill")
-                .font(.headline)
-                .foregroundStyle(Color.velvtGreen)
+                .font(VelvtType.heading(15))
+                .foregroundStyle(VelvtInk.affirmative)
             Text(progress.label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .velvtBody(12)
             Button("Open Today") { presentation.completeOnboarding() }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(VelvtPrimaryButtonStyle())
         }
     }
 }

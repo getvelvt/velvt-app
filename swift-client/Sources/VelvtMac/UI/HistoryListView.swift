@@ -27,10 +27,10 @@ private struct HistoryDashboardView: View {
     @State private var hoveredActivityDetail: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceMD) {
             dailyActivity
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, VelvtMetrics.spaceMD)
         .padding(.bottom, 10)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Daily insight history")
@@ -43,17 +43,18 @@ private struct HistoryDashboardView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Daily Activity")
-                        .font(.headline)
-                        .foregroundStyle(Color.velvtText)
+                        .velvtHeading(14)
                     Text(hoveredActivityDetail ?? "Privacy-safe cloud summaries")
-                        .font(.caption2)
-                        .foregroundStyle(Color.velvtMuted)
+                        .font(VelvtType.caption(10.5))
+                        .foregroundStyle(VelvtInk.tertiaryOnInk)
                         .lineLimit(1)
                 }
                 Spacer()
                 Text("7 days")
-                    .font(.caption2)
-                    .foregroundStyle(Color.velvtMuted)
+                    .font(VelvtType.label(9.5))
+                    .tracking(VelvtType.labelTracking)
+                    .textCase(.uppercase)
+                    .foregroundStyle(VelvtInk.labelOnInk)
             }
 
             VStack(spacing: 3) {
@@ -70,9 +71,13 @@ private struct HistoryDashboardView: View {
                     .padding(.top, 2)
             }
         }
-        .padding(10)
-        .background(Color.velvtPanel)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(VelvtMetrics.panelPadding)
+        .background(VelvtSurface.card)
+        .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
+                .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+        )
     }
 }
 
@@ -82,10 +87,10 @@ private struct DailyActivityRow: View {
     let onActivityHover: (String?) -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: VelvtMetrics.spaceSM) {
             Text(day.date)
-                .font(.caption.bold())
-                .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.5) : Color.velvtText)
+                .font(VelvtType.bodyEmphasis(11.5))
+                .foregroundStyle(day.isNoData ? VelvtInk.tertiaryOnInk : VelvtInk.primaryOnInk)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(width: 62, alignment: .leading)
@@ -95,15 +100,15 @@ private struct DailyActivityRow: View {
                 .frame(maxWidth: .infinity)
 
             Text(day.isNoData ? "No data" : day.activeTime)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(Color.velvtMuted)
+                .font(VelvtType.caption(11).monospacedDigit())
+                .foregroundStyle(VelvtInk.secondaryOnInk)
                 .frame(width: 48, alignment: .trailing)
         }
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(day.date)
         .accessibilityValue(
-      day.isNoData ? "No activity" : day.activeTime
+            day.isNoData ? "No activity" : day.activeTime
         )
     }
 }
@@ -121,12 +126,12 @@ private struct SplitActivityBar: View {
         GeometryReader { proxy in
             HStack(spacing: 2) {
                 if segments.isEmpty {
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(Color.white.opacity(day.isNoData ? 0.06 : 0.12))
-                            .help(emptyHelpText)
-                            .onHover { hovering in
-                                onHover(hovering ? emptyHelpText : nil)
-                            }
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(VelvtPalette.paper.opacity(day.isNoData ? 0.06 : 0.12))
+                        .help(emptyHelpText)
+                        .onHover { hovering in
+                            onHover(hovering ? emptyHelpText : nil)
+                        }
                 } else {
                     ForEach(Array(segments.enumerated()), id: \.element.category) { index, segment in
                         let text = helpText(for: segment)
@@ -151,8 +156,8 @@ private struct SplitActivityBar: View {
     }
 
     private var emptyHelpText: String {
-    day.isNoData
-      ? "No daily summary for this day." : "No activity mix available for this summary yet."
+        day.isNoData
+            ? "No daily summary for this day." : "No activity mix available for this summary yet."
     }
 
     private func helpText(for segment: ActivityProportion) -> String {
@@ -170,39 +175,58 @@ private struct SplitActivityBar: View {
 /// same thing on every row, so the assignment is computed once across all seven
 /// days and passed down rather than derived per row.
 enum ActivityPalette {
-    static let colors: [Color] = [
-        .velvtPink, .velvtGreen, .velvtBlue, .purple.opacity(0.85), .orange.opacity(0.85),
-    ]
-    static let unmatched = Color.white.opacity(0.25)
+    /// The brand's categorical ramp, derived once in `VelvtCategoryRamp` from the
+    /// six brand colours. Forwarded rather than restated so a category can never
+    /// pick up a hue the brand does not own — the old tail was purple and orange.
+    static let colors: [Color] = VelvtCategoryRamp.colors
+    static let unmatched = VelvtCategoryRamp.unmatched
 
     /// Ranks categories by observed time across the window, breaking ties on
     /// name so the mapping is stable between renders.
     static func assign(for days: [DaySummaryViewModel]) -> [String: Color] {
-        let totals = days
-            .flatMap(\.typeProportions)
-            .filter { $0.proportion > 0 }
-            .reduce(into: [String: Int]()) { totals, proportion in
-                totals[proportion.category, default: 0] += proportion.seconds
-            }
-        let ordered = totals.sorted { left, right in
-            left.value == right.value ? left.key < right.key : left.value > right.value
-        }
-        return Dictionary(
-            uniqueKeysWithValues: ordered.enumerated().map { index, entry in
+        assign(forSecondsByCategory: secondsByCategory(days))
+    }
+
+    /// The ranking itself, over category totals rather than over one
+    /// particular day model. The seven-day view on the Patterns tab reads
+    /// local `LocalDailyActivityDay` values rather than cloud summaries, and
+    /// a colour has to mean the same category in both or the legend lies.
+    static func assign(forSecondsByCategory totals: [String: Int]) -> [String: Color] {
+        Dictionary(
+            uniqueKeysWithValues: rank(totals).enumerated().map { index, entry in
                 (entry.key, colors[index % colors.count])
             }
         )
     }
 
-    static func ordered(for days: [DaySummaryViewModel]) -> [(category: String, color: Color)] {
-        let assigned = assign(for: days)
-        let totals = days
+    /// Descending by observed time, ties broken on name so the mapping does
+    /// not shuffle between renders.
+    static func rank(_ totals: [String: Int]) -> [(key: String, value: Int)] {
+        totals.sorted { left, right in
+            left.value == right.value ? left.key < right.key : left.value > right.value
+        }
+    }
+
+    private static func secondsByCategory(_ days: [DaySummaryViewModel]) -> [String: Int] {
+        days
             .flatMap(\.typeProportions)
             .filter { $0.proportion > 0 }
             .reduce(into: [String: Int]()) { totals, proportion in
                 totals[proportion.category, default: 0] += proportion.seconds
             }
-        return totals
+    }
+
+    static func ordered(for days: [DaySummaryViewModel]) -> [(category: String, color: Color)] {
+        let assigned = assign(for: days)
+        let totals =
+            days
+            .flatMap(\.typeProportions)
+            .filter { $0.proportion > 0 }
+            .reduce(into: [String: Int]()) { totals, proportion in
+                totals[proportion.category, default: 0] += proportion.seconds
+            }
+        return
+            totals
             .sorted { left, right in
                 left.value == right.value ? left.key < right.key : left.value > right.value
             }
@@ -231,13 +255,13 @@ private struct FlowingLegend: View {
     var body: some View {
         HStack(spacing: 10) {
             ForEach(entries, id: \.category) { entry in
-                HStack(spacing: 4) {
+                HStack(spacing: VelvtMetrics.spaceXS) {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(entry.color)
                         .frame(width: 8, height: 8)
                     Text(categoryLabel(entry.category))
-                        .font(.caption2)
-                        .foregroundStyle(Color.velvtMuted)
+                        .font(VelvtType.caption(10.5))
+                        .foregroundStyle(VelvtInk.secondaryOnInk)
                         .lineLimit(1)
                 }
             }
@@ -271,15 +295,15 @@ struct HistoryDayRowView: View {
     var body: some View {
         HStack(spacing: 0) {
             Text(day.date)
-                .font(.caption)
-                .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.4) : Color.velvtMuted)
+                .font(VelvtType.caption(11.5))
+                .foregroundStyle(day.isNoData ? VelvtInk.tertiaryOnInk : VelvtInk.secondaryOnInk)
                 .frame(width: 52, alignment: .leading)
 
             Spacer()
 
             Text(day.activeTime)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(day.isNoData ? Color.velvtMuted.opacity(0.35) : Color.velvtMuted)
+                .font(VelvtType.caption(11).monospacedDigit())
+                .foregroundStyle(day.isNoData ? VelvtInk.tertiaryOnInk : VelvtInk.secondaryOnInk)
                 .frame(width: 52, alignment: .trailing)
 
             scoreCell(day.focusScore)
@@ -297,9 +321,9 @@ struct HistoryDayRowView: View {
         guard !day.isNoData else { return "No data" }
         var parts = ["Active \(day.activeTime)"]
         if let focusScore = day.focusScore { parts.append("Focus \(focusScore)") }
-    if let fragmentationScore = day.fragmentationScore {
-      parts.append("Fragmentation \(fragmentationScore)")
-    }
+        if let fragmentationScore = day.fragmentationScore {
+            parts.append("Fragmentation \(fragmentationScore)")
+        }
         return parts.joined(separator: ", ")
     }
 
@@ -308,13 +332,13 @@ struct HistoryDayRowView: View {
         Group {
             if let score {
                 Text("\(score)")
-                    .foregroundStyle(Color.velvtMuted)
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
             } else {
                 Text("—")
-                    .foregroundStyle(Color.velvtMuted.opacity(0.35))
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
             }
         }
-        .font(.system(.caption2, design: .monospaced))
+        .font(VelvtType.caption(11).monospacedDigit())
         .frame(width: 34, alignment: .trailing)
     }
 }
@@ -324,22 +348,23 @@ struct HistoryDayRowView: View {
 struct HistorySkeletonView: View {
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(0 ..< 7, id: \.self) { _ in
+            ForEach(0..<7, id: \.self) { _ in
                 HStack(spacing: 0) {
                     Text("Mon 9")
-                        .font(.caption)
+                        .font(VelvtType.caption(11.5))
                         .frame(width: 52, alignment: .leading)
                     Spacer()
                     Text("2h 15m")
-                        .font(.system(.caption2, design: .monospaced))
+                        .font(VelvtType.caption(11).monospacedDigit())
                         .frame(width: 52, alignment: .trailing)
                     Text("72")
-                        .font(.system(.caption2, design: .monospaced))
+                        .font(VelvtType.caption(11).monospacedDigit())
                         .frame(width: 34, alignment: .trailing)
                     Text("18")
-                        .font(.system(.caption2, design: .monospaced))
+                        .font(VelvtType.caption(11).monospacedDigit())
                         .frame(width: 34, alignment: .trailing)
                 }
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
                 .padding(.vertical, 5)
                 .padding(.horizontal, 14)
                 .shimmering()
@@ -351,54 +376,55 @@ struct HistorySkeletonView: View {
 // MARK: - Preview
 
 #if DEBUG
-@MainActor
-struct HistoryListView_Previews: PreviewProvider {
-    static var previews: some View {
-        Group {
-            HistoryListView(viewModel: populatedViewModel)
-                .previewDisplayName("Populated")
-            HistoryListView(viewModel: HistoryViewModel())
-                .previewDisplayName("Skeleton")
-        }
-        .preferredColorScheme(.dark)
-    }
-
-    static var populatedViewModel: HistoryViewModel {
-        let vm = HistoryViewModel()
-        vm.update(from: HistoryPayload(days: 7, summaries: previewSummaries))
-        return vm
-    }
-
-    static let previewSummaries: [DailySummary] = {
-      let dates = [
-        "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12",
-        "2026-06-13", "2026-06-14", "2026-06-15",
-      ]
-        return dates.enumerated().map { i, date in
-            if i % 3 == 0 {
-          return DailySummary(
-            date: date, status: .noData, eventCount: 0,
-                                    focusScore: nil, fragmentationScore: nil,
-                                    confidenceLevel: .low, activeSeconds: 0)
+    @MainActor
+    struct HistoryListView_Previews: PreviewProvider {
+        static var previews: some View {
+            Group {
+                HistoryListView(viewModel: populatedViewModel)
+                    .previewDisplayName("Populated")
+                HistoryListView(viewModel: HistoryViewModel())
+                    .previewDisplayName("Skeleton")
             }
-        return DailySummary(
-          date: date, status: .ready, eventCount: 40 + i * 8,
-                                focusScore: 55.0 + Double(i * 5),
-                                fragmentationScore: 30.0 - Double(i * 3),
-                                confidenceLevel: .medium,
-                                activeSeconds: 3600 + i * 900,
-                                baselineStatus: i > 4 ? "mature" : "early_stage",
-                                baselineComparison: BaselineComparison(
-                                    status: i > 4 ? "compared" : "early_stage",
-                                    fragmentationDelta: i > 4 ? -4.5 : nil,
-                                    focusDelta: i > 4 ? 3.2 : nil
-                                ),
-                                typeProportions: [
-                                    ActivityProportion(category: "document", seconds: 1600 + i * 120, proportion: 0.48),
-                                    ActivityProportion(category: "messaging", seconds: 900, proportion: 0.27),
-                                    ActivityProportion(category: "browser", seconds: 820, proportion: 0.25),
-                                ])
+            .background(VelvtSurface.ground)
+            .preferredColorScheme(.dark)
         }
-    }()
-}
+
+        static var populatedViewModel: HistoryViewModel {
+            let vm = HistoryViewModel()
+            vm.update(from: HistoryPayload(days: 7, summaries: previewSummaries))
+            return vm
+        }
+
+        static let previewSummaries: [DailySummary] = {
+            let dates = [
+                "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12",
+                "2026-06-13", "2026-06-14", "2026-06-15",
+            ]
+            return dates.enumerated().map { i, date in
+                if i % 3 == 0 {
+                    return DailySummary(
+                        date: date, status: .noData, eventCount: 0,
+                        focusScore: nil, fragmentationScore: nil,
+                        confidenceLevel: .low, activeSeconds: 0)
+                }
+                return DailySummary(
+                    date: date, status: .ready, eventCount: 40 + i * 8,
+                    focusScore: 55.0 + Double(i * 5),
+                    fragmentationScore: 30.0 - Double(i * 3),
+                    confidenceLevel: .medium,
+                    activeSeconds: 3600 + i * 900,
+                    baselineStatus: i > 4 ? "mature" : "early_stage",
+                    baselineComparison: BaselineComparison(
+                        status: i > 4 ? "compared" : "early_stage",
+                        fragmentationDelta: i > 4 ? -4.5 : nil,
+                        focusDelta: i > 4 ? 3.2 : nil
+                    ),
+                    typeProportions: [
+                        ActivityProportion(category: "document", seconds: 1600 + i * 120, proportion: 0.48),
+                        ActivityProportion(category: "messaging", seconds: 900, proportion: 0.27),
+                        ActivityProportion(category: "browser", seconds: 820, proportion: 0.25),
+                    ])
+            }
+        }()
+    }
 #endif

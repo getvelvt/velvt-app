@@ -21,9 +21,10 @@ use velvt_shared_types::{DemotionState, DemotionStateKind};
 use crate::{
     delivery::PushAdapter,
     persistence::{
-        DemotionStateRecord, InterventionDemotionState, PersistenceError, WorkBlockCompletion,
-        WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin,
-        WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
+        DemotionStateRecord, GateVerdict, InterventionDecision, InterventionDemotionState,
+        PersistenceError, ReportedDwell, WorkBlockCompletion, WorkBlockIntervention,
+        WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
+        WorkBlockRepo, WrongInterventionCounts,
     },
 };
 
@@ -36,14 +37,71 @@ const INTENTION_RETENTION_HOURS: i64 = 24;
 /// learned policy: an offer is made only when the observed switching is
 /// unambiguous, the block has run long enough to have an anchor, and there is
 /// still enough time left for a return to mean anything.
+///
+/// Recalibrated 2026-09-19 from six weeks of the development device's own
+/// decisions, which showed the first two thresholds were set past the point of
+/// ever firing. `intervention_decision_log` held 110 decisions: 57
+/// `abstained_warmup`, 31 `abstained_min_switches`, 20 `abstained_block_cap`,
+/// and 2 `offered`, the last on 2026-08-27. A gate that abstains on 108 of 110
+/// evaluations is not being conservative, it is off — and it produces no
+/// evidence about its own calibration, because abstentions say nothing about
+/// what an offer would have done.
+///
+/// `DRIFT_MIN_SWITCHES` 4 → 3 and `DRIFT_MIN_ELAPSED_SECONDS` 5 → 3 minutes are
+/// the two that were binding: together they account for 88 of the 108
+/// abstentions. The switch floor stops at 3, not 2: at 2 the gate made 11
+/// offers across the 100 pure-noise traces in `tests/trace_replay.rs` suite B,
+/// which accepts none. `DRIFT_WINDOW_SECONDS` and `DRIFT_MIN_REMAINING_SECONDS`
+/// are unchanged — neither appears in the abstention record, and widening the
+/// window would change what "recently" means in copy that is frozen. These
+/// constants are policy version 2 and, unchanged, version 3
+/// (`DRIFT_POLICY_VERSION`); version 1 was 4 switches after a 5-minute
+/// warm-up.
+///
+/// These are still an uncalibrated guess, now a less strict one. The thing that
+/// replaces guessing is randomization with a recorded propensity, not a better
+/// constant chosen the same way.
 const DRIFT_WINDOW_SECONDS: i64 = 10 * 60;
-const DRIFT_MIN_SWITCHES: u32 = 4;
-const DRIFT_MIN_ELAPSED_SECONDS: u32 = 5 * 60;
+const DRIFT_MIN_SWITCHES: u32 = 3;
+const DRIFT_MIN_ELAPSED_SECONDS: u32 = 3 * 60;
 const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
+/// The version of the decision policy above, stamped on every logged decision.
+///
+/// Bump it whenever a gate constant, a branch, or the order of the branches
+/// changes meaning, or when the evidence the gate decides on changes. Decisions
+/// logged under different policy versions are not pooled: a rate computed
+/// across a policy change is a number about two different policies.
+///
+/// Version 3 (protocol 32, 2026-09-26) keeps every constant and branch of
+/// version 2 and changes when a dwell reaches the gate. Version 2 saw a dwell
+/// only when the person left it, so a departure was decided on only once they
+/// had come back, and the offer lasted until their next switch (one second on
+/// the founder's Mac on 2026-09-25, too short to be posted); a departure
+/// still in progress when the block ended, or when the Mac slept, was never
+/// decided on at all; and a dwell interrupted by a pause or a restart was
+/// decided on at the resume. Version 3 decides on each dwell once, when it
+/// begins. The set of decision points differs, and so does what an `offered`
+/// row means for the person, so the two are never pooled.
+pub const DRIFT_POLICY_VERSION: u32 = 3;
+/// The realized probability of the arm actually taken. Exactly 1.0 while the
+/// policy is deterministic — there is no randomization, and none is being
+/// introduced here. The value is recorded now because a propensity cannot be
+/// retrofitted: a decision made this week without one can never be used for
+/// off-policy evaluation later.
+const DRIFT_DETERMINISTIC_PROPENSITY: f64 = 1.0;
 /// The registered banned vocabulary for every Rust-authored copy surface
 /// (roadmap invariants 2, 6, and 7). Matched case-insensitively as
 /// substrings against rendered copy. Absence framing, failure tallies, and
 /// streak language are banned everywhere, not only in intervention copy.
+///
+/// The capability claims (`learned` through `gets smarter`) are the honesty
+/// rule: the drift policy is deterministic and nothing in Velvt learns,
+/// adapts, or predicts. `learns`, `learning`, `adapts`, `predicts` and `gets
+/// smarter` were added on 2026-09-25, after the Swift client was found
+/// shipping "Learning from your recent sessions". The same vocabulary is
+/// checked in every shipped Swift and Rust string literal by
+/// `scripts/check_banned_copy.py`, which this list does not replace: this one
+/// runs on rendered copy, including a phrased explanation, at run time.
 pub const BANNED_COPY_TOKENS: &[&str] = &[
     "still",
     "dismiss",
@@ -53,7 +111,12 @@ pub const BANNED_COPY_TOKENS: &[&str] = &[
     "last time",
     "again",
     "learned",
+    "learns",
+    "learning",
     "adaptive",
+    "adapts",
+    "predicts",
+    "gets smarter",
     "missed",
     "skipped",
     "declined",
@@ -64,6 +127,37 @@ pub const BANNED_COPY_TOKENS: &[&str] = &[
     "last offer",
     "streak",
     "broken chain",
+];
+
+/// The registered jargon vocabulary, enforced beside [`BANNED_COPY_TOKENS`]
+/// on every sentence this release rewrote (roadmap invariants 6 and 7).
+///
+/// Two failure modes, one list. The nouns — "observation window", "category
+/// switch", "coverage ratio" — are the instrument describing itself, and they
+/// put Velvt where the user belongs in the sentence. The clauses — "is not
+/// proof", "does not show", "describes timing" — are hedges, and a hedge
+/// bolted onto a claim retracts the claim. The honest version of that caveat
+/// is said once, in the disclosure, never on the end of a fact.
+///
+/// Scope, stated so the test cannot quietly grow past it: this list is
+/// enforced on the end-of-block result, the local dashboard's early signal
+/// and work-block card, and the weekly digest headline. The drift
+/// intervention copy is deliberately exempt — `DRIFT_TITLES` and
+/// `drift_body` are a pre-registered instrument whose exact wording is
+/// pinned by the notifier tests and by an onboarding preview, and rewording
+/// it mid-experiment would pool two different instruments under one
+/// measurement.
+pub const BANNED_JARGON_TOKENS: &[&str] = &[
+    "velvt observed",
+    "observation window",
+    "category switch",
+    "coverage ratio",
+    "classification",
+    "transition",
+    "cluster",
+    "is not proof",
+    "does not show",
+    "describes timing",
 ];
 
 /// Rolling window for the local wrong-intervention counter: `was_focused`
@@ -262,6 +356,10 @@ impl WorkBlockManager {
                 if elapsed_seconds(&record, now) >= record.planned_duration_seconds {
                     self.finish(&record, WorkBlockPhase::Expired, planned_deadline(&record))
                 } else {
+                    // The outage is a boundary like a pause: the next report
+                    // would otherwise close the open row at the restart
+                    // instant and file the whole outage under it.
+                    self.close_open_observation_at_reported_end(&record.block_id, now)?;
                     self.repo.mark_recovered(&record.block_id, now)?;
                     let recovered = self.repo.get(&record.block_id)?;
                     self.publish_deadline(Some(planned_deadline(&recovered)));
@@ -345,8 +443,7 @@ impl WorkBlockManager {
             );
         }
         let effective_now = effective_now(&record, now).min(planned_deadline(&record));
-        self.repo
-            .close_open_observation(&record.block_id, effective_now)?;
+        self.close_open_observation_at_reported_end(&record.block_id, effective_now)?;
         self.repo.set_paused(&record.block_id, effective_now)?;
         self.publish_deadline(None);
         self.snapshot_for(self.repo.get(&record.block_id)?, effective_now)
@@ -489,32 +586,56 @@ impl WorkBlockManager {
                 });
         }
         let at = effective_now(&record, occurred_at).min(planned_deadline(&record));
-        if self
-            .repo
-            .latest_observation(&record.block_id)?
-            .is_some_and(|latest| {
-                latest.ended_at.is_none()
-                    && latest.category == category
-                    && latest.classification_status == status
-                    && latest.classification_confidence == confidence
-            })
+        let latest = self.repo.latest_observation(&record.block_id)?;
+        let same_evidence = |latest: &WorkBlockObservation| {
+            latest.category == category
+                && latest.classification_status == status
+                && latest.classification_confidence == confidence
+        };
+        // A dwell is reported twice since protocol 32: in progress when it
+        // begins, and closed, with the same `occurred_at`, when it ends. The
+        // first report opens the row and runs the gate; the second finds its
+        // own row still open with the same evidence and stops here, so one
+        // dwell is one observation and one decision either way.
+        if latest
+            .as_ref()
+            .is_some_and(|latest| latest.ended_at.is_none() && same_evidence(latest))
         {
             return Ok(None);
         }
+        // A boundary between the two reports (a pause, a sleep, a service
+        // restart) closes the row the in-progress report opened. The closed
+        // report that follows is still the same dwell, not a new one: it began
+        // no later than that row did. It re-opens the ledger at `at`, as a
+        // closed report always did after a boundary, so the time after the
+        // boundary is still observed. It is not evaluated again: the gate
+        // decided on this dwell when it began, and a second decision for the
+        // same dwell would count one departure twice in the decision log.
+        let continues_decided_dwell = latest.as_ref().is_some_and(|latest| {
+            latest.ended_at.is_some()
+                && same_evidence(latest)
+                && latest.occurred_at.timestamp() >= occurred_at.timestamp()
+        });
         self.repo.close_open_observation(&record.block_id, at)?;
-        self.repo.append_observation(
-            &record.block_id,
-            &WorkBlockObservation {
-                occurred_at: at,
-                ended_at: None,
-                category: category.to_owned(),
-                classification_status: status,
-                classification_confidence: confidence,
-            },
-        )?;
+        let observation = WorkBlockObservation {
+            occurred_at: at,
+            ended_at: None,
+            category: category.to_owned(),
+            classification_status: status,
+            classification_confidence: confidence,
+        };
+        self.repo
+            .append_observation(&record.block_id, &observation)?;
+        if continues_decided_dwell {
+            let snapshot = self.snapshot_for(record, at)?;
+            return Ok(Some(ObservationOutcome {
+                snapshot,
+                intervention: None,
+            }));
+        }
         // Observing the return closes the loop: an offer is only worth making
         // if its outcome is recorded.
-        self.record_return_if_pending(&record, category, at)?;
+        self.record_return_if_pending(&record, &observation, at)?;
         let intervention = self.evaluate_drift(&record, at)?;
         let snapshot = self.snapshot_for(record, at)?;
         Ok(Some(ObservationOutcome {
@@ -529,6 +650,27 @@ impl WorkBlockManager {
     /// the detector was right, so it is recorded even if the block has already
     /// ended. Only an unanswered offer transitions: a response cannot be
     /// overwritten, and a second tap is a no-op rather than an error.
+    /// Records that the in-app drift card was on screen for `block_id`.
+    ///
+    /// Not an answer, and never treated as one. It is the delivery fact that
+    /// lets `no_response` be split afterwards into "saw it, said nothing" and
+    /// "it never reached them" — two results that call for opposite fixes.
+    /// Idempotent: the first sighting is the one that counts, and a report for
+    /// a block with no offer is a no-op rather than an error, because the card
+    /// and the offer race on separate surfaces.
+    pub fn record_intervention_card_seen(
+        &self,
+        block_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<WorkBlockSnapshot, WorkBlockError> {
+        let record = self.repo.get(&block_id.to_string())?;
+        if self.repo.intervention(&record.block_id)?.is_some() {
+            self.repo
+                .mark_intervention_card_seen(&record.block_id, now)?;
+        }
+        self.snapshot_for(record, now)
+    }
+
     pub fn report_intervention_outcome(
         &self,
         block_id: Uuid,
@@ -540,7 +682,12 @@ impl WorkBlockManager {
             return Err(WorkBlockError::InvalidRequest);
         };
         if existing.outcome.is_terminal() {
-            // Already answered. Report current state rather than failing.
+            // The one outcome slot is already spoken for and cannot be
+            // rewritten. That is usually an earlier tap, but not always:
+            // `returned` and `no_response` are written by the machine, so this
+            // branch also swallows a genuine first reply that arrived after the
+            // anchor was observed again or after the block ended. Report
+            // current state rather than failing.
             return self.snapshot_for(record, now);
         }
         self.repo
@@ -550,19 +697,34 @@ impl WorkBlockManager {
 
     /// Marks a pending offer as returned once the anchor category is observed
     /// again. Only an `offered` row transitions, so this is idempotent.
+    ///
+    /// The observation has to clear `is_confident_evidence` — the same bar the
+    /// departure had to clear for the offer to exist at all. Closing on weaker
+    /// evidence than opening would let a low-confidence re-classification of
+    /// the anchor retire an offer that only confident evidence could raise, and
+    /// `Returned` is terminal: it stops `active_intervention` rendering and
+    /// makes `report_intervention_outcome` a no-op, so the user loses the reply
+    /// surface without having replied. `was_focused` is the sole numerator of
+    /// the demotion policy, so every such close biases it downward.
     fn record_return_if_pending(
         &self,
         record: &WorkBlockRecord,
-        category: &str,
+        observation: &WorkBlockObservation,
         at: DateTime<Utc>,
     ) -> Result<(), WorkBlockError> {
+        if !is_confident_evidence(observation) {
+            return Ok(());
+        }
         let Some(pending) = self.repo.intervention(&record.block_id)? else {
             return Ok(());
         };
         if pending.outcome != WorkBlockInterventionOutcome::Offered {
             return Ok(());
         }
-        if !pending.anchor_category.eq_ignore_ascii_case(category) {
+        if !pending
+            .anchor_category
+            .eq_ignore_ascii_case(&observation.category)
+        {
             return Ok(());
         }
         self.repo.resolve_intervention(
@@ -573,8 +735,65 @@ impl WorkBlockManager {
         Ok(())
     }
 
+    /// Records one drift-policy decision, including every abstention.
+    ///
+    /// Fire-and-forget by design: a failed write is logged and swallowed, never
+    /// propagated. Delivery behaviour changes by exactly zero — every gate below
+    /// suppresses exactly as it did before, and a broken log must never be able
+    /// to change what the user sees or does not see.
+    ///
+    /// This never writes to `work_block_intervention`. That table's
+    /// `PRIMARY KEY(block_id)` is the denominator of the pre-registered primary
+    /// outcome, and a silence decision recorded there would silently change a
+    /// pre-registered metric.
+    ///
+    /// `anchor_category` is `None` at the branches that abstain before the gate
+    /// has computed an anchor. The log records what the gate knew at the instant
+    /// it decided, not what could be reconstructed afterwards.
+    fn log_decision(
+        &self,
+        record: &WorkBlockRecord,
+        now: DateTime<Utc>,
+        verdict: GateVerdict,
+        anchor_category: Option<&str>,
+        switch_count: u32,
+    ) {
+        let elapsed = elapsed_seconds(record, now);
+        let decision = InterventionDecision {
+            decision_id: Uuid::new_v4().to_string(),
+            occurred_at: now,
+            block_id: Some(record.block_id.clone()),
+            policy_version: DRIFT_POLICY_VERSION,
+            anchor_category: anchor_category.map(str::to_owned),
+            switch_count,
+            elapsed_seconds: elapsed,
+            remaining_seconds: record.planned_duration_seconds.saturating_sub(elapsed),
+            gate_verdict: verdict,
+            propensity: DRIFT_DETERMINISTIC_PROPENSITY,
+            // Resolved on the 600-second horizon by a later pass, never here.
+            // NULL means unresolved; it never means "did not return".
+            anchor_seen_within_600s: None,
+            outcome_at: None,
+        };
+        if let Err(error) = self.repo.record_decision(&decision) {
+            tracing::error!(
+                error_code = "intervention_decision_log_write_failed",
+                error = %error,
+                gate_verdict = verdict.as_str(),
+                "a drift decision could not be logged; the decision itself is unchanged"
+            );
+        }
+    }
+
     /// Deterministic drift gate. Returns an offer at most once per block, and
     /// abstains whenever the evidence is thin rather than guessing.
+    ///
+    /// Every branch below records what it decided into
+    /// `intervention_decision_log` — including the abstentions, which are the
+    /// whole point: without them the eligibility rate of the gate is
+    /// unrecoverable after the fact. The recording is additive. No gate moved,
+    /// no threshold changed, and nothing here writes to
+    /// `work_block_intervention` that did not write to it before.
     fn evaluate_drift(
         &self,
         record: &WorkBlockRecord,
@@ -582,22 +801,27 @@ impl WorkBlockManager {
     ) -> Result<Option<DriftIntervention>, WorkBlockError> {
         let elapsed = elapsed_seconds(record, now);
         if elapsed < DRIFT_MIN_ELAPSED_SECONDS {
+            self.log_decision(record, now, GateVerdict::AbstainedWarmup, None, 0);
             return Ok(None);
         }
         if record.planned_duration_seconds.saturating_sub(elapsed) < DRIFT_MIN_REMAINING_SECONDS {
+            self.log_decision(record, now, GateVerdict::AbstainedRemaining, None, 0);
             return Ok(None);
         }
         // Hard cap. One offer per block, enforced by the row's existence
         // regardless of how it was resolved.
         if self.repo.intervention(&record.block_id)?.is_some() {
+            self.log_decision(record, now, GateVerdict::AbstainedBlockCap, None, 0);
             return Ok(None);
         }
         let backoff = self.backoff_state(now)?;
         if backoff.suppressed {
+            self.log_decision(record, now, GateVerdict::AbstainedBackoff, None, 0);
             return Ok(None);
         }
         let observations = self.repo.observations(&record.block_id)?;
         let Some(anchor) = dominant_category(&observations) else {
+            self.log_decision(record, now, GateVerdict::AbstainedNoAnchor, None, 0);
             return Ok(None);
         };
         let window_start = now - Duration::seconds(DRIFT_WINDOW_SECONDS);
@@ -628,6 +852,13 @@ impl WorkBlockManager {
             previous_was_anchor = Some(is_anchor);
         }
         if switch_count < DRIFT_MIN_SWITCHES {
+            self.log_decision(
+                record,
+                now,
+                GateVerdict::AbstainedMinSwitches,
+                Some(&anchor),
+                switch_count,
+            );
             return Ok(None);
         }
         // Never offer while the latest confident evidence is the anchor: the
@@ -640,6 +871,13 @@ impl WorkBlockManager {
         // Offer frequency can only decrease under this rule, which is the
         // direction roadmap invariant 2 requires.
         if previous_was_anchor == Some(true) {
+            self.log_decision(
+                record,
+                now,
+                GateVerdict::AbstainedAtAnchor,
+                Some(&anchor),
+                switch_count,
+            );
             return Ok(None);
         }
         // Auto-demotion (roadmap invariant 4; D5): while the versioned
@@ -652,6 +890,13 @@ impl WorkBlockManager {
         // shown cannot be wrong. Evidence collection, blocks, session
         // results, and corrections are untouched by this branch.
         if self.evaluate_demotion(now)?.state == InterventionDemotionState::Demoted {
+            self.log_decision(
+                record,
+                now,
+                GateVerdict::WithheldDemotion,
+                Some(&anchor),
+                switch_count,
+            );
             self.repo.record_intervention(
                 &record.block_id,
                 &WorkBlockIntervention {
@@ -663,6 +908,11 @@ impl WorkBlockManager {
                     outcome: WorkBlockInterventionOutcome::WithheldDemotion,
                     outcome_at: Some(now),
                     salience: InterventionSalience::Normal,
+                    // Withheld before any surface existed, so no card was ever
+                    // drawn. Terminal at creation and excluded from delivered
+                    // counts, which is why this stays None rather than becoming
+                    // a delivery failure.
+                    card_seen_at: None,
                 },
             )?;
             return Ok(None);
@@ -680,6 +930,13 @@ impl WorkBlockManager {
         // metrics and reconciles after the block as a count, never as a
         // late nudge.
         if self.focus_active(now) {
+            self.log_decision(
+                record,
+                now,
+                GateVerdict::SuppressedDnd,
+                Some(&anchor),
+                switch_count,
+            );
             self.repo.record_intervention(
                 &record.block_id,
                 &WorkBlockIntervention {
@@ -694,10 +951,20 @@ impl WorkBlockManager {
                     // salience it would have had. It is excluded from the
                     // delivered count either way.
                     salience: InterventionSalience::Normal,
+                    // Held by Focus/DND and delivered by no channel, so there
+                    // was no card to see.
+                    card_seen_at: None,
                 },
             )?;
             return Ok(None);
         }
+        self.log_decision(
+            record,
+            now,
+            GateVerdict::Offered,
+            Some(&anchor),
+            switch_count,
+        );
         self.repo.record_intervention(
             &record.block_id,
             &WorkBlockIntervention {
@@ -709,6 +976,10 @@ impl WorkBlockManager {
                 outcome: WorkBlockInterventionOutcome::Offered,
                 outcome_at: None,
                 salience: backoff.salience,
+                // Offered is not seen. The client reports the sighting when it
+                // actually renders, and until then this row honestly says the
+                // offer has not been shown to reach anyone.
+                card_seen_at: None,
             },
         )?;
         // `now` is the value just recorded as `offered_at`, so the re-render
@@ -1005,8 +1276,7 @@ impl WorkBlockManager {
                 Some(result),
             );
         }
-        self.repo
-            .close_open_observation(&record.block_id, ended_at)?;
+        self.close_open_observation_at_reported_end(&record.block_id, ended_at)?;
         // Silence is a real outcome, not a gap. `resolve_intervention` only
         // moves an unanswered offer, so an explicit response already given
         // survives the block ending.
@@ -1017,7 +1287,10 @@ impl WorkBlockManager {
         )?;
         let observations = self.repo.observations(&record.block_id)?;
         let elapsed = elapsed_seconds(record, ended_at);
-        let result = aggregate_result(record, phase, elapsed, &observations);
+        let reported = self.repo.reported_dwells(record.started_at, ended_at)?;
+        let covered_seconds =
+            reported_coverage_seconds(&reported, &observations, record.started_at, ended_at);
+        let result = aggregate_result(record, phase, elapsed, &observations, covered_seconds);
         // DND evidence is decided once, at finalization, and persists with the
         // result: a block that completes while DND is active is a success, and
         // a held decision reconciles here as a count — the one calm line below
@@ -1042,6 +1315,40 @@ impl WorkBlockManager {
         self.snapshot_with_result(self.repo.get(&record.block_id)?, ended_at, Some(result))
     }
 
+    /// Closes the open observation at a block boundary — a pause, a service
+    /// restart, or the end — where its own dwell ended, never at the boundary.
+    ///
+    /// A row's end is otherwise the next row's start, and at a boundary there
+    /// is no next row. Swift reports a dwell's length only when the user
+    /// leaves it, so the dwell they are in at the boundary has not been
+    /// measured yet. Either the open row belongs to the dwell before it, or,
+    /// since protocol 32, it was opened by the current dwell's in-progress
+    /// report and has no measured length at all. Stretching it to the
+    /// boundary filed every unmeasured second under a category the user had
+    /// already left, or claimed seconds nobody measured (`00-GROUND-TRUTH.md`
+    /// § 6c). A row's own measured length is in `raw_event_buffer` once its
+    /// closed report arrives, so the row closes there, or where it opened when
+    /// there is none, and the unmeasured remainder stays unobserved: Rust has
+    /// no evidence of what it was, and an absent claim is recoverable where a
+    /// wrong one is not.
+    fn close_open_observation_at_reported_end(
+        &self,
+        block_id: &str,
+        boundary: DateTime<Utc>,
+    ) -> Result<(), WorkBlockError> {
+        let Some(open) = self
+            .repo
+            .latest_observation(block_id)?
+            .filter(|observation| observation.ended_at.is_none())
+        else {
+            return Ok(());
+        };
+        let reported = self.repo.reported_dwells(open.occurred_at, boundary)?;
+        self.repo
+            .close_open_observation(block_id, reported_end(&open, &reported, boundary))?;
+        Ok(())
+    }
+
     fn snapshot_for(
         &self,
         record: WorkBlockRecord,
@@ -1061,6 +1368,19 @@ impl WorkBlockManager {
         let remaining = record.planned_duration_seconds.saturating_sub(elapsed);
         let latest = self.repo.latest_observation(&record.block_id)?;
         let (category, status, confidence) = current_evidence(latest.as_ref());
+        // The same function the drift gate calls, so a client comparing
+        // `current_category` with this field sees the anchor the service itself
+        // measures departures from. Live blocks only: a finished block's
+        // evidence category is `result.safe_evidence_category`, which is gated
+        // on coverage, and this must not become a way around that gate.
+        let anchor_category = if matches!(
+            record.phase,
+            WorkBlockPhase::Active | WorkBlockPhase::Paused
+        ) {
+            dominant_category(&self.repo.observations(&record.block_id)?)
+        } else {
+            None
+        };
         let ends_at = (record.phase == WorkBlockPhase::Active).then(|| planned_deadline(&record));
         Ok(WorkBlockSnapshot {
             state_version: WORK_BLOCK_STATE_VERSION,
@@ -1078,6 +1398,7 @@ impl WorkBlockManager {
             paused_at: record.paused_at,
             recovered_after_restart: record.recovered_after_restart,
             current_category: category.clone(),
+            anchor_category,
             classification_status: status,
             confidence,
             status_line: status_line(record.phase, record.intensity, category.as_deref(), status),
@@ -1249,15 +1570,132 @@ fn current_evidence(
 /// filter `aggregate_result` applies, so a switch that would not appear in the
 /// end-of-block result cannot trigger an offer either.
 fn is_confident_evidence(observation: &WorkBlockObservation) -> bool {
-    observation.classification_status == ClassificationStatus::Classified
+    is_confident(
+        &observation.category,
+        observation.classification_status,
+        observation.classification_confidence,
+    )
+}
+
+fn is_confident(
+    category: &str,
+    status: ClassificationStatus,
+    confidence: ClassificationConfidence,
+) -> bool {
+    status == ClassificationStatus::Classified
         && matches!(
-            observation.classification_confidence,
+            confidence,
             ClassificationConfidence::High | ClassificationConfidence::Medium
         )
         && !matches!(
-            observation.category.to_ascii_lowercase().as_str(),
+            category.to_ascii_lowercase().as_str(),
             "system" | "unclassified" | "unlogged"
         )
+}
+
+/// Where the open row's own dwell ended, no later than `boundary`.
+///
+/// The row was opened by a dwell with exactly its evidence, and later dwells
+/// with the same evidence extend it without opening a row (the dedupe in
+/// `observe_safe_category`), so this is the latest end among them. With none
+/// — a row whose report is missing — it closes where it opened and claims
+/// nothing.
+fn reported_end(
+    open: &WorkBlockObservation,
+    reported: &[ReportedDwell],
+    boundary: DateTime<Utc>,
+) -> DateTime<Utc> {
+    reported
+        .iter()
+        .filter(|dwell| {
+            dwell.category == open.category
+                && dwell.classification_status == open.classification_status
+                && dwell.classification_confidence == open.classification_confidence
+        })
+        .map(|dwell| dwell.ended_at().min(boundary))
+        .filter(|ended_at| *ended_at > open.occurred_at)
+        .max()
+        .unwrap_or(open.occurred_at)
+}
+
+/// Seconds of `[started_at, ended_at)` that a reported dwell covered with
+/// confident evidence while the block had a ledger row open
+/// (`00-GROUND-TRUTH.md` § 6d).
+///
+/// Coverage used to be the length of the confident ledger rows, and the rows
+/// tile the block by construction — each ends where the next begins, and the
+/// last was stretched to the end — so it measured whether the rows tiled, not
+/// whether anything was seen. The raw buffer is the evidence the ledger is
+/// built from, so it is what coverage is measured against. The ledger rows
+/// serve only as the mask of time the block was running: a pause closes the
+/// open row and nothing opens another until the block is active again, so
+/// paused time is never counted, whatever the raw buffer saw during it.
+fn reported_coverage_seconds(
+    reported: &[ReportedDwell],
+    observations: &[WorkBlockObservation],
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
+) -> u32 {
+    let seen = merged_spans(
+        reported
+            .iter()
+            .filter(|dwell| {
+                is_confident(
+                    &dwell.category,
+                    dwell.classification_status,
+                    dwell.classification_confidence,
+                )
+            })
+            .map(|dwell| (dwell.occurred_at, dwell.ended_at())),
+        started_at,
+        ended_at,
+    );
+    let running = merged_spans(
+        observations.iter().filter_map(|observation| {
+            observation
+                .ended_at
+                .map(|observation_end| (observation.occurred_at, observation_end))
+        }),
+        started_at,
+        ended_at,
+    );
+    let mut covered = 0_i64;
+    let (mut left, mut right) = (0, 0);
+    while left < seen.len() && right < running.len() {
+        let start = seen[left].0.max(running[right].0);
+        let end = seen[left].1.min(running[right].1);
+        if end > start {
+            covered += (end - start).num_seconds();
+        }
+        if seen[left].1 < running[right].1 {
+            left += 1;
+        } else {
+            right += 1;
+        }
+    }
+    covered.clamp(0, i64::from(u32::MAX)) as u32
+}
+
+/// Clips each span to `[from, until)`, drops the empty ones, and merges the
+/// rest into sorted, disjoint spans, so overlapping reports count once.
+fn merged_spans(
+    spans: impl Iterator<Item = (DateTime<Utc>, DateTime<Utc>)>,
+    from: DateTime<Utc>,
+    until: DateTime<Utc>,
+) -> Vec<(DateTime<Utc>, DateTime<Utc>)> {
+    let mut clipped = spans
+        .map(|(start, end)| (start.max(from), end.min(until)))
+        .filter(|(start, end)| end > start)
+        .collect::<Vec<_>>();
+    clipped.sort();
+    let mut merged: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::with_capacity(clipped.len());
+    for (start, end) in clipped {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
 }
 
 /// The category holding the most confidently observed time so far. Ties break
@@ -1431,7 +1869,12 @@ fn drift_body(seed: u64, switch_count: u32, anchor: &str) -> String {
     // sits mid-sentence.
     let anchor = anchor.replace('_', " ").to_ascii_lowercase();
     let protect = DRIFT_PROTECT_MINUTES;
-    // `DRIFT_MIN_SWITCHES` is 4, so the count is never singular here.
+    // An offer needs at least `DRIFT_MIN_SWITCHES` switches, and this holds
+    // that floor at 2 or more, so the count is never singular here.
+    const _: () = assert!(
+        DRIFT_MIN_SWITCHES >= 2,
+        "drift copy says \"switches\"; a floor of 1 would render \"1 switches\""
+    );
     match (seed / DRIFT_TITLES.len() as u64) % 4 {
         0 => format!(
             "Velvt observed {switch_count} switches away from {anchor} in the last {minutes} \
@@ -1484,11 +1927,94 @@ fn status_line(
     }
 }
 
+/// The registered sentence Velvt says once a block is over.
+///
+/// The user is the grammatical subject of every branch that has one, the
+/// evidence is stated once, and no clause takes the claim back: the caveat
+/// about what a switch does and does not mean is said in the disclosure, not
+/// bolted onto a fact the reader can check against their own memory. The
+/// recovery branch is the one sentence in the product that no timer and no
+/// screen-time report can produce — it is the only place the person leaving
+/// and the same person returning are counted as one event.
+///
+/// Every argument is already computed by `aggregate_result` above. This
+/// function measures nothing; it only chooses a sentence.
+fn block_result_copy(
+    coverage: WorkBlockCoverage,
+    anchor: Option<&str>,
+    switch_aways: u32,
+    recoveries: u32,
+    longest_seconds: u32,
+    covered_seconds: u32,
+    elapsed_seconds: u32,
+) -> String {
+    // Insufficient coverage and a missing anchor are the same condition
+    // (`safe_evidence_category` is `None` exactly when coverage is
+    // insufficient); both are handled so the function stays total.
+    if coverage == WorkBlockCoverage::Insufficient {
+        return LOW_COVERAGE_RESULT_COPY.to_owned();
+    }
+    let Some(anchor) = anchor else {
+        return LOW_COVERAGE_RESULT_COPY.to_owned();
+    };
+    let anchor = friendly_category(anchor).to_ascii_lowercase();
+    let longest = plain_minutes(rounded_minutes(longest_seconds));
+    if switch_aways == 0 {
+        let covered_minutes = rounded_minutes(covered_seconds);
+        let covered = plain_minutes(covered_minutes);
+        // "All N minutes of this block" reads as the block's length. When part
+        // of the block was never categorized — most often the dwell still open
+        // when it ended — N is shorter than the block, and the sentence says
+        // which minutes it is counting instead of implying the rest.
+        if covered_minutes < rounded_minutes(elapsed_seconds) {
+            return format!(
+                "You stayed on {anchor} for all {covered} of this block that Velvt could \
+                 categorize."
+            );
+        }
+        return format!("You stayed on {anchor} for all {covered} of this block.");
+    }
+    let left = if switch_aways == 1 {
+        "once".to_owned()
+    } else {
+        format!("{switch_aways} times")
+    };
+    if recoveries == 0 {
+        return format!(
+            "You left {anchor} {left} and the block ended somewhere else. Longest run: {longest}."
+        );
+    }
+    let came_back = if switch_aways == 1 {
+        "came back".to_owned()
+    } else {
+        format!("came back {recoveries} of them")
+    };
+    format!("You left {anchor} {left} and {came_back}. The longest single run was {longest}.")
+}
+
+/// Said when there is not enough covered activity to support any claim.
+/// Velvt is the subject here on purpose: this branch is a statement about
+/// what the instrument could see, not about what the person did.
+const LOW_COVERAGE_RESULT_COPY: &str =
+    "Too much of this block was outside what Velvt can categorize. There's nothing honest to say \
+     about it.";
+
+/// Minutes with the right noun. "1 minutes" is the kind of seam that tells a
+/// reader a machine wrote the sentence and nobody read it.
+fn plain_minutes(minutes: u32) -> String {
+    if minutes == 1 {
+        "1 minute".to_owned()
+    } else {
+        format!("{minutes} minutes")
+    }
+}
+
 fn aggregate_result(
     record: &WorkBlockRecord,
     phase: WorkBlockPhase,
     elapsed: u32,
     observations: &[WorkBlockObservation],
+    covered_seconds: u32,
 ) -> WorkBlockResult {
     let valid = observations
         .iter()
@@ -1507,13 +2033,12 @@ fn aggregate_result(
             (classified && seconds > 0).then(|| (observation.category.clone(), seconds))
         })
         .collect::<Vec<_>>();
-    let observed_seconds = valid
-        .iter()
-        .fold(0_u32, |total, (_, seconds)| total.saturating_add(*seconds));
+    // Measured against the raw buffer, never against these rows: see
+    // `reported_coverage_seconds`.
     let coverage_ratio = if elapsed == 0 {
         0.0
     } else {
-        (f64::from(observed_seconds) / f64::from(elapsed)).clamp(0.0, 1.0)
+        (f64::from(covered_seconds) / f64::from(elapsed)).clamp(0.0, 1.0)
     };
     let coverage = if coverage_ratio < 0.25 {
         WorkBlockCoverage::Insufficient
@@ -1574,20 +2099,15 @@ fn aggregate_result(
     let safe_evidence_category = (coverage != WorkBlockCoverage::Insufficient)
         .then_some(dominant)
         .flatten();
-    let observation = if coverage == WorkBlockCoverage::Insufficient {
-        "Coverage was incomplete, so Velvt cannot make a confident observation about this block."
-            .into()
-    } else if switch_aways == 0 {
-        format!(
-            "Velvt observed one sustained category pattern across {} minutes of covered activity.",
-            rounded_minutes(observed_seconds)
-        )
-    } else {
-        format!(
-            "Velvt observed {switch_aways} switch-away transitions across {} minutes of covered activity; switching alone does not show distraction.",
-            rounded_minutes(observed_seconds)
-        )
-    };
+    let observation = block_result_copy(
+        coverage,
+        safe_evidence_category.as_deref(),
+        switch_aways,
+        recoveries,
+        longest,
+        covered_seconds,
+        elapsed,
+    );
     WorkBlockResult {
         planned_duration_seconds: record.planned_duration_seconds,
         elapsed_duration_seconds: elapsed,
@@ -1728,6 +2248,7 @@ fn idle_snapshot() -> WorkBlockSnapshot {
         paused_at: None,
         recovered_after_restart: false,
         current_category: None,
+        anchor_category: None,
         classification_status: ClassificationStatus::Unclassified,
         confidence: ClassificationConfidence::None,
         status_line: "Choose one bounded block to begin.".into(),
@@ -1917,17 +2438,41 @@ mod tests {
             .unwrap()
     }
 
-    /// Establishes DEEP_WORK as the anchor, then switches away four times
-    /// inside the ten-minute window.
+    /// Establishes DEEP_WORK as the anchor, then alternates away from it
+    /// inside the ten-minute window, and returns the observation that carried
+    /// the drift offer, stopping the moment one fires.
+    ///
+    /// Threshold-independent on purpose. This used to run a fixed sequence of
+    /// eight observations and return the last one, which worked only while
+    /// `DRIFT_MIN_SWITCHES` was 4 and the offer happened to land on the final
+    /// switch. Under the 2026-09-19 recalibration the offer fires earlier, the
+    /// one-offer-per-block cap suppresses the rest, and every test built on this
+    /// fixture saw `None` — or worse, a later observation of the anchor closed
+    /// the offer as `Returned` before the test could answer it, which is how a
+    /// gate change turned into seventeen failures in tests about responses and
+    /// cooldowns that have nothing to do with the gate.
+    ///
+    /// Stopping at the offer makes the fixture mean "a block that drifted into
+    /// an offer" rather than "a block that drifted exactly four times".
     fn drift_into_offer(manager: &WorkBlockManager) -> Option<ObservationOutcome> {
         observe(manager, "DEEP_WORK", 10);
-        observe(manager, "COMMUNICATION", 400);
-        observe(manager, "DEEP_WORK", 420);
-        observe(manager, "COMMUNICATION", 440);
-        observe(manager, "DEEP_WORK", 460);
-        observe(manager, "COMMUNICATION", 480);
-        observe(manager, "DEEP_WORK", 500);
-        observe(manager, "COMMUNICATION", 520)
+        let mut last = None;
+        for (index, seconds) in (400..=520).step_by(20).enumerate() {
+            let category = if index % 2 == 0 {
+                "COMMUNICATION"
+            } else {
+                "DEEP_WORK"
+            };
+            let outcome = observe(manager, category, seconds);
+            let carried_offer = outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.intervention.is_some());
+            last = outcome;
+            if carried_offer {
+                break;
+            }
+        }
+        last
     }
 
     /// Runs one complete block that drifts, optionally answers the offer, and
@@ -1964,6 +2509,13 @@ mod tests {
             {
                 offer = offer.or(outcome.intervention);
             }
+            // Stop at the offer. Observing past it walks back onto the anchor,
+            // which closes the offer as `Returned` before the caller can answer
+            // it — so a test asking what a dismissal does to the cooldown would
+            // instead be measuring a return it never made.
+            if offer.is_some() {
+                break;
+            }
         }
         if let Some(response) = response {
             manager
@@ -1981,6 +2533,79 @@ mod tests {
     /// are separate code paths over the same offer, so a non-deterministic pick
     /// would let a user read one sentence in the banner and a different one in
     /// the app — for the same nudge.
+    /// A sighting is a delivery fact, not an answer: it records that the card
+    /// reached the user without touching the one outcome slot, so
+    /// `no_response` can afterwards be split into "saw it, said nothing" and
+    /// "it never reached them".
+    #[test]
+    fn a_seen_card_is_recorded_without_answering_the_offer() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+
+        manager
+            .record_intervention_card_seen(block_id, at(900))
+            .unwrap();
+
+        let stored = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the offer row exists");
+        assert_eq!(stored.card_seen_at, Some(at(900)));
+        assert_eq!(
+            stored.outcome,
+            WorkBlockInterventionOutcome::Offered,
+            "a sighting must never resolve the offer"
+        );
+        assert_eq!(stored.outcome_at, None);
+    }
+
+    /// The popover can be reopened while an offer is still unanswered. That is
+    /// the same delivery, and moving the timestamp forward would report the
+    /// offer as reaching the user later than it did.
+    #[test]
+    fn re_rendering_a_seen_card_keeps_the_first_sighting() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager).expect("the gate offered");
+
+        manager
+            .record_intervention_card_seen(block_id, at(900))
+            .unwrap();
+        manager
+            .record_intervention_card_seen(block_id, at(1_500))
+            .unwrap();
+
+        let stored = repo
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the offer row exists");
+        assert_eq!(
+            stored.card_seen_at,
+            Some(at(900)),
+            "the first sighting is the one that counts"
+        );
+    }
+
+    /// The card and the offer live on separate surfaces and can race. A
+    /// sighting reported for a block with no offer is a no-op, never an error:
+    /// failing here would surface an IPC error for something the user did
+    /// nothing wrong to cause.
+    #[test]
+    fn a_sighting_without_an_offer_is_a_no_op() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+
+        manager
+            .record_intervention_card_seen(block_id, at(600))
+            .expect("a sighting with no offer must not error");
+
+        assert!(repo.intervention(&block_id.to_string()).unwrap().is_none());
+    }
+
     #[test]
     fn the_delivered_offer_and_its_re_render_read_identically() {
         let manager = manager();
@@ -2007,6 +2632,11 @@ mod tests {
                 .unwrap()
             {
                 delivered = delivered.or(outcome.intervention);
+            }
+            // Stop at the offer: observing on would return to the anchor and
+            // close it, and an answered offer does not re-render.
+            if delivered.is_some() {
+                break;
             }
         }
         let delivered = delivered.expect("the gate fired");
@@ -2067,18 +2697,23 @@ mod tests {
         let active = manager.start(request(3_600), at(0)).unwrap();
         let block_id = active.block_id.unwrap().to_string();
 
-        // Four departures, all inside the five-minute warm-up, so the gate
+        // Four departures, all inside the three-minute warm-up, so the gate
         // returns early every time and no offer is possible yet. DEEP_WORK
         // holds the longer dwell throughout and stays the anchor.
+        //
+        // Compressed from the original 60/120/180/240 spacing when the warm-up
+        // moved from five minutes to three: at the old spacing the last two
+        // departures land after the warm-up expires, so the gate opens mid-loop
+        // and the test stops describing the case it is named for.
         for (category, seconds) in [
             ("DEEP_WORK", 10),
-            ("COMMUNICATION", 60),
-            ("DEEP_WORK", 70),
+            ("COMMUNICATION", 40),
+            ("DEEP_WORK", 50),
+            ("COMMUNICATION", 80),
+            ("DEEP_WORK", 90),
             ("COMMUNICATION", 120),
             ("DEEP_WORK", 130),
-            ("COMMUNICATION", 180),
-            ("DEEP_WORK", 190),
-            ("COMMUNICATION", 240),
+            ("COMMUNICATION", 170),
         ] {
             let outcome = observe(&manager, category, seconds);
             assert!(
@@ -2089,7 +2724,7 @@ mod tests {
 
         // Warm-up expired and the four switches are still inside the window,
         // but this observation is the return to the anchor: no offer.
-        let returned = observe(&manager, "DEEP_WORK", 310).unwrap();
+        let returned = observe(&manager, "DEEP_WORK", 200).unwrap();
         assert!(
             returned.intervention.is_none(),
             "an offer fired on the observation that returned to the anchor"
@@ -2100,7 +2735,7 @@ mod tests {
         );
 
         // The next confident departure spends the deferred evidence instead.
-        let departed = observe(&manager, "COMMUNICATION", 330).unwrap();
+        let departed = observe(&manager, "COMMUNICATION", 220).unwrap();
         let offer = departed
             .intervention
             .expect("the deferred offer fires on the next confident departure");
@@ -2109,7 +2744,7 @@ mod tests {
             .intervention(&block_id)
             .unwrap()
             .expect("the departure offer is recorded");
-        assert_eq!(recorded.offered_at, at(330));
+        assert_eq!(recorded.offered_at, at(220));
     }
 
     // Removed with scope 4's integration: four tests of an in-block
@@ -2209,12 +2844,18 @@ mod tests {
         let outcome = drift_into_offer(&manager).expect("observation returns state");
         let intervention = outcome
             .intervention
-            .expect("four confident switches should clear the gate");
+            .expect("confident switching at the threshold should clear the gate");
 
         assert_eq!(intervention.action_id, DRIFT_ACTION_ID);
         assert_eq!(intervention.block_id, block_id);
-        // Copy reports observation only: no intent, cause, or judgement.
-        assert!(intervention.body.contains("4 switches away from deep work"));
+        // Copy reports observation only: no intent, cause, or judgement. The
+        // count is pinned to the threshold rather than to a literal: the fixture
+        // stops at the first offer, so the offer always carries exactly
+        // `DRIFT_MIN_SWITCHES`, and the next recalibration should not have to
+        // find every "4" scattered through the assertions.
+        assert!(intervention.body.contains(&format!(
+            "{DRIFT_MIN_SWITCHES} switches away from deep work"
+        )));
         assert!(intervention.body.contains("last 10 minutes"));
 
         let recorded = repo
@@ -2222,7 +2863,7 @@ mod tests {
             .unwrap()
             .expect("the offer is persisted so its outcome can be observed");
         assert_eq!(recorded.anchor_category, "DEEP_WORK");
-        assert_eq!(recorded.switch_count, 4);
+        assert_eq!(recorded.switch_count, DRIFT_MIN_SWITCHES);
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Offered);
     }
 
@@ -2266,6 +2907,47 @@ mod tests {
         let recorded = repo.intervention(&block_id).unwrap().unwrap();
         assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Returned);
         assert_eq!(recorded.outcome_at, Some(at(560)));
+    }
+
+    /// The close criterion has to match the open criterion.
+    ///
+    /// Only `is_confident_evidence` counts a departure, so only
+    /// `is_confident_evidence` may count the return. `Returned` is terminal, so
+    /// a low-confidence re-classification of the anchor closing the offer would
+    /// take away the user's only chance to answer "I was focused" — the answer
+    /// the demotion policy counts.
+    #[test]
+    fn a_low_confidence_glimpse_of_the_anchor_does_not_close_the_offer() {
+        let (manager, repo) = manager_with_repo();
+        let active = manager.start(request(3600), at(0)).unwrap();
+        let block_id = active.block_id.unwrap();
+        drift_into_offer(&manager);
+
+        let outcome = manager
+            .observe_safe_category(
+                "DEEP_WORK",
+                ClassificationStatus::Classified,
+                ClassificationConfidence::Low,
+                at(560),
+            )
+            .unwrap()
+            .expect("a differently classified observation produces a snapshot");
+
+        let recorded = repo.intervention(&block_id.to_string()).unwrap().unwrap();
+        assert_eq!(recorded.outcome, WorkBlockInterventionOutcome::Offered);
+        // The offer is still live on both surfaces the user can reach: the card
+        // in the pushed snapshot, and the reply that lands against it.
+        assert!(outcome.snapshot.active_intervention.is_some());
+        manager
+            .report_intervention_outcome(block_id, InterventionResponse::WasFocused, at(580))
+            .unwrap();
+        assert_eq!(
+            repo.intervention(&block_id.to_string())
+                .unwrap()
+                .unwrap()
+                .outcome,
+            WorkBlockInterventionOutcome::WasFocused
+        );
     }
 
     #[test]
@@ -2402,8 +3084,10 @@ mod tests {
             .expect("an unanswered offer renders in-app");
         assert_eq!(card.action_id, DRIFT_ACTION_ID);
         assert_eq!(card.anchor_category, "DEEP_WORK");
-        assert_eq!(card.switch_count, 4);
-        assert!(card.body.contains("4 switches away from deep work"));
+        assert_eq!(card.switch_count, DRIFT_MIN_SWITCHES);
+        assert!(card.body.contains(&format!(
+            "{DRIFT_MIN_SWITCHES} switches away from deep work"
+        )));
 
         let answered = manager
             .report_intervention_outcome(block_id, InterventionResponse::Dismissed, at(540))
@@ -2415,7 +3099,7 @@ mod tests {
     fn no_offer_is_made_before_the_block_has_an_anchor() {
         let (manager, _repo) = manager_with_repo();
         manager.start(request(3600), at(0)).unwrap();
-        // Same switching shape, but inside the first five minutes.
+        // Same switching shape, but inside the three-minute warm-up.
         observe(&manager, "DEEP_WORK", 10);
         for (index, seconds) in [40, 60, 80, 100, 120, 140, 160].iter().enumerate() {
             let category = if index % 2 == 0 {
@@ -2431,8 +3115,15 @@ mod tests {
     #[test]
     fn no_offer_is_made_when_too_little_of_the_block_remains() {
         let (manager, _repo) = manager_with_repo();
-        // 600s block: by t=520 only 80s remain, under the two-minute floor.
-        manager.start(request(600), at(0)).unwrap();
+        // 540s block. The fixture clears the switch threshold at t=440, where
+        // only 100s remain — under the two-minute floor, so the remaining-time
+        // gate is what refuses, which is the branch this test is about.
+        //
+        // Was 600s, sized against the old threshold where the offer could not
+        // arrive before t=520. A looser switch gate moves the offer earlier, so
+        // a block sized to run out of time by the old offer moment still had
+        // 160s left at the new one and the offer fired.
+        manager.start(request(540), at(0)).unwrap();
         assert!(drift_into_offer(&manager).unwrap().intervention.is_none());
     }
 
@@ -2530,6 +3221,94 @@ mod tests {
         }
     }
 
+    /// The end-of-block sentence, over every branch and every count that can
+    /// reach it. Three separate invariants, because they fail separately:
+    /// the banned-copy registry (absence framing), the new banned-jargon
+    /// registry (instrument nouns and retracting hedges), and the grammatical
+    /// subject. The last one is the whole point of the rewrite — a sentence
+    /// can pass both registries and still be a tracker reporting on itself.
+    #[test]
+    fn block_result_copy_keeps_the_user_as_subject_and_carries_no_jargon() {
+        let mut registry = vec![block_result_copy(
+            WorkBlockCoverage::Insufficient,
+            None,
+            0,
+            0,
+            0,
+            0,
+            1_500,
+        )];
+        assert_eq!(registry[0], LOW_COVERAGE_RESULT_COPY);
+        // A missing anchor under sufficient coverage is unreachable through
+        // `aggregate_result`, but the function is total and says so.
+        assert_eq!(
+            block_result_copy(WorkBlockCoverage::Good, None, 3, 1, 600, 1_500, 1_500),
+            LOW_COVERAGE_RESULT_COPY
+        );
+
+        let mut user_subject = Vec::new();
+        for coverage in [WorkBlockCoverage::Partial, WorkBlockCoverage::Good] {
+            for anchor in ["FOCUS_WORK", "DEEP_WORK", "COMMUNICATION"] {
+                for switch_aways in 0..4u32 {
+                    for recoveries in 0..=switch_aways {
+                        // Fully categorized, and a block that ended with its
+                        // last 5 minutes not yet categorized.
+                        for elapsed in [1_500, 1_800] {
+                            let copy = block_result_copy(
+                                coverage,
+                                Some(anchor),
+                                switch_aways,
+                                recoveries,
+                                60 * u32::from(switch_aways as u16 + 1),
+                                1_500,
+                                elapsed,
+                            );
+                            user_subject.push(copy.clone());
+                            registry.push(copy);
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(user_subject
+            .contains(&"You stayed on focus work for all 25 minutes of this block.".to_owned()));
+        assert!(user_subject.contains(
+            &"You stayed on focus work for all 25 minutes of this block that Velvt could \
+              categorize."
+                .to_owned()
+        ));
+
+        for copy in &user_subject {
+            assert!(
+                copy.starts_with("You "),
+                "block result copy does not make the user the subject: {copy:?}"
+            );
+            // "1 minutes" is the seam that tells a reader nobody proofread
+            // the sentence.
+            assert!(
+                !copy.contains("1 minutes"),
+                "singular minute rendered as plural: {copy:?}"
+            );
+        }
+
+        for copy in &registry {
+            let lowered = copy.to_ascii_lowercase();
+            for forbidden in BANNED_COPY_TOKENS {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "banned copy token {forbidden:?} in block result {copy:?}"
+                );
+            }
+            for forbidden in BANNED_JARGON_TOKENS {
+                assert!(
+                    !lowered.contains(forbidden),
+                    "banned jargon token {forbidden:?} in block result {copy:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn state_transitions_are_bounded_and_terminal_completion_is_idempotent() {
         let manager = manager();
@@ -2593,9 +3372,7 @@ mod tests {
         assert_eq!(result.coverage, WorkBlockCoverage::Insufficient);
         assert_eq!(result.confidence, ConfidenceLevel::None);
         assert!(result.safe_evidence_category.is_none());
-        assert!(result
-            .observation
-            .contains("cannot make a confident observation"));
+        assert_eq!(result.observation, LOW_COVERAGE_RESULT_COPY);
     }
 
     #[test]
@@ -2631,22 +3408,15 @@ mod tests {
 
     #[test]
     fn rust_derives_stretches_switches_recoveries_and_non_accusatory_copy() {
-        let manager = manager();
+        let (manager, db) = manager_with_db();
         let active = manager.start(request(300), at(0)).unwrap();
         let id = active.block_id.unwrap();
-        for (category, second) in [
-            ("FOCUS_WORK", 0),
-            ("COMMUNICATION", 60),
-            ("FOCUS_WORK", 120),
+        for (category, second, dwell) in [
+            ("FOCUS_WORK", 0, 60),
+            ("COMMUNICATION", 60, 60),
+            ("FOCUS_WORK", 120, 180),
         ] {
-            manager
-                .observe_safe_category(
-                    category,
-                    ClassificationStatus::Classified,
-                    ClassificationConfidence::High,
-                    at(second),
-                )
-                .unwrap();
+            deliver(&db, &manager, category, second, dwell);
         }
 
         let result = manager.end(id, at(300)).unwrap().result.unwrap();
@@ -2655,9 +3425,13 @@ mod tests {
         assert_eq!(result.switch_away_count, 1);
         assert_eq!(result.recovery_count, 1);
         assert_eq!(result.safe_evidence_category.as_deref(), Some("FOCUS_WORK"));
-        assert!(result
-            .observation
-            .contains("switching alone does not show distraction"));
+        // The moat sentence: the person who left and the person who came
+        // back are the same subject, counted as one event, with no clause
+        // taking the claim back.
+        assert_eq!(
+            result.observation,
+            "You left focus work once and came back. The longest single run was 3 minutes."
+        );
         assert!(!result.observation.contains("failed"));
     }
 
@@ -2805,6 +3579,303 @@ mod tests {
         let reread = manager.end(id, at(28_900)).unwrap();
         assert_eq!(reread.elapsed_duration_seconds, 60);
         assert_eq!(reread.result.unwrap().elapsed_duration_seconds, 60);
+    }
+
+    // -----------------------------------------------------------------------
+    // The terminal span and coverage (00-GROUND-TRUTH.md § 6c and § 6d).
+    //
+    // Swift reports a dwell when the user *leaves* it, stamped with the time
+    // they entered it and carrying its measured length. The engine sees only
+    // the start. So the dwell the user is in when a block ends has not been
+    // reported when the block is finalized, and the ledger has nothing to
+    // close the last row with except the boundary itself.
+    //
+    // These tests drive the engine the way `ipc/router.rs::handle_raw_event`
+    // does — the raw row is written first, then the category reaches the
+    // engine — because the defect lives in the gap between the two tables and
+    // cannot be seen by a test that only writes one of them.
+    // -----------------------------------------------------------------------
+
+    /// A manager over a fresh database, keeping the database so a test can
+    /// write `raw_event_buffer` rows beside the observations.
+    fn manager_with_db() -> (WorkBlockManager, SqlitePersistence) {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        (WorkBlockManager::new(db.work_block_repo()), db)
+    }
+
+    /// Reports one finished, confidently classified dwell of `seconds` that
+    /// began at `start`.
+    fn deliver(
+        db: &SqlitePersistence,
+        manager: &WorkBlockManager,
+        category: &str,
+        start: i64,
+        seconds: u64,
+    ) -> Option<ObservationOutcome> {
+        deliver_with(
+            db,
+            manager,
+            category,
+            ClassificationStatus::Classified,
+            ClassificationConfidence::High,
+            start,
+            seconds,
+        )
+    }
+
+    /// Reports one finished dwell in the router's order: `raw_event_buffer`
+    /// first, with the dwell's start and measured length, then the category
+    /// to the work-block engine stamped with the dwell's start.
+    fn deliver_with(
+        db: &SqlitePersistence,
+        manager: &WorkBlockManager,
+        category: &str,
+        status: ClassificationStatus,
+        confidence: ClassificationConfidence,
+        start: i64,
+        seconds: u64,
+    ) -> Option<ObservationOutcome> {
+        db.raw_event_repo()
+            .insert(&crate::persistence::RawEventEntry {
+                event_id: Uuid::new_v4().to_string(),
+                stable_id: "abs_terminal_span".into(),
+                label: "document:code".into(),
+                local_display_label: None,
+                local_name_suggestion: None,
+                category: category.into(),
+                taxonomy_version: "mvp-2".into(),
+                classification_tier: "exact_match".into(),
+                classification_status: status.as_str().into(),
+                classification_confidence: confidence.as_str().into(),
+                classification_source: "seed".into(),
+                occurred_at: at(start),
+                duration_seconds: seconds,
+                upload_eligible: false,
+                app_stable_id: None,
+                app_scope_eligible: false,
+            })
+            .unwrap();
+        manager
+            .observe_safe_category(category, status, confidence, at(start))
+            .unwrap()
+    }
+
+    /// Block `1c55e9b6`, the only real block when § 6c was written, replayed to
+    /// the second. The user wrote code for 1237 of its 1500 seconds; the
+    /// shipped result said COMMUNICATION, 1419 s, coverage 1.0, confidence
+    /// high — because the editor dwell was still open at the deadline and the
+    /// communication row, the last one reported, was stretched to cover it.
+    ///
+    /// Rust cannot know at the deadline what the user was doing after their
+    /// last switch; nothing has told it. The honest result is that those
+    /// seconds were not observed, which is too little to name an anchor.
+    #[test]
+    fn the_unreported_final_dwell_is_not_credited_to_the_category_the_user_left() {
+        let (manager, db) = manager_with_db();
+        let repo = db.work_block_repo();
+        let block = manager.start(request(1_500), at(0)).unwrap();
+        let block_id = block.block_id.unwrap().to_string();
+        // Focus work already open 19 s before the block; left at +81.
+        deliver(&db, &manager, "FOCUS_WORK", -19, 100);
+        // Communication, left at +263 for the editor.
+        deliver(&db, &manager, "COMMUNICATION", 81, 182);
+        // The editor dwell runs to +1598. The deadline scheduler finalizes
+        // the block at +1500, 98 s before that dwell is reported.
+        let completed = manager.request_state(at(1_500)).unwrap();
+        assert_eq!(completed.phase, WorkBlockPhase::Completed);
+        assert!(
+            deliver(&db, &manager, "FOCUS_WORK", 263, 1_335).is_none(),
+            "a dwell reported after finalization reaches no ledger"
+        );
+
+        let observations = repo.observations(&block_id).unwrap();
+        let last = observations.last().unwrap();
+        assert_eq!(last.category, "COMMUNICATION");
+        assert_eq!(
+            last.ended_at,
+            Some(at(263)),
+            "the last row closes where its own dwell ended, not at the deadline"
+        );
+
+        let result = completed.result.clone().unwrap();
+        assert_ne!(
+            result.safe_evidence_category.as_deref(),
+            Some("COMMUNICATION")
+        );
+        assert_eq!(result.longest_uninterrupted_seconds, 182);
+        // 81 + 182 reported seconds of 1500. The remainder is unobserved, not
+        // communication, and it no longer counts as coverage.
+        assert!((result.coverage_ratio - 263.0 / 1_500.0).abs() < 1e-9);
+        assert_eq!(result.coverage, WorkBlockCoverage::Insufficient);
+        assert_eq!(result.confidence, ConfidenceLevel::None);
+        assert!(result.safe_evidence_category.is_none());
+        assert_eq!(result.observation, LOW_COVERAGE_RESULT_COPY);
+        assert_eq!(
+            manager.request_state(at(1_700)).unwrap().result,
+            completed.result,
+            "the late dwell cannot rewrite a finalized result"
+        );
+    }
+
+    /// A final dwell that *was* reported before the block ended keeps exactly
+    /// its reported length. Only the unreported remainder goes unclaimed.
+    #[test]
+    fn an_ended_block_closes_its_last_run_where_the_reported_dwell_ended() {
+        let (manager, db) = manager_with_db();
+        let block = manager.start(request(1_500), at(0)).unwrap();
+        deliver(&db, &manager, "FOCUS_WORK", -30, 630);
+        deliver(&db, &manager, "COMMUNICATION", 600, 60);
+        deliver(&db, &manager, "FOCUS_WORK", 660, 700);
+        // The user leaves the editor at +1360 and ends the block at +1400.
+        let result = manager
+            .end(block.block_id.unwrap(), at(1_400))
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(result.safe_evidence_category.as_deref(), Some("FOCUS_WORK"));
+        assert_eq!(result.switch_away_count, 1);
+        assert_eq!(result.recovery_count, 1);
+        assert_eq!(
+            result.longest_uninterrupted_seconds, 700,
+            "not 740: the last 40 s were never reported as focus work"
+        );
+        assert!((result.coverage_ratio - 1_360.0 / 1_400.0).abs() < 1e-9);
+        assert_eq!(result.coverage, WorkBlockCoverage::Good);
+        assert_eq!(result.confidence, ConfidenceLevel::High);
+    }
+
+    /// § 6d: coverage is what the raw buffer saw, not whether the ledger rows
+    /// tile the block. Rows always tile — each ends where the next begins — so
+    /// a stretch with no report at all read as covered, by the category before
+    /// it. Unconfident dwells are reported but support no category, and stay
+    /// out of coverage exactly as they stayed out before.
+    #[test]
+    fn coverage_counts_reported_confident_time_not_ledger_tiling() {
+        let (manager, db) = manager_with_db();
+        manager.start(request(1_500), at(0)).unwrap();
+        deliver(&db, &manager, "FOCUS_WORK", 0, 300);
+        // Nothing at all is reported for +300..+700.
+        deliver_with(
+            &db,
+            &manager,
+            "UNCLASSIFIED",
+            ClassificationStatus::Ambiguous,
+            ClassificationConfidence::Low,
+            700,
+            300,
+        );
+        deliver(&db, &manager, "COMMUNICATION", 1_000, 100);
+        deliver(&db, &manager, "FOCUS_WORK", 1_100, 400);
+        let result = manager.request_state(at(1_500)).unwrap().result.unwrap();
+        // The ledger holds FOCUS_WORK 0..700 (the gap tiled over),
+        // UNCLASSIFIED 700..1000, COMMUNICATION 1000..1100 and FOCUS_WORK
+        // 1100..1500: 1200 confident seconds, a ratio of 0.8, "good", "high".
+        // What was reported with confidence is 300 + 100 + 400.
+        assert!((result.coverage_ratio - 800.0 / 1_500.0).abs() < 1e-9);
+        assert_eq!(result.coverage, WorkBlockCoverage::Partial);
+        assert_eq!(result.confidence, ConfidenceLevel::Low);
+    }
+
+    /// Sleep is a block boundary as well. Pausing stretched the open row to the
+    /// pause instant the same way `finish` stretched it to the deadline, and
+    /// the paused span must never count as coverage whatever the raw buffer
+    /// says, because it is not part of the block.
+    #[test]
+    fn pausing_closes_the_open_run_at_its_reported_end_and_paused_time_is_not_coverage() {
+        let (manager, db) = manager_with_db();
+        let repo = db.work_block_repo();
+        let block = manager.start(request(3_600), at(0)).unwrap();
+        let id = block.block_id.unwrap();
+        deliver(&db, &manager, "FOCUS_WORK", 0, 400);
+        deliver(&db, &manager, "COMMUNICATION", 400, 50);
+        // Back in the editor from +450. The Mac sleeps at +600.
+        manager
+            .lifecycle(WorkBlockLifecycleEvent::Sleep, at(600))
+            .unwrap();
+        let observations = repo.observations(&id.to_string()).unwrap();
+        let last = observations.last().unwrap();
+        assert_eq!(last.category, "COMMUNICATION");
+        assert_eq!(last.ended_at, Some(at(450)), "not the pause instant");
+
+        manager.resume(id, at(700)).unwrap();
+        // The editor dwell, +450..+900 with the sleep inside it, is reported
+        // on the next switch.
+        deliver(&db, &manager, "FOCUS_WORK", 450, 450);
+        deliver(&db, &manager, "COMMUNICATION", 900, 60);
+        let result = manager.end(id, at(1_000)).unwrap().result.unwrap();
+        assert_eq!(result.elapsed_duration_seconds, 900);
+        // Reported, confident, and inside a ledger row: 0..450 and 700..960.
+        // The pause is excluded. So is 450..600: it was real editor time, but
+        // its dwell was reported only after the resume, so no row holds it
+        // and it is left unclaimed rather than guessed.
+        assert!((result.coverage_ratio - 710.0 / 900.0).abs() < 1e-9);
+        assert_eq!(result.coverage, WorkBlockCoverage::Good);
+    }
+
+    /// Overlapping reports count once, unconfident ones not at all, and only
+    /// time inside a ledger row counts: the rows are the mask of when the
+    /// block was running.
+    #[test]
+    fn reported_coverage_counts_each_second_once_and_only_while_running() {
+        let dwell =
+            |start: i64, seconds: u32, confidence: ClassificationConfidence| ReportedDwell {
+                occurred_at: at(start),
+                duration_seconds: seconds,
+                category: "FOCUS_WORK".into(),
+                classification_status: ClassificationStatus::Classified,
+                classification_confidence: confidence,
+            };
+        let row = |start: i64, end: i64| WorkBlockObservation {
+            occurred_at: at(start),
+            ended_at: Some(at(end)),
+            category: "FOCUS_WORK".into(),
+            classification_status: ClassificationStatus::Classified,
+            classification_confidence: ClassificationConfidence::High,
+        };
+        let reported = [
+            dwell(-50, 150, ClassificationConfidence::High),
+            dwell(50, 100, ClassificationConfidence::Medium),
+            dwell(300, 100, ClassificationConfidence::Low),
+            dwell(500, 200, ClassificationConfidence::High),
+        ];
+        // Running 0..250 and 450..600 (a pause between).
+        let rows = [row(0, 250), row(450, 600)];
+        // 0..150 once, not 0..100 plus 50..150; 300..400 is low confidence;
+        // 500..600 of the last dwell is inside the running mask and the block.
+        assert_eq!(
+            reported_coverage_seconds(&reported, &rows, at(0), at(600)),
+            150 + 100
+        );
+        assert_eq!(reported_coverage_seconds(&reported, &[], at(0), at(600)), 0);
+    }
+
+    /// A service restart mid-block is the third boundary. The first category
+    /// reported after it used to close the open row at the restart instant,
+    /// filing the whole outage under the category the user had already left.
+    #[test]
+    fn a_restart_does_not_stretch_the_open_run_across_the_outage() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let repo = db.work_block_repo();
+        let before = WorkBlockManager::new(db.work_block_repo());
+        let block = before.start(request(1_500), at(0)).unwrap();
+        deliver(&db, &before, "FOCUS_WORK", 0, 300);
+        deliver(&db, &before, "COMMUNICATION", 300, 60);
+        // The service is down from about +400 and back at +900.
+        let after = WorkBlockManager::new(db.work_block_repo());
+        assert_eq!(
+            after.recover_after_restart(at(900)).unwrap().phase,
+            WorkBlockPhase::Active
+        );
+        // The editor dwell from +360 is reported on the next switch.
+        deliver(&db, &after, "FOCUS_WORK", 360, 700);
+        let observations = repo
+            .observations(&block.block_id.unwrap().to_string())
+            .unwrap();
+        let communication = observations
+            .iter()
+            .find(|observation| observation.category == "COMMUNICATION")
+            .unwrap();
+        assert_eq!(communication.ended_at, Some(at(360)));
     }
 
     /// Mutable fake Focus/DND source answering from explicit active ranges,
@@ -3073,5 +4144,750 @@ mod tests {
             )
             .unwrap()
             .is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // The decision and abstention log (04-DATA-ARCHITECTURE.md § 4).
+    //
+    // Two properties are load-bearing and both are tested below:
+    //
+    //   1. Every `gate_verdict` in the closed enum is reachable. A closed enum
+    //      with unreachable variants is a lie about what the gate does.
+    //   2. `work_block_intervention` is byte-identical before and after. Its
+    //      PRIMARY KEY(block_id) is the denominator of the pre-registered
+    //      primary outcome; polluting it silently changes a pre-registered
+    //      metric, which is the one thing this project cannot do.
+    // -----------------------------------------------------------------------
+
+    /// A `WorkBlockRepo` that drops every decision-log write and delegates
+    /// everything else untouched.
+    ///
+    /// This is how "before" is reproduced honestly. The only change the decision
+    /// log makes to `evaluate_drift` is a set of `self.log_decision(..)` calls,
+    /// and `log_decision` does exactly one thing: build a row and hand it to
+    /// `record_decision`, swallowing any error. A repo that no-ops
+    /// `record_decision` therefore runs the gate exactly as it ran before the
+    /// log existed — so a dump taken through this wrapper is a real "before",
+    /// not the same run described twice.
+    struct DecisionLogDisabled(Arc<dyn WorkBlockRepo>);
+
+    impl WorkBlockRepo for DecisionLogDisabled {
+        fn create(&self, block: &WorkBlockRecord) -> Result<(), PersistenceError> {
+            self.0.create(block)
+        }
+        fn latest(&self) -> Result<Option<WorkBlockRecord>, PersistenceError> {
+            self.0.latest()
+        }
+        fn mark_intervention_card_seen(
+            &self,
+            block_id: &str,
+            at: DateTime<Utc>,
+        ) -> Result<bool, PersistenceError> {
+            self.0.mark_intervention_card_seen(block_id, at)
+        }
+        fn get(&self, block_id: &str) -> Result<WorkBlockRecord, PersistenceError> {
+            self.0.get(block_id)
+        }
+        fn set_paused(&self, block_id: &str, at: DateTime<Utc>) -> Result<(), PersistenceError> {
+            self.0.set_paused(block_id, at)
+        }
+        fn set_active(
+            &self,
+            block_id: &str,
+            at: DateTime<Utc>,
+            total_paused_seconds: u32,
+        ) -> Result<(), PersistenceError> {
+            self.0.set_active(block_id, at, total_paused_seconds)
+        }
+        fn mark_recovered(
+            &self,
+            block_id: &str,
+            at: DateTime<Utc>,
+        ) -> Result<(), PersistenceError> {
+            self.0.mark_recovered(block_id, at)
+        }
+        fn close_open_observation(
+            &self,
+            block_id: &str,
+            at: DateTime<Utc>,
+        ) -> Result<(), PersistenceError> {
+            self.0.close_open_observation(block_id, at)
+        }
+        fn append_observation(
+            &self,
+            block_id: &str,
+            observation: &WorkBlockObservation,
+        ) -> Result<(), PersistenceError> {
+            self.0.append_observation(block_id, observation)
+        }
+        fn observations(
+            &self,
+            block_id: &str,
+        ) -> Result<Vec<WorkBlockObservation>, PersistenceError> {
+            self.0.observations(block_id)
+        }
+        fn latest_observation(
+            &self,
+            block_id: &str,
+        ) -> Result<Option<WorkBlockObservation>, PersistenceError> {
+            self.0.latest_observation(block_id)
+        }
+        fn reported_dwells(
+            &self,
+            from: DateTime<Utc>,
+            until: DateTime<Utc>,
+        ) -> Result<Vec<ReportedDwell>, PersistenceError> {
+            self.0.reported_dwells(from, until)
+        }
+        fn finalize(
+            &self,
+            block_id: &str,
+            completion: &WorkBlockCompletion,
+        ) -> Result<WorkBlockResult, PersistenceError> {
+            self.0.finalize(block_id, completion)
+        }
+        fn result(&self, block_id: &str) -> Result<Option<WorkBlockResult>, PersistenceError> {
+            self.0.result(block_id)
+        }
+        fn record_intervention(
+            &self,
+            block_id: &str,
+            intervention: &WorkBlockIntervention,
+        ) -> Result<(), PersistenceError> {
+            self.0.record_intervention(block_id, intervention)
+        }
+        fn intervention(
+            &self,
+            block_id: &str,
+        ) -> Result<Option<WorkBlockIntervention>, PersistenceError> {
+            self.0.intervention(block_id)
+        }
+        fn recent_interventions(
+            &self,
+            limit: usize,
+        ) -> Result<Vec<WorkBlockIntervention>, PersistenceError> {
+            self.0.recent_interventions(limit)
+        }
+        fn record_category_correction(
+            &self,
+            block_id: &str,
+            correction: &crate::persistence::WorkBlockCategoryCorrection,
+        ) -> Result<(), PersistenceError> {
+            self.0.record_category_correction(block_id, correction)
+        }
+        fn category_corrections(
+            &self,
+            block_id: &str,
+        ) -> Result<Vec<crate::persistence::WorkBlockCategoryCorrection>, PersistenceError>
+        {
+            self.0.category_corrections(block_id)
+        }
+        fn wrong_intervention_counts(
+            &self,
+            since: DateTime<Utc>,
+        ) -> Result<WrongInterventionCounts, PersistenceError> {
+            self.0.wrong_intervention_counts(since)
+        }
+        fn demotion_state(&self) -> Result<Option<DemotionStateRecord>, PersistenceError> {
+            self.0.demotion_state()
+        }
+        fn set_demotion_state(&self, record: &DemotionStateRecord) -> Result<(), PersistenceError> {
+            self.0.set_demotion_state(record)
+        }
+        fn resolve_intervention(
+            &self,
+            block_id: &str,
+            outcome: WorkBlockInterventionOutcome,
+            at: DateTime<Utc>,
+        ) -> Result<bool, PersistenceError> {
+            self.0.resolve_intervention(block_id, outcome, at)
+        }
+        fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError> {
+            self.0.expire_intentions(now)
+        }
+        fn clear_all(&self) -> Result<u64, PersistenceError> {
+            self.0.clear_all()
+        }
+        /// The one method that differs: the write is dropped on the floor.
+        fn record_decision(
+            &self,
+            _decision: &InterventionDecision,
+        ) -> Result<(), PersistenceError> {
+            Ok(())
+        }
+        fn decisions(&self, block_id: &str) -> Result<Vec<InterventionDecision>, PersistenceError> {
+            self.0.decisions(block_id)
+        }
+        fn recent_decisions(
+            &self,
+            limit: usize,
+        ) -> Result<Vec<InterventionDecision>, PersistenceError> {
+            self.0.recent_decisions(limit)
+        }
+    }
+
+    /// A manager over a fresh in-memory database, with the decision log either
+    /// live or disabled. The returned repo is always the real one, so a
+    /// disabled-log run can still be inspected.
+    fn gate_manager(
+        logging: bool,
+        focus: Option<Arc<FakeFocus>>,
+    ) -> (WorkBlockManager, Arc<dyn WorkBlockRepo>) {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let real = db.work_block_repo();
+        let seen_by_manager: Arc<dyn WorkBlockRepo> = if logging {
+            real.clone()
+        } else {
+            Arc::new(DecisionLogDisabled(real.clone()))
+        };
+        let mut manager = WorkBlockManager::new(seen_by_manager);
+        if let Some(focus) = focus {
+            manager = manager.with_focus_source(focus as Arc<dyn FocusStateSource>);
+        }
+        (manager, real)
+    }
+
+    /// Every `work_block_intervention` row, all columns, in a stable order.
+    ///
+    /// `block_id` is deliberately absent: it is a fresh UUID on every run, so
+    /// including it would make any two runs differ for a reason that has nothing
+    /// to do with what is being tested. Every other column is compared verbatim,
+    /// and the row count is compared separately.
+    fn intervention_dump(repo: &Arc<dyn WorkBlockRepo>) -> String {
+        format!("{:#?}", repo.recent_interventions(1_024).unwrap())
+    }
+
+    /// Logged verdicts in the order the gate produced them.
+    fn logged_verdicts(repo: &Arc<dyn WorkBlockRepo>) -> Vec<GateVerdict> {
+        repo.recent_decisions(1_024)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .map(|decision| decision.gate_verdict)
+            .collect()
+    }
+
+    /// Seeds a completed block and one recorded offer, without going through
+    /// the manager. Used to build the demoting outcome stream, which needs one
+    /// block per offer: the intervention table's primary key would collapse
+    /// sixteen offers in one block to a single row.
+    fn seed_answered_block(
+        repo: &Arc<dyn WorkBlockRepo>,
+        block_id: &str,
+        outcome: WorkBlockInterventionOutcome,
+        offered_at: DateTime<Utc>,
+    ) {
+        repo.create(&WorkBlockRecord {
+            block_id: block_id.to_owned(),
+            phase: WorkBlockPhase::Completed,
+            intention: None,
+            purpose: None,
+            intensity: WorkBlockIntensity::Medium,
+            planned_duration_seconds: 1_500,
+            started_at: offered_at - Duration::seconds(600),
+            paused_at: None,
+            total_paused_seconds: 0,
+            ended_at: Some(offered_at + Duration::seconds(60)),
+            recovered_after_restart: false,
+            recovery_of: None,
+            origin: WorkBlockOrigin::Manual,
+            intention_expires_at: offered_at,
+            updated_at: offered_at,
+        })
+        .unwrap();
+        repo.record_intervention(
+            block_id,
+            &WorkBlockIntervention {
+                offered_at,
+                action_id: DRIFT_ACTION_ID.to_owned(),
+                anchor_category: "DEEP_WORK".into(),
+                switch_count: 4,
+                window_seconds: 600,
+                outcome,
+                outcome_at: Some(offered_at + Duration::seconds(30)),
+                salience: InterventionSalience::Normal,
+                card_seen_at: None,
+            },
+        )
+        .unwrap();
+    }
+
+    /// One scenario per gate verdict, each on its own database.
+    ///
+    /// Returns, per scenario: its name, the verdict it exists to reach, every
+    /// verdict the log recorded, and a canonical dump of the
+    /// `work_block_intervention` rows the scenario produced.
+    fn drive_every_gate_scenario(
+        logging: bool,
+    ) -> Vec<(&'static str, GateVerdict, Vec<GateVerdict>, String)> {
+        let mut scenarios = Vec::new();
+
+        // Warmup: the block has not run long enough to have an anchor.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+        scenarios.push((
+            "warmup",
+            GateVerdict::AbstainedWarmup,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Remaining: past warmup, but under two minutes are left.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(400), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 310);
+        scenarios.push((
+            "remaining",
+            GateVerdict::AbstainedRemaining,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Block cap: an offer already exists for this block.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        observe(&manager, "REFERENCE", 540);
+        scenarios.push((
+            "block_cap",
+            GateVerdict::AbstainedBlockCap,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Backoff: a `not_helpful` reply in the previous block starts a
+        // cooldown that the next block runs inside.
+        let (manager, repo) = gate_manager(logging, None);
+        drift_block(&manager, 0, Some(InterventionResponse::NotHelpful));
+        manager.start(request(3_600), at(600)).unwrap();
+        observe(&manager, "DEEP_WORK", 610);
+        observe(&manager, "COMMUNICATION", 910);
+        scenarios.push((
+            "backoff",
+            GateVerdict::AbstainedBackoff,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // No anchor: evidence exists but none of it is confident, so there is
+        // nothing to have drifted away from.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "SYSTEM", 310);
+        scenarios.push((
+            "no_anchor",
+            GateVerdict::AbstainedNoAnchor,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Minimum switches: one departure is not four.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "COMMUNICATION", 400);
+        scenarios.push((
+            "min_switches",
+            GateVerdict::AbstainedMinSwitches,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // At anchor: the departures accumulate while the block is still in
+        // warmup, and the first observation after warmup is the anchor itself.
+        // The evidence is not discarded — the gate simply refuses to say "you
+        // are away" to someone who is demonstrably back.
+        //
+        // Retimed for the three-minute warm-up. At the old 200/250/270/290
+        // spacing every departure lands after warm-up expires, so the gate
+        // opens on the second one and the scenario reaches `Offered` instead of
+        // the verdict it exists to produce. Departures are now at 50/100/150,
+        // all inside warm-up, and DEEP_WORK keeps the dominant dwell
+        // (120s against 60s) so the anchor does not flip to COMMUNICATION.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        for (offset, category) in [
+            (10, "DEEP_WORK"),
+            (50, "COMMUNICATION"),
+            (60, "DEEP_WORK"),
+            (100, "COMMUNICATION"),
+            (110, "DEEP_WORK"),
+            (150, "COMMUNICATION"),
+            (190, "DEEP_WORK"),
+        ] {
+            observe(&manager, category, offset);
+        }
+        scenarios.push((
+            "at_anchor",
+            GateVerdict::AbstainedAtAnchor,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Withheld by demotion: four wrong of sixteen delivered is over the
+        // threshold, so the gate clears and the decision is held.
+        let (manager, repo) = gate_manager(logging, None);
+        for index in 0..16 {
+            seed_answered_block(
+                &repo,
+                &format!("seeded-block-{index}"),
+                if index < 4 {
+                    WorkBlockInterventionOutcome::WasFocused
+                } else {
+                    WorkBlockInterventionOutcome::Returned
+                },
+                at(-7_200 + i64::from(index) * 60),
+            );
+        }
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        scenarios.push((
+            "withheld_demotion",
+            GateVerdict::WithheldDemotion,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Suppressed by DND: the gate clears while system Focus is active.
+        let focus = FakeFocus::new();
+        focus.set_active(at(0), at(3_600));
+        let (manager, repo) = gate_manager(logging, Some(focus));
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        scenarios.push((
+            "suppressed_dnd",
+            GateVerdict::SuppressedDnd,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        // Offered: the gate clears and the offer is delivered.
+        let (manager, repo) = gate_manager(logging, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        scenarios.push((
+            "offered",
+            GateVerdict::Offered,
+            logged_verdicts(&repo),
+            intervention_dump(&repo),
+        ));
+
+        scenarios
+    }
+
+    /// Mandatory test 1. Every value in the closed `gate_verdict` enum is
+    /// reachable by a real scenario driven through the shipped gate.
+    ///
+    /// Reachability is asserted twice, deliberately: each scenario must produce
+    /// the verdict it exists to produce, and the union across scenarios must be
+    /// the whole enum. The second assertion is what fails when a variant is
+    /// added to the enum without a scenario, rather than the variant quietly
+    /// becoming a value the schema permits and the gate never writes.
+    #[test]
+    fn every_gate_verdict_is_reachable() {
+        let scenarios = drive_every_gate_scenario(true);
+        let mut reached = std::collections::HashSet::new();
+
+        for (name, target, verdicts, _) in &scenarios {
+            assert!(
+                verdicts.contains(target),
+                "scenario `{name}` did not reach {:?}; it logged {verdicts:?}",
+                target
+            );
+            reached.extend(verdicts.iter().copied());
+        }
+
+        let expected: std::collections::HashSet<GateVerdict> =
+            GateVerdict::ALL.into_iter().collect();
+        assert_eq!(
+            reached, expected,
+            "the closed verdict enum and the reachable verdicts disagree"
+        );
+    }
+
+    /// Mandatory test 2, part one. The decision-log write path cannot touch
+    /// `work_block_intervention` at all.
+    ///
+    /// Writing one decision of every verdict against a database that already
+    /// holds a real offer leaves that table byte-identical. The seeded row makes
+    /// the comparison non-vacuous: two empty dumps would also be equal.
+    #[test]
+    fn writing_every_decision_verdict_leaves_work_block_intervention_untouched() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let repo = db.work_block_repo();
+        seed_answered_block(
+            &repo,
+            "pre-existing-block",
+            WorkBlockInterventionOutcome::Returned,
+            at(-600),
+        );
+
+        let before = intervention_dump(&repo);
+        assert!(
+            before.contains("Returned"),
+            "the guard is vacuous unless the table already holds a row"
+        );
+
+        for verdict in GateVerdict::ALL {
+            repo.record_decision(&InterventionDecision {
+                decision_id: format!("decision-{}", verdict.as_str()),
+                occurred_at: at(0),
+                block_id: Some("pre-existing-block".into()),
+                policy_version: DRIFT_POLICY_VERSION,
+                anchor_category: Some("DEEP_WORK".into()),
+                switch_count: 4,
+                elapsed_seconds: 600,
+                remaining_seconds: 900,
+                gate_verdict: verdict,
+                propensity: DRIFT_DETERMINISTIC_PROPENSITY,
+                anchor_seen_within_600s: None,
+                outcome_at: None,
+            })
+            .unwrap();
+        }
+
+        assert_eq!(
+            repo.decisions("pre-existing-block").unwrap().len(),
+            GateVerdict::ALL.len(),
+            "every verdict is storable"
+        );
+        assert_eq!(
+            before,
+            intervention_dump(&repo),
+            "the decision log wrote into the pre-registered denominator"
+        );
+    }
+
+    /// Mandatory test 2, part two. `work_block_intervention` is byte-identical
+    /// before and after the decision log exists.
+    ///
+    /// "Before" is the same scenario run against a repo that drops decision
+    /// writes, which is exactly the gate minus this change. Every scenario is
+    /// compared: row count first, because the row count is the denominator, then
+    /// the full column dump, because a changed column would be just as bad and
+    /// harder to notice.
+    #[test]
+    fn work_block_intervention_is_byte_identical_before_and_after_the_decision_log() {
+        let before = drive_every_gate_scenario(false);
+        let after = drive_every_gate_scenario(true);
+        assert_eq!(before.len(), after.len());
+
+        for ((name, _, before_verdicts, before_dump), (_, _, after_verdicts, after_dump)) in
+            before.iter().zip(after.iter())
+        {
+            assert!(
+                before_verdicts.is_empty(),
+                "scenario `{name}`: the disabled-log run must record nothing"
+            );
+            assert!(
+                !after_verdicts.is_empty(),
+                "scenario `{name}`: the live-log run recorded no decision, so the \
+                 comparison would pass for the wrong reason"
+            );
+            assert_eq!(
+                before_dump.matches("WorkBlockIntervention").count(),
+                after_dump.matches("WorkBlockIntervention").count(),
+                "scenario `{name}`: the intervention row count changed"
+            );
+            assert_eq!(
+                before_dump, after_dump,
+                "scenario `{name}`: a `work_block_intervention` row changed"
+            );
+        }
+    }
+
+    /// The abstentions are the point: the whole reason the log is not
+    /// `work_block_intervention` is that seven of the ten verdicts must leave
+    /// that table empty while still being recorded somewhere.
+    #[test]
+    fn abstentions_are_recorded_without_producing_an_intervention_row() {
+        let (manager, repo) = gate_manager(true, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+        observe(&manager, "COMMUNICATION", 400);
+
+        let block_id = repo.latest().unwrap().unwrap().block_id;
+        let decisions = repo.decisions(&block_id).unwrap();
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[0].gate_verdict, GateVerdict::AbstainedWarmup);
+        assert_eq!(decisions[1].gate_verdict, GateVerdict::AbstainedMinSwitches);
+        assert!(
+            repo.intervention(&block_id).unwrap().is_none(),
+            "an abstention must never create an offer row"
+        );
+
+        // What the log knew, not what could be reconstructed later: the warmup
+        // abstention happened before the gate had computed an anchor.
+        assert_eq!(decisions[0].anchor_category, None);
+        assert_eq!(decisions[1].anchor_category.as_deref(), Some("DEEP_WORK"));
+        assert_eq!(decisions[1].switch_count, 1);
+    }
+
+    /// Propensity is 1.0 and the policy version is stamped, on every decision
+    /// regardless of verdict. Neither can be retrofitted: a decision recorded
+    /// this week without them can never be used for off-policy evaluation.
+    #[test]
+    fn every_decision_carries_a_propensity_and_a_policy_version() {
+        let (manager, repo) = gate_manager(true, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+
+        let decisions = repo.recent_decisions(1_024).unwrap();
+        assert!(!decisions.is_empty());
+        for decision in decisions {
+            assert_eq!(decision.propensity, 1.0);
+            assert_eq!(decision.policy_version, DRIFT_POLICY_VERSION);
+            // Unresolved, never "did not return".
+            assert_eq!(decision.anchor_seen_within_600s, None);
+            assert_eq!(decision.outcome_at, None);
+        }
+    }
+
+    /// Clearing local data clears the decisions with it. A decision log that
+    /// survived a clear would be behavioural evidence the user believes they
+    /// deleted.
+    #[test]
+    fn clearing_local_data_removes_every_logged_decision() {
+        let (manager, repo) = gate_manager(true, None);
+        manager.start(request(3_600), at(0)).unwrap();
+        drift_into_offer(&manager);
+        assert!(!repo.recent_decisions(1_024).unwrap().is_empty());
+
+        manager.clear_data().unwrap();
+
+        assert!(
+            repo.recent_decisions(1_024).unwrap().is_empty(),
+            "decisions outlived the block they were made about"
+        );
+    }
+
+    /// A replayed decision id is a no-op. A retried write must not double-count
+    /// an evaluation, because the eligibility rate is a ratio of counts.
+    #[test]
+    fn a_replayed_decision_id_does_not_double_count() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let repo = db.work_block_repo();
+        seed_answered_block(
+            &repo,
+            "block-for-replay",
+            WorkBlockInterventionOutcome::Returned,
+            at(-600),
+        );
+        let decision = InterventionDecision {
+            decision_id: "stable-id".into(),
+            occurred_at: at(0),
+            block_id: Some("block-for-replay".into()),
+            policy_version: DRIFT_POLICY_VERSION,
+            anchor_category: None,
+            switch_count: 0,
+            elapsed_seconds: 60,
+            remaining_seconds: 1_440,
+            gate_verdict: GateVerdict::AbstainedWarmup,
+            propensity: DRIFT_DETERMINISTIC_PROPENSITY,
+            anchor_seen_within_600s: None,
+            outcome_at: None,
+        };
+
+        repo.record_decision(&decision).unwrap();
+        repo.record_decision(&decision).unwrap();
+
+        assert_eq!(repo.decisions("block-for-replay").unwrap().len(), 1);
+    }
+
+    /// `anchor_category` on the snapshot is the drift gate's anchor: the
+    /// category with the most confidently observed, closed time. It is absent
+    /// until one confident observation has closed, follows the dominant
+    /// category as time accumulates, survives a pause, and is withdrawn once
+    /// the block is finished.
+    #[test]
+    fn the_snapshot_carries_the_gate_anchor_only_while_the_block_is_live() {
+        let (manager, _repo) = manager_with_repo();
+        let started = manager.start(request(3_600), at(0)).unwrap();
+        let block_id = started.block_id.unwrap();
+        assert_eq!(started.anchor_category, None);
+
+        // The open observation is not evidence yet: the gate counts closed
+        // time only, and so does the snapshot.
+        let first = observe(&manager, "DEEP_WORK", 10).unwrap();
+        assert_eq!(first.snapshot.anchor_category, None);
+
+        let away = observe(&manager, "COMMUNICATION", 400).unwrap();
+        assert_eq!(away.snapshot.anchor_category.as_deref(), Some("DEEP_WORK"));
+        assert_eq!(
+            away.snapshot.current_category.as_deref(),
+            Some("COMMUNICATION")
+        );
+
+        let back = observe(&manager, "DEEP_WORK", 450).unwrap();
+        assert_eq!(
+            back.snapshot.anchor_category,
+            back.snapshot.current_category
+        );
+
+        let polled = manager.request_state(at(500)).unwrap();
+        assert_eq!(polled.anchor_category.as_deref(), Some("DEEP_WORK"));
+
+        let paused = manager.pause(block_id, at(520)).unwrap();
+        assert_eq!(paused.phase, WorkBlockPhase::Paused);
+        assert_eq!(paused.anchor_category.as_deref(), Some("DEEP_WORK"));
+
+        let ended = manager.end(block_id, at(530)).unwrap();
+        assert_eq!(ended.phase, WorkBlockPhase::Abandoned);
+        assert_eq!(ended.anchor_category, None);
+    }
+
+    /// The anchor is whichever category holds the most time, so it moves when
+    /// another category overtakes it — exactly as the gate's does.
+    #[test]
+    fn the_snapshot_anchor_follows_the_dominant_category() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3_600), at(0)).unwrap();
+        observe(&manager, "DEEP_WORK", 10);
+        let early = observe(&manager, "COMMUNICATION", 100).unwrap();
+        assert_eq!(early.snapshot.anchor_category.as_deref(), Some("DEEP_WORK"));
+
+        let overtaken = observe(&manager, "DEEP_WORK", 400).unwrap();
+        assert_eq!(
+            overtaken.snapshot.anchor_category.as_deref(),
+            Some("COMMUNICATION")
+        );
+    }
+
+    /// Low-confidence and system evidence never becomes the anchor, however
+    /// long it lasts: the same bar `is_confident_evidence` sets for the gate.
+    #[test]
+    fn unconfident_or_system_time_never_becomes_the_snapshot_anchor() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3_600), at(0)).unwrap();
+        manager
+            .observe_safe_category(
+                "DEEP_WORK",
+                ClassificationStatus::Classified,
+                ClassificationConfidence::Low,
+                at(10),
+            )
+            .unwrap();
+        observe(&manager, "SYSTEM", 600);
+        let outcome = observe(&manager, "COMMUNICATION", 1_200).unwrap();
+        assert_eq!(outcome.snapshot.anchor_category, None);
+    }
+
+    /// The anchor on the snapshot and the anchor recorded on the offer are the
+    /// same value, because they are computed by the same function.
+    #[test]
+    fn the_snapshot_anchor_matches_the_offer_anchor() {
+        let (manager, _repo) = manager_with_repo();
+        manager.start(request(3_600), at(0)).unwrap();
+        let outcome = drift_into_offer(&manager).unwrap();
+        let offer = outcome
+            .snapshot
+            .active_intervention
+            .as_ref()
+            .expect("the fixture drifts into an offer");
+        assert_eq!(
+            outcome.snapshot.anchor_category.as_deref(),
+            Some(offer.anchor_category.as_str())
+        );
     }
 }

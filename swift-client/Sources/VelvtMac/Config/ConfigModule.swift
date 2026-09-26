@@ -39,36 +39,36 @@ public protocol ConfigLoading {
 /// Available in debug builds and tests only — use BundleConfigLoader in
 /// production. Kept for local `swift run` development workflows.
 #if DEBUG
-public struct EnvironmentConfigLoader: ConfigLoading {
-    private let environment: [String: String]
+    public struct EnvironmentConfigLoader: ConfigLoading {
+        private let environment: [String: String]
 
-    public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
-        self.environment = environment
+        public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+            self.environment = environment
+        }
+
+        public func load() throws -> FocusAgentConfig {
+            guard let socketPath = environment["VELVT_SOCKET_PATH"], !socketPath.isEmpty else {
+                throw ConfigError.missingValue(name: "VELVT_SOCKET_PATH")
+            }
+            guard
+                let protocolValue = environment["VELVT_PROTOCOL_VERSION"],
+                let protocolVersion = Int(protocolValue),
+                protocolVersion > 0
+            else {
+                throw ConfigError.invalidValue(name: "VELVT_PROTOCOL_VERSION")
+            }
+            guard let clientVersion = environment["VELVT_CLIENT_VERSION"], !clientVersion.isEmpty else {
+                throw ConfigError.missingValue(name: "VELVT_CLIENT_VERSION")
+            }
+
+            return FocusAgentConfig(
+                socketPath: socketPath,
+                protocolVersion: protocolVersion,
+                clientVersion: clientVersion,
+                apnsEnvironment: .development
+            )
+        }
     }
-
-    public func load() throws -> FocusAgentConfig {
-        guard let socketPath = environment["VELVT_SOCKET_PATH"], !socketPath.isEmpty else {
-            throw ConfigError.missingValue(name: "VELVT_SOCKET_PATH")
-        }
-        guard
-            let protocolValue = environment["VELVT_PROTOCOL_VERSION"],
-            let protocolVersion = Int(protocolValue),
-            protocolVersion > 0
-        else {
-            throw ConfigError.invalidValue(name: "VELVT_PROTOCOL_VERSION")
-        }
-        guard let clientVersion = environment["VELVT_CLIENT_VERSION"], !clientVersion.isEmpty else {
-            throw ConfigError.missingValue(name: "VELVT_CLIENT_VERSION")
-        }
-
-        return FocusAgentConfig(
-            socketPath: socketPath,
-            protocolVersion: protocolVersion,
-            clientVersion: clientVersion,
-            apnsEnvironment: .development
-        )
-    }
-}
 #endif
 
 public enum ConfigError: Error, Equatable {

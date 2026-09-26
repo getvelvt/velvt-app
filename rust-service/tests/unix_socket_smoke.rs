@@ -66,16 +66,34 @@ async fn connect_and_handshake(socket_path: &std::path::Path) -> tokio::net::uni
 // creates the socket's parent and chmods it to 0700 — pointing it at `/tmp`
 // itself would make that chmod fail (and must not succeed).
 //
+// That subdirectory is the test's to remove, not only the socket inside it:
+// `SocketDir` deletes both on drop, so a failed assertion cleans up too and
+// repeated runs do not leave empty `/tmp/velvt-ipc-*` directories behind.
+//
 // Uniqueness comes from a UUID rather than a timestamp. `SystemTime::now()` is
 // only microsecond-granular on macOS, so `as_nanos()` repeats across calls made
 // close together — concurrent tests in this binary share a PID and would derive
 // the same path, leaving one of them to fail its bind with `EEXIST`.
-fn socket_path(name: &str) -> PathBuf {
-    PathBuf::from(format!(
-        "/tmp/velvt-ipc-{}-{}/{name}.sock",
-        std::process::id(),
-        Uuid::new_v4().simple()
-    ))
+struct SocketDir(PathBuf);
+
+impl SocketDir {
+    fn new() -> Self {
+        Self(PathBuf::from(format!(
+            "/tmp/velvt-ipc-{}-{}",
+            std::process::id(),
+            Uuid::new_v4().simple()
+        )))
+    }
+
+    fn socket_path(&self, name: &str) -> PathBuf {
+        self.0.join(format!("{name}.sock"))
+    }
+}
+
+impl Drop for SocketDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn filesystem_sockets_available() -> bool {
@@ -108,7 +126,8 @@ async fn unix_socket_smoke_covers_success_and_rejection() {
     if !filesystem_sockets_available() {
         return;
     }
-    let socket_path = socket_path("single-client");
+    let socket_dir = SocketDir::new();
+    let socket_path = socket_dir.socket_path("single-client");
     let transport = TokioUnixTransport::new(socket_path.clone(), 3);
     let server = tokio::spawn(async move { transport.run().await });
 
@@ -159,7 +178,6 @@ async fn unix_socket_smoke_covers_success_and_rejection() {
     ));
 
     server.abort();
-    let _ = tokio::fs::remove_file(socket_path).await;
 }
 
 #[tokio::test]
@@ -167,7 +185,8 @@ async fn unix_socket_accepts_two_simultaneous_clients() {
     if !filesystem_sockets_available() {
         return;
     }
-    let socket_path = socket_path("two-clients");
+    let socket_dir = SocketDir::new();
+    let socket_path = socket_dir.socket_path("two-clients");
     let transport = TokioUnixTransport::new(socket_path.clone(), 3);
     let server = tokio::spawn(async move { transport.run().await });
 
@@ -179,5 +198,4 @@ async fn unix_socket_accepts_two_simultaneous_clients() {
     drop(client_one);
     drop(client_two);
     server.abort();
-    let _ = tokio::fs::remove_file(socket_path).await;
 }

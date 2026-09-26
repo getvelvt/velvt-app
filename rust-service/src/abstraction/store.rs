@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Mutex};
 
+use super::StableKeySalt;
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct PersonalOverride {
     pub category: String,
@@ -82,14 +84,40 @@ pub trait AbstractionMappingStore: Send + Sync {
         taxonomy_version: &str,
         classification_tier: &str,
     ) -> Result<(), StoreError>;
+
+    /// The salt every key this store holds was computed under.
+    ///
+    /// Asked of the store rather than handed to the engine separately, so the
+    /// engine can only ever compute keys under the salt of the rows it will look
+    /// them up in. A salt supplied from anywhere else would be one wiring mistake
+    /// away from an engine whose every lookup misses: no correction would apply,
+    /// and nothing would say why.
+    fn stable_key_salt(&self) -> Result<StableKeySalt, StoreError>;
 }
 
 /// In-memory store used until R3 supplies durable persistence.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InMemoryMappingStore {
     mappings: Mutex<HashMap<String, String>>,
     overrides: Mutex<HashMap<String, PersonalOverride>>,
     app_overrides: Mutex<HashMap<String, PersonalOverride>>,
+    salt: StableKeySalt,
+}
+
+impl Default for InMemoryMappingStore {
+    /// A fresh random salt per store, as a fresh database gets one from
+    /// migration 0037, so no test can come to depend on a fixed value. Tests
+    /// that seed a correction ask the store for its salt.
+    fn default() -> Self {
+        use sha2::{Digest, Sha256};
+        let seed = uuid::Uuid::new_v4();
+        Self {
+            mappings: Mutex::default(),
+            overrides: Mutex::default(),
+            app_overrides: Mutex::default(),
+            salt: StableKeySalt::from_bytes(Sha256::digest(seed.as_bytes()).into()),
+        }
+    }
 }
 
 impl InMemoryMappingStore {
@@ -144,6 +172,10 @@ impl AbstractionMappingStore for InMemoryMappingStore {
         _classification_tier: &str,
     ) -> Result<(), StoreError> {
         Ok(())
+    }
+
+    fn stable_key_salt(&self) -> Result<StableKeySalt, StoreError> {
+        Ok(self.salt)
     }
 }
 

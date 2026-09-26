@@ -94,9 +94,21 @@ impl<H: HttpClient> PollClient<H> {
     }
 }
 
+/// Answers "when do this user's quiet hours end?" for the delivery path.
+///
+/// Declared here, beside the consumer, for the same reason
+/// `work_block::FocusStateSource` is: delivery needs one narrow question
+/// answered and must not depend on the whole focus domain to ask it.
+/// `None` means `at` is not inside a quiet window — an unconfigured user is
+/// never deferred.
+pub trait QuietHoursSource: Send + Sync {
+    fn quiet_hours_end(&self, at: DateTime<Utc>) -> Option<DateTime<Utc>>;
+}
+
 pub struct PollScheduler<H> {
     client: PollClient<H>,
     push_adapter: Arc<PushAdapter>,
+    quiet_hours: Option<Arc<dyn QuietHoursSource>>,
     auth_state: watch::Receiver<AuthState>,
     shutdown: watch::Receiver<bool>,
     dedupe: InsightDedupeGuard,
@@ -114,11 +126,20 @@ impl<H: HttpClient> PollScheduler<H> {
         Self {
             client,
             push_adapter,
+            quiet_hours: None,
             auth_state,
             shutdown,
             dedupe: InsightDedupeGuard::default(),
             backoff,
         }
+    }
+
+    /// Defer notifications raised inside the user's quiet hours until the
+    /// window closes. Absent, every notification schedules immediately, which
+    /// is the behaviour this scheduler had before quiet hours were wired up.
+    pub fn with_quiet_hours(mut self, quiet_hours: Arc<dyn QuietHoursSource>) -> Self {
+        self.quiet_hours = Some(quiet_hours);
+        self
     }
 
     pub async fn run(mut self) {
@@ -136,7 +157,17 @@ impl<H: HttpClient> PollScheduler<H> {
             match self.client.poll_once().await {
                 Ok(PollOutcome::Insight(insight)) => {
                     self.backoff.reset();
-                    deliver_polled_insight(&self.push_adapter, &mut self.dedupe, *insight).await;
+                    let quiet_until = self
+                        .quiet_hours
+                        .as_ref()
+                        .and_then(|source| source.quiet_hours_end(Utc::now()));
+                    deliver_polled_insight(
+                        &self.push_adapter,
+                        &mut self.dedupe,
+                        *insight,
+                        quiet_until,
+                    )
+                    .await;
                 }
                 Ok(PollOutcome::NoContent) => {
                     self.backoff.reset();
@@ -160,8 +191,10 @@ impl<H: HttpClient> PollScheduler<H> {
                     }
                 }
                 Err(PollError::RateLimited { retry_after }) => {
-                    let delay = retry_after.unwrap_or(
+                    let delay = rate_limit_delay(
+                        retry_after,
                         self.client.config.poll_timeout + self.client.config.idle_interval,
+                        self.client.config.max_backoff,
                     );
                     tracing::warn!(
                         delay_ms = delay.as_millis() as u64,
@@ -220,6 +253,16 @@ impl<H: HttpClient> PollScheduler<H> {
 fn parse_retry_after(value: Option<&str>) -> Option<Duration> {
     let seconds = value?.trim().parse::<u64>().ok()?;
     (seconds > 0).then_some(Duration::from_secs(seconds))
+}
+
+fn rate_limit_delay(
+    retry_after: Option<Duration>,
+    fallback: Duration,
+    max_backoff: Duration,
+) -> Duration {
+    retry_after
+        .map(|delay| delay.min(max_backoff))
+        .unwrap_or(fallback)
 }
 
 #[derive(Deserialize)]
@@ -336,6 +379,7 @@ pub async fn deliver_polled_insight(
     push_adapter: &PushAdapter,
     dedupe: &mut InsightDedupeGuard,
     insight: PolledInsight,
+    do_not_disturb_until: Option<DateTime<Utc>>,
 ) {
     if !dedupe.should_deliver(&insight.id) {
         tracing::debug!("duplicate long-poll insight suppressed");
@@ -350,7 +394,7 @@ pub async fn deliver_polled_insight(
     push_adapter.push_insight(insight.payload).await;
     if should_notify {
         push_adapter
-            .push_notification(notification_id, title, &body, date)
+            .push_notification(notification_id, title, &body, date, do_not_disturb_until)
             .await;
     }
 }
@@ -546,6 +590,107 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_delay_preserves_retry_after_below_cap() {
+        assert_eq!(
+            rate_limit_delay(
+                Some(Duration::from_secs(3)),
+                Duration::from_secs(26),
+                Duration::from_secs(5),
+            ),
+            Duration::from_secs(3)
+        );
+    }
+
+    #[test]
+    fn rate_limit_delay_caps_large_retry_after_values() {
+        for retry_after in [Duration::from_secs(6), Duration::from_secs(u64::MAX)] {
+            assert_eq!(
+                rate_limit_delay(
+                    Some(retry_after),
+                    Duration::from_secs(26),
+                    Duration::from_secs(5),
+                ),
+                Duration::from_secs(5)
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limit_delay_preserves_fallback_for_unusable_headers() {
+        let fallback = Duration::from_secs(26);
+        let max_backoff = Duration::from_secs(5);
+
+        for retry_after in [
+            parse_retry_after(None),
+            parse_retry_after(Some("invalid")),
+            parse_retry_after(Some("0")),
+        ] {
+            assert_eq!(
+                rate_limit_delay(retry_after, fallback, max_backoff),
+                fallback
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_sleep_is_interrupted_by_shutdown() {
+        let (_auth_tx, auth_rx) = watch::channel(AuthState::Authenticated {
+            device_id: "device-1".into(),
+        });
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let queue = crate::delivery::PushQueue::new(1);
+        let client = PollClient::new(Arc::new(FakeHttpClient::new(vec![])), config());
+        let mut scheduler = PollScheduler::new(
+            client,
+            crate::delivery::PushAdapter::new(queue),
+            auth_rx,
+            shutdown_rx,
+        );
+
+        let sleep = tokio::spawn(async move {
+            scheduler
+                .sleep_or_shutdown(Duration::from_secs(u64::MAX))
+                .await
+        });
+        tokio::task::yield_now().await;
+        shutdown_tx.send(true).unwrap();
+
+        assert!(tokio::time::timeout(Duration::from_secs(1), sleep)
+            .await
+            .expect("shutdown should interrupt rate-limit sleep")
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn rate_limit_sleep_is_interrupted_by_auth_change() {
+        let (auth_tx, auth_rx) = watch::channel(AuthState::Authenticated {
+            device_id: "device-1".into(),
+        });
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let queue = crate::delivery::PushQueue::new(1);
+        let client = PollClient::new(Arc::new(FakeHttpClient::new(vec![])), config());
+        let mut scheduler = PollScheduler::new(
+            client,
+            crate::delivery::PushAdapter::new(queue),
+            auth_rx,
+            shutdown_rx,
+        );
+
+        let sleep = tokio::spawn(async move {
+            scheduler
+                .sleep_or_shutdown(Duration::from_secs(u64::MAX))
+                .await
+        });
+        tokio::task::yield_now().await;
+        auth_tx.send(AuthState::NeedsReauth).unwrap();
+
+        assert!(!tokio::time::timeout(Duration::from_secs(1), sleep)
+            .await
+            .expect("auth change should interrupt rate-limit sleep")
+            .unwrap());
+    }
+
+    #[test]
     fn backoff_policy_doubles_until_cap_and_resets() {
         let mut backoff = BackoffPolicy::new(Duration::from_secs(1), Duration::from_secs(4));
 
@@ -567,6 +712,64 @@ mod tests {
         assert!(!guard.should_deliver("insight-2"));
     }
 
+    /// Quiet hours defer the notification rather than dropping it: the
+    /// deadline computed by the scheduler must survive all the way into the
+    /// payload Swift reads, because `do_not_disturb_until` is the only thing
+    /// standing between a 3am insight and a 3am ping.
+    #[tokio::test]
+    async fn quiet_hours_deadline_reaches_the_notification_payload() {
+        let queue = crate::delivery::PushQueue::new(10);
+        let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+        let mut dedupe = InsightDedupeGuard::default();
+        let insight = PolledInsight {
+            id: "insight-quiet".into(),
+            payload: crate::delivery::parser::parse_insight(daily_insight_body()).unwrap(),
+        };
+        let until = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+
+        deliver_polled_insight(&push, &mut dedupe, insight, Some(until)).await;
+
+        let mut seen = None;
+        while let Some(message) = queue.try_pop().await {
+            if let ServerMessage::NotificationPayload(payload) = message {
+                seen = Some(payload);
+            }
+        }
+        let payload = seen.expect("a notification was pushed");
+        assert_eq!(
+            payload.do_not_disturb_until,
+            Some(until),
+            "the quiet-hours deadline was dropped between scheduler and payload"
+        );
+    }
+
+    /// Outside quiet hours nothing is deferred — the field stays absent and
+    /// Swift schedules immediately, exactly as before this was wired up.
+    #[tokio::test]
+    async fn no_quiet_hours_leaves_the_payload_undeferred() {
+        let queue = crate::delivery::PushQueue::new(10);
+        let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+        let mut dedupe = InsightDedupeGuard::default();
+        let insight = PolledInsight {
+            id: "insight-loud".into(),
+            payload: crate::delivery::parser::parse_insight(daily_insight_body()).unwrap(),
+        };
+
+        deliver_polled_insight(&push, &mut dedupe, insight, None).await;
+
+        let mut seen = None;
+        while let Some(message) = queue.try_pop().await {
+            if let ServerMessage::NotificationPayload(payload) = message {
+                seen = Some(payload);
+            }
+        }
+        assert_eq!(
+            seen.expect("a notification was pushed")
+                .do_not_disturb_until,
+            None
+        );
+    }
+
     #[tokio::test]
     async fn deliver_once_for_duplicate_polled_insight() {
         let queue = crate::delivery::PushQueue::new(10);
@@ -577,8 +780,8 @@ mod tests {
             payload: crate::delivery::parser::parse_insight(daily_insight_body()).unwrap(),
         };
 
-        deliver_polled_insight(&push, &mut dedupe, insight.clone()).await;
-        deliver_polled_insight(&push, &mut dedupe, insight).await;
+        deliver_polled_insight(&push, &mut dedupe, insight.clone(), None).await;
+        deliver_polled_insight(&push, &mut dedupe, insight, None).await;
 
         let mut count = 0;
         while let Some(message) = queue.try_pop().await {
@@ -609,7 +812,7 @@ mod tests {
             },
         };
 
-        deliver_polled_insight(&push, &mut dedupe, insight).await;
+        deliver_polled_insight(&push, &mut dedupe, insight, None).await;
 
         let first = queue.try_pop().await;
         let second = queue.try_pop().await;
@@ -642,7 +845,7 @@ mod tests {
             },
         };
 
-        deliver_polled_insight(&push, &mut dedupe, insight).await;
+        deliver_polled_insight(&push, &mut dedupe, insight, None).await;
 
         assert!(matches!(
             queue.try_pop().await,

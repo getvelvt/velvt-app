@@ -1,0 +1,13 @@
+// The one place Velvt's version and build number live.
+//
+// Debug.xcconfig and Release.xcconfig include this file, the Makefile reads its
+// defaults from it, and rust-service/build.rs stamps the helper from it, so the
+// app, its Info.plist and velvt-service all report the same version.
+//
+// To cut a release: raise both values here, commit, then run `make alpha-dmg`
+// from that commit. CURRENT_PROJECT_VERSION orders builds (CFBundleVersion): it
+// may never be lower than the newest build in docs/RELEASES.md, and may equal
+// it only while these two lines still name that release.
+// scripts/tests/release_provenance_test.sh enforces both.
+MARKETING_VERSION = 1.0.12
+CURRENT_PROJECT_VERSION = 18

@@ -469,6 +469,95 @@ fn missing_database_file_is_created_and_migrated_at_startup() {
     );
 }
 
+/// A database this build migrated, then altered to say it applied a different
+/// 0012 than the one this build carries (migration 0039's checksum).
+fn database_that_applied_an_edited_migration(directory: &TestDirectory) -> PathBuf {
+    let database = directory.path("edited-migration.sqlite3");
+    drop(velvt_service::persistence::SqlitePersistence::open(&database).unwrap());
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute(
+            "UPDATE schema_migration SET checksum = ?1 WHERE version = 12",
+            ["ab".repeat(32)],
+        )
+        .unwrap();
+    database
+}
+
+/// A debug build refuses the database and halts, naming the migration: this
+/// is the build every developer and every CI run starts.
+#[cfg(debug_assertions)]
+#[test]
+fn an_edited_migration_halts_a_debug_build_with_a_structured_error() {
+    if !filesystem_sockets_available() {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let taxonomy = write_taxonomy(&directory, "mvp-1");
+    let database = database_that_applied_an_edited_migration(&directory);
+
+    let output = ServiceProcess::spawn(
+        &directory,
+        &[
+            ("VELVT_ABSTRACTION_TAXONOMY_PATH", &taxonomy),
+            ("VELVT_DATABASE_PATH", &database),
+        ],
+    )
+    .wait_for_exit("the edited-migration refusal to exit");
+    let logs = output.logs();
+
+    assert!(
+        logs.contains("migration_checksum_mismatch"),
+        "{}",
+        output.diagnostics()
+    );
+    assert!(
+        logs.contains("0012_local_only_events.sql"),
+        "{}",
+        output.diagnostics()
+    );
+    assert!(
+        logs.contains("service startup halted"),
+        "{}",
+        output.diagnostics()
+    );
+}
+
+/// A release build, which is what testers run, starts on the same database
+/// and logs the mismatch instead of stopping local collection over it.
+#[cfg(not(debug_assertions))]
+#[test]
+fn an_edited_migration_is_logged_by_a_release_build_that_still_starts() {
+    if !filesystem_sockets_available() {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let taxonomy = write_taxonomy(&directory, "mvp-1");
+    let database = database_that_applied_an_edited_migration(&directory);
+
+    let mut service = ServiceProcess::spawn(
+        &directory,
+        &[
+            ("VELVT_ABSTRACTION_TAXONOMY_PATH", &taxonomy),
+            ("VELVT_DATABASE_PATH", &database),
+        ],
+    );
+    service.wait_until_ready("the Unix socket to accept connections");
+    let output = service.terminate_and_collect();
+    let logs = output.logs();
+
+    assert!(
+        logs.contains("migration_checksum_mismatch"),
+        "{}",
+        output.diagnostics()
+    );
+    assert!(
+        !logs.contains("service startup halted"),
+        "{}",
+        output.diagnostics()
+    );
+}
+
 #[test]
 fn readiness_wait_survives_startup_longer_than_500_milliseconds() {
     if !filesystem_sockets_available() {

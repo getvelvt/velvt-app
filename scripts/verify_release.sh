@@ -39,6 +39,25 @@ read_plist() {
   /usr/libexec/PlistBuddy -c "Print :$1" "$plist"
 }
 
+# Each call passes a flag that prints and exits. A helper that does not know the
+# flag would start the whole service instead, so every call runs with an empty
+# environment and a scratch HOME (never the real ~/.velvt) and is killed after
+# 20 seconds.
+helper_flag() {
+  local scratch_home output status
+  scratch_home="$(mktemp -d "${TMPDIR:-/tmp}/velvt-verify-home.XXXXXX")"
+  set +e
+  output="$(env -i PATH="$PATH" HOME="$scratch_home" perl -e 'alarm 20; exec @ARGV or die "exec failed\n"' "$helper" "$1" 2>/dev/null)"
+  status=$?
+  set -e
+  rm -rf "$scratch_home"
+  [[ $status -eq 0 ]] || {
+    echo "ERROR: velvt-service $1 failed or did not exit (status $status)." >&2
+    exit 1
+  }
+  printf '%s\n' "$output"
+}
+
 configuration="$(read_plist VelvtBuildConfiguration)"
 distributable="$(read_plist VelvtDistributable)"
 api_url="$(read_plist VelvtAPIBaseURL)"
@@ -63,9 +82,42 @@ app_protocol="$(read_plist VelvtProtocolVersion)"
 }
 bash "$script_dir/verify_helper_portability.sh" "$helper"
 
-helper_protocol="$($helper --protocol-version)"
+helper_protocol="$(helper_flag --protocol-version)"
 [[ "$helper_protocol" == "$app_protocol" ]] || {
   echo "ERROR: app protocol $app_protocol does not match helper protocol $helper_protocol." >&2
+  exit 1
+}
+
+# The helper reports the app's version to the backend on every batch and at
+# device registration. Through 1.0.11 it reported Cargo's fixed 1.0.0.
+app_version="$(read_plist CFBundleShortVersionString)"
+app_build="$(read_plist CFBundleVersion)"
+helper_version="$(helper_flag --version)"
+[[ "$helper_version" == "$app_version" ]] || {
+  echo "ERROR: helper reports version $helper_version, but the app is $app_version." >&2
+  exit 1
+}
+[[ "$(cat "$resources/velvt-service.version" 2>/dev/null)" == "$app_version" ]] || {
+  echo "ERROR: velvt-service.version does not say $app_version." >&2
+  exit 1
+}
+
+# Checked before the helper is asked, because a helper older than the
+# --source-commit flag would not recognise it.
+source_commit="$(read_plist VelvtSourceCommit 2>/dev/null || true)"
+[[ -n "$source_commit" ]] || {
+  echo "ERROR: Info.plist has no VelvtSourceCommit, so nothing records what source built this app." >&2
+  exit 1
+}
+helper_commit="$(helper_flag --source-commit)"
+[[ "$helper_commit" == "$source_commit" ]] || {
+  echo "ERROR: helper was built from $helper_commit, but the app records $source_commit." >&2
+  exit 1
+}
+
+# SIL OFL 1.1 condition 2: the license travels with every copy of the fonts.
+[[ -f "$resources/Fonts/OFL.txt" ]] || {
+  echo "ERROR: Resources/Fonts/OFL.txt is missing; Manrope may not ship without its license." >&2
   exit 1
 }
 
@@ -139,16 +191,24 @@ for executable in "$app_path/Contents/MacOS/Velvt" "$helper"; do
 done
 
 # Belt and braces: a build-machine home directory anywhere in the shipped
-# binaries means something was baked in that cannot exist on a user's Mac.
+# binaries means something was baked in that cannot exist on a user's Mac, and
+# it names the person who built it. This used to match only a line starting
+# with /Users/ and mentioning velvt, which 867 strings in the 1.0.11 helper
+# (cargo registry paths and the checkout, mid-string) all passed.
+# build_rust_helper.sh now remaps those paths.
 for executable in "$app_path/Contents/MacOS/Velvt" "$helper"; do
-  if strings -a "$executable" | grep -q "^/Users/[^/]*/.*velvt"; then
-    echo "ERROR: $(basename "$executable") embeds an absolute build-machine path." >&2
-    strings -a "$executable" | grep "^/Users/[^/]*/.*velvt" | head -3 >&2
+  if strings -a "$executable" | grep -q "/Users/"; then
+    echo "ERROR: $(basename "$executable") embeds $(strings -a "$executable" | grep -c "/Users/") absolute build-machine paths, e.g.:" >&2
+    strings -a "$executable" | grep "/Users/" | head -3 >&2
     exit 1
   fi
 done
 
 if [[ "$mode" == "production" ]]; then
+  [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "ERROR: a production build must come from a clean commit; it records '$source_commit'." >&2
+    exit 1
+  }
   grep -q '^Authority=Developer ID Application:' <<<"$signature_details" || {
     echo "ERROR: production app is not signed with a Developer ID Application identity." >&2
     exit 1
@@ -279,6 +339,8 @@ echo "Release verification passed"
 echo "  artifact: $app_path"
 echo "  configuration: $configuration"
 echo "  API URL: $api_url"
+echo "  version: $app_version ($app_build)"
+echo "  source commit: $source_commit"
 echo "  protocol: $app_protocol"
 echo "  helper: embedded"
 echo "  preview/debug dylibs: absent"

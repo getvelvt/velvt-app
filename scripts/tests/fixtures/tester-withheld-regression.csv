@@ -1,0 +1,5 @@
+block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention
+block-1,deep_work,medium,3000,completed,1800000000,1800003000,0,1800000600,2400,protect_next_10,FOCUS_WORK,4,600,normal,returned,1800000900,300,1,0
+block-2,study,light,3000,completed,1800010000,1800013000,0,1800010500,2500,protect_next_10,FOCUS_WORK,5,600,quiet,accepted_action,1800010520,20,0,0
+block-3,deep_work,intense,3000,completed,1800020000,1800023000,0,1800020700,2300,protect_next_10,FOCUS_WORK,4,600,normal,delivery_suppressed_dnd,1800020700,0,0,0
+block-4,creative_practice,medium,3600,completed,1800030000,1800033600,0,1800030800,2800,protect_next_10,REFERENCE,6,600,normal,withheld_demotion,1800030800,0,0,0

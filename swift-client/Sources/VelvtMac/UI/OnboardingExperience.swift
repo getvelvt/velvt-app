@@ -180,9 +180,11 @@ public final class NotificationPromptModel: ObservableObject {
     }
 
     public static func openNotificationSettings() {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
-        ) else { return }
+        guard
+            let url = URL(
+                string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+            )
+        else { return }
         NSWorkspace.shared.open(url)
     }
 }
@@ -274,7 +276,7 @@ public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
         case .today: "Start a focus session"
         case .earlySignal: "Today's insight"
         case .focusFragmentation: "Focus fragmentation"
-        case .dailyActivity: "Your week"
+        case .dailyActivity: "Patterns"
         case .statusAndRecovery: "Collection status"
         case .settings: "Settings"
         }
@@ -289,11 +291,22 @@ public enum GuidedTourStep: Int, CaseIterable, Equatable, Sendable {
         case .focusFragmentation:
             "Review broad context changes within your current focus session."
         case .dailyActivity:
-            "Review seven days of privacy-safe activity in one place."
+            // The seven-day activity chart this step used to point at has been
+            // retired; the correction rows it carried now live in Settings.
+            //
+            // This line must describe what the tab RENDERS, which today is
+            // WeekOverWeekCoachingView and nothing else. An earlier draft
+            // promised "one thing Velvt has noticed about how you work" — that
+            // is the antecedent card, which is shadow-only and reads nothing
+            // into this tab. Onboarding is the first thing a user reads; a
+            // promise it cannot keep on day one is the exact failure this
+            // product's thesis cannot survive. Change this line when the
+            // antecedent surface actually lands, not before.
+            "Your week set against the one before it, once there is enough local evidence to compare."
         case .statusAndRecovery:
             "See whether local collection and cloud synchronization need attention."
         case .settings:
-            "Manage collection, queued events, your account, and this tour."
+            "Manage collection, teach Velvt which apps are which, your account, and this tour."
         }
     }
 }
@@ -331,6 +344,19 @@ public final class GuidedTourModel: ObservableObject {
     }
 }
 
+/// The hairline between header, page, and footer.
+///
+/// `Divider` takes its colour from the OS appearance, and the brand ground
+/// deliberately does not follow the OS. This is the guide's "clear trace":
+/// bright enough to bound a surface, never heavy enough to box the reader in.
+private struct VelvtHairline: View {
+    var body: some View {
+        Rectangle()
+            .fill(VelvtSurface.strokeOnInk)
+            .frame(height: VelvtMetrics.hairline)
+    }
+}
+
 public struct FirstRunExperienceView: View {
     @ObservedObject private var model: IntroFlowModel
     private let followsLaunchSequence: Bool
@@ -350,22 +376,22 @@ public struct FirstRunExperienceView: View {
     public var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().opacity(0.2)
+            VelvtHairline()
             ScrollView {
                 page
                     .frame(maxWidth: 620, alignment: .leading)
                     .padding(36)
             }
-            Divider().opacity(0.2)
+            VelvtHairline()
             footer
         }
         .frame(
             minWidth: OnboardingWindowLayout.minimumContentSize.width,
             minHeight: OnboardingWindowLayout.minimumContentSize.height
         )
-        .background(Color(nsColor: .windowBackgroundColor))
-        .foregroundStyle(.primary)
-        .tint(Color.velvtPink)
+        .background(VelvtSurface.ground)
+        .foregroundStyle(VelvtInk.primaryOnInk)
+        .tint(VelvtPalette.crimson)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: model.step)
         .onExitCommand {
             if model.step == .quickStart {
@@ -379,20 +405,22 @@ public struct FirstRunExperienceView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: VelvtMetrics.spaceMD) {
             Image("VelvtWordmark")
                 .resizable()
                 .renderingMode(.template)
                 .interpolation(.high)
                 .scaledToFit()
                 .frame(width: 92, height: 36, alignment: .leading)
-                .foregroundStyle(.primary)
+                .foregroundStyle(VelvtInk.primaryOnInk)
                 .accessibilityLabel("Velvt")
             Spacer()
             if model.step != .quickStart {
                 Text("Step \(model.step.rawValue + 1) of \(introStepCount)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(VelvtType.label())
+                    .tracking(VelvtType.labelTracking)
+                    .textCase(.uppercase)
+                    .foregroundStyle(VelvtInk.labelOnInk)
                     .accessibilityLabel("Intro step \(model.step.rawValue + 1) of \(introStepCount)")
             }
         }
@@ -405,12 +433,18 @@ public struct FirstRunExperienceView: View {
         case .welcome:
             IntroPage(
                 systemImage: "hand.raised.fill",
-                title: "Velvt learns how your attention breaks.",
+                // "Velvt learns how your attention breaks" was the first
+                // sentence a new user read, and it claimed a capability the
+                // shipped product does not have — banned outright by
+                // GOAL.md. What Velvt actually does is notice one thing, and
+                // that is a better promise than the one it was overstating.
+                title:
+                    "Velvt notices the moment you leave the work you sat down to do.",
                 body:
-                    "It notices when you have drifted from the work you sat down to do, and offers one way back before the block is lost. Raw work context never leaves your Mac."
+                    "When it does, it offers one way back before the block is lost. Raw work context never leaves your Mac."
             )
         case .privacy:
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {
                 IntroPage(
                     systemImage: "lock.shield",
                     title: "Private by design, clear about synchronization.",
@@ -418,12 +452,11 @@ public struct FirstRunExperienceView: View {
                         "Velvt can build broad, privacy-safe patterns from the active work context. Raw activity details stay on this Mac."
                 )
                 Text(OnboardingCopy.privacySummary)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
+                    .velvtBody(13)
                     .fixedSize(horizontal: false, vertical: true)
             }
         case .capabilities:
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {
                 IntroPage(
                     systemImage: "sparkles",
                     title: "One nudge, at the moment it helps.",
@@ -440,9 +473,12 @@ public struct FirstRunExperienceView: View {
                     "arrow.triangle.2.circlepath",
                     "Understand broad context switching and uninterrupted stretches.")
                 capability("leaf", "Take one modest recovery action.")
+                // "Focus Fragmentation" is the name of a metric, and a
+                // metric name on the first screen teaches the reader that
+                // this is a thing that measures them.
                 capability(
                     "calendar",
-                    "Review Focus Fragmentation and seven days of Activity without scores or moral judgment.")
+                    "Look back at how a block went, with no score and no verdict.")
             }
         case .ready:
             IntroPage(
@@ -467,16 +503,16 @@ public struct FirstRunExperienceView: View {
 
     private var footer: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
+            HStack(spacing: VelvtMetrics.spaceMD) {
                 secondaryActions
                 Spacer()
                 primaryActions
             }
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 12) {
+                HStack(spacing: VelvtMetrics.spaceMD) {
                     secondaryActions
                 }
-                HStack(spacing: 12) {
+                HStack(spacing: VelvtMetrics.spaceMD) {
                     Spacer()
                     primaryActions
                 }
@@ -489,7 +525,7 @@ public struct FirstRunExperienceView: View {
     @ViewBuilder private var secondaryActions: some View {
         if model.step == .quickStart {
             Button("View full intro") { model.showFullIntro() }
-                .buttonStyle(.plain)
+                .buttonStyle(VelvtQuietButtonStyle())
         } else {
             Button("Skip intro") {
                 if followsLaunchSequence {
@@ -498,9 +534,10 @@ public struct FirstRunExperienceView: View {
                     model.skipIntro()
                 }
             }
-                .buttonStyle(.plain)
+            .buttonStyle(VelvtQuietButtonStyle())
             if model.canGoBack {
                 Button("Back") { model.goBack() }
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
             }
         }
     }
@@ -510,13 +547,13 @@ public struct FirstRunExperienceView: View {
         case .ready:
             if followsLaunchSequence {
                 Button("Continue to Accessibility") { model.finishAndStartUsing() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(VelvtPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
             } else {
                 Button("Skip tour and start using") { model.finishAndStartUsing() }
-                    .buttonStyle(.plain)
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
                 Button("Start guided tour") { model.finishAndStartTour() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(VelvtPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
             }
         case .quickStart:
@@ -525,17 +562,17 @@ public struct FirstRunExperienceView: View {
                     ? (continuesToTour ? "Start guided tour" : "Continue setup")
                     : "Start using Velvt"
             ) { model.finishAndStartUsing() }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
+            .buttonStyle(VelvtPrimaryButtonStyle())
+            .keyboardShortcut(.defaultAction)
         case .capabilities where followsLaunchSequence:
             Button(continuesToTour ? "Start guided tour" : "Continue setup") {
                 model.finishAndStartUsing()
             }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
+            .buttonStyle(VelvtPrimaryButtonStyle())
+            .keyboardShortcut(.defaultAction)
         default:
             Button("Continue") { model.continueForward() }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(VelvtPrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
         }
     }
@@ -549,19 +586,19 @@ public struct FirstRunExperienceView: View {
             Text(text).fixedSize(horizontal: false, vertical: true)
         } icon: {
             Image(systemName: systemImage)
-                .foregroundStyle(Color.velvtPink)
+                .foregroundStyle(VelvtPalette.signal)
                 .frame(width: 24)
         }
-        .font(.body)
+        .velvtBody(13)
     }
 
     private func numberedPoint(_ number: Int, _ text: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text("\(number)")
-                .font(.headline.monospacedDigit())
-                .foregroundStyle(Color.velvtPink)
+                .font(VelvtType.measurement(15))
+                .foregroundStyle(VelvtInk.measurementOnInk)
             Text(text)
-                .font(.body)
+                .velvtBody(13)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
@@ -582,16 +619,15 @@ private struct IntroPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: systemImage)
-                .font(.system(size: 36, weight: .medium))
-                .foregroundStyle(Color.velvtPink)
+                .font(VelvtType.display(34))
+                .foregroundStyle(VelvtPalette.signal)
                 .accessibilityHidden(true)
             Text(title)
-                .font(.largeTitle.bold())
+                .velvtDisplay()
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
             Text(detail)
-                .font(.title3)
-                .foregroundStyle(.secondary)
+                .velvtBody(15)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -612,64 +648,63 @@ public struct AccessibilityPermissionExperienceView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: VelvtMetrics.spaceMD) {
                 Image("VelvtWordmark")
                     .resizable()
                     .renderingMode(.template)
                     .interpolation(.high)
                     .scaledToFit()
                     .frame(width: 92, height: 36, alignment: .leading)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(VelvtInk.primaryOnInk)
                     .accessibilityLabel("Velvt")
                 Spacer()
-                Text("Accessibility")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VelvtEyebrow("Accessibility")
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
 
-            Divider().opacity(0.2)
+            VelvtHairline()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {
                     Image(systemName: "accessibility")
-                        .font(.system(size: 36, weight: .medium))
-                        .foregroundStyle(Color.velvtPink)
+                        .font(VelvtType.display(34))
+                        .foregroundStyle(VelvtPalette.signal)
                         .accessibilityHidden(true)
                     Text("Allow Accessibility after the intro.")
-                        .font(.largeTitle.bold())
+                        .velvtDisplay()
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityAddTraits(.isHeader)
                     Text(
                         "This lets Velvt notice broad changes in the active work context. It does not send raw app names, window titles, URLs, filenames, or paths to the cloud."
                     )
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .velvtBody(15)
                     .fixedSize(horizontal: false, vertical: true)
 
                     if currentStatus == .granted {
                         Label("Accessibility is already allowed.", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(Color.velvtGreen)
+                            .font(VelvtType.body())
+                            .foregroundStyle(VelvtInk.affirmative)
                     } else if model.hasRequested {
-                        Text(
-                            "Accessibility is not enabled yet. Allow Velvt in System Settings, then return here to continue."
-                        )
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        VelvtCard {
+                            Text(
+                                "Accessibility is not enabled yet. Allow Velvt in System Settings, then return here to continue."
+                            )
+                            .velvtBody(13)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 .frame(maxWidth: 620, alignment: .leading)
                 .padding(36)
             }
 
-            Divider().opacity(0.2)
+            VelvtHairline()
 
-            HStack(spacing: 12) {
+            HStack(spacing: VelvtMetrics.spaceMD) {
                 Text("Accessibility is required for Velvt to observe broad context changes.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(VelvtType.caption())
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
                 Spacer()
                 actionButtons
             }
@@ -680,9 +715,9 @@ public struct AccessibilityPermissionExperienceView: View {
             minWidth: OnboardingWindowLayout.minimumContentSize.width,
             minHeight: OnboardingWindowLayout.minimumContentSize.height
         )
-        .background(Color(nsColor: .windowBackgroundColor))
-        .foregroundStyle(.primary)
-        .tint(Color.velvtPink)
+        .background(VelvtSurface.ground)
+        .foregroundStyle(VelvtInk.primaryOnInk)
+        .tint(VelvtPalette.crimson)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: model.hasRequested)
         .accessibilityElement(children: .contain)
     }
@@ -690,13 +725,13 @@ public struct AccessibilityPermissionExperienceView: View {
     @ViewBuilder private var actionButtons: some View {
         if model.canContinue {
             Button("Start Local Collection") { model.continueToWalkthrough() }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(VelvtPrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
         } else {
             Button(requestActionLabel) {
                 Task { await model.request() }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(VelvtPrimaryButtonStyle())
             .disabled(model.isRequesting)
             .keyboardShortcut(.defaultAction)
             .accessibilityHint("Requests macOS Accessibility access")
@@ -733,62 +768,61 @@ public struct NotificationPermissionExperienceView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: VelvtMetrics.spaceMD) {
                 Image("VelvtWordmark")
                     .resizable()
                     .renderingMode(.template)
                     .interpolation(.high)
                     .scaledToFit()
                     .frame(width: 92, height: 36, alignment: .leading)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(VelvtInk.primaryOnInk)
                     .accessibilityLabel("Velvt")
                 Spacer()
-                Text("Notifications")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VelvtEyebrow("Notifications")
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
 
-            Divider().opacity(0.2)
+            VelvtHairline()
 
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {
                 Image(systemName: "bell.badge")
-                    .font(.system(size: 36, weight: .medium))
-                    .foregroundStyle(Color.velvtPink)
+                    .font(VelvtType.display(34))
+                    .foregroundStyle(VelvtPalette.signal)
                     .accessibilityHidden(true)
                 Text("Allow insight notifications.")
-                    .font(.largeTitle.bold())
+                    .velvtDisplay()
                     .accessibilityAddTraits(.isHeader)
                 Text(
                     "Velvt can notify you when a privacy-safe insight is ready. Notifications contain only broad observations—never app names, window titles, URLs, filenames, or paths."
                 )
-                .font(.title3)
-                .foregroundStyle(.secondary)
+                .velvtBody(15)
                 .fixedSize(horizontal: false, vertical: true)
 
                 if currentStatus == .granted {
                     Label("Notifications are already allowed.", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(Color.velvtGreen)
+                        .font(VelvtType.body())
+                        .foregroundStyle(VelvtInk.affirmative)
                 } else if currentStatus == .denied || currentStatus == .restricted {
-                    Text("Notifications are disabled. You can enable them in System Settings.")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
+                    VelvtCard {
+                        Text("Notifications are disabled. You can enable them in System Settings.")
+                            .velvtBody(13)
+                    }
                 }
             }
             .frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
             .padding(36)
 
-            Divider().opacity(0.2)
+            VelvtHairline()
 
-            HStack(spacing: 12) {
+            HStack(spacing: VelvtMetrics.spaceMD) {
                 Button("Not now") { model.skip() }
-                    .buttonStyle(.plain)
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
                 Spacer()
                 Button(actionLabel) {
                     Task { await model.requestAndContinue() }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(VelvtPrimaryButtonStyle())
                 .disabled(model.isRequesting)
                 .keyboardShortcut(.defaultAction)
             }
@@ -799,9 +833,9 @@ public struct NotificationPermissionExperienceView: View {
             minWidth: OnboardingWindowLayout.minimumContentSize.width,
             minHeight: OnboardingWindowLayout.minimumContentSize.height
         )
-        .background(Color(nsColor: .windowBackgroundColor))
-        .foregroundStyle(.primary)
-        .tint(Color.velvtPink)
+        .background(VelvtSurface.ground)
+        .foregroundStyle(VelvtInk.primaryOnInk)
+        .tint(VelvtPalette.crimson)
         .accessibilityElement(children: .contain)
     }
 
@@ -830,72 +864,71 @@ public struct FocusAllowanceExperienceView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: VelvtMetrics.spaceMD) {
                 Image("VelvtWordmark")
                     .resizable()
                     .renderingMode(.template)
                     .interpolation(.high)
                     .scaledToFit()
                     .frame(width: 92, height: 36, alignment: .leading)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(VelvtInk.primaryOnInk)
                     .accessibilityLabel("Velvt")
                 Spacer()
-                Text("Focus")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VelvtEyebrow("Focus")
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
 
-            Divider().opacity(0.2)
+            VelvtHairline()
 
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {
                 Image(systemName: "moon.circle")
-                    .font(.system(size: 36, weight: .medium))
-                    .foregroundStyle(Color.velvtPink)
+                    .font(VelvtType.display(34))
+                    .foregroundStyle(VelvtPalette.signal)
                     .accessibilityHidden(true)
                 Text("Let Velvt through your work Focus?")
-                    .font(.largeTitle.bold())
+                    .velvtDisplay()
                     .accessibilityAddTraits(.isHeader)
                 Text(
                     "If you use a Focus mode while you work, you can allow Velvt through it in macOS Focus settings. Velvt spends that privilege sparingly: at most one bounded nudge inside a block you declared, and anything your Focus blocks is simply held and summarized after the block — never resent, never rerouted."
                 )
-                .font(.title3)
-                .foregroundStyle(.secondary)
+                .velvtBody(15)
                 .fixedSize(horizontal: false, vertical: true)
-                Text(
-                    "The change is yours to make in System Settings; Velvt never edits your Focus modes. Velvt only asks macOS whether some Focus is on — never which one, or what it allows. Declining changes nothing else."
-                )
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                VelvtInsetPanel {
+                    Text(
+                        "The change is yours to make in System Settings; Velvt never edits your Focus modes. Velvt only asks macOS whether some Focus is on — never which one, or what it allows. Declining changes nothing else."
+                    )
+                    .velvtBody(13, onPaper: true)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
 
                 if model.hasRequested {
-                    Text(
-                        "In System Settings, open your work Focus, then add Velvt under Allowed Notifications. Return here when you are done."
-                    )
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    VelvtCard {
+                        Text(
+                            "In System Settings, open your work Focus, then add Velvt under Allowed Notifications. Return here when you are done."
+                        )
+                        .velvtBody(13)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
             .padding(36)
 
-            Divider().opacity(0.2)
+            VelvtHairline()
 
-            HStack(spacing: 12) {
+            HStack(spacing: VelvtMetrics.spaceMD) {
                 Button("Not now") { model.skip() }
-                    .buttonStyle(.plain)
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
                     .accessibilityHint("Continues without changing anything")
                 Spacer()
                 if model.hasRequested {
                     Button("Continue") { model.finish() }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(VelvtPrimaryButtonStyle())
                         .keyboardShortcut(.defaultAction)
                 } else {
                     Button("Open Focus Settings") { model.allowAndOpenFocusSettings() }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(VelvtPrimaryButtonStyle())
                         .disabled(model.isRequesting)
                         .keyboardShortcut(.defaultAction)
                         .accessibilityHint(
@@ -909,9 +942,9 @@ public struct FocusAllowanceExperienceView: View {
             minWidth: OnboardingWindowLayout.minimumContentSize.width,
             minHeight: OnboardingWindowLayout.minimumContentSize.height
         )
-        .background(Color(nsColor: .windowBackgroundColor))
-        .foregroundStyle(.primary)
-        .tint(Color.velvtPink)
+        .background(VelvtSurface.ground)
+        .foregroundStyle(VelvtInk.primaryOnInk)
+        .tint(VelvtPalette.crimson)
         .accessibilityElement(children: .contain)
     }
 }
@@ -930,24 +963,22 @@ public struct TourInvitationExperienceView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: VelvtMetrics.spaceMD) {
                 Image("VelvtWordmark")
                     .resizable()
                     .renderingMode(.template)
                     .interpolation(.high)
                     .scaledToFit()
                     .frame(width: 92, height: 36, alignment: .leading)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(VelvtInk.primaryOnInk)
                     .accessibilityLabel("Velvt")
                 Spacer()
-                Text("Ready")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VelvtEyebrow("Ready")
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
 
-            Divider().opacity(0.2)
+            VelvtHairline()
 
             IntroPage(
                 systemImage: "checkmark.circle.fill",
@@ -958,14 +989,14 @@ public struct TourInvitationExperienceView: View {
             .frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
             .padding(36)
 
-            Divider().opacity(0.2)
+            VelvtHairline()
 
-            HStack(spacing: 12) {
+            HStack(spacing: VelvtMetrics.spaceMD) {
                 Button("Start using Velvt", action: onContinue)
-                    .buttonStyle(.plain)
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
                 Spacer()
                 Button("Show me around", action: onStartTour)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(VelvtPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
             }
             .padding(.horizontal, 24)
@@ -975,9 +1006,9 @@ public struct TourInvitationExperienceView: View {
             minWidth: OnboardingWindowLayout.minimumContentSize.width,
             minHeight: OnboardingWindowLayout.minimumContentSize.height
         )
-        .background(Color(nsColor: .windowBackgroundColor))
-        .foregroundStyle(.primary)
-        .tint(Color.velvtPink)
+        .background(VelvtSurface.ground)
+        .foregroundStyle(VelvtInk.primaryOnInk)
+        .tint(VelvtPalette.crimson)
     }
 }
 
@@ -998,36 +1029,33 @@ public struct OnboardingAccountExperienceView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: VelvtMetrics.spaceMD) {
                 Image("VelvtWordmark")
                     .resizable()
                     .renderingMode(.template)
                     .interpolation(.high)
                     .scaledToFit()
                     .frame(width: 92, height: 36, alignment: .leading)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(VelvtInk.primaryOnInk)
                     .accessibilityLabel("Velvt")
                 Spacer()
-                Text("Account")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VelvtEyebrow("Account")
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
 
-            Divider().opacity(0.2)
+            VelvtHairline()
 
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: VelvtMetrics.spaceLG) {
                 Image(systemName: "person.crop.circle.badge.plus")
-                    .font(.system(size: 36, weight: .medium))
-                    .foregroundStyle(Color.velvtPink)
+                    .font(VelvtType.display(34))
+                    .foregroundStyle(VelvtPalette.signal)
                     .accessibilityHidden(true)
                 Text(authViewModel.authMode == .signUp ? "Create your Velvt account." : "Welcome back.")
-                    .font(.largeTitle.bold())
+                    .velvtDisplay()
                     .accessibilityAddTraits(.isHeader)
                 Text("Your account keeps private history and insight delivery connected across sessions.")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .velvtBody(15)
                     .fixedSize(horizontal: false, vertical: true)
 
                 CredentialTextField(placeholder: "Email", text: $authViewModel.email)
@@ -1037,10 +1065,18 @@ public struct OnboardingAccountExperienceView: View {
                     isSecure: true
                 )
 
+                if authViewModel.authMode == .logIn {
+                    Button("Forgot password?") {
+                        authViewModel.openForgotPasswordPage()
+                    }
+                    .buttonStyle(VelvtQuietButtonStyle())
+                    .accessibilityHint("Opens getvelvt.com in your browser")
+                }
+
                 if let error = authViewModel.errorMessage {
                     Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
+                        .font(VelvtType.caption())
+                        .foregroundStyle(VelvtPalette.signal)
                 }
 
                 Button(
@@ -1050,20 +1086,18 @@ public struct OnboardingAccountExperienceView: View {
                 ) {
                     authViewModel.toggleAuthMode()
                 }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .buttonStyle(VelvtQuietButtonStyle())
             }
             .frame(maxWidth: 620, maxHeight: .infinity, alignment: .topLeading)
             .padding(36)
 
-            Divider().opacity(0.2)
+            VelvtHairline()
 
             HStack {
                 if authViewModel.connectionStatus != .connected {
                     Text("Waiting for the local Velvt service…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(VelvtType.caption())
+                        .foregroundStyle(VelvtInk.tertiaryOnInk)
                 }
                 Spacer()
                 Button(authViewModel.authMode == .signUp ? "Create Account" : "Sign In") {
@@ -1075,7 +1109,7 @@ public struct OnboardingAccountExperienceView: View {
                         }
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(VelvtPrimaryButtonStyle())
                 .disabled(!authViewModel.canSubmitCredentials)
                 .keyboardShortcut(.defaultAction)
             }
@@ -1086,9 +1120,9 @@ public struct OnboardingAccountExperienceView: View {
             minWidth: OnboardingWindowLayout.minimumContentSize.width,
             minHeight: OnboardingWindowLayout.minimumContentSize.height
         )
-        .background(Color(nsColor: .windowBackgroundColor))
-        .foregroundStyle(.primary)
-        .tint(Color.velvtPink)
+        .background(VelvtSurface.ground)
+        .foregroundStyle(VelvtInk.primaryOnInk)
+        .tint(VelvtPalette.crimson)
         .onChange(of: accountStateManager.accountState) { state in
             if case .loggedIn = state {
                 onAuthenticated()
@@ -1139,6 +1173,15 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     var hasPresentedWindow: Bool {
         windowController != nil
+    }
+
+    /// Which stage is on screen, observable without reaching into the stage
+    /// models. The notification stage was orphaned once — `launchStage` never
+    /// took `.notifications` and `presentNotificationStage` had no caller —
+    /// and nothing failed, because every assertion available to a test was
+    /// about whether *a* window was up, not which one.
+    var presentedWindowTitle: String? {
+        windowController?.window?.title
     }
 
     public init(
@@ -1343,7 +1386,12 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     private func presentWindow<Content: View>(_ rootView: Content, title: String) {
-        let hostingController = NSHostingController(rootView: rootView)
+        // The second of the client's two hosting roots. Selection propagates
+        // from here through every onboarding stage, so permission explanations
+        // and the account flow are copyable too.
+        let hostingController = NSHostingController(
+            rootView: rootView.textSelection(.enabled)
+        )
         let window = NSWindow(contentViewController: hostingController)
         window.title = title
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -1398,8 +1446,18 @@ public final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private func finishAccessibilityStage() {
         guard launchStage == .accessibility else { return }
         dismissWindow()
-        launchStage = .focusAllowance
-        presentFocusAllowanceStage()
+        // The notification stage used to sit here and was spliced out, leaving
+        // `presentNotificationStage` with no caller and `.notifications` never
+        // assigned to `launchStage`. The consequence was total: this is the
+        // only reachable surface that calls `requestPermission(for:
+        // .notifications)`, so the app could never ask, `checkStatus` answered
+        // "not determined" forever, and every drift offer and insight was
+        // dropped at the permission gate. A product whose one output is a
+        // timely notification shipped with no way to earn the right to send
+        // one. `finishNotificationStage` already routes onward to
+        // `.focusAllowance`, so restoring the call restores the original chain.
+        launchStage = .notifications
+        presentNotificationStage()
     }
 
     private func finishNotificationStage() {

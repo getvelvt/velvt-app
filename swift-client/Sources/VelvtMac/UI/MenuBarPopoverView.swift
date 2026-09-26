@@ -11,63 +11,315 @@ public enum MenuBarAccountAction: Equatable {
 private struct HistoryWorkspaceView: View {
     @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
     @ObservedObject var localDashboardCoordinator: LocalDashboardCoordinator
-    let menuStatusViewModel: MenuStatusViewModel?
+    @ObservedObject var workBlockCoordinator: WorkBlockCoordinator
 
     var body: some View {
         YourWeekContentView(
             snapshot: localDashboardCoordinator.snapshot,
             historyAvailability: coordinator.historyAvailability,
+            historyNotReadyReason: coordinator.historyNotReadyReason,
             historyViewModel: coordinator.historyViewModel,
-            onCorrectActivity: { segment, category, localName in
-                guard
-                    let eventID = segment.representativeEventID,
-                    let stableID = segment.stableID
-                else { return }
-                menuStatusViewModel?.correct(
-                    eventID: eventID,
-                    stableID: stableID,
-                    category: category,
-                    localActivityName: localName
-                )
-                localDashboardCoordinator.refresh()
-            },
-            onUndoActivity: { segment in
-                guard let stableID = segment.stableID else { return }
-                menuStatusViewModel?.undoCorrection(stableID: stableID)
-                localDashboardCoordinator.refresh()
-            }
+            weeklyDigest: workBlockCoordinator.weeklyDigest,
+            onAcknowledgeDigest: workBlockCoordinator.acknowledgeWeeklyDigest
         )
         .onAppear { localDashboardCoordinator.refresh() }
     }
 }
 
 struct YourWeekContentView: View {
+    /// The seven days, read from local evidence on this Mac.
+    ///
+    /// This chart was removed once, on the reasoning that "a list of patterns
+    /// is a dashboard, and a dashboard is a tracker." That objection was aimed
+    /// at the wrong thing. What made the old version a tracker was that it
+    /// reported cloud daily summaries — a scoreboard arriving from elsewhere.
+    /// `dailyActivity` is different in kind: Rust builds it from this
+    /// machine's own observations, it never leaves the device, and it is the
+    /// evidence behind the single pattern claim below rather than a substitute
+    /// for one. Showing the week the claim was drawn from is what separates an
+    /// observation from an assertion.
+    ///
+    /// It was also, in practice, being thrown away: this property arrived on
+    /// every snapshot and was never read, while the tab rendered a cloud
+    /// summary that has returned `no_data` for every day it has ever been
+    /// asked about.
     let snapshot: LocalDashboardSnapshot?
     let historyAvailability: DeliveryAvailability
+    var historyNotReadyReason: String? = nil
     @ObservedObject var historyViewModel: HistoryViewModel
-    var onCorrectActivity: (LocalDailyActivitySegment, String, String?) -> Void = { _, _, _ in }
-    var onUndoActivity: (LocalDailyActivitySegment) -> Void = { _ in }
+    /// This week's receipts. They were reachable only from inside the
+    /// focus-session sheet, so a completed week could sit correct and unread
+    /// unless the user happened to open the one surface that drew them.
+    var weeklyDigest: WeeklyDigest? = nil
+    var onAcknowledgeDigest: () -> Void = {}
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                DailyActivityView(
-                    snapshot: snapshot,
-                    onCorrectActivity: onCorrectActivity,
-                    onUndoActivity: onUndoActivity
-                )
-                WeekOverWeekCoachingView(
-                    availability: historyAvailability,
-                    viewModel: historyViewModel
-                )
+        // No scroll view of its own: the workspace detail pane scrolls every
+        // tab now, and nesting two scroll views made the inner one swallow
+        // the wheel events that should have moved the outer one.
+        VStack(alignment: .leading, spacing: 12) {
+            if let weeklyDigest {
+                WeeklyDigestCard(digest: weeklyDigest, onAcknowledge: onAcknowledgeDigest)
             }
-            .padding(12)
+            LocalWeekActivityView(days: snapshot?.dailyActivity ?? [])
+            WeekOverWeekCoachingView(
+                availability: historyAvailability,
+                notReadyReason: historyNotReadyReason,
+                viewModel: historyViewModel
+            )
+        }
+        .padding(12)
+    }
+}
+
+/// The local days in `LocalDashboardSnapshot.dailyActivity`, fourteen today.
+///
+/// Rust builds exactly `DAILY_ACTIVITY_DAYS` rows per request
+/// (`dashboard.rs`) and the shaper pins the count, so the row count is the
+/// service's to decide and this view renders whatever it is handed rather than
+/// padding or truncating to a number of its own.
+struct LocalWeekActivityView: View {
+    let days: [LocalDailyActivityDay]
+
+    /// Time per category across the whole window. Segments arrive bucketed per
+    /// app — one row per `(stable_id, category)` — so several can share a
+    /// category, and a bar coloured per segment would give one category two
+    /// colours in a single day.
+    private var secondsByCategory: [String: Int] {
+        days.reduce(into: [String: Int]()) { totals, day in
+            for segment in day.segments where segment.durationSeconds > 0 {
+                totals[segment.category, default: 0] += segment.durationSeconds
+            }
+        }
+    }
+
+    private var palette: [String: Color] {
+        ActivityPalette.assign(forSecondsByCategory: secondsByCategory)
+    }
+
+    private var hasAnyActivity: Bool {
+        days.contains { $0.activeSeconds > 0 }
+    }
+
+    /// One slice per category for a single day, widest first.
+    ///
+    /// Segments arrive bucketed per app — one per `(stable_id, category)` — so
+    /// several can carry the same category. Drawing them unmerged puts two
+    /// slices of one colour side by side, which reads as one slice whose width
+    /// disagrees with the hover text under the pointer.
+    static func slices(for day: LocalDailyActivityDay) -> [(category: String, seconds: Int)] {
+        let totals = day.segments.reduce(into: [String: Int]()) { totals, segment in
+            guard segment.durationSeconds > 0 else { return }
+            totals[segment.category, default: 0] += segment.durationSeconds
+        }
+        return ActivityPalette.rank(totals).map { (category: $0.key, seconds: $0.value) }
+    }
+
+    /// Spoken as one row: the same three facts the sighted row carries, in the
+    /// same order.
+    static func accessibilityLabel(for day: LocalDailyActivityDay) -> String {
+        let date = DaySummaryViewModel.formatDate(day.date)
+        guard day.activeSeconds > 0 else { return "\(date), no observed activity" }
+        let time = DaySummaryViewModel.formatActiveTime(day.activeSeconds)
+        guard let top = slices(for: day).first else { return "\(date), \(time) observed" }
+        return "\(date), \(time) observed, mostly \(localCategoryLabel(top.category))"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Daily Activity")
+                        .velvtHeading(14)
+                    // Names the source, because the honest thing about this
+                    // chart is where it comes from.
+                    Text("Observed on this Mac")
+                        .font(VelvtType.caption(10))
+                        .foregroundStyle(VelvtInk.tertiaryOnInk)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Text("\(days.count) days")
+                    .font(VelvtType.caption(10))
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
+            }
+
+            if days.isEmpty {
+                Text("Waiting for the first local observation.")
+                    .velvtBody(11)
+                    .padding(.top, 2)
+            } else {
+                VStack(spacing: 3) {
+                    ForEach(days) { day in
+                        LocalDayActivityRow(day: day, palette: palette)
+                    }
+                }
+                if hasAnyActivity {
+                    LocalActivityLegend(
+                        entries: ActivityPalette.rank(secondsByCategory).compactMap { entry in
+                            palette[entry.key].map {
+                                (category: entry.key, color: $0, seconds: entry.value)
+                            }
+                        }
+                    )
+                    .padding(.top, 2)
+                }
+            }
+        }
+        .padding(10)
+        .background(VelvtSurface.card)
+        .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous)
+                .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Daily activity observed on this Mac")
+    }
+}
+
+private struct LocalDayActivityRow: View {
+    let day: LocalDailyActivityDay
+    let palette: [String: Color]
+
+    private var isEmpty: Bool { day.activeSeconds == 0 }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(DaySummaryViewModel.formatDate(day.date))
+                .font(VelvtType.bodyEmphasis(11))
+                .foregroundStyle(
+                    isEmpty ? VelvtInk.tertiaryOnInk : VelvtInk.primaryOnInk
+                )
+                .lineLimit(1)
+                .frame(width: 62, alignment: .leading)
+
+            LocalSplitActivityBar(day: day, palette: palette)
+                .frame(height: 9)
+                .frame(maxWidth: .infinity)
+
+            Text(isEmpty ? "—" : DaySummaryViewModel.formatActiveTime(day.activeSeconds))
+                .font(VelvtType.measurement(10).monospacedDigit())
+                .foregroundStyle(VelvtInk.secondaryOnInk)
+                .frame(width: 48, alignment: .trailing)
+        }
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(LocalWeekActivityView.accessibilityLabel(for: day))
+    }
+}
+
+/// Per-slice detail is a native `.help` tooltip rather than a pointer-entered
+/// callback that rewrites a label elsewhere. This file is asserted against the
+/// literal name of that callback, because a row acting on the pointer merely
+/// crossing it is the defect the guard exists for. A tooltip says the same
+/// sentence without reopening that door.
+private struct LocalSplitActivityBar: View {
+    let day: LocalDailyActivityDay
+    let palette: [String: Color]
+
+    private var slices: [(category: String, seconds: Int)] {
+        LocalWeekActivityView.slices(for: day)
+    }
+
+    private var total: Int {
+        max(slices.reduce(0) { $0 + $1.seconds }, 1)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            HStack(spacing: 2) {
+                if slices.isEmpty {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(VelvtPalette.paper.opacity(day.activeSeconds == 0 ? 0.06 : 0.12))
+                        .help(emptyHelpText)
+                } else {
+                    ForEach(slices, id: \.category) { slice in
+                        let text = helpText(for: slice)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(palette[slice.category] ?? ActivityPalette.unmatched)
+                            .frame(
+                                width: max(
+                                    5,
+                                    proxy.size.width * CGFloat(slice.seconds) / CGFloat(total))
+                            )
+                            // `.help` is delivered through the accessibility
+                            // tree, so hiding the slice from that tree silences
+                            // the tooltip along with it. The row above already
+                            // sets an explicit combined label, so nothing here
+                            // is announced twice.
+                            .help(text)
+                    }
+                }
+            }
+        }
+    }
+
+    private var emptyHelpText: String {
+        day.activeSeconds == 0
+            ? "Nothing observed on this day."
+            : "Observed activity on this day is not classified yet."
+    }
+
+    private func helpText(for slice: (category: String, seconds: Int)) -> String {
+        let percent = Int((Double(slice.seconds) / Double(total) * 100).rounded())
+        return
+            "\(localCategoryLabel(slice.category)): \(DaySummaryViewModel.formatActiveTime(slice.seconds)), \(percent)% of observed time."
+    }
+}
+
+/// Names the colours and states the totals behind them.
+///
+/// Carrying the time here rather than only in a tooltip is deliberate: a number
+/// a person has to discover by hovering a nine-point bar is a number most people
+/// never see, and the totals are the part of this chart that is actually a
+/// claim. The tooltip still gives the per-day split.
+private struct LocalActivityLegend: View {
+    let entries: [(category: String, color: Color, seconds: Int)]
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { chips }
+            VStack(alignment: .leading, spacing: 3) { chips }
+        }
+    }
+
+    @ViewBuilder
+    private var chips: some View {
+        ForEach(entries.prefix(5), id: \.category) { entry in
+            HStack(spacing: 4) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(entry.color)
+                    .frame(width: 7, height: 7)
+                Text(localCategoryLabel(entry.category))
+                    .font(VelvtType.caption(10))
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
+                    .lineLimit(1)
+                Text(DaySummaryViewModel.formatActiveTime(entry.seconds))
+                    .font(VelvtType.measurement(10).monospacedDigit())
+                    .foregroundStyle(VelvtInk.primaryOnInk)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                "\(localCategoryLabel(entry.category)), \(DaySummaryViewModel.formatActiveTime(entry.seconds)) across the window"
+            )
         }
     }
 }
 
+/// `FOCUS_WORK` is a wire value, not a word. This is the only transform
+/// applied to it — no renaming, no grouping, no editorialising.
+func localCategoryLabel(_ category: String) -> String {
+    category.replacingOccurrences(of: "_", with: " ").lowercased().capitalized
+}
+
 struct WeekOverWeekCoachingView: View {
     let availability: DeliveryAvailability
+    /// Why history is unavailable, when the service said why. Rust
+    /// distinguishes an unreachable backend from an empty week; without this
+    /// the tab answered both with advice to keep working, which tells someone
+    /// whose network failed that the fault is their work habits.
+    var notReadyReason: String? = nil
     @ObservedObject var viewModel: HistoryViewModel
 
     var body: some View {
@@ -77,13 +329,15 @@ struct WeekOverWeekCoachingView: View {
                     viewModel.progressiveInsight?.tier.label ?? "Progressive insights",
                     systemImage: "chart.line.uptrend.xyaxis"
                 )
-                    .font(.caption.bold())
-                    .foregroundStyle(Color.velvtPink)
+                .font(VelvtType.label(11))
+                .tracking(VelvtType.labelTracking)
+                .textCase(.uppercase)
+                .foregroundStyle(VelvtInk.labelOnPaper)
                 Spacer()
                 if let insight = viewModel.progressiveInsight {
                     Text(insight.confidenceSummary)
-                        .font(.caption2)
-                        .foregroundStyle(Color.velvtMuted)
+                        .font(VelvtType.caption(10))
+                        .foregroundStyle(VelvtInk.tertiaryOnPaper)
                 }
             }
 
@@ -92,12 +346,14 @@ struct WeekOverWeekCoachingView: View {
                 coachingLine("Comparison", insight.comparison)
                 coachingLine("Try next", insight.suggestedAction)
                 Text(insight.evidenceSummary)
-                    .font(.caption2)
-                    .foregroundStyle(Color.velvtMuted)
+                    .font(VelvtType.caption(10))
+                    .foregroundStyle(VelvtInk.tertiaryOnPaper)
                     .fixedSize(horizontal: false, vertical: true)
             } else if availability == .notGenerated {
                 coachingPlaceholder(
-                    "No observed day is ready yet. Keep Velvt running during a normal work block."
+                    notReadyReason == "backend_unavailable"
+                        ? "Daily summaries could not be reached just now. Local collection is unaffected and this will catch up on its own."
+                        : "No observed day is ready yet. Keep Velvt running during a normal work block."
                 )
             } else if availability == .loading || viewModel.isLoading {
                 coachingPlaceholder(
@@ -110,28 +366,28 @@ struct WeekOverWeekCoachingView: View {
             }
         }
         .padding(10)
-        .background(Color.velvtPanel)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(VelvtSurface.paperCard)
+        .clipShape(RoundedRectangle(cornerRadius: VelvtMetrics.panelRadius, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(viewModel.progressiveInsight?.tier.label ?? "Progressive insights")
     }
 
     private func coachingLine(_ label: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(.caption2.bold())
-                .foregroundStyle(Color.velvtText)
+            VelvtEyebrow(label, onPaper: true)
             Text(text)
-                .font(.caption2)
-                .foregroundStyle(Color.velvtMuted)
+                .font(VelvtType.body(11))
+                .lineSpacing(VelvtType.bodySpacing(11))
+                .foregroundStyle(VelvtInk.secondaryOnPaper)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private func coachingPlaceholder(_ text: String) -> some View {
         Text(text)
-            .font(.caption2)
-            .foregroundStyle(Color.velvtMuted)
+            .font(VelvtType.body(11))
+            .lineSpacing(VelvtType.bodySpacing(11))
+            .foregroundStyle(VelvtInk.secondaryOnPaper)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -226,8 +482,8 @@ public enum LocalServiceConnectionPhase: Equatable, Sendable {
 
 @MainActor
 public protocol ConnectionGraceScheduling: AnyObject {
-  func schedule(after interval: TimeInterval, action: @escaping @MainActor () -> Void)
-    -> AnyCancellable
+    func schedule(after interval: TimeInterval, action: @escaping @MainActor () -> Void)
+        -> AnyCancellable
 }
 
 @MainActor
@@ -250,8 +506,8 @@ public final class CollectionActivityStatusModel: ObservableObject {
     private var cancellable: AnyCancellable?
 
     public init(collectionStatus: AnyPublisher<CollectionStatus, Never>) {
-    cancellable = collectionStatus.receive(on: RunLoop.main).sink { [weak self] in self?.status = $0
-    }
+        cancellable = collectionStatus.receive(on: RunLoop.main).sink { [weak self] in self?.status = $0
+        }
     }
 }
 
@@ -297,16 +553,69 @@ public final class ServiceAlertModel: ObservableObject {
     @Published public private(set) var alert: ServiceAlert?
     private var cancellable: AnyCancellable?
 
+    /// A condition the service reports once, when it starts, and that nothing
+    /// resolves while it runs. Auth statuses arrive on every transition and
+    /// say nothing about it, so a status that clears the banner falls back to
+    /// this rather than to nothing. Only a dismissal removes it.
+    private var standing: ServiceAlert?
+
+    /// Status reasons that name a standing condition. `migration_checksum_mismatch`
+    /// is a release helper that opened a database whose applied migrations
+    /// differ from its own files (migration 0039); it keeps running, and says so
+    /// once, at startup.
+    static let standingReasons: Set<String> = ["migration_checksum_mismatch"]
+
+    /// Three outcomes, not two.
+    ///
+    /// This used to be `compactMap(alert(for:))`, which drops nils — so a
+    /// message reporting good health was indistinguishable from a message about
+    /// something else entirely, and neither could clear a banner. Rust sends a
+    /// status on every auth transition (`ipc/connection.rs:219`), and at connect
+    /// time, before the Keychain token has loaded, that status is
+    /// `auth_required`. The banner was raised on the way up and then had no way
+    /// back down: a signed-in user was told to sign in, permanently.
+    enum HealthUpdate {
+        /// This message says nothing about service health. Leave the banner alone.
+        case noOpinion
+        /// The service is healthy. Anything on screen is stale.
+        case clear
+        case raise(ServiceAlert)
+        /// A condition that lasts as long as the service runs; see `standing`.
+        case stand(ServiceAlert)
+    }
+
     public init(messages: some Publisher<ServerMessage, Never>) {
-    cancellable =
-      messages
+        cancellable =
+            messages
             .receive(on: RunLoop.main)
-            .compactMap(Self.alert(for:))
-            .sink { [weak self] in self?.alert = $0 }
+            .sink { [weak self] message in
+                guard let self else { return }
+                switch Self.healthUpdate(for: message) {
+                case .noOpinion: break
+                case .clear: self.alert = self.standing
+                case .raise(let alert): self.alert = alert
+                case .stand(let alert):
+                    self.standing = alert
+                    self.alert = alert
+                }
+            }
+    }
+
+    static func healthUpdate(for message: ServerMessage) -> HealthUpdate {
+        if case .serviceStatus(let status) = message {
+            // A status message always has an opinion; that is what it is for.
+            guard let alert = alert(forServiceState: status) else { return .clear }
+            if let reason = status.reason, standingReasons.contains(reason) {
+                return .stand(alert)
+            }
+            return .raise(alert)
+        }
+        return alert(for: message).map(HealthUpdate.raise) ?? .noOpinion
     }
 
     public func dismiss() {
         alert = nil
+        standing = nil
     }
 
     private static func alert(for message: ServerMessage) -> ServiceAlert? {
@@ -335,8 +644,59 @@ public final class ServiceAlertModel: ObservableObject {
                 title: "Service error",
                 message: error.message
             )
+        case .serviceStatus(let status):
+            return alert(forServiceState: status)
         default:
             return nil
+        }
+    }
+
+    /// The service reporting on itself.
+    ///
+    /// Rust sends this on every connection and on every health transition, and
+    /// the client decoded it and dropped it — so an app that had stopped
+    /// uploading, or had degraded to coarser classification, looked exactly
+    /// like one working perfectly. Two states are deliberately silent: `ready`
+    /// has nothing to say, and a refresh already in flight resolves itself in
+    /// seconds, so surfacing it would be a banner that exists to flicker.
+    ///
+    /// Every message here names what still works. In each of these states local
+    /// collection and every local surface are unaffected, and saying so is the
+    /// difference between a status and a scare.
+    static func alert(forServiceState status: ServiceStatus) -> ServiceAlert? {
+        switch status.state {
+        case .ready:
+            return nil
+        case .degraded where status.reason == "auth_refresh_in_flight":
+            return nil
+        case .degraded where status.reason == "migration_checksum_mismatch":
+            return ServiceAlert(
+                severity: .warning,
+                title: "Local database mismatch",
+                message:
+                    "This version's database setup differs from the one your data was built with. Collection and local history continue."
+            )
+        case .degraded:
+            return ServiceAlert(
+                severity: .warning,
+                title: "Reduced classification",
+                message:
+                    "Velvt is labelling activity with its basic rules for now. Collection and your local history are unaffected."
+            )
+        case .authRequired:
+            return ServiceAlert(
+                severity: .warning,
+                title: "Signed out",
+                message:
+                    "Cloud sync is paused until you sign in. Collection and your local history continue on this Mac."
+            )
+        case .uploadPaused:
+            return ServiceAlert(
+                severity: .warning,
+                title: "Uploads paused",
+                message:
+                    "This device is no longer authorised to sync. Sign in again to resume. Collection and your local history continue on this Mac."
+            )
         }
     }
 }
@@ -374,9 +734,11 @@ enum QueuedEventPresentation {
         guard event.label != "unlogged" else {
             return "Unclassified activity"
         }
-        let component = event.label.split(separator: ":", maxSplits: 1).last.map(String.init)
+        let component =
+            event.label.split(separator: ":", maxSplits: 1).last.map(String.init)
             ?? event.label
-        return component
+        return
+            component
             .replacingOccurrences(of: "_", with: " ")
             .lowercased()
             .capitalized
@@ -390,9 +752,11 @@ enum QueuedEventPresentation {
         if let localLabel = correction.localLabel?.nilIfBlank {
             return localLabel
         }
-        let component = correction.label.split(separator: ":", maxSplits: 1).last.map(String.init)
+        let component =
+            correction.label.split(separator: ":", maxSplits: 1).last.map(String.init)
             ?? correction.label
-        return component
+        return
+            component
             .replacingOccurrences(of: "_", with: " ")
             .lowercased()
             .capitalized
@@ -408,6 +772,24 @@ enum QueuedEventPresentation {
             .lowercased()
             .capitalized
     }
+
+    /// The answers a person can give when asked what something is.
+    ///
+    /// `UNLOGGED` is deliberately not among them: it is the verdict that puts
+    /// an application on the triage list in the first place, so offering it
+    /// back as an answer would be offering "leave it unread" as a category.
+    /// Correcting a single *event* is the one case that still needs it — a
+    /// window the user wants Velvt to stop counting at all — which is why the
+    /// workbench list appends it and this one does not.
+    static let teachableCategories = [
+        "FOCUS_WORK",
+        "PASSIVE_CONSUMPTION",
+        "SOCIAL_FEED",
+        "COMMUNICATION",
+        "TASK_MANAGEMENT",
+        "REFERENCE",
+        "SYSTEM",
+    ]
 }
 
 private struct QueuedEventCorrectionRow: View {
@@ -432,18 +814,19 @@ private struct QueuedEventCorrectionRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("Activity: \(QueuedEventPresentation.activity(event))")
-                .font(.subheadline)
+                .font(VelvtType.bodyEmphasis(12))
+                .foregroundStyle(VelvtInk.primaryOnInk)
                 .lineLimit(1)
                 .truncationMode(.tail)
             Text(
                 "Category: \(QueuedEventPresentation.category(event)) · Queued \(event.occurredAt.formatted(date: .omitted, time: .shortened))"
             )
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(VelvtType.caption(10.5))
+            .foregroundStyle(VelvtInk.secondaryOnInk)
             .lineLimit(1)
             TextField("Local activity name", text: $activityName)
                 .textFieldStyle(.roundedBorder)
-                .font(.caption)
+                .font(VelvtType.body(11))
                 .onChange(of: activityName) { value in
                     if value.count > 48 {
                         activityName = String(value.prefix(48))
@@ -464,11 +847,13 @@ private struct QueuedEventCorrectionRow: View {
                 Button("Save") {
                     onSave(category, normalizedName)
                 }
+                .buttonStyle(VelvtPrimaryButtonStyle())
                 .controlSize(.small)
                 if event.classificationSource == .userRule {
                     Button("Undo", action: onUndo)
                         .buttonStyle(.plain)
-                        .font(.caption)
+                        .font(VelvtType.body(11))
+                        .foregroundStyle(VelvtInk.labelOnInk)
                 }
             }
             // A correction now generalizes to the application, so the next
@@ -476,8 +861,8 @@ private struct QueuedEventCorrectionRow: View {
             // because a label silently changing across windows the user never
             // touched reads as a malfunction, not as learning.
             Text(Self.scopeExplanation)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(VelvtType.caption(10))
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -502,16 +887,9 @@ private struct QueuedEventCorrectionRow: View {
         "Applies to every window of this app. Browser windows apply to that site only. "
         + "Correcting an individual window later overrides it just there."
 
-    fileprivate static let categories = [
-        "FOCUS_WORK",
-        "PASSIVE_CONSUMPTION",
-        "SOCIAL_FEED",
-        "COMMUNICATION",
-        "TASK_MANAGEMENT",
-        "REFERENCE",
-        "SYSTEM",
-        "UNLOGGED",
-    ]
+    /// The teachable answers plus `UNLOGGED`, which only an event correction
+    /// can mean — see `QueuedEventPresentation.teachableCategories`.
+    fileprivate static let categories = QueuedEventPresentation.teachableCategories + ["UNLOGGED"]
 }
 
 private struct ClassificationCorrectionHistoryRow: View {
@@ -538,27 +916,53 @@ private struct ClassificationCorrectionHistoryRow: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(QueuedEventPresentation.activity(correction))
-                        .font(.caption.bold())
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(QueuedEventPresentation.activity(correction))
+                            .font(VelvtType.bodyEmphasis(11))
+                            .foregroundStyle(VelvtInk.primaryOnInk)
+                            .lineLimit(1)
+                        scopeChip
+                    }
                     Text(
                         "\(QueuedEventPresentation.category(correction.category)) · Saved \(correction.updatedAt.formatted(date: .abbreviated, time: .omitted)) · Local only"
                     )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(VelvtType.caption(10))
+                    .foregroundStyle(VelvtInk.tertiaryOnInk)
+                    // Spelled out for app rules only. Window scope is what
+                    // every rule was before protocol 30 and the chip says it
+                    // plainly; an app rule reaching windows the user never
+                    // touched is the part that reads as a malfunction unless
+                    // the row admits it.
+                    if correction.scope == .app {
+                        Text(Self.reach(of: correction.scope))
+                            .font(VelvtType.caption(10))
+                            .foregroundStyle(VelvtInk.tertiaryOnInk)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer(minLength: 4)
                 Button(isEditing ? "Cancel" : "Edit") { isEditing.toggle() }
                     .buttonStyle(.plain)
-                    .font(.caption2)
-                Button("Undo", action: onUndo)
+                    .font(VelvtType.body(10.5))
+                    .foregroundStyle(VelvtInk.labelOnInk)
+                // One control for both scopes. The service resolves which rung
+                // an id belongs to — the two key domains cannot collide — so
+                // the client does not need to, and an app rule taught from the
+                // triage list is removable from exactly the same place as a
+                // window rule. Until protocol 30 nothing could delete one.
+                Button(Self.removalLabel(for: correction.scope), action: onUndo)
                     .buttonStyle(.plain)
-                    .font(.caption2)
+                    .font(VelvtType.body(10.5))
+                    .foregroundStyle(VelvtInk.labelOnInk)
+                    .accessibilityLabel(
+                        "\(Self.removalLabel(for: correction.scope)) the rule for "
+                            + QueuedEventPresentation.activity(correction)
+                    )
             }
             if isEditing {
                 TextField("Local activity name", text: $activityName)
                     .textFieldStyle(.roundedBorder)
-                    .font(.caption)
+                    .font(VelvtType.body(11))
                     .onChange(of: activityName) { value in
                         if value.count > 48 { activityName = String(value.prefix(48)) }
                     }
@@ -575,6 +979,7 @@ private struct ClassificationCorrectionHistoryRow: View {
                         onSave(category, normalizedName)
                         isEditing = false
                     }
+                    .buttonStyle(VelvtPrimaryButtonStyle())
                     .controlSize(.small)
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(normalizedName == nil)
@@ -589,6 +994,51 @@ private struct ClassificationCorrectionHistoryRow: View {
         let value = activityName.trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
     }
+
+    /// Which identity the rule is keyed on, said in two words.
+    ///
+    /// The two rules behave differently, so a list that drew them identically
+    /// could not be trusted or edited: a user looking for why every window of
+    /// an app changed had no way to tell that the rule they were reading was
+    /// the app rule.
+    private var scopeChip: some View {
+        Text(Self.scopeLabel(for: correction.scope))
+            .font(VelvtType.label(9))
+            .tracking(VelvtType.labelTracking)
+            .foregroundStyle(VelvtInk.labelOnInk)
+            .padding(.horizontal, VelvtMetrics.spaceSM)
+            .padding(.vertical, 1)
+            .overlay(
+                RoundedRectangle(cornerRadius: VelvtMetrics.chipRadius, style: .continuous)
+                    .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+            )
+            .accessibilityLabel(Self.reach(of: correction.scope))
+    }
+
+    fileprivate static func scopeLabel(for scope: CorrectionScope) -> String {
+        switch scope {
+        case .window: return "THIS WINDOW"
+        case .app: return "THIS APP"
+        }
+    }
+
+    /// What the rule actually covers, in a sentence.
+    fileprivate static func reach(of scope: CorrectionScope) -> String {
+        switch scope {
+        case .window: return "Applies to this window only."
+        case .app: return "Applies to every window of this app."
+        }
+    }
+
+    /// "Undo" is the right word for a correction the user made to a moment.
+    /// An app rule was never a correction of anything — it is something they
+    /// taught Velvt — so undoing it is removing it.
+    fileprivate static func removalLabel(for scope: CorrectionScope) -> String {
+        switch scope {
+        case .window: return "Undo"
+        case .app: return "Remove"
+        }
+    }
 }
 
 struct CorrectionHistoryBrowser: View {
@@ -600,19 +1050,20 @@ struct CorrectionHistoryBrowser: View {
             HStack(spacing: 6) {
                 TextField("Search saved corrections", text: $query)
                     .textFieldStyle(.roundedBorder)
-                    .font(.caption)
+                    .font(VelvtType.body(11))
                     .onSubmit { search() }
                     .accessibilityLabel("Search local correction history")
                 Button("Search", action: search)
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
                     .controlSize(.small)
             }
             .padding(.horizontal, 16)
 
             if let page = model.correctionHistoryPage {
                 if page.items.isEmpty {
-                    Text(query.isEmpty ? "No saved corrections yet" : "No matching corrections")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text(query.isEmpty ? "Nothing saved yet" : "No matching rules")
+                        .font(VelvtType.caption(10))
+                        .foregroundStyle(VelvtInk.tertiaryOnInk)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                 } else {
@@ -639,13 +1090,15 @@ struct CorrectionHistoryBrowser: View {
                 }
                 HStack {
                     Button("Previous") { model.previousCorrectionHistoryPage() }
+                        .buttonStyle(VelvtQuietButtonStyle())
                         .disabled(page.offset == 0)
                     Spacer()
                     Text(pageDescription(page))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .font(VelvtType.measurement(10).monospacedDigit())
+                        .foregroundStyle(VelvtInk.secondaryOnInk)
                     Spacer()
                     Button("Next") { model.nextCorrectionHistoryPage() }
+                        .buttonStyle(VelvtQuietButtonStyle())
                         .disabled(!page.hasMore)
                 }
                 .controlSize(.small)
@@ -653,7 +1106,7 @@ struct CorrectionHistoryBrowser: View {
             } else {
                 ProgressView("Loading saved corrections…")
                     .controlSize(.small)
-                    .font(.caption2)
+                    .font(VelvtType.caption(10))
                     .padding(.horizontal, 16)
             }
         }
@@ -685,13 +1138,13 @@ public struct PopoverConnectionPresentation {
         switch status {
         case .connected:
             label = "Local service connected"
-            color = .green
+            color = VelvtInk.affirmative
         case .disconnected:
             label = "Disconnected"
-            color = .red
+            color = VelvtPalette.signal
         case .connecting, .handshaking, .reconnecting:
             label = "Connecting"
-            color = .yellow
+            color = VelvtPalette.signal
         }
     }
 
@@ -699,37 +1152,222 @@ public struct PopoverConnectionPresentation {
         switch phase {
         case .starting:
             label = "Starting local service…"
-            color = .yellow
+            color = VelvtPalette.signal
         case .waking:
             label = "Waking local service…"
-            color = .yellow
+            color = VelvtPalette.signal
         case .connected:
             label = "Local service connected"
-            color = .green
+            color = VelvtInk.affirmative
         case .unavailable:
             label = "Local service unavailable"
-            color = .red
+            color = VelvtPalette.signal
         }
     }
 }
 
 public enum MenuBarPopoverLayout {
-    public static let preferredContentSize = CGSize(width: 660, height: 450)
-    public static let walkthroughContentSize = CGSize(width: 660, height: 600)
+    /// 600pt is measured, not chosen. It is the narrowest popover width at
+    /// which the Now tab stops rewrapping: the tab's content measures 325pt
+    /// tall at 660, 620 and 600, then 354pt at 560 and 383pt at 500. Every
+    /// 40pt of extra narrowing buys roughly 30pt of extra height on the
+    /// tallest tab, so width below 600 is paid for in the scarce dimension.
+    /// At 600 the popover is 47% of a 1280pt laptop screen instead of 52%.
+    ///
+    /// 480pt of height clears the tallest realistic Now tab — an active work
+    /// block plus the early signal measures 358pt against a 390pt content
+    /// budget — without needing the whole pane to scroll in the common case.
+    public static let preferredContentSize = CGSize(width: 600, height: 480)
+
+    /// The guided-tour bar measures exactly 86pt at 560, 600 and 660pt wide,
+    /// plus its 1pt divider. Growing the popover by that amount and no more
+    /// keeps every row of the main content where it was when the tour opens
+    /// and closes. The previous fixed 600pt walkthrough height added 150pt,
+    /// so opening the tour pushed the content pane 63pt taller and closing it
+    /// pulled it back — a visible jump on both edges of the transition.
+    public static let guidedTourBarHeight: CGFloat = 87
+
+    public static var walkthroughContentSize: CGSize {
+        CGSize(
+            width: preferredContentSize.width,
+            height: preferredContentSize.height + guidedTourBarHeight
+        )
+    }
+
+    /// The floor the screen clamp may not go under, and the floor a manual
+    /// resize may not drag under. The clamp used to be
+    /// `max(1, visibleFrame - inset)`, which on a small enough visible frame
+    /// hands the window a 1pt dimension. A 1pt window is not a degraded
+    /// interface, it is an invisible one, and the user has no way back out of
+    /// it. Below this size the window fills the visible frame instead.
+    ///
+    /// 500x320 is measured, not chosen. Rendering the surface on a width
+    /// ladder (`MenuBarWindowSnapshotTests`) puts the floor at 470pt: the
+    /// bottom bar reads "Start a focus sess…" at 460, "Start a focus sessi…"
+    /// at 465 and the whole label at 470. 500 keeps 30pt of slack for the
+    /// wider account labels ("Reauthenticate" instead of "Sign In"). On the
+    /// height ladder 320 is the shortest window where the Now tab's primary
+    /// action is on screen without scrolling; 280 cuts "Start a work block"
+    /// in half and 240 hides it behind the bottom bar.
+    public static let minimumContentSize = CGSize(width: 500, height: 320)
+
     public static let screenInset: CGFloat = 24
+
+    /// The workspace rail down the left of the surface — Now / Patterns /
+    /// Settings. Named because the Settings pane has to subtract it to know
+    /// how much width it is actually being given.
+    public static let navigationRailWidth: CGFloat = 132
+
+    /// Measured on the panel style mask this app uses — `.titled` *without*
+    /// `.fullSizeContentView`, so the content view sits below the title bar
+    /// rather than under it. A window frame is this much taller than its
+    /// content. Deliberately not `.fullSizeContentView`: that mask reports
+    /// `contentView.safeAreaInsets.top == 28` and draws the content under the
+    /// title bar, which is exactly the "wordmark cut off at the top edge"
+    /// failure. With this mask the measured insets are zero on every edge and
+    /// a top clip is structurally impossible.
+    public static let titleBarHeight: CGFloat = 28
+
+    /// The gap between the bottom of the status item and the top of the
+    /// window, matching the standing distance `NSPopover` leaves for its arrow.
+    public static let statusItemGap: CGFloat = 6
+
+    /// The ceiling a manual resize may not drag past: the screen the window is
+    /// on, less the standing inset, and never below the floor.
+    public static func maximumContentSize(for visibleFrame: CGRect?) -> CGSize {
+        guard let visibleFrame else {
+            return CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        }
+        return CGSize(
+            width: max(minimumContentSize.width, visibleFrame.width - screenInset),
+            height: max(
+                minimumContentSize.height,
+                visibleFrame.height - screenInset - titleBarHeight
+            )
+        )
+    }
+
+    /// The size to open at.
+    ///
+    /// `stored` is the size the user last dragged the window to, or nil on a
+    /// first launch. A size the user chose outranks the preferred size, but
+    /// not the screen: a window restored from a 6K display onto a laptop is
+    /// clamped down rather than opened wider than the screen it is on. The
+    /// walkthrough adds its bar to whatever survives that, so opening the tour
+    /// grows the window by the bar and never moves the rows above it.
+    public static func resolvedContentSize(
+        stored: CGSize?,
+        visibleFrame: CGRect?,
+        includesWalkthrough: Bool = false
+    ) -> CGSize {
+        guard let stored, stored.width > 0, stored.height > 0 else {
+            return contentSize(for: visibleFrame, includesWalkthrough: includesWalkthrough)
+        }
+        let maximum = maximumContentSize(for: visibleFrame)
+        let base = CGSize(
+            width: min(max(stored.width, min(minimumContentSize.width, maximum.width)), maximum.width),
+            height: min(
+                max(stored.height, min(minimumContentSize.height, maximum.height)),
+                maximum.height
+            )
+        )
+        guard includesWalkthrough else { return base }
+        return CGSize(
+            width: base.width,
+            height: min(base.height + guidedTourBarHeight, maximum.height)
+        )
+    }
+
+    /// The size to persist after a manual resize. The walkthrough bar is the
+    /// window's, not the user's, so it is taken back off before storing —
+    /// otherwise resizing with the tour open would make the tour's extra 87pt
+    /// permanent and the window would grow by a bar on every launch.
+    public static func storableContentSize(
+        _ contentSize: CGSize,
+        includesWalkthrough: Bool
+    ) -> CGSize {
+        guard includesWalkthrough else { return contentSize }
+        return CGSize(
+            width: contentSize.width,
+            height: max(minimumContentSize.height, contentSize.height - guidedTourBarHeight)
+        )
+    }
+
+    /// Where the window goes: under the status item, horizontally centred on
+    /// it, and always inside the visible frame of the screen the status item
+    /// is on.
+    ///
+    /// The origin is recomputed from the status item on every open rather than
+    /// restored from disk. That is what makes the window survive the status
+    /// item moving — a menu bar rearrangement, a display change, a notch, a
+    /// second monitor being unplugged — without a restored frame ever being
+    /// able to land somewhere the user cannot see. Only the *size* is
+    /// persisted; the position is always derived.
+    public static func windowFrame(
+        forContentSize contentSize: CGSize,
+        statusItemFrame: CGRect?,
+        visibleFrame: CGRect?
+    ) -> CGRect {
+        let size = CGSize(width: contentSize.width, height: contentSize.height + titleBarHeight)
+        guard let visibleFrame else {
+            let origin =
+                statusItemFrame.map {
+                    CGPoint(x: $0.midX - size.width / 2, y: $0.minY - statusItemGap - size.height)
+                } ?? .zero
+            return CGRect(origin: origin, size: size)
+        }
+
+        var x: CGFloat
+        var y: CGFloat
+        if let statusItemFrame {
+            x = statusItemFrame.midX - size.width / 2
+            y = statusItemFrame.minY - statusItemGap - size.height
+        } else {
+            x = visibleFrame.midX - size.width / 2
+            y = visibleFrame.maxY - statusItemGap - size.height
+        }
+
+        // Clamp into the visible frame. `min` is applied before `max` so that a
+        // window wider or taller than the screen still has its top-left corner
+        // on screen rather than its bottom-right.
+        x = max(visibleFrame.minX, min(x, visibleFrame.maxX - size.width))
+        y = max(visibleFrame.minY, min(y, visibleFrame.maxY - size.height))
+        return CGRect(x: x, y: y, width: size.width, height: size.height)
+    }
 
     public static func contentSize(
         for visibleFrame: CGRect?,
         includesWalkthrough: Bool = false
     ) -> CGSize {
-        let preferredSize = includesWalkthrough
+        let preferredSize =
+            includesWalkthrough
             ? walkthroughContentSize
             : preferredContentSize
         guard let visibleFrame else { return preferredSize }
         return CGSize(
-            width: min(preferredSize.width, max(1, visibleFrame.width - screenInset)),
-            height: min(preferredSize.height, max(1, visibleFrame.height - screenInset))
+            width: clamp(
+                preferredSize.width,
+                available: visibleFrame.width,
+                minimum: minimumContentSize.width
+            ),
+            height: clamp(
+                preferredSize.height,
+                available: visibleFrame.height,
+                minimum: minimumContentSize.height
+            )
         )
+    }
+
+    /// Shrinks to the screen, but never below a size a person can read and
+    /// never past the screen itself. The result is always greater than zero
+    /// and never exceeds `available`.
+    private static func clamp(
+        _ preferred: CGFloat,
+        available: CGFloat,
+        minimum: CGFloat
+    ) -> CGFloat {
+        let usableMinimum = min(preferred, minimum)
+        return max(min(usableMinimum, available), min(preferred, available - screenInset))
     }
 }
 
@@ -739,9 +1377,16 @@ public enum MenuBarMotionPolicy {
     }
 }
 
-enum SettingsSubmenu: CaseIterable, Equatable {
+/// A Settings destination.
+///
+/// Still named for the submenus it used to be, because the set of
+/// destinations is exactly what it was: this stopped being a submenu when it
+/// stopped opening a window, not when it changed contents.
+enum SettingsSubmenu: CaseIterable, Hashable, Identifiable {
     case appInfo
-    case queuedEvents
+    /// The correction workbench. Named for what a person does here, not for
+    /// the upload queue it also happens to list.
+    case teachApps
     case collectionSettings
     case onboarding
     #if DEBUG
@@ -751,7 +1396,7 @@ enum SettingsSubmenu: CaseIterable, Equatable {
     var title: String {
         switch self {
         case .appInfo: return "App Info"
-        case .queuedEvents: return "Activity & Corrections"
+        case .teachApps: return "Teach Velvt Your Apps"
         case .collectionSettings: return "Collection Settings"
         case .onboarding: return "Onboarding & Tour"
         #if DEBUG
@@ -760,15 +1405,63 @@ enum SettingsSubmenu: CaseIterable, Equatable {
         }
     }
 
-    var preferredHeight: CGFloat {
-        switch self {
-        case .appInfo: return 420
-        case .queuedEvents: return 520
-        case .collectionSettings: return 180
-        case .onboarding: return 210
-        #if DEBUG
-        case .debug: return 190
-        #endif
+    var id: Self { self }
+}
+
+/// How the Settings tab arranges its destination list against the detail that
+/// list selects.
+enum SettingsPaneMode: Equatable {
+    /// List on the left, detail beside it — what a resizable window buys, and
+    /// the shape the Now / Patterns / Settings rail already uses one level up.
+    case sideBySide(listWidth: CGFloat)
+
+    /// One column: the list, or the selected destination with a way back.
+    /// Below the threshold, two columns would hand the detail *less* width
+    /// than the child popover this pane replaced, which would make the fix a
+    /// regression for the correction workbench.
+    case stacked
+}
+
+/// The Settings pane's layout rule, pulled out of the view so the widths can
+/// be asserted rather than eyeballed.
+enum SettingsPaneLayout {
+    /// Fits "Teach Velvt Your Apps" — the longest destination title — on one
+    /// line at `.caption`, with the room a sidebar row insets away.
+    static let listWidth: CGFloat = 164
+
+    /// The width every destination was already laid out for: the width of the
+    /// `NSPopover` this pane replaced. The detail is never given less.
+    static let minimumDetailWidth: CGFloat = 300
+
+    /// And never lets a destination stretch past this.
+    ///
+    /// Measured on the wide shots: at 603pt of detail the Collection Settings
+    /// toggles drift to the middle of the pane, because a `Toggle` at its
+    /// intrinsic width centres itself in a `VStack` and 300pt of popover used
+    /// to hide that; the onboarding sentence runs to a 685pt line. Both are
+    /// artifacts of handing content laid out for 300–380pt whatever a dragged
+    /// window happens to be. Capping the content column and pinning it left
+    /// keeps every destination the shape it was designed as, and lets the
+    /// extra width the user asked for go to the destinations that use it.
+    static let maximumDetailContentWidth: CGFloat = 420
+
+    /// The width the Settings tab has to work with inside a window of
+    /// `contentWidth` — the workspace rail and its hairline come off first.
+    static func paneWidth(forContentWidth contentWidth: CGFloat) -> CGFloat {
+        max(0, contentWidth - MenuBarPopoverLayout.navigationRailWidth - 1)
+    }
+
+    static func mode(forPaneWidth paneWidth: CGFloat) -> SettingsPaneMode {
+        paneWidth >= listWidth + minimumDetailWidth
+            ? .sideBySide(listWidth: listWidth)
+            : .stacked
+    }
+
+    /// What the selected destination actually gets to draw in.
+    static func detailWidth(forPaneWidth paneWidth: CGFloat) -> CGFloat {
+        switch mode(forPaneWidth: paneWidth) {
+        case .sideBySide(let listWidth): return paneWidth - listWidth
+        case .stacked: return paneWidth
         }
     }
 }
@@ -778,10 +1471,14 @@ public enum MenuBarWorkspaceTab: CaseIterable, Equatable, Hashable {
     case history
     case settings
 
+    /// "Today" and "Your Week" are reporting periods — the vocabulary of a
+    /// report you read, not of a thing that is watching with you right now.
+    /// "Now" is where the product actually lives, and "Patterns" is a claim
+    /// about the person rather than a date range.
     public var title: String {
         switch self {
-        case .workBlock: return "Today"
-        case .history: return "Your Week"
+        case .workBlock: return "Now"
+        case .history: return "Patterns"
         case .settings: return "Settings"
         }
     }
@@ -821,6 +1518,124 @@ public struct MenuBarPopoverNavigator {
     }
 }
 
+/// What Escape does, given what is open.
+enum MenuBarEscapeAction: Equatable {
+    case dismissGuidedTour
+    case clearSettingsSelection
+    case closeSurface
+}
+
+/// Escape used to mean one thing — close the surface — because everything it
+/// could have backed out of first was a separate window that took the key
+/// press itself. The Settings detail is inside this window now, so Escape has
+/// to back out of it before it closes anything, and the order is worth
+/// asserting rather than reading.
+enum MenuBarEscapeResolver {
+    static func action(
+        guidedTourIsPresented: Bool,
+        selectedWorkspaceTab: MenuBarWorkspaceTab,
+        selectedSettingsDestination: SettingsSubmenu?
+    ) -> MenuBarEscapeAction {
+        if guidedTourIsPresented { return .dismissGuidedTour }
+        if selectedWorkspaceTab == .settings, selectedSettingsDestination != nil {
+            return .clearSettingsSelection
+        }
+        return .closeSurface
+    }
+}
+
+/// What the workspace's primary action is called, given the phase of the block
+/// the service reports.
+///
+/// The label was unconditional. A drift offer's notification opens the panel
+/// with a block already running, so the one prominent button on the surface
+/// invited the person to start the thing they had not stopped doing. Drawing
+/// the proactive cards in the panel body puts the reply buttons where the
+/// notification lands; this names the button for what it opens.
+enum MenuBarFocusSessionButtonLabel {
+    static func title(for phase: WorkBlockPhase?) -> String {
+        switch phase {
+        case .active, .paused:
+            return "Current work block"
+        case .idle, .completed, .abandoned, .expired, nil:
+            return "Start a focus session"
+        }
+    }
+}
+
+/// Whether the window this view sits in is on screen: ordered in and not
+/// fully covered.
+///
+/// The panel's SwiftUI tree is built once and outlives every closing — the
+/// window is ordered out, not torn down — so `onAppear` inside it says nothing
+/// about whether anyone could see what appeared. This reads the window server's
+/// occlusion state instead, as `MenuBarPanelPresenter.isFrontmostSurface` does,
+/// and follows it through `NSWindow.didChangeOcclusionStateNotification`, which
+/// AppKit posts when the window is ordered in or out, miniaturised, moved off
+/// the active Space, or covered and uncovered.
+struct MenuBarWindowOnScreenReader: NSViewRepresentable {
+    @Binding var isOnScreen: Bool
+
+    /// Visible and at least partly unobscured. A window that was never
+    /// ordered in, or none at all, is not on screen.
+    static func isOnScreen(_ window: NSWindow?) -> Bool {
+        guard let window, window.isVisible else { return false }
+        return window.occlusionState.contains(.visible)
+    }
+
+    func makeNSView(context: Context) -> ReaderView {
+        let view = ReaderView()
+        view.onChange = { visible in
+            if isOnScreen != visible { isOnScreen = visible }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: ReaderView, context: Context) {
+        nsView.onChange = { visible in
+            if isOnScreen != visible { isOnScreen = visible }
+        }
+    }
+
+    final class ReaderView: NSView {
+        var onChange: ((Bool) -> Void)?
+        private var observer: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            observer = nil
+            if let window {
+                observer = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didChangeOcclusionStateNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.report()
+                }
+            }
+            report()
+        }
+
+        /// Deferred to the next turn of the main queue: this can run inside a
+        /// SwiftUI update, and writing state from inside one is undefined.
+        private func report() {
+            let visible = MenuBarWindowOnScreenReader.isOnScreen(window)
+            DispatchQueue.main.async { [weak self] in
+                self?.onChange?(visible)
+            }
+        }
+
+        deinit {
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+    }
+}
+
 public struct MenuBarPopoverView: View {
     @ObservedObject private var presentation: PermissionPresentationModel
     private let permissionManager: (any PermissionManagerProtocol)?
@@ -846,13 +1661,16 @@ public struct MenuBarPopoverView: View {
     private let onEscape: () -> Void
     private let onTerminate: () -> Void
     @State private var navigator = MenuBarPopoverNavigator()
-    @State private var presentedSettingsSubmenu: SettingsSubmenu?
-    @State private var confirmsClassificationReset = false
+    @State private var selectedSettingsDestination: SettingsSubmenu?
     @State private var confirmsWorkBlockClear = false
     @State private var diagnosticsCopied = false
+    @State private var exportMessage: String?
     @State private var debugInsightStatus: String?
     @State private var showsFocusSession = false
-  @State private var showsSystemState = false
+    /// Whether this panel is on screen, from the window server. The drift
+    /// card's sighting is reported only while it is.
+    @State private var panelIsOnScreen = false
+    @State private var showsSystemState = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -875,8 +1693,8 @@ public struct MenuBarPopoverView: View {
         startGuidedTour: (() -> Void)? = nil,
         updateController: AppUpdateController,
         guidedTour: GuidedTourModel = GuidedTourModel(),
-    metricsStore: AppMetricsStore = AppMetricsStore(
-      defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
+        metricsStore: AppMetricsStore = AppMetricsStore(
+            defaults: UserDefaults(suiteName: "MenuBarPopoverView.preview") ?? .standard),
         popoverWillOpen: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher(),
         onEscape: @escaping () -> Void,
         onTerminate: @escaping () -> Void = {}
@@ -889,11 +1707,11 @@ public struct MenuBarPopoverView: View {
         self.currentActivity = currentActivity
         self.serviceAlertModel = serviceAlertModel
         self.collectionSettings = collectionSettings
-    self.workBlockCoordinator =
-      workBlockCoordinator ?? WorkBlockCoordinator(ipcClient: UnavailableWorkBlockIPCClient())
-    self.localDashboardCoordinator =
-      localDashboardCoordinator
-      ?? LocalDashboardCoordinator(ipcClient: UnavailableLocalDashboardIPCClient())
+        self.workBlockCoordinator =
+            workBlockCoordinator ?? WorkBlockCoordinator(ipcClient: UnavailableWorkBlockIPCClient())
+        self.localDashboardCoordinator =
+            localDashboardCoordinator
+            ?? LocalDashboardCoordinator(ipcClient: UnavailableLocalDashboardIPCClient())
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
@@ -909,7 +1727,39 @@ public struct MenuBarPopoverView: View {
         self.onTerminate = onTerminate
     }
 
+    /// Test seam. Returns a copy of this view whose workspace already starts
+    /// on Settings with `destination` selected, so the snapshot tests can
+    /// photograph each destination without an app, a click, or a reach into
+    /// SwiftUI's private state. Assigning a `State` before the view is first
+    /// rendered is the supported way to give one an initial value. The
+    /// shipping app never calls this — every real path starts with no
+    /// destination selected.
+    func openedOnSettings(_ destination: SettingsSubmenu?) -> MenuBarPopoverView {
+        var copy = self
+        var seeded = MenuBarPopoverNavigator()
+        seeded.showSettings()
+        copy._navigator = State(initialValue: seeded)
+        copy._selectedSettingsDestination = State(initialValue: destination)
+        return copy
+    }
+
     public var body: some View {
+        // Applied inside the view rather than at the hosting root so
+        // `NSHostingController<MenuBarPopoverView>` keeps its concrete generic
+        // parameter — wrapping the root turned it into a `ModifiedContent`,
+        // which broke a test that legitimately reaches for the hosting
+        // controller to assert its sizing options. The modifier belongs to the
+        // view anyway; where the view is hosted is not its business.
+        //
+        // One modifier covers the whole tree: SwiftUI propagates selection
+        // down, List rows included. Velvt shows people statements about their
+        // own week — a number worth pasting into a note, a sentence worth
+        // quoting back — and text you cannot select reads as a picture of
+        // information rather than information.
+        content.textSelection(.enabled)
+    }
+
+    @ViewBuilder private var content: some View {
         VStack(spacing: 0) {
             mainContent
             if guidedTour.isPresented {
@@ -934,12 +1784,16 @@ public struct MenuBarPopoverView: View {
             alignment: .top
         )
         .preferredColorScheme(.dark)
-        .tint(Color.velvtPink)
+        .tint(VelvtPalette.crimson)
         .onExitCommand {
-            if guidedTour.isPresented {
-                guidedTour.dismiss()
-            } else {
-                onEscape()
+            switch MenuBarEscapeResolver.action(
+                guidedTourIsPresented: guidedTour.isPresented,
+                selectedWorkspaceTab: navigator.selectedWorkspaceTab,
+                selectedSettingsDestination: selectedSettingsDestination
+            ) {
+            case .dismissGuidedTour: guidedTour.dismiss()
+            case .clearSettingsSelection: clearSettingsSelection()
+            case .closeSurface: onEscape()
             }
         }
         .onChange(of: guidedTour.step) { route(to: $0) }
@@ -947,39 +1801,57 @@ public struct MenuBarPopoverView: View {
             if isPresented {
                 route(to: guidedTour.step)
             } else {
-                dismissSettingsSubmenus()
+                clearSettingsSelection()
                 navigator.selectWorkspaceTab(.workBlock)
             }
         }
         .onReceive(popoverWillOpen) {
-            dismissSettingsSubmenus()
+            clearSettingsSelection()
             navigator.resetForPopoverOpening()
         }
+        .background(MenuBarWindowOnScreenReader(isOnScreen: $panelIsOnScreen))
     }
 
+    /// The window is resizable now, so this row has to survive being narrowed
+    /// and shortened rather than merely fitting at 600x480.
+    ///
+    /// Three things make it survive. `fixedSize(vertical:)` on the whole row
+    /// means the header reports the height it actually needs and is never
+    /// compressed into it: the wordmark's box is a fixed 30pt and a squeezed
+    /// fixed frame does not shrink, it clips — which is the reported cut-off
+    /// top edge. `layoutPriority(1)` means the flexible workspace below gives
+    /// up the space instead of the header. And both status lines wrap
+    /// (`fixedSize(horizontal: false, vertical: true)`, no `lineLimit`) so a
+    /// long label such as "Collection paused: Accessibility permission
+    /// required" or "Checking cloud synchronization…" takes a second line at a
+    /// narrow width instead of being truncated at the right edge.
     private var mainHeader: some View {
         HStack(alignment: .top, spacing: 8) {
             Image("VelvtWordmark")
                 .resizable()
                 .renderingMode(.template)
+                .interpolation(.high)
                 .scaledToFit()
-                .foregroundStyle(Color.velvtText)
+                .foregroundStyle(VelvtInk.primaryOnInk)
                 .frame(width: 76, height: 30, alignment: .leading)
                 .accessibilityLabel("Velvt")
                 .layoutPriority(1)
-            Spacer()
+            Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(localCollectionPresentation.label)
-                        .font(.caption)
+                        .font(VelvtType.caption(11))
                         .foregroundStyle(localCollectionPresentation.color)
                         .multilineTextAlignment(.trailing)
                         .fixedSize(horizontal: false, vertical: true)
-                    Circle().fill(localCollectionPresentation.color).frame(width: 7, height: 7)
+                    Circle()
+                        .fill(localCollectionPresentation.color)
+                        .frame(width: 7, height: 7)
+                        .layoutPriority(1)
                 }
                 Text(backendStatusLabel)
-                    .font(.caption2)
-                    .foregroundStyle(Color.velvtMuted.opacity(0.72))
+                    .font(VelvtType.caption(10))
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
                     .multilineTextAlignment(.trailing)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -988,10 +1860,13 @@ public struct MenuBarPopoverView: View {
         .padding(.horizontal, 16)
         .padding(.top, 15)
         .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .layoutPriority(1)
         .overlay {
             if guidedTour.isPresented, guidedTour.step == .statusAndRecovery {
-                RoundedRectangle(cornerRadius: 7)
-                    .stroke(Color.velvtPink, lineWidth: 2)
+                RoundedRectangle(cornerRadius: VelvtMetrics.chipRadius, style: .continuous)
+                    .stroke(VelvtPalette.crimson, lineWidth: 2)
                     .padding(4)
                     .allowsHitTesting(false)
             }
@@ -1012,7 +1887,7 @@ public struct MenuBarPopoverView: View {
     private var workspace: some View {
         HStack(spacing: 0) {
             workspaceNavigationRail
-                .frame(width: 132)
+                .frame(width: MenuBarPopoverLayout.navigationRailWidth)
 
             Divider().opacity(0.2)
 
@@ -1032,21 +1907,36 @@ public struct MenuBarPopoverView: View {
                 Divider().opacity(0.15)
             }
 
-            Group {
-                if navigator.selectedWorkspaceTab == .settings {
-                    ScrollView { workspaceTransitionContent }
-                } else {
+            // Every tab scrolls, not only Settings. Measured at the 600pt
+            // popover width against a 390pt content budget: the Now tab is
+            // 358pt with an active block, 392pt once the privacy disclosure is
+            // open, and 435pt with the accessibility recovery banner above it.
+            // Without a scroll view on this path that last 45-77pt was simply
+            // clipped, and the Now tab has no scroll view of its own anywhere
+            // beneath it — so the "Start a work block" button could sit below
+            // the cut with no way to reach it.
+            // Settings is the exception. It is a destination list beside the
+            // detail that list selects, and a master-detail nested inside a
+            // page scroll scrolls the page rather than the column under the
+            // pointer — the same nesting mistake the comment above describes,
+            // one level down. Its two columns scroll themselves.
+            if navigator.selectedWorkspaceTab == .settings {
+                workspaceTransitionContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .layoutPriority(1)
+            } else {
+                ScrollView {
                     workspaceTransitionContent
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .layoutPriority(1)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .layoutPriority(1)
 
             Divider().opacity(0.15)
             workspaceBottomBar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Color.black.opacity(0.08))
+        .background(VelvtSurface.ground)
     }
 
     private var workspaceTransitionContent: some View {
@@ -1075,26 +1965,27 @@ public struct MenuBarPopoverView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 10)
         .frame(maxHeight: .infinity)
-        .background(Color.velvtSurface.opacity(0.55))
+        .background(VelvtSurface.cardFlat.opacity(0.55))
     }
 
     private func workspaceNavigationButton(_ tab: MenuBarWorkspaceTab) -> some View {
         let isSelected = navigator.selectedWorkspaceTab == tab
         return Button {
             guard !isSelected else { return }
-            dismissSettingsSubmenus()
+            clearSettingsSelection()
             navigator.selectWorkspaceTab(tab)
         } label: {
             Label(tab.title, systemImage: tab.systemImage)
-                .font(.caption)
-                .fontWeight(isSelected ? .semibold : .medium)
-                .foregroundStyle(isSelected ? Color.velvtText : Color.velvtText.opacity(0.62))
+                .font(isSelected ? VelvtType.heading(12) : VelvtType.body(12))
+                .foregroundStyle(isSelected ? VelvtInk.primaryOnInk : VelvtInk.secondaryOnInk)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .padding(.horizontal, 10)
                 .padding(.vertical, 9)
-                .background(isSelected ? Color.velvtPanelHighlight : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .background(isSelected ? VelvtPalette.paper.opacity(0.10) : Color.clear)
+                .clipShape(
+                    RoundedRectangle(cornerRadius: VelvtMetrics.chipRadius, style: .continuous)
+                )
         }
         .buttonStyle(.plain)
         .keyboardShortcut(tab.keyboardShortcut, modifiers: .command)
@@ -1103,8 +1994,8 @@ public struct MenuBarPopoverView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .overlay {
             if guidedTour.isPresented, tourTab == tab {
-                RoundedRectangle(cornerRadius: 7)
-                    .stroke(Color.velvtPink, lineWidth: 2)
+                RoundedRectangle(cornerRadius: VelvtMetrics.chipRadius, style: .continuous)
+                    .stroke(VelvtPalette.crimson, lineWidth: 2)
                     .allowsHitTesting(false)
             }
         }
@@ -1118,16 +2009,34 @@ public struct MenuBarPopoverView: View {
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
-                        Color.velvtSurface.opacity(0.92),
-                        in: RoundedRectangle(cornerRadius: 10)
+                        VelvtSurface.cardFlat.opacity(0.92),
+                        in: RoundedRectangle(
+                            cornerRadius: VelvtMetrics.panelRadius,
+                            style: .continuous
+                        )
                     )
                     .overlay {
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        RoundedRectangle(
+                            cornerRadius: VelvtMetrics.panelRadius,
+                            style: .continuous
+                        )
+                        .stroke(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
             }
+            // Above the tab content and outside the switch, so a drift offer
+            // and an invitation are on whichever tab the panel opens on. They
+            // used to be drawn only by `WorkBlockView`, which this file
+            // instantiates in exactly one place: the popover behind the bottom
+            // bar's button. An invitation asking someone to declare a block was
+            // therefore reachable only by pressing the button that starts one,
+            // and a drift offer's notification opened this panel onto a
+            // surface with no reply buttons on it.
+            WorkBlockProactiveCards(
+                coordinator: workBlockCoordinator,
+                surfaceIsOnScreen: panelIsOnScreen
+            )
             switch navigator.selectedWorkspaceTab {
             case .workBlock:
                 MinimalDashboardWorkspaceView(
@@ -1146,12 +2055,13 @@ public struct MenuBarPopoverView: View {
                             "Raw work activity and local display labels stay on this Mac. Only privacy-safe abstractions may synchronize for summaries and insights."
                         )
                     }
-                    .font(.caption)
-                    .foregroundStyle(Color.velvtMuted)
+                    .font(VelvtType.body(11))
+                    .lineSpacing(VelvtType.bodySpacing(11))
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
                     .padding(.top, 8)
                 }
-                .font(.caption)
-                .tint(Color.velvtText)
+                .font(VelvtType.heading(12))
+                .tint(VelvtInk.primaryOnInk)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 12)
                 .accessibilityHint(
@@ -1162,14 +2072,23 @@ public struct MenuBarPopoverView: View {
                 HistoryWorkspaceView(
                     coordinator: coordinator,
                     localDashboardCoordinator: localDashboardCoordinator,
-                    menuStatusViewModel: menuStatusViewModel
+                    workBlockCoordinator: workBlockCoordinator
                 )
                 .tourHighlight(guidedTour.isPresented && guidedTour.step == .dailyActivity)
 
             case .settings:
                 settingsContent
             }
-    }
+        }
+        // Settings fills the pane: its list column and its detail column each
+        // need to know how tall they are so they can scroll themselves. Every
+        // other tab is inside a scroll view and must keep reporting the height
+        // it actually wants.
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: navigator.selectedWorkspaceTab == .settings ? .infinity : nil,
+            alignment: .top
+        )
     }
 
     private var workspaceBottomBar: some View {
@@ -1181,37 +2100,63 @@ public struct MenuBarPopoverView: View {
             Button {
                 showsFocusSession.toggle()
             } label: {
-                Label("Start a focus session", systemImage: "timer")
+                // The window narrows now, and something in this row has to
+                // give first. It should not be the one action the row exists
+                // for: without this the primary button was the last item in
+                // the HStack and therefore the first to truncate, reading
+                // "Start a focus sess…" from 465pt down.
+                Label(
+                    MenuBarFocusSessionButtonLabel.title(
+                        for: workBlockCoordinator.snapshot?.phase),
+                    systemImage: "timer"
+                )
+                .fixedSize(horizontal: true, vertical: false)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(VelvtPrimaryButtonStyle(uppercase: true))
             .controlSize(.small)
+            .layoutPriority(1)
             .tourHighlight(guidedTour.isPresented && guidedTour.step == .today)
             .popover(isPresented: $showsFocusSession, arrowEdge: .bottom) {
                 ScrollView {
                     WorkBlockView(coordinator: workBlockCoordinator)
                 }
                 .frame(width: 400, height: 390, alignment: .top)
-                .background(Color.velvtSurface)
+                .background(VelvtSurface.ground)
                 .preferredColorScheme(.dark)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
-        .background(Color.velvtSurface.opacity(0.32))
+        .background(VelvtSurface.cardFlat.opacity(0.32))
     }
 
+    /// The settled state, drawn as settled.
+    ///
+    /// This row used to pair an indeterminate `ProgressView` with the words
+    /// "Gathering info", and it rendered whenever `collectionActivityStatus`
+    /// was `.running` — which is to say, the entire time the app is working
+    /// correctly. `.running` is what `CollectionModule` sends once collection
+    /// starts; nothing ever moves it to a finished state, because there is
+    /// nothing to finish. A spinner is a promise that something will complete,
+    /// so this one promised something that never arrives, and a user watching
+    /// it for twenty minutes was reading it exactly as intended.
+    ///
+    /// It also disagreed with itself: the same condition renders as "active"
+    /// elsewhere, so one state was described two ways on one screen.
+    ///
+    /// If a genuinely transient state is wanted here later, the honest
+    /// candidate is the first cloud insight — that one really is pending, and
+    /// really does resolve. It is a different signal from "is collection
+    /// running" and needs its own condition, not this one.
     private var gatheringInfoStatus: some View {
         HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-                .frame(width: 14, height: 14)
-            Text("Gathering info")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 0)
+            Circle()
+                .fill(VelvtInk.affirmative)
+                .frame(width: 7, height: 7)
             Text("Local collection active")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(VelvtType.caption(11))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
@@ -1220,15 +2165,16 @@ public struct MenuBarPopoverView: View {
     private func serviceAlertRow(_ alert: ServiceAlert) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Circle()
-                .fill(alert.severity == .error ? Color.red : Color.yellow)
+                .fill(alert.severity == .error ? VelvtPalette.crimson : VelvtPalette.signal)
                 .frame(width: 7, height: 7)
                 .padding(.top, 5)
             VStack(alignment: .leading, spacing: 2) {
                 Text(alert.title)
-                    .font(.caption.bold())
+                    .font(VelvtType.heading(11.5))
+                    .foregroundStyle(VelvtInk.primaryOnInk)
                 Text(alert.message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(VelvtType.caption(10))
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
                     .lineLimit(2)
             }
             Spacer(minLength: 0)
@@ -1236,63 +2182,183 @@ public struct MenuBarPopoverView: View {
                 serviceAlertModel.dismiss()
             }
             .buttonStyle(.plain)
-            .font(.caption2)
+            .font(VelvtType.body(11))
+            .foregroundStyle(VelvtInk.labelOnInk)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
     }
 
+    /// The Settings tab: a destination list and the selected destination's
+    /// detail, both inside this window.
+    ///
+    /// This used to be a column of rows that each opened an `NSPopover` — a
+    /// second, detached window floating outside this one — and opened it on
+    /// *hover*, so moving the pointer across the column threw up a window the
+    /// user had not asked for. The surface is a resizable panel with a 500pt
+    /// floor now, so the detail has somewhere to live in the window that is
+    /// already open, and it is reached by clicking a row like every other
+    /// navigation in this app.
     private var settingsContent: some View {
-        VStack(spacing: 0) {
-            Text("Settings")
-                .font(.headline)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            settingsSubmenuRow(SettingsSubmenu.appInfo.title, submenu: .appInfo)
-            settingsSubmenuRow(
-                "\(SettingsSubmenu.queuedEvents.title) (\(menuStatusViewModel?.status?.queuedEventCount ?? 0))",
-                submenu: .queuedEvents
-            )
-            settingsSubmenuRow(SettingsSubmenu.collectionSettings.title, submenu: .collectionSettings)
-            settingsSubmenuRow(SettingsSubmenu.onboarding.title, submenu: .onboarding)
-            #if DEBUG
-                if simulateNotification != nil {
-                    settingsSubmenuRow(SettingsSubmenu.debug.title, submenu: .debug)
+        GeometryReader { proxy in
+            let mode = SettingsPaneLayout.mode(forPaneWidth: proxy.size.width)
+            VStack(spacing: 0) {
+                switch mode {
+                case .sideBySide(let listWidth):
+                    HStack(spacing: 0) {
+                        settingsDestinationList
+                            .frame(width: listWidth)
+                        Divider().opacity(0.2)
+                        settingsDetail(showsBackButton: false)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .stacked:
+                    if selectedSettingsDestination == nil {
+                        settingsDestinationList
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        settingsDetail(showsBackButton: true)
+                    }
                 }
-            #endif
-            Divider().padding(.vertical, 8)
-            HStack(spacing: 8) {
-                if let accountStateManager, let ipcClient {
-                    SettingsAccountDeletionButton(
-                        accountStateManager: accountStateManager,
-                        ipcClient: ipcClient
-                    )
-                }
-                Button("Check for Updates…") {
-                    updateController.checkForUpdates()
-                }
-                .buttonStyle(.bordered)
-                .disabled(!updateController.canCheckForUpdates)
-                Button("Quit Velvt", role: .destructive, action: onTerminate)
-                    .buttonStyle(.bordered)
-                Spacer(minLength: 12)
-                Text("Velvt \(appVersion)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Divider().opacity(0.15)
+                // Deliberately outside the columns and always on screen:
+                // account deletion, updates and Quit belong to the app rather
+                // than to any one destination, and they used to be reachable
+                // no matter which submenu window was open.
+                settingsFooter
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .padding(.bottom, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onAppear {
-            dismissSettingsSubmenus()
-            updateController.refreshAvailability()
+        .onAppear { updateController.refreshAvailability() }
+    }
+
+    /// The DEBUG destination only exists when the app was built with a way to
+    /// simulate an insight, exactly as the old row did.
+    private var settingsDestinations: [SettingsSubmenu] {
+        SettingsSubmenu.allCases.filter { destination in
+            #if DEBUG
+                if destination == .debug { return simulateNotification != nil }
+            #endif
+            return true
         }
     }
 
+    /// A `List` with a selection binding, not the stack of buttons this used
+    /// to be, and for one reason: a `List` is an `NSTableView` underneath, and
+    /// the table is where macOS keyboard navigation already lives. The arrow
+    /// keys move the selection between rows, the list takes focus, and the
+    /// selected row keeps its highlight when focus leaves. Selecting a row is
+    /// the navigation here — there is no separate activation step, and nothing
+    /// opens until a row is selected.
+    ///
+    /// Hover draws the standard row highlight and does nothing else, which is
+    /// the entire complaint this pane exists to answer. Escape backs out; see
+    /// `MenuBarEscapeResolver`.
+    private var settingsDestinationList: some View {
+        List(selection: $selectedSettingsDestination) {
+            ForEach(settingsDestinations) { destination in
+                Text(destination.title)
+                    .font(VelvtType.body(12))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    // A sidebar row draws its label in the secondary colour,
+                    // which on this background is close to unreadable at
+                    // `.caption`. These rows are the navigation, not a caption
+                    // under it.
+                    .foregroundStyle(VelvtInk.primaryOnInk)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .tag(destination)
+            }
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(VelvtSurface.cardFlat.opacity(0.4))
+        .accessibilityLabel("Settings sections")
+    }
+
     @ViewBuilder
-    private func settingsSubmenuContent(for submenu: SettingsSubmenu) -> some View {
+    private func settingsDetail(showsBackButton: Bool) -> some View {
+        VStack(spacing: 0) {
+            if showsBackButton {
+                Button {
+                    clearSettingsSelection()
+                } label: {
+                    Label("All Settings", systemImage: "chevron.left")
+                        .font(VelvtType.body(12))
+                        .foregroundStyle(VelvtInk.labelOnInk)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHint("Returns to the list of settings sections")
+                Divider().opacity(0.15)
+            }
+            ScrollView {
+                Group {
+                    if let destination = selectedSettingsDestination {
+                        settingsDestinationContent(for: destination)
+                    } else {
+                        settingsDetailPlaceholder
+                    }
+                }
+                .frame(maxWidth: SettingsPaneLayout.maximumDetailContentWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Only ever seen side by side: when the pane stacks, an empty selection
+    /// shows the list itself rather than a pane telling you to go find it.
+    private var settingsDetailPlaceholder: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Settings")
+                .velvtHeading(15)
+            Text("Pick a section on the left to open it here.")
+                .font(VelvtType.body(12))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+    }
+
+    private var settingsFooter: some View {
+        HStack(spacing: 8) {
+            if let accountStateManager, let ipcClient {
+                SettingsAccountDeletionButton(
+                    accountStateManager: accountStateManager,
+                    ipcClient: ipcClient
+                )
+            }
+            Button("Check for Updates…") {
+                updateController.checkForUpdates()
+            }
+            .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+            .disabled(!updateController.canCheckForUpdates)
+            Button("Quit Velvt", role: .destructive, action: onTerminate)
+                .buttonStyle(VelvtDestructiveButtonStyle())
+            Spacer(minLength: 8)
+            Text("Velvt \(appVersion)")
+                .font(VelvtType.caption(10))
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
+                .layoutPriority(-1)
+        }
+        // The row has to survive the 500pt floor, where it is competing for
+        // 367pt with three bordered buttons in it.
+        .controlSize(.small)
+        .font(VelvtType.body(11))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func settingsDestinationContent(for submenu: SettingsSubmenu) -> some View {
         switch submenu {
         case .appInfo:
             VStack(spacing: 0) {
@@ -1319,11 +2385,17 @@ public struct MenuBarPopoverView: View {
                 Button("Retry Cloud Synchronization") {
                     menuStatusViewModel?.sendAllNow()
                 }
+                .buttonStyle(.plain)
+                .font(VelvtType.bodyEmphasis(13))
+                .foregroundStyle(VelvtPalette.signal)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
                 if restartLocalService != nil {
                     Button("Restart Local Service") { restartLocalService?() }
+                        .buttonStyle(.plain)
+                        .font(VelvtType.bodyEmphasis(13))
+                        .foregroundStyle(VelvtPalette.signal)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 6)
@@ -1331,115 +2403,52 @@ public struct MenuBarPopoverView: View {
                 Button(diagnosticsCopied ? "Diagnostics Copied" : "Copy Diagnostics") {
                     copyDiagnostics()
                 }
+                .buttonStyle(.plain)
+                .font(VelvtType.bodyEmphasis(13))
+                .foregroundStyle(VelvtPalette.signal)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
+                Button("Export My Data…") { exportLocalData() }
+                    .buttonStyle(.plain)
+                    .font(VelvtType.bodyEmphasis(13))
+                    .foregroundStyle(VelvtPalette.signal)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .accessibilityHint(
+                        "Saves the observations Velvt has shown you as a JSON file you choose the location of"
+                    )
+                if let exportMessage {
+                    Text(exportMessage)
+                        .font(VelvtType.caption(10))
+                        .foregroundStyle(VelvtInk.secondaryOnInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 6)
+                }
             }
             .onAppear { menuStatusViewModel?.refresh() }
 
-        case .queuedEvents:
-            VStack(spacing: 0) {
-                submenuTitle(
-                    "\(submenu.title) (\(menuStatusViewModel?.status?.queuedEventCount ?? 0) queued)"
+        case .teachApps:
+            if let menuStatusViewModel {
+                CorrectionWorkbenchView(
+                    menuStatus: menuStatusViewModel,
+                    localDashboard: localDashboardCoordinator,
+                    title: submenu.title
                 )
-                classificationExplanation
-                let queuedEvents = Array((menuStatusViewModel?.status?.queuedEvents ?? []).prefix(10))
-                if queuedEvents.isEmpty {
-                    Text("No queued events")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(queuedEvents) { event in
-                                QueuedEventCorrectionRow(
-                                    event: event,
-                                    onSave: { category, activityName in
-                                        menuStatusViewModel?.correct(
-                                            event,
-                                            category: category,
-                                            localActivityName: activityName
-                                        )
-                                    },
-                                    onUndo: {
-                                        menuStatusViewModel?.undoCorrection(event)
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    .frame(height: 190)
-                }
-                Divider().padding(.vertical, 6)
-                Text("Saved corrections")
-                    .font(.caption.bold())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                if let menuStatusViewModel {
-                    CorrectionHistoryBrowser(model: menuStatusViewModel)
-                } else {
-                    Text("No saved corrections yet")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                }
-                if let sendError = menuStatusViewModel?.sendError {
-                    Text(sendError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                }
-                // The correction is already saved by the time this appears.
-                // Copy comes from the service verbatim so the confirmation says
-                // exactly what changed and for how long.
-                if let acknowledgment = menuStatusViewModel?.correctionAcknowledgment {
-                    Label(acknowledgment, systemImage: "checkmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .accessibilityLabel(acknowledgment)
-                }
-                Divider().padding(.top, 8)
-                Button("Retry Cloud Synchronization") { menuStatusViewModel?.sendAllNow() }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                Button("Reset Local Activity Corrections", role: .destructive) {
-                    confirmsClassificationReset = true
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-            .onAppear { menuStatusViewModel?.refresh() }
-            .confirmationDialog(
-                "Reset all local activity and category corrections on this Mac?",
-                isPresented: $confirmsClassificationReset,
-                titleVisibility: .visible
-            ) {
-                Button("Reset Corrections", role: .destructive) {
-                    menuStatusViewModel?.resetClassificationLearning()
-                }
-                Button("Cancel", role: .cancel) {}
+            } else {
+                CorrectionWorkbenchUnavailableView(title: submenu.title)
             }
 
         case .collectionSettings:
             VStack(spacing: 0) {
                 submenuTitle(submenu.title)
                 Toggle("Offline Event Collection", isOn: $collectionSettings.offlineEventCollectionEnabled)
-                .toggleStyle(.switch)
-                .font(.caption)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                    .toggleStyle(.switch)
+                    .font(VelvtType.body(12))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                 // The single invitation opt-out. The Rust service owns and
                 // enforces the setting; this toggle renders the reported
                 // state and sends the change. Off means silence — nothing
@@ -1452,13 +2461,14 @@ public struct MenuBarPopoverView: View {
                     )
                 )
                 .toggleStyle(.switch)
-                .font(.caption)
+                .font(VelvtType.body(12))
                 .padding(.horizontal, 16)
                 .padding(.bottom, 12)
                 .accessibilityHint("Off silences soft-start invitations entirely")
                 Button("Clear Local Work Blocks", role: .destructive) {
                     confirmsWorkBlockClear = true
                 }
+                .buttonStyle(VelvtDestructiveButtonStyle())
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -1480,24 +2490,31 @@ public struct MenuBarPopoverView: View {
                 Text(
                     "Replay the full first-run explanation or tour the live menu-bar interface again."
                 )
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(VelvtType.body(11))
+                .lineSpacing(VelvtType.bodySpacing(11))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 10)
                 Button("Replay Full Intro") {
-                    dismissSettingsSubmenus()
+                    clearSettingsSelection()
                     replayOnboarding?()
                     onEscape()
                 }
+                .buttonStyle(.plain)
+                .font(VelvtType.bodyEmphasis(13))
+                .foregroundStyle(VelvtPalette.signal)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 Button("Take Guided Tour") {
-                    dismissSettingsSubmenus()
+                    clearSettingsSelection()
                     startGuidedTour?()
                 }
+                .buttonStyle(.plain)
+                .font(VelvtType.bodyEmphasis(13))
+                .foregroundStyle(VelvtPalette.signal)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
@@ -1523,8 +2540,8 @@ public struct MenuBarPopoverView: View {
                     .frame(maxWidth: .infinity)
                     if let debugInsightStatus {
                         Text(debugInsightStatus)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(VelvtType.caption(10))
+                            .foregroundStyle(VelvtInk.secondaryOnInk)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 16)
@@ -1532,7 +2549,7 @@ public struct MenuBarPopoverView: View {
                     }
                     Button {
                         workBlockCoordinator.simulateDebugInvitation()
-                        dismissSettingsSubmenus()
+                        clearSettingsSelection()
                     } label: {
                         HStack {
                             Image(systemName: "sunrise")
@@ -1547,7 +2564,7 @@ public struct MenuBarPopoverView: View {
                     .frame(maxWidth: .infinity)
                     Button {
                         workBlockCoordinator.simulateDebugDemotion()
-                        dismissSettingsSubmenus()
+                        clearSettingsSelection()
                     } label: {
                         HStack {
                             Image(systemName: "pause.circle")
@@ -1562,7 +2579,7 @@ public struct MenuBarPopoverView: View {
                     .frame(maxWidth: .infinity)
                     Button {
                         workBlockCoordinator.simulateDebugWeeklyDigest()
-                        dismissSettingsSubmenus()
+                        clearSettingsSelection()
                     } label: {
                         HStack {
                             Image(systemName: "doc.plaintext")
@@ -1590,7 +2607,7 @@ public struct MenuBarPopoverView: View {
     }
 
     private func route(to step: GuidedTourStep) {
-        dismissSettingsSubmenus()
+        clearSettingsSelection()
         switch step {
         case .today, .earlySignal, .focusFragmentation, .statusAndRecovery:
             navigator.selectWorkspaceTab(.workBlock)
@@ -1610,20 +2627,26 @@ public struct MenuBarPopoverView: View {
         case .unknown:
             return PopoverConnectionPresentation(
                 label: "Checking Accessibility…",
-                color: .gray
+                color: VelvtInk.tertiaryOnInk
             )
         case .denied, .restricted:
             return PopoverConnectionPresentation(
                 label: "Collection paused: Accessibility permission required",
-                color: .yellow
+                color: VelvtPalette.signal
             )
         case .granted:
             break
         }
         if collectionActivityStatus.status == .running {
-            return PopoverConnectionPresentation(label: "Collection active", color: .green)
+            return PopoverConnectionPresentation(
+                label: "Collection active",
+                color: VelvtInk.affirmative
+            )
         }
-        return PopoverConnectionPresentation(label: "Collection paused", color: .yellow)
+        return PopoverConnectionPresentation(
+            label: "Collection paused",
+            color: VelvtPalette.signal
+        )
     }
 
     private var backendStatusLabel: String {
@@ -1724,6 +2747,33 @@ public struct MenuBarPopoverView: View {
         return date.formatted(date: .omitted, time: .shortened)
     }
 
+    /// Hands the user their own evidence, as a file, wherever they choose to
+    /// put it. A save panel rather than a fixed path: an export the app decides
+    /// the location of is the app's file, not the user's.
+    ///
+    /// The outcome is reported either way. A silent failure here is worse than
+    /// no button, because the user walks away believing they have a copy.
+    private func exportLocalData() {
+        let now = Date()
+        let document = LocalDataExport(
+            snapshot: localDashboardCoordinator.snapshot,
+            digest: workBlockCoordinator.weeklyDigest,
+            exportedAt: now
+        )
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = LocalDataExport.suggestedFilename(for: now)
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.title = "Export Velvt Data"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try document.encoded().write(to: url, options: .atomic)
+            exportMessage = "Exported \(document.days.count) observed days to \(url.lastPathComponent)."
+        } catch {
+            exportMessage = "Could not write the export: \(error.localizedDescription)"
+        }
+    }
+
     private func copyDiagnostics() {
         let status = menuStatusViewModel?.status
         let accountStatus: String
@@ -1734,8 +2784,8 @@ public struct MenuBarPopoverView: View {
         } else {
             accountStatus = "signed_out"
         }
-    let protocolVersion =
-      Bundle.main.object(
+        let protocolVersion =
+            Bundle.main.object(
                 forInfoDictionaryKey: "VelvtProtocolVersion"
             ) as? String ?? "unknown"
         let lines = [
@@ -1765,55 +2815,8 @@ public struct MenuBarPopoverView: View {
         }
     }
 
-    private func settingsRow(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-      HStack {
-        Text(title)
-        Spacer()
-        Image(systemName: "chevron.right").foregroundStyle(.secondary)
-      }
-            .contentShape(Rectangle()).padding(.horizontal, 16).padding(.vertical, 12)
-        }.buttonStyle(.plain).frame(maxWidth: .infinity)
-    }
-
-    private func settingsSubmenuRow(_ title: String, submenu: SettingsSubmenu) -> some View {
-    Button {
-      showSettingsSubmenu(submenu)
-    } label: {
-      HStack {
-        Text(title)
-        Spacer()
-        Image(systemName: "chevron.right").foregroundStyle(.secondary)
-      }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
-        .onHover { if $0 { showSettingsSubmenu(submenu) } }
-        .overlay(alignment: .trailing) {
-            SubmenuPopoverAnchor(
-                isPresented: submenuBinding(for: submenu)
-            ) {
-                ScrollView {
-                    settingsSubmenuContent(for: submenu)
-                }
-                .frame(width: 300, height: submenu.preferredHeight, alignment: .top)
-                .preferredColorScheme(.dark)
-            }
-            .frame(width: 1, height: 1)
-            .allowsHitTesting(false)
-        }
-    }
-
-    private func showSettingsSubmenu(_ submenu: SettingsSubmenu) {
-        guard presentedSettingsSubmenu != submenu else { return }
-        presentedSettingsSubmenu = submenu
-    }
-
-    private func dismissSettingsSubmenus() {
-        presentedSettingsSubmenu = nil
+    private func clearSettingsSelection() {
+        selectedSettingsDestination = nil
     }
 
     private func runDebugInsightSimulation() {
@@ -1834,65 +2837,38 @@ public struct MenuBarPopoverView: View {
         }
     }
 
-    private func submenuBinding(for submenu: SettingsSubmenu) -> Binding<Bool> {
-        Binding(
-            get: { presentedSettingsSubmenu == submenu },
-            set: { isPresented in
-                if isPresented {
-                    showSettingsSubmenu(submenu)
-                } else if presentedSettingsSubmenu == submenu {
-                    dismissSettingsSubmenus()
-                }
-            }
-        )
-    }
     private func infoRow(_ title: String, _ value: String) -> some View {
-    HStack {
-      Text(title).foregroundStyle(.secondary)
-      Spacer()
-      Text(value).lineLimit(1).truncationMode(.middle)
-    }
-        .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
+        HStack {
+            Text(title).foregroundStyle(VelvtInk.secondaryOnInk)
+            Spacer()
+            Text(value).lineLimit(1).truncationMode(.middle).foregroundStyle(VelvtInk.primaryOnInk)
+        }
+        .font(VelvtType.body(11)).padding(.horizontal, 16).padding(.vertical, 7)
     }
     private func authenticationInfoRow() -> some View {
         let presentation = authenticationPresentation
         return HStack(spacing: 7) {
-            Text("Authentication").foregroundStyle(.secondary)
+            Text("Authentication").foregroundStyle(VelvtInk.secondaryOnInk)
             Spacer()
             Text(presentation.text)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .foregroundStyle(VelvtInk.primaryOnInk)
             Circle()
-                .fill(presentation.indicatorColor == .green ? Color.green : Color.red)
+                .fill(
+                    presentation.indicatorColor == .green
+                        ? VelvtInk.affirmative
+                        : VelvtPalette.signal
+                )
                 .frame(width: 7, height: 7)
         }
-        .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
+        .font(VelvtType.body(11)).padding(.horizontal, 16).padding(.vertical, 7)
     }
-    private var classificationExplanation: some View {
-        Text(
-            "Velvt categorizes activity on this Mac. Unclassified means it is not sure. "
-                + "Give an activity a local name and category to teach similar activity. "
-                + "Saved corrections remain available after upload; raw app and window details "
-                + "stay on this Mac."
-        )
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
-        .accessibilityLabel(
-            "How categories work. Velvt categorizes activity on this Mac. "
-                + "Unclassified means it is not sure. Local names and categories teach similar "
-                + "activity and remain after upload. Raw app and window details stay on this Mac."
-        )
-    }
-
-  private func statusRow(
-    _ title: String, presentation: PopoverConnectionPresentation, refresh: @escaping () -> Void
-  ) -> some View {
+    private func statusRow(
+        _ title: String, presentation: PopoverConnectionPresentation, refresh: @escaping () -> Void
+    ) -> some View {
         HStack(spacing: 7) {
-            Text(title).foregroundStyle(.secondary)
+            Text(title).foregroundStyle(VelvtInk.secondaryOnInk)
             Spacer()
             Button(action: refresh) {
                 Text(presentation.label)
@@ -1902,15 +2878,444 @@ public struct MenuBarPopoverView: View {
             .help("Click to refresh status")
             Circle().fill(presentation.color).frame(width: 7, height: 7)
         }
-        .font(.caption).padding(.horizontal, 16).padding(.vertical, 7)
+        .font(VelvtType.body(11)).padding(.horizontal, 16).padding(.vertical, 7)
     }
 
     private func submenuTitle(_ title: String) -> some View {
         Text(title)
-            .font(.headline)
+            .velvtHeading(15)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+    }
+}
+
+/// The correction workbench, extracted so that it actually observes the model
+/// it renders.
+///
+/// `MenuBarPopoverView` holds `MenuStatusViewModel` as a plain `let`, not an
+/// `@ObservedObject` — an `@ObservedObject` cannot be optional. So nothing in
+/// this surface was subscribed to the model that publishes corrections: the
+/// queued rows, the saved-corrections list and the service's "correction
+/// saved" confirmation all redrew only when some *unrelated* observed object
+/// happened to publish. The confirmation clears itself after six seconds, so
+/// whether the user ever saw the acknowledgement for the correction they just
+/// made came down to whether an event happened to be captured inside that
+/// window. Taking the model non-optionally here restores the subscription.
+/// The applications Velvt could not read, each one a single answer away from
+/// being understood from now on.
+///
+/// The rest of this destination corrects a *moment* Velvt got wrong. This
+/// corrects the reason it got it wrong, once, for the whole application —
+/// which is the difference between teaching that scales and teaching that
+/// never ends.
+///
+/// Nothing here is a total and nothing here is a score. The list is the work
+/// Velvt has not done yet, so an empty list is the finished state and the copy
+/// says so in those terms rather than reporting a nothing.
+struct UnclassifiedAppTriageSection: View {
+    @ObservedObject var menuStatus: MenuStatusViewModel
+
+    /// The most rows this section will draw.
+    ///
+    /// The service caps the list at eight for the reason the contract gives —
+    /// thirty one-second curiosities is not a task anyone will do — and this
+    /// holds the same line locally so a service that ever sends more cannot
+    /// turn a task back into an inventory.
+    static let maximumRows = 8
+
+    /// Contract § 5, verbatim, except that one application is "app".
+    ///
+    /// The template is `{n} apps`; rendering "1 apps" would read as a bug in
+    /// the very sentence that asks the user for help, so the singular is
+    /// spelled and nothing else about the line changes.
+    static func headline(appCount: Int) -> String {
+        "Velvt could not read \(appCount) \(appCount == 1 ? "app" : "apps") you used this week."
+    }
+
+    /// Contract § 5, verbatim.
+    static let invitationCopy = "Tell it what they are and it will know from now on."
+
+    /// The good state, said as one: what Velvt *can* do, not a count of zero.
+    static let emptyCopy =
+        "Velvt could read every app you used this week. There is nothing here to teach it."
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            content
+            // Drawn here rather than with the workbench's own banner because
+            // this section sits at the top of a long scroll: a confirmation
+            // for a tap made here would otherwise be rendered several hundred
+            // points below the row that produced it.
+            if let acknowledgment = menuStatus.correctionAcknowledgment,
+                menuStatus.acknowledgmentOrigin == .application
+            {
+                Label(acknowledgment, systemImage: "checkmark.circle")
+                    .font(VelvtType.body(11))
+                    .foregroundStyle(VelvtInk.affirmativeOnInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(acknowledgment)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+        .onAppear { menuStatus.refreshUnclassifiedTriage() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let triageError = menuStatus.triageError {
+            // A failure must not borrow the empty state's sentence: "Velvt
+            // could read every app" would be a claim the service just said it
+            // could not make.
+            Text(triageError)
+                .font(VelvtType.body(11))
+                .lineSpacing(VelvtType.bodySpacing(11))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else if let triage = menuStatus.unclassifiedTriage {
+            if triage.entries.isEmpty {
+                Text(Self.emptyCopy)
+                    .font(VelvtType.body(11))
+                    .lineSpacing(VelvtType.bodySpacing(11))
+                    .foregroundStyle(VelvtInk.affirmativeOnInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(Self.emptyCopy)
+            } else {
+                rows(Array(triage.entries.prefix(Self.maximumRows)))
+            }
+        } else {
+            // Not an empty list and not an error: the question has been asked
+            // and not yet answered.
+            Text("Checking which apps Velvt could not read…")
+                .font(VelvtType.caption(10))
+                .foregroundStyle(VelvtInk.tertiaryOnInk)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func rows(_ entries: [UnclassifiedTriageEntry]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Self.headline(appCount: entries.count))
+                    .font(VelvtType.bodyEmphasis(12))
+                    .foregroundStyle(VelvtInk.primaryOnInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(Self.invitationCopy)
+                    .font(VelvtType.body(11))
+                    .lineSpacing(VelvtType.bodySpacing(11))
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(entries) { entry in
+                    UnclassifiedAppTriageRow(
+                        entry: entry,
+                        onTeach: { category in
+                            menuStatus.teachApplication(entry, category: category)
+                        }
+                    )
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Apps Velvt could not read")
+        }
+    }
+}
+
+/// One application, the time it was on screen, and the question.
+private struct UnclassifiedAppTriageRow: View {
+    let entry: UnclassifiedTriageEntry
+    let onTeach: (String) -> Void
+
+    /// The sentinel the picker starts on.
+    ///
+    /// A `Picker` bound to a real category would arrive pre-answered, and
+    /// choosing the value it was already showing fires no change — so the one
+    /// app whose category matched the default would be untappable. An empty
+    /// tag means "not answered yet", which is also the truth.
+    private static let unanswered = ""
+
+    @State private var category = UnclassifiedAppTriageRow.unanswered
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.displayName)
+                    .font(VelvtType.bodyEmphasis(11))
+                    .foregroundStyle(VelvtInk.primaryOnInk)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                // Not `VelvtInk.measurementOnInk`: that is signal, which the
+                // palette's own table measures at 4.17:1 on ink and reserves
+                // for large bold type. This duration is 10.5pt.
+                Text(observedDescription)
+                    .font(VelvtType.caption(10.5).monospacedDigit())
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Picker("Category", selection: $category) {
+                Text("What is this?").tag(Self.unanswered)
+                ForEach(QueuedEventPresentation.teachableCategories, id: \.self) { value in
+                    Text(QueuedEventPresentation.category(value)).tag(value)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.small)
+            .font(VelvtType.body(11))
+            .frame(maxWidth: 150)
+            .accessibilityLabel("What \(entry.displayName) is")
+            .onChange(of: category) { value in
+                guard value != Self.unanswered else { return }
+                onTeach(value)
+            }
+        }
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(entry.displayName), \(observedDescription)")
+    }
+
+    /// Facts, in the order they matter: how long, then how often. No share of
+    /// the week — a percentage of a period is a report about the period.
+    private var observedDescription: String {
+        "\(DurationText.compact(entry.secondsObserved)) observed · \(entry.eventCount) "
+            + (entry.eventCount == 1 ? "time" : "times")
+    }
+}
+
+struct CorrectionWorkbenchView: View {
+    @ObservedObject var menuStatus: MenuStatusViewModel
+    @ObservedObject var localDashboard: LocalDashboardCoordinator
+    let title: String
+    @State private var confirmsReset = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(title)
+                .velvtHeading(15)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            explanation
+            // First, because it is the cheapest teaching on the surface: one
+            // answer per application instead of one per event, and it removes
+            // the reason the rows below it need correcting at all.
+            sectionLabel("Apps Velvt could not read")
+            UnclassifiedAppTriageSection(menuStatus: menuStatus)
+
+            Divider().padding(.vertical, 6)
+            sectionLabel("Activities on this Mac")
+            // The activity rows. They arrived here from the Patterns tab,
+            // where the same data was drawn as a seven-day stacked chart with
+            // a percentage column — the literal Screen Time artifact, and the
+            // single strongest reason the product read as a tracker. The rows
+            // are the affordance for choosing something to correct, so they
+            // are kept; the week and the percentages are not.
+            LocalActivityCorrectionList(
+                snapshot: localDashboard.snapshot,
+                onCorrectActivity: { segment, category, localName in
+                    guard
+                        let eventID = segment.representativeEventID,
+                        let stableID = segment.stableID
+                    else { return }
+                    menuStatus.correct(
+                        eventID: eventID,
+                        stableID: stableID,
+                        category: category,
+                        localActivityName: localName
+                    )
+                },
+                onUndoActivity: { segment in
+                    guard let stableID = segment.stableID else { return }
+                    menuStatus.undoCorrection(stableID: stableID)
+                }
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+
+            Divider().padding(.vertical, 6)
+            sectionLabel(
+                "Waiting to sync (\(menuStatus.status?.queuedEventCount ?? 0))"
+            )
+            queuedEventRows
+
+            Divider().padding(.vertical, 6)
+            // "Rules", not "corrections": the list now holds both the
+            // corrections the user made to a window and the apps they taught
+            // Velvt outright, and only one of those two is a correction.
+            sectionLabel("Saved rules")
+            CorrectionHistoryBrowser(model: menuStatus)
+
+            if let sendError = menuStatus.sendError {
+                Text(sendError)
+                    .font(VelvtType.body(11))
+                    .foregroundStyle(VelvtPalette.signal)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            }
+            // The correction is already saved by the time this appears.
+            // Copy comes from the service verbatim so the confirmation says
+            // exactly what changed and for how long.
+            //
+            // Protocol 30 made Remove and Reset acknowledge too, and both live
+            // in this half of the surface — Remove in the saved-corrections
+            // list directly above, Reset in the button directly below — so
+            // this is where their confirmation belongs. A teach from the
+            // triage list is confirmed up there instead, beside the row that
+            // was tapped, which is what `acknowledgmentOrigin` distinguishes.
+            if let acknowledgment = menuStatus.correctionAcknowledgment,
+                menuStatus.acknowledgmentOrigin != .application
+            {
+                Label(acknowledgment, systemImage: "checkmark.circle")
+                    .font(VelvtType.body(11))
+                    .foregroundStyle(VelvtInk.affirmative)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .accessibilityLabel(acknowledgment)
+            }
+
+            Divider().padding(.top, 8)
+            Button("Retry Cloud Synchronization") { menuStatus.sendAllNow() }
+                .buttonStyle(.plain)
+                .font(VelvtType.bodyEmphasis(13))
+                .foregroundStyle(VelvtPalette.signal)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+            Button("Reset Local Activity Corrections", role: .destructive) {
+                confirmsReset = true
+            }
+            .buttonStyle(VelvtDestructiveButtonStyle())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .onAppear {
+            menuStatus.refresh()
+            localDashboard.refresh()
+        }
+        // Redraw the activity rows off the service's own confirmation that a
+        // correction was taken, not off the click that requested it.
+        //
+        // The two commands travel over one actor-isolated socket client on two
+        // unstructured tasks, so a dashboard request fired immediately after a
+        // correction can reach the router first and rebuild the rows from
+        // pre-correction data. The router then has nothing further to push,
+        // and `LocalDashboardCoordinator` only refreshes on a work-block
+        // message, on reconnect, or on appear — so the corrected label could
+        // stay wrong on screen indefinitely. The acknowledgement cannot arrive
+        // before the correction has been written, which makes it the one
+        // signal that is safe to refresh on.
+        .onChange(of: menuStatus.correctionAcknowledgment) { acknowledgment in
+            guard acknowledgment != nil else { return }
+            localDashboard.refresh()
+        }
+        .confirmationDialog(
+            // Names the apps too: since protocol 30 this also removes every
+            // rule taught from the triage list, and a dialog that only warned
+            // about "corrections" would be understating what the button does.
+            "Reset every correction and every app you have taught Velvt on this Mac?",
+            isPresented: $confirmsReset,
+            titleVisibility: .visible
+        ) {
+            Button("Reset Corrections", role: .destructive) {
+                menuStatus.resetClassificationLearning()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    @ViewBuilder
+    private var queuedEventRows: some View {
+        let queuedEvents = Array((menuStatus.status?.queuedEvents ?? []).prefix(10))
+        if queuedEvents.isEmpty {
+            Text("Nothing is waiting to sync.")
+                .font(VelvtType.body(11))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+        } else {
+            // No scroll view of its own. The list is capped at ten rows by the
+            // service, and a 190pt scroll view nested inside the submenu's own
+            // scroll view meant a wheel gesture over these rows moved the
+            // inner list and then stopped, instead of continuing down to the
+            // saved corrections below it.
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(queuedEvents) { event in
+                    QueuedEventCorrectionRow(
+                        event: event,
+                        onSave: { category, activityName in
+                            menuStatus.correct(
+                                event,
+                                category: category,
+                                localActivityName: activityName
+                            )
+                        },
+                        onUndo: { menuStatus.undoCorrection(event) }
+                    )
+                }
+            }
+        }
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        VelvtEyebrow(text, onPaper: false)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+    }
+
+    private var explanation: some View {
+        Text(Self.explanationCopy)
+            .font(VelvtType.body(11))
+            .lineSpacing(VelvtType.bodySpacing(11))
+            .foregroundStyle(VelvtInk.secondaryOnInk)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+            .accessibilityLabel(Self.explanationCopy)
+    }
+
+    /// 05 § 2, verbatim. It is the whole framing of this surface: not a report
+    /// on the user, a place where the user corrects the software.
+    static let explanationCopy =
+        "Velvt gets these wrong sometimes. Fixing one here fixes it everywhere, on this Mac only — nothing about it ever syncs."
+}
+
+/// Shown when the correction workbench has no service connection behind it.
+struct CorrectionWorkbenchUnavailableView: View {
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(title)
+                .velvtHeading(15)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            Text(
+                "The local privacy service is not connected, so there is nothing to correct yet."
+            )
+            .font(VelvtType.body(11))
+            .lineSpacing(VelvtType.bodySpacing(11))
+            .foregroundStyle(VelvtInk.secondaryOnInk)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        }
     }
 }
 
@@ -1925,18 +3330,18 @@ private struct GuidedTourBar: View {
         .padding(.horizontal, 14)
         .padding(.top, 11)
         .padding(.bottom, 16)
-        .background(Color.velvtPanel)
+        .background(VelvtSurface.cardFlat)
         .accessibilityElement(children: .contain)
     }
 
     private var tourCopy: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text("\(model.progressLabel) · \(model.step.title)")
-                .font(.caption.bold())
-                .foregroundStyle(Color.velvtText)
+                .font(VelvtType.heading(12))
+                .foregroundStyle(VelvtInk.primaryOnInk)
             Text(model.step.detail)
-                .font(.caption2)
-                .foregroundStyle(Color.velvtMuted)
+                .font(VelvtType.body(11))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
                 .lineLimit(2)
                 .accessibilityLabel(model.step.detail)
         }
@@ -1949,146 +3354,25 @@ private struct GuidedTourBar: View {
         HStack(alignment: .center) {
             Button("Skip tour") { model.dismiss() }
                 .buttonStyle(.plain)
+                .font(VelvtType.body(11))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
             Spacer(minLength: 16)
             HStack(spacing: 8) {
                 Button("Back") { model.goBack() }
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
                     .disabled(!model.canGoBack)
                 Button(model.isLastStep ? "Done" : "Next") { model.advance() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(VelvtPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .tint(Color.velvtPink)
+        .tint(VelvtPalette.crimson)
     }
 }
 
-private extension String {
-    var nilIfBlank: String? {
+extension String {
+    fileprivate var nilIfBlank: String? {
         trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
-    }
-}
-
-private struct SubmenuPopoverAnchor<Content: View>: NSViewRepresentable {
-    @Binding var isPresented: Bool
-    let content: () -> Content
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(isPresented: $isPresented)
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        NSView()
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.updateBinding($isPresented)
-        let popover = context.coordinator.popover
-        let contentViewController = context.coordinator.host(content())
-
-        if isPresented {
-            let targetView = nsView.bounds.isEmpty ? (nsView.superview ?? nsView) : nsView
-            let sourceRect = NSRect(
-                x: targetView.bounds.maxX - 1,
-                y: targetView.bounds.midY,
-                width: 1,
-                height: 1
-            )
-            contentViewController.view.layoutSubtreeIfNeeded()
-            let contentSize = contentViewController.view.fittingSize
-            popover.contentSize = contentSize
-
-            if !popover.isShown {
-                popover.show(relativeTo: sourceRect, of: targetView, preferredEdge: .maxX)
-            }
-            if let window = popover.contentViewController?.view.window,
-        let sourceFrame = targetView.window?.convertToScreen(
-          targetView.convert(targetView.bounds, to: nil))
-      {
-                window.setFrame(
-                    SubmenuPopoverPlacement.frame(
-                        sourceFrameInScreen: sourceFrame,
-                        submenuContentSize: contentSize,
-                        sourceMenuFrameInScreen: targetView.window?.frame,
-                        currentWindowFrame: window.frame
-                    ),
-                    display: true
-                )
-            }
-        } else if !isPresented, popover.isShown {
-            popover.performClose(nil)
-        }
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.dismantle()
-    }
-
-    final class Coordinator: NSObject, NSPopoverDelegate {
-        let popover = NSPopover()
-        private var contentViewController: NSHostingController<Content>?
-        private var setPresented: (Bool) -> Void
-        private var isDismantling = false
-
-        init(isPresented: Binding<Bool>) {
-            setPresented = { isPresented.wrappedValue = $0 }
-            super.init()
-            popover.behavior = .semitransient
-            popover.delegate = self
-        }
-
-        func host(_ content: Content) -> NSHostingController<Content> {
-            if let contentViewController {
-                contentViewController.rootView = content
-                return contentViewController
-            }
-            let contentViewController = NSHostingController(rootView: content)
-            self.contentViewController = contentViewController
-            popover.contentViewController = contentViewController
-            return contentViewController
-        }
-
-        func updateBinding(_ isPresented: Binding<Bool>) {
-            setPresented = { isPresented.wrappedValue = $0 }
-        }
-
-        func dismantle() {
-            isDismantling = true
-            popover.delegate = nil
-            popover.close()
-            popover.contentViewController = nil
-            contentViewController = nil
-        }
-
-        func popoverDidClose(_ notification: Notification) {
-            guard !isDismantling else { return }
-            setPresented(false)
-        }
-    }
-}
-
-struct SubmenuPopoverPlacement {
-    static func frame(
-        sourceFrameInScreen: CGRect,
-        submenuContentSize: CGSize,
-        sourceMenuFrameInScreen: CGRect? = nil,
-        currentWindowFrame: CGRect? = nil
-    ) -> CGRect {
-        let x = currentWindowFrame?.minX ?? sourceFrameInScreen.maxX
-        let centeredY = sourceFrameInScreen.midY - submenuContentSize.height / 2
-        let y: CGFloat
-        if let sourceMenuFrameInScreen,
-      centeredY + submenuContentSize.height > sourceMenuFrameInScreen.maxY
-    {
-            y = sourceMenuFrameInScreen.maxY - submenuContentSize.height
-        } else {
-            y = centeredY
-        }
-        return CGRect(
-            x: x,
-            y: y,
-            width: submenuContentSize.width,
-            height: submenuContentSize.height
-        )
     }
 }
 
@@ -2099,48 +3383,59 @@ private struct MenuBarAccountControls: View {
     @State private var showsAuthentication = false
     init(accountStateManager: AccountStateManager, ipcClient: any IPCClientProtocol) {
         self.accountStateManager = accountStateManager
-    _authViewModel = StateObject(
-      wrappedValue: AuthViewModel(accountStateManager: accountStateManager, ipcClient: ipcClient))
+        _authViewModel = StateObject(
+            wrappedValue: AuthViewModel(accountStateManager: accountStateManager, ipcClient: ipcClient))
     }
     var body: some View {
         Group {
             switch accountStateManager.accountState {
             case .loggingIn: ProgressView("Signing in").controlSize(.small)
             case .loggingOut: ProgressView("Signing out").controlSize(.small)
-      case .pendingErasure:
-        Text("Account deletion in progress").font(.caption).foregroundStyle(.secondary)
+            case .pendingErasure:
+                Text("Account deletion in progress").font(VelvtType.body(11)).foregroundStyle(
+                    VelvtInk.secondaryOnInk)
             default:
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 8) {
-            ForEach(
-              Array(
-                MenuBarAccountActionResolver.actions(for: accountStateManager.accountState)
-                  .enumerated()), id: \.offset
-            ) { _, action in actionButton(for: action) }
+                        ForEach(
+                            Array(
+                                MenuBarAccountActionResolver.actions(for: accountStateManager.accountState)
+                                    .enumerated()), id: \.offset
+                        ) { _, action in actionButton(for: action) }
                     }
                     if let error = authViewModel.errorMessage {
                         Text(error)
-                            .font(.caption2)
-                            .foregroundStyle(.red)
+                            .font(VelvtType.caption(10))
+                            .foregroundStyle(VelvtPalette.signal)
                     }
                 }
             }
         }
         .sheet(isPresented: $showsAuthentication) {
-      MenuBarAuthenticationView(
-        authViewModel: authViewModel, accountStateManager: accountStateManager,
-        initialMode: authenticationMode, dismiss: { showsAuthentication = false })
+            MenuBarAuthenticationView(
+                authViewModel: authViewModel, accountStateManager: accountStateManager,
+                initialMode: authenticationMode, dismiss: { showsAuthentication = false })
         }
     }
     @ViewBuilder private func actionButton(for action: MenuBarAccountAction) -> some View {
         switch action {
-    case .authenticate(let mode):
-      Button(mode == .logIn ? signInLabel : "Sign Up") {
-        authenticationMode = mode
-        authViewModel.authMode = mode
-        showsAuthentication = true
-      }
-        case .logOut: Button("Log Out", role: .destructive) { authViewModel.logOut() }
+        case .authenticate(let mode):
+            Button(mode == .logIn ? signInLabel : "Sign Up") {
+                authenticationMode = mode
+                authViewModel.authMode = mode
+                showsAuthentication = true
+            }
+            // The guide allows one crimson action per surface. Sign in is the
+            // returning path and leads; sign up sits beside it as the alternative.
+            // Presentation only — both buttons do exactly what they did before.
+            .buttonStyle(
+                mode == .logIn
+                    ? AnyButtonStyle(VelvtPrimaryButtonStyle())
+                    : AnyButtonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+            )
+        case .logOut:
+            Button("Log Out", role: .destructive) { authViewModel.logOut() }
+                .buttonStyle(VelvtDestructiveButtonStyle())
         case .deleteAccount: EmptyView()
         }
     }
@@ -2168,7 +3463,7 @@ private struct SettingsAccountDeletionButton: View {
             Button("Delete Account", role: .destructive) {
                 authViewModel.requestAccountDeletion()
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(VelvtDestructiveButtonStyle())
             .confirmationDialog(
                 "Delete your Velvt account? This request cannot be undone.",
                 isPresented: Binding(
@@ -2183,7 +3478,7 @@ private struct SettingsAccountDeletionButton: View {
                 Button("Cancel", role: .cancel) { authViewModel.cancelAccountDeletion() }
             } message: {
                 Text(
-                    "Velvt deletes behavioral data and disables authentication. It retains only an anonymized account record and the erasure/audit records required to prove deletion completed."
+                    "Deletes your account and the activity stored for it in the cloud, keeping only an anonymized account record and the erasure/audit records required to prove deletion completed. Activity waiting to upload from this Mac is destroyed and never sent. Everything else Velvt has stored locally stays on this Mac; delete ~/.velvt/ to remove it."
                 )
             }
         }
@@ -2197,32 +3492,42 @@ private struct MenuBarAuthenticationView: View {
     let dismiss: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-      Text(authViewModel.authMode == .signUp ? "Create your account" : "Welcome back").font(
-        .title3.bold())
+            Text(authViewModel.authMode == .signUp ? "Create your account" : "Welcome back")
+                .velvtDisplay(22)
             CredentialTextField(placeholder: "Email", text: $authViewModel.email)
             CredentialTextField(placeholder: "Password", text: $authViewModel.password, isSecure: true)
-            if let error = authViewModel.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
-      HStack {
-        Button("Cancel", action: dismiss)
-        Spacer()
-        Button(authViewModel.authMode == .signUp ? "Create Account" : "Sign In") {
-          Task {
-            if authViewModel.authMode == .signUp {
-              await authViewModel.signUp()
-            } else {
-              await authViewModel.logIn()
+            if authViewModel.authMode == .logIn {
+                Button("Forgot password?") { authViewModel.openForgotPasswordPage() }
+                    .buttonStyle(.plain).font(VelvtType.body(11))
+                    .foregroundStyle(VelvtInk.labelOnInk)
+                    .accessibilityHint("Opens getvelvt.com in your browser")
             }
-          }
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(!authViewModel.canSubmitCredentials)
-      }
-      Button(
-        authViewModel.authMode == .signUp ? "I already have an account" : "Create a new account"
-      ) { authViewModel.toggleAuthMode() }.buttonStyle(.plain).font(.caption).foregroundStyle(
-        .secondary)
-    }.padding(24).frame(width: 360).onAppear { authViewModel.authMode = initialMode }.onChange(
-      of: accountStateManager.accountState
-    ) { if case .loggedIn = $0 { dismiss() } }
+            if let error = authViewModel.errorMessage {
+                Text(error).font(VelvtType.body(11)).foregroundStyle(VelvtPalette.signal)
+            }
+            HStack {
+                Button("Cancel", action: dismiss)
+                    .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+                Spacer()
+                Button(authViewModel.authMode == .signUp ? "Create Account" : "Sign In") {
+                    Task {
+                        if authViewModel.authMode == .signUp {
+                            await authViewModel.signUp()
+                        } else {
+                            await authViewModel.logIn()
+                        }
+                    }
+                }
+                .buttonStyle(VelvtPrimaryButtonStyle())
+                .disabled(!authViewModel.canSubmitCredentials)
+            }
+            Button(
+                authViewModel.authMode == .signUp ? "I already have an account" : "Create a new account"
+            ) { authViewModel.toggleAuthMode() }.buttonStyle(.plain).font(VelvtType.body(11))
+                .foregroundStyle(VelvtInk.labelOnInk)
+        }.padding(24).frame(width: 360).background(VelvtSurface.ground)
+            .onAppear { authViewModel.authMode = initialMode }.onChange(
+                of: accountStateManager.accountState
+            ) { if case .loggedIn = $0 { dismiss() } }
     }
 }

@@ -18,9 +18,23 @@
         "app_name": { "type": "string" },
         "window_title": { "type": "string" },
         "bundle_id": { "type": ["string", "null"] },
+        "declared_app_category": {
+          "type": ["string", "null"],
+          "description": "LSApplicationCategoryType declared in the application's own Info.plist. A fact read off disk; which values mean anything is decided in Rust, and most mean nothing. Local IPC only."
+        },
+        "document_type_ids": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "description": "LSItemContentTypes declared across CFBundleDocumentTypes, flattened, deduplicated and sorted by the client. An oversized list is sent empty rather than truncated: a truncated list is a set the application never declared. The bound is 256, above every measured application (Xcode declares 152). An over-bound list costs the declaration only; the event and its duration are kept. Local IPC only."
+        },
         "focused_document_url": {
           "type": ["string", "null"],
           "description": "Raw focused browser document URL. Local IPC only; Rust must normalize and discard it before persistence."
+        },
+        "in_progress": {
+          "type": "boolean",
+          "description": "Protocol 32. True when the dwell has only just begun: the activity became frontmost at occurred_at and nothing has been measured yet, so duration_seconds carries no information. Rust feeds it to the in-block drift gate and nothing else: it is never stored and never uploaded. The same dwell is sent again, closed, with its measured duration when the person leaves it. Absent or false: a closed dwell, which is all a pre-32 client ever sent."
         }
       }
     }

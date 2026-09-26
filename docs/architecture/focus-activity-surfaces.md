@@ -8,7 +8,7 @@ grounded observation and next action remain above that control.
 
 - Rust performs all bounded history queries and derives timeline blocks,
   deduplicated category transitions, clusters, longest stretches, recoveries,
-  coverage, comparison eligibility, seven local day rows, label buckets,
+  coverage, comparison eligibility, `DAILY_ACTIVITY_DAYS` (14) local day rows, label buckets,
   `Other`, percentages, and grounded detail evidence.
 - Swift renders the DTO and stores only the selected segment in `UserDefaults`.
   It never scans events or derives behavioral metrics.
@@ -39,7 +39,8 @@ and is not emitted by this implementation; no single day is called a baseline.
 
 ## Daily Activity rule
 
-Rust uses seven indexed local-calendar queries, each capped at 2,048 events.
+Rust uses one indexed local-calendar query per row, `DAILY_ACTIVITY_DAYS` (14)
+of them, each capped at `MAX_DAY_EVENTS` (16,384) events.
 High/medium-confidence rows use their curated local display label, then fall
 back to the safe category. Weak rows become `Unclassified`. Buckets under one
 minute or five percent and buckets after the five largest labels merge into one

@@ -3,6 +3,18 @@
 //! R1 owns transport, framing, version negotiation, and typed message
 //! validation. It does not implement event processing or later service layers.
 
+/// The behavioural layer: the frozen feature contract and the retention that
+/// bounds the durable substrate it reads.
+///
+/// Declared here rather than in `lib.rs` only because this lane does not own
+/// `lib.rs`. It belongs in the library — nothing about it is entry-point
+/// specific, and the online and offline models will both need to import it.
+/// Moving it is a one-line change: add `pub mod behavior;` to `src/lib.rs`,
+/// delete this declaration, and drop the `#![allow(dead_code)]` at the top of
+/// `behavior/features.rs`, which exists only because a binary crate has no
+/// notion of a symbol that is public for someone else to use.
+mod behavior;
+
 #[tokio::main]
 async fn main() {
     if let Some(argument) = std::env::args().nth(1) {
@@ -12,9 +24,14 @@ async fn main() {
                 return;
             }
             "--version" => {
-                println!("{}", env!("CARGO_PKG_VERSION"));
+                println!("{}", velvt_service::build_info::SERVICE_VERSION);
                 return;
             }
+            "--source-commit" => {
+                println!("{}", velvt_service::build_info::SOURCE_COMMIT);
+                return;
+            }
+            "--dry-run-egress" => std::process::exit(dry_run_egress().await),
             _ => {}
         }
     }
@@ -59,12 +76,46 @@ async fn main() {
         return;
     }
 
-    let Ok(persistence) = SqlitePersistence::open(&config.database_path) else {
-        tracing::error!(
-            error_code = "persistence_initialization_failed",
-            "service startup halted"
-        );
-        return;
+    let (persistence, migration_report) = match SqlitePersistence::open_with_migration_report(
+        &config.database_path,
+    ) {
+        Ok(opened) => opened,
+        Err(velvt_service::persistence::PersistenceError::MigrationNameMismatch {
+            version,
+            recorded,
+            embedded,
+        }) => {
+            // Named in full: the fix is a human decision about this database,
+            // and the two file names are the whole of what that person needs.
+            tracing::error!(
+                error_code = "migration_name_mismatch",
+                version,
+                recorded = recorded.as_str(),
+                embedded,
+                "service startup halted: this database applied a different migration under the same number"
+            );
+            return;
+        }
+        // A debug build only: release builds open the database and report the
+        // mismatch in `migration_report` (see `MigrationChecksumPolicy`).
+        Err(velvt_service::persistence::PersistenceError::MigrationChecksumMismatch(mismatch)) => {
+            tracing::error!(
+                error_code = "migration_checksum_mismatch",
+                version = mismatch.version,
+                name = mismatch.name,
+                recorded = mismatch.recorded.as_str(),
+                embedded = mismatch.embedded.as_str(),
+                "service startup halted: this database applied a different version of a migration than this build carries"
+            );
+            return;
+        }
+        Err(_) => {
+            tracing::error!(
+                error_code = "persistence_initialization_failed",
+                "service startup halted"
+            );
+            return;
+        }
     };
     let Ok(taxonomy) = Taxonomy::from_path(&config.abstraction_taxonomy_path) else {
         tracing::error!(
@@ -83,7 +134,33 @@ async fn main() {
     }
     let embedding_plugin = load_embedding_plugin(&config, &taxonomy)
         .or_else(|| {
-            velvt_service::abstraction::EmbeddingSimilarityPlugin::builtin(taxonomy.version()).ok()
+            // The shipped Tier 2 fallback runs on this install's salt. Without
+            // it the hash family is the one written out in `plugin.rs`, so the
+            // sketches this caches in `semantic_embedding_cache` are readable
+            // back to words by anyone holding the file and the public source,
+            // with nothing taken off the device.
+            //
+            // A salt the database cannot produce disables Tier 2 rather than
+            // falling back to `EmbeddingSalt::UNSALTED`: an unsalted classifier
+            // wired in here would keep caching recoverable sketches while
+            // migration 0031 and PRIVACY.md both describe a salted one. Tier 1
+            // and Tier 3 still classify, so the cost is classification quality
+            // rather than a property the documents assert.
+            let salt = persistence
+                .abstraction_map_repo()
+                .embedding_salt()
+                .inspect_err(|_| {
+                    tracing::warn!(
+                        error_code = "embedding_salt_unavailable",
+                        "Tier 2 classification disabled"
+                    );
+                })
+                .ok()?;
+            velvt_service::abstraction::EmbeddingSimilarityPlugin::builtin_salted(
+                taxonomy.version(),
+                salt,
+            )
+            .ok()
         })
         .map(|plugin| plugin.with_learning_store(persistence.semantic_learning_store()));
     // Tracked before the plugin is consumed below: true only when an operator
@@ -105,6 +182,7 @@ async fn main() {
 
     #[cfg(unix)]
     {
+        use crate::behavior::OutOfBlockRunRetentionTarget;
         use std::sync::Arc;
         use velvt_service::auth::{
             AccountAuthService, AuthManager, AuthState, AuthStateMachine, HttpClient,
@@ -119,8 +197,10 @@ async fn main() {
         use velvt_service::ipc::{MenuStatusProvider, R7Router, ReconnectTracker};
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
-            CacheRetentionTarget, RawEventRetentionTarget, RetentionScheduler,
-            UploadBatchRetentionTarget, WorkBlockIntentionRetentionTarget,
+            AbstractionMapRetentionTarget, CacheRetentionTarget, EgressLedgerRetentionTarget,
+            InterventionDecisionOutcomeTarget, RawEventRetentionTarget, RetentionScheduler,
+            SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+            WorkBlockIntentionRetentionTarget,
         };
         use velvt_service::upload::{
             BatchAssembler, EventIngestor, HttpBatchUploader, SharedUploadBatcher, UploadBatcher,
@@ -140,7 +220,12 @@ async fn main() {
 
         let (auth_session_tx, mut auth_session_rx) = tokio::sync::mpsc::unbounded_channel();
         let token_store = Arc::new(VolatileTokenStore::with_update_sender(auth_session_tx));
-        let raw_http = Arc::new(ReqwestHttpClient::new(config.upload_api_base_url.clone()));
+        // The only network client. It appends every request to the egress
+        // ledger before sending it, and sends nothing the ledger cannot record.
+        let raw_http = Arc::new(ReqwestHttpClient::new(
+            config.upload_api_base_url.clone(),
+            persistence.egress_ledger_repo(),
+        ));
 
         // Device registration requires a logged-in user's access token --
         // `/v1/devices` has no anonymous mode -- so it cannot happen here at
@@ -246,6 +331,18 @@ async fn main() {
                 .await;
         }
 
+        // A release build opened a database whose applied migrations differ
+        // from this build's files. Collection runs; the persistence layer has
+        // logged each one, and the app is told so a tester can report it.
+        if !migration_report.checksum_mismatches.is_empty() {
+            push_adapter
+                .push_service_status(
+                    velvt_shared_types::ServiceState::Degraded,
+                    Some("migration_checksum_mismatch"),
+                )
+                .await;
+        }
+
         // Watches device-bound auth state and forwards terminal transitions
         // to Swift as proactive IPC pushes, independent of any in-flight
         // request.
@@ -333,6 +430,9 @@ async fn main() {
             Arc::clone(&push_adapter),
             auth_state.subscribe(),
             token.subscribe(),
+        )
+        .with_quiet_hours(
+            Arc::clone(&focus) as Arc<dyn velvt_service::delivery::poll::QuietHoursSource>
         );
         let poll_task = tokio::spawn(async move { poll_scheduler.run().await });
 
@@ -351,7 +451,7 @@ async fn main() {
                     retry_scan_interval,
                     upload_shutdown,
                     "1",
-                    env!("CARGO_PKG_VERSION"),
+                    velvt_service::build_info::SERVICE_VERSION,
                 )
                 .await;
         });
@@ -456,6 +556,48 @@ async fn main() {
             config.cache_expiry_grace,
             config.retention_batch_size,
         );
+        // The fifth target. `out_of_block_run` is durable, not infinite: 90
+        // days, a constant rather than a config value, so widening it requires
+        // a code change and a PRIVACY.md edit rather than an environment
+        // variable. Registered after the four existing targets; order does not
+        // matter here because no target reads another's rows.
+        let out_of_block_run_target = OutOfBlockRunRetentionTarget::with_default_retention(
+            persistence.behavior_repo(),
+            config.retention_batch_size,
+        );
+        // The sixth. `semantic_embedding_cache` had no target at all, and its
+        // only bound was a 512-row cap that a frequently revisited window never
+        // falls out of. It holds a sketch derived from the window title, so it
+        // expires on the raw-event horizon, as a constant for the same reason
+        // `out_of_block_run` uses one.
+        let semantic_embedding_cache_target =
+            SemanticEmbeddingCacheRetentionTarget::with_default_retention(
+                persistence.abstraction_map_repo(),
+                config.retention_batch_size,
+            );
+        // The seventh, and the only one that writes rather than deletes: the
+        // outcome pass the decision log's write site says resolves it. Batched
+        // and idempotent like the others, so it backfills all of history a
+        // tick at a time and then costs one bounded query per cycle.
+        let decision_outcome_target = InterventionDecisionOutcomeTarget::new(
+            Arc::clone(&work_block_repo),
+            config.retention_batch_size,
+        );
+        // The eighth. `abstraction_map` kept one row per window ever observed,
+        // keyed on the (application, title) pair, with no sweep at all. It now
+        // expires on the raw-event horizon from the last observation, except
+        // where a correction or a buffered event still points at the row.
+        let abstraction_map_target = AbstractionMapRetentionTarget::with_default_retention(
+            persistence.abstraction_map_repo(),
+            config.retention_batch_size,
+        );
+        // The ninth: the egress ledger, on its own constant bounds, pruned
+        // oldest first behind a checkpoint so the surviving chain still
+        // verifies.
+        let egress_ledger_target = EgressLedgerRetentionTarget::with_default_retention(
+            persistence.egress_ledger_repo(),
+            config.retention_batch_size,
+        );
         let retention_scheduler =
             RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
                 .add_target(raw_event_target)
@@ -463,7 +605,12 @@ async fn main() {
                 .add_target(cache_target)
                 .add_target(WorkBlockIntentionRetentionTarget::new(
                     work_block_retention_repo,
-                ));
+                ))
+                .add_target(out_of_block_run_target)
+                .add_target(semantic_embedding_cache_target)
+                .add_target(decision_outcome_target)
+                .add_target(abstraction_map_target)
+                .add_target(egress_ledger_target);
         let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
 
         // R7 + R8 transport — shutdown-aware, reconnect-tracking.
@@ -554,6 +701,38 @@ async fn main() {
     tracing::error!("Unix domain socket transport is unavailable on this platform");
 }
 
+/// `velvt-service --dry-run-egress`: prints every request the helper would
+/// send next, and every endpoint it can reach, without sending anything or
+/// writing to the database. Reads the same `VELVT_DATABASE_PATH` and
+/// `VELVT_API_BASE_URL` the service does. Returns the process exit code.
+async fn dry_run_egress() -> i32 {
+    let config = match velvt_service::config::ServiceConfig::load() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("velvt-service: {error}");
+            return 78; // EX_CONFIG
+        }
+    };
+    let mut report = Vec::new();
+    let result = velvt_service::egress::dry_run::run(
+        &config.database_path,
+        &config.upload_api_base_url,
+        &mut report,
+    )
+    .await;
+    use std::io::Write;
+    if std::io::stdout().write_all(&report).is_err() {
+        return 74; // EX_IOERR
+    }
+    match result {
+        Ok(_) => 0,
+        Err(error) => {
+            eprintln!("velvt-service: {error}");
+            1
+        }
+    }
+}
+
 #[cfg(feature = "onnx")]
 fn load_embedding_plugin(
     config: &velvt_service::config::ServiceConfig,
@@ -586,14 +765,46 @@ fn load_embedding_plugin(
         );
         return None;
     };
-    if centroids.taxonomy_version() != taxonomy.version()
-        || centroids
-            .categories()
-            .any(|category| !taxonomy.contains_category(category))
-    {
+    // A centroid artifact is built against one taxonomy version and is not
+    // transferable to another: the prototypes are embeddings of that version's
+    // category descriptions, so a mismatch means the similarity scores are
+    // measured against the wrong reference points. Refusing to load it is
+    // correct. Refusing it quietly is not — the `mvp-1` → `mvp-2` bump disables
+    // Tier 2 on every install whose configured artifact predates it, and an
+    // operator reading only "Tier 2 classification disabled" cannot tell that
+    // from a missing file, a bad path, or a deliberate configuration. So both
+    // versions and the artifact path go in the line: it is the whole diagnosis,
+    // and it names the fix (rebuild the artifact against the loaded taxonomy).
+    if centroids.taxonomy_version() != taxonomy.version() {
         tracing::warn!(
             error_code = "tier2_centroids_invalid",
-            "Tier 2 classification disabled"
+            reason = "taxonomy_version_mismatch",
+            centroid_taxonomy_version = centroids.taxonomy_version(),
+            loaded_taxonomy_version = taxonomy.version(),
+            centroid_artifact_version = centroids.artifact_version(),
+            centroid_path = %centroid_path.display(),
+            "Tier 2 classification disabled: the configured centroid artifact \
+             was built against a different taxonomy version and must be rebuilt"
+        );
+        return None;
+    }
+    // A category the loaded taxonomy does not have is a different failure with
+    // the same outcome, and is worth separating: the versions agree, so the
+    // artifact or the taxonomy file has been edited by hand.
+    let unknown: Vec<String> = centroids
+        .categories()
+        .filter(|category| !taxonomy.contains_category(category))
+        .map(str::to_owned)
+        .collect();
+    if !unknown.is_empty() {
+        tracing::warn!(
+            error_code = "tier2_centroids_invalid",
+            reason = "unknown_categories",
+            unknown_categories = unknown.join(","),
+            loaded_taxonomy_version = taxonomy.version(),
+            centroid_path = %centroid_path.display(),
+            "Tier 2 classification disabled: the configured centroid artifact \
+             scores categories the loaded taxonomy does not contain"
         );
         return None;
     }

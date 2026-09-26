@@ -145,7 +145,14 @@ impl ServiceConfig {
         // empty on every real install. This is still the tightest retention in
         // PRIVACY.md — the same safe events live 30 days in `upload_batch` —
         // and the rows are local-only, abstracted metadata.
-        let raw_event_ttl_hours = parse_env("VELVT_RAW_EVENT_TTL_HOURS", 168_u64)?;
+        // Covers `DAILY_ACTIVITY_DAYS`. A TTL shorter than the rendered window
+        // does not show "no activity" for the oldest days — it shows deleted
+        // evidence drawn as zeroes, which is why the two are pinned together by
+        // a test rather than left as two numbers that happen to match.
+        let raw_event_ttl_hours = parse_env(
+            "VELVT_RAW_EVENT_TTL_HOURS",
+            crate::dashboard::DAILY_ACTIVITY_DAYS as u64 * 24,
+        )?;
         let raw_event_expiry_interval_minutes =
             parse_env("VELVT_RAW_EVENT_EXPIRY_INTERVAL_MINUTES", 30_u64)?;
         let retention_batch_size = parse_env("VELVT_RETENTION_BATCH_SIZE", 500_usize)?;
@@ -288,20 +295,32 @@ fn taxonomy_path() -> Result<PathBuf, ConfigError> {
 /// Inside `Velvt.app` the helper and the taxonomy are siblings in
 /// `Contents/Resources`, so a distributed build resolves this without the
 /// launcher having to inject an environment variable. `CARGO_MANIFEST_DIR`
-/// remains only as a `cargo run` convenience and must never be the path a
-/// shipped binary depends on — it points at the build machine's checkout.
+/// remains only as a debug-build `cargo run` convenience and must never be the
+/// path a shipped binary depends on — it points at the build machine's
+/// checkout. A release build does not compile it in at all: the string named
+/// the builder's home directory in every shipped helper through 1.0.11. A
+/// release binary run outside the bundle needs `VELVT_ABSTRACTION_TAXONOMY_PATH`.
 fn default_taxonomy_path() -> PathBuf {
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(directory) = executable.parent() {
-            let beside_executable = directory.join(TAXONOMY_FILE_NAME);
-            if beside_executable.is_file() {
-                return beside_executable;
-            }
+    let beside_executable = std::env::current_exe().ok().and_then(|executable| {
+        executable
+            .parent()
+            .map(|directory| directory.join(TAXONOMY_FILE_NAME))
+    });
+    if let Some(path) = &beside_executable {
+        if path.is_file() {
+            return path.clone();
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join(TAXONOMY_FILE_NAME)
+    #[cfg(debug_assertions)]
+    {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(TAXONOMY_FILE_NAME)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        beside_executable.unwrap_or_else(|| PathBuf::from(TAXONOMY_FILE_NAME))
+    }
 }
 
 /// The canonical socket path, embedded at compile time from
@@ -466,23 +485,42 @@ mod tests {
         assert_eq!(config.upload_api_base_url, "http://localhost:8000");
     }
 
+    /// The shipped raw-event horizon is a published number, so it is pinned to
+    /// a literal here rather than to an expression.
+    ///
+    /// `PRIVACY.md` states 14 days for `raw_event_buffer`.
+    /// `tests/published_claims.rs` reads that cell out of the document itself
+    /// and compares it to the loaded config, so editing the document alone turns
+    /// the build red. This literal is the other half: it turns the build red
+    /// when the constant moves and nobody has looked at the document at all,
+    /// which is what happened in commit `515ccf5` — the horizon doubled, no
+    /// `.md` file was touched, and nothing failed.
+    const DOCUMENTED_RETENTION_DAYS: u64 = 14;
+
     #[test]
     fn raw_event_retention_covers_daily_activity() {
-        // The local daily-activity chart reads `raw_event_buffer`. When the TTL
-        // is shorter than the rendered window, the oldest days are not "no
-        // activity" — they are deleted evidence drawn as zeroes, which no test
-        // could see because retention never runs in the persistence fixtures.
+        // This compared `config.raw_event_ttl >= window` with `window` derived
+        // from `DAILY_ACTIVITY_DAYS` — the same constant the TTL default is
+        // derived from. It was `x >= x`: no change to either side could fail
+        // it, and it stayed green through the 7-to-14 change that left six
+        // published "7 days" claims false. The equality against a literal is
+        // what makes the next such change red.
         let _guard = ENVIRONMENT_LOCK.lock().unwrap();
         std::env::remove_var("VELVT_RAW_EVENT_TTL_HOURS");
         let config = ServiceConfig::load().unwrap();
 
-        let window = std::time::Duration::from_secs(
-            crate::dashboard::DAILY_ACTIVITY_DAYS as u64 * 24 * 3600,
-        );
-        assert!(
-            config.raw_event_ttl >= window,
-            "raw-event TTL {:?} must cover the {}-day daily-activity window",
+        assert_eq!(
             config.raw_event_ttl,
+            std::time::Duration::from_secs(DOCUMENTED_RETENTION_DAYS * 24 * 3600),
+            "the shipped raw-event TTL default must stay the {DOCUMENTED_RETENTION_DAYS} days PRIVACY.md publishes"
+        );
+        // The original relationship still holds and still matters: the local
+        // daily-activity chart reads `raw_event_buffer`, so a window wider than
+        // the TTL renders the oldest days as deleted evidence drawn as zeroes
+        // rather than as missing data.
+        assert!(
+            crate::dashboard::DAILY_ACTIVITY_DAYS as u64 <= DOCUMENTED_RETENTION_DAYS,
+            "the {}-day daily-activity window does not fit inside a {DOCUMENTED_RETENTION_DAYS}-day TTL",
             crate::dashboard::DAILY_ACTIVITY_DAYS
         );
     }

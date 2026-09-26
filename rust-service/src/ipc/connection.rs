@@ -169,8 +169,11 @@ where
     .await?;
 
     let mut errors = 0_usize;
+    // Owned here, outside every `select!`, so a frame read half way when
+    // another branch wins is finished on the next pass instead of dropped.
+    let mut pending_frame = Vec::new();
     let hello = loop {
-        let Some(frame) = read_frame(&mut reader).await? else {
+        let Some(frame) = read_frame(&mut reader, &mut pending_frame).await? else {
             return Ok(());
         };
         match decode_client_hello(&frame) {
@@ -210,7 +213,7 @@ where
         }
 
         let frame = tokio::select! {
-            frame = read_frame(&mut reader) => frame?,
+            frame = read_frame(&mut reader, &mut pending_frame) => frame?,
             state = next_auth_state(&mut auth_states) => {
                 let Some(state) = state else {
                     auth_states = None;
@@ -322,6 +325,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::DemotionState(_) => "demotion_state",
         ServerMessage::WeeklyDigest(_) => "weekly_digest",
         ServerMessage::InterventionExplanation(_) => "intervention_explanation",
+        ServerMessage::UnclassifiedTriage(_) => "unclassified_triage",
     }
 }
 

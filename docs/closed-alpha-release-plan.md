@@ -1,5 +1,26 @@
 # Velvt closed-alpha release plan
 
+> **Superseded 2026-09-25 — historical, do not run a cohort from this file.**
+> The first cohort is run from the cohort kit in the private Velvt workspace,
+> `plan/04-alpha-cohort-kit.md`. Where this plan and the kit disagree, the
+> kit is right:
+>
+> - **Size:** 40 participants, invited in waves (10, then 15 and 15), not
+>   10–20.
+> - **No account:** testers do not sign up or sign in. The local loop needs no
+>   account and no backend, so step 6 below ("Ask them to sign in") does not
+>   apply.
+> - **Notifications:** testers are asked to allow them; the drift offer is
+>   what is being measured.
+> - **Instrument:** the pre-registered outcome is sustained anchor engagement
+>   under drift policy v3 (`DRIFT_POLICY_VERSION = 3`, protocol 32), analysed
+>   on policy-v3 rows only, from the exported CSVs — not the insight-centred
+>   interview and weekly-review measures below.
+> - **Privacy explanation:** use the kit's consent wording. Velvt reads app
+>   names and window titles on the Mac to classify them (web addresses are
+>   reduced to the site name, on the Mac); only broad categories and
+>   durations leave it.
+
 ## Cohort and duration
 
 Recruit 10–20 macOS knowledge workers for two weeks. Include a mix of document-heavy,

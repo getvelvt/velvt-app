@@ -17,6 +17,8 @@
 		16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */; };
 		18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30FB3399A5C45808376ACF1 /* EventRelay.swift */; };
 		1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945E765C974B4023B7362068 /* NotificationScheduler.swift */; };
+		548C73B5233642F6A54DE429 /* LocalDataExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8153E37465DF4E479FBD7E64 /* LocalDataExport.swift */; };
+		9C6EC9CC32724A43B410B515 /* NotificationDeliveryReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E62D3AE123C454889212369 /* NotificationDeliveryReporter.swift */; };
 		F1A2B3C40D5E46789ABC1234 /* DigestFraming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E8D7C6B5A4F43210FED8765 /* DigestFraming.swift */; };
 		E5B71D3A9C4F42188A03D7E6 /* NudgePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D9F4C8B60A34E17B5CA3F82 /* NudgePreviewView.swift */; };
 		A1C4E7F2B93D4E118C6A5D30 /* InterventionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */; };
@@ -53,6 +55,9 @@
 		C31D8E315B114A8B9345F301 /* OnboardingExperience.swift in Sources */ = {isa = PBXBuildFile; fileRef = C31D8E315B114A8B9345F302 /* OnboardingExperience.swift */; };
 		D4A0C4A9A65047B88055A101 /* UpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A0C4A9A65047B88055A102 /* UpdateController.swift */; };
 		D4A0C4A9A65047B88055A103 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = D4A0C4A9A65047B88055A105 /* Sparkle */; };
+		FEEDFACE0FFFFF0000000002 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0FFFFF0000000001 /* Fonts */; };
+		FEEDFACE0FFFFF0000000012 /* VelvtTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0FFFFF0000000011 /* VelvtTheme.swift */; };
+		FEEDFACE0FFFFF0000000022 /* DeclaredAppMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEEDFACE0FFFFF0000000021 /* DeclaredAppMetadata.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -82,6 +87,8 @@
 		928E12E20A85E864E9B7E683 /* ConfigModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ConfigModule.swift; path = Config/ConfigModule.swift; sourceTree = "<group>"; };
 		93C055AD72C0443A8CD98C13 /* PermissionManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PermissionManager.swift; path = Permissions/PermissionManager.swift; sourceTree = "<group>"; };
 		945E765C974B4023B7362068 /* NotificationScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationScheduler.swift; path = Delivery/NotificationScheduler.swift; sourceTree = "<group>"; };
+		8153E37465DF4E479FBD7E64 /* LocalDataExport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LocalDataExport.swift; path = UI/LocalDataExport.swift; sourceTree = "<group>"; };
+		8E62D3AE123C454889212369 /* NotificationDeliveryReporter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationDeliveryReporter.swift; path = Delivery/NotificationDeliveryReporter.swift; sourceTree = "<group>"; };
 		9E8D7C6B5A4F43210FED8765 /* DigestFraming.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DigestFraming.swift; path = UI/DigestFraming.swift; sourceTree = "<group>"; };
 		2D9F4C8B60A34E17B5CA3F82 /* NudgePreviewView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NudgePreviewView.swift; path = UI/NudgePreviewView.swift; sourceTree = "<group>"; };
 		3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InterventionNotifier.swift; path = Delivery/InterventionNotifier.swift; sourceTree = "<group>"; };
@@ -104,6 +111,9 @@
 		ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarPopoverView.swift; path = UI/MenuBarPopoverView.swift; sourceTree = "<group>"; };
 		EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FakeIPCClient.swift; path = IPC/FakeIPCClient.swift; sourceTree = "<group>"; };
 		F30FB3399A5C45808376ACF1 /* EventRelay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelay.swift; path = Relay/EventRelay.swift; sourceTree = "<group>"; };
+		FEEDFACE0FFFFF0000000001 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fonts; path = Resources/Fonts; sourceTree = "<group>"; };
+		FEEDFACE0FFFFF0000000011 /* VelvtTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = VelvtTheme.swift; path = UI/VelvtTheme.swift; sourceTree = "<group>"; };
+		FEEDFACE0FFFFF0000000021 /* DeclaredAppMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DeclaredAppMetadata.swift; path = Collection/DeclaredAppMetadata.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -176,6 +186,8 @@
 				E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */,
 				5EFBC3479E444AF9BFDD0AF6 /* NotificationDeliveryCoordinator.swift */,
 				945E765C974B4023B7362068 /* NotificationScheduler.swift */,
+				8153E37465DF4E479FBD7E64 /* LocalDataExport.swift */,
+				8E62D3AE123C454889212369 /* NotificationDeliveryReporter.swift */,
 				9E8D7C6B5A4F43210FED8765 /* DigestFraming.swift */,
 				2D9F4C8B60A34E17B5CA3F82 /* NudgePreviewView.swift */,
 				3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */,
@@ -193,6 +205,9 @@
 				9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */,
 				9DB1CFA52FE2CD6F00632E03 /* Release.xcconfig */,
 				9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */,
+				FEEDFACE0FFFFF0000000001 /* Fonts */,
+				FEEDFACE0FFFFF0000000011 /* VelvtTheme.swift */,
+				FEEDFACE0FFFFF0000000021 /* DeclaredAppMetadata.swift */,
 			);
 			name = VelvtMac;
 			path = Sources/VelvtMac;
@@ -269,6 +284,7 @@
 			files = (
 				9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist.template in Resources */,
 				AF894F952FE76B6B0023DA87 /* Assets.xcassets in Resources */,
+				FEEDFACE0FFFFF0000000002 /* Fonts in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -312,7 +328,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\nVELVT_API_BASE_URL=\"${VELVT_API_BASE_URL}\" VELVT_APNS_ENV=\"${VELVT_APNS_ENV}\" \\\n  \"${SRCROOT}/../scripts/build_rust_helper.sh\" \\\n  \"$RUST_DIR\" \"$RESOURCES_DIR/velvt-service\" \\\n  \"${VELVT_DISTRIBUTABLE:-NO}\" \"${ARCHS:-$(uname -m)}\"\ncp \"$RUST_DIR/resources/abstraction-taxonomy-mvp-1.json\" \"$RESOURCES_DIR/abstraction-taxonomy-mvp-1.json\"\n\"$RESOURCES_DIR/velvt-service\" --version > \"$RESOURCES_DIR/velvt-service.version\"\n\"$RESOURCES_DIR/velvt-service\" --protocol-version > \"$RESOURCES_DIR/velvt-service.protocol-version\"\n";
+			shellScript = "set -euo pipefail\nRUST_DIR=\"${SRCROOT}/../rust-service\"\nRESOURCES_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources\"\nmkdir -p \"$RESOURCES_DIR\"\nSOURCE_COMMIT=\"${VELVT_SOURCE_COMMIT:-}\"\n[ -n \"$SOURCE_COMMIT\" ] || SOURCE_COMMIT=\"$(\"${SRCROOT}/../scripts/release_provenance.sh\" source-commit)\"\nVELVT_API_BASE_URL=\"${VELVT_API_BASE_URL}\" VELVT_APNS_ENV=\"${VELVT_APNS_ENV}\" \\\n  VELVT_SERVICE_VERSION=\"${MARKETING_VERSION}\" VELVT_SOURCE_COMMIT=\"$SOURCE_COMMIT\" \\\n  \"${SRCROOT}/../scripts/build_rust_helper.sh\" \\\n  \"$RUST_DIR\" \"$RESOURCES_DIR/velvt-service\" \\\n  \"${VELVT_DISTRIBUTABLE:-NO}\" \"${ARCHS:-$(uname -m)}\"\ncp \"$RUST_DIR/resources/abstraction-taxonomy-mvp-1.json\" \"$RESOURCES_DIR/abstraction-taxonomy-mvp-1.json\"\n\"$RESOURCES_DIR/velvt-service\" --version > \"$RESOURCES_DIR/velvt-service.version\"\n\"$RESOURCES_DIR/velvt-service\" --protocol-version > \"$RESOURCES_DIR/velvt-service.protocol-version\"\n";
 		};
 		C8D9E0F1A2B3C4D5E6F70819 /* Inject Custom Info.plist Keys */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -332,7 +348,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\n# GENERATE_INFOPLIST_FILE=YES only supports Xcode's fixed INFOPLIST_KEY_*\n# allowlist (~79 Apple-defined keys) -- custom keys like VelvtAPIBaseURL are\n# silently dropped by Xcode's plist generator no matter how they're set in\n# xcconfig. This phase injects them directly into the already-generated\n# Info.plist using the same resolved build settings the xcconfig defines.\nPLIST=\"${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}\"\nset_plist_string() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 string $2\" \"$PLIST\"\n}\nset_plist_bool() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 bool $2\" \"$PLIST\"\n}\nset_plist_string VelvtAPIBaseURL \"${VELVT_API_BASE_URL}\"\nset_plist_string VelvtAPNSEnv \"${VELVT_APNS_ENV}\"\nset_plist_string VelvtSocketPath \"${VELVT_SOCKET_PATH}\"\nset_plist_string VelvtProtocolVersion \"${VELVT_PROTOCOL_VERSION}\"\nset_plist_string VelvtClientVersion \"${MARKETING_VERSION}\"\nset_plist_string VelvtBuildConfiguration \"${VELVT_BUILD_CONFIGURATION}\"\nset_plist_string VelvtDistributable \"${VELVT_DISTRIBUTABLE}\"\nfor key in SUFeedURL SUPublicEDKey SURequireSignedFeed SUVerifyUpdateBeforeExtraction SUSignedFeedFailureExpirationInterval SUEnableSystemProfiling; do\n  /usr/libexec/PlistBuddy -c \"Delete :$key\" \"$PLIST\" >/dev/null 2>&1 || true\ndone\nset_plist_bool VelvtUpdaterEnabled false\nif [ \"${VELVT_UPDATER_ENABLED:-NO}\" = \"YES\" ]; then\n  case \"${VELVT_UPDATE_FEED_URL:-}\" in\n    https://*) ;;\n    *) echo \"error: VELVT_UPDATE_FEED_URL must be HTTPS when updater is enabled\" >&2; exit 1 ;;\n  esac\n  feed_location=\"${VELVT_UPDATE_FEED_URL#https://}\"\n  feed_authority=\"${feed_location%%/*}\"\n  case \"$feed_location\" in *\\?*|*\\#*|*@*) echo \"error: update feed must not contain credentials, query, or fragment\" >&2; exit 1 ;; esac\n  case \"$feed_authority\" in *:443) ;; *:*) echo \"error: update feed must use the default HTTPS port\" >&2; exit 1 ;; esac\n  key_length=$(printf '%s' \"${VELVT_UPDATE_PUBLIC_ED_KEY:-}\" | /usr/bin/base64 -D | /usr/bin/wc -c | /usr/bin/tr -d ' ')\n  if [ \"$key_length\" != \"32\" ]; then\n    echo \"error: VELVT_UPDATE_PUBLIC_ED_KEY must be a base64-encoded 32-byte Ed25519 public key\" >&2\n    exit 1\n  fi\n  set_plist_bool VelvtUpdaterEnabled true\n  set_plist_string SUFeedURL \"${VELVT_UPDATE_FEED_URL}\"\n  set_plist_string SUPublicEDKey \"${VELVT_UPDATE_PUBLIC_ED_KEY}\"\n  set_plist_bool SURequireSignedFeed true\n  set_plist_bool SUVerifyUpdateBeforeExtraction true\n  /usr/libexec/PlistBuddy -c \"Add :SUSignedFeedFailureExpirationInterval integer 0\" \"$PLIST\"\n  set_plist_bool SUEnableSystemProfiling false\nfi\ntouch \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			shellScript = "set -euo pipefail\n# GENERATE_INFOPLIST_FILE=YES only supports Xcode's fixed INFOPLIST_KEY_*\n# allowlist (~79 Apple-defined keys) -- custom keys like VelvtAPIBaseURL are\n# silently dropped by Xcode's plist generator no matter how they're set in\n# xcconfig. This phase injects them directly into the already-generated\n# Info.plist using the same resolved build settings the xcconfig defines.\nPLIST=\"${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}\"\nset_plist_string() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 string $2\" \"$PLIST\"\n}\nset_plist_bool() {\n  /usr/libexec/PlistBuddy -c \"Delete :$1\" \"$PLIST\" >/dev/null 2>&1 || true\n  /usr/libexec/PlistBuddy -c \"Add :$1 bool $2\" \"$PLIST\"\n}\nset_plist_string VelvtAPIBaseURL \"${VELVT_API_BASE_URL}\"\nset_plist_string VelvtAPNSEnv \"${VELVT_APNS_ENV}\"\nset_plist_string VelvtSocketPath \"${VELVT_SOCKET_PATH}\"\nset_plist_string VelvtProtocolVersion \"${VELVT_PROTOCOL_VERSION}\"\nset_plist_string VelvtClientVersion \"${MARKETING_VERSION}\"\nset_plist_string VelvtBuildConfiguration \"${VELVT_BUILD_CONFIGURATION}\"\nset_plist_string VelvtDistributable \"${VELVT_DISTRIBUTABLE}\"\nSOURCE_COMMIT=\"${VELVT_SOURCE_COMMIT:-}\"\n[ -n \"$SOURCE_COMMIT\" ] || SOURCE_COMMIT=\"$(\"${SRCROOT}/../scripts/release_provenance.sh\" source-commit)\"\nset_plist_string VelvtSourceCommit \"$SOURCE_COMMIT\"\nfor key in SUFeedURL SUPublicEDKey SURequireSignedFeed SUVerifyUpdateBeforeExtraction SUSignedFeedFailureExpirationInterval SUEnableSystemProfiling; do\n  /usr/libexec/PlistBuddy -c \"Delete :$key\" \"$PLIST\" >/dev/null 2>&1 || true\ndone\nset_plist_bool VelvtUpdaterEnabled false\nif [ \"${VELVT_UPDATER_ENABLED:-NO}\" = \"YES\" ]; then\n  case \"${VELVT_UPDATE_FEED_URL:-}\" in\n    https://*) ;;\n    *) echo \"error: VELVT_UPDATE_FEED_URL must be HTTPS when updater is enabled\" >&2; exit 1 ;;\n  esac\n  feed_location=\"${VELVT_UPDATE_FEED_URL#https://}\"\n  feed_authority=\"${feed_location%%/*}\"\n  case \"$feed_location\" in *\\?*|*\\#*|*@*) echo \"error: update feed must not contain credentials, query, or fragment\" >&2; exit 1 ;; esac\n  case \"$feed_authority\" in *:443) ;; *:*) echo \"error: update feed must use the default HTTPS port\" >&2; exit 1 ;; esac\n  key_length=$(printf '%s' \"${VELVT_UPDATE_PUBLIC_ED_KEY:-}\" | /usr/bin/base64 -D | /usr/bin/wc -c | /usr/bin/tr -d ' ')\n  if [ \"$key_length\" != \"32\" ]; then\n    echo \"error: VELVT_UPDATE_PUBLIC_ED_KEY must be a base64-encoded 32-byte Ed25519 public key\" >&2\n    exit 1\n  fi\n  set_plist_bool VelvtUpdaterEnabled true\n  set_plist_string SUFeedURL \"${VELVT_UPDATE_FEED_URL}\"\n  set_plist_string SUPublicEDKey \"${VELVT_UPDATE_PUBLIC_ED_KEY}\"\n  set_plist_bool SURequireSignedFeed true\n  set_plist_bool SUVerifyUpdateBeforeExtraction true\n  /usr/libexec/PlistBuddy -c \"Add :SUSignedFeedFailureExpirationInterval integer 0\" \"$PLIST\"\n  set_plist_bool SUEnableSystemProfiling false\nfi\ntouch \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -341,6 +357,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FEEDFACE0FFFFF0000000022 /* DeclaredAppMetadata.swift in Sources */,
+				FEEDFACE0FFFFF0000000012 /* VelvtTheme.swift in Sources */,
 				55588AE17C7342FCF13F4249 /* AppModule.swift in Sources */,
 				1597C5865C34465AA105915D /* AppMetricsStore.swift in Sources */,
 				143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */,
@@ -370,6 +388,8 @@
 				E422A6EE3F134F359B286F33 /* DisplayDataCoordinator.swift in Sources */,
 				C6FEFBE12367472398E2ECBC /* NotificationDeliveryCoordinator.swift in Sources */,
 				1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */,
+				548C73B5233642F6A54DE429 /* LocalDataExport.swift in Sources */,
+				9C6EC9CC32724A43B410B515 /* NotificationDeliveryReporter.swift in Sources */,
 				F1A2B3C40D5E46789ABC1234 /* DigestFraming.swift in Sources */,
 				E5B71D3A9C4F42188A03D7E6 /* NudgePreviewView.swift in Sources */,
 				A1C4E7F2B93D4E118C6A5D30 /* InterventionNotifier.swift in Sources */,

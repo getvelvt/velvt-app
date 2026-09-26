@@ -1,5 +1,6 @@
 import Combine
 import XCTest
+
 @testable import VelvtMac
 
 // MARK: - CircularBuffer unit tests
@@ -7,7 +8,9 @@ import XCTest
 final class CircularBufferTests: XCTestCase {
     func testEnqueueAndDequeuePreservesOrder() {
         var buf = CircularBuffer<Int>(capacity: 3)
-        buf.enqueue(1); buf.enqueue(2); buf.enqueue(3)
+        buf.enqueue(1)
+        buf.enqueue(2)
+        buf.enqueue(3)
 
         XCTAssertEqual(buf.dequeue(), 1)
         XCTAssertEqual(buf.dequeue(), 2)
@@ -26,7 +29,9 @@ final class CircularBufferTests: XCTestCase {
 
     func testDropOldestRemovesHead() {
         var buf = CircularBuffer<Int>(capacity: 3)
-        buf.enqueue(1); buf.enqueue(2); buf.enqueue(3)
+        buf.enqueue(1)
+        buf.enqueue(2)
+        buf.enqueue(3)
         buf.dropOldest()
 
         XCTAssertEqual(buf.count, 2)
@@ -36,9 +41,11 @@ final class CircularBufferTests: XCTestCase {
 
     func testWrapAroundPreservesOrder() {
         var buf = CircularBuffer<Int>(capacity: 3)
-        buf.enqueue(1); buf.enqueue(2); buf.enqueue(3)
-        _ = buf.dequeue() // remove 1
-        buf.enqueue(4)    // wraps around
+        buf.enqueue(1)
+        buf.enqueue(2)
+        buf.enqueue(3)
+        _ = buf.dequeue()  // remove 1
+        buf.enqueue(4)  // wraps around
 
         XCTAssertEqual(buf.dequeue(), 2)
         XCTAssertEqual(buf.dequeue(), 3)
@@ -47,13 +54,14 @@ final class CircularBufferTests: XCTestCase {
 
     func testDropOldestOnEmptyBufferIsNoOp() {
         var buf = CircularBuffer<Int>(capacity: 2)
-        buf.dropOldest() // must not crash
+        buf.dropOldest()  // must not crash
         XCTAssertEqual(buf.count, 0)
     }
 
     func testRequeueFrontRestoresDequeuedElementOrder() {
         var buf = CircularBuffer<Int>(capacity: 3)
-        buf.enqueue(1); buf.enqueue(2)
+        buf.enqueue(1)
+        buf.enqueue(2)
 
         let first = buf.dequeue()
         XCTAssertEqual(first, 1)
@@ -61,6 +69,26 @@ final class CircularBufferTests: XCTestCase {
 
         XCTAssertEqual(buf.dequeue(), 1)
         XCTAssertEqual(buf.dequeue(), 2)
+    }
+
+    /// A ring that refilled to capacity while a send was in flight is the normal
+    /// state after a disconnect, not a programming error, so requeueing the
+    /// dequeued event must be total rather than trapping the host process.
+    func testRequeueFrontOnFullBufferEvictsNewestAndReportsTheDrop() {
+        var buf = CircularBuffer<Int>(capacity: 3)
+        buf.enqueue(2)
+        buf.enqueue(3)
+        buf.enqueue(4)
+        XCTAssertTrue(buf.isFull)
+
+        let evicted = buf.requeueFront(1)
+
+        XCTAssertEqual(evicted, 4, "the newest element makes room for the older one being restored")
+        XCTAssertEqual(buf.count, 3)
+        XCTAssertEqual(buf.dequeue(), 1)
+        XCTAssertEqual(buf.dequeue(), 2)
+        XCTAssertEqual(buf.dequeue(), 3)
+        XCTAssertNil(buf.dequeue())
     }
 }
 
@@ -90,6 +118,85 @@ final class EventRelayTests: XCTestCase {
             if case .rawEvent(let m) = msg { return m }
             return nil
         }
+    }
+
+    // MARK: In-progress reports (proto v32)
+
+    /// A dwell that has just begun goes out live, flagged, behind the closed
+    /// dwell it follows — the order the service needs to land the closed report
+    /// on its own row before the next activity opens one.
+    func testABeginningIsSentLiveFlaggedAndAfterTheDwellItFollows() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+
+        var closed = makeEvent(index: 1)
+        closed = RawEvent(
+            appName: closed.appName, windowTitle: closed.windowTitle,
+            occurredAt: closed.occurredAt, durationSeconds: 48)
+        relay.receive(closed)
+        relay.activityBegan(makeEvent(index: 2))
+        await drain()
+
+        let sent = sentRawEvents(client)
+        XCTAssertEqual(sent.map(\.appName), ["App1", "App2"])
+        XCTAssertEqual(sent.map(\.inProgress), [false, true])
+        XCTAssertEqual(sent.map(\.durationSeconds), [48, 0])
+        XCTAssertEqual(sent.last?.occurredAt, Date(timeIntervalSince1970: 2))
+    }
+
+    /// Offline, a beginning is dropped rather than buffered: by the time the
+    /// socket is back the activity may be over, and its closed report is
+    /// buffered and carries the same facts. Nothing is lost but timeliness.
+    func testABeginningIsNeverBufferedOrReplayedAfterReconnect() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        await drain()
+
+        relay.activityBegan(makeEvent(index: 1))
+        relay.receive(makeEvent(index: 1))
+        await drain()
+        let buffered = await relay.bufferedEventCount
+        XCTAssertEqual(buffered, 1, "only the closed dwell waits for the socket")
+
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+        XCTAssertEqual(sentRawEvents(client).map(\.inProgress), [false])
+        let dropped = await relay.droppedEventCount
+        XCTAssertEqual(dropped, 0, "a live report that could not go is not a dropped event")
+    }
+
+    /// Before the relay starts there is no socket to be live on.
+    func testABeginningBeforeStartIsNotHeld() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+
+        relay.activityBegan(makeEvent(index: 1))
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+
+        XCTAssertTrue(sentRawEvents(client).isEmpty)
+    }
+
+    /// A beginning is not an action: the counter tracks measured dwells.
+    func testABeginningDoesNotCountAsAnAction() async throws {
+        let client = FakeIPCClient()
+        let metrics = AppMetricsStore(defaults: UserDefaults(suiteName: "EventRelayTests.\(UUID().uuidString)")!)
+        let relay = EventRelay(ipcClient: client, capacity: 10, metrics: metrics)
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+
+        relay.activityBegan(makeEvent(index: 1))
+        await drain()
+
+        XCTAssertEqual(sentRawEvents(client).count, 1)
+        XCTAssertEqual(metrics.actionsLogged, 0)
     }
 
     // MARK: Buffer fill and drop-oldest policy
@@ -139,8 +246,22 @@ final class EventRelayTests: XCTestCase {
         let metrics = AppMetricsStore(defaults: UserDefaults(suiteName: "EventRelayTests.\(UUID().uuidString)")!)
         let relay = EventRelay(ipcClient: client, capacity: 10, metrics: metrics)
 
+        // `receive` is nonisolated and increments the counter on the calling
+        // thread. `AppMetricsStore`'s threading contract republishes the
+        // `@Published` mirror on the main queue, and this test body is not on
+        // it, so the mirror is read after that hop rather than before it --
+        // waiting on the publisher, not on a clock.
+        let reachedTwo = expectation(description: "actionsLogged mirror reaches 2")
+        reachedTwo.assertForOverFulfill = false
+        let cancellable = metrics.$actionsLogged
+            .filter { $0 == 2 }
+            .sink { _ in reachedTwo.fulfill() }
+
         relay.receive(makeEvent(index: 1))
         relay.receive(makeEvent(index: 2))
+
+        await fulfillment(of: [reachedTwo], timeout: 5)
+        cancellable.cancel()
 
         XCTAssertEqual(metrics.actionsLogged, 2)
     }
@@ -332,6 +453,52 @@ final class EventRelayTests: XCTestCase {
         XCTAssertEqual(bufferedAfterReconnect, 0)
     }
 
+    /// The shipping crash: `flushBuffer` releases the actor at the hop into the
+    /// IPC client, the send loop drains the AsyncStream backlog into the ring
+    /// while it is released, and the requeue of the in-flight event then lands on
+    /// a ring that is already back at capacity. A full ring is the normal
+    /// post-disconnect state, so this path must never trap.
+    func testFlushSendFailureOnFullBufferRequeuesWithoutTrapping() async throws {
+        let client = RefillDuringSendFakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 3)
+        await relay.start()
+        await drain()
+
+        for i in 1...3 {
+            relay.receive(makeEvent(index: i))
+        }
+        await drain()
+        let bufferedBeforeFlush = await relay.bufferedEventCount
+        XCTAssertEqual(bufferedBeforeFlush, 3)
+
+        // The flush dequeues App1 and hops into the client. While the actor is
+        // released the send loop appends App4 and App5 — taking the ring back to
+        // capacity and dropping App2 — and only then does the send fail.
+        let refillEvents = [makeEvent(index: 4), makeEvent(index: 5)]
+        client.refillOnFirstSend = { [refillEvents] in
+            for event in refillEvents {
+                relay.receive(event)
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+
+        let bufferedAfterFailure = await relay.bufferedEventCount
+        XCTAssertEqual(bufferedAfterFailure, 3)
+        // App2 was dropped by the overflowing refill; App5 was evicted to make
+        // room at the front for the requeued App1. Both are counted.
+        let dropped = await relay.droppedEventCount
+        XCTAssertEqual(dropped, 2)
+
+        await relay.connectionDidChange(to: .connected)
+        await drain()
+
+        XCTAssertEqual(client.sentAppNames(), ["App1", "App3", "App4"])
+        let bufferedAfterReconnect = await relay.bufferedEventCount
+        XCTAssertEqual(bufferedAfterReconnect, 0)
+    }
+
     func testDisconnectAfterReconnectBuffersSubsequentEvents() async throws {
         let client = FakeIPCClient()
         let relay = EventRelay(ipcClient: client, capacity: 500)
@@ -362,7 +529,7 @@ final class EventRelayTests: XCTestCase {
         let client = DisconnectingFakeIPCClient(disconnectAfterSends: 2)
         let relay = EventRelay(ipcClient: client, capacity: 500)
         await relay.start()
-        await drain() // settle status observer initial .disconnected
+        await drain()  // settle status observer initial .disconnected
 
         // Buffer 5 events while disconnected.
         for i in 1...5 { relay.receive(makeEvent(index: i)) }
@@ -491,7 +658,7 @@ final class EventRelayTests: XCTestCase {
         await relay.start()
 
         await relay.stop()
-        await relay.stop() // must not crash — second call is a no-op
+        await relay.stop()  // must not crash — second call is a no-op
 
         // After double stop, starting again must work.
         await relay.start()
@@ -511,7 +678,7 @@ final class EventRelayTests: XCTestCase {
         let relay = EventRelay(ipcClient: client, capacity: 10)
 
         await relay.start()
-        await relay.start() // must not create duplicate tasks / crash
+        await relay.start()  // must not create duplicate tasks / crash
 
         // Settle: the status observer emits .disconnected on subscription;
         // drain it before manually advancing the connection state.
@@ -538,7 +705,7 @@ final class EventRelayTests: XCTestCase {
 
         // Restart and verify the relay works correctly with fresh state.
         await relay.start()
-        await drain() // settle status observer
+        await drain()  // settle status observer
         await relay.connectionDidChange(to: .connected)
         relay.receive(makeEvent(index: 2))
         await drain()
@@ -554,7 +721,7 @@ final class EventRelayTests: XCTestCase {
         let client = FakeIPCClient()
         let relay = EventRelay(ipcClient: client, capacity: 10)
         await relay.start()
-        await drain() // settle status observer
+        await drain()  // settle status observer
 
         // Buffer a few events to make cycles more interesting.
         for i in 1...3 { relay.receive(makeEvent(index: i)) }
@@ -641,6 +808,59 @@ private final class SlowFakeIPCClient: IPCClientProtocol, @unchecked Sendable {
 
     func send(_ message: ClientMessage) async throws {
         try await Task.sleep(for: .seconds(sendDelay))
+    }
+}
+
+/// IPCClientProtocol test double that refills the relay's ring buffer from
+/// inside the first `send()` and then fails it. This reproduces what the real
+/// client does for free: `send` runs off the relay's executor, so anything the
+/// relay's own send loop had queued lands in the ring before the failure is
+/// observed.
+private final class RefillDuringSendFakeIPCClient: IPCClientProtocol, @unchecked Sendable {
+    let incomingMessages: AsyncStream<ServerMessage>
+    var connectionStatus: AnyPublisher<ConnectionStatus, Never> {
+        statusSubject.eraseToAnyPublisher()
+    }
+
+    /// Runs once, during the first send, while the relay actor is released.
+    /// The send it runs inside always throws.
+    var refillOnFirstSend: (@Sendable () async -> Void)?
+
+    private let statusSubject = CurrentValueSubject<ConnectionStatus, Never>(.disconnected)
+    private let streamContinuation: AsyncStream<ServerMessage>.Continuation
+    private let lock = NSLock()
+    private var recorded: [ClientMessage] = []
+    private var sendCount = 0
+
+    init() {
+        var cont: AsyncStream<ServerMessage>.Continuation!
+        incomingMessages = AsyncStream { cont = $0 }
+        streamContinuation = cont
+    }
+
+    func connect() async throws {}
+    func disconnect() { statusSubject.send(.disconnected) }
+
+    func send(_ message: ClientMessage) async throws {
+        let isFirstSend = lock.withLock { () -> Bool in
+            sendCount += 1
+            return sendCount == 1
+        }
+        if isFirstSend, let refill = refillOnFirstSend {
+            refillOnFirstSend = nil
+            await refill()
+            throw IPCError.connectionClosed
+        }
+        lock.withLock { recorded.append(message) }
+    }
+
+    func sentAppNames() -> [String] {
+        lock.withLock {
+            recorded.compactMap { message -> String? in
+                if case .rawEvent(let event) = message { return event.appName }
+                return nil
+            }
+        }
     }
 }
 

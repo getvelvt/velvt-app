@@ -110,7 +110,7 @@ Run against the final immutable artifacts, substituting only credentialed paths
 and expected identifiers:
 
 ```bash
-cd /Users/maximkudryashov/Projects/velvt-dev/velvt-app
+cd velvt-app   # the repository root
 
 swift package --package-path swift-client resolve
 swift test --package-path swift-client
@@ -230,7 +230,7 @@ credentialed packaged N-to-N+1 matrix is complete.
    activation remains blocked at P0 pending the credentialed packaged matrix.
 2. **Evidence and commands:** recorded above; independent shell gate run passed.
 3. **Files changed by reviewer:** only
-   `/Users/maximkudryashov/Projects/velvt-dev/UPDATER_SECURITY_REVIEW.md`.
+   `UPDATER_SECURITY_REVIEW.md`, outside this repository.
 4. **Tests added/executed by reviewer:** no tests added to avoid ownership
    collision; executed `make test-update-release`, shell syntax checks, and
    `git diff --check`.

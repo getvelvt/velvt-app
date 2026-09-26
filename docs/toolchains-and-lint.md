@@ -60,8 +60,8 @@ two changes:
 - **`lineLength: 120`.** 99% of lines are 99 columns or shorter. At 100 columns,
   274 lines are too long. At 120, 38 are.
 
-Measured under this configuration with Xcode 16.3 on 2026-09-25, 8,136 findings
-remain, spread across 56 files:
+When the gate was introduced on 2026-09-25, measured under this configuration
+with Xcode 16.3, there were 8,136 findings across 56 files:
 
 | Rule | Findings |
 |---|---:|
@@ -80,18 +80,48 @@ remain, spread across 56 files:
 | ReplaceForEachWithForLoop | 1 |
 | NoBlockComments | 1 |
 
-Indentation accounts for 93% of the findings. Most of it comes from the 14 files
-that are still written with 2-space indentation and the 3 that mix both widths.
-Those include `VelvtPopoverContentView.swift`, `WorkBlockView.swift`,
+Indentation accounted for 93% of the findings. Most of it came from the 14
+files that were written with 2-space indentation and the 3 that mixed both
+widths. Those included `VelvtPopoverContentView.swift`, `WorkBlockView.swift`,
 `WorkBlockCoordinator.swift`, and most of the snapshot and coordinator tests.
+
+### The reformat
+
+Later on 2026-09-25 the tree was reformatted to this configuration in two
+commits:
+
+1. The output of `swift format format --in-place` on every file except the
+   three listed below, and nothing else. Besides whitespace and line breaks it
+   removes statement-separating semicolons, adds trailing commas to multi-line
+   collection literals, sorts imports, removes the spaces around `..<` and
+   `...`, and turns three `private extension` blocks into `extension` blocks
+   with `fileprivate` members. None of these changes behaviour.
+2. Hand fixes for the four lint rules that `swift format format` does not
+   rewrite: `UseLetInEveryBoundCaseVariable` (`case let .x(value)` becomes
+   `case .x(let value)`), `OnlyOneTrailingClosureArgument`,
+   `ReplaceForEachWithForLoop` and `NoBlockComments`.
+
+`swift build` and `swift test` (762 tests, 12 skipped) passed before and after.
+
+Three files were left as they were, because open PR #53 edits them and
+formatting them first would have made it conflict:
+
+- `Sources/VelvtMac/Service/ServiceManager.swift`
+- `Tests/VelvtMacTests/HistoryViewModelTests.swift`
+- `Tests/VelvtMacTests/ServiceManagerTests.swift`
+
+Their 486 findings, in 11 (file, rule) pairs, are the whole baseline now. Every
+other file is clean on every rule, so any finding in one of them fails the
+gate. Run `cd swift-client && swift format format --in-place <file>` on a file
+before committing it.
 
 ### The gate
 
 `scripts/lint_swift.sh` runs swift-format and sorts its findings against
-`swift-client/.swift-format-baseline`. The baseline lists the 133 (file, rule)
-pairs that had findings when the gate was introduced. A finding passes only if
-its file and rule appear together as a pair. Anything else fails the build. As
-a result:
+`swift-client/.swift-format-baseline`. The baseline lists the (file, rule)
+pairs that still have findings: 133 when the gate was introduced and 11 after
+the reformat. A finding passes only if its file and rule appear together as a
+pair. Anything else fails the build. As a result:
 
 - if a file is clean on a rule, it stays clean on that rule;
 - if a file is clean on every rule, it stays clean on every rule;
@@ -107,18 +137,25 @@ output. It checks that the gate fails on a new finding, on swift-format
 crashing, and on a missing configuration. It runs as part of `make
 test-measurement`.
 
-### Follow-up: empty the baseline
+### Follow-up: finish the reformat
 
-The code has not been reformatted yet. A reformat of about 8,000 lines would
-conflict with every open Swift branch. Reformat one file at a time instead,
-starting with a file that no open branch touches:
+After PR #53 merges, or is closed:
 
-1. `cd swift-client && swift format format --in-place <file>`
-2. Review the diff. It should be whitespace and line breaks only. If
-   `DoNotUseSemicolons` or `UseLetInEveryBoundCaseVariable` findings remain,
-   fix them by hand.
-3. `make test-swift lint-swift`, then delete that file's lines from the
-   baseline.
+1. Format the three files:
 
-Once the baseline is empty, replace the script with `swift format lint --strict
---recursive Sources Tests`.
+   ```sh
+   cd swift-client
+   swift format format --in-place \
+     Sources/VelvtMac/Service/ServiceManager.swift \
+     Tests/VelvtMacTests/HistoryViewModelTests.swift \
+     Tests/VelvtMacTests/ServiceManagerTests.swift
+   ```
+
+2. Review the diff. It should be whitespace, line breaks, semicolons and import
+   order only. Fix by hand anything `swift format lint` still reports.
+3. Make the gate strict: have `scripts/lint_swift.sh` run `swift format lint
+   --strict --recursive Sources Tests` (keep its check for a missing
+   `.swift-format`), delete `swift-client/.swift-format-baseline`, and update
+   `scripts/tests/lint_swift_test.sh`, this document, `AGENTS.md`,
+   `CONTRIBUTING.md` and `docs/quickstart.md`, which describe the baseline.
+4. `make test-swift lint-swift test-measurement`.

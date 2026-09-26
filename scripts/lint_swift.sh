@@ -4,15 +4,14 @@
 # `swift format lint` exits 0 on warnings, so running it bare enforced nothing:
 # with no `.swift-format` it linted against its 2-space defaults, printed about
 # 27,000 warnings on a codebase written mostly in 4 spaces, and CI stayed green.
-# `swift-client/.swift-format` now states the house style, but about 8,000
-# findings remain, most of them in files still indented with 2 spaces.
-# Reformatting those at once would conflict with every open Swift branch, so it
-# is a change of its own.
+# `swift-client/.swift-format` now states the house style. On 2026-09-25 the
+# tree was reformatted to it, except for three files that an open pull request
+# edits: formatting them first would have made that pull request conflict.
 #
-# Until then this is a ratchet. `swift-client/.swift-format-baseline` lists the
-# (file, rule) pairs that had findings when the gate was introduced. A finding
-# is tolerated only when its file and its rule are listed together. Everything
-# else fails, so:
+# Until those three are formatted this is a ratchet.
+# `swift-client/.swift-format-baseline` lists the (file, rule) pairs that still
+# have findings. A finding is tolerated only when its file and its rule are
+# listed together. Everything else fails, so:
 #
 # - a rule a file is clean on stays clean in that file;
 # - a file that is clean on every rule stays clean on every rule;
@@ -20,7 +19,9 @@
 #
 # Baseline pairs that no longer match anything are reported, not fatal, so
 # fixing old findings never turns someone else's pull request red. Delete them
-# when you see them. Never add a pair to get a change through.
+# when you see them. Never add a pair to get a change through. Once the
+# baseline is empty, replace this script with
+# `swift format lint --strict --recursive Sources Tests`.
 #
 # Overrides, for scripts/tests/lint_swift_test.sh:
 #   VELVT_SWIFT_PACKAGE_DIR  the Swift package to lint (default: swift-client)

@@ -68,9 +68,10 @@
       ]
     },
     "daily_activity": {
+      "$comment": "Exactly DAILY_ACTIVITY_DAYS rows, oldest first, today last (rust-service/src/dashboard.rs). 14 since 2026-08-27; rust-service/tests/emitted_payload_schema.rs fails if the two disagree.",
       "type": "array",
-      "minItems": 7,
-      "maxItems": 7,
+      "minItems": 14,
+      "maxItems": 14,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -87,7 +88,8 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["id", "label", "representative_event_id", "stable_id", "suggested_name", "alias_confirmed", "category", "duration_seconds", "percentage", "confidence", "explanation"],
+              "$comment": "representative_event_id, stable_id and suggested_name are omitted, not sent as null, when Rust has no value (skip_serializing_if in LocalDailyActivitySegment).",
+              "required": ["id", "label", "alias_confirmed", "category", "duration_seconds", "percentage", "confidence", "explanation"],
               "properties": {
                 "id": { "type": "string" },
                 "label": { "type": "string" },

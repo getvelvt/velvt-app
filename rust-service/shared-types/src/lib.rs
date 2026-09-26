@@ -1042,7 +1042,8 @@ pub struct RequestWorkBlockState {}
 pub struct RequestLocalDashboard {
     pub window_seconds: u32,
     /// Current local UTC offset supplied by Swift so Rust can produce exactly
-    /// seven bounded local-calendar rows without receiving locale or identity.
+    /// `DAILY_ACTIVITY_DAYS` (14) bounded local-calendar rows without
+    /// receiving locale or identity.
     pub utc_offset_seconds: i32,
 }
 

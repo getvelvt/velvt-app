@@ -8,7 +8,7 @@ grounded observation and next action remain above that control.
 
 - Rust performs all bounded history queries and derives timeline blocks,
   deduplicated category transitions, clusters, longest stretches, recoveries,
-  coverage, comparison eligibility, seven local day rows, label buckets,
+  coverage, comparison eligibility, `DAILY_ACTIVITY_DAYS` (14) local day rows, label buckets,
   `Other`, percentages, and grounded detail evidence.
 - Swift renders the DTO and stores only the selected segment in `UserDefaults`.
   It never scans events or derives behavioral metrics.

@@ -113,6 +113,88 @@ final class CollectionModuleTests: XCTestCase {
         )
     }
 
+    /// A departure is reported while it is happening. Reported only when it
+    /// ended, it reached the service's drift gate at the moment the person
+    /// came back, and the offer it produced was withdrawn before anyone saw
+    /// it. The dwell being replaced is always handed over first.
+    func testEachActivityIsReportedAsItBeginsRightAfterTheDwellItReplaces() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "Draft", 20: "Feed"]
+        let dates = DateQueue([10, 20, 25, 30, 40].map { Date(timeIntervalSince1970: $0) })
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            now: dates.next
+        )
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+        workspace.activate(.init(processIdentifier: 20, appName: "Browser"))
+        accessibility.emitTitle("Feed")
+        accessibility.emitTitle("Video")
+
+        let at = { (seconds: TimeInterval) in Date(timeIntervalSince1970: seconds) }
+        XCTAssertEqual(
+            sink.journal,
+            [
+                .began(RawEvent(appName: "Editor", windowTitle: "Draft", occurredAt: at(10))),
+                .closed(
+                    RawEvent(appName: "Editor", windowTitle: "Draft", occurredAt: at(10), durationSeconds: 10)),
+                .began(RawEvent(appName: "Browser", windowTitle: "Feed", occurredAt: at(20))),
+                .closed(
+                    RawEvent(appName: "Browser", windowTitle: "Feed", occurredAt: at(20), durationSeconds: 10)),
+                .began(RawEvent(appName: "Browser", windowTitle: "Video", occurredAt: at(30))),
+            ],
+            "the repeated notification at 25 is the same activity and reports nothing"
+        )
+    }
+
+    /// Splitting a dwell or ending collection starts no new activity, so
+    /// neither reports one.
+    func testFlushAndStopReportNoActivityBeginning() throws {
+        let sink = RecordingEventSink()
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "Draft"]
+        let dates = DateQueue([10, 40].map { Date(timeIntervalSince1970: $0) })
+        let agent = makeAgent(
+            sink: sink,
+            workspace: workspace,
+            accessibility: accessibility,
+            now: dates.next
+        )
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+        XCTAssertTrue(agent.flushPendingDwell(at: Date(timeIntervalSince1970: 25)))
+        agent.stop()
+
+        let began = sink.journal.filter {
+            if case .began = $0 { return true }
+            return false
+        }
+        let opened = RawEvent(
+            appName: "Editor", windowTitle: "Draft", occurredAt: Date(timeIntervalSince1970: 10))
+        XCTAssertEqual(began, [.began(opened)])
+        XCTAssertEqual(sink.events.count, 2, "the flushed span and the final one")
+    }
+
+    func testEventSinkFanoutForwardsBeginningsToEverySink() {
+        let first = RecordingEventSink()
+        let second = RecordingEventSink()
+        let fanout = EventSinkFanout([first, second])
+        let event = RawEvent(appName: "Editor", windowTitle: "Draft", occurredAt: Date(timeIntervalSince1970: 1))
+
+        fanout.activityBegan(event)
+
+        XCTAssertEqual(first.journal, [.began(event)])
+        XCTAssertEqual(second.journal, [.began(event)])
+        XCTAssertTrue(first.events.isEmpty, "a beginning is not a measured dwell")
+    }
+
     func testPermissionRevocationStopsCollectionAndSuppressesLaterEvents() throws {
         let sink = RecordingEventSink()
         let permission = FakePermissionChecker(isTrusted: true)
@@ -713,10 +795,23 @@ final class CollectionModuleTests: XCTestCase {
 }
 
 private final class RecordingEventSink: EventSink {
+    enum Entry: Equatable {
+        case closed(RawEvent)
+        case began(RawEvent)
+    }
+
+    /// Closed dwells only, which is all a ledger sink ever sees.
     private(set) var events: [RawEvent] = []
+    /// Everything, in the order the agent handed it over.
+    private(set) var journal: [Entry] = []
 
     func receive(_ event: RawEvent) {
         events.append(event)
+        journal.append(.closed(event))
+    }
+
+    func activityBegan(_ event: RawEvent) {
+        journal.append(.began(event))
     }
 }
 

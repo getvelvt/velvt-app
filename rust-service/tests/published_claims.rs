@@ -183,6 +183,7 @@ fn sentinel_raw_event(event_id: Uuid) -> RawEvent {
         declared_app_category: Some(SENTINEL_DECLARED_CATEGORY.into()),
         document_type_ids: sentinel_document_type_ids(),
         focused_document_url: None,
+        in_progress: false,
         duration_seconds: 300,
     }
 }

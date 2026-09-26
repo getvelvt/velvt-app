@@ -178,8 +178,13 @@ public final class InterventionNotifier {
             // checking alone would drop the offer in silence. Ask once, at the
             // moment there is something worth showing.
             let checked = await permissionManager.checkStatus(for: .notifications)
+            // Cancelled means the service withdrew the offer while the check
+            // was in flight. Said out loud: this used to be the one exit that
+            // left nothing on the log, which is exactly what the founder's Mac
+            // showed on 2026-09-25 — one settings query, then silence.
             guard !Task.isCancelled else {
                 self?.finishAttempt(key: key, disposition: .undelivered)
+                reporter.report(.withdrawnBeforeDelivery, surface: .driftOffer)
                 return
             }
             var status = checked
@@ -187,7 +192,12 @@ public final class InterventionNotifier {
                 self?.hasRequestedPermission = true
                 status = await permissionManager.requestPermission(for: .notifications)
             }
-            guard status == .granted, !Task.isCancelled else {
+            guard !Task.isCancelled else {
+                self?.finishAttempt(key: key, disposition: .undelivered)
+                reporter.report(.withdrawnBeforeDelivery, surface: .driftOffer)
+                return
+            }
+            guard status == .granted else {
                 // Not a decision this app made, so the offer is not spent:
                 // it stays eligible while it is still on screen.
                 self?.finishAttempt(key: key, disposition: .undelivered)

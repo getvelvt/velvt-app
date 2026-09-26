@@ -560,6 +560,11 @@ impl WorkBlockManager {
                 });
         }
         let at = effective_now(&record, occurred_at).min(planned_deadline(&record));
+        // A dwell is reported twice since protocol 32: in progress when it
+        // begins, and closed, with the same `occurred_at`, when it ends. The
+        // first report opens the row and runs the gate; the second finds its
+        // own row still open with the same evidence and stops here, so one
+        // dwell is one observation and one decision either way.
         if self
             .repo
             .latest_observation(&record.block_id)?
@@ -1268,14 +1273,18 @@ impl WorkBlockManager {
     /// restart, or the end — where its own dwell ended, never at the boundary.
     ///
     /// A row's end is otherwise the next row's start, and at a boundary there
-    /// is no next row. Swift reports a dwell when the user leaves it, so the
-    /// dwell they are in at the boundary has not been reported yet, and the
-    /// open row belongs to the one before it. Stretching that row to the
-    /// boundary filed every unreported second under a category the user had
-    /// already left (`00-GROUND-TRUTH.md` § 6c). Its own dwell's measured
-    /// length is in `raw_event_buffer`, so the row closes there and the
-    /// unreported remainder stays unobserved: Rust has no evidence of what it
-    /// was, and an absent claim is recoverable where a wrong one is not.
+    /// is no next row. Swift reports a dwell's length only when the user
+    /// leaves it, so the dwell they are in at the boundary has not been
+    /// measured yet. Either the open row belongs to the dwell before it, or,
+    /// since protocol 32, it was opened by the current dwell's in-progress
+    /// report and has no measured length at all. Stretching it to the
+    /// boundary filed every unmeasured second under a category the user had
+    /// already left, or claimed seconds nobody measured (`00-GROUND-TRUTH.md`
+    /// § 6c). A row's own measured length is in `raw_event_buffer` once its
+    /// closed report arrives, so the row closes there, or where it opened when
+    /// there is none, and the unmeasured remainder stays unobserved: Rust has
+    /// no evidence of what it was, and an absent claim is recoverable where a
+    /// wrong one is not.
     fn close_open_observation_at_reported_end(
         &self,
         block_id: &str,

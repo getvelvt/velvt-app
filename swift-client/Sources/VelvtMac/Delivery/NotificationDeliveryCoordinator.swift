@@ -213,10 +213,22 @@ public final class NotificationDeliveryCoordinator {
 public final class NotificationResponseRouter: NSObject, UNUserNotificationCenterDelegate {
     private let openPopover: () -> Void
     private let scrollToDate: ScrollToDateAction
+    private let isDriftCardInFront: () -> Bool
+    private let reporter: any NotificationDeliveryReporting
 
-    public init(openPopover: @escaping () -> Void, scrollToDate: ScrollToDateAction) {
+    /// - Parameter isDriftCardInFront: whether the menu-bar window, which
+    ///   draws the live drift card above every tab, is the surface in front of
+    ///   the person right now.
+    public init(
+        openPopover: @escaping () -> Void,
+        scrollToDate: ScrollToDateAction,
+        isDriftCardInFront: @escaping () -> Bool = { false },
+        reporter: any NotificationDeliveryReporting = OSLogNotificationDeliveryReporter()
+    ) {
         self.openPopover = openPopover
         self.scrollToDate = scrollToDate
+        self.isDriftCardInFront = isDriftCardInFront
+        self.reporter = reporter
     }
 
     /// `nonisolated` so it satisfies the (non-isolated) protocol requirement;
@@ -233,12 +245,38 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
         completionHandler()
     }
 
+    /// Asked only while Velvt is the active app; from the background the
+    /// system presents the notification without consulting the app.
     nonisolated public func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .list, .sound])
+        let isDriftOffer =
+            notification.request.content.userInfo[interventionNotificationUserInfoKey] as? Bool == true
+        Task { @MainActor in
+            completionHandler(self.presentationWhileActive(isDriftOffer: isDriftOffer))
+        }
+    }
+
+    /// How a notification is shown while Velvt is the active app.
+    ///
+    /// Being active is not the same as showing the offer. The app is active
+    /// whenever any of its windows has focus — settings, onboarding, the
+    /// history view — and then the banner is the only thing that says an
+    /// offer exists, so it is presented exactly as it would be from the
+    /// background. The one exception is a drift offer while the menu-bar
+    /// window is in front: that window draws the offer's card above every
+    /// tab, so a banner and a sound would announce what the person is already
+    /// looking at. It is still listed in Notification Center.
+    func presentationWhileActive(isDriftOffer: Bool) -> UNNotificationPresentationOptions {
+        let surface: NotificationDeliverySurface = isDriftOffer ? .driftOffer : .dailyInsight
+        if isDriftOffer, isDriftCardInFront() {
+            reporter.report(.listedBehindVisibleCard, surface: surface)
+            return [.list]
+        }
+        reporter.report(.bannerWhileActive, surface: surface)
+        return [.banner, .list, .sound]
     }
 
     func handle(userInfo: [AnyHashable: Any]) {

@@ -23,7 +23,7 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Swift client architecture | `docs/swift-client/architecture.md` | SwiftUI/AppKit structure, composition root, event capture, IPC, and state flow |
 | Swift client settings | `docs/swift-client/settings.md` | Settings UI, persisted local preferences, menu status, and configuration sources |
 | Swift client auth | `docs/swift-client/auth.md` | Auth UI flow, session state, Keychain persistence, and IPC auth messages |
-| IPC contract deep dive | `docs/architecture/ipc-contract.md` | IPC framing, versioning, direction lists, and the message catalog, reconciled through protocol 31 |
+| IPC contract deep dive | `docs/architecture/ipc-contract.md` | IPC framing, versioning, direction lists, and the message catalog, reconciled through protocol 32 |
 | Classification v2 contract | `docs/classification-v2-contract.md` | The design behind bundle-keyed corrections, declared app metadata, triage, and the protocol-30 classifier ladder |
 | Event relay deep dive | `docs/architecture/event-relay.md` | Existing detailed guide for Swift event buffering and reconnect behavior |
 | Collection agent deep dive | `docs/architecture/collection-agent.md` | Existing detailed guide for macOS Accessibility event collection |

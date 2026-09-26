@@ -185,13 +185,50 @@ or logged. `NotificationDeliveryCoordinator` only ever holds a payload inside
 the closure of its own in-flight `Task` for that one schedule attempt; it is
 released once the task completes or is superseded.
 
+## Drift Offer Delivery and What It Logs
+
+The drift offer reaches Swift inside the `work_block_state` snapshot as
+`active_intervention`; `InterventionNotifier` posts it once per offer
+(`velvt.intervention.<block>.<offered_at>`) after a notifications-permission
+check. Since protocol 32 the service makes the offer when the person arrives
+in the away app, from the dwell's in-progress report, and withdraws it when
+they come back — so the offer is live for as long as they are away. Before,
+it was made from the away dwell's closed report, which is sent at the moment
+they come back, and withdrawn by the next report about a second later.
+
+Every attempt ends in exactly one line under subsystem `com.velvt.mac`,
+category `NotificationDelivery`, at a persisted level, so
+`log show --last 1d --predicate 'subsystem == "com.velvt.mac" AND category == "NotificationDelivery"'`
+answers after the fact what happened (`scripts/watch_notifications.sh` wraps
+it):
+
+| Line | Level | Meaning |
+|---|---|---|
+| `notification_delivered` | notice | `UNUserNotificationCenter.add(_:)` accepted the request |
+| `notification_suppressed_by_salience` | notice | quiet offer: card only, by design |
+| `notification_withdrawn_before_delivery` | notice | the offer ended while the permission check was in flight; nothing posted |
+| `error_code=notification_permission_blocked status=…` | error | notifications not authorised; the offer stays eligible |
+| `error_code=notification_centre_rejected` | error | the centre refused the request |
+| `notification_presented_while_active presentation=banner` | notice | Velvt was active; shown as a banner as usual |
+| `notification_presented_while_active presentation=list_behind_visible_card` | notice | Velvt was active with the menu-bar window in front, which already draws the card: listed in Notification Center, no banner or sound |
+
+`notification_delivered` with no banner on screen means macOS held it — Do
+Not Disturb or another Focus — and it went to Notification Center. Velvt reads
+Focus state only through the optional Focus-status permission; without it the
+service cannot hold the offer as `suppressed_dnd`.
+
 ## Notification Tap → Popover Scroll-to-Date
 
 ```swift
 @MainActor
 public final class NotificationResponseRouter: NSObject, UNUserNotificationCenterDelegate {
-    public init(openPopover: () -> Void, scrollToDate: ScrollToDateAction)
+    public init(
+        openPopover: () -> Void,
+        scrollToDate: ScrollToDateAction,
+        isDriftCardInFront: () -> Bool,
+        reporter: any NotificationDeliveryReporting)
     func handle(userInfo: [AnyHashable: Any])  // extracts "insight_date", calls openPopover() + scrollToDate(date)
+    func presentationWhileActive(isDriftOffer: Bool) -> UNNotificationPresentationOptions
 }
 ```
 

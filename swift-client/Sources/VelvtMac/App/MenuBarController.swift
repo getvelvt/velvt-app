@@ -609,6 +609,10 @@ public final class MenuBarController: NSObject {
     /// callers should use `togglePopover()`/`showPopover()`/`closePopover()`.
     public var isPopoverShown: Bool { popover.isShown }
 
+    /// Whether the menu-bar window is on screen and in front of the person,
+    /// not merely open behind their work or on another Space.
+    public var isPopoverInFront: Bool { popover.isShown && popover.isFrontmostSurface }
+
     public init(
         presentation: PermissionPresentationModel,
         permissionManager: (any PermissionManagerProtocol)? = nil,

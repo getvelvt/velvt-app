@@ -78,7 +78,20 @@ public struct RawEvent: Equatable, Sendable {
 }
 
 public protocol EventSink: AnyObject {
+    /// A dwell that has ended, carrying its measured duration.
     func receive(_ event: RawEvent)
+
+    /// A dwell that has just begun: the same activity `receive(_:)` will be
+    /// handed when it ends, with nothing measured yet.
+    ///
+    /// Always called after `receive(_:)` for the dwell it replaces, so a sink
+    /// sees one activity close before the next opens. Optional: a sink that
+    /// only keeps a ledger of measured time has nothing to do here.
+    func activityBegan(_ event: RawEvent)
+}
+
+extension EventSink {
+    public func activityBegan(_ event: RawEvent) {}
 }
 
 public final class EventSinkFanout: EventSink {
@@ -91,6 +104,12 @@ public final class EventSinkFanout: EventSink {
     public func receive(_ event: RawEvent) {
         for sink in sinks {
             sink.receive(event)
+        }
+    }
+
+    public func activityBegan(_ event: RawEvent) {
+        for sink in sinks {
+            sink.activityBegan(event)
         }
     }
 }
@@ -427,13 +446,13 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             focusedDocumentURL: activity.focusedDocumentURL,
             occurredAt: now()
         )
-        let completedEvent = lock.withLock { () -> RawEvent? in
+        let (completedEvent, beganEvent) = lock.withLock { () -> (RawEvent?, RawEvent?) in
             guard isRunningLocked && activeProcessIdentifier == application.processIdentifier else {
-                return nil
+                return (nil, nil)
             }
             guard let previousEvent = pendingDwellEvent else {
                 pendingDwellEvent = nextEvent
-                return nil
+                return (nil, nextEvent)
             }
             // Declared metadata is deliberately absent from this comparison. It
             // is a property of the application, not of the activity, so it
@@ -447,17 +466,27 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
                     || previousEvent.windowTitle != nextEvent.windowTitle
                     || previousEvent.focusedDocumentURL != nextEvent.focusedDocumentURL
             else {
-                return nil
+                return (nil, nil)
             }
             pendingDwellEvent = nextEvent
-            return previousEvent.withDuration(
+            let completed = previousEvent.withDuration(
                 seconds: dwellSeconds(
                     from: previousEvent.occurredAt,
                     through: nextEvent.occurredAt
                 ))
+            return (completed, nextEvent)
         }
         if let completedEvent {
             eventSink?.receive(completedEvent)
+        }
+        // After the dwell it replaces, never before. The service reads the
+        // two in order: the closed report lands on the row its own in-progress
+        // report opened, and only then does the new activity open the next.
+        // Reported at the start because that is when a departure is still
+        // true; reported only when it ended, a departure reached the drift
+        // gate at the moment the person came back.
+        if let beganEvent {
+            eventSink?.activityBegan(beganEvent)
         }
     }
 

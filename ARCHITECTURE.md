@@ -4,7 +4,7 @@ This is the canonical architecture reference for this repository: the Velvt
 macOS app (`swift-client/`, product `Velvt.app`) and its bundled Rust helper
 (`rust-service/`). For deep dives into individual subsystems, see
 [`docs/architecture/`](docs/architecture/); this document ties them together
-and reflects `develop` as of 2026-09-25 (IPC protocol 31 and migrations
+and reflects `develop` as of 2026-09-26 (IPC protocol 32 and migrations
 0001–0039; the shipped 1.0.11 build is protocol 30 and migration 0036), not any
 individual issue branch.
 
@@ -71,7 +71,10 @@ The drift offer takes a different path and never touches the cloud: Rust sets
 `active_intervention` on the `work_block_state` snapshot, Swift renders the
 in-app card and posts the Rust-authored title and body through
 `InterventionNotificationScheduling`. It is only raised inside a declared
-work block, at most once per block.
+work block, at most once per block. The gate runs on each dwell's in-progress
+`raw_event` (protocol 32), so the offer is raised while the person is in the
+away app and withdrawn when they come back; the closed report of the same dwell
+changes nothing.
 
 ## Module responsibility table
 
@@ -198,7 +201,7 @@ and had to be retroactively closed during this MVP integration pass).
 Unknown future server discriminators decode as `ServerMessage.unknown(type:)`
 on the Swift side so older clients degrade gracefully rather than crashing.
 [`docs/architecture/ipc-contract.md`](docs/architecture/ipc-contract.md) is the
-message catalog, reconciled through protocol 31.
+message catalog, reconciled through protocol 32.
 
 ## The auth state machine
 

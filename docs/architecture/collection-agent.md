@@ -64,6 +64,13 @@ with its whole-second `durationSeconds`; the new observation begins the next
 interval. `stop()` and a permission revocation close and emit the current
 interval as well.
 
+The new observation is also handed to the sink at once, through
+`EventSink.activityBegan(_:)`, always after the interval it closes. The relay
+sends it as an in-progress `raw_event` (protocol 32), so the service's drift
+gate sees a departure while it is happening rather than when the person comes
+back. Neither `flushPendingDwell(at:)` nor `stop()` begins an activity, so
+neither reports one.
+
 To avoid treating an unattended period as active use, a single interval is
 capped at 1,800 seconds (30 minutes). The raw title and app name remain local;
 only the resulting duration follows the existing IPC path.

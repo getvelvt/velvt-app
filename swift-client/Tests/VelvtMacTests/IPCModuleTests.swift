@@ -52,6 +52,31 @@ final class IPCModuleTests: XCTestCase {
         }
     }
 
+    /// Proto v32. A closed dwell's frame carries no `in_progress` key, byte for
+    /// byte what a v31 client sent, so the ledger path cannot tell the
+    /// difference; only a dwell that has just begun says so.
+    func testInProgressIsOnTheWireOnlyWhenTrue() throws {
+        func payload(inProgress: Bool) throws -> [String: Any] {
+            let message = ClientMessage.rawEvent(
+                RawEventMessage(
+                    eventID: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!,
+                    occurredAt: Date(timeIntervalSince1970: 1_790_388_157),
+                    appName: "local-only",
+                    windowTitle: "local-only",
+                    bundleID: nil,
+                    inProgress: inProgress
+                ))
+            let data = try encoder.encode(message)
+            XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), message)
+            let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            XCTAssertEqual(envelope["type"] as? String, "raw_event")
+            return envelope["payload"] as? [String: Any] ?? [:]
+        }
+
+        XCTAssertNil(try payload(inProgress: false)["in_progress"])
+        XCTAssertEqual(try payload(inProgress: true)["in_progress"] as? Bool, true)
+    }
+
     /// The sighting has to reach Rust as `intervention_card_seen` with exactly
     /// one payload key. The single-key shape is the guarantee: there is nowhere
     /// in this message a user answer could be carried, so a card being drawn

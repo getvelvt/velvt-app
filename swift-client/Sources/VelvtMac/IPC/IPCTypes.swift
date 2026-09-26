@@ -725,6 +725,11 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
     /// what the protocol can carry — see `DeclaredDocumentTypeBounds`.
     public let documentTypeIDs: [String]
     public let focusedDocumentURL: String?
+    /// The dwell has only just begun, so nothing has been measured and
+    /// `durationSeconds` is 0 (proto v32). The service uses it for the in-block
+    /// drift gate only and never stores it; the same dwell is sent again,
+    /// closed, with its measured duration when it ends.
+    public let inProgress: Bool
 
     public init(
         eventID: UUID,
@@ -735,7 +740,8 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         bundleID: String?,
         declaredAppCategory: String? = nil,
         documentTypeIDs: [String] = [],
-        focusedDocumentURL: String? = nil
+        focusedDocumentURL: String? = nil,
+        inProgress: Bool = false
     ) {
         self.eventID = eventID
         self.occurredAt = occurredAt
@@ -748,6 +754,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         // can assemble a frame the service would have to refuse.
         self.documentTypeIDs = DeclaredDocumentTypeBounds.representable(documentTypeIDs)
         self.focusedDocumentURL = focusedDocumentURL
+        self.inProgress = inProgress
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -760,6 +767,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
         case declaredAppCategory = "declared_app_category"
         case documentTypeIDs = "document_type_ids"
         case focusedDocumentURL = "focused_document_url"
+        case inProgress = "in_progress"
     }
 
     public init(from decoder: Decoder) throws {
@@ -774,6 +782,7 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
             String.self, forKey: .declaredAppCategory)
         documentTypeIDs = try container.decodeIfPresent([String].self, forKey: .documentTypeIDs) ?? []
         focusedDocumentURL = try container.decodeIfPresent(String.self, forKey: .focusedDocumentURL)
+        inProgress = try container.decodeIfPresent(Bool.self, forKey: .inProgress) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -792,6 +801,11 @@ public struct RawEventMessage: Codable, Equatable, Sendable {
             try container.encode(documentTypeIDs, forKey: .documentTypeIDs)
         }
         try container.encodeIfPresent(focusedDocumentURL, forKey: .focusedDocumentURL)
+        // Absent on a closed dwell, matching the service's
+        // `skip_serializing_if`, so the ledger's frame is unchanged.
+        if inProgress {
+            try container.encode(true, forKey: .inProgress)
+        }
     }
 }
 

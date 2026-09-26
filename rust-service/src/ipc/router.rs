@@ -1,5 +1,7 @@
 use std::{
+    collections::VecDeque,
     future::Future,
+    hash::{BuildHasher, Hash, Hasher, RandomState},
     pin::Pin,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -14,7 +16,7 @@ use velvt_shared_types::{
     ServerMessage, SetApplicationCategory, UnclassifiedTriage, UnclassifiedTriageEntry,
 };
 
-use crate::abstraction::AbstractionEngine;
+use crate::abstraction::{AbstractedEvent, AbstractionEngine};
 use crate::auth::{
     AccountAuthService, AuthError, AuthState, HttpClient, HttpRequest, SessionValidator, TokenStore,
 };
@@ -575,6 +577,7 @@ mod tests {
             declared_app_category: None,
             document_type_ids: Vec::new(),
             focused_document_url: None,
+            in_progress: false,
         })
     }
 
@@ -987,6 +990,7 @@ mod tests {
                 .map(|_| "public.source-code".to_owned())
                 .collect(),
             focused_document_url: None,
+            in_progress: false,
         };
 
         let too_many = router
@@ -1094,6 +1098,7 @@ pub struct R7Router {
     initiation: Option<Arc<InitiationManager>>,
     receipts: Option<Arc<ReceiptsManager>>,
     auth_state: Option<tokio::sync::watch::Receiver<AuthState>>,
+    in_progress_dwells: Arc<InProgressDwells>,
 }
 
 impl R7Router {
@@ -1121,6 +1126,7 @@ impl R7Router {
             initiation: None,
             receipts: None,
             auth_state: None,
+            in_progress_dwells: Arc::default(),
         }
     }
 
@@ -2455,6 +2461,9 @@ impl R7Router {
     /// audit row, feed the upload batcher, and acknowledge. Raw `app_name`/
     /// `window_title` are consumed only by `abstraction_engine.process` and
     /// never appear in `RawEventEntry`, `BatchEventPayload`, or this ack.
+    ///
+    /// A dwell reported in progress (protocol 32) takes none of those steps:
+    /// see [`Self::observe_dwell_in_progress`].
     async fn handle_raw_event(&self, mut event: velvt_shared_types::RawEvent) -> ServerMessage {
         let event_id = event.event_id;
         let occurred_at = event.occurred_at;
@@ -2462,41 +2471,9 @@ impl R7Router {
             .duration_seconds
             .min(u64::from(MAX_REPORTED_DWELL_SECONDS));
         let upload_eligible = self.upload_eligible();
-        // Before abstraction, because a frame that breaks a published bound is
-        // not evidence. What is refused is the *declaration*, never the event:
-        // the duration is real observed time and the product's primary input,
-        // while declared metadata is an optional hint. So the offending
-        // declaration is cleared and the event is classified and stored exactly
-        // as one that never carried any metadata — which is also the behaviour
-        // the absent-metadata invariant already guarantees.
-        //
-        // Dropping the event here would be the most expensive possible reading
-        // of a client bug: the applications that break a client-side cap are
-        // the richest declarers, so their time would vanish from the audit row,
-        // the work blocks and the triage list at once, silently. The contract
-        // authorises abstaining from the metadata, not discarding observations.
-        //
-        // Cleared rather than truncated: a shortened list is a different set of
-        // declared types, and classifying on a set the application did not
-        // declare is worse than classifying on nothing.
-        if let Err(err) = event.validate_declared_metadata() {
-            // Matched exhaustively on purpose: every bound published today is a
-            // bound on the declared document-type list, and a bound added later
-            // on some other declared field must fail to compile here rather
-            // than leave that field feeding the classifier unchecked.
-            match err {
-                RawEventMetadataError::TooManyDocumentTypes
-                | RawEventMetadataError::DocumentTypeTooLong
-                | RawEventMetadataError::EmptyDocumentType => event.document_type_ids.clear(),
-            }
-            // Debug, not warn: with the observation kept this is a degraded
-            // hint, not an incident. The reason code is a fixed string and
-            // carries no fragment of the values that were refused.
-            tracing::debug!(
-                error_code = "raw_event_metadata_cleared",
-                reason = err.code(),
-                "cleared declared metadata that broke its published bounds and kept the event"
-            );
+        clear_declared_metadata_beyond_bounds(&mut event);
+        if event.in_progress {
+            return self.observe_dwell_in_progress(event).await;
         }
         // Captured before `process` consumes the event. The bundle identifier
         // is hashed here and the raw value is dropped with the rest of the raw
@@ -2519,7 +2496,16 @@ impl R7Router {
             declared_app_category: event.declared_app_category.clone(),
             document_type_ids: event.document_type_ids.clone(),
         };
-        match self.abstraction_engine.process(event) {
+        // A dwell the gate already saw in progress was classified then, with
+        // every side effect `process` has. Reusing that result keeps each
+        // dwell classified exactly once, as it always was, so the mapping,
+        // the classification counts and the Tier 2 telemetry are the same
+        // whether or not the in-progress report arrived.
+        let processed = match self.in_progress_dwells.take(&event) {
+            Some(abstracted) => Ok(abstracted),
+            None => self.abstraction_engine.process(event),
+        };
+        match processed {
             Ok(abstracted) => {
                 let entry = RawEventEntry {
                     event_id: event_id.to_string(),
@@ -2575,57 +2561,7 @@ impl R7Router {
                         );
                     }
                 }
-                if let Some(work_blocks) = &self.work_blocks {
-                    match work_blocks.observe_safe_category(
-                        abstracted.category(),
-                        abstracted.classification_status(),
-                        abstracted.classification_confidence(),
-                        occurred_at,
-                    ) {
-                        Ok(Some(outcome)) => {
-                            if let Some(push) = &self.work_block_push {
-                                let mut snapshot = outcome.snapshot;
-                                // An in-session offer is authored entirely
-                                // on-device: it never waits on the cloud or on
-                                // a mature baseline.
-                                //
-                                // Salience is the whole delivery instruction,
-                                // and the snapshot is the only thing that
-                                // carries it to the client. `Normal` rings and
-                                // renders; `Quiet` renders only. Reduced
-                                // salience is already set by backoff: after a
-                                // negative reply in this block, the offer never
-                                // regains the OS notification.
-                                //
-                                // Velvt's own quiet hours reduce delivery the
-                                // same way — inside the accepted window the
-                                // offer keeps its in-app card and sends no OS
-                                // notification — so the window is applied here,
-                                // on the field the client reads, rather than on
-                                // a parallel push the client's notification
-                                // path never consulted. (Active system DND
-                                // never reaches this point: the manager holds
-                                // the whole decision and no offer is surfaced
-                                // at all.)
-                                if snapshot.active_intervention.is_some()
-                                    && self.focus.as_ref().is_some_and(|focus| {
-                                        focus.in_velvt_quiet_hours(occurred_at)
-                                    })
-                                {
-                                    if let Some(active) = snapshot.active_intervention.as_mut() {
-                                        active.salience = InterventionSalience::Quiet;
-                                    }
-                                }
-                                push.push_work_block_state(snapshot).await;
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(_) => tracing::warn!(
-                            error_code = "work_block_observation_failed",
-                            "safe work-block observation was not recorded"
-                        ),
-                    }
-                }
+                self.observe_for_work_block(&abstracted, occurred_at).await;
                 ServerMessage::RawEventAck(RawEventAck {
                     event_id,
                     status: RawEventStatus::Accepted,
@@ -2645,6 +2581,221 @@ impl R7Router {
                 })
             }
         }
+    }
+
+    /// Feeds a dwell that has only just begun to the in-block drift gate, and
+    /// to nothing else.
+    ///
+    /// Swift reports a dwell when it ends, because only then is its length
+    /// known, so every closed report describes an activity the person has
+    /// already left. The drift gate evaluated departures on those reports and
+    /// therefore always learned of one at the moment the person came back:
+    /// the offer it made was withdrawn as `returned` by the very next
+    /// observation, before any notification could be posted. The in-progress
+    /// report is the same dwell at its start, so the gate sees the departure
+    /// while it is happening.
+    ///
+    /// The decision itself is unchanged. `observe_safe_category` evaluates at
+    /// the dwell's `occurred_at`, which the closed report carried too, and the
+    /// closed report of the same dwell then lands on the same open
+    /// observation and is a no-op there. The gate sees the same evidence, in
+    /// the same order, stamped at the same instants; it sees it sooner.
+    ///
+    /// Nothing is persisted as an event and nothing reaches the upload queue:
+    /// the closed report is still the only one the ledger keeps. Outside an
+    /// active block there is nothing to decide, so the report is not even
+    /// classified and the closed report is processed exactly as before.
+    async fn observe_dwell_in_progress(
+        &self,
+        event: velvt_shared_types::RawEvent,
+    ) -> ServerMessage {
+        let event_id = event.event_id;
+        let occurred_at = event.occurred_at;
+        let accepted = ServerMessage::RawEventAck(RawEventAck {
+            event_id,
+            status: RawEventStatus::Accepted,
+            drop_reason: None,
+        });
+        let Some(work_blocks) = &self.work_blocks else {
+            return accepted;
+        };
+        if !work_blocks.has_active_block().unwrap_or(false) {
+            return accepted;
+        }
+        let fingerprint = self.in_progress_dwells.fingerprint(&event);
+        match self.abstraction_engine.process(event) {
+            Ok(abstracted) => {
+                self.in_progress_dwells
+                    .remember(fingerprint, abstracted.clone());
+                self.observe_for_work_block(&abstracted, occurred_at).await;
+                accepted
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error_code = "abstraction_failed",
+                    error = %err,
+                    "an in-progress dwell failed classification; its closed report will be classified again"
+                );
+                ServerMessage::RawEventAck(RawEventAck {
+                    event_id,
+                    status: RawEventStatus::Dropped,
+                    drop_reason: Some("abstraction_failed".into()),
+                })
+            }
+        }
+    }
+
+    /// Records one classified observation against the live work block and
+    /// pushes the resulting snapshot when the observation changed it.
+    async fn observe_for_work_block(
+        &self,
+        abstracted: &AbstractedEvent,
+        occurred_at: chrono::DateTime<Utc>,
+    ) {
+        let Some(work_blocks) = &self.work_blocks else {
+            return;
+        };
+        match work_blocks.observe_safe_category(
+            abstracted.category(),
+            abstracted.classification_status(),
+            abstracted.classification_confidence(),
+            occurred_at,
+        ) {
+            Ok(Some(outcome)) => {
+                if let Some(push) = &self.work_block_push {
+                    let mut snapshot = outcome.snapshot;
+                    // An in-session offer is authored entirely on-device: it
+                    // never waits on the cloud or on a mature baseline.
+                    //
+                    // Salience is the whole delivery instruction, and the
+                    // snapshot is the only thing that carries it to the client.
+                    // `Normal` rings and renders; `Quiet` renders only. Reduced
+                    // salience is already set by backoff: after a negative
+                    // reply in this block, the offer never regains the OS
+                    // notification.
+                    //
+                    // Velvt's own quiet hours reduce delivery the same way —
+                    // inside the accepted window the offer keeps its in-app
+                    // card and sends no OS notification — so the window is
+                    // applied here, on the field the client reads, rather than
+                    // on a parallel push the client's notification path never
+                    // consulted. (Active system DND never reaches this point:
+                    // the manager holds the whole decision and no offer is
+                    // surfaced at all.)
+                    if snapshot.active_intervention.is_some()
+                        && self
+                            .focus
+                            .as_ref()
+                            .is_some_and(|focus| focus.in_velvt_quiet_hours(occurred_at))
+                    {
+                        if let Some(active) = snapshot.active_intervention.as_mut() {
+                            active.salience = InterventionSalience::Quiet;
+                        }
+                    }
+                    push.push_work_block_state(snapshot).await;
+                }
+            }
+            Ok(None) => {}
+            Err(_) => tracing::warn!(
+                error_code = "work_block_observation_failed",
+                "safe work-block observation was not recorded"
+            ),
+        }
+    }
+}
+
+/// How many dwells reported in progress are held waiting for their closed
+/// report. A dwell is closed by the next activity, so one entry is live at a
+/// time; the rest is slack for a client that quit mid-dwell.
+const IN_PROGRESS_DWELL_CAPACITY: usize = 32;
+
+/// Abstractions made for dwells reported in progress, held until the same
+/// dwell is reported closed, so each dwell is classified once.
+///
+/// Keyed by a digest of everything the closed report repeats — the start
+/// instant and every raw identity field — under a per-process random key:
+/// nothing raw is held as a key, and a digest means nothing outside this run.
+/// The value is the privacy-safe abstraction the closed report would have
+/// produced, made under the rules in force when the dwell began. Memory only,
+/// and bounded: a dwell whose closed report never arrives is evicted by later
+/// ones instead of accumulating.
+#[derive(Default)]
+struct InProgressDwells {
+    keys: RandomState,
+    entries: Mutex<VecDeque<(u64, AbstractedEvent)>>,
+}
+
+impl InProgressDwells {
+    fn fingerprint(&self, event: &velvt_shared_types::RawEvent) -> u64 {
+        let mut state = self.keys.build_hasher();
+        event.occurred_at.hash(&mut state);
+        event.app_name.hash(&mut state);
+        event.window_title.hash(&mut state);
+        event.bundle_id.hash(&mut state);
+        event.declared_app_category.hash(&mut state);
+        event.document_type_ids.hash(&mut state);
+        event.focused_document_url.hash(&mut state);
+        state.finish()
+    }
+
+    fn remember(&self, fingerprint: u64, abstracted: AbstractedEvent) {
+        let Ok(mut entries) = self.entries.lock() else {
+            return;
+        };
+        entries.retain(|(key, _)| *key != fingerprint);
+        if entries.len() >= IN_PROGRESS_DWELL_CAPACITY {
+            entries.pop_front();
+        }
+        entries.push_back((fingerprint, abstracted));
+    }
+
+    fn take(&self, event: &velvt_shared_types::RawEvent) -> Option<AbstractedEvent> {
+        let fingerprint = self.fingerprint(event);
+        let mut entries = self.entries.lock().ok()?;
+        let index = entries.iter().position(|(key, _)| *key == fingerprint)?;
+        entries.remove(index).map(|(_, abstracted)| abstracted)
+    }
+}
+
+/// Clears declared metadata that breaks its published bounds and keeps the
+/// event. Applied to in-progress and closed reports alike, so both are
+/// classified from the same facts.
+fn clear_declared_metadata_beyond_bounds(event: &mut velvt_shared_types::RawEvent) {
+    // Before abstraction, because a frame that breaks a published bound is
+    // not evidence. What is refused is the *declaration*, never the event:
+    // the duration is real observed time and the product's primary input,
+    // while declared metadata is an optional hint. So the offending
+    // declaration is cleared and the event is classified and stored exactly
+    // as one that never carried any metadata — which is also the behaviour
+    // the absent-metadata invariant already guarantees.
+    //
+    // Dropping the event here would be the most expensive possible reading
+    // of a client bug: the applications that break a client-side cap are
+    // the richest declarers, so their time would vanish from the audit row,
+    // the work blocks and the triage list at once, silently. The contract
+    // authorises abstaining from the metadata, not discarding observations.
+    //
+    // Cleared rather than truncated: a shortened list is a different set of
+    // declared types, and classifying on a set the application did not
+    // declare is worse than classifying on nothing.
+    if let Err(err) = event.validate_declared_metadata() {
+        // Matched exhaustively on purpose: every bound published today is a
+        // bound on the declared document-type list, and a bound added later
+        // on some other declared field must fail to compile here rather
+        // than leave that field feeding the classifier unchecked.
+        match err {
+            RawEventMetadataError::TooManyDocumentTypes
+            | RawEventMetadataError::DocumentTypeTooLong
+            | RawEventMetadataError::EmptyDocumentType => event.document_type_ids.clear(),
+        }
+        // Debug, not warn: with the observation kept this is a degraded
+        // hint, not an incident. The reason code is a fixed string and
+        // carries no fragment of the values that were refused.
+        tracing::debug!(
+            error_code = "raw_event_metadata_cleared",
+            reason = err.code(),
+            "cleared declared metadata that broke its published bounds and kept the event"
+        );
     }
 }
 

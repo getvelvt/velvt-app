@@ -7,7 +7,7 @@ final class MenuBarStateResolverTests: XCTestCase {
     private let sut = MenuBarStateResolver()
 
     private static let collectionStatuses: [CollectionStatus] = [
-        .idle, .running, .permissionRevoked, .error("boom"),
+        .idle, .running, .limited("ax_observer_failed"), .permissionRevoked, .error("boom"),
     ]
 
     private static let connectionStatuses: [ConnectionStatus] = [

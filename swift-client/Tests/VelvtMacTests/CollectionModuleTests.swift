@@ -247,7 +247,8 @@ final class CollectionModuleTests: XCTestCase {
         accessibility.emitError(.observerRegistrationFailed(code: AXError.invalidUIElement.rawValue))
         workspace.activate(.init(processIdentifier: 20, appName: "Two"))
 
-        XCTAssertTrue(statuses.contains(.error("ax_observer_failed:\(AXError.invalidUIElement.rawValue)")))
+        XCTAssertTrue(statuses.contains(.limited("ax_observer_failed:\(AXError.invalidUIElement.rawValue)")))
+        XCTAssertEqual(statuses.last, .running)
         XCTAssertEqual(
             sink.events,
             [
@@ -507,10 +508,223 @@ final class CollectionModuleTests: XCTestCase {
         try agent.start()
         workspace.activate(.init(processIdentifier: 20, appName: "Editor"))
 
-        XCTAssertTrue(statuses.contains(.error("ax_observer_registration_failed:\(AXError.noValue.rawValue)")))
-        XCTAssertEqual(statuses.filter { $0 == .running }.count, 1)
+        XCTAssertEqual(
+            statuses,
+            [
+                .idle,
+                .running,
+                .limited("ax_observer_registration_failed:\(AXError.noValue.rawValue)"),
+                .running,
+            ]
+        )
         XCTAssertEqual(workspace.stopCallCount, 0)
         XCTAssertTrue(sink.events.isEmpty)
+    }
+
+    /// The founder's Mac on 2026-09-26: collection ran all day and the window
+    /// said "Collection paused". One application could not be observed at
+    /// window level, and the status that failure published was never replaced,
+    /// because only `start()` ever reported `.running`.
+    func testStatusReturnsToRunningWhenTheNextActivationIsObserved() throws {
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.startErrors = [
+            10: .observerRegistrationFailed(code: AXError.noValue.rawValue)
+        ]
+        accessibility.initialTitles = [20: "Draft"]
+        let agent = makeAgent(workspace: workspace, accessibility: accessibility)
+        var statuses: [CollectionStatus] = []
+        agent.status.sink { statuses.append($0) }.store(in: &cancellables)
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Windowless"))
+        workspace.activate(.init(processIdentifier: 20, appName: "Editor"))
+
+        XCTAssertEqual(
+            statuses,
+            [
+                .idle,
+                .running,
+                .limited("ax_observer_registration_failed:\(AXError.noValue.rawValue)"),
+                .running,
+            ]
+        )
+        XCTAssertTrue(agent.isRunning)
+    }
+
+    /// The other failure path: an observer that was registered and later
+    /// failed. The agent drops that application's observer and must register
+    /// afresh on the next activation, even when it is the same application.
+    func testObserverFailureIsLimitedAndTheNextActivationRegistersAgain() throws {
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "Draft", 20: "Inbox"]
+        let agent = makeAgent(workspace: workspace, accessibility: accessibility)
+        var statuses: [CollectionStatus] = []
+        agent.status.sink { statuses.append($0) }.store(in: &cancellables)
+        let failure = "ax_observer_failed:\(AXError.invalidUIElement.rawValue)"
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+        accessibility.emitError(.observerRegistrationFailed(code: AXError.invalidUIElement.rawValue))
+
+        XCTAssertEqual(statuses.last, .limited(failure))
+        XCTAssertTrue(agent.isRunning)
+        XCTAssertEqual(accessibility.activeObserverCount, 0)
+
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+
+        XCTAssertEqual(accessibility.operations.filter { $0 == .start(10) }.count, 2)
+        XCTAssertEqual(accessibility.activeObserverCount, 1)
+        XCTAssertEqual(statuses, [.idle, .running, .limited(failure), .running])
+
+        accessibility.emitError(.observerRegistrationFailed(code: AXError.invalidUIElement.rawValue))
+        workspace.activate(.init(processIdentifier: 20, appName: "Mail"))
+
+        XCTAssertEqual(statuses.last, .running)
+        XCTAssertEqual(accessibility.maximumActiveObserverCount, 1)
+    }
+
+    /// Each transition is published once and logged once, and a report that
+    /// changes nothing is neither: a second application that fails the same
+    /// way, or a second one that registers, is not a transition.
+    func testEveryStatusTransitionIsPublishedAndLoggedExactlyOnce() throws {
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        let noWindow = CollectionError.observerRegistrationFailed(code: AXError.noValue.rawValue)
+        accessibility.startErrors = [10: noWindow, 30: noWindow]
+        accessibility.initialTitles = [20: "Draft", 40: "Notes"]
+        var transitions: [StatusTransition] = []
+        let agent = makeAgent(
+            workspace: workspace,
+            accessibility: accessibility,
+            reportStatusTransition: { transitions.append(StatusTransition(from: $0, to: $1)) }
+        )
+        var statuses: [CollectionStatus] = []
+        agent.status.sink { statuses.append($0) }.store(in: &cancellables)
+        let limited = CollectionStatus.limited("ax_observer_registration_failed:\(AXError.noValue.rawValue)")
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Windowless"))
+        workspace.activate(.init(processIdentifier: 30, appName: "Also Windowless"))
+        workspace.activate(.init(processIdentifier: 20, appName: "Editor"))
+        workspace.activate(.init(processIdentifier: 40, appName: "Notes"))
+        agent.stop()
+
+        XCTAssertEqual(statuses, [.idle, .running, limited, .running, .idle])
+        XCTAssertEqual(
+            transitions,
+            [
+                StatusTransition(from: .idle, to: .running),
+                StatusTransition(from: .running, to: limited),
+                StatusTransition(from: limited, to: .running),
+                StatusTransition(from: .running, to: .idle),
+            ]
+        )
+    }
+
+    func testPermissionRevocationAndRefusedStartAreLoggedTransitions() throws {
+        let permission = FakePermissionChecker(isTrusted: false)
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "Draft"]
+        var transitions: [StatusTransition] = []
+        let agent = makeAgent(
+            permission: permission,
+            workspace: workspace,
+            accessibility: accessibility,
+            reportStatusTransition: { transitions.append(StatusTransition(from: $0, to: $1)) }
+        )
+
+        XCTAssertThrowsError(try agent.start())
+        permission.isTrusted = true
+        try agent.start()
+        permission.isTrusted = false
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+
+        XCTAssertEqual(
+            transitions,
+            [
+                StatusTransition(from: .idle, to: .permissionRevoked),
+                StatusTransition(from: .permissionRevoked, to: .running),
+                StatusTransition(from: .running, to: .permissionRevoked),
+            ]
+        )
+    }
+
+    /// A registration can succeed and the agent still stop before it reports:
+    /// the first activity it reads finds the permission gone. That stop is the
+    /// truth, and the registration's `.running` must not overwrite it.
+    func testRegistrationThatEndsInRevocationDoesNotReportRunning() throws {
+        let permission = FakePermissionChecker(isTrusted: true)
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "Draft"]
+        accessibility.onStart = { _ in permission.isTrusted = false }
+        let agent = makeAgent(permission: permission, workspace: workspace, accessibility: accessibility)
+        var statuses: [CollectionStatus] = []
+        agent.status.sink { statuses.append($0) }.store(in: &cancellables)
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+
+        XCTAssertEqual(statuses, [.idle, .running, .permissionRevoked])
+        XCTAssertFalse(agent.isRunning)
+    }
+
+    func testStatusLogLinesArePersistedAndCarryOnlyFixedCodes() {
+        let noWindow = "ax_observer_registration_failed:\(AXError.noValue.rawValue)"
+        let transitions: [StatusTransition] = [
+            StatusTransition(from: .idle, to: .running),
+            StatusTransition(from: .running, to: .limited(noWindow)),
+            StatusTransition(from: .limited(noWindow), to: .running),
+            StatusTransition(from: .running, to: .permissionRevoked),
+            StatusTransition(from: .permissionRevoked, to: .idle),
+            StatusTransition(from: .running, to: .error("ax_observer_failed")),
+        ]
+
+        let lines = transitions.map { CollectionStatusLog.line(from: $0.from, to: $0.to) }
+
+        XCTAssertTrue(lines.allSatisfy { $0.level == .default })
+        XCTAssertEqual(
+            lines.map(\.message),
+            [
+                "collection_status_changed from=idle to=running",
+                "collection_status_changed from=running to=limited reason=\(noWindow)",
+                "collection_status_changed from=limited to=running",
+                "collection_status_changed from=running to=permission_revoked",
+                "collection_status_changed from=permission_revoked to=idle",
+                "collection_status_changed from=running to=error reason=ax_observer_failed",
+            ]
+        )
+    }
+
+    /// The codes a transition carries come from the agent, never from the
+    /// application it was observing.
+    func testLoggedTransitionsNeverCarryApplicationNamesOrTitles() throws {
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.startErrors = [10: .observerRegistrationFailed(code: AXError.noValue.rawValue)]
+        accessibility.initialTitles = [20: "Quarterly Secret Plan"]
+        var messages: [String] = []
+        let agent = makeAgent(
+            workspace: workspace,
+            accessibility: accessibility,
+            reportStatusTransition: { messages.append(CollectionStatusLog.line(from: $0, to: $1).message) }
+        )
+
+        try agent.start()
+        workspace.activate(
+            .init(processIdentifier: 10, appName: "Private Diary", bundleIdentifier: "com.example.diary"))
+        workspace.activate(.init(processIdentifier: 20, appName: "Secret Editor"))
+        accessibility.emitError(.observerRegistrationFailed(code: AXError.invalidUIElement.rawValue))
+
+        XCTAssertEqual(messages.count, 4)
+        for message in messages {
+            for forbidden in ["Private Diary", "com.example.diary", "Secret Editor", "Quarterly Secret Plan"] {
+                XCTAssertFalse(message.contains(forbidden), message)
+            }
+        }
     }
 
     func testNoEventsAreGeneratedWithoutExplicitNotification() throws {
@@ -782,16 +996,23 @@ final class CollectionModuleTests: XCTestCase {
         permission: FakePermissionChecker = FakePermissionChecker(isTrusted: true),
         workspace: FakeWorkspaceObserver = FakeWorkspaceObserver(),
         accessibility: FakeAccessibilityObserver = FakeAccessibilityObserver(),
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        reportStatusTransition: @escaping (CollectionStatus, CollectionStatus) -> Void = { _, _ in }
     ) -> AXCollectionAgent {
         AXCollectionAgent(
             eventSink: sink,
             permissionChecker: permission,
             workspaceObserver: workspace,
             accessibilityObserver: accessibility,
-            now: now
+            now: now,
+            reportStatusTransition: reportStatusTransition
         )
     }
+}
+
+private struct StatusTransition: Equatable {
+    let from: CollectionStatus
+    let to: CollectionStatus
 }
 
 private final class RecordingEventSink: EventSink {
@@ -871,6 +1092,7 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
     var initialDocumentURLs: [pid_t: String] = [:]
     var startError: CollectionError?
     var startErrors: [pid_t: CollectionError] = [:]
+    var onStart: ((pid_t) -> Void)?
     private(set) var operations: [Operation] = []
     private(set) var stopCallCount = 0
     private(set) var startCallCount = 0
@@ -886,6 +1108,7 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
     ) throws -> FocusedActivity {
         operations.append(.start(application.processIdentifier))
         startCallCount += 1
+        onStart?(application.processIdentifier)
         if let startError = startErrors[application.processIdentifier] {
             throw startError
         }

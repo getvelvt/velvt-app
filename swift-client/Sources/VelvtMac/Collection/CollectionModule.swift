@@ -3,6 +3,7 @@ import ApplicationServices
 import Combine
 import Darwin
 import Foundation
+import os
 
 /// Collection is strictly event-driven. Scheduled or repeated activity checks
 /// are prohibited in this module.
@@ -117,8 +118,70 @@ public final class EventSinkFanout: EventSink {
 public enum CollectionStatus: Equatable, Sendable {
     case idle
     case running
+    /// Still collecting, but the application in front could not be observed
+    /// at window level. The code says why, as a fixed token and an `AXError`
+    /// number, never an application name or a title.
+    ///
+    /// Not a stop: the workspace observer is still running, and the next
+    /// activation that registers returns the agent to `.running`. The usual
+    /// cause is an application with no focused or main window at the moment it
+    /// was activated.
+    case limited(String)
     case permissionRevoked
+    /// Collection stopped on a failure. `AXCollectionAgent` never reports one
+    /// any more: every AX failure it sees leaves it collecting, as `.limited`.
     case error(String)
+
+    /// Whether the agent is still observing application activations.
+    public var isCollecting: Bool {
+        switch self {
+        case .running, .limited: return true
+        case .idle, .permissionRevoked, .error: return false
+        }
+    }
+}
+
+/// One unified-log line per collection status transition, at `.default`, so
+/// it is kept on disk and `log show` finds it after the fact.
+///
+/// The status never used to be logged at all, so "Collection paused" on a Mac
+/// that was plainly collecting could not be traced to the failure behind it.
+/// Every token is fixed or an `AXError` number, so the line is public.
+public enum CollectionStatusLog {
+    private static let log = Logger(subsystem: "com.velvt.mac", category: "Collection")
+
+    public static func report(from previous: CollectionStatus, to status: CollectionStatus) {
+        let line = line(from: previous, to: status)
+        log.log(level: line.level, "\(line.message, privacy: .public)")
+    }
+
+    static func line(
+        from previous: CollectionStatus,
+        to status: CollectionStatus
+    ) -> (level: OSLogType, message: String) {
+        var message = "collection_status_changed from=\(token(previous)) to=\(token(status))"
+        if let reason = reason(status) {
+            message += " reason=\(reason)"
+        }
+        return (.default, message)
+    }
+
+    private static func token(_ status: CollectionStatus) -> String {
+        switch status {
+        case .idle: return "idle"
+        case .running: return "running"
+        case .limited: return "limited"
+        case .permissionRevoked: return "permission_revoked"
+        case .error: return "error"
+        }
+    }
+
+    private static func reason(_ status: CollectionStatus) -> String? {
+        switch status {
+        case .limited(let code), .error(let code): return code
+        case .idle, .running, .permissionRevoked: return nil
+        }
+    }
 }
 
 public protocol CollectionAgentProtocol: AnyObject {
@@ -203,10 +266,17 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     private let now: () -> Date
     private let maximumDwellDuration: TimeInterval
     private let statusSubject = CurrentValueSubject<CollectionStatus, Never>(.idle)
+    private let reportStatusTransition: (CollectionStatus, CollectionStatus) -> Void
     private let lock = NSLock()
     private var isRunningLocked = false
     private var activeProcessIdentifier: pid_t?
     private var pendingDwellEvent: RawEvent?
+    /// Guards `publishedStatus` and every send, and nothing else. Activations
+    /// report on the main thread and AX observer failures on the callback
+    /// queue, so without it two reports could reach subscribers in the
+    /// opposite order to the one they were decided in.
+    private let statusLock = NSLock()
+    private var publishedStatus: CollectionStatus = .idle
 
     public var isRunning: Bool { lock.withLock { isRunningLocked } }
 
@@ -226,7 +296,9 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         accessibilityObserver: any AccessibilityObserving,
         metadataProvider: any DeclaredAppMetadataReading = BundleInfoPlistMetadataProvider(),
         now: @escaping () -> Date = Date.init,
-        maximumDwellDuration: TimeInterval = 30 * 60
+        maximumDwellDuration: TimeInterval = 30 * 60,
+        reportStatusTransition: @escaping (_ from: CollectionStatus, _ to: CollectionStatus) -> Void =
+            CollectionStatusLog.report
     ) {
         self.eventSink = eventSink
         self.permissionChecker = permissionChecker
@@ -235,6 +307,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         self.metadataProvider = metadataProvider
         self.now = now
         self.maximumDwellDuration = maximumDwellDuration
+        self.reportStatusTransition = reportStatusTransition
     }
 
     public func start() throws {
@@ -242,7 +315,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             return
         }
         guard permissionChecker.hasPermission() else {
-            statusSubject.send(.permissionRevoked)
+            publish(.permissionRevoked)
             throw CollectionError.permissionRevoked
         }
         let shouldStart = lock.withLock {
@@ -259,17 +332,9 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         let currentApplication = workspaceObserver.start { [weak self] application in
             self?.applicationDidActivate(application)
         }
-        statusSubject.send(.running)
+        publish(.running)
         if let currentApplication {
-            do {
-                try observe(currentApplication)
-            } catch CollectionError.permissionRevoked {
-                stopAfterPermissionRevocation()
-            } catch CollectionError.observerRegistrationFailed(let code) {
-                statusSubject.send(.error("ax_observer_registration_failed:\(code)"))
-            } catch {
-                statusSubject.send(.error("ax_observer_registration_failed"))
-            }
+            observeReportingFailure(currentApplication)
         }
     }
 
@@ -291,7 +356,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         }
         accessibilityObserver.stop()
         workspaceObserver.stop()
-        statusSubject.send(.idle)
+        publish(.idle)
     }
 
     /// Emits the dwell that is still in progress, carrying only the duration
@@ -387,14 +452,50 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         guard lock.withLock({ activeProcessIdentifier != application.processIdentifier }) else {
             return
         }
+        observeReportingFailure(application)
+    }
+
+    /// Registers for `application` and reports how that went.
+    ///
+    /// A registration that fails for one application leaves the workspace
+    /// observer running, so it is `.limited`, not a stop, and the next one that
+    /// succeeds is `.running` again. Only `start()` used to report `.running`,
+    /// so a single application that could not be observed left the status on
+    /// an error for the rest of the session.
+    private func observeReportingFailure(_ application: RunningApplication) {
         do {
             try observe(application)
+            publish(.running)
         } catch CollectionError.permissionRevoked {
             stopAfterPermissionRevocation()
         } catch CollectionError.observerRegistrationFailed(let code) {
-            statusSubject.send(.error("ax_observer_registration_failed:\(code)"))
+            publish(.limited("ax_observer_registration_failed:\(code)"))
         } catch {
-            statusSubject.send(.error("ax_observer_registration_failed"))
+            publish(.limited("ax_observer_registration_failed"))
+        }
+    }
+
+    /// Publishes `status` and logs the transition, once, when it differs from
+    /// the status last published.
+    ///
+    /// A collecting status is dropped once the agent has stopped. An
+    /// activation on the main thread can finish registering after the callback
+    /// queue has already stopped the agent for a revoked permission, and its
+    /// `.running` must not paper over that stop.
+    ///
+    /// Never called with `lock` held: it reads `isRunning`, which takes it.
+    private func publish(_ status: CollectionStatus) {
+        statusLock.withLock {
+            guard !status.isCollecting || isRunning else {
+                return
+            }
+            let previous = publishedStatus
+            guard status != previous else {
+                return
+            }
+            publishedStatus = status
+            statusSubject.send(status)
+            reportStatusTransition(previous, status)
         }
     }
 
@@ -510,10 +611,13 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         if let finalEvent = result.finalEvent {
             eventSink?.receive(finalEvent)
         }
+        // The observer for this application is gone, but the workspace
+        // observer is not: the next activation registers afresh, because
+        // `activeProcessIdentifier` no longer matches anything.
         if case .observerRegistrationFailed(let code) = error {
-            statusSubject.send(.error("ax_observer_failed:\(code)"))
+            publish(.limited("ax_observer_failed:\(code)"))
         } else {
-            statusSubject.send(.error("ax_observer_failed"))
+            publish(.limited("ax_observer_failed"))
         }
     }
 
@@ -535,7 +639,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         }
         accessibilityObserver.stop()
         workspaceObserver.stop()
-        statusSubject.send(.permissionRevoked)
+        publish(.permissionRevoked)
     }
 
     private func dwellSeconds(from start: Date, through end: Date) -> Int {

@@ -1187,7 +1187,7 @@ public struct PopoverConnectionPresentation {
                 label = "Collection active"
                 color = VelvtInk.affirmative
             case .limited:
-                label = "Collection limited for this app"
+                label = "Collection limited for the app in front"
                 color = VelvtInk.secondaryOnInk
             case .idle, .permissionRevoked, .error:
                 label = "Collection paused"

@@ -1169,6 +1169,73 @@ final class MenuBarWindowSnapshotTests: XCTestCase {
         }
     }
 
+    /// Notifications denied and one application unobservable: the notice card
+    /// above the tab, "Collection limited for this app" in the header, and the
+    /// Notifications line in App Info, at the floor, the opening size and wide.
+    func testRenderNotificationsOffAndLimitedCollectionWhenRequested() throws {
+        let output = try outputDirectory()
+        registerWordmark()
+        let permissions = FakePermissionManager()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore()
+        )
+        permissions.setStatus(.granted, for: .accessibility)
+        permissions.setStatus(.denied, for: .notifications)
+        let limited = CollectionStatus.limited("ax_observer_registration_failed:-25212")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        for width in [CGFloat(500), 600, 900] {
+            let view = makeView(presentation: presentation, collectionStatus: limited)
+            // The status model receives on the main run loop; without a turn
+            // the header would still show the model's initial `.idle`.
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            try render(
+                view,
+                named: "menu-bar-notifications-off-w\(Int(width)).png",
+                outputDirectory: output,
+                size: CGSize(width: width, height: 520)
+            )
+        }
+
+        let prompt = NotificationPromptModel(
+            presentation: presentation,
+            permissionManager: permissions,
+            onContinue: {}
+        )
+        try render(
+            NotificationPermissionExperienceView(model: prompt, presentation: presentation),
+            named: "intro-notifications-denied.png",
+            outputDirectory: output,
+            size: OnboardingWindowLayout.preferredContentSize
+        )
+
+        let presenter = MenuBarPanelPresenter()
+        defer { presenter.close() }
+        presenter.maximumContentSize = CGSize(width: 2_000, height: 1_500)
+        let hosting = NSHostingController(
+            rootView: makeView(presentation: presentation, collectionStatus: limited)
+                .openedOnSettings(.appInfo))
+        hosting.sizingOptions = []
+        presenter.contentViewController = hosting
+        for (widthName, size) in [
+            ("min500", MenuBarPopoverLayout.minimumContentSize),
+            ("open600", CGSize(width: 600, height: 620)),
+        ] {
+            presenter.contentSize = size
+            presenter.panel.orderFront(nil)
+            presenter.panel.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            guard let frameView = presenter.panel.contentView?.superview else {
+                return XCTFail("panel has no frame view")
+            }
+            frameView.layoutSubtreeIfNeeded()
+            try write(
+                frameView, named: "settings-panel-\(widthName)-app-info-notifications-off.png",
+                outputDirectory: output)
+        }
+    }
+
     /// The guided tour bar carries `layoutPriority(2)`, the highest in the
     /// surface. With the window short and the tour open, the header is the thing
     /// the layout would otherwise squeeze — and a squeezed fixed 30pt image box
@@ -1250,6 +1317,7 @@ final class MenuBarWindowSnapshotTests: XCTestCase {
 
     private func makeView(
         presentation: PermissionPresentationModel? = nil,
+        collectionStatus: CollectionStatus = .running,
         guidedTour: GuidedTourModel = GuidedTourModel(),
         simulateNotification: (() async -> DebugInsightSimulationResult)? = nil
     ) -> MenuBarPopoverView {
@@ -1268,7 +1336,7 @@ final class MenuBarWindowSnapshotTests: XCTestCase {
                 connectionStatus: Just(.connected).eraseToAnyPublisher()
             ),
             collectionActivityStatus: CollectionActivityStatusModel(
-                collectionStatus: Just(.running).eraseToAnyPublisher()
+                collectionStatus: Just(collectionStatus).eraseToAnyPublisher()
             ),
             currentActivity: CurrentActivityModel(),
             serviceAlertModel: ServiceAlertModel(messages: Empty<ServerMessage, Never>()),

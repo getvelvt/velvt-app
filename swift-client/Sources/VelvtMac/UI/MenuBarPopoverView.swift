@@ -1840,6 +1840,13 @@ public struct MenuBarPopoverView: View {
             clearSettingsSelection()
             navigator.resetForPopoverOpening()
         }
+        // The app re-checks notifications when it becomes active, but clicking
+        // this panel does not activate the app, and coming back from System
+        // Settings is usually a click on the panel. Becoming key is the moment
+        // that does happen, so the notifications-off notice goes then.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            Task { _ = await permissionManager?.checkStatus(for: .notifications) }
+        }
         .background(MenuBarWindowOnScreenReader(isOnScreen: $panelIsOnScreen))
     }
 
@@ -1912,6 +1919,7 @@ public struct MenuBarPopoverView: View {
         }
         .task {
             _ = await permissionManager?.checkStatus(for: .accessibility)
+            _ = await permissionManager?.checkStatus(for: .notifications)
         }
     }
 
@@ -2036,25 +2044,15 @@ public struct MenuBarPopoverView: View {
     private var selectedWorkspaceContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             if presentation.showsAccessibilityRecovery {
-                PermissionRecoveryView()
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        VelvtSurface.cardFlat.opacity(0.92),
-                        in: RoundedRectangle(
-                            cornerRadius: VelvtMetrics.panelRadius,
-                            style: .continuous
-                        )
-                    )
-                    .overlay {
-                        RoundedRectangle(
-                            cornerRadius: VelvtMetrics.panelRadius,
-                            style: .continuous
-                        )
-                        .stroke(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
+                permissionCard(PermissionRecoveryView())
+            }
+            // Above every tab, like the Accessibility card: with notifications
+            // off, this window is the only place a drift nudge or an insight
+            // can reach the person at all.
+            if presentation.showsNotificationsOffNotice {
+                permissionCard(
+                    NotificationsOffNoticeView(dismiss: { presentation.dismissNotificationsOffNotice() })
+                )
             }
             // Above the tab content and outside the switch, so a drift offer
             // and an invitation are on whichever tab the panel opens on. They
@@ -2120,6 +2118,28 @@ public struct MenuBarPopoverView: View {
             maxHeight: navigator.selectedWorkspaceTab == .settings ? .infinity : nil,
             alignment: .top
         )
+    }
+
+    private func permissionCard<Content: View>(_ content: Content) -> some View {
+        content
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                VelvtSurface.cardFlat.opacity(0.92),
+                in: RoundedRectangle(
+                    cornerRadius: VelvtMetrics.panelRadius,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: VelvtMetrics.panelRadius,
+                    style: .continuous
+                )
+                .stroke(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
     }
 
     private var workspaceBottomBar: some View {
@@ -2403,6 +2423,7 @@ public struct MenuBarPopoverView: View {
                     refresh: { menuStatusViewModel?.refresh() }
                 )
                 infoRow("Collection", localCollectionPresentation.label)
+                notificationsInfoRows
                 infoRow("Cloud sync", uploadStatusDescription)
                 infoRow("Last synchronized", lastSuccessfulSyncDescription)
                 infoRow("Queued", "\(menuStatusViewModel?.status?.queuedEventCount ?? 0) events")
@@ -2846,6 +2867,28 @@ public struct MenuBarPopoverView: View {
                 debugInsightStatus =
                     "Insight updated, but macOS could not schedule the notification."
             }
+        }
+    }
+
+    @ViewBuilder private var notificationsInfoRows: some View {
+        let status = presentation.statuses[.notifications] ?? .unknown
+        infoRow("Notifications", NotificationsOffNotice.settingsValue(for: status))
+        if status == .denied || status == .restricted {
+            Text(NotificationsOffNotice.settingsDetail)
+                .font(VelvtType.body(11))
+                .lineSpacing(VelvtType.bodySpacing(11))
+                .foregroundStyle(VelvtInk.secondaryOnInk)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+            Button("Open Notification Settings") { NotificationSettingsLink.open() }
+                .buttonStyle(.plain)
+                .font(VelvtType.bodyEmphasis(13))
+                .foregroundStyle(VelvtPalette.signal)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .accessibilityHint("Opens Velvt's notification settings in System Settings")
         }
     }
 

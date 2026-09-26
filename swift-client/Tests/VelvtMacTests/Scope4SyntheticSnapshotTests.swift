@@ -95,8 +95,10 @@ final class Scope4SyntheticSnapshotTests: XCTestCase {
             "Velvt offered this nudge because it observed 4 switches away from deep work in the 10 minutes before the offer."
         )))
     try await waitUntil { explainCoordinator.explanation != nil }
+    // The drift card, and its explain affordance, are drawn by the panel body
+    // now, not by the focus-session popover.
     try render(
-      WorkBlockView(coordinator: explainCoordinator),
+      WorkBlockProactiveCards(coordinator: explainCoordinator, surfaceIsOnScreen: false),
       named: "scope4-explain-this-nudge-synthetic.png",
       outputDirectory: output,
       size: NSSize(width: 460, height: 460)

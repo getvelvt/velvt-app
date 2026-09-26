@@ -1537,6 +1537,98 @@ enum MenuBarEscapeResolver {
     }
 }
 
+/// What the workspace's primary action is called, given the phase of the block
+/// the service reports.
+///
+/// The label was unconditional. A drift offer's notification opens the panel
+/// with a block already running, so the one prominent button on the surface
+/// invited the person to start the thing they had not stopped doing. Drawing
+/// the proactive cards in the panel body puts the reply buttons where the
+/// notification lands; this names the button for what it opens.
+enum MenuBarFocusSessionButtonLabel {
+    static func title(for phase: WorkBlockPhase?) -> String {
+        switch phase {
+        case .active, .paused:
+            return "Current work block"
+        case .idle, .completed, .abandoned, .expired, nil:
+            return "Start a focus session"
+        }
+    }
+}
+
+/// Whether the window this view sits in is on screen: ordered in and not
+/// fully covered.
+///
+/// The panel's SwiftUI tree is built once and outlives every closing — the
+/// window is ordered out, not torn down — so `onAppear` inside it says nothing
+/// about whether anyone could see what appeared. This reads the window server's
+/// occlusion state instead, as `MenuBarPanelPresenter.isFrontmostSurface` does,
+/// and follows it through `NSWindow.didChangeOcclusionStateNotification`, which
+/// AppKit posts when the window is ordered in or out, miniaturised, moved off
+/// the active Space, or covered and uncovered.
+struct MenuBarWindowOnScreenReader: NSViewRepresentable {
+    @Binding var isOnScreen: Bool
+
+    /// Visible and at least partly unobscured. A window that was never
+    /// ordered in, or none at all, is not on screen.
+    static func isOnScreen(_ window: NSWindow?) -> Bool {
+        guard let window, window.isVisible else { return false }
+        return window.occlusionState.contains(.visible)
+    }
+
+    func makeNSView(context: Context) -> ReaderView {
+        let view = ReaderView()
+        view.onChange = { visible in
+            if isOnScreen != visible { isOnScreen = visible }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: ReaderView, context: Context) {
+        nsView.onChange = { visible in
+            if isOnScreen != visible { isOnScreen = visible }
+        }
+    }
+
+    final class ReaderView: NSView {
+        var onChange: ((Bool) -> Void)?
+        private var observer: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            observer = nil
+            if let window {
+                observer = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didChangeOcclusionStateNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.report()
+                }
+            }
+            report()
+        }
+
+        /// Deferred to the next turn of the main queue: this can run inside a
+        /// SwiftUI update, and writing state from inside one is undefined.
+        private func report() {
+            let visible = MenuBarWindowOnScreenReader.isOnScreen(window)
+            DispatchQueue.main.async { [weak self] in
+                self?.onChange?(visible)
+            }
+        }
+
+        deinit {
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+    }
+}
+
 public struct MenuBarPopoverView: View {
     @ObservedObject private var presentation: PermissionPresentationModel
     private let permissionManager: (any PermissionManagerProtocol)?
@@ -1568,6 +1660,9 @@ public struct MenuBarPopoverView: View {
     @State private var exportMessage: String?
     @State private var debugInsightStatus: String?
     @State private var showsFocusSession = false
+    /// Whether this panel is on screen, from the window server. The drift
+    /// card's sighting is reported only while it is.
+    @State private var panelIsOnScreen = false
   @State private var showsSystemState = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1707,6 +1802,7 @@ public struct MenuBarPopoverView: View {
             clearSettingsSelection()
             navigator.resetForPopoverOpening()
         }
+        .background(MenuBarWindowOnScreenReader(isOnScreen: $panelIsOnScreen))
     }
 
     /// The window is resizable now, so this row has to survive being narrowed
@@ -1922,6 +2018,18 @@ public struct MenuBarPopoverView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
             }
+            // Above the tab content and outside the switch, so a drift offer
+            // and an invitation are on whichever tab the panel opens on. They
+            // used to be drawn only by `WorkBlockView`, which this file
+            // instantiates in exactly one place: the popover behind the bottom
+            // bar's button. An invitation asking someone to declare a block was
+            // therefore reachable only by pressing the button that starts one,
+            // and a drift offer's notification opened this panel onto a
+            // surface with no reply buttons on it.
+            WorkBlockProactiveCards(
+                coordinator: workBlockCoordinator,
+                surfaceIsOnScreen: panelIsOnScreen
+            )
             switch navigator.selectedWorkspaceTab {
             case .workBlock:
                 MinimalDashboardWorkspaceView(
@@ -1990,8 +2098,12 @@ public struct MenuBarPopoverView: View {
                 // for: without this the primary button was the last item in
                 // the HStack and therefore the first to truncate, reading
                 // "Start a focus sess…" from 465pt down.
-                Label("Start a focus session", systemImage: "timer")
-                    .fixedSize(horizontal: true, vertical: false)
+                Label(
+                    MenuBarFocusSessionButtonLabel.title(
+                        for: workBlockCoordinator.snapshot?.phase),
+                    systemImage: "timer"
+                )
+                .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(VelvtPrimaryButtonStyle(uppercase: true))
             .controlSize(.small)

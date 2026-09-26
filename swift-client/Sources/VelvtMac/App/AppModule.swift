@@ -331,7 +331,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await client.connect()
                 return
-            } catch let IPCError.versionMismatch(expected, got) {
+            } catch IPCError.versionMismatch(let expected, let got) {
                 if reclaimAttempts < maximumOrphanReclaimAttempts,
                     await reclaimOrphanedHelper()
                 {

@@ -778,7 +778,7 @@ private final class RefillDuringSendFakeIPCClient: IPCClientProtocol, @unchecked
     func sentAppNames() -> [String] {
         lock.withLock {
             recorded.compactMap { message -> String? in
-                if case let .rawEvent(event) = message { return event.appName }
+                if case .rawEvent(let event) = message { return event.appName }
                 return nil
             }
         }

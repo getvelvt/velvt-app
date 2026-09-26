@@ -234,10 +234,11 @@ final class VersionMismatchRecoveryLoopTests: XCTestCase {
 
         await AppDelegate.connectRetryingVersionMismatch(
             client,
-            reclaimOrphanedHelper: { reclaim.reclaim() }
-        ) { expected, got in
-            prompt.answer(expected: expected, got: got)
-        }
+            reclaimOrphanedHelper: { reclaim.reclaim() },
+            presentVersionMismatch: { expected, got in
+                prompt.answer(expected: expected, got: got)
+            }
+        )
 
         XCTAssertEqual(reclaim.count, 1)
         XCTAssertEqual(client.connectCount, 2, "the re-dial has to happen after the socket is freed")
@@ -253,10 +254,11 @@ final class VersionMismatchRecoveryLoopTests: XCTestCase {
 
         await AppDelegate.connectRetryingVersionMismatch(
             client,
-            reclaimOrphanedHelper: { reclaim.reclaim() }
-        ) { expected, got in
-            prompt.answer(expected: expected, got: got)
-        }
+            reclaimOrphanedHelper: { reclaim.reclaim() },
+            presentVersionMismatch: { expected, got in
+                prompt.answer(expected: expected, got: got)
+            }
+        )
 
         XCTAssertEqual(reclaim.count, 1)
         XCTAssertEqual(prompt.count, 1)
@@ -274,10 +276,11 @@ final class VersionMismatchRecoveryLoopTests: XCTestCase {
 
         await AppDelegate.connectRetryingVersionMismatch(
             client,
-            reclaimOrphanedHelper: { reclaim.reclaim() }
-        ) { expected, got in
-            prompt.answer(expected: expected, got: got)
-        }
+            reclaimOrphanedHelper: { reclaim.reclaim() },
+            presentVersionMismatch: { expected, got in
+                prompt.answer(expected: expected, got: got)
+            }
+        )
 
         XCTAssertEqual(reclaim.count, AppDelegate.maximumOrphanReclaimAttempts)
         XCTAssertEqual(prompt.count, 1)
@@ -293,10 +296,11 @@ final class VersionMismatchRecoveryLoopTests: XCTestCase {
 
         await AppDelegate.connectRetryingVersionMismatch(
             client,
-            reclaimOrphanedHelper: { reclaim.reclaim() }
-        ) { expected, got in
-            prompt.answer(expected: expected, got: got)
-        }
+            reclaimOrphanedHelper: { reclaim.reclaim() },
+            presentVersionMismatch: { expected, got in
+                prompt.answer(expected: expected, got: got)
+            }
+        )
 
         XCTAssertEqual(reclaim.count, 0)
         XCTAssertEqual(prompt.count, 0)

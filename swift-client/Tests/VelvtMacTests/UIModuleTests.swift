@@ -583,7 +583,9 @@ private final class ManualConnectionGraceScheduler: ConnectionGraceScheduling {
     }
 
     func fireAll() {
-        entries.filter { !$0.isCancelled }.forEach { $0.action() }
+        for entry in entries.filter({ !$0.isCancelled }) {
+            entry.action()
+        }
     }
 }
 

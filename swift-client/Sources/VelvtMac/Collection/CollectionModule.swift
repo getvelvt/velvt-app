@@ -246,7 +246,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
                 try observe(currentApplication)
             } catch CollectionError.permissionRevoked {
                 stopAfterPermissionRevocation()
-            } catch let CollectionError.observerRegistrationFailed(code) {
+            } catch CollectionError.observerRegistrationFailed(let code) {
                 statusSubject.send(.error("ax_observer_registration_failed:\(code)"))
             } catch {
                 statusSubject.send(.error("ax_observer_registration_failed"))
@@ -372,7 +372,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             try observe(application)
         } catch CollectionError.permissionRevoked {
             stopAfterPermissionRevocation()
-        } catch let CollectionError.observerRegistrationFailed(code) {
+        } catch CollectionError.observerRegistrationFailed(let code) {
             statusSubject.send(.error("ax_observer_registration_failed:\(code)"))
         } catch {
             statusSubject.send(.error("ax_observer_registration_failed"))
@@ -481,7 +481,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
         if let finalEvent = result.finalEvent {
             eventSink?.receive(finalEvent)
         }
-        if case let .observerRegistrationFailed(code) = error {
+        if case .observerRegistrationFailed(let code) = error {
             statusSubject.send(.error("ax_observer_failed:\(code)"))
         } else {
             statusSubject.send(.error("ax_observer_failed"))
@@ -894,7 +894,7 @@ public final class AXApplicationObserver: AccessibilityObserving {
     }
 
     private func copyTitle(from element: AXUIElement) -> String? {
-        guard case let .success(title) = copyTitleResult(from: element) else {
+        guard case .success(let title) = copyTitleResult(from: element) else {
             return nil
         }
         return title

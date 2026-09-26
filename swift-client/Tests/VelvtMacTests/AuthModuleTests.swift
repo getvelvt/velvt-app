@@ -396,7 +396,8 @@ final class AccountStateManagerTests: XCTestCase {
     func testLoggedInToLoggingInIsRejected() {
         let sut = makeLoggedInManager()
         sut.transition(to: .loggingIn)
-        if case .loggedIn = sut.accountState { /* expected */
+        if case .loggedIn = sut.accountState {
+            // expected
         } else {
             XCTFail("Expected .loggedIn to be preserved; got \(sut.accountState)")
         }

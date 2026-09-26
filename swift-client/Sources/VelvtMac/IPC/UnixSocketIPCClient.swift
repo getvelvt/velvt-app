@@ -161,7 +161,7 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
         switch response {
         case .acknowledged:
             publish(.connected)
-        case let .versionMismatch(mismatch):
+        case .versionMismatch(let mismatch):
             throw IPCError.versionMismatch(
                 expected: mismatch.serverProtocolVersion,
                 got: mismatch.clientProtocolVersion
@@ -396,7 +396,7 @@ actor UnixSocketTransport: IPCTransportProtocol {
     /// of holding the startup UI until the five-second safety timeout.
     static func connectionError(for state: NWConnection.State) -> IPCError? {
         switch state {
-        case let .waiting(error), let .failed(error):
+        case .waiting(let error), .failed(let error):
             .socket(code: error.safeCode)
         case .cancelled:
             .connectionClosed
@@ -433,11 +433,11 @@ private final class ContinuationGate: @unchecked Sendable {
 extension NWError {
     fileprivate var safeCode: Int32 {
         switch self {
-        case let .posix(code):
+        case .posix(let code):
             return code.rawValue
-        case let .dns(code):
+        case .dns(let code):
             return Int32(code)
-        case let .tls(code):
+        case .tls(let code):
             return Int32(code)
         @unknown default:
             return -1

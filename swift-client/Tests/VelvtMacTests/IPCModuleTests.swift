@@ -239,7 +239,7 @@ final class IPCModuleTests: XCTestCase {
                "baseline_comparison":{},"type_proportions":[]}]}}
             """
         let message = try decoder.decode(ServerMessage.self, from: Data(json.utf8))
-        guard case let .historyPayload(payload) = message else {
+        guard case .historyPayload(let payload) = message else {
             return XCTFail("expected a history payload, decoded \(message)")
         }
         XCTAssertEqual(payload.summaries.first?.longestUninterruptedSeconds, 1500)
@@ -470,7 +470,7 @@ final class IPCModuleTests: XCTestCase {
             {"type":"start_work_block","payload":{"intention":null,"planned_duration_seconds":1500,"purpose":null,"intensity":"medium"}}
             """.utf8)
         let decoded = try decoder.decode(ClientMessage.self, from: v26)
-        guard case let .startWorkBlock(request) = decoded else {
+        guard case .startWorkBlock(let request) = decoded else {
             return XCTFail("expected start_work_block")
         }
         XCTAssertNil(request.invitationID)
@@ -566,7 +566,7 @@ final class IPCModuleTests: XCTestCase {
             {"type":"demotion_state","payload":{"state":"active","wrong_count":0,"delivered_count":4,"threshold_percent":15,"minimum_sample":10,"window_days":14,"threshold_policy_version":1,"repromotion_policy_version":1}}
             """.utf8)
         let decoded = try decoder.decode(ServerMessage.self, from: active)
-        guard case let .demotionState(state) = decoded else {
+        guard case .demotionState(let state) = decoded else {
             return XCTFail("expected demotion_state")
         }
         XCTAssertEqual(state.state, .active)

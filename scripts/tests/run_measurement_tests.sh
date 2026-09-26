@@ -4,7 +4,7 @@
 # These cover `analyze_cohort.py`, `export_cohort_evidence.sh`,
 # `prove_local.sh`, `prove_egress.sh`, `antecedent_probe.py`,
 # `generate_traces.py`, the pbxproj target-membership guard, the Swift lint
-# gate, and the executable bit on every script. They need only python3, perl,
+# gate, the banned-copy guard, and the executable bit on every script. They need only python3, perl,
 # and the sqlite3 that ships with macOS — no cargo, no Xcode — so they run in
 # seconds and there is no excuse for skipping them. CI runs them in the `swift`
 # job, under the Python in `.python-version`.
@@ -25,6 +25,7 @@ tests=(
   generate_traces_test.sh
   verify_pbxproj_membership_test.sh
   lint_swift_test.sh
+  check_banned_copy_test.sh
   script_modes_test.sh
 )
 

@@ -8,7 +8,6 @@ public enum ManagedServiceState {
     case installing
     case running
     case stopped
-    case updateInProgress
     case failed(Error)
 }
 
@@ -19,8 +18,7 @@ extension ManagedServiceState: Equatable {
         case (.notInstalled, .notInstalled),
              (.installing, .installing),
              (.running, .running),
-             (.stopped, .stopped),
-             (.updateInProgress, .updateInProgress):
+             (.stopped, .stopped):
             return true
         case (.failed, .failed):
             return true
@@ -66,9 +64,15 @@ final class SMServiceRegistrar: ServiceRegistrar {
 ///
 /// Version sidecar: the Run Script build phase writes the Rust binary's
 /// semver string to Contents/Resources/velvt-service.version next to the
-/// binary. ServiceManager copies that sidecar alongside the binary to
-/// ~/Library/Application Support/Velvt/velvt-service.version and compares
-/// the two strings on each launch to detect updates.
+/// binary, and `install()` copies it alongside the installed binary to
+/// ~/Library/Application Support/Velvt/velvt-service.version.
+///
+/// Nothing compares the two copies. `ensureUpToDate()` did, but nothing
+/// called it, and it was removed on 2026-09-25: the shipped app does not
+/// install the helper through this type at all. `ServiceProcessLauncher`
+/// runs `Contents/Resources/velvt-service` straight from the app bundle as a
+/// child process, so there is no installed copy whose version could go
+/// stale.
 @MainActor
 public final class ServiceManager: ObservableObject {
     @Published public var state: ManagedServiceState = .notInstalled
@@ -166,20 +170,6 @@ public final class ServiceManager: ObservableObject {
         }
     }
 
-    /// Compares bundled vs installed version sidecar. Re-installs only if they differ.
-    public func ensureUpToDate() async {
-        do {
-            let bundledVersion = try bundledVersionString()
-            let installedVersion = installedVersionString()
-            guard bundledVersion != installedVersion else { return }
-            state = .updateInProgress
-            try? registrar.unregister()
-            try install()
-        } catch {
-            state = .failed(error)
-        }
-    }
-
     /// Registers the LaunchAgent if not already enabled. No-op when already running.
     public func start() async {
         guard !registrar.isEnabled else { state = .running; return }
@@ -242,17 +232,6 @@ public final class ServiceManager: ObservableObject {
         contents = contents.replacingOccurrences(of: "{{BINARY_PATH}}", with: binaryDest.path)
         let destURL = launchAgentsDir.appendingPathComponent(plistName)
         try contents.write(to: destURL, atomically: true, encoding: .utf8)
-    }
-
-    private func bundledVersionString() throws -> String {
-        let url = try bundledVersionProvider()
-        return try String(contentsOf: url, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func installedVersionString() -> String? {
-        (try? String(contentsOf: versionSidecar, encoding: .utf8))
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 }
 

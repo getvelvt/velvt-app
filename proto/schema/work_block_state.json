@@ -32,8 +32,7 @@
         "classification_status",
         "confidence",
         "status_line",
-        "result",
-        "active_intervention"
+        "result"
       ],
       "properties": {
         "state_version": {

@@ -49,6 +49,34 @@
   the first queued a push, which is the shape the in-progress report creates at
   every activity switch.
 
+## Schema corrections: what the service emits - 2026-09-25 (no wire change; the protocol stays 31)
+
+- `local_dashboard.daily_activity` declared `minItems`/`maxItems` 7, the count protocol 20
+  introduced. Rust has sent `DAILY_ACTIVITY_DAYS` = 14 rows since 2026-08-27
+  (`rust-service/src/dashboard.rs`; shipped in 1.0.9 and 1.0.11 at protocols
+  28 and 30), and the outbound shaper rejects any other count. The schema now
+  says 14. No Rust or Swift type changed and the bytes on the socket are the
+  same as before; the Swift client renders whatever count it receives.
+- A `daily_activity` segment listed `representative_event_id`, `stable_id` and
+  `suggested_name` as required. Rust omits each of them when it has no value
+  (`skip_serializing_if` on `LocalDailyActivitySegment`), and a segment for a
+  seed-matched application has no `suggested_name`, so a real payload broke
+  the schema on the first day with focus work in it. They are now optional.
+- `work_block_state` listed `active_intervention` as required, while its own
+  `$comment` said it is present only while an offer is unanswered, which is
+  what Rust does (`skip_serializing_if`). It is now optional.
+- The Swift decoders already read all four as optionals, so nothing on either
+  side changes.
+- Why the conformance test below missed these: it validates instances
+  generated from the schema, so a 7-row instance agreed with a 7-row schema
+  and every generated instance filled in every optional field.
+  `rust-service/tests/emitted_payload_schema.rs` now drives the real router
+  (real events, an active block), validates the `local_dashboard` and
+  `work_block_state` payloads it emits against the schemas, and fails if the
+  schema's row bounds and `DAILY_ACTIVITY_DAYS` differ. The validator it uses
+  is the one `schema_conformance.rs` uses, moved to
+  `shared-types/tests/support/json_schema.rs` so both share it.
+
 ## Schema corrections - 2026-09-25 (no wire change; the protocol stays 31)
 
 `rust-service/shared-types/tests/schema_conformance.rs` now builds a maximal and

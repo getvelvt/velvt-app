@@ -140,15 +140,23 @@ final class DeliveryModuleTests: XCTestCase {
         sut.resetClassificationLearning()
         try? await Task.sleep(nanoseconds: 10_000_000)
 
+        // The two commands are chained, so they are sent in order, and each
+        // one queues a history refresh once it has been sent. The refresh runs
+        // on its own chain, so whether the first refresh goes out before or
+        // after the reset is a scheduling race, not a contract: CI has seen
+        // both orders. Assert what is guaranteed.
+        let sent = client.sentMessages
+        let history = ClientMessage.requestCorrectionHistory(.init(query: nil, offset: 0))
         XCTAssertEqual(
-            client.sentMessages,
+            sent.filter { $0 != history },
             [
                 .removeClassificationOverride(.init(stableID: "abs_safe")),
-                .requestCorrectionHistory(.init(query: nil, offset: 0)),
                 .resetClassificationOverrides,
-                .requestCorrectionHistory(.init(query: nil, offset: 0)),
             ]
         )
+        XCTAssertEqual(sent.filter { $0 == history }.count, 2)
+        XCTAssertEqual(sent.first, .removeClassificationOverride(.init(stableID: "abs_safe")))
+        XCTAssertEqual(sent.last, history, "the reset is followed by a refresh")
     }
 
     /// The failure copy names what the reset removes, stored corrections,

@@ -54,7 +54,7 @@ const INTENTION_RETENTION_HOURS: i64 = 24;
 /// which accepts none. `DRIFT_WINDOW_SECONDS` and `DRIFT_MIN_REMAINING_SECONDS`
 /// are unchanged — neither appears in the abstention record, and widening the
 /// window would change what "recently" means in copy that is frozen. These
-/// constants are policy version 2 and, unchanged, version 3
+/// constants are policy version 2 and, unchanged, versions 3 and 4
 /// (`DRIFT_POLICY_VERSION`); version 1 was 4 switches after a 5-minute
 /// warm-up.
 ///
@@ -82,7 +82,20 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// decided on at the resume. Version 3 decides on each dwell once, when it
 /// begins. The set of decision points differs, and so does what an `offered`
 /// row means for the person, so the two are never pooled.
-pub const DRIFT_POLICY_VERSION: u32 = 3;
+///
+/// Version 4 (2026-09-26, no protocol change) keeps every constant, branch
+/// and timing of version 3 and changes the evidence. Until then the Mac
+/// client reported nothing for an application it could not observe at window
+/// level, most often one with no focused or main window when it was
+/// activated: the dwell before it stayed open and absorbed its time. A
+/// departure from the anchor to such an application was never an
+/// observation, so it was never counted as a switch or decided on, and its
+/// time counted toward whatever the person had left, the anchor included.
+/// Version 4 receives it as an application-level dwell with no window title,
+/// classified by the application's own rungs. The set of decision points,
+/// the switch counts and the anchor all differ from version 3, so the two are
+/// never pooled.
+pub const DRIFT_POLICY_VERSION: u32 = 4;
 /// The realized probability of the arm actually taken. Exactly 1.0 while the
 /// policy is deterministic — there is no randomization, and none is being
 /// introduced here. The value is recorded now because a propensity cannot be

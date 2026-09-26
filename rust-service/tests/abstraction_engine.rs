@@ -928,3 +928,162 @@ fn an_app_scoped_correction_does_not_leak_across_apps() {
         "FOCUS_WORK"
     );
 }
+
+/// What the Mac client sends for an application it cannot observe at window
+/// level (drift policy 4): the application's identity and what it declares,
+/// with an empty title and no document URL.
+fn application_level_event(
+    app_name: &str,
+    bundle_id: &str,
+    declared_app_category: Option<&str>,
+    document_type_ids: &[&str],
+) -> RawEvent {
+    RawEvent {
+        bundle_id: Some(bundle_id.to_owned()),
+        declared_app_category: declared_app_category.map(str::to_owned),
+        document_type_ids: document_type_ids
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect(),
+        ..raw_event(app_name, "")
+    }
+}
+
+/// An application-level dwell goes down the same ladder as any other and is
+/// decided by the rungs that need no window: the bundle seed, the name seed,
+/// the declared document types, the declared category, and for a browser with
+/// no page to read, the explicitly ambiguous prior. No rung reads a title that
+/// is not there, and an application nothing recognises stays unclassified.
+#[test]
+fn an_application_level_dwell_is_classified_by_the_application_rungs() {
+    let engine = engine();
+    let cases = [
+        (
+            application_level_event("Messages", "com.apple.MobileSMS", None, &[]),
+            "COMMUNICATION",
+            ClassificationStatus::Classified,
+            ClassificationSource::Seed,
+        ),
+        (
+            application_level_event("Slack", "com.tinyspeck.slackmacgap", None, &[]),
+            "COMMUNICATION",
+            ClassificationStatus::Classified,
+            ClassificationSource::Seed,
+        ),
+        (
+            application_level_event(
+                "Obscure Studio",
+                "com.example.studio",
+                None,
+                &["public.source-code", "public.swift-source"],
+            ),
+            "FOCUS_WORK",
+            ClassificationStatus::Classified,
+            ClassificationSource::DeclaredDocumentTypes,
+        ),
+        (
+            application_level_event(
+                "Obscure Player",
+                "com.example.player",
+                Some("public.app-category.video"),
+                &[],
+            ),
+            "PASSIVE_CONSUMPTION",
+            ClassificationStatus::Classified,
+            ClassificationSource::DeclaredAppCategory,
+        ),
+        (
+            application_level_event(
+                "Google Chrome",
+                "com.google.Chrome",
+                Some("public.app-category.productivity"),
+                &["public.html", "public.movie"],
+            ),
+            "REFERENCE",
+            ClassificationStatus::Ambiguous,
+            ClassificationSource::Fallback,
+        ),
+        (
+            application_level_event("Velvt", "com.velvt.mac", None, &[]),
+            "SYSTEM",
+            ClassificationStatus::Classified,
+            ClassificationSource::Seed,
+        ),
+        (
+            application_level_event("Qwzx Tool", "com.example.qwzx", None, &[]),
+            "UNLOGGED",
+            ClassificationStatus::Unclassified,
+            ClassificationSource::Fallback,
+        ),
+    ];
+
+    for (event, category, status, source) in cases {
+        let app_name = event.app_name.clone();
+        let abstracted = engine.process(event).unwrap();
+        assert_eq!(abstracted.category(), category, "{app_name}");
+        assert_eq!(abstracted.classification_status(), status, "{app_name}");
+        assert_eq!(abstracted.classification_source(), source, "{app_name}");
+    }
+}
+
+/// Corrections reach an application-level dwell through the application
+/// rungs, and a correction made on one binds to the empty title only: it is
+/// never taken for a correction of the application's titled windows.
+#[test]
+fn corrections_reach_an_application_level_dwell_without_leaking_onto_windows() {
+    let store = Arc::new(InMemoryMappingStore::default());
+    let salt = store.stable_key_salt().unwrap();
+    store.set_app_override(
+        &velvt_service::abstraction::app_bundle_key_for(&salt, "com.example.editor"),
+        velvt_service::abstraction::PersonalOverride {
+            category: "FOCUS_WORK".to_owned(),
+            local_activity_name: None,
+        },
+    );
+    store.set_override(
+        &velvt_service::abstraction::stable_key_for(&salt, "Qwzx Chat", ""),
+        velvt_service::abstraction::PersonalOverride {
+            category: "COMMUNICATION".to_owned(),
+            local_activity_name: None,
+        },
+    );
+    let engine = AbstractionEngine::builder(store, Taxonomy::from_builtin().unwrap())
+        .register_builtin_plugins()
+        .build()
+        .unwrap();
+
+    let corrected_app = engine
+        .process(application_level_event(
+            "Qwzx Editor",
+            "com.example.editor",
+            None,
+            &[],
+        ))
+        .unwrap();
+    assert_eq!(corrected_app.category(), "FOCUS_WORK");
+    assert_eq!(
+        corrected_app.classification_source(),
+        ClassificationSource::UserRule
+    );
+
+    assert_eq!(
+        engine
+            .process(application_level_event(
+                "Qwzx Chat",
+                "com.example.chat",
+                None,
+                &[]
+            ))
+            .unwrap()
+            .category(),
+        "COMMUNICATION"
+    );
+    assert_ne!(
+        engine
+            .process(raw_event("Qwzx Chat", "quarterly plan"))
+            .unwrap()
+            .category(),
+        "COMMUNICATION",
+        "a correction of the application-level dwell must not leak onto a titled window"
+    );
+}

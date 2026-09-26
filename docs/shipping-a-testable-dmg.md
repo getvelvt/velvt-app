@@ -200,15 +200,17 @@ a Release build, so this is unavailable in the DMG.
 Device-local, deterministic, and independent of the cloud, so it works on a
 fresh install with no account and no baseline history:
 
-This is drift policy v3 (`DRIFT_POLICY_VERSION = 3`, protocol 32, velvt-app
-PR #56). The gate constants are in `rust-service/src/work_block/mod.rs`:
+This is drift policy v4 (`DRIFT_POLICY_VERSION = 4`, protocol 32). The gate
+constants are in `rust-service/src/work_block/mod.rs`:
 ≥ 3 confident switches away from the anchor inside a rolling 10-minute window,
 after ≥ 3 minutes elapsed, with ≥ 2 minutes remaining. They are v2's (PR #40,
-1.0.9 to 1.0.11); v3 changes when a switch reaches the gate, which is now the
-moment it happens. Under v2 the gate heard of a switch only when you came back,
-and the offer was withdrawn at your next switch, often before a notification
-was posted. The first
-gate, v1, was ≥ 4 switches after 5 minutes; it no longer ships.
+1.0.9 to 1.0.11); v3 (velvt-app PR #56, 1.0.12) changed when a switch reaches
+the gate, which is now the moment it happens. Under v2 the gate heard of a
+switch only when you came back, and the offer was withdrawn at your next
+switch, often before a notification was posted. v4 also counts a switch to an
+application Velvt cannot observe at window level (one with no window open when
+you switch to it, for example); under v3 that switch was never reported. The
+first gate, v1, was ≥ 4 switches after 5 minutes; it no longer ships.
 
 1. Start a work block of **25 minutes** (anything that leaves 2 minutes after
    the switches works).
@@ -240,7 +242,7 @@ delivered later).
 | Focus / DND not suppressing it | Control Centre → Focus |
 | Service running and connected | Menu bar shows a connected state, not "Collection paused" |
 | Accessibility granted | System Settings → Privacy & Security → Accessibility |
-| Gates actually met | ≥3 confident switches in 10 min, ≥3 min elapsed, ≥2 min remaining (policy v3) |
+| Gates actually met | ≥3 confident switches in 10 min, ≥3 min elapsed, ≥2 min remaining (policy v4) |
 | Delivery outcome | `bash scripts/watch_notifications.sh` reports `notification_delivered` or why it was not |
 | Already offered this block | One per block — start a new one |
 

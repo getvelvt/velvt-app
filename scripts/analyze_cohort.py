@@ -14,8 +14,8 @@ This script computes. It does not decide. Every threshold and definition here
 is read from that file's pre-registration (2026-08-09), its additions
 (2026-08-17), the amendment that replaced the primary outcome (2026-08-21), the
 correction of 2026-08-31, the drift policy v2 amendment and 0.1.6 metrics
-(both 2026-09-25), and the drift policy v3 note (2026-09-26), all written
-before any cohort data existed. Nothing may be
+(both 2026-09-25), and the drift policy v3 and v4 notes (both 2026-09-26), all
+written before any cohort data existed. Nothing may be
 added after seeing results. If a definition turns out to be wrong, amend it in
 a dated note stating what was known at the time.
 
@@ -93,9 +93,18 @@ WARMUP_EXCLUSION_SECONDS = 180
 # decision points differs from v2, and an offer now reaches the person while
 # they are away instead of being withdrawn as they come back. Rows from v1, v2
 # and v3 are never pooled, and every cohort result uses policy_version 3 only.
-# The note is `pitch-deck-inputs/evidence/drafts/2026-09-26-policy-v3-note.md`
-# until the founder appends it to traction-summary.md.
-ANALYSED_POLICY_VERSION = 3
+# The founder appended the note to traction-summary.md on 2026-09-26.
+#
+# Note, dated 2026-09-26: drift policy v4 (no protocol change) keeps every v3
+# constant and timing, so the warm-up exclusion above stands, but the gate now
+# receives an application the Mac client cannot observe at window level as a
+# dwell of its own. Under v3 such an application reported nothing and its time
+# went to the dwell before it, so a departure to it was never a decision point,
+# never a switch, and never took time from the anchor. Rows from v1 to v4 are
+# never pooled, and every cohort result uses policy_version 4 only. The note is
+# `pitch-deck-inputs/evidence/drafts/2026-09-26-policy-v4-note.md` until the
+# founder appends it to traction-summary.md.
+ANALYSED_POLICY_VERSION = 4
 
 # A `work_block_intervention` row has no policy column. It takes the
 # policy_version of the decision-log row for the same block_id whose verdict is
@@ -1136,8 +1145,8 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
         "policy": {
             "analysed_policy_version": ANALYSED_POLICY_VERSION,
             "rule": (
-                "2026-09-25 amendment and 2026-09-26 note: policy_version 1, 2 and 3 "
-                "are never pooled and every result uses policy_version "
+                "2026-09-25 amendment and 2026-09-26 notes: policy_version 1, 2, 3 "
+                "and 4 are never pooled and every result uses policy_version "
                 f"{ANALYSED_POLICY_VERSION} only. An intervention row takes "
                 "the policy_version of the decision-log row for the same block_id "
                 "whose gate_verdict is offered, withheld_demotion or suppressed_dnd; "
@@ -1244,7 +1253,7 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
         "exclusions": {
             "declared_in_advance": [
                 f"blocks whose elapsed time (ended_at - started_at - total_paused_seconds) "
-                f"is under {WARMUP_EXCLUSION_SECONDS}s, below the policy v2 and v3 warm-up "
+                f"is under {WARMUP_EXCLUSION_SECONDS}s, below the policy v2 to v4 warm-up "
                 "(2026-09-25; was 300 s)",
                 "the founder's own device",
                 "any participant who reinstalled mid-cohort (local history resets with the database)",

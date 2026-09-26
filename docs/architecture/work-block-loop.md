@@ -96,6 +96,25 @@ decision points is not the same everywhere, which is why the version changed:
 `tests/drift_offer_in_progress_boundaries.rs` pins each case against a
 closed-only client.
 
+Drift policy version 4 (2026-09-26, `DRIFT_POLICY_VERSION = 4`, no protocol
+change) keeps every constant, branch and timing of version 3 and changes the
+evidence. When the Mac client cannot observe the application in front at
+window level (most often an application with no focused or main window when it
+is activated, AX error -25212), it now reports an application-level dwell: the
+application's name, bundle identifier and declared metadata, an empty
+`window_title` and no document URL, in progress when it begins and closed when
+it ends, like any other. It is classified by the rungs that need no window
+(bundle and name seeds, declared document types and category, the ambiguous
+browser prior), stored, counted toward coverage when that classification is
+confident, and decided on by the gate. Under version 3 the client reported
+nothing for such an application: the dwell before it stayed open and absorbed
+its time, so a departure from the anchor to it was never an observation, never
+a switch and never a decision point, and its time counted toward whatever the
+person had left, the anchor included. The decision points, switch counts and
+anchor differ, which is why the version changed.
+`tests/drift_offer_live_helper.rs` replays one block both ways against the real
+helper.
+
 An observation row's end is the next row's start. At a boundary — pause or
 sleep, a service restart, or the end of the block — there is no next row, and
 the dwell the user is in has not been measured yet. The open row is therefore

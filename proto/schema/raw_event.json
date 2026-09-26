@@ -16,7 +16,10 @@
         "occurred_at": { "type": "string", "format": "date-time" },
         "duration_seconds": { "type": "integer", "minimum": 0, "maximum": 1800 },
         "app_name": { "type": "string" },
-        "window_title": { "type": "string" },
+        "window_title": {
+          "type": "string",
+          "description": "Raw focused-window title. Empty when there is none to read: an untitled window, or an application the client cannot observe at window level, which it reports with the application's identity only (and no focused_document_url) rather than not at all. Rust classifies an empty title through the application-level rungs and never substitutes one. Local IPC only."
+        },
         "bundle_id": { "type": ["string", "null"] },
         "declared_app_category": {
           "type": ["string", "null"],

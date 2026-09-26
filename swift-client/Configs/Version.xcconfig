@@ -9,5 +9,5 @@
 // may never be lower than the newest build in docs/RELEASES.md, and may equal
 // it only while these two lines still name that release.
 // scripts/tests/release_provenance_test.sh enforces both.
-MARKETING_VERSION = 1.0.11
-CURRENT_PROJECT_VERSION = 17
+MARKETING_VERSION = 1.0.12
+CURRENT_PROJECT_VERSION = 18

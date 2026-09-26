@@ -282,9 +282,10 @@ generates the salt and re-keys every digest already on disk under it.
 
 The first table above is every store that holds something drawn from your Mac. It is
 not every table in the file. A database with every migration in this source
-tree applied (0001–0038) holds 37 tables, plus SQLite's own `sqlite_sequence`.
-A Velvt 1.0.11 database stops at 0036 and holds 34: it has no
-`stable_key_salt`, `egress_ledger`, or `egress_ledger_checkpoint`. Of the 37,
+tree applied holds 37 tables, plus SQLite's own `sqlite_sequence`. A Velvt
+1.0.11 database (migrations 0001–0036) holds 34: it has no `stable_key_salt`,
+`egress_ledger`, or `egress_ledger_checkpoint`, which migrations 0037 and 0038
+add. Of the 37,
 the 20 that are not in that table hold counters, settings, keys, feature state,
 and the record of what was sent. They are listed here for the same reason the
 three empty ones are — you will see them if you open the file.

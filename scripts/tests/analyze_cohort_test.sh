@@ -26,6 +26,9 @@
 #      participant with blocks and zero offers is not a dropped row.
 #   9. The 0.1.6 measures: completion by origin, invitation acceptance, the
 #      explain-tap rate, and decision-log integrity.
+#  11. The 2026-08-17 measure 3, corrections made per participant, was
+#      pre-registered and unmeasurable: no export carried it. It is counted from
+#      the corrections CSV, as a count, and a missing file is never a zero.
 #
 # Fixtures are CSVs written the way export_cohort_evidence.sh writes them.
 # export_cohort_evidence_test.sh covers the databases behind them, across
@@ -67,6 +70,7 @@ HEADERS = {
     "blocks": "block_id,origin,phase,started_at,ended_at,total_paused_seconds,planned_duration_seconds",
     "invitations": "invitation_id,offered_at,action_id,policy_version,backoff_policy_version,outcome,outcome_at",
     "explain": "week_start_local_date,taps,delivered_interventions,blocks_declared",
+    "corrections": "scope,category,rules,corrections",
 }
 T0 = 1800000000
 spec = json.load(sys.stdin)
@@ -140,10 +144,13 @@ if spec.get("invitations") is not None:
                           for i, inv in enumerate(spec["invitations"])])
 if spec.get("explain") is not None:
     write("explain", spec["explain"])
-meta = {"export_format": "2", "exported_at": str(T0 + 7 * 86400), "schema_version": "36",
+if spec.get("corrections") is not None:
+    write("corrections", spec["corrections"])
+meta = {"export_format": "3", "exported_at": str(T0 + 7 * 86400), "schema_version": "36",
         "decision_log": "present" if spec.get("decisions") is not None else "absent",
         "invitations": "present" if spec.get("invitations") is not None else "absent",
         "explain_probe": "present" if spec.get("explain") is not None else "absent",
+        "corrections": "present" if spec.get("corrections") is not None else "absent",
         "card_seen_recorded_since": str(T0 - 86400), "invitations_enabled": "1"}
 meta.update(spec.get("meta", {}))
 if spec.get("write_meta", True):
@@ -223,6 +230,7 @@ for needle in "WITHHELD (recorded, never delivered)" \
               "INVITED VERSUS SELF-DECLARED COMPLETION" \
               "INVITATION ACCEPTANCE" \
               "EXPLAIN-TAP RATE" \
+              "CORRECTIONS PER PARTICIPANT (2026-08-17 measure 3; a count, not engagement)" \
               "DECISION-LOG INTEGRITY"; do
   grep -qF -- "$needle" <<<"$report" || fail "report omits: $needle"
 done
@@ -591,5 +599,100 @@ assert r["participants"]["analysed"] == 0, r["participants"]
 assert "more than one export" in r["participants"]["excluded_whole"]["velvt-cohort-2027-01-22"], r["participants"]
 assert r["decisions_recorded"]["total"] == 0, r["decisions_recorded"]
 PY2
+
+# ===========================================================================
+# 11. Corrections made per participant (2026-08-17 measure 3). A count per
+#     participant, summed from the app rows; window rules are descriptive; a
+#     participant with no corrections is a zero; one whose export has no file
+#     is not measurable, never a zero; a malformed row is reported and not
+#     counted; a founder export's corrections go nowhere.
+# ===========================================================================
+make_export "$work/corr/p-teacher" <<'JSON'
+{"blocks": [{"block_id": "a", "started_at": 1800000000}],
+ "offers": [], "decisions": [{"block_id": "a", "gate_verdict": "abstained_min_switches"}],
+ "corrections": [
+   {"scope": "app", "category": "FOCUS_WORK", "rules": 2, "corrections": 5},
+   {"scope": "app", "category": "COMMUNICATION", "rules": 1, "corrections": 1},
+   {"scope": "window", "category": "REFERENCE", "rules": 3}
+ ]}
+JSON
+make_export "$work/corr/p-zero" <<'JSON'
+{"blocks": [{"block_id": "a", "started_at": 1800000000}],
+ "offers": [], "decisions": [], "corrections": []}
+JSON
+make_export "$work/corr/p-older" <<'JSON'
+{"blocks": [{"block_id": "a", "started_at": 1800000000}],
+ "offers": [], "decisions": [], "meta": {"export_format": "2"}}
+JSON
+python3 - "$work/corr/p-older/p-older-meta.csv" <<'PY'
+import csv, sys
+rows = [r for r in csv.reader(open(sys.argv[1])) if r[0] != "corrections"]
+csv.writer(open(sys.argv[1], "w", newline="")).writerows(rows)
+PY
+make_export "$work/corr/p-lost" <<'JSON'
+{"blocks": [{"block_id": "a", "started_at": 1800000000}],
+ "offers": [], "decisions": [],
+ "corrections": [{"scope": "app", "category": "SYSTEM", "rules": 1, "corrections": 1}]}
+JSON
+rm "$work/corr/p-lost/p-lost-corrections.csv"
+make_export "$work/corr/p-bad" <<'JSON'
+{"blocks": [{"block_id": "a", "started_at": 1800000000}],
+ "offers": [], "decisions": [],
+ "corrections": [
+   {"scope": "app", "category": "Slack", "rules": 1, "corrections": 1},
+   {"scope": "app", "category": "SYSTEM", "rules": 2, "corrections": 1},
+   {"scope": "app", "category": "REFERENCE", "rules": 1, "corrections": 4},
+   {"scope": "app", "category": "REFERENCE", "rules": 1, "corrections": 4},
+   {"scope": "window", "category": "SYSTEM", "rules": 0}
+ ]}
+JSON
+make_export "$work/corr/p-upgraded" <<'JSON'
+{"blocks": [{"block_id": "a", "started_at": 1800000000}],
+ "offers": [],
+ "decisions": [{"block_id": "a", "gate_verdict": "abstained_warmup", "policy_version": 1}],
+ "corrections": [{"scope": "app", "category": "FOCUS_WORK", "rules": 1, "corrections": 2}]}
+JSON
+make_export "$work/corr/founder-corr" <<'JSON'
+{"blocks": [{"block_id": "a", "started_at": 1800000000}],
+ "offers": [], "decisions": [],
+ "corrections": [{"scope": "app", "category": "FOCUS_WORK", "rules": 9, "corrections": 99}]}
+JSON
+"$analyze" --json "$work/corr"/*/ > "$work/corr.json"
+check "$work/corr.json" "corrections made per participant" <<'PY'
+c = r["corrections_per_participant"]
+per = c["per_participant"]
+assert sorted(per) == ["p-bad", "p-teacher", "p-upgraded", "p-zero"], sorted(per)
+assert per["p-teacher"] == {
+    "app_scoped_corrections": 6, "applications_with_an_app_rule": 3, "window_rules": 3,
+    "app_scoped_corrections_by_category": {"COMMUNICATION": 1, "FOCUS_WORK": 5}}, per["p-teacher"]
+assert per["p-zero"]["app_scoped_corrections"] == 0, per["p-zero"]
+assert c["participants_with_zero_app_scoped_corrections"] == ["p-zero"], c
+# Only the first REFERENCE row survives; the unknown category, the app row
+# with fewer corrections than rules, the duplicate and the empty window row
+# are each reported.
+assert per["p-bad"]["app_scoped_corrections"] == 4, per["p-bad"]
+assert per["p-bad"]["window_rules"] == 0, per["p-bad"]
+bad = [m for m in r["data_quality"]["malformed"] if m.startswith("p-bad:")]
+assert len(bad) == 4, bad
+# A file that never came and a file that never existed are not zeros.
+assert c["not_measurable_for"] == ["p-lost", "p-older"], c
+assert any("p-lost: the export wrote a corrections file" in m
+           for m in r["data_quality"]["malformed"]), r["data_quality"]
+assert not any(m.startswith("p-older:") for m in r["data_quality"]["malformed"]), r["data_quality"]
+# No timestamp, so counts cannot be cut at a policy upgrade: said, not hidden.
+assert c["includes_history_before_policy_v2"] == ["p-upgraded"], c
+assert c["total_app_scoped_corrections"] == 6 + 0 + 4 + 2, c
+assert c["app_scoped_corrections_by_category"] == {
+    "COMMUNICATION": 1, "FOCUS_WORK": 7, "REFERENCE": 4}, c
+assert r["exclusions"]["founder_devices_excluded"] == ["founder-corr"], r["exclusions"]
+PY
+corr_report="$("$analyze" "$work/corr"/*/)"
+check_power_markers "$corr_report"
+for needle in "p-teacher                   6 app-scoped correction(s) on 3 app(s); 3 window rule(s)" \
+              "no corrections file: ['p-lost', 'p-older']" \
+              "counts include time before policy v2, not separable: ['p-upgraded']" \
+              "Each count is a lower bound."; do
+  grep -qF -- "$needle" <<<"$corr_report" || fail "corrections report omits: $needle"
+done
 
 echo "analyze_cohort_test.sh: OK"

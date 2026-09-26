@@ -8,9 +8,9 @@
 # outcomes are not measurable without the participant deliberately handing
 # them over. This script is that hand-over.
 #
-# What it emits: up to six CSV files that share one name stem, each with its own
-# row grain. They are kept apart on purpose: one file carrying two grains would
-# be pooled by the first person who opened it in a spreadsheet.
+# What it emits: up to seven CSV files that share one name stem, each with its
+# own row grain. They are kept apart on purpose: one file carrying two grains
+# would be pooled by the first person who opened it in a spreadsheet.
 #
 #   <stem>.csv              one row per recorded intervention
 #                           (`work_block_intervention`), with `card_seen_at`.
@@ -32,6 +32,11 @@
 #   <stem>-explain.csv      one row per local week: explain-this-nudge taps
 #                           (migration 0025), and the delivered offers and
 #                           declared blocks in that week, counted on this Mac.
+#   <stem>-corrections.csv  one row per rule scope and broad category: how many
+#                           classification rules this Mac holds, and for the
+#                           app-scoped ones how many corrections wrote them
+#                           (migration 0017). Counts only. No key, no typed
+#                           name, no label: nothing that names an app or window.
 #   <stem>-meta.csv         what this database could and could not record:
 #                           schema version, whether the decision log exists,
 #                           when card sightings started being recorded, and
@@ -66,6 +71,7 @@ DECISIONS_OUT="$STEM-decisions.csv"
 BLOCKS_OUT="$STEM-blocks.csv"
 INVITATIONS_OUT="$STEM-invitations.csv"
 EXPLAIN_OUT="$STEM-explain.csv"
+CORRECTIONS_OUT="$STEM-corrections.csv"
 META_OUT="$STEM-meta.csv"
 
 if [[ ! -f "$DB" ]]; then
@@ -131,7 +137,8 @@ fi
 # Companion files from an earlier run in the same folder would otherwise sit
 # beside this run's files and be read as part of it. Only this script's own
 # output names are removed.
-rm -f "$DECISIONS_OUT" "$BLOCKS_OUT" "$INVITATIONS_OUT" "$EXPLAIN_OUT" "$META_OUT"
+rm -f "$DECISIONS_OUT" "$BLOCKS_OUT" "$INVITATIONS_OUT" "$EXPLAIN_OUT" \
+  "$CORRECTIONS_OUT" "$META_OUT"
 
 # ---------------------------------------------------------------------------
 # 1. One row per recorded intervention.
@@ -371,7 +378,67 @@ if has_table explain_probe_week; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. What this database could record. The analysis reads this to tell "the
+# 6. The classification corrections this Mac holds, as counts per rule scope
+#    and broad category. This is the 2026-08-17 pre-registered measure 3,
+#    "corrections made per participant", which no file carried before.
+#
+#    app     `personal_app_override` (0017): one row per application the person
+#            taught a category, from a correction or from the list of apps
+#            Velvt could not read (`set_application_category`, triage).
+#            `correction_count` starts at 1 and each later correction
+#            that lands on the same application adds 1, so its sum is the
+#            number of app-scoped corrections behind the rules that exist now.
+#    window  `personal_override` (0007): one row per corrected window. It keeps
+#            no count, because correcting the same window again overwrites it,
+#            so `corrections` is left empty rather than guessed.
+#
+#    Only rules that still exist can be counted. A correction the person
+#    removed, or a Reset, takes its count with it, so every number here is a
+#    lower bound. The block-scoped "Wrong category" reply to a drift offer
+#    (`work_block_category_correction`) is not a classification rule and is
+#    already in the offers file as outcome `wrong_classification`.
+#
+#    What is never selected: the key digests, the typed activity name, and
+#    every label. `category` is written only when it is one of the eight the
+#    service accepts for a correction (`override_label_for_category`,
+#    rust-service/src/abstraction/engine.rs, unchanged since 1.0.1); anything
+#    else becomes `unrecognized`. The IPC layer already refuses any other
+#    value, so this matters only if something wrote the table around it, and
+#    then free text still cannot leave in this column.
+#
+#    A 1.0.0 database (0016) has no app-scoped rules at all, so the measure
+#    does not exist there: no file is written and the meta file says `absent`.
+# ---------------------------------------------------------------------------
+CORRECTIONS="absent"
+CORRECTION_ROWS=0
+if has_table personal_app_override && has_table personal_override; then
+  CORRECTIONS="present"
+  write_csv "$CORRECTIONS_OUT" \
+    'scope,category,rules,corrections' \
+    "WITH rules AS (
+       SELECT 'app' AS scope, a.category AS category, a.correction_count AS corrections
+         FROM personal_app_override AS a
+       UNION ALL
+       SELECT 'window' AS scope, w.category AS category, NULL AS corrections
+         FROM personal_override AS w)
+     SELECT
+        r.scope,
+        CASE
+            WHEN r.category IN ('FOCUS_WORK', 'PASSIVE_CONSUMPTION', 'SOCIAL_FEED',
+                                'COMMUNICATION', 'TASK_MANAGEMENT', 'REFERENCE',
+                                'SYSTEM', 'UNLOGGED') THEN r.category
+            ELSE 'unrecognized'
+        END,
+        COUNT(*),
+        SUM(r.corrections)
+     FROM rules AS r
+     GROUP BY 1, 2
+     ORDER BY 1, 2;"
+  CORRECTION_ROWS="$(rows_in "$CORRECTIONS_OUT")"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. What this database could record. The analysis reads this to tell "the
 #    database had no decision log" from "the decision-log file went missing on
 #    the way", and to report who switched invitations off.
 # ---------------------------------------------------------------------------
@@ -386,12 +453,13 @@ if has_table initiation_settings; then
 fi
 {
   printf 'key,value\n'
-  printf 'export_format,2\n'
+  printf 'export_format,3\n'
   printf 'exported_at,%s\n' "$(date -u +%s)"
   printf 'schema_version,%s\n' "$SCHEMA_VERSION"
   printf 'decision_log,%s\n' "$DECISION_LOG"
   printf 'invitations,%s\n' "$INVITATIONS"
   printf 'explain_probe,%s\n' "$EXPLAIN_PROBE"
+  printf 'corrections,%s\n' "$CORRECTIONS"
   printf 'card_seen_recorded_since,%s\n' "$CARD_SEEN_SINCE"
   printf 'invitations_enabled,%s\n' "$INVITATIONS_ENABLED"
 } > "$META_OUT"
@@ -423,6 +491,12 @@ if [[ "$EXPLAIN_PROBE" == "present" ]]; then
   cat <<SUMMARY
 Wrote $EXPLAIN_ROWS week(s) of explain-tap counts to:
   $EXPLAIN_OUT
+SUMMARY
+fi
+if [[ "$CORRECTIONS" == "present" ]]; then
+  cat <<SUMMARY
+Wrote $CORRECTION_ROWS row(s) of correction counts to:
+  $CORRECTIONS_OUT
 SUMMARY
 fi
 cat <<SUMMARY
@@ -468,7 +542,10 @@ session you started, with how it started (by you or from an invitation), how
 it ended, and its timings. The invitations file lists each invitation and your
 answer. The explain file counts "Explain this nudge" taps per week, next to
 the nudges and sessions in that week, with each week named by the date of its
-Monday.
+Monday. The corrections file counts the category corrections you have made,
+per broad category only: how many apps and how many windows you corrected,
+and how many corrections the apps took in total. It does not say which apps
+or windows they were.
 
 Does NOT contain: your block intentions, app names, window titles, URLs,
 filenames, or anything you typed or read. Open the files and check before

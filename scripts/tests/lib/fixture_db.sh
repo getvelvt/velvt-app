@@ -13,11 +13,14 @@
 #   protocol 25  1.0.0 (0016)  and 1.0.1 (0017)
 #   protocol 28  1.0.9 (0031)  first build on drift policy v2
 #   protocol 30  1.0.11 (0036) the first with card_seen_at (0032, protocol 29)
+#   protocol 31  develop on 2026-09-25 (0038), in no shipped build yet: salted
+#                stable keys (0037) and the egress ledger (0038)
 # shellcheck shell=bash
 
 FIXTURE_MIGRATIONS_PROTOCOL_25=17
 FIXTURE_MIGRATIONS_PROTOCOL_28=31
 FIXTURE_MIGRATIONS_PROTOCOL_30=36
+FIXTURE_MIGRATIONS_PROTOCOL_31=38
 
 # migrate_fixture_db DB LAST_VERSION APPLIED_AT
 #   Applies every migration numbered <= LAST_VERSION that DB has not recorded,

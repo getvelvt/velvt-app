@@ -5,9 +5,9 @@
 #
 # 1. The export must carry ENOUGH: block timings on every offer, the decision
 #    log with `policy_version`, a row for every declared block (offer or not),
-#    `card_seen_at`, invitation outcomes and the explain-tap counts, so every
-#    measure pre-registered in `traction-summary.md` can be computed from what a
-#    tester sends back.
+#    `card_seen_at`, invitation outcomes, the explain-tap counts and the
+#    correction counts, so every measure pre-registered in `traction-summary.md`
+#    can be computed from what a tester sends back.
 #
 # 2. The export must carry NOTHING ELSE. The script's own disclosure promises a
 #    participant that no intention, app name, window title, URL or filename can
@@ -19,8 +19,9 @@
 #    fixture is built by replaying the shipped migrations up to a real build's
 #    schema: protocol 30 (1.0.11), protocol 28 (1.0.9, no `card_seen_at`), a
 #    28 -> 30 upgrade (rows from before migration 0032 are "unknown", not
-#    "unseen"), and protocol 25 (1.0.1, no decision log at all). Older than
-#    protocol 25 must still stop with an error.
+#    "unseen"), protocol 25 (1.0.1, no decision log at all), 1.0.0 (no
+#    app-scoped corrections), and protocol 31 (develop) for the corrections
+#    file. Older than protocol 25 must still stop with an error.
 #
 # The tester receives the script pasted or attached, with no execute bit, and
 # runs `bash export_cohort_evidence.sh` under the bash 3.2 that ships with
@@ -60,7 +61,10 @@ S_LABEL='ZZSENTINELEVENTLABELZZ'
 S_MAPNAME='ZZSENTINELMAPDISPLAYNAMEZZ'
 S_OVERRIDE='ZZSENTINELOVERRIDENAMEZZ'
 S_URLHOST='ZZSENTINELURLHOSTZZ'
-SENTINELS=("$S_INTENTION" "$S_APPNAME" "$S_DISPLAY" "$S_LABEL" "$S_MAPNAME" "$S_OVERRIDE" "$S_URLHOST")
+# Written straight into a correction's category, around the IPC check that
+# refuses it, to prove the exporter's closed set is what stops it.
+S_CATEGORY='ZZSENTINELCATEGORYZZ'
+SENTINELS=("$S_INTENTION" "$S_APPNAME" "$S_DISPLAY" "$S_LABEL" "$S_MAPNAME" "$S_OVERRIDE" "$S_URLHOST" "$S_CATEGORY")
 
 # Every local-only text column that really holds raw identity on a Mac.
 seed_sentinels() {
@@ -211,6 +215,7 @@ DECISIONS_HEADER='decision_id,occurred_at,block_id,policy_version,anchor_categor
 BLOCKS_HEADER='block_id,origin,phase,started_at,ended_at,total_paused_seconds,planned_duration_seconds'
 INVITATIONS_HEADER='invitation_id,offered_at,action_id,policy_version,backoff_policy_version,outcome,outcome_at'
 EXPLAIN_HEADER='week_start_local_date,taps,delivered_interventions,blocks_declared'
+CORRECTIONS_HEADER='scope,category,rules,corrections'
 
 # ===========================================================================
 # A. Protocol 30 (1.0.11), fresh install. The tester's path: a pasted copy
@@ -236,7 +241,7 @@ chmod 644 "$pasted/export_cohort_evidence.sh"
   || fail "bash export_cohort_evidence.sh failed from a pasted copy:$(printf '\n')$(cat "$work/stdout30.txt")"
 
 stem="$pasted/velvt-cohort-$(date -u +%Y-%m-%d)"
-for suffix in "" -decisions -blocks -invitations -explain -meta; do
+for suffix in "" -decisions -blocks -invitations -explain -corrections -meta; do
   [[ -f "$stem$suffix.csv" ]] || fail "missing $(basename "$stem$suffix.csv")"
 done
 
@@ -256,6 +261,7 @@ check_header "$stem-decisions.csv" "$DECISIONS_HEADER"
 check_header "$stem-blocks.csv" "$BLOCKS_HEADER"
 check_header "$stem-invitations.csv" "$INVITATIONS_HEADER"
 check_header "$stem-explain.csv" "$EXPLAIN_HEADER"
+check_header "$stem-corrections.csv" "$CORRECTIONS_HEADER"
 
 # 2. The offer rows carry the right arithmetic and card_seen buckets.
 python3 - "$stem.csv" <<'PY' || fail "per-offer rows are wrong"
@@ -331,7 +337,14 @@ assert meta["explain_probe"] == "present", meta
 assert meta["card_seen_recorded_since"] == str(1800000000 - 86400), meta
 assert meta["invitations_enabled"] == "0", meta
 assert meta["exported_at"].isdigit(), meta
+assert meta["export_format"] == "3", meta
+assert meta["corrections"] == "present", meta
 PY
+
+# 5b. The corrections file: the two rules seed_sentinels wrote, as counts, and
+#     nothing that names them. An app rule is written with correction_count 1.
+[[ "$(tail -n +2 "$stem-corrections.csv")" == "$(printf 'app,FOCUS_WORK,1,1\nwindow,REFERENCE,1,')" ]] \
+  || fail "corrections rows are wrong:$(printf '\n')$(cat "$stem-corrections.csv")"
 
 # 6. The privacy promise, over every file the tester sends, and their terminal.
 assert_no_sentinel "$stem".csv "$stem"-*.csv
@@ -359,6 +372,7 @@ for phrase in "block start and end times" "total time paused" \
               "Times are plain epoch seconds." \
               "the policy version" "every session you started" \
               "named by the date of its Monday" \
+              "It does not say which apps or windows they were." \
               "Please send every file listed above."; do
   grep -qF -- "$phrase" <<<"$folded" || fail "disclosure omits: $phrase"
 done
@@ -387,6 +401,9 @@ assert (inv["accepted"], inv["terminal"], inv["unresolved_offered_excluded"]) ==
 assert inv["participants_with_invitations_off"] == ["p30"], inv
 ex = r["explain_tap_rate"]
 assert (ex["taps"], ex["delivered_interventions"]) == (2, 3), ex
+corr = r["corrections_per_participant"]["per_participant"]["p30"]
+assert (corr["app_scoped_corrections"], corr["applications_with_an_app_rule"],
+        corr["window_rules"]) == (1, 1, 1), corr
 PY
 
 # 9. There is still no `SELECT *` anywhere in the exporter's executable text.
@@ -517,6 +534,133 @@ reason = r["participants"]["excluded_whole"]["p25"]
 assert "predates migration 0026" in reason, reason
 assert r["decisions_recorded"]["total"] == 0, r["decisions_recorded"]
 PY
+
+# ===========================================================================
+# F. Corrections (2026-08-17 measure 3) on protocol 28 (1.0.9) and protocol 31
+#    (develop, with salted keys and the egress ledger). The same rows on both:
+#    five app rules and four window rules, one of each with a category nothing
+#    could have written through the IPC layer, plus a block-scoped "Wrong
+#    category" reply that is not a classification rule and is not counted.
+#    Only columns 0017 already had are written, so one seed fits both schemas.
+# ===========================================================================
+seed_corrections() {
+  sqlite3 "$1" <<SQL
+INSERT INTO personal_app_override (app_key_hash, category, activity_name, correction_count)
+VALUES
+ ('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd01','FOCUS_WORK',NULL,3),
+ ('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd02','FOCUS_WORK','$S_OVERRIDE two',1),
+ ('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd03','SOCIAL_FEED',NULL,2),
+ ('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd04','$S_CATEGORY',NULL,1);
+INSERT INTO personal_override (key_hash, category, activity_name)
+VALUES
+ ('eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee01','FOCUS_WORK',NULL),
+ ('eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee02','FOCUS_WORK','$S_URLHOST two'),
+ ('eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee03','$S_CATEGORY',NULL);
+INSERT INTO work_block_category_correction (block_id, category, counts_as_category, corrected_at)
+VALUES ('block-4','REFERENCE','FOCUS_WORK',$((T0 + 30500)));
+SQL
+}
+
+for proto in 28 31; do
+  case "$proto" in
+    28) last="$FIXTURE_MIGRATIONS_PROTOCOL_28" ;;
+    31) last="$FIXTURE_MIGRATIONS_PROTOCOL_31" ;;
+  esac
+  dbc="$work/corrections$proto.sqlite3"
+  migrate_fixture_db "$dbc" "$last" "$INSTALLED_AT"
+  seed_blocks_and_offers "$dbc"
+  seed_sentinels "$dbc"
+  seed_corrections "$dbc"
+  outdir="$work/cohort-corrections/c$proto"
+  mkdir -p "$outdir"
+  run_export "$dbc" "$outdir/c$proto.csv" "$work/stdoutc$proto.txt"
+  check_header "$outdir/c$proto-corrections.csv" "$CORRECTIONS_HEADER"
+  # seed_sentinels adds one FOCUS_WORK app rule (count 1) and one REFERENCE
+  # window rule to the rows above.
+  expected="$(printf '%s\n' \
+    'app,FOCUS_WORK,3,5' \
+    'app,SOCIAL_FEED,1,2' \
+    'app,unrecognized,1,1' \
+    'window,FOCUS_WORK,2,' \
+    'window,REFERENCE,1,' \
+    'window,unrecognized,1,')"
+  actual="$(tail -n +2 "$outdir/c$proto-corrections.csv")"
+  [[ "$actual" == "$expected" ]] || {
+    echo "expected:" >&2; echo "$expected" >&2
+    echo "actual:" >&2; echo "$actual" >&2
+    fail "protocol $proto corrections rows"
+  }
+  [[ "$(meta_of "$outdir/c$proto-meta.csv" corrections)" == "present" ]] \
+    || fail "protocol $proto meta: corrections"
+  [[ "$(meta_of "$outdir/c$proto-meta.csv" schema_version)" == "$last" ]] \
+    || fail "protocol $proto fixture is not at migration $last"
+  # The sentinel category and both typed names really are in the database.
+  [[ "$(sqlite3 "$dbc" "SELECT COUNT(*) FROM personal_app_override WHERE category = '$S_CATEGORY';")" == "1" ]] \
+    || fail "seeding failed, the category leak test would be vacuous"
+  assert_no_sentinel "$outdir"/*.csv "$work/stdoutc$proto.txt"
+  # No key digest leaves either: none of the 64-character keys seeded here.
+  grep -qE '[0-9a-e]{64}' "$outdir/c$proto-corrections.csv" && fail "a key digest was exported"
+
+  python3 "$analyze" --json "$outdir" > "$work/analysisc$proto.json"
+  python3 - "$work/analysisc$proto.json" "c$proto" <<'PY' || fail "exporter/analyser round trip (corrections, protocol $proto)"
+import json, sys
+r = json.load(open(sys.argv[1]))
+name = sys.argv[2]
+assert r["data_quality"]["malformed"] == [], r["data_quality"]
+c = r["corrections_per_participant"]
+assert c["participants_measured"] == 1, c
+entry = c["per_participant"][name]
+# 3 + 1 + 1 (FOCUS_WORK) + 2 (SOCIAL_FEED) + 1 (unrecognized): the block-scoped
+# reply is not among them.
+assert entry["app_scoped_corrections"] == 8, entry
+assert entry["applications_with_an_app_rule"] == 5, entry
+assert entry["window_rules"] == 4, entry
+assert c["app_scoped_corrections_by_category"] == {
+    "FOCUS_WORK": 5, "SOCIAL_FEED": 2, "unrecognized": 1}, c
+assert c["not_measurable_for"] == [], c
+PY
+done
+
+# The exporter's closed category set, the analyser's and the service's must be
+# one set. The service's is the match in `override_label_for_category`, the
+# only gate every correction path goes through.
+python3 - "$repo_root/rust-service/src/abstraction/engine.rs" "$export_script" "$analyze" <<'PY' \
+  || fail "the correction category sets drifted apart"
+import ast, re, sys
+engine, exporter, analyzer = (open(p).read() for p in sys.argv[1:])
+body = engine.split("fn override_label_for_category", 1)[1].split("\n}\n", 1)[0]
+service = set(re.findall(r'"([A-Z_]+)"\s*=>', body))
+listed = exporter.split("WHEN r.category IN (", 1)[1].split(")", 1)[0]
+exported = set(re.findall(r"'([A-Z_]+)'", listed))
+tree = ast.parse(analyzer)
+analysed = next(
+    set(ast.literal_eval(node.value))
+    for node in tree.body
+    if isinstance(node, ast.Assign)
+    and any(getattr(t, "id", None) == "CORRECTION_CATEGORIES" for t in node.targets)
+)
+assert len(service) == 8, service
+assert exported == service, (exported ^ service)
+assert analysed == service | {"unrecognized"}, (analysed ^ (service | {"unrecognized"}))
+PY
+
+# ===========================================================================
+# G. 1.0.0 (migration 0016) had no app-scoped corrections, so measure 3 does
+#    not exist there: no corrections file, `absent` in the meta file, and a
+#    stale one from an earlier run in the same folder is removed.
+# ===========================================================================
+db16="$work/p16.sqlite3"
+migrate_fixture_db "$db16" 16 "$INSTALLED_AT"
+sqlite3 "$db16" <<SQL
+INSERT INTO work_block (block_id, phase, purpose, intensity,
+    planned_duration_seconds, started_at, total_paused_seconds, ended_at, intention_expires_at)
+VALUES ('old-1','completed','deep_work','medium',3000,$T0,0,$((T0 + 3000)),$((T0 + 86400)));
+SQL
+mkdir -p "$work/p16"
+echo "stale" > "$work/p16/export-corrections.csv"
+run_export "$db16" "$work/p16/export.csv" "$work/stdout16.txt"
+[[ ! -e "$work/p16/export-corrections.csv" ]] || fail "a corrections file was left on a 1.0.0 database"
+[[ "$(meta_of "$work/p16/export-meta.csv" corrections)" == "absent" ]] || fail "meta: corrections on 1.0.0"
 
 # ===========================================================================
 # E. Older than protocol 25 still stops, loudly.

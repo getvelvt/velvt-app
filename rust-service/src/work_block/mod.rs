@@ -74,8 +74,9 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 ///
 /// Version 3 (protocol 32, 2026-09-26) keeps every constant and branch of
 /// version 2 and changes when a dwell reaches the gate. Version 2 saw a dwell
-/// only when the person left it, so a departure was decided on as they came
-/// back and the offer was withdrawn before it could be posted; a departure
+/// only when the person left it, so a departure was decided on only once they
+/// had come back, and the offer lasted until their next switch (one second on
+/// the founder's Mac on 2026-09-25, too short to be posted); a departure
 /// still in progress when the block ended, or when the Mac slept, was never
 /// decided on at all; and a dwell interrupted by a pause or a restart was
 /// decided on at the resume. Version 3 decides on each dwell once, when it

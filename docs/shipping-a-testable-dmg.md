@@ -206,7 +206,8 @@ PR #56). The gate constants are in `rust-service/src/work_block/mod.rs`:
 after ≥ 3 minutes elapsed, with ≥ 2 minutes remaining. They are v2's (PR #40,
 1.0.9 to 1.0.11); v3 changes when a switch reaches the gate, which is now the
 moment it happens. Under v2 the gate heard of a switch only when you came back,
-and the offer was withdrawn before a notification could be posted. The first
+and the offer was withdrawn at your next switch, often before a notification
+was posted. The first
 gate, v1, was ≥ 4 switches after 5 minutes; it no longer ships.
 
 1. Start a work block of **25 minutes** (anything that leaves 2 minutes after

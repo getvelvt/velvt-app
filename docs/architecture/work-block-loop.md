@@ -72,8 +72,8 @@ observation row and runs the drift gate while the departure is still true; the
 closed report of the same dwell finds that row open with the same evidence and
 changes nothing. Before protocol 32 only the closed report existed, so the gate
 learned of a departure at the moment the user came back, and the offer it made
-was withdrawn as `returned` by the next report before any notification could
-be posted. A closed report whose in-progress report never arrived (the socket
+was withdrawn as `returned` by the next report: one second later on the
+founder's Mac on 2026-09-25, before any notification was posted. A closed report whose in-progress report never arrived (the socket
 was down) opens the row itself, as before.
 
 This is drift policy version 3 (`DRIFT_POLICY_VERSION`). The gate's constants

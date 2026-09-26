@@ -43,9 +43,16 @@ database, the logs, or any request.
 
 Raw application names, bundle identifiers, window titles, URLs, file paths,
 filenames, and any text drawn from a window title never leave the device.
-They exist transiently in the Swift collection layer and are forwarded
-once, over a local Unix domain socket, to the Rust service running on the
-same machine. The Rust service is the privacy enforcement boundary: its
+They exist transiently in the Swift collection layer and are forwarded over a
+local Unix domain socket to the Rust service running on the same machine. Since
+protocol 32 each activity is forwarded twice: when it begins, so the drift
+check in a work block can see a switch while it is happening, and when it ends,
+with how long it lasted. Only the second is stored. The first is sent only
+while the socket is up, is never buffered or replayed, and is never written to
+disk or uploaded: the Rust service keeps nothing raw from it, only the
+activity's classification and a digest under a key that exists for one run of
+the service, in memory, until the second report arrives. The Rust service is the
+privacy enforcement boundary: its
 abstraction engine consumes raw events and produces only an
 `AbstractedEvent` — a stable local ID, an on-device classification label,
 a category, a taxonomy version, and a timestamp. Some on-device labels and

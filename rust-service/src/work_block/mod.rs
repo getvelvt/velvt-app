@@ -81,6 +81,15 @@ const DRIFT_DETERMINISTIC_PROPENSITY: f64 = 1.0;
 /// (roadmap invariants 2, 6, and 7). Matched case-insensitively as
 /// substrings against rendered copy. Absence framing, failure tallies, and
 /// streak language are banned everywhere, not only in intervention copy.
+///
+/// The capability claims (`learned` through `gets smarter`) are the honesty
+/// rule: the drift policy is deterministic and nothing in Velvt learns,
+/// adapts, or predicts. `learns`, `learning`, `adapts`, `predicts` and `gets
+/// smarter` were added on 2026-09-25, after the Swift client was found
+/// shipping "Learning from your recent sessions". The same vocabulary is
+/// checked in every shipped Swift and Rust string literal by
+/// `scripts/check_banned_copy.py`, which this list does not replace: this one
+/// runs on rendered copy, including a phrased explanation, at run time.
 pub const BANNED_COPY_TOKENS: &[&str] = &[
     "still",
     "dismiss",
@@ -90,7 +99,12 @@ pub const BANNED_COPY_TOKENS: &[&str] = &[
     "last time",
     "again",
     "learned",
+    "learns",
+    "learning",
     "adaptive",
+    "adapts",
+    "predicts",
+    "gets smarter",
     "missed",
     "skipped",
     "declined",

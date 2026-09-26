@@ -36,7 +36,6 @@ struct ServiceUnavailableView: View {
                         await onRetry()
                     } else {
                         await serviceManager.ensureInstalled()
-                        await serviceManager.ensureUpToDate()
                         await serviceManager.start()
                     }
                 }

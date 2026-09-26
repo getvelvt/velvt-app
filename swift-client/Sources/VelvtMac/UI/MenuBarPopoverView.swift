@@ -72,10 +72,10 @@ struct YourWeekContentView: View {
     }
 }
 
-/// Seven local days, drawn from `LocalDashboardSnapshot.dailyActivity`.
+/// The local days in `LocalDashboardSnapshot.dailyActivity`, fourteen today.
 ///
 /// Rust builds exactly `DAILY_ACTIVITY_DAYS` rows per request
-/// (`dashboard.rs:387`) and the shaper pins the count, so the row count is the
+/// (`dashboard.rs`) and the shaper pins the count, so the row count is the
 /// service's to decide and this view renders whatever it is handed rather than
 /// padding or truncating to a number of its own.
 struct LocalWeekActivityView: View {

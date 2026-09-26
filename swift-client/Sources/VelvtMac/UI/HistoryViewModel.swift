@@ -405,7 +405,9 @@ public struct BaselineProgress: Equatable, Sendable {
         case "emerging":
             "Your personal baseline is becoming more reliable"
         case "provisional":
-            "Learning from your recent sessions"
+            // The comparison uses the few days recorded so far, by a fixed
+            // rule. Nothing here learns, and the label must not claim it does.
+            "Comparing with your recent days — \(collectedDays) observed day\(collectedDays == 1 ? "" : "s")"
         default:
             "Collecting a neutral baseline — \(collectedDays) observed day\(collectedDays == 1 ? "" : "s")"
         }

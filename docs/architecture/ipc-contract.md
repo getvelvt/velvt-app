@@ -433,11 +433,14 @@ version in brackets is where the message or field arrived.
   Rust answers with explicit-work-block Focus Fragmentation and Daily
   Activity, one row per local day. Rust owns clipping, transitions, switching
   clusters, recoveries, coverage, comparison, day boundaries and label
-  aggregation; Swift only renders. **Known drift:** Rust now emits
-  `DAILY_ACTIVITY_DAYS` = 14 rows (`rust-service/src/dashboard.rs`), while
-  `proto/schema/local_dashboard.json` still declares `daily_activity` with
-  `minItems`/`maxItems` 7 from protocol 20. The schema, not the code, is stale;
-  correcting it is a proto change and is not made here.
+  aggregation; Swift only renders. `daily_activity` holds exactly
+  `DAILY_ACTIVITY_DAYS` = 14 rows (`rust-service/src/dashboard.rs`), oldest
+  first and today last. Protocol 20 introduced it with 7; Rust has sent 14
+  since 2026-08-27 (1.0.9 and later), and the schema said 7 until it was
+  corrected on 2026-09-25 with no wire change. `rust-service/tests/emitted_payload_schema.rs`
+  now validates the payload the service emits against the schema, so the two
+  cannot drift apart again unnoticed. A segment's `representative_event_id`,
+  `stable_id` and `suggested_name` are omitted when Rust has no value.
 
 **Drift offers and outcomes.**
 

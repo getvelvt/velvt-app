@@ -81,11 +81,12 @@ integration writes a file beside the database; both are described under
 "Stored outside the database" below.
 
 This section describes the source in this repository, which is ahead of the
-current build. Velvt 1.0.11 has migrations 0001–0036. Three things described
+current build. Velvt 1.0.11 has migrations 0001–0036. Four things described
 below start with the first build after 1.0.11: the per-install
 `stable_key_salt` that keys the stored digests (migration 0037), `egress_ledger`
-(migration 0038), and SQLite's `secure_delete`. Each is scoped again where it
-is described.
+(migration 0038), the migration checksum in `schema_migration` (migration
+0039), and SQLite's `secure_delete`. Each is scoped again where it is
+described.
 
 | Table | Contents | Default retention |
 |---|---|---|
@@ -310,7 +311,7 @@ three empty ones are — you will see them if you open the file.
 | `initiation_settings` | the single invitations on/off switch | singleton; no sweep, and it survives Clear Local Work Blocks for the same reason |
 | `weekly_digest` | one row per completed local week: bounded counts — blocks declared and completed, recoveries, wrong interventions, invitations accepted, withheld — and when the digest was shown and closed. No categories, copy, or per-day breakdown is representable | 12 completed weeks, pruned when the next digest is generated; removed by Clear Local Work Blocks |
 | `explain_probe_week` | one tap counter per local week, for the explain-tap metric. Which nudge was explained is not representable | pruned on the same 12-week rule; removed by Clear Local Work Blocks |
-| `schema_migration` | one row per applied migration: its version, its file name, a checksum of the migration's SQL (since migration 0039; computed from the public source file, so nothing in it comes from your Mac), and when it ran. Created by the migration runner rather than by a migration file | no sweep; one row is added per migration and none is removed |
+| `schema_migration` | one row per applied migration: its version, its file name, a checksum of the migration's SQL (since migration 0039, the first build after 1.0.11; computed from the public source file, so nothing in it comes from your Mac), and when it ran. Created by the migration runner rather than by a migration file | no sweep; one row is added per migration and none is removed |
 | `persistence_migration_probe` | nothing. Migration 0002 created it to prove that a new migration file is embedded and applied, and no code path, shipped or test, inserts a row | empty on every install; no sweep |
 
 ### What the app's destructive actions actually remove

@@ -41,7 +41,7 @@ final class MenuBarNavigationTests: XCTestCase {
         let limited = CollectionStatus.limited("ax_observer_registration_failed:-25212")
         let cases: [(CollectionStatus, String, Color)] = [
             (.running, "Collection active", VelvtInk.affirmative),
-            (limited, "Collection limited for this app", VelvtInk.secondaryOnInk),
+            (limited, "Collection limited for the app in front", VelvtInk.secondaryOnInk),
             (.idle, "Collection paused", VelvtPalette.signal),
             (.permissionRevoked, "Collection paused", VelvtPalette.signal),
             (.error("ax_observer_failed"), "Collection paused", VelvtPalette.signal),
@@ -1170,7 +1170,7 @@ final class MenuBarWindowSnapshotTests: XCTestCase {
     }
 
     /// Notifications denied and one application unobservable: the notice card
-    /// above the tab, "Collection limited for this app" in the header, and the
+    /// above the tab, "Collection limited for the app in front" in the header, and the
     /// Notifications line in App Info, at the floor, the opening size and wide.
     func testRenderNotificationsOffAndLimitedCollectionWhenRequested() throws {
         let output = try outputDirectory()

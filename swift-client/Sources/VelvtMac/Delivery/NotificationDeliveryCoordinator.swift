@@ -119,7 +119,8 @@ public final class NotificationDeliveryCoordinator {
     @discardableResult
     public func handle(_ payload: NotificationPayload) -> Task<Void, Never> {
         pendingTasksByDate[payload.insightDate]?.cancel()
-        let task = Task { @MainActor [weak self, scheduler, permissionManager, scheduledNotifications, reporter, debounceInterval] in
+        let task = Task {
+            @MainActor [weak self, scheduler, permissionManager, scheduledNotifications, reporter, debounceInterval] in
             // Briefly wait so a near-simultaneous newer payload for the same
             // date can cancel this task before any scheduling work happens.
             try? await Task.sleep(for: debounceInterval)
@@ -135,7 +136,8 @@ public final class NotificationDeliveryCoordinator {
             // something worth showing, exactly as the debug path does.
             let checked = await permissionManager.checkStatus(for: .notifications)
             guard !Task.isCancelled else { return }
-            let status = checked == .unknown
+            let status =
+                checked == .unknown
                 ? await permissionManager.requestPermission(for: .notifications)
                 : checked
             guard status == .granted, !Task.isCancelled else {
@@ -167,7 +169,8 @@ public final class NotificationDeliveryCoordinator {
             try? await Task.sleep(for: debounceInterval)
             guard !Task.isCancelled else { return .schedulingFailed }
             let currentStatus = await permissionManager.checkStatus(for: .notifications)
-            let status = currentStatus == .unknown
+            let status =
+                currentStatus == .unknown
                 ? await permissionManager.requestPermission(for: .notifications)
                 : currentStatus
             guard status == .granted, !Task.isCancelled else {

@@ -1,5 +1,6 @@
 import Combine
 import XCTest
+
 @testable import VelvtMac
 
 // MARK: - CircularBuffer unit tests
@@ -7,7 +8,9 @@ import XCTest
 final class CircularBufferTests: XCTestCase {
     func testEnqueueAndDequeuePreservesOrder() {
         var buf = CircularBuffer<Int>(capacity: 3)
-        buf.enqueue(1); buf.enqueue(2); buf.enqueue(3)
+        buf.enqueue(1)
+        buf.enqueue(2)
+        buf.enqueue(3)
 
         XCTAssertEqual(buf.dequeue(), 1)
         XCTAssertEqual(buf.dequeue(), 2)
@@ -26,7 +29,9 @@ final class CircularBufferTests: XCTestCase {
 
     func testDropOldestRemovesHead() {
         var buf = CircularBuffer<Int>(capacity: 3)
-        buf.enqueue(1); buf.enqueue(2); buf.enqueue(3)
+        buf.enqueue(1)
+        buf.enqueue(2)
+        buf.enqueue(3)
         buf.dropOldest()
 
         XCTAssertEqual(buf.count, 2)
@@ -36,9 +41,11 @@ final class CircularBufferTests: XCTestCase {
 
     func testWrapAroundPreservesOrder() {
         var buf = CircularBuffer<Int>(capacity: 3)
-        buf.enqueue(1); buf.enqueue(2); buf.enqueue(3)
-        _ = buf.dequeue() // remove 1
-        buf.enqueue(4)    // wraps around
+        buf.enqueue(1)
+        buf.enqueue(2)
+        buf.enqueue(3)
+        _ = buf.dequeue()  // remove 1
+        buf.enqueue(4)  // wraps around
 
         XCTAssertEqual(buf.dequeue(), 2)
         XCTAssertEqual(buf.dequeue(), 3)
@@ -47,13 +54,14 @@ final class CircularBufferTests: XCTestCase {
 
     func testDropOldestOnEmptyBufferIsNoOp() {
         var buf = CircularBuffer<Int>(capacity: 2)
-        buf.dropOldest() // must not crash
+        buf.dropOldest()  // must not crash
         XCTAssertEqual(buf.count, 0)
     }
 
     func testRequeueFrontRestoresDequeuedElementOrder() {
         var buf = CircularBuffer<Int>(capacity: 3)
-        buf.enqueue(1); buf.enqueue(2)
+        buf.enqueue(1)
+        buf.enqueue(2)
 
         let first = buf.dequeue()
         XCTAssertEqual(first, 1)
@@ -68,7 +76,9 @@ final class CircularBufferTests: XCTestCase {
     /// dequeued event must be total rather than trapping the host process.
     func testRequeueFrontOnFullBufferEvictsNewestAndReportsTheDrop() {
         var buf = CircularBuffer<Int>(capacity: 3)
-        buf.enqueue(2); buf.enqueue(3); buf.enqueue(4)
+        buf.enqueue(2)
+        buf.enqueue(3)
+        buf.enqueue(4)
         XCTAssertTrue(buf.isFull)
 
         let evicted = buf.requeueFront(1)
@@ -440,7 +450,7 @@ final class EventRelayTests: XCTestCase {
         let client = DisconnectingFakeIPCClient(disconnectAfterSends: 2)
         let relay = EventRelay(ipcClient: client, capacity: 500)
         await relay.start()
-        await drain() // settle status observer initial .disconnected
+        await drain()  // settle status observer initial .disconnected
 
         // Buffer 5 events while disconnected.
         for i in 1...5 { relay.receive(makeEvent(index: i)) }
@@ -569,7 +579,7 @@ final class EventRelayTests: XCTestCase {
         await relay.start()
 
         await relay.stop()
-        await relay.stop() // must not crash — second call is a no-op
+        await relay.stop()  // must not crash — second call is a no-op
 
         // After double stop, starting again must work.
         await relay.start()
@@ -589,7 +599,7 @@ final class EventRelayTests: XCTestCase {
         let relay = EventRelay(ipcClient: client, capacity: 10)
 
         await relay.start()
-        await relay.start() // must not create duplicate tasks / crash
+        await relay.start()  // must not create duplicate tasks / crash
 
         // Settle: the status observer emits .disconnected on subscription;
         // drain it before manually advancing the connection state.
@@ -616,7 +626,7 @@ final class EventRelayTests: XCTestCase {
 
         // Restart and verify the relay works correctly with fresh state.
         await relay.start()
-        await drain() // settle status observer
+        await drain()  // settle status observer
         await relay.connectionDidChange(to: .connected)
         relay.receive(makeEvent(index: 2))
         await drain()
@@ -632,7 +642,7 @@ final class EventRelayTests: XCTestCase {
         let client = FakeIPCClient()
         let relay = EventRelay(ipcClient: client, capacity: 10)
         await relay.start()
-        await drain() // settle status observer
+        await drain()  // settle status observer
 
         // Buffer a few events to make cycles more interesting.
         for i in 1...3 { relay.receive(makeEvent(index: i)) }

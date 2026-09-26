@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import SwiftUI
 import XCTest
 
 @testable import VelvtMac
@@ -9,26 +10,26 @@ import XCTest
 @MainActor
 final class MenuBarNavigationTests: XCTestCase {
 
-  func testRestoredWorkspaceNavigationKeepsThePreviousOrderAndTitles() {
-    XCTAssertEqual(
-      MenuBarWorkspaceTab.allCases.map(\.title),
-      ["Now", "Patterns", "Settings"]
-    )
-  }
+    func testRestoredWorkspaceNavigationKeepsThePreviousOrderAndTitles() {
+        XCTAssertEqual(
+            MenuBarWorkspaceTab.allCases.map(\.title),
+            ["Now", "Patterns", "Settings"]
+        )
+    }
 
-  func testRestoredWorkspaceNavigatorResetsToToday() {
-    var navigator = MenuBarPopoverNavigator()
+    func testRestoredWorkspaceNavigatorResetsToToday() {
+        var navigator = MenuBarPopoverNavigator()
 
-    navigator.selectWorkspaceTab(.history)
-    XCTAssertEqual(navigator.selectedWorkspaceTab, .history)
+        navigator.selectWorkspaceTab(.history)
+        XCTAssertEqual(navigator.selectedWorkspaceTab, .history)
 
-    navigator.resetForPopoverOpening()
-    XCTAssertEqual(navigator.selectedWorkspaceTab, .workBlock)
-  }
+        navigator.resetForPopoverOpening()
+        XCTAssertEqual(navigator.selectedWorkspaceTab, .workBlock)
+    }
 
     func testConnectionPresentationUsesRequestedLabelsAndColors() {
-    XCTAssertEqual(
-      PopoverConnectionPresentation(status: .connected).label, "Local service connected")
+        XCTAssertEqual(
+            PopoverConnectionPresentation(status: .connected).label, "Local service connected")
         XCTAssertEqual(PopoverConnectionPresentation(status: .connecting).label, "Connecting")
         XCTAssertEqual(PopoverConnectionPresentation(status: .disconnected).label, "Disconnected")
     }
@@ -78,9 +79,9 @@ final class MenuBarNavigationTests: XCTestCase {
         let messages = PassthroughSubject<ServerMessage, Never>()
         let model = ServiceAlertModel(messages: messages)
 
-    messages.send(
-      .privacyViolationAlert(
-        PrivacyViolationAlert(
+        messages.send(
+            .privacyViolationAlert(
+                PrivacyViolationAlert(
                     code: "raw_content_detected",
                     message: "Sensitive content was blocked."
                 )))
@@ -106,9 +107,9 @@ final class MenuBarNavigationTests: XCTestCase {
         let messages = PassthroughSubject<ServerMessage, Never>()
         let model = ServiceAlertModel(messages: messages)
 
-    messages.send(
-      .errorResponse(
-        ErrorResponse(
+        messages.send(
+            .errorResponse(
+                ErrorResponse(
                     code: "unexpected",
                     message: "Something went wrong.",
                     relatedEventID: nil
@@ -186,169 +187,168 @@ final class MenuBarNavigationTests: XCTestCase {
 
     func testSettingsRetainsEveryDestination() {
         #if DEBUG
-      XCTAssertEqual(
-        SettingsSubmenu.allCases.map(\.title),
-        [
-            "App Info", "Teach Velvt Your Apps", "Collection Settings", "Onboarding & Tour",
-            "Debug/Testing",
-        ])
+            XCTAssertEqual(
+                SettingsSubmenu.allCases.map(\.title),
+                [
+                    "App Info", "Teach Velvt Your Apps", "Collection Settings", "Onboarding & Tour",
+                    "Debug/Testing",
+                ])
         #else
-      XCTAssertEqual(
-        SettingsSubmenu.allCases.map(\.title),
-        [
-            "App Info", "Teach Velvt Your Apps", "Collection Settings", "Onboarding & Tour",
-        ])
+            XCTAssertEqual(
+                SettingsSubmenu.allCases.map(\.title),
+                [
+                    "App Info", "Teach Velvt Your Apps", "Collection Settings", "Onboarding & Tour",
+                ])
         #endif
     }
 
-  /// Settings detail is rendered in this window now, so the question the old
-  /// per-destination popover widths answered — "is there room" — is answered
-  /// by the pane instead. The floor is the width the destinations were already
-  /// laid out for: the 300pt of the `NSPopover` this pane replaced. No window
-  /// size a user can produce may hand the detail less than that.
-  func testTheSettingsDetailNeverGetsLessWidthThanThePopoverItReplaced() {
-    for contentWidth in stride(from: MenuBarPopoverLayout.minimumContentSize.width, through: 2_000, by: 1)
-    {
-      let pane = SettingsPaneLayout.paneWidth(forContentWidth: contentWidth)
-      XCTAssertGreaterThanOrEqual(
-        SettingsPaneLayout.detailWidth(forPaneWidth: pane),
-        SettingsPaneLayout.minimumDetailWidth,
-        "A \(contentWidth)pt window squeezed the settings detail"
-      )
-    }
-  }
-
-  /// At the size the surface opens at, the requested shape is the one that
-  /// renders: list on the left, detail beside it.
-  func testTheSettingsPaneIsSideBySideAtTheSizeTheWindowOpensAt() {
-    let pane = SettingsPaneLayout.paneWidth(
-      forContentWidth: MenuBarPopoverLayout.preferredContentSize.width)
-
-    XCTAssertEqual(
-      SettingsPaneLayout.mode(forPaneWidth: pane),
-      .sideBySide(listWidth: SettingsPaneLayout.listWidth)
-    )
-    XCTAssertGreaterThanOrEqual(
-      SettingsPaneLayout.detailWidth(forPaneWidth: pane),
-      SettingsPaneLayout.minimumDetailWidth
-    )
-  }
-
-  /// At the 500pt floor two columns would leave the detail 203pt — less than
-  /// the popover it replaced — so the pane stacks and the detail takes the
-  /// whole thing instead. This is the case the correction workbench depends
-  /// on: it is the widest destination there is.
-  func testTheSettingsPaneStacksAtTheWindowMinimumRatherThanSqueezingTheDetail() {
-    let pane = SettingsPaneLayout.paneWidth(
-      forContentWidth: MenuBarPopoverLayout.minimumContentSize.width)
-
-    XCTAssertEqual(SettingsPaneLayout.mode(forPaneWidth: pane), .stacked)
-    XCTAssertEqual(SettingsPaneLayout.detailWidth(forPaneWidth: pane), pane)
-    XCTAssertLessThan(
-      pane - SettingsPaneLayout.listWidth,
-      SettingsPaneLayout.minimumDetailWidth,
-      "If two columns fit at the floor, this pane should not be stacking"
-    )
-  }
-
-  /// Widening is monotone inside each layout mode, and steps down exactly
-  /// once — at the threshold, where the pane stops being one column and the
-  /// destination list becomes permanently visible beside the detail.
-  ///
-  /// That step cannot be designed away: side-by-side always hands the list a
-  /// column the stacked layout did not have to give. What can be held is its
-  /// size and its count. The detail never loses more than the list it gained,
-  /// it never lands under the floor asserted above, and it happens once rather
-  /// than oscillating around the boundary.
-  func testTheSettingsDetailStepsDownExactlyOnceAndNeverByMoreThanTheListItGains() {
-    var steps: [(CGFloat, CGFloat)] = []
-    var previous = SettingsPaneLayout.detailWidth(
-      forPaneWidth: SettingsPaneLayout.paneWidth(
-        forContentWidth: MenuBarPopoverLayout.minimumContentSize.width))
-
-    for contentWidth in stride(
-      from: MenuBarPopoverLayout.minimumContentSize.width + 1, through: 1_600, by: 1)
-    {
-      let width = SettingsPaneLayout.detailWidth(
-        forPaneWidth: SettingsPaneLayout.paneWidth(forContentWidth: contentWidth))
-      if width < previous { steps.append((contentWidth, previous - width)) }
-      previous = width
+    /// Settings detail is rendered in this window now, so the question the old
+    /// per-destination popover widths answered — "is there room" — is answered
+    /// by the pane instead. The floor is the width the destinations were already
+    /// laid out for: the 300pt of the `NSPopover` this pane replaced. No window
+    /// size a user can produce may hand the detail less than that.
+    func testTheSettingsDetailNeverGetsLessWidthThanThePopoverItReplaced() {
+        for contentWidth in stride(from: MenuBarPopoverLayout.minimumContentSize.width, through: 2_000, by: 1) {
+            let pane = SettingsPaneLayout.paneWidth(forContentWidth: contentWidth)
+            XCTAssertGreaterThanOrEqual(
+                SettingsPaneLayout.detailWidth(forPaneWidth: pane),
+                SettingsPaneLayout.minimumDetailWidth,
+                "A \(contentWidth)pt window squeezed the settings detail"
+            )
+        }
     }
 
-    XCTAssertEqual(steps.count, 1, "The settings detail width changes shape more than once: \(steps)")
-    XCTAssertLessThanOrEqual(
-      steps.first?.1 ?? .greatestFiniteMagnitude,
-      SettingsPaneLayout.listWidth,
-      "The detail gave up more width than the destination list it gained"
-    )
-    XCTAssertEqual(
-      SettingsPaneLayout.mode(
-        forPaneWidth: SettingsPaneLayout.paneWidth(forContentWidth: steps[0].0)),
-      .sideBySide(listWidth: SettingsPaneLayout.listWidth),
-      "The one step down is the stacked-to-side-by-side flip and nothing else"
-    )
-  }
+    /// At the size the surface opens at, the requested shape is the one that
+    /// renders: list on the left, detail beside it.
+    func testTheSettingsPaneIsSideBySideAtTheSizeTheWindowOpensAt() {
+        let pane = SettingsPaneLayout.paneWidth(
+            forContentWidth: MenuBarPopoverLayout.preferredContentSize.width)
 
-  /// The content column cap has to sit above the floor, or a wide window and
-  /// a narrow one would disagree about how wide a destination is.
-  func testTheDetailContentCapSitsAboveTheFloorItIsCappingTowards() {
-    XCTAssertGreaterThanOrEqual(
-      SettingsPaneLayout.maximumDetailContentWidth,
-      SettingsPaneLayout.minimumDetailWidth
-    )
-    // At the size the window opens at, the detail is narrower than the cap, so
-    // the cap changes nothing there: a destination is drawn at the width it
-    // has until the user asks for more.
-    XCTAssertLessThanOrEqual(
-      SettingsPaneLayout.detailWidth(
-        forPaneWidth: SettingsPaneLayout.paneWidth(
-          forContentWidth: MenuBarPopoverLayout.preferredContentSize.width)),
-      SettingsPaneLayout.maximumDetailContentWidth
-    )
-  }
+        XCTAssertEqual(
+            SettingsPaneLayout.mode(forPaneWidth: pane),
+            .sideBySide(listWidth: SettingsPaneLayout.listWidth)
+        )
+        XCTAssertGreaterThanOrEqual(
+            SettingsPaneLayout.detailWidth(forPaneWidth: pane),
+            SettingsPaneLayout.minimumDetailWidth
+        )
+    }
 
-  /// The rail width the settings pane subtracts has to be the rail width the
-  /// workspace actually draws, or every assertion above is measuring a
-  /// different window than the one that ships.
-  func testTheSettingsPaneSubtractsTheRailTheWorkspaceDraws() {
-    XCTAssertEqual(MenuBarPopoverLayout.navigationRailWidth, 132)
-    XCTAssertEqual(
-      SettingsPaneLayout.paneWidth(forContentWidth: 600),
-      600 - MenuBarPopoverLayout.navigationRailWidth - 1
-    )
-    XCTAssertEqual(SettingsPaneLayout.paneWidth(forContentWidth: 10), 0)
-  }
+    /// At the 500pt floor two columns would leave the detail 203pt — less than
+    /// the popover it replaced — so the pane stacks and the detail takes the
+    /// whole thing instead. This is the case the correction workbench depends
+    /// on: it is the widest destination there is.
+    func testTheSettingsPaneStacksAtTheWindowMinimumRatherThanSqueezingTheDetail() {
+        let pane = SettingsPaneLayout.paneWidth(
+            forContentWidth: MenuBarPopoverLayout.minimumContentSize.width)
 
-  /// Escape used to mean one thing, because everything it could have backed
-  /// out of first was a separate window that took the key press itself. The
-  /// settings detail is in this window now, so Escape backs out of it before
-  /// it closes the surface — and the guided tour still outranks both.
-  func testEscapeBacksOutOfTheOpenSettingsDetailBeforeClosingTheSurface() {
-    XCTAssertEqual(
-      MenuBarEscapeResolver.action(
-        guidedTourIsPresented: false, selectedWorkspaceTab: .settings,
-        selectedSettingsDestination: .teachApps),
-      .clearSettingsSelection
-    )
-    XCTAssertEqual(
-      MenuBarEscapeResolver.action(
-        guidedTourIsPresented: false, selectedWorkspaceTab: .settings,
-        selectedSettingsDestination: nil),
-      .closeSurface
-    )
-    XCTAssertEqual(
-      MenuBarEscapeResolver.action(
-        guidedTourIsPresented: false, selectedWorkspaceTab: .workBlock,
-        selectedSettingsDestination: .appInfo),
-      .closeSurface
-    )
-    XCTAssertEqual(
-      MenuBarEscapeResolver.action(
-        guidedTourIsPresented: true, selectedWorkspaceTab: .settings,
-        selectedSettingsDestination: .appInfo),
-      .dismissGuidedTour
-    )
-  }
+        XCTAssertEqual(SettingsPaneLayout.mode(forPaneWidth: pane), .stacked)
+        XCTAssertEqual(SettingsPaneLayout.detailWidth(forPaneWidth: pane), pane)
+        XCTAssertLessThan(
+            pane - SettingsPaneLayout.listWidth,
+            SettingsPaneLayout.minimumDetailWidth,
+            "If two columns fit at the floor, this pane should not be stacking"
+        )
+    }
+
+    /// Widening is monotone inside each layout mode, and steps down exactly
+    /// once — at the threshold, where the pane stops being one column and the
+    /// destination list becomes permanently visible beside the detail.
+    ///
+    /// That step cannot be designed away: side-by-side always hands the list a
+    /// column the stacked layout did not have to give. What can be held is its
+    /// size and its count. The detail never loses more than the list it gained,
+    /// it never lands under the floor asserted above, and it happens once rather
+    /// than oscillating around the boundary.
+    func testTheSettingsDetailStepsDownExactlyOnceAndNeverByMoreThanTheListItGains() {
+        var steps: [(CGFloat, CGFloat)] = []
+        var previous = SettingsPaneLayout.detailWidth(
+            forPaneWidth: SettingsPaneLayout.paneWidth(
+                forContentWidth: MenuBarPopoverLayout.minimumContentSize.width))
+
+        for contentWidth in stride(
+            from: MenuBarPopoverLayout.minimumContentSize.width + 1, through: 1_600, by: 1)
+        {
+            let width = SettingsPaneLayout.detailWidth(
+                forPaneWidth: SettingsPaneLayout.paneWidth(forContentWidth: contentWidth))
+            if width < previous { steps.append((contentWidth, previous - width)) }
+            previous = width
+        }
+
+        XCTAssertEqual(steps.count, 1, "The settings detail width changes shape more than once: \(steps)")
+        XCTAssertLessThanOrEqual(
+            steps.first?.1 ?? .greatestFiniteMagnitude,
+            SettingsPaneLayout.listWidth,
+            "The detail gave up more width than the destination list it gained"
+        )
+        XCTAssertEqual(
+            SettingsPaneLayout.mode(
+                forPaneWidth: SettingsPaneLayout.paneWidth(forContentWidth: steps[0].0)),
+            .sideBySide(listWidth: SettingsPaneLayout.listWidth),
+            "The one step down is the stacked-to-side-by-side flip and nothing else"
+        )
+    }
+
+    /// The content column cap has to sit above the floor, or a wide window and
+    /// a narrow one would disagree about how wide a destination is.
+    func testTheDetailContentCapSitsAboveTheFloorItIsCappingTowards() {
+        XCTAssertGreaterThanOrEqual(
+            SettingsPaneLayout.maximumDetailContentWidth,
+            SettingsPaneLayout.minimumDetailWidth
+        )
+        // At the size the window opens at, the detail is narrower than the cap, so
+        // the cap changes nothing there: a destination is drawn at the width it
+        // has until the user asks for more.
+        XCTAssertLessThanOrEqual(
+            SettingsPaneLayout.detailWidth(
+                forPaneWidth: SettingsPaneLayout.paneWidth(
+                    forContentWidth: MenuBarPopoverLayout.preferredContentSize.width)),
+            SettingsPaneLayout.maximumDetailContentWidth
+        )
+    }
+
+    /// The rail width the settings pane subtracts has to be the rail width the
+    /// workspace actually draws, or every assertion above is measuring a
+    /// different window than the one that ships.
+    func testTheSettingsPaneSubtractsTheRailTheWorkspaceDraws() {
+        XCTAssertEqual(MenuBarPopoverLayout.navigationRailWidth, 132)
+        XCTAssertEqual(
+            SettingsPaneLayout.paneWidth(forContentWidth: 600),
+            600 - MenuBarPopoverLayout.navigationRailWidth - 1
+        )
+        XCTAssertEqual(SettingsPaneLayout.paneWidth(forContentWidth: 10), 0)
+    }
+
+    /// Escape used to mean one thing, because everything it could have backed
+    /// out of first was a separate window that took the key press itself. The
+    /// settings detail is in this window now, so Escape backs out of it before
+    /// it closes the surface — and the guided tour still outranks both.
+    func testEscapeBacksOutOfTheOpenSettingsDetailBeforeClosingTheSurface() {
+        XCTAssertEqual(
+            MenuBarEscapeResolver.action(
+                guidedTourIsPresented: false, selectedWorkspaceTab: .settings,
+                selectedSettingsDestination: .teachApps),
+            .clearSettingsSelection
+        )
+        XCTAssertEqual(
+            MenuBarEscapeResolver.action(
+                guidedTourIsPresented: false, selectedWorkspaceTab: .settings,
+                selectedSettingsDestination: nil),
+            .closeSurface
+        )
+        XCTAssertEqual(
+            MenuBarEscapeResolver.action(
+                guidedTourIsPresented: false, selectedWorkspaceTab: .workBlock,
+                selectedSettingsDestination: .appInfo),
+            .closeSurface
+        )
+        XCTAssertEqual(
+            MenuBarEscapeResolver.action(
+                guidedTourIsPresented: true, selectedWorkspaceTab: .settings,
+                selectedSettingsDestination: .appInfo),
+            .dismissGuidedTour
+        )
+    }
 
     func testGuidedTourCoversOnlyLiveDestinationsAndMovesDeterministically() {
         let tour = GuidedTourModel()
@@ -522,37 +522,37 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(presentation.indicatorColor, .green)
     }
 
-  /// The two defects this pane replaced, guarded where they lived.
-  ///
-  /// Settings used to navigate on `.onHover` — the pointer crossing a row was
-  /// enough to open something — and what it opened was an `NSPopover`, a
-  /// detached window floating outside this one. Neither is visible to a unit
-  /// test of a SwiftUI view and either is one line to reintroduce, so they are
-  /// asserted against the source. `NSPopover` in prose is fine; constructing
-  /// one is the thing.
-  func testTheMenuBarSurfaceNeverNavigatesOnHoverAndOwnsNoChildPopover() throws {
-    let source = try String(
-      contentsOf: URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("Sources/VelvtMac/UI/MenuBarPopoverView.swift"),
-      encoding: .utf8
-    )
+    /// The two defects this pane replaced, guarded where they lived.
+    ///
+    /// Settings used to navigate on `.onHover` — the pointer crossing a row was
+    /// enough to open something — and what it opened was an `NSPopover`, a
+    /// detached window floating outside this one. Neither is visible to a unit
+    /// test of a SwiftUI view and either is one line to reintroduce, so they are
+    /// asserted against the source. `NSPopover` in prose is fine; constructing
+    /// one is the thing.
+    func testTheMenuBarSurfaceNeverNavigatesOnHoverAndOwnsNoChildPopover() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/VelvtMac/UI/MenuBarPopoverView.swift"),
+            encoding: .utf8
+        )
 
-    XCTAssertFalse(
-      source.contains("onHover"),
-      "Hover may highlight. It may not navigate: that is the reported complaint."
-    )
-    XCTAssertFalse(
-      source.contains("NSPopover("),
-      "Settings detail belongs in the resizable panel, not in a second window."
-    )
-    XCTAssertTrue(
-      source.contains("List(selection: $selectedSettingsDestination)"),
-      "The destination list is a List so that arrow keys and Tab work"
-    )
-  }
+        XCTAssertFalse(
+            source.contains("onHover"),
+            "Hover may highlight. It may not navigate: that is the reported complaint."
+        )
+        XCTAssertFalse(
+            source.contains("NSPopover("),
+            "Settings detail belongs in the resizable panel, not in a second window."
+        )
+        XCTAssertTrue(
+            source.contains("List(selection: $selectedSettingsDestination)"),
+            "The destination list is a List so that arrow keys and Tab work"
+        )
+    }
 
 }
 @MainActor
@@ -604,10 +604,10 @@ final class DeviceRevokedUITests: XCTestCase {
         let flagSet = expectation(description: "isDeviceRevoked set to true")
         var cancellable: AnyCancellable?
         cancellable = manager.$isDeviceRevoked.dropFirst().sink { revoked in
-      if revoked {
-        flagSet.fulfill()
-        cancellable?.cancel()
-      }
+            if revoked {
+                flagSet.fulfill()
+                cancellable?.cancel()
+            }
         }
 
         client.inject(.deviceRevoked(DeviceRevoked(message: "Your device was revoked")))
@@ -626,12 +626,12 @@ final class DeviceRevokedUITests: XCTestCase {
 
         let flagSet = expectation(description: "isDeviceRevoked set")
         var cancellable: AnyCancellable?
-    cancellable = manager.$isDeviceRevoked.dropFirst().sink {
-      if $0 {
-        flagSet.fulfill()
-        cancellable?.cancel()
-      }
-    }
+        cancellable = manager.$isDeviceRevoked.dropFirst().sink {
+            if $0 {
+                flagSet.fulfill()
+                cancellable?.cancel()
+            }
+        }
         client.inject(.deviceRevoked(DeviceRevoked(message: "revoked")))
         await fulfillment(of: [flagSet], timeout: 1)
 
@@ -661,256 +661,258 @@ final class DeviceRevokedUITests: XCTestCase {
 @MainActor
 final class LocalActivityCorrectionListTests: XCTestCase {
 
-  private let stableID = "abs_editor_local"
+    private let stableID = "abs_editor_local"
 
-  /// What the service sends before the correction: the activity is
-  /// unclassified, so it sorts last and its id carries `unclassified`.
-  private func beforeCorrection() -> LocalDashboardSnapshot {
-    snapshot(segments: [
-      segment(id: "2026-08-16-segment-0-focus_work", stableID: "abs_other", label: "Xcode",
-        category: "FOCUS_WORK", seconds: 5_400, percentage: 75, confidence: .high),
-      segment(id: "2026-08-16-segment-1-unclassified", stableID: stableID, label: "Unclassified",
-        suggestedName: "Sketch Companion", category: "UNCLASSIFIED", seconds: 1_800,
-        percentage: 25, confidence: .none),
-    ])
-  }
+    /// What the service sends before the correction: the activity is
+    /// unclassified, so it sorts last and its id carries `unclassified`.
+    private func beforeCorrection() -> LocalDashboardSnapshot {
+        snapshot(segments: [
+            segment(
+                id: "2026-08-16-segment-0-focus_work", stableID: "abs_other", label: "Xcode",
+                category: "FOCUS_WORK", seconds: 5_400, percentage: 75, confidence: .high),
+            segment(
+                id: "2026-08-16-segment-1-unclassified", stableID: stableID, label: "Unclassified",
+                suggestedName: "Sketch Companion", category: "UNCLASSIFIED", seconds: 1_800,
+                percentage: 25, confidence: .none),
+        ])
+    }
 
-  /// What the service sends after it: the same activity, now classified, so it
-  /// re-buckets under a new category and the day is re-sorted. Same
-  /// `stableID`, different `id`, different index.
-  private func afterCorrection() -> LocalDashboardSnapshot {
-    snapshot(segments: [
-      segment(id: "2026-08-16-segment-0-focus_work", stableID: "abs_other", label: "Xcode",
-        category: "FOCUS_WORK", seconds: 5_400, percentage: 75, confidence: .high),
-      segment(id: "2026-08-16-segment-1-creative", stableID: stableID, label: "Sketch Companion",
-        suggestedName: "Sketch Companion", aliasConfirmed: true, category: "CREATIVE",
-        seconds: 1_800, percentage: 25, confidence: .high),
-    ])
-  }
+    /// What the service sends after it: the same activity, now classified, so it
+    /// re-buckets under a new category and the day is re-sorted. Same
+    /// `stableID`, different `id`, different index.
+    private func afterCorrection() -> LocalDashboardSnapshot {
+        snapshot(segments: [
+            segment(
+                id: "2026-08-16-segment-0-focus_work", stableID: "abs_other", label: "Xcode",
+                category: "FOCUS_WORK", seconds: 5_400, percentage: 75, confidence: .high),
+            segment(
+                id: "2026-08-16-segment-1-creative", stableID: stableID, label: "Sketch Companion",
+                suggestedName: "Sketch Companion", aliasConfirmed: true, category: "CREATIVE",
+                seconds: 1_800, percentage: 25, confidence: .high),
+        ])
+    }
 
-  func testTheSegmentIdentityTheServiceSendsDoesNotSurviveACorrection() {
-    let before = try! XCTUnwrap(
-      LocalActivityCorrectionList.correctableDay(in: beforeCorrection())
-    ).segments.first(where: { $0.stableID == stableID })!
-    let after = try! XCTUnwrap(
-      LocalActivityCorrectionList.correctableDay(in: afterCorrection())
-    ).segments.first(where: { $0.stableID == stableID })!
+    func testTheSegmentIdentityTheServiceSendsDoesNotSurviveACorrection() {
+        let before = try! XCTUnwrap(
+            LocalActivityCorrectionList.correctableDay(in: beforeCorrection())
+        ).segments.first(where: { $0.stableID == stableID })!
+        let after = try! XCTUnwrap(
+            LocalActivityCorrectionList.correctableDay(in: afterCorrection())
+        ).segments.first(where: { $0.stableID == stableID })!
 
-    XCTAssertNotEqual(
-      before.id, after.id,
-      "The service's segment id embeds the category, so a correction changes it")
-    XCTAssertEqual(before.stableID, after.stableID)
-  }
+        XCTAssertNotEqual(
+            before.id, after.id,
+            "The service's segment id embeds the category, so a correction changes it")
+        XCTAssertEqual(before.stableID, after.stableID)
+    }
 
-  func testASelectedActivityStaysSelectedThroughItsOwnCorrection() {
-    let selected = LocalActivityCorrectionList.selectedSegment(
-      stableID: stableID, in: beforeCorrection())
-    XCTAssertEqual(selected?.label, "Unclassified")
+    func testASelectedActivityStaysSelectedThroughItsOwnCorrection() {
+        let selected = LocalActivityCorrectionList.selectedSegment(
+            stableID: stableID, in: beforeCorrection())
+        XCTAssertEqual(selected?.label, "Unclassified")
 
-    let stillSelected = LocalActivityCorrectionList.selectedSegment(
-      stableID: stableID, in: afterCorrection())
-    XCTAssertNotNil(
-      stillSelected,
-      "The correction panel must not disappear the moment the correction lands")
-    XCTAssertEqual(stillSelected?.label, "Sketch Companion")
-    XCTAssertEqual(stillSelected?.category, "CREATIVE")
-  }
+        let stillSelected = LocalActivityCorrectionList.selectedSegment(
+            stableID: stableID, in: afterCorrection())
+        XCTAssertNotNil(
+            stillSelected,
+            "The correction panel must not disappear the moment the correction lands")
+        XCTAssertEqual(stillSelected?.label, "Sketch Companion")
+        XCTAssertEqual(stillSelected?.category, "CREATIVE")
+    }
 
-  func testTheEvidenceLineIsRereadFromTheSnapshotRatherThanCaptured() {
-    let before = LocalActivityCorrectionList.selectedSegment(
-      stableID: stableID, in: beforeCorrection())!
-    let after = LocalActivityCorrectionList.selectedSegment(
-      stableID: stableID, in: afterCorrection())!
+    func testTheEvidenceLineIsRereadFromTheSnapshotRatherThanCaptured() {
+        let before = LocalActivityCorrectionList.selectedSegment(
+            stableID: stableID, in: beforeCorrection())!
+        let after = LocalActivityCorrectionList.selectedSegment(
+            stableID: stableID, in: afterCorrection())!
 
-    XCTAssertTrue(LocalActivityCorrectionList.detail(for: before).hasPrefix("Unclassified"))
-    XCTAssertTrue(LocalActivityCorrectionList.detail(for: after).hasPrefix("Sketch Companion"))
-    XCTAssertNotEqual(
-      LocalActivityCorrectionList.detail(for: before),
-      LocalActivityCorrectionList.detail(for: after))
-  }
+        XCTAssertTrue(LocalActivityCorrectionList.detail(for: before).hasPrefix("Unclassified"))
+        XCTAssertTrue(LocalActivityCorrectionList.detail(for: after).hasPrefix("Sketch Companion"))
+        XCTAssertNotEqual(
+            LocalActivityCorrectionList.detail(for: before),
+            LocalActivityCorrectionList.detail(for: after))
+    }
 
-  /// 05 § 2: "A percentage of your week is a report; a duration next to a
-  /// correctable label is a workbench."
-  func testTheWorkbenchStatesADurationAndNeverAPercentage() {
-    let segment = LocalActivityCorrectionList.selectedSegment(
-      stableID: stableID, in: beforeCorrection())!
-    let detail = LocalActivityCorrectionList.detail(for: segment)
+    /// 05 § 2: "A percentage of your week is a report; a duration next to a
+    /// correctable label is a workbench."
+    func testTheWorkbenchStatesADurationAndNeverAPercentage() {
+        let segment = LocalActivityCorrectionList.selectedSegment(
+            stableID: stableID, in: beforeCorrection())!
+        let detail = LocalActivityCorrectionList.detail(for: segment)
 
-    XCTAssertTrue(detail.contains("30m"), detail)
-    XCTAssertFalse(detail.contains("%"), detail)
-    XCTAssertFalse(detail.lowercased().contains("7 day"), detail)
-    XCTAssertFalse(detail.lowercased().contains("week"), detail)
-  }
+        XCTAssertTrue(detail.contains("30m"), detail)
+        XCTAssertFalse(detail.contains("%"), detail)
+        XCTAssertFalse(detail.lowercased().contains("7 day"), detail)
+        XCTAssertFalse(detail.lowercased().contains("week"), detail)
+    }
 
-  func testDurationsReadAsMinutesAndHours() {
-    XCTAssertEqual(LocalActivityCorrectionList.plainDuration(0), "0m")
-    XCTAssertEqual(LocalActivityCorrectionList.plainDuration(1_800), "30m")
-    XCTAssertEqual(LocalActivityCorrectionList.plainDuration(3_600), "1h 0m")
-    XCTAssertEqual(LocalActivityCorrectionList.plainDuration(5_400), "1h 30m")
-  }
+    func testDurationsReadAsMinutesAndHours() {
+        XCTAssertEqual(LocalActivityCorrectionList.plainDuration(0), "0m")
+        XCTAssertEqual(LocalActivityCorrectionList.plainDuration(1_800), "30m")
+        XCTAssertEqual(LocalActivityCorrectionList.plainDuration(3_600), "1h 0m")
+        XCTAssertEqual(LocalActivityCorrectionList.plainDuration(5_400), "1h 30m")
+    }
 
-  /// Picking the most recent day that has activity, rather than today, keeps
-  /// the workbench usable first thing in the morning. It is a filter over the
-  /// delivered payload, not a computation on it.
-  func testTheWorkbenchFallsBackToTheMostRecentDayThatHasActivity() {
-    let populated = beforeCorrection()
-    var days = populated.dailyActivity
-    days.append(
-      LocalDailyActivityDay(
-        id: "2026-08-17", date: "2026-08-17", state: .noData, activeSeconds: 0,
-        coverage: .noData, segments: []))
-    let withEmptyToday = LocalDashboardSnapshot(
-      generatedAt: populated.generatedAt, windowStart: populated.windowStart,
-      windowEnd: populated.windowEnd, switchCount: populated.switchCount,
-      switchesPerHour: populated.switchesPerHour, coverage: populated.coverage,
-      earlySignal: populated.earlySignal, segments: populated.segments,
-      focusFragmentation: nil, dailyActivity: days)
+    /// Picking the most recent day that has activity, rather than today, keeps
+    /// the workbench usable first thing in the morning. It is a filter over the
+    /// delivered payload, not a computation on it.
+    func testTheWorkbenchFallsBackToTheMostRecentDayThatHasActivity() {
+        let populated = beforeCorrection()
+        var days = populated.dailyActivity
+        days.append(
+            LocalDailyActivityDay(
+                id: "2026-08-17", date: "2026-08-17", state: .noData, activeSeconds: 0,
+                coverage: .noData, segments: []))
+        let withEmptyToday = LocalDashboardSnapshot(
+            generatedAt: populated.generatedAt, windowStart: populated.windowStart,
+            windowEnd: populated.windowEnd, switchCount: populated.switchCount,
+            switchesPerHour: populated.switchesPerHour, coverage: populated.coverage,
+            earlySignal: populated.earlySignal, segments: populated.segments,
+            focusFragmentation: nil, dailyActivity: days)
 
-    XCTAssertEqual(
-      LocalActivityCorrectionList.correctableDay(in: withEmptyToday)?.date, "2026-08-16")
-    XCTAssertNil(LocalActivityCorrectionList.correctableDay(in: nil))
-  }
+        XCTAssertEqual(
+            LocalActivityCorrectionList.correctableDay(in: withEmptyToday)?.date, "2026-08-16")
+        XCTAssertNil(LocalActivityCorrectionList.correctableDay(in: nil))
+    }
 
-  func testAnUnknownCategoryFallsBackToAnEditableOne() {
-    XCTAssertEqual(LocalActivityCorrectionList.correctionCategory("CREATIVE"), "UNLOGGED")
-    XCTAssertEqual(LocalActivityCorrectionList.correctionCategory("FOCUS_WORK"), "FOCUS_WORK")
-  }
+    func testAnUnknownCategoryFallsBackToAnEditableOne() {
+        XCTAssertEqual(LocalActivityCorrectionList.correctionCategory("CREATIVE"), "UNLOGGED")
+        XCTAssertEqual(LocalActivityCorrectionList.correctionCategory("FOCUS_WORK"), "FOCUS_WORK")
+    }
 
-  // MARK: Fixtures
+    // MARK: Fixtures
 
-  private func segment(
-    id: String, stableID: String, label: String, suggestedName: String? = nil,
-    aliasConfirmed: Bool = false, category: String, seconds: Int, percentage: Int,
-    confidence: ClassificationConfidence
-  ) -> LocalDailyActivitySegment {
-    LocalDailyActivitySegment(
-      id: id, label: label, representativeEventID: UUID(), stableID: stableID,
-      suggestedName: suggestedName, aliasConfirmed: aliasConfirmed, category: category,
-      durationSeconds: seconds, percentage: percentage, confidence: confidence,
-      explanation: nil)
-  }
+    private func segment(
+        id: String, stableID: String, label: String, suggestedName: String? = nil,
+        aliasConfirmed: Bool = false, category: String, seconds: Int, percentage: Int,
+        confidence: ClassificationConfidence
+    ) -> LocalDailyActivitySegment {
+        LocalDailyActivitySegment(
+            id: id, label: label, representativeEventID: UUID(), stableID: stableID,
+            suggestedName: suggestedName, aliasConfirmed: aliasConfirmed, category: category,
+            durationSeconds: seconds, percentage: percentage, confidence: confidence,
+            explanation: nil)
+    }
 
-  private func snapshot(segments: [LocalDailyActivitySegment]) -> LocalDashboardSnapshot {
-    let base = Date(timeIntervalSince1970: 1_800_000_000)
-    return LocalDashboardSnapshot(
-      generatedAt: base, windowStart: base, windowEnd: base.addingTimeInterval(3_600),
-      switchCount: 3, switchesPerHour: 3, coverage: .good,
-      earlySignal: LocalEarlySignal(
-        status: .ready, observedFrom: base, observedThrough: base.addingTimeInterval(3_600),
-        observedSeconds: 3_600, requiredSeconds: 0, evidenceEventCount: 9, focusedSeconds: 2_100,
-        meaningfulSwitchCount: 3, longestUninterruptedSeconds: 1_080,
-        observation: "One change of direction in the last 60 minutes.",
-        suggestedAction: "Want 25 minutes on it, uninterrupted?", actionMinutes: 25),
-      segments: [], focusFragmentation: nil,
-      dailyActivity: [
-        LocalDailyActivityDay(
-          id: "2026-08-16", date: "2026-08-16", state: .ready, activeSeconds: 7_200,
-          coverage: .good, segments: segments)
-      ])
-  }
+    private func snapshot(segments: [LocalDailyActivitySegment]) -> LocalDashboardSnapshot {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        return LocalDashboardSnapshot(
+            generatedAt: base, windowStart: base, windowEnd: base.addingTimeInterval(3_600),
+            switchCount: 3, switchesPerHour: 3, coverage: .good,
+            earlySignal: LocalEarlySignal(
+                status: .ready, observedFrom: base, observedThrough: base.addingTimeInterval(3_600),
+                observedSeconds: 3_600, requiredSeconds: 0, evidenceEventCount: 9, focusedSeconds: 2_100,
+                meaningfulSwitchCount: 3, longestUninterruptedSeconds: 1_080,
+                observation: "One change of direction in the last 60 minutes.",
+                suggestedAction: "Want 25 minutes on it, uninterrupted?", actionMinutes: 25),
+            segments: [], focusFragmentation: nil,
+            dailyActivity: [
+                LocalDailyActivityDay(
+                    id: "2026-08-16", date: "2026-08-16", state: .ready, activeSeconds: 7_200,
+                    coverage: .good, segments: segments)
+            ])
+    }
 }
 
 // MARK: - Correction workbench wiring
 
-import SwiftUI
-
 @MainActor
 final class CorrectionWorkbenchViewTests: XCTestCase {
 
-  /// The framing sentence is the whole point of this surface: not a report on
-  /// the user, a place where the user corrects the software.
-  func testTheWorkbenchExplainsItselfAsSomethingYouFixNotSomethingYouRead() {
-    let copy = CorrectionWorkbenchView.explanationCopy
+    /// The framing sentence is the whole point of this surface: not a report on
+    /// the user, a place where the user corrects the software.
+    func testTheWorkbenchExplainsItselfAsSomethingYouFixNotSomethingYouRead() {
+        let copy = CorrectionWorkbenchView.explanationCopy
 
-    XCTAssertTrue(copy.contains("Velvt gets these wrong sometimes"), copy)
-    XCTAssertTrue(copy.contains("this Mac only"), copy)
-    XCTAssertFalse(copy.lowercased().contains("7 day"), copy)
-    XCTAssertFalse(copy.lowercased().contains("percentage"), copy)
-  }
-
-  /// The correction and the dashboard request travel over one actor-isolated
-  /// socket client on two unstructured tasks, so refreshing the rows straight
-  /// after the click can read the dashboard back before the correction has
-  /// been applied. Refreshing off the service's acknowledgement instead cannot
-  /// race it: the acknowledgement is written by the same handler that applied
-  /// the correction.
-  func testCorrectedRowsRefreshOffTheServiceAcknowledgementNotTheClick() async throws {
-    let client = FakeIPCClient()
-    let messages = PassthroughSubject<ServerMessage, Never>()
-    let menuStatus = MenuStatusViewModel(ipcClient: client, messages: messages)
-    let dashboard = LocalDashboardCoordinator(ipcClient: client)
-    dashboard.start(messages: messages, connectionStatus: client.connectionStatus)
-
-    let host = NSHostingView(
-      rootView: CorrectionWorkbenchView(
-        menuStatus: menuStatus,
-        localDashboard: dashboard,
-        title: "Teach Velvt Your Apps"
-      )
-      .frame(width: 380, height: 560)
-    )
-    host.frame = NSRect(x: 0, y: 0, width: 380, height: 560)
-    host.layoutSubtreeIfNeeded()
-    try await waitUntil("the workbench asks for the rows when it opens") {
-      self.dashboardRequestCount(client) > 0
+        XCTAssertTrue(copy.contains("Velvt gets these wrong sometimes"), copy)
+        XCTAssertTrue(copy.contains("this Mac only"), copy)
+        XCTAssertFalse(copy.lowercased().contains("7 day"), copy)
+        XCTAssertFalse(copy.lowercased().contains("percentage"), copy)
     }
 
-    let before = dashboardRequestCount(client)
-    messages.send(.menuStatus(acknowledgingStatus()))
+    /// The correction and the dashboard request travel over one actor-isolated
+    /// socket client on two unstructured tasks, so refreshing the rows straight
+    /// after the click can read the dashboard back before the correction has
+    /// been applied. Refreshing off the service's acknowledgement instead cannot
+    /// race it: the acknowledgement is written by the same handler that applied
+    /// the correction.
+    func testCorrectedRowsRefreshOffTheServiceAcknowledgementNotTheClick() async throws {
+        let client = FakeIPCClient()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let menuStatus = MenuStatusViewModel(ipcClient: client, messages: messages)
+        let dashboard = LocalDashboardCoordinator(ipcClient: client)
+        dashboard.start(messages: messages, connectionStatus: client.connectionStatus)
 
-    try await waitUntil("a correction the service confirmed redraws the rows it changed") {
-      self.dashboardRequestCount(client) > before
+        let host = NSHostingView(
+            rootView: CorrectionWorkbenchView(
+                menuStatus: menuStatus,
+                localDashboard: dashboard,
+                title: "Teach Velvt Your Apps"
+            )
+            .frame(width: 380, height: 560)
+        )
+        host.frame = NSRect(x: 0, y: 0, width: 380, height: 560)
+        host.layoutSubtreeIfNeeded()
+        try await waitUntil("the workbench asks for the rows when it opens") {
+            self.dashboardRequestCount(client) > 0
+        }
+
+        let before = dashboardRequestCount(client)
+        messages.send(.menuStatus(acknowledgingStatus()))
+
+        try await waitUntil("a correction the service confirmed redraws the rows it changed") {
+            self.dashboardRequestCount(client) > before
+        }
     }
-  }
 
-  private func waitUntil(
-    _ description: String,
-    timeout: TimeInterval = 3,
-    _ condition: @escaping () -> Bool
-  ) async throws {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-      if condition() { return }
-      try await Task.sleep(nanoseconds: 20_000_000)
+    private func waitUntil(
+        _ description: String,
+        timeout: TimeInterval = 3,
+        _ condition: @escaping () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("Timed out waiting until \(description)")
     }
-    XCTFail("Timed out waiting until \(description)")
-  }
 
-  func testAWorkbenchWithNoServiceBehindItSaysSoRatherThanShowingAnEmptyList() {
-    let host = NSHostingView(
-      rootView: CorrectionWorkbenchUnavailableView(title: "Teach Velvt Your Apps")
-        .frame(width: 380)
-    )
-    host.frame = NSRect(x: 0, y: 0, width: 380, height: 200)
-    host.layoutSubtreeIfNeeded()
+    func testAWorkbenchWithNoServiceBehindItSaysSoRatherThanShowingAnEmptyList() {
+        let host = NSHostingView(
+            rootView: CorrectionWorkbenchUnavailableView(title: "Teach Velvt Your Apps")
+                .frame(width: 380)
+        )
+        host.frame = NSRect(x: 0, y: 0, width: 380, height: 200)
+        host.layoutSubtreeIfNeeded()
 
-    XCTAssertGreaterThan(host.fittingSize.height, 0)
-  }
+        XCTAssertGreaterThan(host.fittingSize.height, 0)
+    }
 
-  private func dashboardRequestCount(_ client: FakeIPCClient) -> Int {
-    client.sentMessages.filter {
-      if case .requestLocalDashboard = $0 { return true }
-      return false
-    }.count
-  }
+    private func dashboardRequestCount(_ client: FakeIPCClient) -> Int {
+        client.sentMessages.filter {
+            if case .requestLocalDashboard = $0 { return true }
+            return false
+        }.count
+    }
 
-  private func acknowledgingStatus() -> MenuStatus {
-    MenuStatus(
-      deviceID: "device",
-      cloudReady: true,
-      uploadStatus: "idle",
-      lastUploadErrorCode: nil,
-      nextUploadAttemptAt: nil,
-      lastSuccessfulSyncAt: nil,
-      pendingUploadBatchCount: 0,
-      failedUploadBatchCount: 0,
-      rejectedUploadBatchCount: 0,
-      queuedEventCount: 0,
-      queuedEvents: [],
-      correctionHistory: [],
-      correctionAcknowledgment: "Sketch Companion is creative work from now on."
-    )
-  }
+    private func acknowledgingStatus() -> MenuStatus {
+        MenuStatus(
+            deviceID: "device",
+            cloudReady: true,
+            uploadStatus: "idle",
+            lastUploadErrorCode: nil,
+            nextUploadAttemptAt: nil,
+            lastSuccessfulSyncAt: nil,
+            pendingUploadBatchCount: 0,
+            failedUploadBatchCount: 0,
+            rejectedUploadBatchCount: 0,
+            queuedEventCount: 0,
+            queuedEvents: [],
+            correctionHistory: [],
+            correctionAcknowledgment: "Sketch Companion is creative work from now on."
+        )
+    }
 }
 
 /// Renders the correction workbench at the width the settings pane gives it,
@@ -920,91 +922,91 @@ final class CorrectionWorkbenchViewTests: XCTestCase {
 /// Accessibility permission.
 @MainActor
 final class CorrectionWorkbenchSnapshotTests: XCTestCase {
-  func testRenderWorkbenchWhenRequested() async throws {
-    guard
-      let output = ProcessInfo.processInfo.environment["VELVT_WORKBENCH_SCREENSHOT_DIR"]
-    else {
-      throw XCTSkip("Set VELVT_WORKBENCH_SCREENSHOT_DIR to render the workbench")
+    func testRenderWorkbenchWhenRequested() async throws {
+        guard
+            let output = ProcessInfo.processInfo.environment["VELVT_WORKBENCH_SCREENSHOT_DIR"]
+        else {
+            throw XCTSkip("Set VELVT_WORKBENCH_SCREENSHOT_DIR to render the workbench")
+        }
+
+        // The narrowest the workbench is ever drawn: the settings pane at the
+        // 500pt window floor, where it stacks and takes the whole pane.
+        let width = SettingsPaneLayout.paneWidth(
+            forContentWidth: MenuBarPopoverLayout.minimumContentSize.width)
+        let height = CGFloat(520)
+        let client = FakeIPCClient()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let menuStatus = MenuStatusViewModel(ipcClient: client, messages: messages)
+        let dashboard = LocalDashboardCoordinator(ipcClient: client)
+        dashboard.start(messages: messages, connectionStatus: client.connectionStatus)
+        messages.send(.localDashboard(Self.syntheticSnapshot()))
+        for _ in 0..<100 where dashboard.snapshot == nil {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        let view = ScrollView {
+            CorrectionWorkbenchView(
+                menuStatus: menuStatus, localDashboard: dashboard, title: "Teach Velvt Your Apps")
+        }
+        .frame(width: width, height: height, alignment: .top)
+        .background(Color.velvtSurface)
+        .preferredColorScheme(.dark)
+
+        let host = NSHostingView(rootView: AnyView(view))
+        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        host.layoutSubtreeIfNeeded()
+        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
+            return XCTFail("Unable to create snapshot bitmap")
+        }
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else {
+            return XCTFail("Unable to encode snapshot PNG")
+        }
+        let directory = URL(fileURLWithPath: output, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(
+            to: directory.appendingPathComponent("correction-workbench.png"), options: .atomic)
+        print("workbench_snapshot_size=\(Int(width))x\(Int(height))")
     }
 
-    // The narrowest the workbench is ever drawn: the settings pane at the
-    // 500pt window floor, where it stacks and takes the whole pane.
-    let width = SettingsPaneLayout.paneWidth(
-      forContentWidth: MenuBarPopoverLayout.minimumContentSize.width)
-    let height = CGFloat(520)
-    let client = FakeIPCClient()
-    let messages = PassthroughSubject<ServerMessage, Never>()
-    let menuStatus = MenuStatusViewModel(ipcClient: client, messages: messages)
-    let dashboard = LocalDashboardCoordinator(ipcClient: client)
-    dashboard.start(messages: messages, connectionStatus: client.connectionStatus)
-    messages.send(.localDashboard(Self.syntheticSnapshot()))
-    for _ in 0..<100 where dashboard.snapshot == nil {
-      try await Task.sleep(nanoseconds: 20_000_000)
+    static func syntheticSnapshot() -> LocalDashboardSnapshot {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        func segment(
+            _ id: String, _ stableID: String, _ label: String, _ category: String, _ seconds: Int,
+            _ percentage: Int, _ confidence: ClassificationConfidence, _ suggestion: String? = nil
+        ) -> LocalDailyActivitySegment {
+            LocalDailyActivitySegment(
+                id: id, label: label, representativeEventID: UUID(), stableID: stableID,
+                suggestedName: suggestion, aliasConfirmed: false, category: category,
+                durationSeconds: seconds, percentage: percentage, confidence: confidence,
+                explanation: "One sustained focus work block lasted 45 minutes.")
+        }
+        return LocalDashboardSnapshot(
+            generatedAt: base, windowStart: base, windowEnd: base.addingTimeInterval(3_600),
+            switchCount: 3, switchesPerHour: 3, coverage: .good,
+            earlySignal: LocalEarlySignal(
+                status: .ready, observedFrom: base, observedThrough: base.addingTimeInterval(3_600),
+                observedSeconds: 3_600, requiredSeconds: 0, evidenceEventCount: 9,
+                focusedSeconds: 2_100, meaningfulSwitchCount: 3, longestUninterruptedSeconds: 1_080,
+                observation: "One change of direction in the last 60 minutes.",
+                suggestedAction: "Want 25 minutes on it, uninterrupted?", actionMinutes: 25),
+            segments: [], focusFragmentation: nil,
+            dailyActivity: [
+                LocalDailyActivityDay(
+                    id: "2026-08-16", date: "2026-08-16", state: .ready, activeSeconds: 11_700,
+                    coverage: .good,
+                    segments: [
+                        segment("d-segment-0-focus_work", "abs_a", "Xcode", "FOCUS_WORK", 5_400, 45, .high),
+                        segment(
+                            "d-segment-1-communication", "abs_b", "Slack", "COMMUNICATION", 2_700, 24, .medium),
+                        segment("d-segment-2-reference", "abs_c", "Safari", "REFERENCE", 1_800, 16, .medium),
+                        segment(
+                            "d-segment-3-unclassified", "abs_d", "Unclassified", "UNCLASSIFIED", 1_200, 10,
+                            .none, "Sketch Companion"),
+                        segment("d-segment-4-other", "abs_e", "Other", "OTHER", 600, 5, .none),
+                    ])
+            ])
     }
-
-    let view = ScrollView {
-      CorrectionWorkbenchView(
-        menuStatus: menuStatus, localDashboard: dashboard, title: "Teach Velvt Your Apps")
-    }
-    .frame(width: width, height: height, alignment: .top)
-    .background(Color.velvtSurface)
-    .preferredColorScheme(.dark)
-
-    let host = NSHostingView(rootView: AnyView(view))
-    host.frame = NSRect(x: 0, y: 0, width: width, height: height)
-    host.layoutSubtreeIfNeeded()
-    guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
-      return XCTFail("Unable to create snapshot bitmap")
-    }
-    host.cacheDisplay(in: host.bounds, to: bitmap)
-    guard let data = bitmap.representation(using: .png, properties: [:]) else {
-      return XCTFail("Unable to encode snapshot PNG")
-    }
-    let directory = URL(fileURLWithPath: output, isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try data.write(
-      to: directory.appendingPathComponent("correction-workbench.png"), options: .atomic)
-    print("workbench_snapshot_size=\(Int(width))x\(Int(height))")
-  }
-
-  static func syntheticSnapshot() -> LocalDashboardSnapshot {
-    let base = Date(timeIntervalSince1970: 1_800_000_000)
-    func segment(
-      _ id: String, _ stableID: String, _ label: String, _ category: String, _ seconds: Int,
-      _ percentage: Int, _ confidence: ClassificationConfidence, _ suggestion: String? = nil
-    ) -> LocalDailyActivitySegment {
-      LocalDailyActivitySegment(
-        id: id, label: label, representativeEventID: UUID(), stableID: stableID,
-        suggestedName: suggestion, aliasConfirmed: false, category: category,
-        durationSeconds: seconds, percentage: percentage, confidence: confidence,
-        explanation: "One sustained focus work block lasted 45 minutes.")
-    }
-    return LocalDashboardSnapshot(
-      generatedAt: base, windowStart: base, windowEnd: base.addingTimeInterval(3_600),
-      switchCount: 3, switchesPerHour: 3, coverage: .good,
-      earlySignal: LocalEarlySignal(
-        status: .ready, observedFrom: base, observedThrough: base.addingTimeInterval(3_600),
-        observedSeconds: 3_600, requiredSeconds: 0, evidenceEventCount: 9,
-        focusedSeconds: 2_100, meaningfulSwitchCount: 3, longestUninterruptedSeconds: 1_080,
-        observation: "One change of direction in the last 60 minutes.",
-        suggestedAction: "Want 25 minutes on it, uninterrupted?", actionMinutes: 25),
-      segments: [], focusFragmentation: nil,
-      dailyActivity: [
-        LocalDailyActivityDay(
-          id: "2026-08-16", date: "2026-08-16", state: .ready, activeSeconds: 11_700,
-          coverage: .good,
-          segments: [
-            segment("d-segment-0-focus_work", "abs_a", "Xcode", "FOCUS_WORK", 5_400, 45, .high),
-            segment(
-              "d-segment-1-communication", "abs_b", "Slack", "COMMUNICATION", 2_700, 24, .medium),
-            segment("d-segment-2-reference", "abs_c", "Safari", "REFERENCE", 1_800, 16, .medium),
-            segment(
-              "d-segment-3-unclassified", "abs_d", "Unclassified", "UNCLASSIFIED", 1_200, 10,
-              .none, "Sketch Companion"),
-            segment("d-segment-4-other", "abs_e", "Other", "OTHER", 600, 5, .none),
-          ])
-      ])
-  }
 }
 
 /// Renders the menu bar surface at the sizes a resizable window can actually
@@ -1016,260 +1018,261 @@ final class CorrectionWorkbenchSnapshotTests: XCTestCase {
 /// Accessibility permission.
 @MainActor
 final class MenuBarWindowSnapshotTests: XCTestCase {
-  func testRenderMenuBarSurfaceWhenRequested() throws {
-    let output = try outputDirectory()
-    registerWordmark()
+    func testRenderMenuBarSurfaceWhenRequested() throws {
+        let output = try outputDirectory()
+        registerWordmark()
 
-    var sizes: [(String, CGSize)] = [
-      ("preferred", MenuBarPopoverLayout.preferredContentSize),
-      ("minimum", MenuBarPopoverLayout.minimumContentSize),
-      ("wide", CGSize(width: 900, height: 620)),
-    ]
-    // Width ladder at a fixed height, then a height ladder at the preferred
-    // width. `minimumContentSize` is read off these, not guessed.
-    for width in stride(from: CGFloat(340), through: 620, by: 20) {
-      sizes.append(("w\(Int(width))", CGSize(width: width, height: 480)))
-    }
-    for height in stride(from: CGFloat(240), through: 480, by: 40) {
-      sizes.append(("h\(Int(height))", CGSize(width: 600, height: height)))
-    }
-    for (name, size) in sizes {
-      try render(makeView(), named: "menu-bar-\(name).png", outputDirectory: output, size: size)
-    }
-    print("window_snapshot_count=\(sizes.count)")
-  }
-
-  /// Every settings destination, through the real `NSPanel`, at the three
-  /// widths that matter: the 500pt floor where the pane stacks, the size the
-  /// window opens at where it goes side by side, and a dragged-wider window.
-  ///
-  /// Through the panel and not a bare `NSHostingView`, deliberately. The
-  /// destination list is a `List`, a `List` is an `NSTableView` underneath,
-  /// and a table draws its rows only once it is in a window — rendered into a
-  /// windowless hosting view the list column comes out empty, which is a
-  /// picture of the renderer rather than of the pane.
-  ///
-  /// The point of the shots is that no destination is a second window any
-  /// more and that none of them lost content on the way in.
-  func testRenderEverySettingsDestinationThroughTheRealPanelWhenRequested() throws {
-    let output = try outputDirectory()
-    registerWordmark()
-    let presenter = MenuBarPanelPresenter()
-    defer { presenter.close() }
-    presenter.maximumContentSize = CGSize(width: 2_000, height: 1_500)
-
-    var destinations: [(String, SettingsSubmenu?)] = [
-      ("list", nil),
-      ("app-info", .appInfo),
-      ("teach-apps", .teachApps),
-      ("collection", .collectionSettings),
-      ("onboarding", .onboarding),
-    ]
-    #if DEBUG
-      destinations.append(("debug", .debug))
-    #endif
-
-    for (name, destination) in destinations {
-      // One view instance, resized under the camera. That is deliberate: the
-      // three shots of a destination are the same live pane being dragged from
-      // the floor to a wide window, so if the selection did not survive a
-      // resize — or if the stacked-to-side-by-side flip dropped it — the later
-      // shots in each row would come back on the placeholder.
-      let hosting = NSHostingController(
-        rootView: makeView(simulateNotification: { .scheduled }).openedOnSettings(destination))
-      hosting.sizingOptions = []
-      presenter.contentViewController = hosting
-      for (widthName, size) in [
-        ("min500", MenuBarPopoverLayout.minimumContentSize),
-        ("open600", CGSize(width: 600, height: 520)),
-        ("wide900", CGSize(width: 900, height: 620)),
-      ] {
-        presenter.contentSize = size
-        presenter.panel.orderFront(nil)
-        presenter.panel.layoutIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        guard let frameView = presenter.panel.contentView?.superview else {
-          return XCTFail("panel has no frame view")
+        var sizes: [(String, CGSize)] = [
+            ("preferred", MenuBarPopoverLayout.preferredContentSize),
+            ("minimum", MenuBarPopoverLayout.minimumContentSize),
+            ("wide", CGSize(width: 900, height: 620)),
+        ]
+        // Width ladder at a fixed height, then a height ladder at the preferred
+        // width. `minimumContentSize` is read off these, not guessed.
+        for width in stride(from: CGFloat(340), through: 620, by: 20) {
+            sizes.append(("w\(Int(width))", CGSize(width: width, height: 480)))
         }
-        frameView.layoutSubtreeIfNeeded()
-        try write(
-          frameView, named: "settings-panel-\(widthName)-\(name).png", outputDirectory: output)
-        let pane = SettingsPaneLayout.paneWidth(forContentWidth: size.width)
-        print(
-          "settings shot=\(widthName)/\(name) pane=\(Int(pane)) "
-            + "detail=\(Int(SettingsPaneLayout.detailWidth(forPaneWidth: pane))) "
-            + "mode=\(SettingsPaneLayout.mode(forPaneWidth: pane))"
+        for height in stride(from: CGFloat(240), through: 480, by: 40) {
+            sizes.append(("h\(Int(height))", CGSize(width: 600, height: height)))
+        }
+        for (name, size) in sizes {
+            try render(makeView(), named: "menu-bar-\(name).png", outputDirectory: output, size: size)
+        }
+        print("window_snapshot_count=\(sizes.count)")
+    }
+
+    /// Every settings destination, through the real `NSPanel`, at the three
+    /// widths that matter: the 500pt floor where the pane stacks, the size the
+    /// window opens at where it goes side by side, and a dragged-wider window.
+    ///
+    /// Through the panel and not a bare `NSHostingView`, deliberately. The
+    /// destination list is a `List`, a `List` is an `NSTableView` underneath,
+    /// and a table draws its rows only once it is in a window — rendered into a
+    /// windowless hosting view the list column comes out empty, which is a
+    /// picture of the renderer rather than of the pane.
+    ///
+    /// The point of the shots is that no destination is a second window any
+    /// more and that none of them lost content on the way in.
+    func testRenderEverySettingsDestinationThroughTheRealPanelWhenRequested() throws {
+        let output = try outputDirectory()
+        registerWordmark()
+        let presenter = MenuBarPanelPresenter()
+        defer { presenter.close() }
+        presenter.maximumContentSize = CGSize(width: 2_000, height: 1_500)
+
+        var destinations: [(String, SettingsSubmenu?)] = [
+            ("list", nil),
+            ("app-info", .appInfo),
+            ("teach-apps", .teachApps),
+            ("collection", .collectionSettings),
+            ("onboarding", .onboarding),
+        ]
+        #if DEBUG
+            destinations.append(("debug", .debug))
+        #endif
+
+        for (name, destination) in destinations {
+            // One view instance, resized under the camera. That is deliberate: the
+            // three shots of a destination are the same live pane being dragged from
+            // the floor to a wide window, so if the selection did not survive a
+            // resize — or if the stacked-to-side-by-side flip dropped it — the later
+            // shots in each row would come back on the placeholder.
+            let hosting = NSHostingController(
+                rootView: makeView(simulateNotification: { .scheduled }).openedOnSettings(destination))
+            hosting.sizingOptions = []
+            presenter.contentViewController = hosting
+            for (widthName, size) in [
+                ("min500", MenuBarPopoverLayout.minimumContentSize),
+                ("open600", CGSize(width: 600, height: 520)),
+                ("wide900", CGSize(width: 900, height: 620)),
+            ] {
+                presenter.contentSize = size
+                presenter.panel.orderFront(nil)
+                presenter.panel.layoutIfNeeded()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                guard let frameView = presenter.panel.contentView?.superview else {
+                    return XCTFail("panel has no frame view")
+                }
+                frameView.layoutSubtreeIfNeeded()
+                try write(
+                    frameView, named: "settings-panel-\(widthName)-\(name).png", outputDirectory: output)
+                let pane = SettingsPaneLayout.paneWidth(forContentWidth: size.width)
+                print(
+                    "settings shot=\(widthName)/\(name) pane=\(Int(pane)) "
+                        + "detail=\(Int(SettingsPaneLayout.detailWidth(forPaneWidth: pane))) "
+                        + "mode=\(SettingsPaneLayout.mode(forPaneWidth: pane))"
+                )
+            }
+        }
+    }
+
+    /// The long-label case: a denied Accessibility permission puts "Collection
+    /// paused: Accessibility permission required" in the header, which is the
+    /// string most likely to be cut at the right edge when the window narrows.
+    func testRenderLongHeaderLabelsWhenRequested() throws {
+        let output = try outputDirectory()
+        registerWordmark()
+        let permissions = FakePermissionManager()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore()
         )
-      }
+        permissions.setStatus(.denied, for: .accessibility)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        for width in [CGFloat(500), 600, 900] {
+            try render(
+                makeView(presentation: presentation),
+                named: "menu-bar-denied-w\(Int(width)).png",
+                outputDirectory: output,
+                size: CGSize(width: width, height: 480)
+            )
+        }
     }
-  }
 
-  /// The long-label case: a denied Accessibility permission puts "Collection
-  /// paused: Accessibility permission required" in the header, which is the
-  /// string most likely to be cut at the right edge when the window narrows.
-  func testRenderLongHeaderLabelsWhenRequested() throws {
-    let output = try outputDirectory()
-    registerWordmark()
-    let permissions = FakePermissionManager()
-    let presentation = PermissionPresentationModel(
-      permissionManager: permissions,
-      onboardingStateStore: InMemoryOnboardingStateStore()
-    )
-    permissions.setStatus(.denied, for: .accessibility)
-    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-
-    for width in [CGFloat(500), 600, 900] {
-      try render(
-        makeView(presentation: presentation),
-        named: "menu-bar-denied-w\(Int(width)).png",
-        outputDirectory: output,
-        size: CGSize(width: width, height: 480)
-      )
+    /// The guided tour bar carries `layoutPriority(2)`, the highest in the
+    /// surface. With the window short and the tour open, the header is the thing
+    /// the layout would otherwise squeeze — and a squeezed fixed 30pt image box
+    /// clips rather than shrinks. These shots are the check that it does not.
+    func testRenderGuidedTourAtShortHeightsWhenRequested() throws {
+        let output = try outputDirectory()
+        registerWordmark()
+        for height in [CGFloat(320), 400, 567] {
+            let tour = GuidedTourModel()
+            tour.start()
+            try render(
+                makeView(guidedTour: tour),
+                named: "menu-bar-tour-h\(Int(height)).png",
+                outputDirectory: output,
+                size: CGSize(width: 600, height: height)
+            )
+        }
     }
-  }
 
-  /// The guided tour bar carries `layoutPriority(2)`, the highest in the
-  /// surface. With the window short and the tour open, the header is the thing
-  /// the layout would otherwise squeeze — and a squeezed fixed 30pt image box
-  /// clips rather than shrinks. These shots are the check that it does not.
-  func testRenderGuidedTourAtShortHeightsWhenRequested() throws {
-    let output = try outputDirectory()
-    registerWordmark()
-    for height in [CGFloat(320), 400, 567] {
-      let tour = GuidedTourModel()
-      tour.start()
-      try render(
-        makeView(guidedTour: tour),
-        named: "menu-bar-tour-h\(Int(height)).png",
-        outputDirectory: output,
-        size: CGSize(width: 600, height: height)
-      )
+    /// Renders through the real `NSPanel`, capturing the window's frame view so
+    /// the title bar strip is in the picture. This is the shot that shows the
+    /// header is not drawn under the chrome.
+    func testRenderTheRealPanelWindowWhenRequested() throws {
+        let output = try outputDirectory()
+        registerWordmark()
+        let presenter = MenuBarPanelPresenter()
+        defer { presenter.close() }
+        let hosting = NSHostingController(rootView: makeView())
+        hosting.sizingOptions = []
+        presenter.contentViewController = hosting
+        presenter.maximumContentSize = CGSize(width: 2_000, height: 1_500)
+
+        for (name, size) in [
+            ("panel-preferred", MenuBarPopoverLayout.preferredContentSize),
+            ("panel-minimum", MenuBarPopoverLayout.minimumContentSize),
+            ("panel-resized-larger", CGSize(width: 860, height: 640)),
+        ] {
+            presenter.contentSize = size
+            presenter.panel.orderFront(nil)
+            presenter.panel.layoutIfNeeded()
+            guard let frameView = presenter.panel.contentView?.superview else {
+                return XCTFail("panel has no frame view")
+            }
+            frameView.layoutSubtreeIfNeeded()
+            print(
+                "panel \(name) content=\(presenter.contentSize) frame=\(presenter.panel.frame.size) "
+                    + "safeAreaTop=\(presenter.panel.contentView?.safeAreaInsets.top ?? -1)"
+            )
+            try write(frameView, named: "menu-bar-\(name).png", outputDirectory: output)
+        }
     }
-  }
 
-  /// Renders through the real `NSPanel`, capturing the window's frame view so
-  /// the title bar strip is in the picture. This is the shot that shows the
-  /// header is not drawn under the chrome.
-  func testRenderTheRealPanelWindowWhenRequested() throws {
-    let output = try outputDirectory()
-    registerWordmark()
-    let presenter = MenuBarPanelPresenter()
-    defer { presenter.close() }
-    let hosting = NSHostingController(rootView: makeView())
-    hosting.sizingOptions = []
-    presenter.contentViewController = hosting
-    presenter.maximumContentSize = CGSize(width: 2_000, height: 1_500)
-
-    for (name, size) in [
-      ("panel-preferred", MenuBarPopoverLayout.preferredContentSize),
-      ("panel-minimum", MenuBarPopoverLayout.minimumContentSize),
-      ("panel-resized-larger", CGSize(width: 860, height: 640)),
-    ] {
-      presenter.contentSize = size
-      presenter.panel.orderFront(nil)
-      presenter.panel.layoutIfNeeded()
-      guard let frameView = presenter.panel.contentView?.superview else {
-        return XCTFail("panel has no frame view")
-      }
-      frameView.layoutSubtreeIfNeeded()
-      print(
-        "panel \(name) content=\(presenter.contentSize) frame=\(presenter.panel.frame.size) "
-          + "safeAreaTop=\(presenter.panel.contentView?.safeAreaInsets.top ?? -1)"
-      )
-      try write(frameView, named: "menu-bar-\(name).png", outputDirectory: output)
+    private func outputDirectory() throws -> String {
+        guard let output = ProcessInfo.processInfo.environment["VELVT_WINDOW_SCREENSHOT_DIR"] else {
+            throw XCTSkip("Set VELVT_WINDOW_SCREENSHOT_DIR to render the menu bar surface")
+        }
+        return output
     }
-  }
 
-  private func outputDirectory() throws -> String {
-    guard let output = ProcessInfo.processInfo.environment["VELVT_WINDOW_SCREENSHOT_DIR"] else {
-      throw XCTSkip("Set VELVT_WINDOW_SCREENSHOT_DIR to render the menu bar surface")
+    /// SwiftPM does not compile `Assets.xcassets`, so `Image("VelvtWordmark")`
+    /// has no artwork to find under `swift test`. Registering the shipped SVG
+    /// under the same name is attempted here for completeness; SwiftUI resolves
+    /// `Image(_:)` through the asset catalog rather than through AppKit's named
+    /// image table, so the wordmark renders as its empty 76x30 box. The box is
+    /// what the clipping bug is about, and the box is measurable.
+    private func registerWordmark() {
+        guard NSImage(named: "VelvtWordmark") == nil else { return }
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let svg =
+            repoRoot
+            .appendingPathComponent("Assets.xcassets/VelvtWordmark.imageset/VelvtWordmark.svg")
+        guard let image = NSImage(contentsOf: svg) else { return }
+        image.isTemplate = true
+        image.setName("VelvtWordmark")
     }
-    return output
-  }
 
-  /// SwiftPM does not compile `Assets.xcassets`, so `Image("VelvtWordmark")`
-  /// has no artwork to find under `swift test`. Registering the shipped SVG
-  /// under the same name is attempted here for completeness; SwiftUI resolves
-  /// `Image(_:)` through the asset catalog rather than through AppKit's named
-  /// image table, so the wordmark renders as its empty 76x30 box. The box is
-  /// what the clipping bug is about, and the box is measurable.
-  private func registerWordmark() {
-    guard NSImage(named: "VelvtWordmark") == nil else { return }
-    let repoRoot = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-    let svg = repoRoot
-      .appendingPathComponent("Assets.xcassets/VelvtWordmark.imageset/VelvtWordmark.svg")
-    guard let image = NSImage(contentsOf: svg) else { return }
-    image.isTemplate = true
-    image.setName("VelvtWordmark")
-  }
-
-  private func makeView(
-    presentation: PermissionPresentationModel? = nil,
-    guidedTour: GuidedTourModel = GuidedTourModel(),
-    simulateNotification: (() async -> DebugInsightSimulationResult)? = nil
-  ) -> MenuBarPopoverView {
-    let resolved =
-      presentation
-      ?? PermissionPresentationModel(
-        permissionManager: FakePermissionManager(),
-        onboardingStateStore: InMemoryOnboardingStateStore()
-      )
-    let client = FakeIPCClient()
-    let messages = PassthroughSubject<ServerMessage, Never>()
-    return MenuBarPopoverView(
-      presentation: resolved,
-      coordinator: ConcreteDisplayDataCoordinator(),
-      serviceConnectionStatus: ServiceConnectionStatusModel(
-        connectionStatus: Just(.connected).eraseToAnyPublisher()
-      ),
-      collectionActivityStatus: CollectionActivityStatusModel(
-        collectionStatus: Just(.running).eraseToAnyPublisher()
-      ),
-      currentActivity: CurrentActivityModel(),
-      serviceAlertModel: ServiceAlertModel(messages: Empty<ServerMessage, Never>()),
-      accountStateManager: AccountStateManager(keychain: FakeKeychain()),
-      ipcClient: client,
-      menuStatusViewModel: MenuStatusViewModel(ipcClient: client, messages: messages),
-      simulateNotification: simulateNotification,
-      updateController: .disabled(),
-      guidedTour: guidedTour,
-      onEscape: {}
-    )
-  }
-
-  private func render<V: View>(
-    _ view: V,
-    named name: String,
-    outputDirectory: String,
-    size: CGSize
-  ) throws {
-    let root = AnyView(
-      view
-        .frame(width: size.width, height: size.height, alignment: .top)
-        .background(Color.velvtSurface)
-        .preferredColorScheme(.dark)
-    )
-    let host = NSHostingView(rootView: root)
-    host.frame = NSRect(origin: .zero, size: size)
-    host.layoutSubtreeIfNeeded()
-    try write(host, named: name, outputDirectory: outputDirectory)
-  }
-
-  private func write(_ view: NSView, named name: String, outputDirectory: String) throws {
-    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
-      return XCTFail("Unable to create snapshot bitmap for \(name)")
+    private func makeView(
+        presentation: PermissionPresentationModel? = nil,
+        guidedTour: GuidedTourModel = GuidedTourModel(),
+        simulateNotification: (() async -> DebugInsightSimulationResult)? = nil
+    ) -> MenuBarPopoverView {
+        let resolved =
+            presentation
+            ?? PermissionPresentationModel(
+                permissionManager: FakePermissionManager(),
+                onboardingStateStore: InMemoryOnboardingStateStore()
+            )
+        let client = FakeIPCClient()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        return MenuBarPopoverView(
+            presentation: resolved,
+            coordinator: ConcreteDisplayDataCoordinator(),
+            serviceConnectionStatus: ServiceConnectionStatusModel(
+                connectionStatus: Just(.connected).eraseToAnyPublisher()
+            ),
+            collectionActivityStatus: CollectionActivityStatusModel(
+                collectionStatus: Just(.running).eraseToAnyPublisher()
+            ),
+            currentActivity: CurrentActivityModel(),
+            serviceAlertModel: ServiceAlertModel(messages: Empty<ServerMessage, Never>()),
+            accountStateManager: AccountStateManager(keychain: FakeKeychain()),
+            ipcClient: client,
+            menuStatusViewModel: MenuStatusViewModel(ipcClient: client, messages: messages),
+            simulateNotification: simulateNotification,
+            updateController: .disabled(),
+            guidedTour: guidedTour,
+            onEscape: {}
+        )
     }
-    view.cacheDisplay(in: view.bounds, to: bitmap)
-    guard let data = bitmap.representation(using: .png, properties: [:]) else {
-      return XCTFail("Unable to encode snapshot PNG for \(name)")
+
+    private func render<V: View>(
+        _ view: V,
+        named name: String,
+        outputDirectory: String,
+        size: CGSize
+    ) throws {
+        let root = AnyView(
+            view
+                .frame(width: size.width, height: size.height, alignment: .top)
+                .background(Color.velvtSurface)
+                .preferredColorScheme(.dark)
+        )
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        try write(host, named: name, outputDirectory: outputDirectory)
     }
-    let directory = URL(fileURLWithPath: outputDirectory, isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try data.write(to: directory.appendingPathComponent(name), options: .atomic)
-  }
+
+    private func write(_ view: NSView, named name: String, outputDirectory: String) throws {
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            return XCTFail("Unable to create snapshot bitmap for \(name)")
+        }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else {
+            return XCTFail("Unable to encode snapshot PNG for \(name)")
+        }
+        let directory = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: directory.appendingPathComponent(name), options: .atomic)
+    }
 }
 
 // MARK: - Local seven-day activity (Patterns tab)
@@ -1389,7 +1392,6 @@ final class LocalWeekActivityTests: XCTestCase {
     }
 }
 
-
 final class CorrectionRowLabelTests: XCTestCase {
     private func segment(
         label: String, suggested: String?, confirmed: Bool
@@ -1425,7 +1427,6 @@ final class CorrectionRowLabelTests: XCTestCase {
         XCTAssertEqual(LocalActivityCorrectionList.rowLabel(for: bare), "Writing")
     }
 }
-
 
 @MainActor
 final class ServiceStatusAlertTests: XCTestCase {
@@ -1564,7 +1565,6 @@ final class ServiceStatusAlertTests: XCTestCase {
     }
 }
 
-
 @MainActor
 final class WeeklyDigestReachabilityTests: XCTestCase {
     private func source(_ name: String) throws -> String {
@@ -1612,7 +1612,6 @@ final class WeeklyDigestReachabilityTests: XCTestCase {
         XCTAssertTrue(workBlock.contains("onAcknowledge: coordinator.acknowledgeWeeklyDigest"))
     }
 }
-
 
 @MainActor
 final class TodaySoFarTests: XCTestCase {
@@ -1662,24 +1661,23 @@ final class TodaySoFarTests: XCTestCase {
     }
 }
 
-
 final class LocalDataExportTests: XCTestCase {
     private func snapshot() -> LocalDashboardSnapshot? {
         let json = """
-        {"generated_at":"2026-08-27T10:00:00Z","window_start":"2026-08-27T09:00:00Z",
-         "window_end":"2026-08-27T10:00:00Z","switch_count":4,"switches_per_hour":4.0,
-         "coverage":"good",
-         "early_signal":{"status":"ready","observed_through":"2026-08-27T10:00:00Z",
-           "observed_seconds":600,"required_seconds":0,"evidence_event_count":10,
-           "focused_seconds":600,"meaningful_switch_count":4,
-           "longest_uninterrupted_seconds":300,"action_minutes":10},
-         "segments":[],
-         "daily_activity":[{"id":"d1","date":"2026-08-27","state":"ready",
-           "active_seconds":3600,"coverage":"good",
-           "segments":[{"id":"s1","label":"Coding","category":"FOCUS_WORK",
-             "alias_confirmed":false,"duration_seconds":3600,"percentage":100,
-             "confidence":"high"}]}]}
-        """
+            {"generated_at":"2026-08-27T10:00:00Z","window_start":"2026-08-27T09:00:00Z",
+             "window_end":"2026-08-27T10:00:00Z","switch_count":4,"switches_per_hour":4.0,
+             "coverage":"good",
+             "early_signal":{"status":"ready","observed_through":"2026-08-27T10:00:00Z",
+               "observed_seconds":600,"required_seconds":0,"evidence_event_count":10,
+               "focused_seconds":600,"meaningful_switch_count":4,
+               "longest_uninterrupted_seconds":300,"action_minutes":10},
+             "segments":[],
+             "daily_activity":[{"id":"d1","date":"2026-08-27","state":"ready",
+               "active_seconds":3600,"coverage":"good",
+               "segments":[{"id":"s1","label":"Coding","category":"FOCUS_WORK",
+                 "alias_confirmed":false,"duration_seconds":3600,"percentage":100,
+                 "confidence":"high"}]}]}
+            """
         return try? IPCMessageCodec.makeDecoder()
             .decode(LocalDashboardSnapshot.self, from: Data(json.utf8))
     }

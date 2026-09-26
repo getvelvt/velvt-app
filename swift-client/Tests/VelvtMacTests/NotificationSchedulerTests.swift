@@ -1,13 +1,15 @@
 import Combine
 import UserNotifications
 import XCTest
+
 @testable import VelvtMac
 
 final class UNNotificationSchedulerTests: XCTestCase {
 
     func testSchedulesImmediatelyWhenNoDoNotDisturb() async {
         let center = FakeUNUserNotificationCenter()
-        let metrics = AppMetricsStore(defaults: UserDefaults(suiteName: "NotificationSchedulerTests.\(UUID().uuidString)")!)
+        let metrics = AppMetricsStore(
+            defaults: UserDefaults(suiteName: "NotificationSchedulerTests.\(UUID().uuidString)")!)
         let sut = UNNotificationScheduler(
             center: center,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },

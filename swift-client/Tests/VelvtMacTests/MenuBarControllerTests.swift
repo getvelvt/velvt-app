@@ -2,6 +2,7 @@ import Combine
 import ObjectiveC
 import SwiftUI
 import XCTest
+
 @testable import VelvtMac
 
 @MainActor
@@ -159,12 +160,14 @@ final class MenuBarControllerTests: XCTestCase {
         XCTAssertTrue(sut.isPopoverShown)
 
         coordinator.updateInsight(
-            InsightPayload(date: "2026-06-15", text: "first", confidenceLevel: .high, lowConfidence: false, generatedAt: Date())
+            InsightPayload(
+                date: "2026-06-15", text: "first", confidenceLevel: .high, lowConfidence: false, generatedAt: Date())
         )
         XCTAssertTrue(sut.isPopoverShown, "Pushing new display data must not close the popover")
 
         coordinator.updateInsight(
-            InsightPayload(date: "2026-06-16", text: "second", confidenceLevel: .high, lowConfidence: false, generatedAt: Date())
+            InsightPayload(
+                date: "2026-06-16", text: "second", confidenceLevel: .high, lowConfidence: false, generatedAt: Date())
         )
         XCTAssertTrue(sut.isPopoverShown, "A second push while still open must not toggle the popover")
 
@@ -178,7 +181,8 @@ final class MenuBarControllerTests: XCTestCase {
         // visually look like a close/reopen).
         let coordinator = ConcreteDisplayDataCoordinator()
         coordinator.updateInsight(
-            InsightPayload(date: "2026-06-15", text: "first", confidenceLevel: .high, lowConfidence: false, generatedAt: Date())
+            InsightPayload(
+                date: "2026-06-15", text: "first", confidenceLevel: .high, lowConfidence: false, generatedAt: Date())
         )
         guard case .populated(let insightVM, _) = coordinator.state else {
             XCTFail("Expected populated state")
@@ -186,7 +190,8 @@ final class MenuBarControllerTests: XCTestCase {
         }
 
         coordinator.updateInsight(
-            InsightPayload(date: "2026-06-16", text: "second", confidenceLevel: .high, lowConfidence: false, generatedAt: Date())
+            InsightPayload(
+                date: "2026-06-16", text: "second", confidenceLevel: .high, lowConfidence: false, generatedAt: Date())
         )
 
         guard case .populated(let insightVM2, _) = coordinator.state else {
@@ -214,7 +219,8 @@ final class MenuBarControllerTests: XCTestCase {
         XCTAssertFalse(sut.isPopoverShown)
         sut.showPopover()
 
-        XCTAssertEqual(activateCallCount, 1, "showPopover() must activate/unhide the app so a hidden app becomes visible")
+        XCTAssertEqual(
+            activateCallCount, 1, "showPopover() must activate/unhide the app so a hidden app becomes visible")
         XCTAssertTrue(sut.isPopoverShown)
 
         sut.remove()
@@ -262,7 +268,8 @@ final class MenuBarControllerTests: XCTestCase {
 
         router.handle(userInfo: ["insight_date": "2026-06-12"])
 
-        XCTAssertEqual(activateCallCount, 1, "Tapping a notification while the app is hidden must bring it to the foreground")
+        XCTAssertEqual(
+            activateCallCount, 1, "Tapping a notification while the app is hidden must bring it to the foreground")
         XCTAssertTrue(menuBar.isPopoverShown)
         XCTAssertEqual(scrolledDate, "2026-06-12")
 

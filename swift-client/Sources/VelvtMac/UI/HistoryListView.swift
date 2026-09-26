@@ -108,7 +108,7 @@ private struct DailyActivityRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(day.date)
         .accessibilityValue(
-      day.isNoData ? "No activity" : day.activeTime
+            day.isNoData ? "No activity" : day.activeTime
         )
     }
 }
@@ -126,12 +126,12 @@ private struct SplitActivityBar: View {
         GeometryReader { proxy in
             HStack(spacing: 2) {
                 if segments.isEmpty {
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(VelvtPalette.paper.opacity(day.isNoData ? 0.06 : 0.12))
-                            .help(emptyHelpText)
-                            .onHover { hovering in
-                                onHover(hovering ? emptyHelpText : nil)
-                            }
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(VelvtPalette.paper.opacity(day.isNoData ? 0.06 : 0.12))
+                        .help(emptyHelpText)
+                        .onHover { hovering in
+                            onHover(hovering ? emptyHelpText : nil)
+                        }
                 } else {
                     ForEach(Array(segments.enumerated()), id: \.element.category) { index, segment in
                         let text = helpText(for: segment)
@@ -156,8 +156,8 @@ private struct SplitActivityBar: View {
     }
 
     private var emptyHelpText: String {
-    day.isNoData
-      ? "No daily summary for this day." : "No activity mix available for this summary yet."
+        day.isNoData
+            ? "No daily summary for this day." : "No activity mix available for this summary yet."
     }
 
     private func helpText(for segment: ActivityProportion) -> String {
@@ -218,13 +218,15 @@ enum ActivityPalette {
 
     static func ordered(for days: [DaySummaryViewModel]) -> [(category: String, color: Color)] {
         let assigned = assign(for: days)
-        let totals = days
+        let totals =
+            days
             .flatMap(\.typeProportions)
             .filter { $0.proportion > 0 }
             .reduce(into: [String: Int]()) { totals, proportion in
                 totals[proportion.category, default: 0] += proportion.seconds
             }
-        return totals
+        return
+            totals
             .sorted { left, right in
                 left.value == right.value ? left.key < right.key : left.value > right.value
             }
@@ -319,9 +321,9 @@ struct HistoryDayRowView: View {
         guard !day.isNoData else { return "No data" }
         var parts = ["Active \(day.activeTime)"]
         if let focusScore = day.focusScore { parts.append("Focus \(focusScore)") }
-    if let fragmentationScore = day.fragmentationScore {
-      parts.append("Fragmentation \(fragmentationScore)")
-    }
+        if let fragmentationScore = day.fragmentationScore {
+            parts.append("Fragmentation \(fragmentationScore)")
+        }
         return parts.joined(separator: ", ")
     }
 
@@ -346,7 +348,7 @@ struct HistoryDayRowView: View {
 struct HistorySkeletonView: View {
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(0 ..< 7, id: \.self) { _ in
+            ForEach(0..<7, id: \.self) { _ in
                 HStack(spacing: 0) {
                     Text("Mon 9")
                         .font(VelvtType.caption(11.5))
@@ -374,55 +376,55 @@ struct HistorySkeletonView: View {
 // MARK: - Preview
 
 #if DEBUG
-@MainActor
-struct HistoryListView_Previews: PreviewProvider {
-    static var previews: some View {
-        Group {
-            HistoryListView(viewModel: populatedViewModel)
-                .previewDisplayName("Populated")
-            HistoryListView(viewModel: HistoryViewModel())
-                .previewDisplayName("Skeleton")
-        }
-        .background(VelvtSurface.ground)
-        .preferredColorScheme(.dark)
-    }
-
-    static var populatedViewModel: HistoryViewModel {
-        let vm = HistoryViewModel()
-        vm.update(from: HistoryPayload(days: 7, summaries: previewSummaries))
-        return vm
-    }
-
-    static let previewSummaries: [DailySummary] = {
-      let dates = [
-        "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12",
-        "2026-06-13", "2026-06-14", "2026-06-15",
-      ]
-        return dates.enumerated().map { i, date in
-            if i % 3 == 0 {
-          return DailySummary(
-            date: date, status: .noData, eventCount: 0,
-                                    focusScore: nil, fragmentationScore: nil,
-                                    confidenceLevel: .low, activeSeconds: 0)
+    @MainActor
+    struct HistoryListView_Previews: PreviewProvider {
+        static var previews: some View {
+            Group {
+                HistoryListView(viewModel: populatedViewModel)
+                    .previewDisplayName("Populated")
+                HistoryListView(viewModel: HistoryViewModel())
+                    .previewDisplayName("Skeleton")
             }
-        return DailySummary(
-          date: date, status: .ready, eventCount: 40 + i * 8,
-                                focusScore: 55.0 + Double(i * 5),
-                                fragmentationScore: 30.0 - Double(i * 3),
-                                confidenceLevel: .medium,
-                                activeSeconds: 3600 + i * 900,
-                                baselineStatus: i > 4 ? "mature" : "early_stage",
-                                baselineComparison: BaselineComparison(
-                                    status: i > 4 ? "compared" : "early_stage",
-                                    fragmentationDelta: i > 4 ? -4.5 : nil,
-                                    focusDelta: i > 4 ? 3.2 : nil
-                                ),
-                                typeProportions: [
-                                    ActivityProportion(category: "document", seconds: 1600 + i * 120, proportion: 0.48),
-                                    ActivityProportion(category: "messaging", seconds: 900, proportion: 0.27),
-                                    ActivityProportion(category: "browser", seconds: 820, proportion: 0.25),
-                                ])
+            .background(VelvtSurface.ground)
+            .preferredColorScheme(.dark)
         }
-    }()
-}
+
+        static var populatedViewModel: HistoryViewModel {
+            let vm = HistoryViewModel()
+            vm.update(from: HistoryPayload(days: 7, summaries: previewSummaries))
+            return vm
+        }
+
+        static let previewSummaries: [DailySummary] = {
+            let dates = [
+                "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12",
+                "2026-06-13", "2026-06-14", "2026-06-15",
+            ]
+            return dates.enumerated().map { i, date in
+                if i % 3 == 0 {
+                    return DailySummary(
+                        date: date, status: .noData, eventCount: 0,
+                        focusScore: nil, fragmentationScore: nil,
+                        confidenceLevel: .low, activeSeconds: 0)
+                }
+                return DailySummary(
+                    date: date, status: .ready, eventCount: 40 + i * 8,
+                    focusScore: 55.0 + Double(i * 5),
+                    fragmentationScore: 30.0 - Double(i * 3),
+                    confidenceLevel: .medium,
+                    activeSeconds: 3600 + i * 900,
+                    baselineStatus: i > 4 ? "mature" : "early_stage",
+                    baselineComparison: BaselineComparison(
+                        status: i > 4 ? "compared" : "early_stage",
+                        fragmentationDelta: i > 4 ? -4.5 : nil,
+                        focusDelta: i > 4 ? 3.2 : nil
+                    ),
+                    typeProportions: [
+                        ActivityProportion(category: "document", seconds: 1600 + i * 120, proportion: 0.48),
+                        ActivityProportion(category: "messaging", seconds: 900, proportion: 0.27),
+                        ActivityProportion(category: "browser", seconds: 820, proportion: 0.25),
+                    ])
+            }
+        }()
+    }
 #endif

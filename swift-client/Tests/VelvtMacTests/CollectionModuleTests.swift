@@ -1,6 +1,7 @@
 import Combine
 import Darwin
 import XCTest
+
 @testable import VelvtMac
 
 final class CollectionModuleTests: XCTestCase {
@@ -85,7 +86,7 @@ final class CollectionModuleTests: XCTestCase {
         let dates = DateQueue([
             Date(timeIntervalSince1970: 10),
             Date(timeIntervalSince1970: 20),
-            Date(timeIntervalSince1970: 30)
+            Date(timeIntervalSince1970: 30),
         ])
         let agent = makeAgent(
             sink: sink,
@@ -148,7 +149,7 @@ final class CollectionModuleTests: XCTestCase {
             Date(timeIntervalSince1970: 10),
             Date(timeIntervalSince1970: 25),
             Date(timeIntervalSince1970: 30),
-            Date(timeIntervalSince1970: 40)
+            Date(timeIntervalSince1970: 40),
         ])
         let agent = makeAgent(
             sink: sink,
@@ -188,7 +189,7 @@ final class CollectionModuleTests: XCTestCase {
             Date(timeIntervalSince1970: 1),
             Date(timeIntervalSince1970: 2),
             Date(timeIntervalSince1970: 3),
-            Date(timeIntervalSince1970: 4)
+            Date(timeIntervalSince1970: 4),
         ])
         let agent = makeAgent(
             sink: sink,
@@ -224,7 +225,7 @@ final class CollectionModuleTests: XCTestCase {
         let dates = DateQueue([
             Date(timeIntervalSince1970: 10),
             Date(timeIntervalSince1970: 25),
-            Date(timeIntervalSince1970: 30)
+            Date(timeIntervalSince1970: 30),
         ])
         let agent = makeAgent(
             sink: sink,
@@ -276,7 +277,7 @@ final class CollectionModuleTests: XCTestCase {
             "com.operasoftware.Opera",
             "com.operasoftware.OperaGX",
             "com.vivaldi.Vivaldi",
-            "com.kagi.kagimacOS"
+            "com.kagi.kagimacOS",
         ]
 
         for bundleIdentifier in supported {
@@ -301,7 +302,7 @@ final class CollectionModuleTests: XCTestCase {
             Date(timeIntervalSince1970: 10),
             Date(timeIntervalSince1970: 20),
             Date(timeIntervalSince1970: 30),
-            Date(timeIntervalSince1970: 40)
+            Date(timeIntervalSince1970: 40),
         ])
         let agent = makeAgent(
             sink: sink,
@@ -328,7 +329,7 @@ final class CollectionModuleTests: XCTestCase {
 
         try agent.start()
         let start = ContinuousClock.now
-        for processIdentifier in 1 ... 5 {
+        for processIdentifier in 1...5 {
             workspace.activate(.init(processIdentifier: pid_t(processIdentifier), appName: "App \(processIdentifier)"))
         }
         let elapsed = ContinuousClock.now - start
@@ -348,7 +349,7 @@ final class CollectionModuleTests: XCTestCase {
         accessibility.initialTitles = [10: "Long task"]
         let dates = DateQueue([
             Date(timeIntervalSince1970: 10),
-            Date(timeIntervalSince1970: 10_000)
+            Date(timeIntervalSince1970: 10_000),
         ])
         let agent = AXCollectionAgent(
             eventSink: sink,
@@ -508,7 +509,7 @@ final class CollectionModuleTests: XCTestCase {
             Date(timeIntervalSince1970: 182),
             Date(timeIntervalSince1970: 263),
             // Consumed by `deinit`'s `stop()` once the agent goes out of scope.
-            Date(timeIntervalSince1970: 1_598)
+            Date(timeIntervalSince1970: 1_598),
         ])
         let agent = makeAgent(
             sink: sink,
@@ -545,7 +546,7 @@ final class CollectionModuleTests: XCTestCase {
             Date(timeIntervalSince1970: 263),
             Date(timeIntervalSince1970: 1_598),
             // Consumed by `deinit`'s `stop()` once the agent goes out of scope.
-            Date(timeIntervalSince1970: 1_700)
+            Date(timeIntervalSince1970: 1_700),
         ])
         let agent = makeAgent(
             sink: sink,
@@ -590,7 +591,7 @@ final class CollectionModuleTests: XCTestCase {
                     windowTitle: "code",
                     occurredAt: Date(timeIntervalSince1970: 1_495),
                     durationSeconds: 103
-                )
+                ),
             ]
         )
 
@@ -612,7 +613,7 @@ final class CollectionModuleTests: XCTestCase {
         let dates = DateQueue([
             Date(timeIntervalSince1970: 0),
             // Consumed by `deinit`'s `stop()` once the agent goes out of scope.
-            Date(timeIntervalSince1970: 900)
+            Date(timeIntervalSince1970: 900),
         ])
         let agent = makeAgent(
             sink: sink,
@@ -644,7 +645,7 @@ final class CollectionModuleTests: XCTestCase {
         accessibility.initialTitles = [10: "code"]
         let dates = DateQueue([
             Date(timeIntervalSince1970: 0),
-            Date(timeIntervalSince1970: 100)
+            Date(timeIntervalSince1970: 100),
         ])
         let agent = makeAgent(
             sink: sink,
@@ -673,7 +674,7 @@ final class CollectionModuleTests: XCTestCase {
             Date(timeIntervalSince1970: 0),
             Date(timeIntervalSince1970: 700),
             // Consumed by `deinit`'s `stop()` once the agent goes out of scope.
-            Date(timeIntervalSince1970: 800)
+            Date(timeIntervalSince1970: 800),
         ])
         let agent = makeAgent(
             sink: sink,

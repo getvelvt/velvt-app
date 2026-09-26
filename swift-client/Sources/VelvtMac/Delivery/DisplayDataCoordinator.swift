@@ -364,9 +364,12 @@ final class MenuBarDataLoader {
     private var requestInFlight = false
     private var canRequest = false
 
-    init(ipcClient: any IPCClientProtocol, currentLocalInsightDate: @escaping () -> String = {
-        MenuBarDataLoader.currentUTCDateString()
-    }, retryDelayNanoseconds: UInt64 = 2_000_000_000) {
+    init(
+        ipcClient: any IPCClientProtocol,
+        currentLocalInsightDate: @escaping () -> String = {
+            MenuBarDataLoader.currentUTCDateString()
+        }, retryDelayNanoseconds: UInt64 = 2_000_000_000
+    ) {
         self.ipcClient = ipcClient
         self.currentLocalInsightDate = currentLocalInsightDate
         self.retryDelayNanoseconds = retryDelayNanoseconds

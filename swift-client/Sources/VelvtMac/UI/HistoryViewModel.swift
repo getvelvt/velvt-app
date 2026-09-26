@@ -6,16 +6,16 @@ import Foundation
 ///
 /// Numeric fields are `nil` for `no_data` days; views must render "—" for nil.
 public struct DaySummaryViewModel: Identifiable, Equatable {
-    public let id: String              // YYYY-MM-DD — stable across renders
-    public let date: String            // "Mon 9"
-    public let statusLabel: String     // "ready" | "no data"
-    public let activeTime: String      // "3h 12m" | "45m" | "—"
+    public let id: String  // YYYY-MM-DD — stable across renders
+    public let date: String  // "Mon 9"
+    public let statusLabel: String  // "ready" | "no data"
+    public let activeTime: String  // "3h 12m" | "45m" | "—"
     public let focusedTime: String
     public let activeSeconds: Int
     public let focusedSeconds: Int
     public let meaningfulSwitchCount: Int
     public let longestUninterrupted: String
-    public let focusScore: Int?        // nil when isNoData
+    public let focusScore: Int?  // nil when isNoData
     public let fragmentationScore: Int?
     public let eventCount: Int
     public let confidenceLabel: String
@@ -34,18 +34,20 @@ public struct DaySummaryViewModel: Identifiable, Equatable {
         activeSeconds = isNoData ? 0 : summary.activeSeconds
         focusedSeconds = isNoData ? 0 : summary.focusedSeconds
         meaningfulSwitchCount = isNoData ? 0 : summary.meaningfulSwitchCount
-        longestUninterrupted = isNoData
+        longestUninterrupted =
+            isNoData
             ? "—"
             : DaySummaryViewModel.formatActiveTime(summary.longestUninterruptedSeconds)
         focusScore = isNoData ? nil : summary.focusScore.map { Int($0.rounded()) }
         fragmentationScore = isNoData ? nil : summary.fragmentationScore.map { Int($0.rounded()) }
         eventCount = summary.eventCount
-        confidenceLabel = switch summary.confidenceLevel {
-        case .high: "high"
-        case .medium: "medium"
-        case .low: "early"
-        case .none: "none"
-        }
+        confidenceLabel =
+            switch summary.confidenceLevel {
+            case .high: "high"
+            case .medium: "medium"
+            case .low: "early"
+            case .none: "none"
+            }
         baselineStatus = summary.baselineStatus
         baselineComparison = summary.baselineComparison
         typeProportions = summary.typeProportions
@@ -171,7 +173,7 @@ public final class HistoryViewModel: ObservableObject {
         guard let earliestDate = formatter.date(from: earliest.id) else { return existing }
         let missing = target - existing.count
         // (1...missing).reversed() → offsets [missing, ..., 1] → chronological ascending order.
-        let stubs: [DaySummaryViewModel] = (1 ... missing).reversed().compactMap { offset in
+        let stubs: [DaySummaryViewModel] = (1...missing).reversed().compactMap { offset in
             guard let date = Calendar.current.date(byAdding: .day, value: -offset, to: earliestDate)
             else { return nil }
             let stub = DailySummary(
@@ -229,7 +231,8 @@ public struct ProgressiveInsight: Equatable, Sendable {
         let recentWindow = Array(days.suffix(7))
         let recent = recentWindow.filter { !$0.isNoData }
         guard !recent.isEmpty else { return nil }
-        let prior = days.count >= 14
+        let prior =
+            days.count >= 14
             ? Array(days.suffix(14).prefix(7).filter { !$0.isNoData })
             : []
 
@@ -311,7 +314,8 @@ public struct ProgressiveInsight: Equatable, Sendable {
                 "\(Int((focusShare * 100).rounded()))% of \(day.activeTime) observed active time was in focus-oriented work."
             comparison =
                 "\(day.meaningfulSwitchCount) meaningful switches were observed; no complete weekly comparison is available yet."
-            suggestedAction = day.meaningfulSwitchCount > 4
+            suggestedAction =
+                day.meaningfulSwitchCount > 4
                 ? "Protect one 20-minute lane and see whether switching settles."
                 : "Repeat one steady block from today while the context is still fresh."
         }
@@ -348,10 +352,12 @@ public struct ProgressiveInsight: Equatable, Sendable {
             let range = ((shares.max() ?? 0) - (shares.min() ?? 0)) * 100
             observation =
                 "Focus-oriented work represented \(Int((averageShare * 100).rounded()))% of observed active time across \(days.count) days."
-            comparison = shares.count > 1
+            comparison =
+                shares.count > 1
                 ? "Available days varied by \(Int(range.rounded())) focus-share points; this is a partial-window comparison, not week over week."
                 : "Only one active day is available inside this partial window."
-            suggestedAction = range >= 15
+            suggestedAction =
+                range >= 15
                 ? "Repeat one condition from the steadier day during your next 20-minute block."
                 : "Protect one 20-minute lane and keep building comparable days."
         }

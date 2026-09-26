@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import VelvtMac
 
 final class ConfigModuleTests: XCTestCase {
@@ -82,7 +83,7 @@ final class ConfigModuleTests: XCTestCase {
 
     func testBundleConfigLoaderInvalidAPNSEnvThrows() {
         var dict = validDictionary()
-        dict["VelvtAPNSEnv"] = "staging"   // unrecognised value
+        dict["VelvtAPNSEnv"] = "staging"  // unrecognised value
         XCTAssertThrowsError(try BundleConfigLoader(infoDictionary: dict).load()) { error in
             XCTAssertEqual(error as? ConfigError, .invalidValue(name: "VelvtAPNSEnv"))
         }
@@ -127,41 +128,41 @@ final class ConfigModuleTests: XCTestCase {
 
     // MARK: - EnvironmentConfigLoader (debug builds only)
 
-#if DEBUG
-    func testEnvironmentConfigLoaderHappyPath() throws {
-        let env: [String: String] = [
-            "VELVT_SOCKET_PATH": "~/.velvt/test.sock",
-            "VELVT_PROTOCOL_VERSION": "19",
-            "VELVT_CLIENT_VERSION": "0.1.0",
-        ]
-        let config = try EnvironmentConfigLoader(environment: env).load()
-        XCTAssertEqual(config.socketPath, "~/.velvt/test.sock")
-        XCTAssertEqual(config.protocolVersion, 19)
-        XCTAssertEqual(config.clientVersion, "0.1.0")
-        XCTAssertEqual(config.apnsEnvironment, .development)
-    }
-
-    func testEnvironmentConfigLoaderMissingSocketPath() {
-        let env: [String: String] = [
-            "VELVT_PROTOCOL_VERSION": "19",
-            "VELVT_CLIENT_VERSION": "0.1.0",
-        ]
-        XCTAssertThrowsError(try EnvironmentConfigLoader(environment: env).load()) { error in
-            XCTAssertEqual(error as? ConfigError, .missingValue(name: "VELVT_SOCKET_PATH"))
+    #if DEBUG
+        func testEnvironmentConfigLoaderHappyPath() throws {
+            let env: [String: String] = [
+                "VELVT_SOCKET_PATH": "~/.velvt/test.sock",
+                "VELVT_PROTOCOL_VERSION": "19",
+                "VELVT_CLIENT_VERSION": "0.1.0",
+            ]
+            let config = try EnvironmentConfigLoader(environment: env).load()
+            XCTAssertEqual(config.socketPath, "~/.velvt/test.sock")
+            XCTAssertEqual(config.protocolVersion, 19)
+            XCTAssertEqual(config.clientVersion, "0.1.0")
+            XCTAssertEqual(config.apnsEnvironment, .development)
         }
-    }
 
-    func testEnvironmentConfigLoaderInvalidProtocolVersion() {
-        let env: [String: String] = [
-            "VELVT_SOCKET_PATH": "/tmp/sock",
-            "VELVT_PROTOCOL_VERSION": "abc",
-            "VELVT_CLIENT_VERSION": "0.1.0",
-        ]
-        XCTAssertThrowsError(try EnvironmentConfigLoader(environment: env).load()) { error in
-            XCTAssertEqual(error as? ConfigError, .invalidValue(name: "VELVT_PROTOCOL_VERSION"))
+        func testEnvironmentConfigLoaderMissingSocketPath() {
+            let env: [String: String] = [
+                "VELVT_PROTOCOL_VERSION": "19",
+                "VELVT_CLIENT_VERSION": "0.1.0",
+            ]
+            XCTAssertThrowsError(try EnvironmentConfigLoader(environment: env).load()) { error in
+                XCTAssertEqual(error as? ConfigError, .missingValue(name: "VELVT_SOCKET_PATH"))
+            }
         }
-    }
-#endif
+
+        func testEnvironmentConfigLoaderInvalidProtocolVersion() {
+            let env: [String: String] = [
+                "VELVT_SOCKET_PATH": "/tmp/sock",
+                "VELVT_PROTOCOL_VERSION": "abc",
+                "VELVT_CLIENT_VERSION": "0.1.0",
+            ]
+            XCTAssertThrowsError(try EnvironmentConfigLoader(environment: env).load()) { error in
+                XCTAssertEqual(error as? ConfigError, .invalidValue(name: "VELVT_PROTOCOL_VERSION"))
+            }
+        }
+    #endif
 
     // MARK: - Helpers
 
@@ -185,7 +186,8 @@ final class ConfigModuleTests: XCTestCase {
 
     private func runDistributionPreflight(url: String) throws -> Int32 {
         let process = Process()
-        process.executableURL = repositoryRoot
+        process.executableURL =
+            repositoryRoot
             .appendingPathComponent("scripts/preflight_distribution.sh")
         process.arguments = [url]
         process.standardOutput = Pipe()

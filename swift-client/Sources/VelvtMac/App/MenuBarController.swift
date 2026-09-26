@@ -280,8 +280,12 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
         get { panel.contentRect(forFrameRect: panel.frame).size }
         set {
             let clamped = NSSize(
-                width: min(max(newValue.width, min(minimumContentSize.width, maximumContentSize.width)), maximumContentSize.width),
-                height: min(max(newValue.height, min(minimumContentSize.height, maximumContentSize.height)), maximumContentSize.height)
+                width: min(
+                    max(newValue.width, min(minimumContentSize.width, maximumContentSize.width)),
+                    maximumContentSize.width),
+                height: min(
+                    max(newValue.height, min(minimumContentSize.height, maximumContentSize.height)),
+                    maximumContentSize.height)
             )
             guard clamped.width > 0, clamped.height > 0 else { return }
             lastAppliedContentSize = clamped
@@ -412,7 +416,8 @@ public final class MenuBarPanelPresenter: NSObject, PopoverPresenting, NSWindowD
     /// moves the window with the item instead of stranding it.
     public func position(under positioningView: NSView) {
         let statusItemFrame = screenFrame(of: positioningView)
-        let visibleFrame = positioningView.window?.screen?.visibleFrame
+        let visibleFrame =
+            positioningView.window?.screen?.visibleFrame
             ?? NSScreen.main?.visibleFrame
         maximumContentSize = MenuBarPopoverLayout.maximumContentSize(for: visibleFrame)
         let frame = MenuBarPopoverLayout.windowFrame(
@@ -611,7 +616,8 @@ public final class MenuBarController: NSObject {
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
-        metricsStore: AppMetricsStore = AppMetricsStore(defaults: UserDefaults(suiteName: "MenuBarController.preview") ?? .standard),
+        metricsStore: AppMetricsStore = AppMetricsStore(
+            defaults: UserDefaults(suiteName: "MenuBarController.preview") ?? .standard),
         currentActivity: CurrentActivityModel = CurrentActivityModel(),
         serviceAlertModel: ServiceAlertModel? = nil,
         collectionSettings: CollectionSettingsModel = CollectionSettingsModel(),
@@ -884,7 +890,8 @@ public final class MenuBarController: NSObject {
     private static let iconConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
 
     private func updatePopoverSize(includesWalkthrough: Bool) {
-        let visibleFrame = statusItemManager.button?.window?.screen?.visibleFrame
+        let visibleFrame =
+            statusItemManager.button?.window?.screen?.visibleFrame
             ?? NSScreen.main?.visibleFrame
         popover.contentSize = MenuBarPopoverLayout.resolvedContentSize(
             stored: windowSizeStore.contentSize,

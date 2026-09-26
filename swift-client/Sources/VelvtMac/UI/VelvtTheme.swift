@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 #if canImport(CoreText)
-import CoreText
+    import CoreText
 #endif
 
 // =============================================================================
@@ -276,33 +276,34 @@ public enum VelvtFonts {
 
     private static let registrationOnce: Void = {
         #if canImport(CoreText)
-        let names = ["Manrope-Regular", "Manrope-Bold", "Manrope-ExtraBold"]
-        var registeredAny = false
-        for bundle in candidateBundles {
-            for name in names {
-                guard let url = bundle.url(forResource: name, withExtension: "ttf")
-                    ?? bundle.url(
-                        forResource: name,
-                        withExtension: "ttf",
-                        subdirectory: "Fonts"
-                    )
-                else { continue }
-                // `.process` scope keeps the faces out of the user's font book;
-                // a coaching app has no business installing fonts system-wide.
-                if CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) {
-                    registeredAny = true
+            let names = ["Manrope-Regular", "Manrope-Bold", "Manrope-ExtraBold"]
+            var registeredAny = false
+            for bundle in candidateBundles {
+                for name in names {
+                    guard
+                        let url = bundle.url(forResource: name, withExtension: "ttf")
+                            ?? bundle.url(
+                                forResource: name,
+                                withExtension: "ttf",
+                                subdirectory: "Fonts"
+                            )
+                    else { continue }
+                    // `.process` scope keeps the faces out of the user's font book;
+                    // a coaching app has no business installing fonts system-wide.
+                    if CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) {
+                        registeredAny = true
+                    }
                 }
+                if registeredAny { break }
             }
-            if registeredAny { break }
-        }
-        VelvtFonts.isRegistered = registeredAny
+            VelvtFonts.isRegistered = registeredAny
         #endif
     }()
 
     private static var candidateBundles: [Bundle] {
         var bundles: [Bundle] = []
         #if SWIFT_PACKAGE
-        bundles.append(Bundle.module)
+            bundles.append(Bundle.module)
         #endif
         bundles.append(Bundle.main)
         bundles.append(Bundle(for: BundleToken.self))
@@ -680,10 +681,11 @@ public enum VelvtCategoryRamp {
     /// the better contrast against it. Computed rather than tabulated so it
     /// stays correct if the ramp changes.
     public static func legibleForeground(on swatch: Color) -> Color {
-        let composited = NSColor(swatch).blended(
-            withFraction: 0,
-            of: NSColor(VelvtPalette.ink)
-        ) ?? NSColor(swatch)
+        let composited =
+            NSColor(swatch).blended(
+                withFraction: 0,
+                of: NSColor(VelvtPalette.ink)
+            ) ?? NSColor(swatch)
         guard let srgb = composited.usingColorSpace(.sRGB) else {
             return VelvtPalette.paper
         }

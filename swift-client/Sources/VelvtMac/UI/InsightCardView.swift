@@ -93,7 +93,9 @@ private struct InsightCardContentView: View {
                         Image(systemName: "info.circle")
                             .font(VelvtType.caption(10.5))
                             .foregroundStyle(VelvtInk.tertiaryOnPaper)
-                            .help("\(viewModel.evidenceSummary) Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
+                            .help(
+                                "\(viewModel.evidenceSummary) Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt)."
+                            )
                     }
                 }
 
@@ -120,7 +122,8 @@ private struct InsightCardContentView: View {
                             .help(viewModel.suggestedAction)
                         Spacer(minLength: VelvtMetrics.spaceXS)
                         if let onSuggestedAction,
-                           !viewModel.suggestedActionButtonLabel.isEmpty {
+                            !viewModel.suggestedActionButtonLabel.isEmpty
+                        {
                             Button("Plan session", action: onSuggestedAction)
                                 .buttonStyle(VelvtPrimaryButtonStyle(uppercase: true))
                         }
@@ -137,7 +140,8 @@ private struct InsightCardContentView: View {
                                 .velvtHeading(14, onPaper: true)
                                 .fixedSize(horizontal: false, vertical: true)
                             if let onSuggestedAction,
-                               !viewModel.suggestedActionButtonLabel.isEmpty {
+                                !viewModel.suggestedActionButtonLabel.isEmpty
+                            {
                                 Button(viewModel.suggestedActionButtonLabel, action: onSuggestedAction)
                                     .buttonStyle(VelvtPrimaryButtonStyle())
                                     .keyboardShortcut(.defaultAction)
@@ -150,16 +154,16 @@ private struct InsightCardContentView: View {
 
                 if !compact {
                     DisclosureGroup("Why am I seeing this?", isExpanded: $showsEvidence) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(viewModel.evidenceSummary)
-                        Text("Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(viewModel.evidenceSummary)
+                            Text("Confidence: \(viewModel.confidenceLabel). \(viewModel.generatedAt).")
+                        }
+                        .font(VelvtType.caption(11))
+                        .lineSpacing(VelvtType.bodySpacing(11))
+                        .foregroundStyle(VelvtInk.tertiaryOnPaper)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 5)
                     }
-                    .font(VelvtType.caption(11))
-                    .lineSpacing(VelvtType.bodySpacing(11))
-                    .foregroundStyle(VelvtInk.tertiaryOnPaper)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 5)
-                }
                     .font(VelvtType.body(12))
                     .foregroundStyle(VelvtInk.secondaryOnPaper)
                     .tint(VelvtInk.labelOnPaper)
@@ -221,9 +225,9 @@ struct ConfidenceDotView: View {
     // the evidence, not a score to pass or fail.
     private var dotColor: Color {
         switch label {
-        case "high":       return VelvtInk.secondaryOnPaper
-        case "moderate":   return VelvtInk.tertiaryOnPaper
-        default:           return VelvtPalette.ink.opacity(0.28) // "early data"
+        case "high": return VelvtInk.secondaryOnPaper
+        case "moderate": return VelvtInk.tertiaryOnPaper
+        default: return VelvtPalette.ink.opacity(0.28)  // "early data"
         }
     }
 }
@@ -231,30 +235,32 @@ struct ConfidenceDotView: View {
 // MARK: - Preview
 
 #if DEBUG
-@MainActor
-struct InsightCardView_Previews: PreviewProvider {
-    static var previews: some View {
-        Group {
-            InsightCardView(viewModel: populatedViewModel)
-                .previewDisplayName("Populated")
-            InsightCardView(viewModel: InsightViewModel())
-                .previewDisplayName("Skeleton")
+    @MainActor
+    struct InsightCardView_Previews: PreviewProvider {
+        static var previews: some View {
+            Group {
+                InsightCardView(viewModel: populatedViewModel)
+                    .previewDisplayName("Populated")
+                InsightCardView(viewModel: InsightViewModel())
+                    .previewDisplayName("Skeleton")
+            }
+            .padding()
+            .background(VelvtSurface.ground)
+            .preferredColorScheme(.dark)
         }
-        .padding()
-        .background(VelvtSurface.ground)
-        .preferredColorScheme(.dark)
-    }
 
-    static var populatedViewModel: InsightViewModel {
-        let vm = InsightViewModel()
-        vm.update(from: InsightPayload(
-            date: "2026-06-15",
-            text: "Your attention stayed on a single context for the longest stretch in several weeks. The late afternoon stood out.",
-            confidenceLevel: .high,
-            lowConfidence: false,
-            generatedAt: Date()
-        ))
-        return vm
+        static var populatedViewModel: InsightViewModel {
+            let vm = InsightViewModel()
+            vm.update(
+                from: InsightPayload(
+                    date: "2026-06-15",
+                    text:
+                        "Your attention stayed on a single context for the longest stretch in several weeks. The late afternoon stood out.",
+                    confidenceLevel: .high,
+                    lowConfidence: false,
+                    generatedAt: Date()
+                ))
+            return vm
+        }
     }
-}
 #endif

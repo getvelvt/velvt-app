@@ -76,8 +76,10 @@ async fn main() {
         return;
     }
 
-    let persistence = match SqlitePersistence::open(&config.database_path) {
-        Ok(persistence) => persistence,
+    let (persistence, migration_report) = match SqlitePersistence::open_with_migration_report(
+        &config.database_path,
+    ) {
+        Ok(opened) => opened,
         Err(velvt_service::persistence::PersistenceError::MigrationNameMismatch {
             version,
             recorded,
@@ -91,6 +93,19 @@ async fn main() {
                 recorded = recorded.as_str(),
                 embedded,
                 "service startup halted: this database applied a different migration under the same number"
+            );
+            return;
+        }
+        // A debug build only: release builds open the database and report the
+        // mismatch in `migration_report` (see `MigrationChecksumPolicy`).
+        Err(velvt_service::persistence::PersistenceError::MigrationChecksumMismatch(mismatch)) => {
+            tracing::error!(
+                error_code = "migration_checksum_mismatch",
+                version = mismatch.version,
+                name = mismatch.name,
+                recorded = mismatch.recorded.as_str(),
+                embedded = mismatch.embedded.as_str(),
+                "service startup halted: this database applied a different version of a migration than this build carries"
             );
             return;
         }
@@ -312,6 +327,18 @@ async fn main() {
                 .push_service_status(
                     velvt_shared_types::ServiceState::Degraded,
                     Some("tier2_classification_unavailable"),
+                )
+                .await;
+        }
+
+        // A release build opened a database whose applied migrations differ
+        // from this build's files. Collection runs; the persistence layer has
+        // logged each one, and the app is told so a tester can report it.
+        if !migration_report.checksum_mismatches.is_empty() {
+            push_adapter
+                .push_service_status(
+                    velvt_shared_types::ServiceState::Degraded,
+                    Some("migration_checksum_mismatch"),
                 )
                 .await;
         }

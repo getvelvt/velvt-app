@@ -46,8 +46,161 @@ include!(concat!(env!("OUT_DIR"), "/embedded_migrations.rs"));
 /// digest under it, because SQL cannot compute an HMAC.
 const STABLE_KEY_SALT_MIGRATION: i64 = 37;
 
+/// A migration's content checksum, as `schema_migration.checksum` (0039)
+/// records it: the SHA-256, in 64 lowercase hex digits, of the SQL with every
+/// comment removed and every run of whitespace outside a quoted token
+/// collapsed to one space.
+///
+/// Comments are outside it because correcting a migration's header is right
+/// and has been done to four applied migrations (0001 and 0011 on 2026-08-21,
+/// 0027 and 0028 on 2026-09-14), none of which changed what the migration did.
+/// Everything else is inside it: a changed statement, literal, identifier,
+/// keyword case, or a space added where there was none.
+fn migration_checksum(sql: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(normalized_sql(sql)))
+}
+
+/// `sql` as SQLite's tokenizer sees it, less comments: a `--` comment runs to
+/// the end of its line and a `/* */` comment to its close (or the end of the
+/// input), and each is whitespace. `'...'`, `"..."`, `` `...` `` and `[...]`
+/// are copied byte for byte, so a `--` inside a literal is not a comment and
+/// whitespace inside one is significant. Every delimiter is ASCII, and no
+/// multi-byte UTF-8 sequence contains an ASCII byte, so working on bytes
+/// copies any other text unchanged.
+fn normalized_sql(sql: &str) -> Vec<u8> {
+    let bytes = sql.as_bytes();
+    let mut normalized = Vec::with_capacity(bytes.len());
+    let mut separated = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let next = bytes.get(index + 1).copied();
+        if byte == b'-' && next == Some(b'-') {
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            separated = true;
+            continue;
+        }
+        if byte == b'/' && next == Some(b'*') {
+            index += 2;
+            while index < bytes.len() && !bytes[index..].starts_with(b"*/") {
+                index += 1;
+            }
+            index = (index + 2).min(bytes.len());
+            separated = true;
+            continue;
+        }
+        if matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0c) {
+            index += 1;
+            separated = true;
+            continue;
+        }
+        if separated && !normalized.is_empty() {
+            normalized.push(b' ');
+        }
+        separated = false;
+        let close = match byte {
+            b'\'' | b'"' | b'`' => byte,
+            b'[' => b']',
+            _ => {
+                normalized.push(byte);
+                index += 1;
+                continue;
+            }
+        };
+        let start = index;
+        index += 1;
+        while index < bytes.len() {
+            index += 1;
+            if bytes[index - 1] == close {
+                // A doubled quote is one escaped quote; `]` has no escape.
+                if close != b']' && bytes.get(index) == Some(&close) {
+                    index += 1;
+                    continue;
+                }
+                break;
+            }
+        }
+        normalized.extend_from_slice(&bytes[start..index]);
+    }
+    normalized
+}
+
+/// What the runner does when an applied migration's recorded checksum is not
+/// the checksum of the file this build embeds for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MigrationChecksumPolicy {
+    /// Refuse the database: roll the whole run back and return
+    /// [`PersistenceError::MigrationChecksumMismatch`].
+    Refuse,
+    /// Open it: apply what is pending, commit, log each mismatch at error
+    /// level, and return them in the [`MigrationReport`].
+    Report,
+}
+
+impl MigrationChecksumPolicy {
+    /// `Refuse` in debug builds, which is every `cargo test` and so every CI
+    /// run, and every developer's local helper. `Report` in release builds,
+    /// which is what testers run. A migration that changed after a tester's
+    /// database applied it is a defect in the build, not in the database, and
+    /// the tester can do nothing about it; a helper that refused to start would
+    /// stop local collection over it. The recorded schema is the one on disk
+    /// whether or not the helper starts, so starting loses nothing, and the
+    /// report repeats on every start until the difference is resolved.
+    const fn for_this_build() -> Self {
+        if cfg!(debug_assertions) {
+            Self::Refuse
+        } else {
+            Self::Report
+        }
+    }
+}
+
+/// An applied migration whose recorded checksum differs from this build's.
+/// Every field is a file name or a checksum of a file from this repository,
+/// never user data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationChecksumMismatch {
+    pub version: i64,
+    pub name: &'static str,
+    /// What the database recorded when it applied (or first checksummed) it.
+    pub recorded: String,
+    /// The checksum of the file this build embeds for that version.
+    pub embedded: String,
+}
+
+/// What a migration run found besides the migrations it applied.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MigrationReport {
+    /// Applied migrations whose recorded checksum differs from this build's.
+    /// Empty in a debug build, which refuses the database instead.
+    pub checksum_mismatches: Vec<MigrationChecksumMismatch>,
+    /// Rows given a checksum in this run: every row on the run that applies
+    /// 0039, and after that none, unless something recorded a row without one.
+    pub checksums_recorded: usize,
+}
+
+/// Whether 0039 has added `schema_migration.checksum` to this database.
+fn schema_migration_has_checksum(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<bool, PersistenceError> {
+    Ok(transaction
+        .query_row(
+            "SELECT 1 FROM pragma_table_info('schema_migration') WHERE name = 'checksum'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 /// Every pending migration, in one transaction, in version order.
-fn apply_embedded_migrations(connection: &mut Connection) -> Result<(), PersistenceError> {
+fn apply_embedded_migrations(
+    connection: &mut Connection,
+    policy: MigrationChecksumPolicy,
+) -> Result<MigrationReport, PersistenceError> {
     let transaction = connection.transaction()?;
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migration (
@@ -63,45 +216,100 @@ fn apply_embedded_migrations(connection: &mut Connection) -> Result<(), Persiste
     // allocated twice before build.rs refused duplicates) would otherwise be
     // skipped silently and leave this database on a schema no other install
     // has. Refusing to open is the loud outcome: the whole transaction rolls
-    // back, nothing is applied, and startup halts naming both files.
+    // back, nothing is applied, and startup halts naming both files. That
+    // holds in every build: a different file under the same number is a
+    // different schema for certain.
     //
-    // This compares names only. An edited migration keeps its name and passes;
-    // detecting that needs a content checksum recorded per applied migration,
-    // which needs a new column and so a numbered migration of its own.
+    // The recorded checksum (0039) is the evidence that the file under that
+    // name is the content this build carries. Before 0039 there is no column
+    // and nothing to compare; a row with no checksum is given one below.
+    let checksummed = schema_migration_has_checksum(&transaction)?;
+    let recorded_query = if checksummed {
+        "SELECT name, checksum FROM schema_migration WHERE version = ?1"
+    } else {
+        "SELECT name, NULL FROM schema_migration WHERE version = ?1"
+    };
+    let mut pending = Vec::new();
+    let mut checksum_mismatches = Vec::new();
     for migration in EMBEDDED_MIGRATIONS {
         let recorded = transaction
-            .query_row(
-                "SELECT name FROM schema_migration WHERE version = ?1",
-                [migration.version],
-                |row| row.get::<_, String>(0),
-            )
+            .query_row(recorded_query, [migration.version], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
             .optional()?;
         match recorded {
-            None => {
-                transaction.execute_batch(migration.sql)?;
-                // Only while 0037 itself is being applied, in its transaction,
-                // and therefore exactly once per database: a second pass would
-                // HMAC keys that are already keyed and orphan every one of them.
-                if migration.version == STABLE_KEY_SALT_MIGRATION {
-                    rekey_stored_digests(&transaction)?;
-                }
-                transaction.execute(
-                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
-                    params![migration.version, migration.name],
-                )?;
-            }
-            Some(recorded) if recorded == migration.name => {}
-            Some(recorded) => {
+            None => pending.push(migration),
+            Some((name, _)) if name != migration.name => {
                 return Err(PersistenceError::MigrationNameMismatch {
                     version: migration.version,
-                    recorded,
+                    recorded: name,
                     embedded: migration.name,
                 });
             }
+            Some((_, Some(recorded))) => {
+                let embedded = migration_checksum(migration.sql);
+                if recorded != embedded {
+                    checksum_mismatches.push(MigrationChecksumMismatch {
+                        version: migration.version,
+                        name: migration.name,
+                        recorded,
+                        embedded,
+                    });
+                }
+            }
+            Some((_, None)) => {}
+        }
+    }
+    if policy == MigrationChecksumPolicy::Refuse && !checksum_mismatches.is_empty() {
+        return Err(PersistenceError::MigrationChecksumMismatch(
+            checksum_mismatches.remove(0),
+        ));
+    }
+    for migration in pending {
+        transaction.execute_batch(migration.sql)?;
+        // Only while 0037 itself is being applied, in its transaction,
+        // and therefore exactly once per database: a second pass would
+        // HMAC keys that are already keyed and orphan every one of them.
+        if migration.version == STABLE_KEY_SALT_MIGRATION {
+            rekey_stored_digests(&transaction)?;
+        }
+        transaction.execute(
+            "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+            params![migration.version, migration.name],
+        )?;
+    }
+    // Every row without a checksum gets the embedded file's: the rows recorded
+    // before 0039 existed, and the rows this run just inserted. The name check
+    // above has already matched each of them to its file. A recorded checksum
+    // is never overwritten, so a mismatch is reported again on every start.
+    let mut checksums_recorded = 0;
+    if schema_migration_has_checksum(&transaction)? {
+        let mut record = transaction.prepare(
+            "UPDATE schema_migration SET checksum = ?2 WHERE version = ?1 AND checksum IS NULL",
+        )?;
+        for migration in EMBEDDED_MIGRATIONS {
+            checksums_recorded += record.execute(params![
+                migration.version,
+                migration_checksum(migration.sql)
+            ])?;
         }
     }
     transaction.commit()?;
-    Ok(())
+    for mismatch in &checksum_mismatches {
+        tracing::error!(
+            error_code = "migration_checksum_mismatch",
+            version = mismatch.version,
+            name = mismatch.name,
+            recorded = mismatch.recorded.as_str(),
+            embedded = mismatch.embedded.as_str(),
+            "this database applied a different version of a migration than this build carries; \
+             opening it anyway"
+        );
+    }
+    Ok(MigrationReport {
+        checksum_mismatches,
+        checksums_recorded,
+    })
 }
 
 /// Every column that holds a digest `abstraction/key.rs` computed, as
@@ -216,6 +424,15 @@ pub enum PersistenceError {
         recorded: String,
         embedded: &'static str,
     },
+    /// The database applied migration `version` under this build's file name
+    /// but with different content: its recorded checksum is not this build's.
+    /// Returned only by a debug build; a release build opens the database and
+    /// reports the mismatch in its [`MigrationReport`] instead.
+    #[error(
+        "SQLite migration {} ({:?}) was applied with checksum {}, but this build embeds checksum {} for it",
+        .0.version, .0.name, .0.recorded, .0.embedded
+    )]
+    MigrationChecksumMismatch(MigrationChecksumMismatch),
 }
 
 #[derive(Clone)]
@@ -225,6 +442,15 @@ pub struct SqlitePersistence {
 
 impl SqlitePersistence {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, PersistenceError> {
+        Self::open_with_migration_report(path).map(|(persistence, _)| persistence)
+    }
+
+    /// [`Self::open`], and what the migration run found. A release build opens
+    /// a database whose applied migrations do not match this build's files and
+    /// says so here; the service reports itself degraded when it is not empty.
+    pub fn open_with_migration_report(
+        path: impl AsRef<Path>,
+    ) -> Result<(Self, MigrationReport), PersistenceError> {
         let path = path.as_ref();
         if path != Path::new(":memory:") {
             let parent = path.parent().ok_or(PersistenceError::PathUnavailable)?;
@@ -254,8 +480,8 @@ impl SqlitePersistence {
         let persistence = Self {
             connection: Arc::new(Mutex::new(connection)),
         };
-        persistence.run_migrations()?;
-        Ok(persistence)
+        let report = persistence.run_migrations_reporting()?;
+        Ok((persistence, report))
     }
 
     pub fn open_in_memory() -> Result<Self, PersistenceError> {
@@ -277,8 +503,12 @@ impl SqlitePersistence {
     }
 
     pub fn run_migrations(&self) -> Result<(), PersistenceError> {
+        self.run_migrations_reporting().map(|_| ())
+    }
+
+    fn run_migrations_reporting(&self) -> Result<MigrationReport, PersistenceError> {
         let mut connection = self.connection()?;
-        apply_embedded_migrations(&mut connection)
+        apply_embedded_migrations(&mut connection, MigrationChecksumPolicy::for_this_build())
     }
 
     pub fn abstraction_map_repo(&self) -> Arc<dyn AbstractionMapRepo> {
@@ -7129,7 +7359,7 @@ mod salted_key_tests {
 
     /// A database exactly as far as 1.0.11 took it: every migration before
     /// 0037, recorded as applied, and nothing after.
-    fn database_at_1_0_11() -> Connection {
+    pub(super) fn database_at_1_0_11() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection
             .pragma_update(None, "foreign_keys", true)
@@ -7162,7 +7392,7 @@ mod salted_key_tests {
     /// What a 1.0.11 user who had corrected one window of their editor, taught
     /// one application from triage, and once opened a window long ago would
     /// have on disk -- every key in its unsalted form.
-    fn seed_1_0_11_rows(connection: &Connection) {
+    pub(super) fn seed_1_0_11_rows(connection: &Connection) {
         let window = unsalted_window(EDITOR, EDITOR_TITLE);
         let editor = unsalted_app(EDITOR);
         let bundle = unsalted_bundle(EDITOR_BUNDLE);
@@ -7715,5 +7945,448 @@ mod salted_key_tests {
                 .any(|step| step.contains("idx_raw_event_buffer_stable_id")),
             "{plan:?}"
         );
+    }
+}
+
+/// Migration 0039: the content checksum `schema_migration` records for every
+/// applied migration, the backfill onto rows recorded before it, and what a
+/// debug and a release build each do when a recorded checksum is not theirs.
+#[cfg(test)]
+mod migration_checksum_tests {
+    use super::salted_key_tests::{database_at_1_0_11, seed_1_0_11_rows};
+    use super::{
+        apply_embedded_migrations, migration_checksum, normalized_sql, MigrationChecksumMismatch,
+        MigrationChecksumPolicy, MigrationReport, PersistenceError, SqlitePersistence,
+        EMBEDDED_MIGRATIONS,
+    };
+    use rusqlite::{params, Connection};
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    /// 0011 exactly as v1.0.1 shipped it. Its header was rewritten on
+    /// 2026-08-21 (commit 1d51b66) to name the raw application name it stores;
+    /// the statement did not change, and every 1.0.1 database applied it.
+    const MIGRATION_0011_AS_V1_0_1_SHIPPED: &str = "\
+-- A short-lived, device-local naming hint derived from the raw application
+-- metadata already processed at ingestion. It is never copied to upload tables.
+ALTER TABLE raw_event_buffer ADD COLUMN local_name_suggestion TEXT
+    CHECK(local_name_suggestion IS NULL OR (
+        length(trim(local_name_suggestion)) BETWEEN 1 AND 48
+        AND instr(local_name_suggestion, char(10)) = 0
+        AND instr(local_name_suggestion, char(13)) = 0
+    ));
+";
+
+    fn embedded(version: i64) -> &'static super::Migration {
+        EMBEDDED_MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == version)
+            .expect("an embedded migration")
+    }
+
+    fn database(connection: Connection) -> SqlitePersistence {
+        SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        }
+    }
+
+    fn run(
+        database: &SqlitePersistence,
+        policy: MigrationChecksumPolicy,
+    ) -> Result<MigrationReport, PersistenceError> {
+        let mut connection = database.connection().unwrap();
+        apply_embedded_migrations(&mut connection, policy)
+    }
+
+    fn recorded(database: &SqlitePersistence) -> Vec<(i64, String, Option<String>)> {
+        let connection = database.connection().unwrap();
+        let mut statement = connection
+            .prepare("SELECT version, name, checksum FROM schema_migration ORDER BY version")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
+    }
+
+    fn assert_every_row_carries_its_files_checksum(database: &SqlitePersistence) {
+        let rows = recorded(database);
+        assert_eq!(rows.len(), EMBEDDED_MIGRATIONS.len());
+        for ((version, name, checksum), migration) in rows.into_iter().zip(EMBEDDED_MIGRATIONS) {
+            assert_eq!(
+                (version, name.as_str()),
+                (migration.version, migration.name)
+            );
+            assert_eq!(
+                checksum.as_deref(),
+                Some(migration_checksum(migration.sql).as_str()),
+                "{name}"
+            );
+        }
+    }
+
+    fn count(database: &SqlitePersistence, table: &str) -> i64 {
+        database
+            .connection()
+            .unwrap()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+
+    fn set_checksum(database: &SqlitePersistence, version: i64, checksum: Option<&str>) {
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE schema_migration SET checksum = ?2 WHERE version = ?1",
+                params![version, checksum],
+            )
+            .unwrap();
+    }
+
+    /// What a database that applied a different 0012 than this build's would
+    /// have recorded: the checksum of that other content.
+    fn edited_0012_checksum() -> String {
+        migration_checksum(&format!(
+            "{}\nCREATE INDEX idx_edited ON raw_event_buffer(label);",
+            embedded(12).sql
+        ))
+    }
+
+    #[test]
+    fn a_fresh_database_records_every_migrations_checksum() {
+        let (database, report) = SqlitePersistence::open_with_migration_report(":memory:").unwrap();
+
+        assert_eq!(
+            report,
+            MigrationReport {
+                checksum_mismatches: Vec::new(),
+                checksums_recorded: EMBEDDED_MIGRATIONS.len(),
+            }
+        );
+        assert_every_row_carries_its_files_checksum(&database);
+
+        let before = recorded(&database);
+        let again = run(&database, MigrationChecksumPolicy::Refuse).unwrap();
+        assert_eq!(
+            again,
+            MigrationReport::default(),
+            "the next start checks, and records nothing"
+        );
+        assert_eq!(recorded(&database), before);
+    }
+
+    /// The upgrade a tester's Mac takes: 1.0.11 left migrations 0001 to 0036
+    /// applied and recorded without a checksum column. The first start of this
+    /// build applies 0037, 0038 and 0039 and gives every row -- the 36 it
+    /// found and the 3 it applied -- the checksum of its file; the next start
+    /// verifies all 39 and records nothing.
+    #[test]
+    fn a_1_0_11_database_upgrades_through_0039_and_is_checksummed() {
+        let connection = database_at_1_0_11();
+        seed_1_0_11_rows(&connection);
+        let database = database(connection);
+        let before_upgrade = recorded_without_checksum(&database);
+        assert_eq!(
+            before_upgrade.last().map(|(version, _)| *version),
+            Some(36),
+            "the fixture is a 1.0.11 database"
+        );
+
+        let report = run(&database, MigrationChecksumPolicy::Refuse).unwrap();
+
+        assert_eq!(
+            report,
+            MigrationReport {
+                checksum_mismatches: Vec::new(),
+                checksums_recorded: EMBEDDED_MIGRATIONS.len(),
+            }
+        );
+        assert_every_row_carries_its_files_checksum(&database);
+        // The rows 1.0.11 recorded kept their names and are still there.
+        let after: Vec<(i64, String)> = recorded(&database)
+            .into_iter()
+            .map(|(version, name, _)| (version, name))
+            .take(before_upgrade.len())
+            .collect();
+        assert_eq!(after, before_upgrade);
+        // And so is what the 1.0.11 user had on disk.
+        assert_eq!(count(&database, "raw_event_buffer"), 2);
+        assert_eq!(count(&database, "personal_app_override"), 2);
+        assert_eq!(count(&database, "stable_key_salt"), 1);
+
+        let next_start = run(&database, MigrationChecksumPolicy::Refuse).unwrap();
+        assert_eq!(next_start, MigrationReport::default());
+    }
+
+    fn recorded_without_checksum(database: &SqlitePersistence) -> Vec<(i64, String)> {
+        let connection = database.connection().unwrap();
+        let mut statement = connection
+            .prepare("SELECT version, name FROM schema_migration ORDER BY version")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
+    }
+
+    /// A debug build -- every test, every CI run -- refuses a database that
+    /// applied different content under a migration's name, names the
+    /// migration and both checksums, and leaves the database as it found it.
+    #[test]
+    fn a_debug_build_refuses_a_database_that_applied_an_edited_migration() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        set_checksum(&database, 12, Some(&edited_0012_checksum()));
+        set_checksum(&database, 3, None);
+        let before = recorded(&database);
+
+        let error = run(&database, MigrationChecksumPolicy::Refuse)
+            .expect_err("an edited migration must not pass as applied");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("0012_local_only_events.sql")
+                && message.contains(&edited_0012_checksum())
+                && message.contains(&migration_checksum(embedded(12).sql)),
+            "the refusal names the migration and both checksums: {message}"
+        );
+        match error {
+            PersistenceError::MigrationChecksumMismatch(mismatch) => assert_eq!(
+                mismatch,
+                MigrationChecksumMismatch {
+                    version: 12,
+                    name: "0012_local_only_events.sql",
+                    recorded: edited_0012_checksum(),
+                    embedded: migration_checksum(embedded(12).sql),
+                }
+            ),
+            other => panic!("expected a migration checksum mismatch, got {other:?}"),
+        }
+        // Rolled back whole: not even the missing checksum on 0003 was filled.
+        assert_eq!(recorded(&database), before);
+    }
+
+    /// A release build opens the same database: it records what is missing,
+    /// reports the mismatch, and keeps the recorded checksum, so the report
+    /// repeats on every start rather than being overwritten into silence.
+    #[test]
+    fn a_release_build_opens_a_database_that_applied_an_edited_migration_and_reports_it() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        set_checksum(&database, 12, Some(&edited_0012_checksum()));
+        set_checksum(&database, 3, None);
+        let mismatch = MigrationChecksumMismatch {
+            version: 12,
+            name: "0012_local_only_events.sql",
+            recorded: edited_0012_checksum(),
+            embedded: migration_checksum(embedded(12).sql),
+        };
+
+        let report = run(&database, MigrationChecksumPolicy::Report).unwrap();
+
+        assert_eq!(
+            report,
+            MigrationReport {
+                checksum_mismatches: vec![mismatch.clone()],
+                checksums_recorded: 1,
+            }
+        );
+        let rows = recorded(&database);
+        assert_eq!(
+            rows[2].2.as_deref(),
+            Some(migration_checksum(embedded(3).sql).as_str())
+        );
+        assert_eq!(rows[11].2.as_deref(), Some(edited_0012_checksum().as_str()));
+
+        let next_start = run(&database, MigrationChecksumPolicy::Report).unwrap();
+        assert_eq!(
+            next_start,
+            MigrationReport {
+                checksum_mismatches: vec![mismatch],
+                checksums_recorded: 0,
+            }
+        );
+    }
+
+    /// A different file under a migration's number is a different schema for
+    /// certain, so it is refused in every build, with or without a checksum
+    /// column -- the check PR #47 added is unchanged by 0039.
+    #[test]
+    fn a_reused_migration_number_is_refused_by_every_build_after_0039() {
+        for policy in [
+            MigrationChecksumPolicy::Refuse,
+            MigrationChecksumPolicy::Report,
+        ] {
+            let database = SqlitePersistence::open_in_memory().unwrap();
+            database
+                .connection()
+                .unwrap()
+                .execute(
+                    "UPDATE schema_migration SET name = '0010_local_only_events.sql'
+                     WHERE version = 10",
+                    [],
+                )
+                .unwrap();
+
+            let error = run(&database, policy).expect_err("a renumbered migration is refused");
+
+            match error {
+                PersistenceError::MigrationNameMismatch {
+                    version,
+                    recorded,
+                    embedded,
+                } => {
+                    assert_eq!(version, 10);
+                    assert_eq!(recorded, "0010_local_only_events.sql");
+                    assert_eq!(embedded, "0010_personal_override_activity_name.sql");
+                }
+                other => panic!("{policy:?}: expected a name mismatch, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn debug_builds_refuse_and_release_builds_report() {
+        let expected = if cfg!(debug_assertions) {
+            MigrationChecksumPolicy::Refuse
+        } else {
+            MigrationChecksumPolicy::Report
+        };
+        assert_eq!(MigrationChecksumPolicy::for_this_build(), expected);
+    }
+
+    #[test]
+    fn the_checksum_column_holds_only_a_lowercase_sha256_hex_digest() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let connection = database.connection().unwrap();
+        for invalid in ["not-a-checksum".to_owned(), "AB".repeat(32), "a".repeat(63)] {
+            assert!(
+                connection
+                    .execute(
+                        "UPDATE schema_migration SET checksum = ?1 WHERE version = 1",
+                        [&invalid],
+                    )
+                    .is_err(),
+                "{invalid:?} must be refused"
+            );
+        }
+    }
+
+    /// Every file in `migrations/` against its line in `migrations/CHECKSUMS`.
+    /// This is where an edited migration fails in CI: a test database is
+    /// always fresh, so the runner's own check never sees an old checksum
+    /// there.
+    #[test]
+    fn every_migration_matches_its_line_in_checksums() {
+        let listed: BTreeMap<&str, &str> = include_str!("../../migrations/CHECKSUMS")
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                let (checksum, name) = line
+                    .split_once("  ")
+                    .expect("a CHECKSUMS line is `<checksum>  <file name>`");
+                (name, checksum)
+            })
+            .collect();
+        let mut problems = Vec::new();
+        for migration in EMBEDDED_MIGRATIONS {
+            let actual = migration_checksum(migration.sql);
+            match listed.get(migration.name) {
+                None => problems.push(format!(
+                    "{} is not in migrations/CHECKSUMS; add the line `{actual}  {}`",
+                    migration.name, migration.name
+                )),
+                Some(expected) if *expected != actual => problems.push(format!(
+                    "{} changed after it was merged: CHECKSUMS has {expected}, the file is now \
+                     {actual}. Every database that applied it recorded {expected}. Correcting \
+                     its comments does not change the checksum; any other change belongs in a \
+                     new migration",
+                    migration.name
+                )),
+                Some(_) => {}
+            }
+        }
+        for name in listed.keys() {
+            if !EMBEDDED_MIGRATIONS
+                .iter()
+                .any(|migration| migration.name == *name)
+            {
+                problems.push(format!(
+                    "migrations/CHECKSUMS lists {name}, which is not a migration"
+                ));
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    /// The four edits ever made to an applied migration were to comments:
+    /// 0001 and 0011 on 2026-08-21, 0027 and 0028 on 2026-09-14. A checksum
+    /// that counted comments would have reported every one of them as an edit.
+    #[test]
+    fn a_comment_only_edit_to_an_applied_migration_is_not_an_edit() {
+        let shipped = MIGRATION_0011_AS_V1_0_1_SHIPPED;
+        let current = embedded(11).sql;
+        assert_ne!(shipped, current, "the fixture is the pre-2026-08-21 file");
+
+        assert_eq!(migration_checksum(shipped), migration_checksum(current));
+    }
+
+    #[test]
+    fn comments_and_whitespace_are_outside_the_checksum() {
+        let statement = "CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT NOT NULL);";
+        for variant in [
+            "-- header\nCREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT NOT NULL);\n",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, -- why\n label TEXT NOT NULL);",
+            "CREATE TABLE t /* what */ (id INTEGER PRIMARY KEY,\n\tlabel TEXT NOT NULL);",
+            "\n\nCREATE  TABLE\tt (id INTEGER PRIMARY KEY, label   TEXT NOT NULL);\r\n",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT NOT NULL);-- trailing",
+        ] {
+            assert_eq!(
+                migration_checksum(variant),
+                migration_checksum(statement),
+                "{variant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_change_to_a_statement_changes_the_checksum() {
+        let statement =
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT NOT NULL DEFAULT 'a b');";
+        for variant in [
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT DEFAULT 'a b');",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT NOT NULL DEFAULT 'a  b');",
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT NOT NULL DEFAULT 'a-- b');",
+            "create table t (id INTEGER PRIMARY KEY, label TEXT NOT NULL DEFAULT 'a b');",
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, label TEXT NOT NULL DEFAULT 'a b');",
+            "CREATE TABLE u (id INTEGER PRIMARY KEY, label TEXT NOT NULL DEFAULT 'a b');",
+        ] {
+            assert_ne!(
+                migration_checksum(variant),
+                migration_checksum(statement),
+                "{variant:?}"
+            );
+        }
+    }
+
+    /// Quoted text is copied as it is: `--` and `/*` inside it are not
+    /// comments, whitespace inside it is kept, and a doubled quote does not
+    /// end it.
+    #[test]
+    fn quoted_text_is_copied_byte_for_byte() {
+        let sql = "SELECT 'it''s -- not /* a */ comment',  \"a  b\", [c  d], `e  f`, 'café';";
+        assert_eq!(
+            String::from_utf8(normalized_sql(sql)).unwrap(),
+            "SELECT 'it''s -- not /* a */ comment', \"a  b\", [c  d], `e  f`, 'café';"
+        );
+        // Unterminated input ends where the input does rather than panicking.
+        for unterminated in ["SELECT 'open", "SELECT 1 /* open", "SELECT [open", "--"] {
+            let _ = migration_checksum(unterminated);
+        }
     }
 }

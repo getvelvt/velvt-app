@@ -277,6 +277,14 @@ Direction: Rust to Swift. Purpose: notify Swift of service health.
 - `state`: `ready`, `degraded`, `upload_paused`, or `auth_required`
 - `reason`: optional safe diagnostic reason
 
+Rust sends `auth_refresh_in_flight`, `needs_reauth` and `device_revoked` from
+the auth state, on every connection and every transition. It sends
+`tier2_classification_unavailable` and `migration_checksum_mismatch` once, when
+the service starts. The second means a release helper opened a database whose
+applied migrations differ from its own files (migration 0039). That condition
+lasts as long as the helper runs, so Swift keeps its warning up through later
+auth statuses until the user dismisses it.
+
 ### `error_response`
 
 Direction: either direction. Purpose: provide a typed, safe error envelope.

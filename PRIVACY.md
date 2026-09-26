@@ -291,7 +291,7 @@ file.
 | `initiation_settings` | the single invitations on/off switch | singleton; no sweep, and it survives Clear Local Work Blocks for the same reason |
 | `weekly_digest` | one row per completed local week: bounded counts — blocks declared and completed, recoveries, wrong interventions, invitations accepted, withheld — and when the digest was shown and closed. No categories, copy, or per-day breakdown is representable | 12 completed weeks, pruned when the next digest is generated; removed by Clear Local Work Blocks |
 | `explain_probe_week` | one tap counter per local week, for the explain-tap metric. Which nudge was explained is not representable | pruned on the same 12-week rule; removed by Clear Local Work Blocks |
-| `schema_migration` | one row per applied migration: its version, its file name, and when it ran. Created by the migration runner rather than by a migration file | no sweep; one row is added per migration and none is removed |
+| `schema_migration` | one row per applied migration: its version, its file name, a checksum of the migration's SQL (since migration 0039; computed from the public source file, so nothing in it comes from your Mac), and when it ran. Created by the migration runner rather than by a migration file | no sweep; one row is added per migration and none is removed |
 | `persistence_migration_probe` | nothing. Migration 0002 created it to prove that a new migration file is embedded and applied, and no code path, shipped or test, inserts a row | empty on every install; no sweep |
 
 ### What the app's destructive actions actually remove
@@ -407,7 +407,7 @@ fails until this list is updated in the same commit.
 | `personal_semantic_prototype` | `key_hash`, `category`, `embedding`, `dimensions`, `correction_count`, `updated_at` |
 | `quiet_hours_offer_state` | `id`, `rule_version`, `triggered_at`, `offered_at`, `response`, `responded_at` |
 | `raw_event_buffer` | `id`, `event_id`, `stable_id`, `label`, `category`, `taxonomy_version`, `occurred_at`, `created_at`, `duration_seconds`, `local_display_label`, `classification_tier`, `classification_status`, `classification_confidence`, `classification_source`, `local_name_suggestion`, `upload_eligible`, `app_stable_id`, `app_scope_eligible`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids` |
-| `schema_migration` | `id`, `version`, `name`, `created_at` |
+| `schema_migration` | `id`, `version`, `name`, `created_at`, `checksum` |
 | `semantic_embedding_cache` | `key_hash`, `embedding`, `dimensions`, `updated_at` |
 | `stable_key_salt` | `id`, `salt`, `created_at` |
 | `upload_batch` | `id`, `batch_id`, `status`, `sent_at`, `attempt_count`, `next_attempt_at`, `last_error_code`, `created_at` |

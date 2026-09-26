@@ -20,7 +20,7 @@ pub use models::{
     WorkBlockOrigin, WorkBlockRecord, WrongInterventionCounts,
 };
 pub use models::{ReportedDwell, MAX_REPORTED_DWELL_SECONDS};
-pub use sqlite::{PersistenceError, SqlitePersistence};
+pub use sqlite::{MigrationChecksumMismatch, MigrationReport, PersistenceError, SqlitePersistence};
 pub use traits::{
     AbstractionMapRepo, AntecedentFindingRepo, BehaviorRepo, FocusRepo, HistoryCacheRepo,
     InitiationRepo, InsightCacheRepo, RawEventRepo, ReceiptsRepo, UploadBatchRepo, WorkBlockRepo,

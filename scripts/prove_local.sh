@@ -131,6 +131,8 @@ annotation_for() {
       echo "a name YOU typed when you corrected a classification" ;;
     work_block.intention)
       echo "the sentence you typed when you started a block — expires after 24h" ;;
+    schema_migration.checksum)
+      echo "SHA-256 of the migration file's SQL, from the public source (migration 0039) — nothing from this Mac" ;;
     history_cache.payload|insight_cache.payload|weekly_digest.payload|work_block_result.payload)
       echo "a JSON summary Velvt rendered for itself; raise --width to read it whole" ;;
     *) echo "" ;;

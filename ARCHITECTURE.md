@@ -5,7 +5,7 @@ macOS app (`swift-client/`, product `Velvt.app`) and its bundled Rust helper
 (`rust-service/`). For deep dives into individual subsystems, see
 [`docs/architecture/`](docs/architecture/); this document ties them together
 and reflects `develop` as of 2026-09-25 (IPC protocol 31 and migrations
-0001–0037; the shipped 1.0.11 build is protocol 30 and migration 0036), not any
+0001–0039; the shipped 1.0.11 build is protocol 30 and migration 0036), not any
 individual issue branch.
 
 ## System diagram

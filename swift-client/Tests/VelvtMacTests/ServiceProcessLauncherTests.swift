@@ -1,4 +1,5 @@
 import XCTest
+import os
 
 @testable import VelvtMac
 
@@ -15,6 +16,35 @@ final class ServiceProcessLauncherTests: XCTestCase {
         XCTAssertTrue(diagnostic.contains("stderr"))
         XCTAssertTrue(diagnostic.contains("\(sensitiveOutput.utf8.count)"))
         XCTAssertFalse(diagnostic.contains(sensitiveOutput))
+    }
+
+    /// About 600 of these an afternoon at `.error` buried the errors that
+    /// mattered. Routine stdout is `.debug`; a chunk with an `error_code`, and
+    /// anything on stderr, is still an error.
+    func testPipeDiagnosticLevelKeepsOnlyReportedFailuresAtError() {
+        let routine = "2026-09-26T14:37:00.000000Z  INFO velvt_service::ipc: accepted connection\n"
+        let failure =
+            "2026-09-26T14:37:00.000000Z ERROR velvt_service: error_code=\"duplicate_service_instance\" another velvt-service instance is already listening\n"
+
+        XCTAssertEqual(
+            ServiceProcessLauncher.pipeDiagnosticLevel(
+                label: "stdout",
+                errorCodes: ServiceProcessLauncher.errorCodes(inPipeChunk: routine)
+            ),
+            .debug
+        )
+        XCTAssertEqual(
+            ServiceProcessLauncher.pipeDiagnosticLevel(
+                label: "stdout",
+                errorCodes: ServiceProcessLauncher.errorCodes(inPipeChunk: failure)
+            ),
+            .error
+        )
+        XCTAssertEqual(ServiceProcessLauncher.pipeDiagnosticLevel(label: "stderr", errorCodes: []), .error)
+        XCTAssertEqual(
+            ServiceProcessLauncher.pipeDiagnosticLevel(label: "stderr", errorCodes: ["startup_halted"]),
+            .error
+        )
     }
 
     func testStopWaitsForOwnedHelperToExit() throws {

@@ -255,13 +255,32 @@ public final class ServiceProcessLauncher {
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
+            let codes = errorCodes(inPipeChunk: String(decoding: data, as: UTF8.self))
             let diagnostic = redactedPipeDiagnostic(
                 label: label,
                 byteCount: data.count,
-                errorCodes: errorCodes(inPipeChunk: String(decoding: data, as: UTF8.self))
+                errorCodes: codes
             )
-            ServiceProcessLauncherLog.shared.error("\(diagnostic, privacy: .public)")
+            ServiceProcessLauncherLog.shared.log(
+                level: pipeDiagnosticLevel(label: label, errorCodes: codes),
+                "\(diagnostic, privacy: .public)"
+            )
         }
+    }
+
+    /// The level a chunk of helper output is relayed at.
+    ///
+    /// The helper's tracing output goes to stdout, all of it, so stdout is
+    /// mostly routine: on the founder's Mac on 2026-09-26 it was about 600
+    /// error-level lines in four hours, each "emitted N bytes; content
+    /// redacted", and they buried the errors that mattered. A byte count says
+    /// nothing, so routine stdout is `.debug`. A chunk that carries an
+    /// `error_code` is a failure the helper reported, and stays `.error`, as
+    /// does stderr, which the helper writes to only when it cannot start or
+    /// when it panics.
+    nonisolated static func pipeDiagnosticLevel(label: String, errorCodes: [String]) -> OSLogType {
+        guard label == "stdout", errorCodes.isEmpty else { return .error }
+        return .debug
     }
 
     nonisolated static func redactedPipeDiagnostic(

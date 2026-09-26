@@ -810,6 +810,141 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(model.status, .granted)
     }
 
+    func testNotificationsOffNoticeShowsOnlyWhileNotificationsAreBlockedAndNotDismissed() {
+        let expectations: [(PermissionStatus, Bool, Bool)] = [
+            (.denied, false, true),
+            (.restricted, false, true),
+            (.denied, true, false),
+            (.restricted, true, false),
+            (.granted, false, false),
+            (.unknown, false, false),
+        ]
+
+        for (status, dismissed, shown) in expectations {
+            XCTAssertEqual(
+                NotificationsOffNotice.isShown(notificationStatus: status, isDismissed: dismissed),
+                shown,
+                "status=\(status) dismissed=\(dismissed)"
+            )
+        }
+    }
+
+    /// Dismissed until the next launch, which for an in-memory flag means for
+    /// the life of the presentation model, and back once notifications have
+    /// been allowed and then turned off again.
+    func testNotificationsOffNoticeDismissalLastsUntilNotificationsAreAllowed() {
+        let permissions = FakePermissionManager()
+        let presentation = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore(hasCompletedOnboarding: true)
+        )
+
+        XCTAssertFalse(presentation.showsNotificationsOffNotice)
+
+        permissions.setStatus(.denied, for: .notifications)
+        XCTAssertTrue(presentation.showsNotificationsOffNotice)
+
+        presentation.dismissNotificationsOffNotice()
+        XCTAssertFalse(presentation.showsNotificationsOffNotice)
+
+        permissions.setStatus(.restricted, for: .notifications)
+        XCTAssertFalse(presentation.showsNotificationsOffNotice)
+
+        permissions.setStatus(.granted, for: .notifications)
+        XCTAssertFalse(presentation.showsNotificationsOffNotice)
+        XCTAssertFalse(presentation.isNotificationsOffNoticeDismissed)
+
+        permissions.setStatus(.denied, for: .notifications)
+        XCTAssertTrue(presentation.showsNotificationsOffNotice)
+    }
+
+    func testANewLaunchShowsTheNoticeAgainWhileNotificationsStayOff() {
+        let permissions = FakePermissionManager()
+        permissions.setStatus(.denied, for: .notifications)
+        let firstLaunch = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore(hasCompletedOnboarding: true)
+        )
+        firstLaunch.dismissNotificationsOffNotice()
+        XCTAssertFalse(firstLaunch.showsNotificationsOffNotice)
+
+        let nextLaunch = PermissionPresentationModel(
+            permissionManager: permissions,
+            onboardingStateStore: InMemoryOnboardingStateStore(hasCompletedOnboarding: true)
+        )
+
+        XCTAssertTrue(nextLaunch.showsNotificationsOffNotice)
+    }
+
+    func testNotificationsSettingsLineNamesTheState() {
+        XCTAssertEqual(NotificationsOffNotice.settingsValue(for: .granted), "Allowed")
+        XCTAssertEqual(NotificationsOffNotice.settingsValue(for: .denied), "Off")
+        XCTAssertEqual(NotificationsOffNotice.settingsValue(for: .restricted), "Off")
+        XCTAssertEqual(NotificationsOffNotice.settingsValue(for: .unknown), "Not yet allowed")
+    }
+
+    func testNotificationsOffNoticeSaysWhatIsLostAndWhy() {
+        for copy in [
+            NotificationsOffNotice.title, NotificationsOffNotice.message, NotificationsOffNotice.settingsDetail,
+        ] {
+            XCTAssertFalse(copy.isEmpty)
+        }
+        XCTAssertTrue(NotificationsOffNotice.title.contains("Notifications are off"))
+        XCTAssertTrue(NotificationsOffNotice.message.contains("Drift nudges"))
+        XCTAssertTrue(NotificationsOffNotice.message.contains("insights"))
+    }
+
+    func testNotificationSettingsLinkOpensVelvtsOwnPageBeforeThePane() {
+        XCTAssertEqual(
+            NotificationSettingsLink.urls(bundleIdentifier: "com.velvt.mac").map(\.absoluteString),
+            [
+                "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.velvt.mac",
+                "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
+            ]
+        )
+    }
+
+    func testNotificationSettingsLinkFallsBackToThePaneOnlyWhenVelvtsPageFails() {
+        var opened: [String] = []
+        let openedOwnPage = NotificationSettingsLink.open(bundleIdentifier: "com.velvt.mac") { url in
+            opened.append(url.absoluteString)
+            return true
+        }
+        XCTAssertTrue(openedOwnPage)
+        XCTAssertEqual(
+            opened,
+            ["x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.velvt.mac"]
+        )
+
+        opened = []
+        let openedPane = NotificationSettingsLink.open(bundleIdentifier: "com.velvt.mac") { url in
+            opened.append(url.absoluteString)
+            return !url.absoluteString.contains("?id=")
+        }
+        XCTAssertTrue(openedPane)
+        XCTAssertEqual(
+            opened,
+            [
+                "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.velvt.mac",
+                "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
+            ]
+        )
+
+        XCTAssertFalse(NotificationSettingsLink.open(bundleIdentifier: "com.velvt.mac") { _ in false })
+    }
+
+    /// The intro's notification step has to name the notification that
+    /// matters most. It asked only for "insight notifications" until
+    /// 2026-09-26, so a person declining it had no way to know they were also
+    /// declining the drift nudge.
+    func testIntroNotificationStepNamesTheDriftNudgeAsWellAsInsights() {
+        let explanation = OnboardingCopy.notificationsExplanation
+        XCTAssertTrue(explanation.contains("nudge when you drift away during a focus session you started"))
+        XCTAssertTrue(explanation.contains("daily insight"))
+        XCTAssertFalse(OnboardingCopy.notificationsTitle.localizedCaseInsensitiveContains("insight"))
+        XCTAssertTrue(OnboardingCopy.notificationsBlocked.contains("System Settings"))
+    }
+
     @MainActor
     func testAccountOnboardingNeverGatesLocalFirstValue() {
         XCTAssertFalse(

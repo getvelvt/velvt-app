@@ -2,6 +2,16 @@ import AppKit
 import SwiftUI
 
 public enum OnboardingCopy {
+    /// Names the drift nudge first. This step used to ask only for "insight
+    /// notifications", so declining it read as declining a daily summary, and
+    /// nothing said it also silenced the one notification Velvt exists to
+    /// send.
+    public static let notificationsTitle = "Allow notifications."
+    public static let notificationsExplanation =
+        "Velvt sends a nudge when you drift away during a focus session you started, at most one per session, and a daily insight when one is ready. Notifications contain only broad observations—never app names, window titles, URLs, filenames, or paths."
+    public static let notificationsBlocked =
+        "Notifications are off for Velvt, so drift nudges and daily insights can't reach you. Turn them on in System Settings > Notifications > Velvt."
+
     public static let privacySummary =
         "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights. Depending on the service configuration, privacy-safe derived prompts may be processed by an approved external model provider."
 }
@@ -180,12 +190,7 @@ public final class NotificationPromptModel: ObservableObject {
     }
 
     public static func openNotificationSettings() {
-        guard
-            let url = URL(
-                string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
-            )
-        else { return }
-        NSWorkspace.shared.open(url)
+        NotificationSettingsLink.open()
     }
 }
 
@@ -790,14 +795,12 @@ public struct NotificationPermissionExperienceView: View {
                     .font(VelvtType.display(34))
                     .foregroundStyle(VelvtPalette.signal)
                     .accessibilityHidden(true)
-                Text("Allow insight notifications.")
+                Text(OnboardingCopy.notificationsTitle)
                     .velvtDisplay()
                     .accessibilityAddTraits(.isHeader)
-                Text(
-                    "Velvt can notify you when a privacy-safe insight is ready. Notifications contain only broad observations—never app names, window titles, URLs, filenames, or paths."
-                )
-                .velvtBody(15)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(OnboardingCopy.notificationsExplanation)
+                    .velvtBody(15)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 if currentStatus == .granted {
                     Label("Notifications are already allowed.", systemImage: "checkmark.circle.fill")
@@ -805,8 +808,9 @@ public struct NotificationPermissionExperienceView: View {
                         .foregroundStyle(VelvtInk.affirmative)
                 } else if currentStatus == .denied || currentStatus == .restricted {
                     VelvtCard {
-                        Text("Notifications are disabled. You can enable them in System Settings.")
+                        Text(OnboardingCopy.notificationsBlocked)
                             .velvtBody(13)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

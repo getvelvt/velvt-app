@@ -174,6 +174,19 @@ public final class PermissionPresentationModel: ObservableObject {
         .accessibility: .unknown,
         .notifications: .unknown,
     ]
+    {
+        didSet {
+            // A dismissal answers one stretch of notifications being off. Once
+            // they are allowed, turning them off again is a new stretch.
+            if statuses[.notifications] == .granted {
+                isNotificationsOffNoticeDismissed = false
+            }
+        }
+    }
+
+    /// In memory only, so a dismissed notice is back at the next launch for as
+    /// long as notifications stay off.
+    @Published public private(set) var isNotificationsOffNoticeDismissed = false
 
     public var showsAccessibilityRecovery: Bool {
         switch statuses[.accessibility] ?? .unknown {
@@ -182,6 +195,13 @@ public final class PermissionPresentationModel: ObservableObject {
         case .unknown, .granted:
             return false
         }
+    }
+
+    public var showsNotificationsOffNotice: Bool {
+        NotificationsOffNotice.isShown(
+            notificationStatus: statuses[.notifications] ?? .unknown,
+            isDismissed: isNotificationsOffNoticeDismissed
+        )
     }
 
     public var hasSeenValueProposition: Bool {
@@ -223,6 +243,10 @@ public final class PermissionPresentationModel: ObservableObject {
 
     public func replayOnboarding() {
         showsOnboarding = true
+    }
+
+    public func dismissNotificationsOffNotice() {
+        isNotificationsOffNoticeDismissed = true
     }
 
     public func acknowledgeValueProposition() {
@@ -320,6 +344,100 @@ public struct PermissionRecoveryView: View {
             return
         }
         NSWorkspace.shared.open(url)
+    }
+}
+
+/// What the window says when macOS is blocking Velvt's notifications.
+///
+/// Found on the founder's Mac on 2026-09-26: notifications were denied for
+/// Velvt, every drift offer was dropped at the permission gate
+/// (`notification_permission_blocked` on the log), and nothing in the app said
+/// so. The drift offer he did see, he saw only because he had opened the
+/// window.
+public enum NotificationsOffNotice {
+    public static let title = "Notifications are off for Velvt"
+    public static let message =
+        "Drift nudges and daily insights can't reach you. You'll only see them when this window is open."
+    public static let settingsDetail =
+        "Drift nudges and daily insights can't reach you while notifications are off for Velvt."
+
+    /// Denied and restricted both mean nothing Velvt posts is shown. Unknown
+    /// is either not yet asked or not yet checked, and says nothing is wrong.
+    public static func isShown(notificationStatus: PermissionStatus, isDismissed: Bool) -> Bool {
+        switch notificationStatus {
+        case .denied, .restricted:
+            return !isDismissed
+        case .unknown, .granted:
+            return false
+        }
+    }
+
+    /// The value on the Notifications line in Settings.
+    public static func settingsValue(for status: PermissionStatus) -> String {
+        switch status {
+        case .granted: return "Allowed"
+        case .denied, .restricted: return "Off"
+        case .unknown: return "Not yet allowed"
+        }
+    }
+}
+
+/// Opens System Settings at Velvt's own notification settings.
+///
+/// The notification pane is asked for Velvt's page by bundle identifier, as
+/// `id`. Should macOS refuse that URL outright, the bare pane is next, which
+/// still leaves the person one click from the switch.
+public enum NotificationSettingsLink {
+    static let paneURLString = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+    public static let velvtBundleIdentifier = "com.velvt.mac"
+
+    /// Velvt's own page first, then the pane.
+    static func urls(bundleIdentifier: String) -> [URL] {
+        [
+            URL(string: "\(paneURLString)?id=\(bundleIdentifier)"),
+            URL(string: paneURLString),
+        ].compactMap { $0 }
+    }
+
+    @discardableResult
+    public static func open(
+        bundleIdentifier: String = Bundle.main.bundleIdentifier ?? velvtBundleIdentifier,
+        opener: (URL) -> Bool = { NSWorkspace.shared.open($0) }
+    ) -> Bool {
+        urls(bundleIdentifier: bundleIdentifier).contains(where: opener)
+    }
+}
+
+/// The card the window shows while macOS is blocking Velvt's notifications.
+/// Dismissing it hides it until the next launch.
+public struct NotificationsOffNoticeView: View {
+    private let openSettings: () -> Void
+    private let dismiss: () -> Void
+
+    public init(
+        openSettings: @escaping () -> Void = { NotificationSettingsLink.open() },
+        dismiss: @escaping () -> Void
+    ) {
+        self.openSettings = openSettings
+        self.dismiss = dismiss
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+            Label(NotificationsOffNotice.title, systemImage: "bell.slash")
+                .velvtHeading(14)
+            Text(NotificationsOffNotice.message)
+                .velvtBody(12)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: VelvtMetrics.spaceSM) {
+                Button("Open Notification Settings", action: openSettings)
+                    .buttonStyle(VelvtPrimaryButtonStyle())
+                    .accessibilityHint("Opens Velvt's notification settings in System Settings")
+                Button("Dismiss", action: dismiss)
+                    .buttonStyle(VelvtQuietButtonStyle())
+                    .accessibilityHint("Hides this notice until Velvt next opens")
+            }
+        }
     }
 }
 

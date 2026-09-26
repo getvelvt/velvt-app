@@ -65,9 +65,10 @@ public struct WorkBlockView: View {
       if let digest = coordinator.weeklyDigest {
         weeklyDigestCard(digest)
       }
-      if let invitation = coordinator.invitation {
-        invitationCard(invitation)
-      }
+      // The invitation and the drift offer are not drawn here. This view's one
+      // call site is the popover behind the panel's primary button, and each
+      // card was reachable only by taking the action it exists to prompt:
+      // `WorkBlockProactiveCards`, drawn by the panel body, is their one home.
       // A live block outranks the planning form. The form used to win, so
       // "Plan another session" followed by an invitation accepted anywhere
       // else left a start form sitting on top of a running block; and the
@@ -224,102 +225,6 @@ public struct WorkBlockView: View {
     .padding(VelvtMetrics.cardPadding)
   }
 
-  /// The in-app surface for a live drift offer.
-  ///
-  /// This is the primary path, not a fallback for the notification: it always
-  /// renders, whereas an OS notification depends on authorization and is
-  /// suppressed by Focus. Every reply is recorded, so silence stays
-  /// distinguishable from disagreement.
-  ///
-  /// Copy comes from Rust verbatim. Swift does not reinterpret the evidence or
-  /// offer an action outside the registry.
-  private func interventionCard(_ intervention: ActiveIntervention) -> some View {
-    // Paper stock: a drift offer is one sentence addressed to the person, not
-    // a panel of data about them, and the guide reserves paper for exactly
-    // that. The offer itself sits in the blush inset — the tint the guide
-    // keeps for a small experiment the reader is free to decline.
-    VelvtPaperCard(padding: VelvtMetrics.spaceMD) {
-      VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
-        Text(intervention.title)
-          .velvtHeading(14, onPaper: true)
-
-        Text(intervention.body)
-          .velvtBody(12, onPaper: true)
-          .fixedSize(horizontal: false, vertical: true)
-
-        VelvtInsetPanel {
-          HStack(spacing: VelvtMetrics.spaceSM) {
-            Button("Back to work") {
-              coordinator.respondToIntervention(.acceptedAction)
-            }
-            .buttonStyle(VelvtPrimaryButtonStyle())
-
-            Spacer(minLength: 0)
-
-            // Declining carries the same weight of presence as accepting. A
-            // dismissal drawn as a faint glyph next to a filled button is
-            // pressure, and pressure is the one thing the guide rules out.
-            Button {
-              coordinator.respondToIntervention(.dismissed)
-            } label: {
-              Image(systemName: "xmark")
-            }
-            .buttonStyle(VelvtSecondaryButtonStyle(onPaper: true))
-            .accessibilityLabel("Dismiss this suggestion")
-          }
-        }
-
-        // Disagreement is evidence against the detector, so each kind of "you
-        // were wrong" is a first-class reply rather than a shrug. "I was
-        // focused" leads: it is the only reply that says the offer should never
-        // have fired, and a false positive Velvt cannot see is one it cannot
-        // stop making.
-        HStack(spacing: VelvtMetrics.spaceMD) {
-          Button("I was focused") {
-            coordinator.respondToIntervention(.wasFocused)
-          }
-          .accessibilityHint("Tells Velvt this suggestion was wrong — you were working")
-
-          Button("Wrong category") {
-            coordinator.respondToIntervention(.wrongClassification)
-          }
-
-          Button("Not helpful") {
-            coordinator.respondToIntervention(.notHelpful)
-          }
-
-          Spacer(minLength: 0)
-        }
-        .buttonStyle(.plain)
-        .font(VelvtType.caption())
-        .foregroundStyle(VelvtInk.secondaryOnPaper)
-
-        // The one-tap explanation (D7): the sentence is Rust-authored from
-        // the stored evidence and rendered verbatim. One sentence, no input
-        // field, no reply, no thread — this affordance is the chat gate, not
-        // a chat.
-        if let explanation = coordinator.explanation {
-          Label(explanation.sentence, systemImage: "text.magnifyingglass")
-            .font(VelvtType.caption(10.5))
-            .lineSpacing(VelvtType.bodySpacing(10.5))
-            .foregroundStyle(VelvtInk.tertiaryOnPaper)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityLabel("Explanation. \(explanation.sentence)")
-        } else {
-          Button(DigestFraming.explainLabel) {
-            coordinator.requestExplanation()
-          }
-          .buttonStyle(.plain)
-          .font(VelvtType.caption(10.5))
-          .foregroundStyle(VelvtInk.labelOnPaper)
-          .accessibilityHint("Shows one sentence about the evidence behind this nudge")
-        }
-      }
-    }
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("\(intervention.title). \(intervention.body)")
-  }
-
   /// The demotion disclosure (D5; roadmap invariant 4): shown as respect,
   /// never hidden. The body copy is Rust-authored and rendered verbatim;
   /// the detail line shows the exact counts and versioned constants the
@@ -402,42 +307,6 @@ public struct WorkBlockView: View {
     .accessibilityLabel("Quiet hours offer. \(offer.body)")
   }
 
-  /// The initiation invitation. At most one per day, extended by the
-  /// deterministic Rust policy; Swift renders the body verbatim and can
-  /// only accept (a declared block through the existing start command) or
-  /// dismiss. Declining is calm and costless.
-  private func invitationCard(_ invitation: InitiationInvitation) -> some View {
-    VelvtCard(padding: VelvtMetrics.spaceMD) {
-      VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
-        Label("Soft start", systemImage: "sunrise")
-          .velvtHeading(14)
-
-        Text(invitation.body)
-          .velvtBody(12)
-          .fixedSize(horizontal: false, vertical: true)
-
-        HStack(spacing: VelvtMetrics.spaceSM) {
-          Button("Start now") {
-            coordinator.acceptInvitation()
-          }
-          .buttonStyle(VelvtPrimaryButtonStyle())
-          .accessibilityHint("Starts a declared soft-start block on the local service")
-
-          Button("Not now") {
-            coordinator.dismissInvitation()
-          }
-          .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
-          .accessibilityHint("Dismisses this invitation; future invitations only get rarer")
-
-          Spacer(minLength: 0)
-        }
-      }
-    }
-    .padding([.horizontal, .top], VelvtMetrics.cardPadding)
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("Soft start invitation. \(invitation.body)")
-  }
-
   private func activeBlock(_ snapshot: WorkBlockSnapshot) -> some View {
     VStack(alignment: .leading, spacing: VelvtMetrics.spaceMD) {
       HStack(alignment: .firstTextBaseline) {
@@ -486,15 +355,6 @@ public struct WorkBlockView: View {
       Text(snapshot.statusLine)
         .velvtBody(12)
         .fixedSize(horizontal: false, vertical: true)
-
-      if let intervention = snapshot.activeIntervention {
-        interventionCard(intervention)
-          // The sighting is reported from the render itself, not from the
-          // offer arriving: an offer that lands while the popover is closed
-          // has not reached anyone, and saying otherwise here would recreate
-          // the exact ambiguity this records its way out of.
-          .onAppear { coordinator.reportInterventionCardSeen() }
-      }
 
       if let error = coordinator.commandError {
         Text(error)
@@ -808,6 +668,224 @@ public struct WorkBlockView: View {
 
 extension String {
   fileprivate var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// A card Velvt raises without being asked.
+public enum WorkBlockProactiveCard: Equatable {
+  /// The drift offer for a block that is running. Time-critical, so it leads.
+  case intervention
+  /// The at-most-one-a-day initiation invitation.
+  case invitation
+}
+
+/// The two cards Velvt raises on its own initiative, as their own view so the
+/// panel body can draw them.
+///
+/// Both used to live inside `WorkBlockView`, whose one call site is the popover
+/// behind the panel's primary button. An invitation exists to ask someone to
+/// declare a block who has not decided to, and a drift offer exists to reach
+/// someone whose attention has already gone elsewhere, so each was reachable
+/// only by taking the action it exists to prompt. A notification tap opens the
+/// panel, not that popover, so the offer's one instruction landed on a surface
+/// with no reply buttons on it. The weekly digest was lifted out of the same
+/// popover for the same reason; these two were what was left.
+///
+/// One home each, deliberately. The panel and the focus-session popover can be
+/// on screen together, and two sets of reply buttons for one drift offer is two
+/// chances to record a reply the person did not make.
+///
+/// The panel's view tree outlives the panel being on screen: the window is
+/// ordered out on close, not torn down. So `onAppear` alone no longer means
+/// "someone could see this", and the drift card's sighting (`card_seen_at`,
+/// migration 0032) is reported only while `surfaceIsOnScreen` says the surface
+/// drawing it is actually on screen: when the card appears on a visible panel,
+/// or when a panel already holding the card comes on screen.
+public struct WorkBlockProactiveCards: View {
+  @ObservedObject private var coordinator: WorkBlockCoordinator
+  private let surfaceIsOnScreen: Bool
+
+  public init(coordinator: WorkBlockCoordinator, surfaceIsOnScreen: Bool) {
+    self.coordinator = coordinator
+    self.surfaceIsOnScreen = surfaceIsOnScreen
+  }
+
+  /// Which cards this view draws right now, in the order it draws them.
+  ///
+  /// The only inputs are the coordinator's state. Whether the focus-session
+  /// popover is open is not one of them, which is the point of the move; view
+  /// composition is not observable from a unit test and this is.
+  var presentedCards: [WorkBlockProactiveCard] {
+    var cards: [WorkBlockProactiveCard] = []
+    if coordinator.snapshot?.activeIntervention != nil {
+      cards.append(.intervention)
+    }
+    if coordinator.invitation != nil {
+      cards.append(.invitation)
+    }
+    return cards
+  }
+
+  public var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      if let intervention = coordinator.snapshot?.activeIntervention {
+        interventionCard(intervention)
+          // Reported from the render, and only while the surface is on screen:
+          // an offer that lands while the panel is closed has not reached
+          // anyone, and saying otherwise would recreate the exact ambiguity
+          // `card_seen_at` records its way out of. The service keeps the first
+          // sighting, so reporting again on every opening is harmless.
+          .onAppear { reportSightingIfOnScreen() }
+          .onChange(of: surfaceIsOnScreen) { _ in reportSightingIfOnScreen() }
+      }
+      if let invitation = coordinator.invitation {
+        invitationCard(invitation)
+      }
+    }
+    .accessibilityElement(children: .contain)
+  }
+
+  /// Reports the drift card as seen when, and only when, the surface drawing
+  /// it is on screen. The coordinator adds its own guard: nothing is sent
+  /// unless an unanswered offer is live.
+  func reportSightingIfOnScreen() {
+    guard surfaceIsOnScreen else { return }
+    coordinator.reportInterventionCardSeen()
+  }
+
+  /// The in-app surface for a live drift offer.
+  ///
+  /// This is where a reply comes from, and the only place one can be made. The
+  /// notification carries the offer to someone who is not looking at the panel;
+  /// this card is what they find when they open it, on whichever tab it opens
+  /// on. An OS notification depends on authorization and is suppressed by
+  /// Focus, so this is the primary path, not a fallback. Every reply is
+  /// recorded, so silence stays distinguishable from disagreement.
+  ///
+  /// Copy comes from Rust verbatim. Swift does not reinterpret the evidence or
+  /// offer an action outside the registry.
+  private func interventionCard(_ intervention: ActiveIntervention) -> some View {
+    // Paper stock: a drift offer is one sentence addressed to the person, not
+    // a panel of data about them, and the guide reserves paper for exactly
+    // that. The offer itself sits in the blush inset — the tint the guide
+    // keeps for a small experiment the reader is free to decline.
+    VelvtPaperCard(padding: VelvtMetrics.spaceMD) {
+      VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+        Text(intervention.title)
+          .velvtHeading(14, onPaper: true)
+
+        Text(intervention.body)
+          .velvtBody(12, onPaper: true)
+          .fixedSize(horizontal: false, vertical: true)
+
+        VelvtInsetPanel {
+          HStack(spacing: VelvtMetrics.spaceSM) {
+            Button("Back to work") {
+              coordinator.respondToIntervention(.acceptedAction)
+            }
+            .buttonStyle(VelvtPrimaryButtonStyle())
+
+            Spacer(minLength: 0)
+
+            // Declining carries the same weight of presence as accepting. A
+            // dismissal drawn as a faint glyph next to a filled button is
+            // pressure, and pressure is the one thing the guide rules out.
+            Button {
+              coordinator.respondToIntervention(.dismissed)
+            } label: {
+              Image(systemName: "xmark")
+            }
+            .buttonStyle(VelvtSecondaryButtonStyle(onPaper: true))
+            .accessibilityLabel("Dismiss this suggestion")
+          }
+        }
+
+        // Disagreement is evidence against the detector, so each kind of "you
+        // were wrong" is a first-class reply rather than a shrug. "I was
+        // focused" leads: it is the only reply that says the offer should never
+        // have fired, and a false positive Velvt cannot see is one it cannot
+        // stop making.
+        HStack(spacing: VelvtMetrics.spaceMD) {
+          Button("I was focused") {
+            coordinator.respondToIntervention(.wasFocused)
+          }
+          .accessibilityHint("Tells Velvt this suggestion was wrong — you were working")
+
+          Button("Wrong category") {
+            coordinator.respondToIntervention(.wrongClassification)
+          }
+
+          Button("Not helpful") {
+            coordinator.respondToIntervention(.notHelpful)
+          }
+
+          Spacer(minLength: 0)
+        }
+        .buttonStyle(.plain)
+        .font(VelvtType.caption())
+        .foregroundStyle(VelvtInk.secondaryOnPaper)
+
+        // The one-tap explanation (D7): the sentence is Rust-authored from
+        // the stored evidence and rendered verbatim. One sentence, no input
+        // field, no reply, no thread — this affordance is the chat gate, not
+        // a chat.
+        if let explanation = coordinator.explanation {
+          Label(explanation.sentence, systemImage: "text.magnifyingglass")
+            .font(VelvtType.caption(10.5))
+            .lineSpacing(VelvtType.bodySpacing(10.5))
+            .foregroundStyle(VelvtInk.tertiaryOnPaper)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel("Explanation. \(explanation.sentence)")
+        } else {
+          Button(DigestFraming.explainLabel) {
+            coordinator.requestExplanation()
+          }
+          .buttonStyle(.plain)
+          .font(VelvtType.caption(10.5))
+          .foregroundStyle(VelvtInk.labelOnPaper)
+          .accessibilityHint("Shows one sentence about the evidence behind this nudge")
+        }
+      }
+    }
+    .padding([.horizontal, .top], VelvtMetrics.cardPadding)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("\(intervention.title). \(intervention.body)")
+  }
+
+  /// The initiation invitation. At most one per day, extended by the
+  /// deterministic Rust policy; Swift renders the body verbatim and can
+  /// only accept (a declared block through the existing start command) or
+  /// dismiss. Declining is calm and costless.
+  private func invitationCard(_ invitation: InitiationInvitation) -> some View {
+    VelvtCard(padding: VelvtMetrics.spaceMD) {
+      VStack(alignment: .leading, spacing: VelvtMetrics.spaceSM) {
+        Label("Soft start", systemImage: "sunrise")
+          .velvtHeading(14)
+
+        Text(invitation.body)
+          .velvtBody(12)
+          .fixedSize(horizontal: false, vertical: true)
+
+        HStack(spacing: VelvtMetrics.spaceSM) {
+          Button("Start now") {
+            coordinator.acceptInvitation()
+          }
+          .buttonStyle(VelvtPrimaryButtonStyle())
+          .accessibilityHint("Starts a declared soft-start block on the local service")
+
+          Button("Not now") {
+            coordinator.dismissInvitation()
+          }
+          .buttonStyle(VelvtSecondaryButtonStyle(onPaper: false))
+          .accessibilityHint("Dismisses this invitation; future invitations only get rarer")
+
+          Spacer(minLength: 0)
+        }
+      }
+    }
+    .padding([.horizontal, .top], VelvtMetrics.cardPadding)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Soft start invitation. \(invitation.body)")
+  }
 }
 
 /// This week's receipts, as their own view so more than one surface can show

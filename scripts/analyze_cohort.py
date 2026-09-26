@@ -4,7 +4,8 @@
 Input is whatever `export_cohort_evidence.sh` wrote on each tester's Mac: a
 per-offer CSV and, beside it, the companion files that share its name stem
 (`-decisions.csv`, `-blocks.csv`, `-invitations.csv`, `-explain.csv`,
-`-meta.csv`). Pass one folder per participant, or the files themselves.
+`-corrections.csv`, `-meta.csv`). Pass one folder per participant, or the files
+themselves.
 Output is the numbers named in `pitch-deck-inputs/evidence/traction-summary.md`,
 each with its numerator, denominator, window and exclusions stated, because a
 ratio on its own is not reportable evidence.
@@ -174,11 +175,30 @@ BLOCK_ORIGINS = ("manual", "invitation")
 INVITATION_TERMINAL_OUTCOMES = ("accepted", "dismissed", "no_response", "expired")
 INVITATION_OPEN_OUTCOMES = ("offered",)
 
+# The corrections file (2026-08-17 measure 3), one row per rule scope and broad
+# category. `app` is `personal_app_override`, whose summed correction_count is
+# the pre-registered count; `window` is `personal_override`, which keeps no
+# count. The exporter writes any category outside the service's accepted set
+# as `unrecognized`.
+CORRECTION_SCOPES = ("app", "window")
+CORRECTION_CATEGORIES = (
+    "FOCUS_WORK",
+    "PASSIVE_CONSUMPTION",
+    "SOCIAL_FEED",
+    "COMMUNICATION",
+    "TASK_MANAGEMENT",
+    "REFERENCE",
+    "SYSTEM",
+    "UNLOGGED",
+    "unrecognized",
+)
+
 COMPANION_SUFFIXES = {
     "decisions": "-decisions.csv",
     "blocks": "-blocks.csv",
     "invitations": "-invitations.csv",
     "explain": "-explain.csv",
+    "corrections": "-corrections.csv",
     "meta": "-meta.csv",
 }
 FILE_KINDS = ("offers",) + tuple(COMPANION_SUFFIXES)
@@ -188,6 +208,7 @@ META_TABLE_KEYS = {
     "decisions": "decision_log",
     "invitations": "invitations",
     "explain": "explain_probe",
+    "corrections": "corrections",
 }
 
 WEEK_SECONDS = 7 * 24 * 3600
@@ -231,6 +252,7 @@ class Participant:
     block_rows: list | None = None
     invitation_rows: list | None = None
     explain_rows: list | None = None
+    correction_rows: list | None = None
 
 
 @dataclass
@@ -257,6 +279,11 @@ class Cohort:
     blocks: dict = field(default_factory=dict)
     invitations: dict = field(default_factory=dict)
     explain: dict = field(default_factory=dict)
+    # Correction counts per participant. They carry no timestamp, so they
+    # cannot be split at a policy upgrade; `corrections_span_policy_change`
+    # names the participants whose counts include time before policy v2.
+    corrections: dict = field(default_factory=dict)
+    corrections_span_policy_change: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +516,7 @@ def load(
             continue
         participant.decision_rows = rows
 
-        for kind in ("blocks", "invitations", "explain"):
+        for kind in ("blocks", "invitations", "explain", "corrections"):
             path = participant.files.get(kind)
             if path is None:
                 if participant.meta.get(META_TABLE_KEYS.get(kind, ""), "") == "present":
@@ -505,8 +532,10 @@ def load(
                 participant.block_rows = rows
             elif kind == "invitations":
                 participant.invitation_rows = rows
-            else:
+            elif kind == "explain":
                 participant.explain_rows = rows
+            else:
+                participant.correction_rows = rows
 
         cohort.analysed.append(participant)
 
@@ -724,6 +753,38 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             )
         cohort.explain[name] = kept
 
+    # --- Corrections (2026-08-17 measure 3) -------------------------------------
+    if participant.correction_rows is not None:
+        app: dict[str, tuple[int, int]] = {}
+        window: dict[str, int] = {}
+        for row in participant.correction_rows:
+            scope = _text(row, "scope")
+            category = _text(row, "category")
+            rules = _int(row, "rules")
+            corrections = _int(row, "corrections")
+            problem = None
+            if scope not in CORRECTION_SCOPES or category not in CORRECTION_CATEGORIES:
+                problem = "unknown scope or category"
+            elif rules is None or rules < 1:
+                problem = "rules is not a positive count"
+            elif scope == "app" and (corrections is None or corrections < rules):
+                # Every app rule is written by at least one correction.
+                problem = "app corrections missing or fewer than its rules"
+            elif category in (app if scope == "app" else window):
+                problem = "a second row for one scope and category"
+            if problem:
+                cohort.malformed.append(
+                    f"{name}: corrections row scope={scope!r} category={category!r}: {problem}"
+                )
+                continue
+            if scope == "app":
+                app[category] = (rules, corrections)
+            else:
+                window[category] = rules
+        cohort.corrections[name] = {"app": app, "window": window}
+        if non_v2_until is not None:
+            cohort.corrections_span_policy_change.append(name)
+
 
 # ---------------------------------------------------------------------------
 # Analysis
@@ -931,6 +992,64 @@ def _explain(cohort: Cohort) -> dict:
     }
 
 
+def _corrections(cohort: Cohort) -> dict:
+    per_participant = {}
+    by_category = Counter()
+    for name in sorted(cohort.corrections):
+        app = cohort.corrections[name]["app"]
+        window = cohort.corrections[name]["window"]
+        per_participant[name] = {
+            "app_scoped_corrections": sum(c for _, c in app.values()),
+            "applications_with_an_app_rule": sum(r for r, _ in app.values()),
+            "window_rules": sum(window.values()),
+            "app_scoped_corrections_by_category": {
+                category: c for category, (_, c) in sorted(app.items())
+            },
+        }
+        for category, (_, c) in app.items():
+            by_category[category] += c
+    measured = sorted(per_participant)
+    return {
+        "definition": (
+            "2026-08-17 addition, measure 3: the count of app-scoped classification "
+            "corrections per participant. Reported as a count only. It measures how "
+            "far the seed dictionary missed that person's apps: not engagement, and "
+            "not to be presented as such."
+        ),
+        "how_counted": (
+            "The sum of correction_count over the participant's app-scoped rules "
+            "(personal_app_override, migration 0017), from the corrections CSV. A "
+            "rule starts at 1 and every later correction that lands on the same "
+            "application adds 1, whether it came from correcting an activity or "
+            "from the list of apps Velvt could not read. Applications with a rule "
+            "and window rules (personal_override, which keeps no count) are "
+            "descriptive."
+        ),
+        "lower_bound": (
+            "Only rules that exist at export are counted. A correction the "
+            "participant removed, or a Reset, takes its count with it."
+        ),
+        "not_counted": (
+            "The 'Wrong category' reply to a drift offer is block-scoped "
+            "(work_block_category_correction), not a classification rule. It is "
+            "counted in the trust figure as wrong_classification. A correction of a "
+            "browser tab is window-scoped only and appears under window rules."
+        ),
+        "measurable": bool(measured),
+        "participants_measured": len(measured),
+        "per_participant": per_participant,
+        "participants_with_zero_app_scoped_corrections": [
+            n for n in measured if not per_participant[n]["app_scoped_corrections"]
+        ],
+        "total_app_scoped_corrections": sum(by_category.values()),
+        "app_scoped_corrections_by_category": dict(sorted(by_category.items())),
+        "includes_history_before_policy_v2": sorted(cohort.corrections_span_policy_change),
+        "not_measurable_for": sorted(
+            p.name for p in cohort.analysed if p.name not in cohort.corrections
+        ),
+    }
+
+
 def _integrity(cohort: Cohort) -> dict:
     verdicts = Counter()
     deviations = 0
@@ -1101,6 +1220,7 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
         "completion_by_origin": _completion_by_origin(cohort),
         "invitation_acceptance": _invitations(cohort),
         "explain_tap_rate": _explain(cohort),
+        "corrections_per_participant": _corrections(cohort),
         "decision_log_integrity": _integrity(cohort),
         "exclusions": {
             "declared_in_advance": [
@@ -1320,6 +1440,25 @@ def render(result: dict) -> str:
         add("  not measurable from the cohort export (no explain file)")
     if explain["not_measurable_for"]:
         add(f"  no explain file: {explain['not_measurable_for']}")
+
+    corrections = result["corrections_per_participant"]
+    heading("CORRECTIONS PER PARTICIPANT (2026-08-17 measure 3; a count, not engagement)")
+    para(corrections["definition"])
+    if corrections["measurable"]:
+        for name, entry in corrections["per_participant"].items():
+            add(f"  {name:24} {entry['app_scoped_corrections']:4} app-scoped correction(s) "
+                f"on {entry['applications_with_an_app_rule']} app(s); "
+                f"{entry['window_rules']} window rule(s)")
+        add(f"  app-scoped corrections by category: "
+            f"{corrections['app_scoped_corrections_by_category'] or '{}'}")
+        para(f"Each count is a lower bound. {corrections['lower_bound']}")
+    else:
+        add("  not measurable from the cohort export (no corrections file)")
+    if corrections["not_measurable_for"]:
+        add(f"  no corrections file: {corrections['not_measurable_for']}")
+    if corrections["includes_history_before_policy_v2"]:
+        add(f"  ! counts include time before policy v2, not separable: "
+            f"{corrections['includes_history_before_policy_v2']}")
 
     integrity = result["decision_log_integrity"]
     heading("DECISION-LOG INTEGRITY (policy_version 2 rows)")

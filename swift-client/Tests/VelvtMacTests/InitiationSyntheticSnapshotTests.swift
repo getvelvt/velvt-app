@@ -16,7 +16,11 @@ final class InitiationSyntheticSnapshotTests: XCTestCase {
       throw XCTSkip("Set VELVT_INITIATION_SCREENSHOT_DIR to render synthetic handoff screenshots")
     }
 
-    // 1. The invitation card above the idle start form.
+    // 1. The invitation card above the idle start form. The card is the panel
+    //    body's now (`WorkBlockProactiveCards`): `WorkBlockView` stopped
+    //    drawing it because it was reachable only from inside the
+    //    focus-session popover, so the shot composes the two the way the
+    //    panel does.
     let client = FakeIPCClient()
     let messages = PassthroughSubject<ServerMessage, Never>()
     let coordinator = WorkBlockCoordinator(ipcClient: client)
@@ -33,7 +37,10 @@ final class InitiationSyntheticSnapshotTests: XCTestCase {
     messages.send(.workBlockState(idleSnapshot()))
     try await waitUntil { coordinator.invitation != nil && coordinator.snapshot != nil }
     try render(
-      WorkBlockView(coordinator: coordinator),
+      VStack(alignment: .leading, spacing: 0) {
+        WorkBlockProactiveCards(coordinator: coordinator, surfaceIsOnScreen: false)
+        WorkBlockView(coordinator: coordinator)
+      },
       named: "initiation-invitation-card-synthetic.png",
       outputDirectory: output,
       size: NSSize(width: 420, height: 560)

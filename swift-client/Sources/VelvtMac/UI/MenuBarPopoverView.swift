@@ -1164,6 +1164,37 @@ public struct PopoverConnectionPresentation {
             color = VelvtPalette.signal
         }
     }
+
+    /// The window header's collection line.
+    ///
+    /// "Collection paused" is reserved for collection that has actually
+    /// stopped. It used to be the label for everything but `.running`, and one
+    /// application that could not be observed at window level left it there
+    /// for the rest of the session while collection carried on. That failure
+    /// now reads as `.limited`: said calmly, in secondary ink, and gone at the
+    /// next app switch that registers.
+    public init(accessibility: PermissionStatus, collection: CollectionStatus) {
+        switch accessibility {
+        case .unknown:
+            label = "Checking Accessibility…"
+            color = VelvtInk.tertiaryOnInk
+        case .denied, .restricted:
+            label = "Collection paused: Accessibility permission required"
+            color = VelvtPalette.signal
+        case .granted:
+            switch collection {
+            case .running:
+                label = "Collection active"
+                color = VelvtInk.affirmative
+            case .limited:
+                label = "Collection limited for this app"
+                color = VelvtInk.secondaryOnInk
+            case .idle, .permissionRevoked, .error:
+                label = "Collection paused"
+                color = VelvtPalette.signal
+            }
+        }
+    }
 }
 
 public enum MenuBarPopoverLayout {
@@ -2623,29 +2654,9 @@ public struct MenuBarPopoverView: View {
     }
 
     private var localCollectionPresentation: PopoverConnectionPresentation {
-        switch presentation.statuses[.accessibility] ?? .unknown {
-        case .unknown:
-            return PopoverConnectionPresentation(
-                label: "Checking Accessibility…",
-                color: VelvtInk.tertiaryOnInk
-            )
-        case .denied, .restricted:
-            return PopoverConnectionPresentation(
-                label: "Collection paused: Accessibility permission required",
-                color: VelvtPalette.signal
-            )
-        case .granted:
-            break
-        }
-        if collectionActivityStatus.status == .running {
-            return PopoverConnectionPresentation(
-                label: "Collection active",
-                color: VelvtInk.affirmative
-            )
-        }
-        return PopoverConnectionPresentation(
-            label: "Collection paused",
-            color: VelvtPalette.signal
+        PopoverConnectionPresentation(
+            accessibility: presentation.statuses[.accessibility] ?? .unknown,
+            collection: collectionActivityStatus.status
         )
     }
 
@@ -2810,6 +2821,7 @@ public struct MenuBarPopoverView: View {
         switch collectionActivityStatus.status {
         case .idle: "idle"
         case .running: "active"
+        case .limited: "limited"
         case .permissionRevoked: "permission_required"
         case .error: "error"
         }

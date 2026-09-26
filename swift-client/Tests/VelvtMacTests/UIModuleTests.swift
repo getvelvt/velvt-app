@@ -34,6 +34,43 @@ final class MenuBarNavigationTests: XCTestCase {
         XCTAssertEqual(PopoverConnectionPresentation(status: .disconnected).label, "Disconnected")
     }
 
+    /// "Collection paused" only when collection has stopped. A window-level
+    /// failure for one application is `.limited`, which reads calmly, and a
+    /// recovered one is simply active again.
+    func testCollectionLabelSaysPausedOnlyWhenCollectionStopped() {
+        let limited = CollectionStatus.limited("ax_observer_registration_failed:-25212")
+        let cases: [(CollectionStatus, String, Color)] = [
+            (.running, "Collection active", VelvtInk.affirmative),
+            (limited, "Collection limited for this app", VelvtInk.secondaryOnInk),
+            (.idle, "Collection paused", VelvtPalette.signal),
+            (.permissionRevoked, "Collection paused", VelvtPalette.signal),
+            (.error("ax_observer_failed"), "Collection paused", VelvtPalette.signal),
+        ]
+
+        for (status, label, color) in cases {
+            let presentation = PopoverConnectionPresentation(accessibility: .granted, collection: status)
+            XCTAssertEqual(presentation.label, label, "\(status)")
+            XCTAssertEqual(presentation.color, color, "\(status)")
+        }
+    }
+
+    func testCollectionLabelDefersToTheAccessibilityPermission() {
+        for status in [CollectionStatus.running, .limited("ax_observer_failed"), .idle] {
+            XCTAssertEqual(
+                PopoverConnectionPresentation(accessibility: .unknown, collection: status).label,
+                "Checking Accessibility…"
+            )
+            XCTAssertEqual(
+                PopoverConnectionPresentation(accessibility: .denied, collection: status).label,
+                "Collection paused: Accessibility permission required"
+            )
+            XCTAssertEqual(
+                PopoverConnectionPresentation(accessibility: .restricted, collection: status).label,
+                "Collection paused: Accessibility permission required"
+            )
+        }
+    }
+
     func testServiceConnectionStatusModelReflectsSocketUpdates() async {
         let client = FakeIPCClient()
         let model = ServiceConnectionStatusModel(connectionStatus: client.connectionStatus)

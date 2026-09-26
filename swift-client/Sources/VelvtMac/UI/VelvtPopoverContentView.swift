@@ -863,7 +863,8 @@ struct CompactWorkBlockControl: View {
                         -TimeInterval(snapshot.plannedDurationSeconds))...Date.distantFuture,
                     countsDown: false
                 )
-                Text(" elapsed of \(duration(snapshot.plannedDurationSeconds)) planned")
+                Text(BlockTimeText.sentenceSuffix(snapshot))
+                    .accessibilityLabel(BlockTimeText.spokenSuffix(snapshot))
             }
             .accessibilityElement(children: .combine)
         } else {
@@ -872,9 +873,8 @@ struct CompactWorkBlockControl: View {
             // while a block is running or paused, a counted time is a clock; once
             // it is over, every number on the result card is a duration. A chosen
             // duration — the plan — is always a duration.
-            Text(
-                "\(DurationText.clock(snapshot.elapsedDurationSeconds)) elapsed of \(duration(snapshot.plannedDurationSeconds)) planned"
-            )
+            Text(BlockTimeText.sentence(snapshot))
+                .accessibilityLabel(BlockTimeText.spoken(snapshot))
         }
     }
 }
@@ -1550,7 +1550,7 @@ public struct FocusFragmentationView: View {
 
     /// The numbers, and only the ones the coverage behind them supports.
     ///
-    /// Planned and elapsed are on the card in every state: neither is measured
+    /// Elapsed and planned are on the card in every state: neither is measured
     /// by the classifier. The user chose the plan and the service timed the
     /// block, so a collection outage cannot make either of them wrong. Longest
     /// stretch and switches are the opposite — they exist only inside the
@@ -1580,9 +1580,10 @@ public struct FocusFragmentationView: View {
                 spacing: 4
             ) {
                 focusMetric(
-                    "Planned / elapsed",
-                    "\(duration(focus.plannedDurationSeconds)) / \(duration(focus.elapsedDurationSeconds))",
-                    "Planned duration and recorded elapsed duration for this explicit work block.")
+                    BlockTimeText.label,
+                    BlockTimeText.compact(focus),
+                    "Recorded elapsed duration against the planned duration for this explicit work block.",
+                    spoken: BlockTimeText.spoken(focus))
                 if state.showsObservedMetrics {
                     focusMetric(
                         "Longest stretch", duration(focus.longestUninterruptedSeconds),
@@ -1631,7 +1632,12 @@ public struct FocusFragmentationView: View {
         }
     }
 
-    private func focusMetric(_ title: String, _ value: String, _ help: String) -> some View {
+    /// `spoken` replaces "title, value" where that would not survive being
+    /// read aloud: "Elapsed / planned, 12m / 25m" is two slashes and two
+    /// abbreviations.
+    private func focusMetric(
+        _ title: String, _ value: String, _ help: String, spoken: String? = nil
+    ) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(value).font(VelvtType.measurement(12).monospacedDigit())
                 .foregroundStyle(VelvtInk.primaryOnInk)
@@ -1640,7 +1646,7 @@ public struct FocusFragmentationView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .help(help)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title), \(value)")
+        .accessibilityLabel(spoken ?? "\(title), \(value)")
         .accessibilityHint(help)
     }
 
@@ -2192,6 +2198,95 @@ enum DurationText {
         let remainder = value % 60
         if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, remainder) }
         return String(format: "%d:%02d", minutes, remainder)
+    }
+
+    /// `compact` in words, for accessibility labels. `25m` is an abbreviation
+    /// for the eye; a spoken label should not leave a speech engine to guess
+    /// what the `m` stands for.
+    static func spoken(_ seconds: Int) -> String {
+        let value = max(0, seconds)
+        let hours = value / 3600
+        let minutes = (value % 3600) / 60
+        let remainder = value % 60
+        func unit(_ count: Int, _ name: String) -> String {
+            count == 1 ? "1 \(name)" : "\(count) \(name)s"
+        }
+        if hours > 0 {
+            return minutes > 0 ? "\(unit(hours, "hour")) \(unit(minutes, "minute"))" : unit(hours, "hour")
+        }
+        if minutes > 0 {
+            return remainder > 0
+                ? "\(unit(minutes, "minute")) \(unit(remainder, "second"))" : unit(minutes, "minute")
+        }
+        return unit(value, "second")
+    }
+}
+
+/// The two numbers every block-time surface reads. A surface hands over its
+/// whole payload rather than two bare `Int`s, so the pair cannot be swapped at
+/// the call site — which is exactly how the dashboard card came to print
+/// `25m / 12m`.
+protocol BlockTiming {
+    var elapsedDurationSeconds: Int { get }
+    var plannedDurationSeconds: Int { get }
+}
+
+extension WorkBlockSnapshot: BlockTiming {}
+extension WorkBlockResult: BlockTiming {}
+extension LocalFocusFragmentation: BlockTiming {}
+
+/// A block's time, elapsed first and the plan second, on every surface that
+/// shows it: `12m / 25m` under "Elapsed / planned" on the cards, and "12:34
+/// elapsed of 25m planned" on the one-line live row, which has no label above
+/// its number and so says it in words.
+///
+/// Elapsed leads because it is the number that moves; the plan is what it is
+/// read against. The dashboard's work-block card printed it the other way
+/// round, `25m / 12m` under "Planned / elapsed", directly beneath a live row
+/// that read elapsed first — one block, two orders, one screen.
+///
+/// Remaining time is not a third slot in this pair. The work-block card
+/// counts it down in its own column under its own "Remaining" label, so a
+/// countdown is never read as either half of `elapsed / planned`.
+enum BlockTimeText {
+    static let label = "Elapsed / planned"
+    static let remainingLabel = "Remaining"
+
+    /// A finished block, or a snapshot of one: both halves are durations.
+    static func compact(_ block: some BlockTiming) -> String {
+        "\(DurationText.compact(block.elapsedDurationSeconds))\(plannedSuffix(block))"
+    }
+
+    /// A running or paused block: elapsed is a clock, because it is the same
+    /// number `Text(timerInterval:)` was drawing a moment ago. The plan is a
+    /// chosen duration, so it stays one.
+    static func clock(_ block: some BlockTiming) -> String {
+        "\(DurationText.clock(block.elapsedDurationSeconds))\(plannedSuffix(block))"
+    }
+
+    /// What follows a live elapsed `Text(timerInterval:)` on a card.
+    static func plannedSuffix(_ block: some BlockTiming) -> String {
+        " / \(DurationText.compact(block.plannedDurationSeconds))"
+    }
+
+    /// The live row, frozen: paused, or active without a deadline.
+    static func sentence(_ block: some BlockTiming) -> String {
+        "\(DurationText.clock(block.elapsedDurationSeconds))\(sentenceSuffix(block))"
+    }
+
+    /// What follows a live elapsed `Text(timerInterval:)` on the live row.
+    static func sentenceSuffix(_ block: some BlockTiming) -> String {
+        " elapsed of \(DurationText.compact(block.plannedDurationSeconds)) planned"
+    }
+
+    /// Every block-time surface's accessibility label, whichever shape it draws.
+    static func spoken(_ block: some BlockTiming) -> String {
+        "\(DurationText.spoken(block.elapsedDurationSeconds)) \(spokenSuffix(block))"
+    }
+
+    /// What VoiceOver reads after a live elapsed count it reads for itself.
+    static func spokenSuffix(_ block: some BlockTiming) -> String {
+        "elapsed of \(DurationText.spoken(block.plannedDurationSeconds)) planned"
     }
 }
 

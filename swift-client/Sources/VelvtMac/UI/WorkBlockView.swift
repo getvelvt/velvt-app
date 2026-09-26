@@ -334,12 +334,8 @@ public struct WorkBlockView: View {
             }
 
             HStack(spacing: VelvtMetrics.spaceLG) {
-                timeColumn(
-                    "Elapsed", seconds: snapshot.elapsedDurationSeconds, snapshot: snapshot, countsDown: false
-                )
-                timeColumn(
-                    "Remaining", seconds: snapshot.remainingDurationSeconds, snapshot: snapshot,
-                    countsDown: true)
+                elapsedColumn(snapshot)
+                remainingColumn(snapshot)
                 VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
                     Text("Category")
                         .font(VelvtType.label(9.5))
@@ -447,8 +443,9 @@ public struct WorkBlockView: View {
                             .font(VelvtType.measurement(13).monospacedDigit())
                             .foregroundStyle(VelvtPalette.signal)
                     }
-                    resultMetric("Longest stretch", result.longestUninterruptedSeconds)
-                    resultMetric("Elapsed", result.elapsedDurationSeconds)
+                    resultMetric(
+                        "Longest stretch", DurationText.compact(result.longestUninterruptedSeconds))
+                    resultMetric(BlockTimeText.label, BlockTimeText.compact(result))
                     VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
                         Text("Switch-aways")
                             .font(VelvtType.label(9.5))
@@ -461,9 +458,7 @@ public struct WorkBlockView: View {
                     }
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel(
-                    "Came back \(result.recoveryCount) times after \(result.switchAwayCount) switch-aways"
-                )
+                .accessibilityLabel(Self.resultMetricsAccessibilityLabel(result))
 
                 Text(coverageLabel(result))
                     .font(VelvtType.caption(10.5))
@@ -515,7 +510,7 @@ public struct WorkBlockView: View {
         }
     }
 
-    /// Elapsed and remaining for a live block.
+    /// Elapsed against the plan, and remaining, for a live block.
     ///
     /// Both live values hang off `ends_at`, which is the only number on this
     /// snapshot that stays true as wall-clock advances. The service publishes
@@ -537,57 +532,88 @@ public struct WorkBlockView: View {
     /// `ends_at` rather than `started_at` is what carries paused time, which is
     /// why the two agree across a pause and resume without Swift ever holding a
     /// `total_paused_seconds` of its own.
-    @ViewBuilder
-    private func timeColumn(
-        _ title: String,
-        seconds: Int,
-        snapshot: WorkBlockSnapshot,
-        countsDown: Bool
-    ) -> some View {
+    ///
+    /// Elapsed carries the plan beside it, `12:34 / 25m`, in the order every
+    /// block-time surface uses (`BlockTimeText`). Remaining is the one
+    /// countdown and keeps its own column and label, so it cannot be read as
+    /// either half of that pair.
+    ///
+    /// Paused, or an active block the service sent without a deadline, each
+    /// column shows the last number the service published, in the same clock
+    /// shape the running timer draws, so pausing a ninety-minute block cannot
+    /// turn 1:29:00 into 89:00. The old branching ran a count-*up* whenever
+    /// `ends_at` was missing, including for the Remaining column.
+    private func elapsedColumn(_ snapshot: WorkBlockSnapshot) -> some View {
         VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
-            Text(title)
-                .font(VelvtType.label(9.5))
-                .tracking(VelvtType.labelTracking)
-                .textCase(.uppercase)
-                .foregroundStyle(VelvtInk.tertiaryOnInk)
-            if snapshot.phase == .active, let endsAt = snapshot.endsAt {
-                if countsDown {
-                    Text(timerInterval: Date()...max(Date(), endsAt), countsDown: true)
-                        .font(VelvtType.measurement(15).monospacedDigit())
-                        .foregroundStyle(VelvtInk.primaryOnInk)
+            // The value below speaks "elapsed of … planned" itself.
+            timeColumnTitle(BlockTimeText.label)
+                .accessibilityHidden(true)
+            Group {
+                if snapshot.phase == .active, let endsAt = snapshot.endsAt {
+                    HStack(spacing: 0) {
+                        Text(
+                            timerInterval: endsAt.addingTimeInterval(
+                                -TimeInterval(snapshot.plannedDurationSeconds))...Date.distantFuture,
+                            countsDown: false
+                        )
+                        Text(BlockTimeText.plannedSuffix(snapshot))
+                            .accessibilityLabel(BlockTimeText.spokenSuffix(snapshot))
+                    }
                 } else {
-                    Text(
-                        timerInterval: endsAt.addingTimeInterval(
-                            -TimeInterval(snapshot.plannedDurationSeconds))...Date.distantFuture,
-                        countsDown: false
-                    )
-                    .font(VelvtType.measurement(15).monospacedDigit())
-                    .foregroundStyle(VelvtInk.primaryOnInk)
+                    Text(BlockTimeText.clock(snapshot))
+                        .accessibilityLabel(BlockTimeText.spoken(snapshot))
                 }
-            } else {
-                // Paused, or an active block the service sent without a deadline.
-                // The last number it published, in the same shape the running timer
-                // draws, so pausing a ninety-minute block cannot turn 1:29:00 into
-                // 89:00. The old branching ran a count-*up* here whenever `ends_at`
-                // was missing, including for the Remaining column.
-                Text(DurationText.clock(seconds))
-                    .font(VelvtType.measurement(15).monospacedDigit())
-                    .foregroundStyle(VelvtInk.primaryOnInk)
             }
+            .font(VelvtType.measurement(15).monospacedDigit())
+            .foregroundStyle(VelvtInk.primaryOnInk)
         }
+        .accessibilityElement(children: .combine)
     }
 
-    private func resultMetric(_ title: String, _ seconds: Int) -> some View {
+    private func remainingColumn(_ snapshot: WorkBlockSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
+            timeColumnTitle(BlockTimeText.remainingLabel)
+            Group {
+                if snapshot.phase == .active, let endsAt = snapshot.endsAt {
+                    Text(timerInterval: Date()...max(Date(), endsAt), countsDown: true)
+                } else {
+                    Text(DurationText.clock(snapshot.remainingDurationSeconds))
+                }
+            }
+            .font(VelvtType.measurement(15).monospacedDigit())
+            .foregroundStyle(VelvtInk.primaryOnInk)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func timeColumnTitle(_ title: String) -> some View {
+        Text(title)
+            .font(VelvtType.label(9.5))
+            .tracking(VelvtType.labelTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(VelvtInk.tertiaryOnInk)
+    }
+
+    private func resultMetric(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: VelvtMetrics.spaceXS) {
             Text(title)
                 .font(VelvtType.label(9.5))
                 .tracking(VelvtType.labelTracking)
                 .textCase(.uppercase)
                 .foregroundStyle(VelvtInk.tertiaryOnInk)
-            Text(DurationText.compact(seconds))
+            Text(value)
                 .font(VelvtType.measurement(13).monospacedDigit())
                 .foregroundStyle(VelvtInk.primaryOnInk)
         }
+    }
+
+    /// The result row is one accessibility element, so its label is the only
+    /// thing VoiceOver reads of it. It used to stop at the counts, and the
+    /// block's time never reached VoiceOver at all; it now ends with it,
+    /// elapsed first, as the row draws it.
+    static func resultMetricsAccessibilityLabel(_ result: WorkBlockResult) -> String {
+        "Came back \(result.recoveryCount) times after \(result.switchAwayCount) switch-aways. "
+            + "\(BlockTimeText.spoken(result))."
     }
 
     private var durationSeconds: Int {

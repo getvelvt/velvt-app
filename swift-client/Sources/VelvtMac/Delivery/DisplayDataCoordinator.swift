@@ -247,10 +247,13 @@ public final class MenuStatusViewModel: ObservableObject {
         )
     }
 
+    /// Removes every correction and application rule the person set. The
+    /// method name is historical; what it resets is a list of stored
+    /// corrections, not anything learned, and the copy says so.
     public func resetClassificationLearning() {
         enqueueClassificationCommand(
             .resetClassificationOverrides,
-            failureMessage: "Unable to reset classification learning. Try again later."
+            failureMessage: "Unable to reset your category corrections. Try again later."
         )
     }
 

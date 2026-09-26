@@ -151,6 +151,25 @@ final class DeliveryModuleTests: XCTestCase {
         )
     }
 
+    /// The failure copy names what the reset removes, stored corrections,
+    /// and claims nothing about learning (FACTS: nothing in Velvt learns).
+    @MainActor
+    func testResetCorrectionsFailureNamesCorrectionsNotLearning() async {
+        let client = FakeIPCClient()
+        client.shouldThrowOnSend = IPCError.notConnected
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let sut = MenuStatusViewModel(ipcClient: client, messages: messages)
+
+        sut.resetClassificationLearning()
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(
+            sut.sendError,
+            "Unable to reset your category corrections. Try again later."
+        )
+        XCTAssertFalse(sut.sendError?.lowercased().contains("learn") ?? true)
+    }
+
     @MainActor
     func testCorrectionHistorySearchAndPaginationStayBounded() async {
         let client = FakeIPCClient()

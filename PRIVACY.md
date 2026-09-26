@@ -80,6 +80,13 @@ The Swift app keeps a small amount of state elsewhere, and one optional
 integration writes a file beside the database; both are described under
 "Stored outside the database" below.
 
+This section describes the source in this repository, which is ahead of the
+current build. Velvt 1.0.11 has migrations 0001–0036. Three things described
+below start with the first build after 1.0.11: the per-install
+`stable_key_salt` that keys the stored digests (migration 0037), `egress_ledger`
+(migration 0038), and SQLite's `secure_delete`. Each is scoped again where it
+is described.
+
 | Table | Contents | Default retention |
 |---|---|---|
 | `abstraction_map` | stable-key hash → stable ID, the on-device `label` (such as `video:youtube`), category, taxonomy version, classification provenance, and `display_name` — a friendly name for the window, or the activity name you typed when you renamed a classification. The key is an HMAC under this install's `stable_key_salt` (migration 0037), described below | a mapping is swept once 14 days pass with no further observation of its window, unless a correction you made or an event still in `raw_event_buffer` points at it — so a window you corrected keeps its mapping until you undo that correction. `display_name` also goes when you undo that correction, or with Reset Corrections, which nulls the column on every row |
@@ -147,8 +154,9 @@ are disclosed here rather than hidden behind the table's name:
   identifier** (`com.microsoft.VSCode` and the like), computed under its own
   domain separator so it cannot collide with the name key beside it. The column
   holds the digest, never the identifier — but the digest is not a secret. Since
-  migration 0037 it is keyed with this install's `stable_key_salt`, so it differs
-  from Mac to Mac and a list hashed from public sources matches nothing. The salt
+  migration 0037 (the first build after 1.0.11) it is keyed with this install's
+  `stable_key_salt`, so it differs from Mac to Mac and a list hashed from public
+  sources matches nothing; in 1.0.11 it is unsalted and the same on every Mac. The salt
   sits in the same file, though, and the set of macOS bundle identifiers is
   small, public and enumerable, so anyone holding the whole file can hash a list
   of known identifiers under it and read off which applications you ran. Treat
@@ -261,15 +269,25 @@ each salt is stored beside what it keys, neither protects anything from someone
 who has the whole file. The only protection against that is who can read the
 file: it is owner-only, inside an owner-only directory.
 
+Which builds have which salt: `embedding_salt` is in the tagged sources of 1.0.9
+and 1.0.11. `stable_key_salt` is not. Migration 0037 starts with the first
+build after 1.0.11, and Velvt 1.0.11 has migrations 0001–0036, so on a 1.0.11
+database every window key, application key, and bundle digest is a plain
+SHA-256 over a fixed domain string and the raw input: the same on every Mac,
+and testable against a list of guesses with this repository's source alone.
+When the first build after 1.0.11 opens such a database, migration 0037
+generates the salt and re-keys every digest already on disk under it.
+
 ### The rest of the database
 
 The first table above is every store that holds something drawn from your Mac. It is
-not every table in the file. A database with every shipped migration applied
-holds 37 tables, plus SQLite's own `sqlite_sequence`; the 20 that are not in
-that table hold counters, settings, keys, feature state, and the record of what
-was sent. They are listed here for
-the same reason the three empty ones are — you will see them if you open the
-file.
+not every table in the file. A database with every migration in this source
+tree applied (0001–0038) holds 37 tables, plus SQLite's own `sqlite_sequence`.
+A Velvt 1.0.11 database stops at 0036 and holds 34: it has no
+`stable_key_salt`, `egress_ledger`, or `egress_ledger_checkpoint`. Of the 37,
+the 20 that are not in that table hold counters, settings, keys, feature state,
+and the record of what was sent. They are listed here for the same reason the
+three empty ones are — you will see them if you open the file.
 
 | Table | What it holds | Retention |
 |---|---|---|
@@ -278,7 +296,7 @@ file.
 | `egress_ledger` | one row per HTTP request the helper made, written before it was sent: when, the method and URL, the body's byte count, the SHA-256 of the body, whether an account token was attached, and a hash chaining the row to the one before. No body is stored. For the sign-up, log-in, and token-refresh bodies the hash is taken with the password or token replaced by `[redacted]`. Described under "How to audit what is sent" below | 30 days or 100,000 rows, whichever is tighter, oldest first. No in-app removal |
 | `egress_ledger_checkpoint` | the sequence number and hash of the last `egress_ledger` row retention removed, so the rows that remain still verify | the newest checkpoint only |
 | `embedding_salt` | a 32-byte random value generated on this device by migration 0031: the per-install key the embedding feature hash is computed under, as described above. No activity data | singleton, and never rewritten: a second salt would invalidate every sketch stored under the first. No sweep |
-| `stable_key_salt` | a second 32-byte random value generated on this device, by migration 0037: the per-install key every stable key, application key, and bundle digest in this file is an HMAC under. It stops a guess being checked offline from this repository alone and stops two Macs' keys matching; it does not stop someone who holds this whole file, because it is in it. No activity data | singleton, and never rewritten while it exists: a second salt would orphan every correction keyed under the first, so if the row is deleted by hand Velvt mints a new one and removes the corrections and mappings it can no longer match. No sweep |
+| `stable_key_salt` | a second 32-byte random value generated on this device, by migration 0037: the per-install key every stable key, application key, and bundle digest in this file is an HMAC under. It stops a guess being checked offline from this repository alone and stops two Macs' keys matching; it does not stop someone who holds this whole file, because it is in it. No activity data. Not in a Velvt 1.0.11 database, which stops at migration 0036; it starts with the first build after 1.0.11 | singleton, and never rewritten while it exists: a second salt would orphan every correction keyed under the first, so if the row is deleted by hand Velvt mints a new one and removes the corrections and mappings it can no longer match. No sweep |
 | `upload_host_backoff` | one row per upload host — the configured API hostname, its consecutive-failure count, and the earliest time a next attempt is allowed. No event content | removed for a host as soon as a batch upload to it succeeds; otherwise it persists |
 | `work_block_intervention` | the drift offer a block received: broad anchor category, switch count, window length, salience, the fixed action id, when it was offered, when its in-app card was first on screen (`card_seen_at`, migration 0032), and the outcome you gave it and when. The block id is the primary key, so a block holds at most one. No label, app identity, window title, URL, or intention text | removed with its block, and by Clear Local Work Blocks |
 | `work_block_category_correction` | when you answer an offer with "wrong classification", the broad category that counts as focus work for that block. Categories only | removed with its block, and by Clear Local Work Blocks |
@@ -325,7 +343,10 @@ with SQLite's `secure_delete` on, so SQLite overwrites a deleted row's bytes wit
 zeros instead of leaving them in free space, where a tool reading the raw file
 could still find them. Audit 8 found the opposite before this was switched on on
 2026-09-25: after Clear Local Work Blocks, the text of a cleared intention was
-still readable in the raw file.
+still readable in the raw file. This applies from the first build after 1.0.11.
+Velvt 1.0.11 and earlier open the database without `secure_delete`, so on those
+builds a deleted row's bytes can stay readable in the raw file, as Audit 8
+found.
 
 There is no in-app action that clears everything. Deleting `~/.velvt/` is the
 only complete removal, and the procedure for it is at the end of this document.
@@ -564,7 +585,9 @@ stands for, so there is nothing in it to reverse. What does the lookup is the
 separate stable *key*, which lives in `abstraction_map` on this device. Since
 migration 0037 it is an HMAC-SHA-256 of (app name, window context) under
 `stable_key_salt`; before that it was a plain unsalted SHA-256, testable against
-any Velvt database from this repository's source alone. The salt ends that, and
+any Velvt database from this repository's source alone. Migration 0037 starts
+with the first build after 1.0.11, so a Velvt 1.0.11 database still holds the
+unsalted form. The salt ends that, and
 ends two Macs sharing a key, but it is stored beside the keys, so anyone holding
 the whole database file can still confirm a guessed title one hash at a time.
 What limits that is retention: a mapping is swept 14 days after its window was

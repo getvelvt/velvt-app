@@ -1508,6 +1508,47 @@ final class ServiceStatusAlertTests: XCTestCase {
             "an unrelated message must leave a real alert standing")
     }
 
+    /// A release helper that opened a database whose applied migrations differ
+    /// from its own files keeps running and says so. The copy is its own, not
+    /// "Reduced classification", which would describe a different problem.
+    func testAMigrationChecksumMismatchHasItsOwnWarning() {
+        let alert = ServiceAlertModel.alert(
+            forServiceState: status(.degraded, "migration_checksum_mismatch"))
+
+        XCTAssertEqual(alert?.severity, .warning)
+        XCTAssertEqual(alert?.title, "Local database mismatch")
+        XCTAssertTrue(alert?.message.contains("Collection") == true)
+    }
+
+    /// The helper reports the mismatch once, when it starts, and it lasts as
+    /// long as that helper runs. The auth statuses that follow on every
+    /// transition say nothing about it, so good news about auth must not erase
+    /// it; only a dismissal does.
+    func testAMigrationChecksumMismatchOutlivesLaterAuthStatuses() {
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let model = ServiceAlertModel(messages: messages)
+
+        messages.send(
+            .serviceStatus(ServiceStatus(state: .degraded, reason: "migration_checksum_mismatch")))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(model.alert?.title, "Local database mismatch")
+
+        messages.send(.serviceStatus(ServiceStatus(state: .authRequired, reason: "needs_reauth")))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(model.alert?.title, "Signed out", "a new problem still takes the banner")
+
+        messages.send(.serviceStatus(ServiceStatus(state: .ready, reason: nil)))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(
+            model.alert?.title, "Local database mismatch",
+            "signing in resolves the auth problem, not the database one")
+
+        model.dismiss()
+        messages.send(.serviceStatus(ServiceStatus(state: .ready, reason: nil)))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertNil(model.alert, "a dismissed warning stays dismissed")
+    }
+
     /// Every one of these states leaves local collection running. A status that
     /// reads as total failure would send a user to uninstall over a paused
     /// upload queue.

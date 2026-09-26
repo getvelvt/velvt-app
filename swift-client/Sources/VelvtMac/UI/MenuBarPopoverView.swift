@@ -552,6 +552,18 @@ public final class ServiceAlertModel: ObservableObject {
     @Published public private(set) var alert: ServiceAlert?
     private var cancellable: AnyCancellable?
 
+    /// A condition the service reports once, when it starts, and that nothing
+    /// resolves while it runs. Auth statuses arrive on every transition and
+    /// say nothing about it, so a status that clears the banner falls back to
+    /// this rather than to nothing. Only a dismissal removes it.
+    private var standing: ServiceAlert?
+
+    /// Status reasons that name a standing condition. `migration_checksum_mismatch`
+    /// is a release helper that opened a database whose applied migrations
+    /// differ from its own files (migration 0039); it keeps running, and says so
+    /// once, at startup.
+    static let standingReasons: Set<String> = ["migration_checksum_mismatch"]
+
     /// Three outcomes, not two.
     ///
     /// This used to be `compactMap(alert(for:))`, which drops nils — so a
@@ -567,6 +579,8 @@ public final class ServiceAlertModel: ObservableObject {
         /// The service is healthy. Anything on screen is stale.
         case clear
         case raise(ServiceAlert)
+        /// A condition that lasts as long as the service runs; see `standing`.
+        case stand(ServiceAlert)
     }
 
     public init(messages: some Publisher<ServerMessage, Never>) {
@@ -574,10 +588,14 @@ public final class ServiceAlertModel: ObservableObject {
             messages
             .receive(on: RunLoop.main)
             .sink { [weak self] message in
+                guard let self else { return }
                 switch Self.healthUpdate(for: message) {
                 case .noOpinion: break
-                case .clear: self?.alert = nil
-                case .raise(let alert): self?.alert = alert
+                case .clear: self.alert = self.standing
+                case .raise(let alert): self.alert = alert
+                case .stand(let alert):
+                    self.standing = alert
+                    self.alert = alert
                 }
             }
     }
@@ -585,13 +603,18 @@ public final class ServiceAlertModel: ObservableObject {
     static func healthUpdate(for message: ServerMessage) -> HealthUpdate {
         if case .serviceStatus(let status) = message {
             // A status message always has an opinion; that is what it is for.
-            return alert(forServiceState: status).map(HealthUpdate.raise) ?? .clear
+            guard let alert = alert(forServiceState: status) else { return .clear }
+            if let reason = status.reason, standingReasons.contains(reason) {
+                return .stand(alert)
+            }
+            return .raise(alert)
         }
         return alert(for: message).map(HealthUpdate.raise) ?? .noOpinion
     }
 
     public func dismiss() {
         alert = nil
+        standing = nil
     }
 
     private static func alert(for message: ServerMessage) -> ServiceAlert? {
@@ -645,6 +668,13 @@ public final class ServiceAlertModel: ObservableObject {
             return nil
         case .degraded where status.reason == "auth_refresh_in_flight":
             return nil
+        case .degraded where status.reason == "migration_checksum_mismatch":
+            return ServiceAlert(
+                severity: .warning,
+                title: "Local database mismatch",
+                message:
+                    "This version's database setup differs from the one your data was built with. Collection and local history continue."
+            )
         case .degraded:
             return ServiceAlert(
                 severity: .warning,

@@ -465,7 +465,7 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     private func observeReportingFailure(_ application: RunningApplication) {
         do {
             try observe(application)
-            publish(.running)
+            publish(.running, observing: application.processIdentifier)
         } catch CollectionError.permissionRevoked {
             stopAfterPermissionRevocation()
         } catch CollectionError.observerRegistrationFailed(let code) {
@@ -483,10 +483,17 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     /// queue has already stopped the agent for a revoked permission, and its
     /// `.running` must not paper over that stop.
     ///
-    /// Never called with `lock` held: it reads `isRunning`, which takes it.
-    private func publish(_ status: CollectionStatus) {
+    /// `processIdentifier` names the application a registration's report is
+    /// about. The report is dropped once that application is no longer the one
+    /// observed: its observer can fail on the callback queue before the
+    /// activation that registered it reports, and the failure's `.limited` is
+    /// the newer fact. Checked under `statusLock`, so in either order the
+    /// failure's report is the one left standing.
+    ///
+    /// Never called with `lock` held: it takes it.
+    private func publish(_ status: CollectionStatus, observing processIdentifier: pid_t? = nil) {
         statusLock.withLock {
-            guard !status.isCollecting || isRunning else {
+            guard !status.isCollecting || isStillCollecting(observing: processIdentifier) else {
                 return
             }
             let previous = publishedStatus
@@ -496,6 +503,18 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
             publishedStatus = status
             statusSubject.send(status)
             reportStatusTransition(previous, status)
+        }
+    }
+
+    private func isStillCollecting(observing processIdentifier: pid_t?) -> Bool {
+        lock.withLock {
+            guard isRunningLocked else {
+                return false
+            }
+            guard let processIdentifier else {
+                return true
+            }
+            return activeProcessIdentifier == processIdentifier
         }
     }
 

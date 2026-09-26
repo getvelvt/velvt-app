@@ -672,6 +672,37 @@ final class CollectionModuleTests: XCTestCase {
         XCTAssertFalse(agent.isRunning)
     }
 
+    /// The observer's first callback runs on its own queue and can fail before
+    /// the activation that registered it has reported. The failure is the
+    /// newer fact, and the registration's `.running` must not overwrite it:
+    /// that would say "Collection active" for an application nothing observes
+    /// until the next switch.
+    func testObserverThatFailsBeforeItsRegistrationReportsStaysLimited() throws {
+        let workspace = FakeWorkspaceObserver()
+        let accessibility = FakeAccessibilityObserver()
+        accessibility.initialTitles = [10: "Draft", 20: "Inbox"]
+        let failure = CollectionError.observerRegistrationFailed(code: AXError.invalidUIElement.rawValue)
+        accessibility.onRegistered = { processIdentifier in
+            if processIdentifier == 10 {
+                accessibility.emitError(failure)
+            }
+        }
+        let agent = makeAgent(workspace: workspace, accessibility: accessibility)
+        var statuses: [CollectionStatus] = []
+        agent.status.sink { statuses.append($0) }.store(in: &cancellables)
+        let limited = CollectionStatus.limited("ax_observer_failed:\(AXError.invalidUIElement.rawValue)")
+
+        try agent.start()
+        workspace.activate(.init(processIdentifier: 10, appName: "Editor"))
+
+        XCTAssertEqual(statuses, [.idle, .running, limited])
+        XCTAssertTrue(agent.isRunning)
+
+        workspace.activate(.init(processIdentifier: 20, appName: "Mail"))
+
+        XCTAssertEqual(statuses, [.idle, .running, limited, .running])
+    }
+
     func testStatusLogLinesArePersistedAndCarryOnlyFixedCodes() {
         let noWindow = "ax_observer_registration_failed:\(AXError.noValue.rawValue)"
         let transitions: [StatusTransition] = [
@@ -1093,6 +1124,9 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
     var startError: CollectionError?
     var startErrors: [pid_t: CollectionError] = [:]
     var onStart: ((pid_t) -> Void)?
+    /// Runs once the observer is registered and its handlers are live, before
+    /// `start` returns: the moment a real observer's first callback can land.
+    var onRegistered: ((pid_t) -> Void)?
     private(set) var operations: [Operation] = []
     private(set) var stopCallCount = 0
     private(set) var startCallCount = 0
@@ -1119,6 +1153,7 @@ private final class FakeAccessibilityObserver: AccessibilityObserving {
         maximumActiveObserverCount = max(maximumActiveObserverCount, activeObserverCount)
         self.activityHandler = activityHandler
         self.errorHandler = errorHandler
+        onRegistered?(application.processIdentifier)
         return FocusedActivity(
             windowTitle: initialTitles[application.processIdentifier],
             focusedDocumentURL: initialDocumentURLs[application.processIdentifier]

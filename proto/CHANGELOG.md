@@ -23,9 +23,18 @@
   reused there, so each dwell is still classified exactly once. The gate
   evaluates at the dwell's `occurred_at`, which the closed report carried too,
   and the closed report then lands on the observation the in-progress one
-  opened and is a no-op there. Decisions, offers, outcomes and their
-  timestamps are the same as before; only the wall-clock moment the gate
-  reaches them moves. `DRIFT_POLICY_VERSION` is unchanged.
+  opened and is a no-op there. When a pause, a sleep or a service restart
+  closed that observation first, the closed report re-opens the ledger at the
+  resume and is not evaluated again, so one dwell is one decision.
+- Drift policy version 3 (`DRIFT_POLICY_VERSION` 2 → 3). The gate's constants
+  and branches are unchanged, and on dwells that close inside the block with
+  no boundary between their two reports the decisions and their timestamps
+  are too; only the wall-clock moment moves. Elsewhere the decision points
+  differ: a dwell still in progress when the block ends or the Mac sleeps is
+  now decided on (version 2 never saw it), and a dwell interrupted by a pause
+  or a restart is decided on when it began rather than at the resume. An
+  offer now reaches the person while they are away. Decisions under the two
+  versions are never pooled.
 - Acknowledged like any `raw_event` (`raw_event_ack`, `accepted`).
 - Compatibility: a closed dwell carries no `in_progress` key, byte for byte
   what a protocol-31 client sent. A pre-32 service rejects the key

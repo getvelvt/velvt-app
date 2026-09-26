@@ -53,9 +53,10 @@ const INTENTION_RETENTION_HOURS: i64 = 24;
 /// offers across the 100 pure-noise traces in `tests/trace_replay.rs` suite B,
 /// which accepts none. `DRIFT_WINDOW_SECONDS` and `DRIFT_MIN_REMAINING_SECONDS`
 /// are unchanged — neither appears in the abstention record, and widening the
-/// window would change what "recently" means in copy that is frozen. This is
-/// policy version 2 (`DRIFT_POLICY_VERSION`); version 1 was 4 switches after a
-/// 5-minute warm-up.
+/// window would change what "recently" means in copy that is frozen. These
+/// constants are policy version 2 and, unchanged, version 3
+/// (`DRIFT_POLICY_VERSION`); version 1 was 4 switches after a 5-minute
+/// warm-up.
 ///
 /// These are still an uncalibrated guess, now a less strict one. The thing that
 /// replaces guessing is randomization with a recorded propensity, not a better
@@ -67,10 +68,20 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// The version of the decision policy above, stamped on every logged decision.
 ///
 /// Bump it whenever a gate constant, a branch, or the order of the branches
-/// changes meaning. Decisions logged under different policy versions are not
-/// pooled: a rate computed across a policy change is a number about two
-/// different policies.
-pub const DRIFT_POLICY_VERSION: u32 = 2;
+/// changes meaning, or when the evidence the gate decides on changes. Decisions
+/// logged under different policy versions are not pooled: a rate computed
+/// across a policy change is a number about two different policies.
+///
+/// Version 3 (protocol 32, 2026-09-26) keeps every constant and branch of
+/// version 2 and changes when a dwell reaches the gate. Version 2 saw a dwell
+/// only when the person left it, so a departure was decided on as they came
+/// back and the offer was withdrawn before it could be posted; a departure
+/// still in progress when the block ended, or when the Mac slept, was never
+/// decided on at all; and a dwell interrupted by a pause or a restart was
+/// decided on at the resume. Version 3 decides on each dwell once, when it
+/// begins. The set of decision points differs, and so does what an `offered`
+/// row means for the person, so the two are never pooled.
+pub const DRIFT_POLICY_VERSION: u32 = 3;
 /// The realized probability of the arm actually taken. Exactly 1.0 while the
 /// policy is deterministic — there is no randomization, and none is being
 /// introduced here. The value is recorded now because a propensity cannot be

@@ -53,6 +53,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # 2027-01-15 08:00:00 UTC, a Friday. Its local week (UTC) starts 2027-01-11.
 T0=1800000000
 INSTALLED_AT=$((T0 - 86400))
+# The drift policy the seeded decisions were made under: the one
+# analyze_cohort.py analyses (ANALYSED_POLICY_VERSION). The exporter copies
+# whatever is stored, so the value only matters to the round trips.
+POLICY=3
 
 S_INTENTION='ZZSENTINELINTENTIONZZ'
 S_APPNAME='ZZSENTINELAPPNAMEZZ'
@@ -137,13 +141,13 @@ INSERT INTO intervention_decision_log (decision_id, occurred_at, block_id,
     policy_version, anchor_category, switch_count, elapsed_seconds,
     remaining_seconds, gate_verdict, propensity, anchor_seen_within_600s, outcome_at)
 VALUES
- ('d-01', $((T0 + 60)),    'block-1', 2, NULL,         0,   60, 2940, 'abstained_warmup', 1.0, 1, $((T0 + 660))),
- ('d-02', $((T0 + 600)),   'block-1', 2, 'FOCUS_WORK', 3,  600, 2400, 'offered',          1.0, 1, $((T0 + 1200))),
- ('d-03', $((T0 + 10900)), 'block-2', 2, 'FOCUS_WORK', 4,  600, 2400, 'suppressed_dnd',   1.0, 0, $((T0 + 11500))),
- ('d-04', $((T0 + 20700)), 'block-3', 2, 'REFERENCE',  3,  700, 2300, 'withheld_demotion',1.0, NULL, NULL),
- ('d-05', $((T0 + 30400)), 'block-4', 2, 'FOCUS_WORK', 3,  400, 1400, 'offered',          1.0, NULL, NULL),
- ('d-06', $((T0 + 40050)), 'block-5', 2, NULL,         0,   50, 1450, 'abstained_warmup', 1.0, NULL, NULL),
- ('d-07', $((T0 + 63600)), 'block-7', 2, 'REFERENCE',  5, 3600,    0, 'offered',          1.0, 0, $((T0 + 64200)));
+ ('d-01', $((T0 + 60)),    'block-1', $POLICY, NULL,         0,   60, 2940, 'abstained_warmup', 1.0, 1, $((T0 + 660))),
+ ('d-02', $((T0 + 600)),   'block-1', $POLICY, 'FOCUS_WORK', 3,  600, 2400, 'offered',          1.0, 1, $((T0 + 1200))),
+ ('d-03', $((T0 + 10900)), 'block-2', $POLICY, 'FOCUS_WORK', 4,  600, 2400, 'suppressed_dnd',   1.0, 0, $((T0 + 11500))),
+ ('d-04', $((T0 + 20700)), 'block-3', $POLICY, 'REFERENCE',  3,  700, 2300, 'withheld_demotion',1.0, NULL, NULL),
+ ('d-05', $((T0 + 30400)), 'block-4', $POLICY, 'FOCUS_WORK', 3,  400, 1400, 'offered',          1.0, NULL, NULL),
+ ('d-06', $((T0 + 40050)), 'block-5', $POLICY, NULL,         0,   50, 1450, 'abstained_warmup', 1.0, NULL, NULL),
+ ('d-07', $((T0 + 63600)), 'block-7', $POLICY, 'REFERENCE',  5, 3600,    0, 'offered',          1.0, 0, $((T0 + 64200)));
 SQL
 }
 
@@ -298,7 +302,7 @@ import csv, sys
 rows = {r["decision_id"]: r for r in csv.DictReader(open(sys.argv[1]))}
 T0 = 1800000000
 assert sorted(rows) == [f"d-0{i}" for i in range(1, 8)], sorted(rows)
-assert {r["policy_version"] for r in rows.values()} == {"2"}, rows
+assert {r["policy_version"] for r in rows.values()} == {"3"}, rows
 assert rows["d-01"]["gate_verdict"] == "abstained_warmup", rows["d-01"]
 assert rows["d-05"]["anchor_seen_within_600s"] == "", rows["d-05"]
 assert rows["d-02"]["anchor_seen_within_600s"] == "1", rows["d-02"]
@@ -389,8 +393,8 @@ import json, sys
 r = json.load(open(sys.argv[1]))
 assert r["data_quality"]["malformed"] == [], r["data_quality"]
 assert r["participants"]["analysed"] == 1, r["participants"]
-assert r["policy"]["decisions_by_policy_version"] == {"2": 7}, r["policy"]
-assert r["policy"]["interventions_by_attribution"] == {"2": 5}, r["policy"]
+assert r["policy"]["decisions_by_policy_version"] == {"3": 7}, r["policy"]
+assert r["policy"]["interventions_by_attribution"] == {"3": 5}, r["policy"]
 d = r["decisions_recorded"]
 assert (d["total"], d["delivered"], d["withheld"]) == (5, 3, 2), d
 assert r["primary_outcome"]["eligible_decision_points"] == 3, r["primary_outcome"]
@@ -473,8 +477,8 @@ VALUES
 INSERT INTO intervention_decision_log (decision_id, occurred_at, block_id, policy_version,
     anchor_category, switch_count, elapsed_seconds, remaining_seconds, gate_verdict, propensity)
 VALUES
- ('d-08',$((T0 + 70400)),'block-8',2,'FOCUS_WORK',3,400,1400,'offered',1.0),
- ('d-09',$((T0 + 80400)),'block-9',2,'FOCUS_WORK',3,400,1400,'offered',1.0);
+ ('d-08',$((T0 + 70400)),'block-8',$POLICY,'FOCUS_WORK',3,400,1400,'offered',1.0),
+ ('d-09',$((T0 + 80400)),'block-9',$POLICY,'FOCUS_WORK',3,400,1400,'offered',1.0);
 SQL
 mkdir -p "$work/upgrade"
 run_export "$dbup" "$work/upgrade/export.csv" "$work/stdoutup.txt"

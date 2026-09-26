@@ -73,9 +73,28 @@ closed report of the same dwell finds that row open with the same evidence and
 changes nothing. Before protocol 32 only the closed report existed, so the gate
 learned of a departure at the moment the user came back, and the offer it made
 was withdrawn as `returned` by the next report before any notification could
-be posted. The gate's inputs and timestamps are identical either way; only the
-wall-clock moment it decides moves. A closed report whose in-progress report
-never arrived (the socket was down) opens the row itself, as before.
+be posted. A closed report whose in-progress report never arrived (the socket
+was down) opens the row itself, as before.
+
+This is drift policy version 3 (`DRIFT_POLICY_VERSION`). The gate's constants
+and branches are version 2's, and on a stretch of dwells that all close inside
+the block with no boundary between their two reports, the decisions and their
+timestamps are the same both ways; only the wall-clock moment moves. The set of
+decision points is not the same everywhere, which is why the version changed:
+
+- A dwell still in progress when the block ends, or when the Mac sleeps and the
+  block pauses, is now decided on when it begins. Version 2 never saw it, so a
+  person who left and did not come back before the end was never offered
+  anything.
+- A dwell interrupted by a pause or a service restart is decided on once, when
+  it begins. Version 2 decided on it when its closed report arrived after the
+  resume, against a window that had moved on. A boundary closes the row the
+  in-progress report opened; the closed report that follows re-opens the
+  ledger at the resume and is not evaluated again, so one dwell is never two
+  decisions.
+
+`tests/drift_offer_in_progress_boundaries.rs` pins each case against a
+closed-only client.
 
 An observation row's end is the next row's start. At a boundary — pause or
 sleep, a service restart, or the end of the block — there is no next row, and

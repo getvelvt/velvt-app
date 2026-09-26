@@ -224,11 +224,14 @@ for abstraction.
   just begun and `duration_seconds` is 0 because nothing has been measured.
   Swift reports every dwell twice: in progress when it begins, and closed,
   with its measured duration, when the next one begins, always in that order.
+  The in-progress report goes only live, while the socket is up and no older
+  closed report is waiting; it is never buffered or replayed.
   Rust feeds an in-progress report to the in-block drift gate only: it is
   never stored in `raw_event_buffer` and never uploaded, and it is not even
   classified outside an active block. Without it the gate saw a departure
   only when the person came back, and the offer it made was withdrawn before a
-  notification could be posted. Absent on a closed dwell.
+  notification could be posted. Absent on a closed dwell. The gate deciding
+  on each dwell as it begins is drift policy version 3.
 
 ### `raw_event_ack`
 

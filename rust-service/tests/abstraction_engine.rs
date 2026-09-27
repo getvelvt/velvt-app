@@ -33,6 +33,28 @@ fn engine() -> AbstractionEngine {
     AbstractionEngine::from_builtin_taxonomy(Arc::new(InMemoryMappingStore::default())).unwrap()
 }
 
+/// Times 10,000 runs of the engine over one event and holds them to the Tier 1
+/// budget: a mean and a p95 under one millisecond.
+fn assert_tier1_budget(engine: &AbstractionEngine, what: &str, event: impl Fn() -> RawEvent) {
+    let mut samples = Vec::with_capacity(10_000);
+    for _ in 0..10_000 {
+        let started = Instant::now();
+        let _ = engine.process(event()).unwrap();
+        samples.push(started.elapsed());
+    }
+    samples.sort();
+    let mean = samples.iter().sum::<Duration>() / samples.len() as u32;
+    let p50 = samples[4_999];
+    let p95 = samples[9_499];
+    let p99 = samples[9_899];
+    eprintln!("Tier 1 ({what}) mean={mean:?} p50={p50:?} p95={p95:?} p99={p99:?}");
+    assert!(
+        mean < Duration::from_millis(1),
+        "Tier 1 ({what}) mean was {mean:?}"
+    );
+    assert!(p95.as_millis() < 1, "Tier 1 ({what}) p95 was {p95:?}");
+}
+
 #[test]
 fn tier1_is_deterministic_and_completes_under_one_millisecond() {
     let engine = engine();
@@ -42,19 +64,6 @@ fn tier1_is_deterministic_and_completes_under_one_millisecond() {
     let second = engine
         .process(raw_event("VS Code", "private project"))
         .unwrap();
-    let mut samples = Vec::with_capacity(10_000);
-    for _ in 0..10_000 {
-        let started = Instant::now();
-        let _ = engine
-            .process(raw_event("VS Code", "private project"))
-            .unwrap();
-        samples.push(started.elapsed());
-    }
-    samples.sort();
-    let mean = samples.iter().sum::<Duration>() / samples.len() as u32;
-    let p50 = samples[4_999];
-    let p95 = samples[9_499];
-    let p99 = samples[9_899];
 
     assert_eq!(first.stable_id(), second.stable_id());
     assert_eq!(first.label(), second.label());
@@ -71,9 +80,33 @@ fn tier1_is_deterministic_and_completes_under_one_millisecond() {
         ClassificationConfidence::High
     );
     assert_eq!(first.classification_source(), ClassificationSource::Seed);
-    eprintln!("Tier 1 mean={mean:?} p50={p50:?} p95={p95:?} p99={p99:?}");
-    assert!(mean < Duration::from_millis(1), "Tier 1 mean was {mean:?}");
-    assert!(p95.as_millis() < 1, "Tier 1 p95 was {p95:?}");
+    assert_tier1_budget(&engine, "an application seed", || {
+        raw_event("VS Code", "private project")
+    });
+}
+
+/// A browser tab on a seeded site takes a longer Tier 1 path than an
+/// application seed: the site's identity, the seed table lookup, the site key
+/// and the site-rule lookup all run for it, so it is held to the same budget.
+/// A seeded host only: a site no seed names falls through to the tiers below.
+#[test]
+fn tier1_for_a_seeded_browser_tab_completes_under_one_millisecond() {
+    let engine = engine();
+    let seeded_tab = || RawEvent {
+        focused_document_url: Some("https://github.com/org/repo/pull/1".to_owned()),
+        ..raw_event("Safari", "Fix the flaky test by org - Pull Request #1")
+    };
+    let tab = engine.process(seeded_tab()).unwrap();
+
+    assert_eq!(tab.label(), "reference:github");
+    assert_eq!(tab.category(), "REFERENCE");
+    assert_eq!(tab.classification_tier(), ClassificationTier::ExactMatch);
+    assert_eq!(tab.classification_source(), ClassificationSource::Seed);
+    assert_eq!(
+        tab.classification_confidence(),
+        ClassificationConfidence::High
+    );
+    assert_tier1_budget(&engine, "a seeded browser tab", seeded_tab);
 }
 
 #[test]

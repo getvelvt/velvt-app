@@ -17,7 +17,8 @@ WHETHER to offer there:
 
   2. The declared withhold candidate. `ReturnLedger::would_withhold` in
      `rust-service/src/behavior/returns.rs` is the one per-person rule declared
-     for offline evaluation. It never looks at randomized points: it withholds
+     for offline evaluation. As built, it reads only departures the gate did not
+     act on (v6 § 9 would add rows the draw assigned to silence): it withholds
      at a point when, in each of the point's three context cells, the lower end
      of the 80% interval on the person's own return rate over the last 28 days
      is at least 0.60 (no-nudge returns after departures the gate did not act

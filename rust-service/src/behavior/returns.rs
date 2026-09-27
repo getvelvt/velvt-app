@@ -48,7 +48,7 @@
 //! a withhold rule fire more often than the person's own rate would.
 //!
 //! Resolved rows are tallied per person into a small frozen set of context
-//! cells ([`CELLS`]): which kind of category the departure went to, which third
+//! cells ([`RETURN_CELLS`]): which kind of category the departure went to, which third
 //! of the block it happened in, and which part of the local day. Each cell is a
 //! Beta-Binomial posterior shrunk towards the person's own overall rate, so the
 //! default answer is "no difference from you in general".
@@ -195,7 +195,7 @@ pub const ASSUMED_WITHIN_BLOCK_CORRELATION: f64 = 0.3;
 pub const DISPUTED_BLOCK_WEIGHT: f64 = 0.5;
 
 /// Family-wise two-sided error rate over the whole cell family, Bonferroni
-/// over [`CELLS`]`.len()` contrasts. The family size is the compile-time
+/// over [`RETURN_CELLS`]`.len()` contrasts. The family size is the compile-time
 /// number of cells, never the number that happened to be testable.
 pub const FAMILY_ALPHA: f64 = 0.20;
 
@@ -234,7 +234,7 @@ pub enum CellDimension {
 /// One frozen context cell. Every resolved row falls in exactly one cell of
 /// each dimension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Cell {
+pub enum ReturnCell {
     /// COMMUNICATION.
     Communication,
     /// SOCIAL_FEED or PASSIVE_CONSUMPTION.
@@ -254,19 +254,19 @@ pub enum Cell {
 
 /// The whole family, in reporting order. Adding, removing or redrawing a cell
 /// is a [`RETURN_LEDGER_MODEL_VERSION`] change.
-pub const CELLS: [Cell; 9] = [
-    Cell::Communication,
-    Cell::FeedsAndVideo,
-    Cell::WorkAdjacent,
-    Cell::FirstThird,
-    Cell::MiddleThird,
-    Cell::FinalThird,
-    Cell::Morning,
-    Cell::Afternoon,
-    Cell::EveningAndNight,
+pub const RETURN_CELLS: [ReturnCell; 9] = [
+    ReturnCell::Communication,
+    ReturnCell::FeedsAndVideo,
+    ReturnCell::WorkAdjacent,
+    ReturnCell::FirstThird,
+    ReturnCell::MiddleThird,
+    ReturnCell::FinalThird,
+    ReturnCell::Morning,
+    ReturnCell::Afternoon,
+    ReturnCell::EveningAndNight,
 ];
 
-impl Cell {
+impl ReturnCell {
     /// Stable identifier for logs and offline analysis.
     pub fn id(self) -> &'static str {
         match self {
@@ -295,38 +295,38 @@ impl Cell {
 
 /// The departure cell for a confident category, or `None` for one that can
 /// never be confident evidence (SYSTEM, UNLOGGED) or is outside the taxonomy.
-pub fn departure_cell(category: &str) -> Option<Cell> {
+pub fn departure_cell(category: &str) -> Option<ReturnCell> {
     match category.to_ascii_uppercase().as_str() {
-        "COMMUNICATION" => Some(Cell::Communication),
-        "SOCIAL_FEED" | "PASSIVE_CONSUMPTION" => Some(Cell::FeedsAndVideo),
-        "REFERENCE" | "TASK_MANAGEMENT" | "FOCUS_WORK" => Some(Cell::WorkAdjacent),
+        "COMMUNICATION" => Some(ReturnCell::Communication),
+        "SOCIAL_FEED" | "PASSIVE_CONSUMPTION" => Some(ReturnCell::FeedsAndVideo),
+        "REFERENCE" | "TASK_MANAGEMENT" | "FOCUS_WORK" => Some(ReturnCell::WorkAdjacent),
         _ => None,
     }
 }
 
 /// The block third from the decision row's own elapsed and remaining seconds.
 /// `None` when the row carries no planned duration to divide by.
-pub fn elapsed_cell(elapsed_seconds: u32, remaining_seconds: u32) -> Option<Cell> {
+pub fn elapsed_cell(elapsed_seconds: u32, remaining_seconds: u32) -> Option<ReturnCell> {
     let planned = u64::from(elapsed_seconds) + u64::from(remaining_seconds);
     if planned == 0 {
         return None;
     }
     let scaled = 3 * u64::from(elapsed_seconds);
     Some(if scaled < planned {
-        Cell::FirstThird
+        ReturnCell::FirstThird
     } else if scaled < 2 * planned {
-        Cell::MiddleThird
+        ReturnCell::MiddleThird
     } else {
-        Cell::FinalThird
+        ReturnCell::FinalThird
     })
 }
 
 /// The part of the local day for an hour 0-23.
-pub fn hour_cell(local_hour: u32) -> Cell {
+pub fn hour_cell(local_hour: u32) -> ReturnCell {
     match local_hour {
-        5..=11 => Cell::Morning,
-        12..=16 => Cell::Afternoon,
-        _ => Cell::EveningAndNight,
+        5..=11 => ReturnCell::Morning,
+        12..=16 => ReturnCell::Afternoon,
+        _ => ReturnCell::EveningAndNight,
     }
 }
 
@@ -379,15 +379,15 @@ impl BlockEvidence {
 /// What the ledger knows about one gate decision at the instant it was made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecisionContext {
-    pub departure: Cell,
-    pub elapsed: Cell,
-    pub hour: Cell,
+    pub departure: ReturnCell,
+    pub elapsed: ReturnCell,
+    pub hour: ReturnCell,
     pub switch_count: u32,
     pub verdict: GateVerdict,
 }
 
 impl DecisionContext {
-    pub fn cells(&self) -> [Cell; 3] {
+    pub fn cells(&self) -> [ReturnCell; 3] {
         [self.departure, self.elapsed, self.hour]
     }
 }
@@ -801,7 +801,7 @@ pub enum CellStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellReport {
-    pub cell: Cell,
+    pub cell: ReturnCell,
     /// Over every resolved row in the lookback.
     pub estimate: RateEstimate,
     /// What became of every departure in the cell, resolved or not.
@@ -847,7 +847,7 @@ pub struct ReturnLedger {
     pub controls: LedgerControls,
     pub counts: LedgerCounts,
     pub baseline: RateEstimate,
-    /// One report per cell, in [`CELLS`] order.
+    /// One report per cell, in [`RETURN_CELLS`] order.
     pub cells: Vec<CellReport>,
     pub abstention: Option<LedgerAbstention>,
     /// The largest `switch_count` among counted rows. Under v5 it is below the
@@ -972,11 +972,11 @@ fn cell_prior(all: &Tally, clustering: bool) -> (f64, f64) {
     )
 }
 
-/// Cell against the rest of its dimension, over `rows`, if both clear the
+/// ReturnCell against the rest of its dimension, over `rows`, if both clear the
 /// floor.
 fn contrast(
     rows: &[&ResolvedRow],
-    cell: Cell,
+    cell: ReturnCell,
     floor: (usize, usize),
     clustering: bool,
 ) -> Option<ContrastStat> {
@@ -1026,7 +1026,7 @@ impl ReturnLedger {
             ..LedgerCounts::default()
         };
         let mut rows: Vec<ResolvedRow> = Vec::new();
-        let mut accounting: BTreeMap<Cell, CellAccounting> = BTreeMap::new();
+        let mut accounting: BTreeMap<ReturnCell, CellAccounting> = BTreeMap::new();
         for (position, (_, block)) in selected.iter().enumerate() {
             let weight = if block.disputed_as_of(config.as_of) {
                 counts.disputed_blocks += 1;
@@ -1099,7 +1099,7 @@ impl ReturnLedger {
         };
 
         let discovery_threshold = if controls.bonferroni {
-            normal_upper_quantile(FAMILY_ALPHA / (2.0 * CELLS.len() as f64))
+            normal_upper_quantile(FAMILY_ALPHA / (2.0 * RETURN_CELLS.len() as f64))
         } else {
             normal_upper_quantile(FAMILY_ALPHA / 2.0)
         };
@@ -1128,7 +1128,7 @@ impl ReturnLedger {
             .collect();
 
         let prior = cell_prior(&all, controls.clustering);
-        let cells = CELLS
+        let cells = RETURN_CELLS
             .iter()
             .map(|&cell| {
                 let estimate = Tally::of(
@@ -1211,7 +1211,7 @@ impl ReturnLedger {
         }
     }
 
-    pub fn cell(&self, cell: Cell) -> &CellReport {
+    pub fn cell(&self, cell: ReturnCell) -> &CellReport {
         self.cells
             .iter()
             .find(|report| report.cell == cell)
@@ -1220,7 +1220,7 @@ impl ReturnLedger {
 
     /// Cells whose difference from the rest of their dimension was found in
     /// the earlier blocks and repeated in the later ones.
-    pub fn surfaced(&self) -> Vec<(Cell, CellDirection)> {
+    pub fn surfaced(&self) -> Vec<(ReturnCell, CellDirection)> {
         self.cells
             .iter()
             .filter_map(|report| match report.status {
@@ -1500,11 +1500,11 @@ mod tests {
         let rows = departure_rows(&one_departure("COMMUNICATION", 120, 3_000), 0);
         assert_eq!(rows.len(), 1, "only the departure is a row: {rows:?}");
         assert_eq!(rows[0].outcome, resolved(true, 780));
-        assert_eq!(rows[0].context.departure, Cell::Communication);
+        assert_eq!(rows[0].context.departure, ReturnCell::Communication);
 
         let rows = departure_rows(&one_departure("SOCIAL_FEED", 400, 3_000), 0);
         assert_eq!(rows[0].outcome, resolved(false, 500));
-        assert_eq!(rows[0].context.departure, Cell::FeedsAndVideo);
+        assert_eq!(rows[0].context.departure, ReturnCell::FeedsAndVideo);
 
         // Exactly the threshold is a return: at least 600 of 900.
         let rows = departure_rows(&one_departure("REFERENCE", 300, 3_000), 0);
@@ -1635,7 +1635,7 @@ mod tests {
         assert_eq!(ledger.counts.censored_treated, 1);
         assert_eq!(ledger.counts.resolved, 1);
         assert_eq!(ledger.counts.resolved_before_offer, 1);
-        let communication = ledger.cell(Cell::Communication).accounting;
+        let communication = ledger.cell(ReturnCell::Communication).accounting;
         assert_eq!(
             communication,
             CellAccounting {
@@ -1644,13 +1644,13 @@ mod tests {
                 ..CellAccounting::default()
             }
         );
-        let adjacent = ledger.cell(Cell::WorkAdjacent).accounting;
+        let adjacent = ledger.cell(ReturnCell::WorkAdjacent).accounting;
         assert_eq!(adjacent.censored_treated, 0);
         assert_eq!(adjacent.resolved_before_offer, 1);
         // Both departures fall in the first third, so that cell carries both.
-        let first = ledger.cell(Cell::FirstThird).accounting;
+        let first = ledger.cell(ReturnCell::FirstThird).accounting;
         assert_eq!((first.departures, first.censored_treated), (2, 1));
-        assert_eq!(ledger.cell(Cell::Communication).estimate.resolved, 0);
+        assert_eq!(ledger.cell(ReturnCell::Communication).estimate.resolved, 0);
     }
 
     #[test]
@@ -1687,18 +1687,18 @@ mod tests {
 
     #[test]
     fn the_cells_partition_every_departure() {
-        assert_eq!(CELLS.len(), 9);
-        let mut ids: Vec<&str> = CELLS.iter().map(|cell| cell.id()).collect();
+        assert_eq!(RETURN_CELLS.len(), 9);
+        let mut ids: Vec<&str> = RETURN_CELLS.iter().map(|cell| cell.id()).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), CELLS.len(), "cell ids are unique");
+        assert_eq!(ids.len(), RETURN_CELLS.len(), "cell ids are unique");
         for dimension in [
             CellDimension::Departure,
             CellDimension::Elapsed,
             CellDimension::Hour,
         ] {
             assert_eq!(
-                CELLS
+                RETURN_CELLS
                     .iter()
                     .filter(|cell| cell.dimension() == dimension)
                     .count(),
@@ -1714,13 +1714,13 @@ mod tests {
         for hour in 0..24 {
             let _ = hour_cell(hour);
         }
-        assert_eq!(hour_cell(4), Cell::EveningAndNight);
-        assert_eq!(hour_cell(5), Cell::Morning);
-        assert_eq!(hour_cell(12), Cell::Afternoon);
-        assert_eq!(hour_cell(17), Cell::EveningAndNight);
-        assert_eq!(elapsed_cell(0, 3_600), Some(Cell::FirstThird));
-        assert_eq!(elapsed_cell(1_200, 2_400), Some(Cell::MiddleThird));
-        assert_eq!(elapsed_cell(2_400, 1_200), Some(Cell::FinalThird));
+        assert_eq!(hour_cell(4), ReturnCell::EveningAndNight);
+        assert_eq!(hour_cell(5), ReturnCell::Morning);
+        assert_eq!(hour_cell(12), ReturnCell::Afternoon);
+        assert_eq!(hour_cell(17), ReturnCell::EveningAndNight);
+        assert_eq!(elapsed_cell(0, 3_600), Some(ReturnCell::FirstThird));
+        assert_eq!(elapsed_cell(1_200, 2_400), Some(ReturnCell::MiddleThird));
+        assert_eq!(elapsed_cell(2_400, 1_200), Some(ReturnCell::FinalThird));
         assert_eq!(elapsed_cell(0, 0), None);
     }
 
@@ -1732,34 +1732,37 @@ mod tests {
         let fallback = 3 * 3_600 + 1_800;
         assert_eq!(
             departure_rows(&block, fallback)[0].context.hour,
-            Cell::Morning
+            ReturnCell::Morning
         );
         block.utc_offset_seconds = Some(4 * 3_600);
         assert_eq!(
             departure_rows(&block, fallback)[0].context.hour,
-            Cell::Afternoon
+            ReturnCell::Afternoon
         );
 
         // Through the ledger: one block per offset, read at its own.
         let mut blocks = history(&[(true, "COMMUNICATION"); 2], Duration::days(1));
         blocks[1].utc_offset_seconds = Some(4 * 3_600);
         let ledger = ReturnLedger::build(&blocks, &LedgerConfig::new(at(20 * 86_400), fallback));
-        assert_eq!(ledger.cell(Cell::Morning).accounting.departures, 1);
-        assert_eq!(ledger.cell(Cell::Afternoon).accounting.departures, 1);
+        assert_eq!(ledger.cell(ReturnCell::Morning).accounting.departures, 1);
+        assert_eq!(ledger.cell(ReturnCell::Afternoon).accounting.departures, 1);
     }
 
     #[test]
     fn the_part_of_the_day_is_local() {
         // 1_800_000_000 is 08:00 UTC.
         let block = one_departure("COMMUNICATION", 120, 3_000);
-        assert_eq!(departure_rows(&block, 0)[0].context.hour, Cell::Morning);
+        assert_eq!(
+            departure_rows(&block, 0)[0].context.hour,
+            ReturnCell::Morning
+        );
         assert_eq!(
             departure_rows(&block, 5 * 3_600)[0].context.hour,
-            Cell::Afternoon
+            ReturnCell::Afternoon
         );
         assert_eq!(
             departure_rows(&block, -4 * 3_600)[0].context.hour,
-            Cell::EveningAndNight
+            ReturnCell::EveningAndNight
         );
     }
 
@@ -1867,15 +1870,15 @@ mod tests {
         assert_eq!(ledger.abstention, None);
         // (cell, returned, resolved, blocks, lower end of the 80% interval)
         let pinned = [
-            (Cell::Communication, 5, 10, 10, 0.392_546_752_285),
-            (Cell::FeedsAndVideo, 5, 7, 7, 0.536_916_437_166),
-            (Cell::WorkAdjacent, 21, 23, 17, 0.792_387_031_023),
-            (Cell::FirstThird, 15, 20, 20, 0.627_717_218_147),
-            (Cell::MiddleThird, 16, 20, 20, 0.675_806_342_703),
-            (Cell::FinalThird, 0, 0, 0, 0.422_990_126_298),
-            (Cell::Morning, 10, 14, 7, 0.561_184_701_132),
-            (Cell::Afternoon, 11, 14, 7, 0.622_012_140_453),
-            (Cell::EveningAndNight, 10, 12, 6, 0.651_963_632_261),
+            (ReturnCell::Communication, 5, 10, 10, 0.392_546_752_285),
+            (ReturnCell::FeedsAndVideo, 5, 7, 7, 0.536_916_437_166),
+            (ReturnCell::WorkAdjacent, 21, 23, 17, 0.792_387_031_023),
+            (ReturnCell::FirstThird, 15, 20, 20, 0.627_717_218_147),
+            (ReturnCell::MiddleThird, 16, 20, 20, 0.675_806_342_703),
+            (ReturnCell::FinalThird, 0, 0, 0, 0.422_990_126_298),
+            (ReturnCell::Morning, 10, 14, 7, 0.561_184_701_132),
+            (ReturnCell::Afternoon, 11, 14, 7, 0.622_012_140_453),
+            (ReturnCell::EveningAndNight, 10, 12, 6, 0.651_963_632_261),
         ];
         for (cell, returned, resolved, blocks, lower) in pinned {
             let estimate = ledger.cell(cell).estimate;
@@ -1904,30 +1907,30 @@ mod tests {
         };
         for (departure, elapsed, hour, fires, min_lower) in [
             (
-                Cell::WorkAdjacent,
-                Cell::MiddleThird,
-                Cell::Afternoon,
+                ReturnCell::WorkAdjacent,
+                ReturnCell::MiddleThird,
+                ReturnCell::Afternoon,
                 true,
                 Some(0.622_012_140_453),
             ),
             (
-                Cell::WorkAdjacent,
-                Cell::FirstThird,
-                Cell::Morning,
+                ReturnCell::WorkAdjacent,
+                ReturnCell::FirstThird,
+                ReturnCell::Morning,
                 false,
                 Some(0.561_184_701_132),
             ),
             (
-                Cell::Communication,
-                Cell::FirstThird,
-                Cell::Afternoon,
+                ReturnCell::Communication,
+                ReturnCell::FirstThird,
+                ReturnCell::Afternoon,
                 false,
                 Some(0.392_546_752_285),
             ),
             (
-                Cell::FeedsAndVideo,
-                Cell::MiddleThird,
-                Cell::Morning,
+                ReturnCell::FeedsAndVideo,
+                ReturnCell::MiddleThird,
+                ReturnCell::Morning,
                 false,
                 None,
             ),
@@ -2079,15 +2082,15 @@ mod tests {
         assert!(
             ledger
                 .surfaced()
-                .contains(&(Cell::Communication, CellDirection::Lower)),
+                .contains(&(ReturnCell::Communication, CellDirection::Lower)),
             "{:#?}",
             ledger.cells
         );
 
         let reference = DecisionContext {
-            departure: Cell::WorkAdjacent,
-            elapsed: Cell::FirstThird,
-            hour: Cell::Morning,
+            departure: ReturnCell::WorkAdjacent,
+            elapsed: ReturnCell::FirstThird,
+            hour: ReturnCell::Morning,
             switch_count: 1,
             verdict: GateVerdict::AbstainedMinSwitches,
         };
@@ -2118,7 +2121,7 @@ mod tests {
         // Communication departures do not come back on their own, so the
         // candidate never fires there.
         let communication = DecisionContext {
-            departure: Cell::Communication,
+            departure: ReturnCell::Communication,
             ..reference
         };
         assert!(!ledger.would_withhold(&communication).would_withhold);

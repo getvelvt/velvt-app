@@ -75,8 +75,8 @@ use velvt_shared_types::{
 };
 
 use returns::{
-    context_of, departure_rows, BlockEvidence, Cell, CellDirection, CensorReason, LedgerAbstention,
-    LedgerConfig, LedgerControls, ReturnLedger, RowOutcome, WithholdSupport,
+    context_of, departure_rows, BlockEvidence, CellDirection, CensorReason, LedgerAbstention,
+    LedgerConfig, LedgerControls, ReturnCell, ReturnLedger, RowOutcome, WithholdSupport,
 };
 
 const SUITE_A: &str = "SYNTHETIC-suite-a-recovery.jsonl";
@@ -866,7 +866,7 @@ fn last_end(person: &ReplayedPerson) -> DateTime<Utc> {
 fn communication_lower(ledger: &ReturnLedger) -> bool {
     ledger
         .surfaced()
-        .contains(&(Cell::Communication, CellDirection::Lower))
+        .contains(&(ReturnCell::Communication, CellDirection::Lower))
 }
 
 fn percent(count: usize, total: usize) -> f64 {
@@ -1102,7 +1102,7 @@ fn suite_e_planted_is_found_at_volume_and_nothing_else_is() {
     for person in &planted {
         assert_eq!(
             person.trace.truth.planted_cell.as_deref(),
-            Some(Cell::Communication.id())
+            Some(ReturnCell::Communication.id())
         );
         let volume = person
             .trace
@@ -1114,14 +1114,14 @@ fn suite_e_planted_is_found_at_volume_and_nothing_else_is() {
         entry.0 += 1;
         entry.1 += usize::from(ledger.abstention.is_none());
         entry.2 += usize::from(communication_lower(&ledger));
-        let report = ledger.cell(Cell::Communication);
+        let report = ledger.cell(ReturnCell::Communication);
         *statuses
             .entry((volume, format!("{:?}", report.status)))
             .or_default() += 1;
         for (cell, direction) in ledger.surfaced() {
             if !matches!(
                 cell,
-                Cell::Communication | Cell::FeedsAndVideo | Cell::WorkAdjacent
+                ReturnCell::Communication | ReturnCell::FeedsAndVideo | ReturnCell::WorkAdjacent
             ) {
                 spurious.push(format!(
                     "{}: {} {direction:?}",
@@ -1253,7 +1253,7 @@ fn suite_e_corrected_follows_the_inputs_and_down_weights_disputes() {
             person.trace.trace_id
         );
         let rate = |ledger: &ReturnLedger| {
-            let estimate = ledger.cell(Cell::Communication).estimate;
+            let estimate = ledger.cell(ReturnCell::Communication).estimate;
             estimate.returned as f64 / estimate.resolved.max(1) as f64
         };
         communication_rate_fell += usize::from(rate(&at_end) < rate(&at_change));
@@ -1280,7 +1280,11 @@ fn suite_e_corrected_follows_the_inputs_and_down_weights_disputes() {
 }
 
 /// The departure cells, which INFORMATIVE's offers treat differently.
-const DEPARTURE_CELLS: [Cell; 3] = [Cell::Communication, Cell::FeedsAndVideo, Cell::WorkAdjacent];
+const DEPARTURE_CELLS: [ReturnCell; 3] = [
+    ReturnCell::Communication,
+    ReturnCell::FeedsAndVideo,
+    ReturnCell::WorkAdjacent,
+];
 
 /// Returned over total, as a proportion.
 fn rate((returned, total): (usize, usize)) -> f64 {
@@ -1303,10 +1307,10 @@ fn rate((returned, total): (usize, usize)) -> f64 {
 #[test]
 fn suite_e_informative_offers_after_non_returns_make_the_rate_read_high() {
     let informative = family("INFORMATIVE");
-    let mut planted: BTreeMap<Cell, (usize, usize)> = BTreeMap::new();
-    let mut ledger_read: BTreeMap<Cell, (usize, usize)> = BTreeMap::new();
-    let mut retired: BTreeMap<Cell, (usize, usize)> = BTreeMap::new();
-    let mut treated: BTreeMap<Cell, usize> = BTreeMap::new();
+    let mut planted: BTreeMap<ReturnCell, (usize, usize)> = BTreeMap::new();
+    let mut ledger_read: BTreeMap<ReturnCell, (usize, usize)> = BTreeMap::new();
+    let mut retired: BTreeMap<ReturnCell, (usize, usize)> = BTreeMap::new();
+    let mut treated: BTreeMap<ReturnCell, usize> = BTreeMap::new();
     let mut surfaced_higher = 0usize;
 
     for person in &informative {
@@ -1320,9 +1324,9 @@ fn suite_e_informative_offers_after_non_returns_make_the_rate_read_high() {
         surfaced_higher += usize::from(
             ledger
                 .surfaced()
-                .contains(&(Cell::Communication, CellDirection::Higher)),
+                .contains(&(ReturnCell::Communication, CellDirection::Higher)),
         );
-        let mut person_treated: BTreeMap<Cell, usize> = BTreeMap::new();
+        let mut person_treated: BTreeMap<ReturnCell, usize> = BTreeMap::new();
         for (index, (spec, block)) in person
             .trace
             .blocks
@@ -1390,12 +1394,14 @@ fn suite_e_informative_offers_after_non_returns_make_the_rate_read_high() {
         }
     }
 
-    let gap = |cell: Cell| {
+    let gap = |cell: ReturnCell| {
         rate(ledger_read.get(&cell).copied().unwrap_or_default())
             - rate(planted.get(&cell).copied().unwrap_or_default())
     };
     for cell in DEPARTURE_CELLS {
-        let at = |map: &BTreeMap<Cell, (usize, usize)>| map.get(&cell).copied().unwrap_or_default();
+        let at = |map: &BTreeMap<ReturnCell, (usize, usize)>| {
+            map.get(&cell).copied().unwrap_or_default()
+        };
         println!(
             "suite E INFORMATIVE {}: planted {}/{} = {:.3}; the ledger reads {}/{} = {:.3} \
              ({:+.3}), with {} censored as treated; the retired exclusion read {}/{} = {:.3}",
@@ -1419,13 +1425,13 @@ fn suite_e_informative_offers_after_non_returns_make_the_rate_read_high() {
         informative.len()
     );
 
-    let communication = Cell::Communication;
+    let communication = ReturnCell::Communication;
     assert!(
         gap(communication) > 0.05,
         "offers after non-returns did not make the communication rate read high: {:+.3}",
         gap(communication)
     );
-    for other in [Cell::FeedsAndVideo, Cell::WorkAdjacent] {
+    for other in [ReturnCell::FeedsAndVideo, ReturnCell::WorkAdjacent] {
         assert!(
             gap(communication) > gap(other),
             "the bias is not larger where the offers are: {:+.3} against {:+.3} in {}",
@@ -1433,7 +1439,7 @@ fn suite_e_informative_offers_after_non_returns_make_the_rate_read_high() {
             gap(other),
             other.id()
         );
-        let count = |cell: Cell| treated.get(&cell).copied().unwrap_or(0);
+        let count = |cell: ReturnCell| treated.get(&cell).copied().unwrap_or(0);
         assert!(
             count(communication) > count(other),
             "the treated count does not point at the cell the offers follow"

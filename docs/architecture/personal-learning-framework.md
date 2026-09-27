@@ -286,9 +286,11 @@ precision 33% under the headroom link and 3% with no link.
 
 **v5 (now, wave 1).**
 - Nothing changes for testers. The ledger stays shadow.
-- Wave 1 is read for rates only: eligible points per user-week, the censoring
-  share, reply rates, and clustering within blocks. Those rates replace the
-  simulator's assumptions.
+- Wave 1 is read for three rates only, as the v6 draft sets out: declared
+  blocks per tester-week (b), the share of blocks whose offered point had at
+  least 900 seconds left (q), and the censored share at those points (c).
+  Eligible points per block cannot be measured from v5, which stops at the
+  first offer. Those rates replace the simulator's assumptions.
 - Nobody reads outcome-by-context tables from testers until the v6 amendment is
   on main.
 

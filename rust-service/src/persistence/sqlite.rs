@@ -2393,12 +2393,14 @@ impl RawEventRepo for SqliteRawEventRepo {
             return Ok(Vec::new());
         }
         let connection = self.0.connection()?;
-        // Grouped on `idx_raw_event_buffer_site_stable_id` (0040). The join is
-        // what names a row, and it is also a filter: a site whose name was
-        // never kept or has been swept is time the user cannot be asked about,
-        // so it is left out rather than shown under a placeholder the way an
-        // unnamed application is -- a list of sites called "a website" is not
-        // a task anyone can do.
+        // The plan narrows to the window of days on
+        // `idx_raw_event_buffer_occurred_at` and groups by site in a temporary
+        // B-tree; `idx_raw_event_buffer_site_stable_id` (0040) is not used
+        // here. The join is what names a row, and it is also a filter: a site
+        // whose name was never kept or has been swept is time the user cannot
+        // be asked about, so it is left out rather than shown under a
+        // placeholder the way an unnamed application is -- a list of sites
+        // called "a website" is not a task anyone can do.
         let mut statement = connection.prepare(&format!(
             "SELECT site_stable_id, display_name, seconds_observed, event_count
              FROM (

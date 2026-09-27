@@ -22,9 +22,10 @@
 -- salt stored beside it and read off which sites these keys are, so the column
 -- is disclosed in PRIVACY.md as naming the site.
 --
--- The index serves the list of sites Velvt could not categorize, which groups
--- the buffered events of a window of days by site the way 0033's index serves
--- the application list.
+-- The index serves lookups by one site's key, such as the one that finds the
+-- windows of a site whose rule is removed. The list of sites Velvt could not
+-- categorize does not use it: that query narrows to a window of days on
+-- `idx_raw_event_buffer_occurred_at` and groups by site in a temporary B-tree.
 --
 -- `personal_site_override` is one rule taught about one site: its site key,
 -- the category, the activity name typed for it (under the CHECK 0017 puts on

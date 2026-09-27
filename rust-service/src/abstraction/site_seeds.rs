@@ -387,8 +387,10 @@ pub(crate) const SITE_SEEDS: &[SiteSeed] = &[
     SiteSeed { host: "web.facebook.com", scope: SiteScope::HostOnly, label: "social:facebook", category: "SOCIAL_FEED" },
     SiteSeed { host: "threads.net", scope: SiteScope::WithSubdomains, label: "social:threads", category: "SOCIAL_FEED" },
     SiteSeed { host: "threads.com", scope: SiteScope::WithSubdomains, label: "social:threads", category: "SOCIAL_FEED" },
-    // -- HostOnly: learning.linkedin.com and developer.linkedin.com are not the feed
-    SiteSeed { host: "linkedin.com", scope: SiteScope::HostOnly, label: "social:linkedin", category: "SOCIAL_FEED" },
+    // -- linkedin.com is left out: messaging, jobs, Sales Navigator and Learning
+    //    share the feed's host, and Learning is a path the host cannot see. A
+    //    LinkedIn visit goes to the "needs a category" list and the person
+    //    decides it once.
     SiteSeed { host: "bsky.app", scope: SiteScope::WithSubdomains, label: "social:feed", category: "SOCIAL_FEED" },
     SiteSeed { host: "pinterest.com", scope: SiteScope::WithSubdomains, label: "social:feed", category: "SOCIAL_FEED" },
     SiteSeed { host: "tumblr.com", scope: SiteScope::WithSubdomains, label: "social:feed", category: "SOCIAL_FEED" },

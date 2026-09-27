@@ -230,6 +230,10 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
         ),
         ("personal_override", vec![]),
         ("personal_app_override", vec![]),
+        ("personal_site_override", vec![]),
+        // Migration 0040 puts a site name on the horizon of the raw events it
+        // was seen in, counted from the last of them.
+        ("local_site_name", vec![raw_event_days]),
         (
             "semantic_embedding_cache",
             vec![
@@ -545,15 +549,19 @@ fn measured_intention_retention_hours() -> u64 {
 /// Being disclosed by name in `PRIVACY.md` is the bar for being on this list.
 /// `local_name_suggestion` is additionally named in the headers of
 /// `0001_initial_persistence.sql` and `0011_local_activity_suggestions.sql`;
-/// `display_name` and the two `activity_name` columns are named in the storage
-/// table as the places the name a user typed is kept.
+/// `display_name` and the three `activity_name` columns are named in the
+/// storage table as the places the name a user typed is kept; and
+/// `local_site_name.host`, the one column that holds a hostname, is named in
+/// the storage table and in the header of `0040_site_rules_and_site_names.sql`.
 ///
 /// Adding a column here is the deliberate act the audit found missing. Do not
 /// add one without adding it to `PRIVACY.md` in the same commit.
 const DEVICE_LOCAL_EXCEPTION_COLUMNS: &[&str] = &[
     "abstraction_map.display_name",
+    "local_site_name.host",
     "personal_app_override.activity_name",
     "personal_override.activity_name",
+    "personal_site_override.activity_name",
     "raw_event_buffer.local_display_label",
     "raw_event_buffer.local_name_suggestion",
 ];
@@ -1235,11 +1243,13 @@ const MIGRATED_TABLES: &[&str] = &[
     "insight_cache",
     "intervention_decision_log",
     "intervention_demotion_state",
+    "local_site_name",
     "out_of_block_run",
     "persistence_migration_probe",
     "personal_app_override",
     "personal_override",
     "personal_semantic_prototype",
+    "personal_site_override",
     "quiet_hours_offer_state",
     "raw_event_buffer",
     "schema_migration",

@@ -93,14 +93,18 @@ below start with the first build after 1.0.11: the per-install
 `stable_key_salt` that keys the stored digests (migration 0037), `egress_ledger`
 (migration 0038), the migration checksum in `schema_migration` (migration
 0039), and SQLite's `secure_delete`. Each is scoped again where it is
-described.
+described. Migration 0040 starts later, with the first build after 1.0.13:
+`personal_site_override`, `local_site_name`, and `raw_event_buffer.site_stable_id`,
+all described below.
 
 | Table | Contents | Default retention |
 |---|---|---|
 | `abstraction_map` | stable-key hash → stable ID, the on-device `label` (such as `video:youtube`), category, taxonomy version, classification provenance, and `display_name` — a friendly name for the window, or the activity name you typed when you renamed a classification. The key is an HMAC under this install's `stable_key_salt` (migration 0037), described below | a mapping is swept once 14 days pass with no further observation of its window, unless a correction you made or an event still in `raw_event_buffer` points at it — so a window you corrected keeps its mapping until you undo that correction. `display_name` also goes when you undo that correction, or with Reset Corrections, which nulls the column on every row |
-| `raw_event_buffer` | abstracted event metadata for short-lived audit/replay and the local 14-day activity chart, plus seven device-local columns that can name or identify an application, all described below (`label`, `local_display_label`, `local_name_suggestion`, `app_stable_id`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids`) | 14 days (`VELVT_RAW_EVENT_TTL_HOURS`) |
+| `raw_event_buffer` | abstracted event metadata for short-lived audit/replay and the local 14-day activity chart, plus seven device-local columns that can name or identify an application, all described below (`label`, `local_display_label`, `local_name_suggestion`, `app_stable_id`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids`), and since migration 0040 `site_stable_id`, a salted key of the site a browser tab was on, also described below | 14 days (`VELVT_RAW_EVENT_TTL_HOURS`) |
 | `upload_batch` / `batch_event` | the upload queue: each batch's id, status, attempt count and last error code, and per queued event its id, timestamp, duration, category, classification tier and taxonomy version — plus two device-local columns that are never sent, the random stable ID and the on-device `label` (which can name a service, as `communication:slack` does); the serializer turns the label into the category-scoped type that is sent | sent batches: 30 days; rejected batches: 7 days (audit window); pending and failed batches: 30 days, the same horizon as sent |
 | `personal_override` | one correction you made to a single window: the window's stable-key hash, the category you chose, `activity_name` (the name you typed for it), and since migration 0036 `app_key_hash` — the application key the correction also taught, the same salted app-name digest as `raw_event_buffer.app_stable_id`, so Undo can remove that application rule without reading the event buffer | until you undo that correction or use Reset Corrections. No sweep expires it |
+| `personal_site_override` | a rule you taught about one site, applied in every browser: the site's key — the same salted digest of the site's hostname as `raw_event_buffer.site_stable_id`, never the hostname itself — the category you chose, `activity_name` (the name you typed for it), a correction count, and when the rule was made and last changed | until you remove that rule or use Reset Corrections. No sweep expires it |
+| `local_site_name` | **the hostname of a site Velvt could not categorize**, in `host` (such as `docs.example.org`, with a leading `www.` removed), beside the site's key and `last_seen_at`, so Velvt can name the site when it asks you what it is. Written only on a visit that was not confidently classified, to a site you have taught no rule for. It is the only column in the database that holds a hostname, and it holds nothing else from the address: no path, query, port, or credentials | removed when you teach a rule for that site; otherwise 14 days after the site was last seen |
 | `personal_app_override` | the same correction applied to a whole application rather than one window: app-key hash, category, `activity_name`, a correction count, since migration 0034 `bundle_key_hash` — the same bundle-identifier digest described under `raw_event_buffer` below, NULL on every rule taught before that migration — and since migration 0035 `app_only`, which records whether you taught the rule for the whole application from the triage list (1) or it was written beside a single-window correction (0) | until you undo the correction it came from or use Reset Corrections. No sweep expires it |
 | `semantic_embedding_cache` | one hashed sketch per application-and-title pair the classifier has scored, keyed by the same salted window key as `abstraction_map`. The sketch is derived from the raw application name and the raw window title, computed under this install's `embedding_salt`, and individual words are partially recoverable from it by someone holding the whole file — described below | the 512 most recently observed pairs; a pair is swept once 14 days pass with no further observation of it. The clock restarts on every observation, so a window you keep returning to is never swept |
 | `personal_semantic_prototype` | a copy of that same sketch, kept for a category you corrected so the classifier can recognise the activity again | the 64 most-corrected pairs, at most 12 per category; removed by undoing that correction or by Reset Corrections. No sweep expires it |
@@ -202,6 +206,18 @@ declared-metadata columns travel in a `DeclaredAppMetadata` whose hand-written
 digest prints as `[local_identifier]`, the declared category as `[redacted]`,
 and the document types as a count of how many there were.
 
+One more column of `raw_event_buffer` identifies where a browser tab was
+rather than which application showed it. **`site_stable_id`** (migration 0040)
+is the key of the tab's site: an HMAC-SHA-256 of the hostname, with a leading
+`www.` removed, under this install's `stable_key_salt`. It is the same in every
+browser, which is what lets one rule you teach about a site apply in all of
+them, and it is NULL for any window that is not a browser tab on a named site —
+an address such as `192.168.1.20`, `localhost`, and `.local` names get no key.
+It holds the digest, never the hostname, but a hostname is a guessable input:
+anyone holding the whole file can hash a list of sites under the salt beside it
+and read off which ones you visited. Treat it as naming the site. Like the seven
+above it is absent from the upload path and expires with the rest of the buffer.
+
 Two of the declared-metadata columns are written and not yet read.
 Classification reads the declared category and the document types off the event
 as it arrives, never back out of the buffer; the only one of the three anything
@@ -221,8 +237,9 @@ the Daily Activity chart. Both stay on the socket; neither is uploaded.
 
 `semantic_embedding_cache` is the one store on this list that is derived from a
 window title. Tier 2 classification builds the string
-`app name [SEP] window title`, turns it into a 256-number sketch, and keeps the
-sketch — not the string — under the window's salted stable key. Nothing about
+`app name [SEP] window title` — for a browser tab, `browser name [SEP] hostname
+window title` — turns it into a 256-number sketch, and keeps the sketch — not
+the string — under the window's salted stable key. Nothing about
 it is uploaded: `BatchEventPayload` has no field it could occupy.
 
 The sketch is lossy and it is not the title. It is also not one-way. Each word
@@ -269,8 +286,8 @@ reaches a pair you stopped observing; it never reaches one you keep observing.
 
 Two per-install salts live in the database, and they protect the same thing in
 the same limited way. `stable_key_salt` (migration 0037) keys every window key,
-application key, and bundle digest; `embedding_salt` (migration 0031) keys the
-sketch. Each is 32 random bytes generated on this Mac. Because of them, a stored
+application key, and bundle digest, and since migration 0040 every site key;
+`embedding_salt` (migration 0031) keys the sketch. Each is 32 random bytes generated on this Mac. Because of them, a stored
 key or sketch cannot be tested against guesses using only this repository, and
 the same application or window produces different values on two Macs. Because
 each salt is stored beside what it keys, neither protects anything from someone
@@ -290,10 +307,10 @@ generates the salt and re-keys every digest already on disk under it.
 
 The first table above is every store that holds something drawn from your Mac. It is
 not every table in the file. A database with every migration in this source
-tree applied holds 37 tables, plus SQLite's own `sqlite_sequence`. A Velvt
+tree applied holds 39 tables, plus SQLite's own `sqlite_sequence`. A Velvt
 1.0.11 database (migrations 0001–0036) holds 34: it has no `stable_key_salt`,
-`egress_ledger`, or `egress_ledger_checkpoint`, which migrations 0037 and 0038
-add. Of the 37,
+`egress_ledger`, `egress_ledger_checkpoint`, `personal_site_override`, or
+`local_site_name`, which migrations 0037, 0038 and 0040 add. Of the 39,
 the 20 that are not in that table hold counters, settings, keys, feature state,
 and the record of what was sent. They are listed here for the same reason the
 three empty ones are — you will see them if you open the file.
@@ -327,8 +344,9 @@ Several rows above name an in-app action. Each one is a specific button, and
 this is the whole of what it reaches:
 
 - **Reset Corrections** deletes `personal_override`, `personal_app_override`,
-  and `personal_semantic_prototype`, and sets `abstraction_map.display_name` to
-  NULL on every row. The per-correction **Undo** does the same for one window:
+  `personal_site_override`, and `personal_semantic_prototype`, and sets
+  `abstraction_map.display_name` to NULL on every row. The per-correction
+  **Undo** does the same for one window:
   its own override row and prototype, the application-scoped override behind it,
   and the `display_name` on that window and on the other windows of the same
   application. Neither rewrites `raw_event_buffer`: a name you typed stays in
@@ -430,13 +448,15 @@ fails until this list is updated in the same commit.
 | `insight_cache` | `id`, `date`, `payload`, `ttl`, `created_at`, `not_found` |
 | `intervention_decision_log` | `decision_id`, `occurred_at`, `block_id`, `policy_version`, `anchor_category`, `switch_count`, `elapsed_seconds`, `remaining_seconds`, `gate_verdict`, `propensity`, `anchor_seen_within_600s`, `outcome_at` |
 | `intervention_demotion_state` | `id`, `state`, `demoted_at`, `manual_reset_at`, `threshold_policy_version`, `repromotion_policy_version`, `updated_at` |
+| `local_site_name` | `site_key_hash`, `host`, `last_seen_at` |
 | `out_of_block_run` | `id`, `started_at_bucket`, `duration_seconds`, `category`, `classification_status`, `classification_confidence`, `local_hour`, `local_date` |
 | `persistence_migration_probe` | `id`, `marker`, `created_at` |
 | `personal_app_override` | `app_key_hash`, `category`, `activity_name`, `correction_count`, `created_at`, `updated_at`, `bundle_key_hash`, `app_only` |
 | `personal_override` | `key_hash`, `category`, `created_at`, `updated_at`, `activity_name`, `app_key_hash` |
 | `personal_semantic_prototype` | `key_hash`, `category`, `embedding`, `dimensions`, `correction_count`, `updated_at` |
+| `personal_site_override` | `site_key_hash`, `category`, `activity_name`, `correction_count`, `created_at`, `updated_at` |
 | `quiet_hours_offer_state` | `id`, `rule_version`, `triggered_at`, `offered_at`, `response`, `responded_at` |
-| `raw_event_buffer` | `id`, `event_id`, `stable_id`, `label`, `category`, `taxonomy_version`, `occurred_at`, `created_at`, `duration_seconds`, `local_display_label`, `classification_tier`, `classification_status`, `classification_confidence`, `classification_source`, `local_name_suggestion`, `upload_eligible`, `app_stable_id`, `app_scope_eligible`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids` |
+| `raw_event_buffer` | `id`, `event_id`, `stable_id`, `label`, `category`, `taxonomy_version`, `occurred_at`, `created_at`, `duration_seconds`, `local_display_label`, `classification_tier`, `classification_status`, `classification_confidence`, `classification_source`, `local_name_suggestion`, `upload_eligible`, `app_stable_id`, `app_scope_eligible`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids`, `site_stable_id` |
 | `schema_migration` | `id`, `version`, `name`, `created_at`, `checksum` |
 | `semantic_embedding_cache` | `key_hash`, `embedding`, `dimensions`, `updated_at` |
 | `stable_key_salt` | `id`, `salt`, `created_at` |
@@ -611,12 +631,18 @@ identifier, in `raw_event_buffer.app_stable_id`,
 `raw_event_buffer.app_bundle_stable_id`, `personal_override.app_key_hash`,
 `personal_app_override.app_key_hash`, and `personal_app_override.bundle_key_hash`,
 which a holder of the whole file can reverse by hashing known names and bundle
-identifiers under the salt stored beside them; the metadata an application
+identifiers under the salt stored beside them; salted digests of browser sites,
+in `raw_event_buffer.site_stable_id`, `personal_site_override.site_key_hash`, and
+`local_site_name.site_key_hash`, which can be reversed the same way with a list
+of hostnames; the hostname of a site Velvt could not categorize, in
+`local_site_name.host`; the metadata an application
 publishes about itself, in `raw_event_buffer.declared_app_category` and
 `raw_event_buffer.document_type_ids`; the names you type when you correct a
 classification, in `abstraction_map.display_name`, `personal_override`,
-`personal_app_override`, and `raw_event_buffer.local_display_label`; and a
-hashed sketch of `app name [SEP] window title`, in `semantic_embedding_cache`
+`personal_app_override`, `personal_site_override`, and
+`raw_event_buffer.local_display_label`; and a hashed sketch of
+`app name [SEP] window title` (with the hostname before the title, for a
+browser tab), in `semantic_embedding_cache`
 and `personal_semantic_prototype`. The sketch is not the title and cannot be
 turned back into one, but individual words are partially recoverable from it by
 someone holding the whole file — the section above says how, and what the

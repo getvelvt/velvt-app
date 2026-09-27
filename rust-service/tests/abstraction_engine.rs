@@ -1388,6 +1388,31 @@ fn an_unseeded_site_is_inferred_only_when_its_signals_agree() {
     assert!(disputed.site_stable_id().is_some());
 }
 
+/// A tab on a site the table leaves out, with a title full of another tool's
+/// keywords, is not filed by its title. An Atlassian workspace serves Jira and
+/// Confluence from one host, so the host cannot say which a tab is, and the
+/// title's product words are exactly what used to misfile Confluence pages as
+/// task management. The tab is left for the person to categorize.
+#[test]
+fn a_site_the_table_leaves_out_is_not_filed_by_its_title() {
+    let engine = engine();
+
+    let event = engine
+        .process(browser_tab(
+            "Safari",
+            "https://qwzx.atlassian.net/wiki/spaces/ENG/pages/1",
+            "Onboarding guide - Engineering - Confluence (Jira tickets inside)",
+        ))
+        .unwrap();
+
+    assert_eq!(event.label(), "reference:browser");
+    assert_eq!(
+        event.classification_status(),
+        ClassificationStatus::Ambiguous
+    );
+    assert_eq!(event.local_site_name(), Some("qwzx.atlassian.net"));
+}
+
 /// The hostname is device-local. It is kept on the event for the local list
 /// and nowhere else: not in the event's serialized form, not in its `Debug`,
 /// and not in the upload payload.

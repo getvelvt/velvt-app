@@ -345,8 +345,9 @@ pub(crate) const SITE_SEEDS: &[SiteSeed] = &[
     SiteSeed { host: "zotero.org", scope: SiteScope::WithSubdomains, label: "reference:research", category: "REFERENCE" },
 
     // Task management
-    // -- Jira and Confluence share *.atlassian.net; the existing `atlassian net` rule files both here
-    SiteSeed { host: "atlassian.net", scope: SiteScope::WithSubdomains, label: "task:manage", category: "TASK_MANAGEMENT" },
+    // -- *.atlassian.net is left out: Jira and Confluence share each workspace's
+    //    host, so the host cannot tell a ticket from a document. A workspace goes
+    //    to the "needs a category" list and the person decides it once.
     SiteSeed { host: "jira.com", scope: SiteScope::WithSubdomains, label: "task:manage", category: "TASK_MANAGEMENT" },
     SiteSeed { host: "linear.app", scope: SiteScope::WithSubdomains, label: "task:manage", category: "TASK_MANAGEMENT" },
     SiteSeed { host: "trello.com", scope: SiteScope::WithSubdomains, label: "task:manage", category: "TASK_MANAGEMENT" },

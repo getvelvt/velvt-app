@@ -433,6 +433,13 @@ assert r["policy"]["interventions_by_attribution"] == {"5": 5}, r["policy"]
 d = r["decisions_recorded"]
 assert (d["total"], d["delivered"], d["withheld"]) == (5, 3, 2), d
 assert r["primary_outcome"]["eligible_decision_points"] == 3, r["primary_outcome"]
+# d-02, d-05 and d-07 are eligible; every one has an outcome row and every one
+# is censored, so the result is counts, not an estimate.
+primary = r["primary_outcome"]
+assert primary["with_outcome_row"] == 3, primary
+assert primary["censored"] == {"block_ended": 1, "export_ended": 0, "observer_gap": 2}, primary
+assert (primary["numerator"], primary["denominator"], primary["reportable"]) == (0, 0, False), primary
+assert primary["departure_category_counts"] == {"none (at the anchor, or no evidence yet)": 2, "unrecognized": 1}, primary
 assert r["card_seen"]["no_response"] == {"seen": 0, "unseen": 1, "unknown": 0}, r["card_seen"]
 assert r["blocks_per_participant"]["per_participant"]["p30"]["blocks_declared"] == 7, r["blocks_per_participant"]
 inv = r["invitation_acceptance"]

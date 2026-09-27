@@ -3,9 +3,9 @@
 
 Input is whatever `export_cohort_evidence.sh` wrote on each tester's Mac: a
 per-offer CSV and, beside it, the companion files that share its name stem
-(`-decisions.csv`, `-blocks.csv`, `-invitations.csv`, `-explain.csv`,
-`-corrections.csv`, `-meta.csv`). Pass one folder per participant, or the files
-themselves.
+(`-decisions.csv`, `-outcomes.csv`, `-blocks.csv`, `-invitations.csv`,
+`-explain.csv`, `-corrections.csv`, `-meta.csv`). Pass one folder per
+participant, or the files themselves.
 Output is the numbers named in `pitch-deck-inputs/evidence/traction-summary.md`,
 each with its numerator, denominator, window and exclusions stated, because a
 ratio on its own is not reportable evidence.
@@ -14,19 +14,21 @@ This script computes. It does not decide. Every threshold and definition here
 is read from that file's pre-registration (2026-08-09), its additions
 (2026-08-17), the amendment that replaced the primary outcome (2026-08-21), the
 correction of 2026-08-31, the drift policy v2 amendment and 0.1.6 metrics
-(both 2026-09-25), the drift policy v3 and v4 notes (both 2026-09-26), and the
-drift policy v5 note (2026-09-27, below; not yet in that file), all written
-before any cohort data existed. Nothing may be
-added after seeing results. If a definition turns out to be wrong, amend it in
-a dated note stating what was known at the time.
+(both 2026-09-25), the drift policy v3 and v4 amendments (both 2026-09-26),
+the drift policy v5 amendment (2026-09-27), and the instrument addendum that
+fixes how the outcomes are computed (drafted 2026-09-27; it must be in that
+file before any export is used), all written before any cohort data existed.
+Nothing may be added after seeing results. If a definition turns out to be
+wrong, amend it in a dated note stating what was known at the time.
 
-What it does not compute: the replacement primary outcome's NUMERATOR
-(sustained anchor engagement, at least 600 of the 900 seconds after a decision
-point in the anchor category). That needs per-second anchor coverage from
-`work_block_observation`, which no export carries. The denominator, the
-censoring that the export can see, and the power verdict are computed and
-reported. The retired 2026-08-09 figure is reported as descriptive, never as
-the headline.
+The replacement primary outcome (sustained anchor engagement, at least 600 of
+the 900 seconds after a decision point in the anchor category) needs the
+observation ledger, which never leaves the tester's Mac. The exporter works
+out each decision's labels there (`-outcomes.csv`, export format 4), and this
+script counts them on the eligible points, with censoring by reason. An export
+from before format 4 has no labels, and its points are reported as not
+measurable, never approximated. The retired 2026-08-09 figure is reported as
+descriptive, never as the headline.
 
 Usage:
     python3 scripts/analyze_cohort.py ~/cohort/*/          # one folder per participant
@@ -344,6 +346,10 @@ class Participant:
     invitation_rows: list | None = None
     explain_rows: list | None = None
     correction_rows: list | None = None
+    # None when the export carried no usable outcomes file; the reason is in
+    # `outcomes_unusable`.
+    outcome_rows: list | None = None
+    outcomes_unusable: str = ""
 
 
 @dataclass
@@ -725,19 +731,36 @@ def load(
             continue
         participant.decision_rows = rows
 
-        for kind in ("blocks", "invitations", "explain", "corrections"):
+        for kind in ("blocks", "invitations", "explain", "corrections", "outcomes"):
             path = participant.files.get(kind)
             if path is None:
                 if participant.meta.get(META_TABLE_KEYS.get(kind, ""), "") == "present":
                     cohort.malformed.append(
                         f"{name}: the export wrote a {kind} file and it was not received"
                     )
+                    if kind == "outcomes":
+                        participant.outcomes_unusable = "outcomes file written and not received"
                 continue
-            rows, _, error = _read_csv(path)
+            rows, fields, error = _read_csv(path)
             if error:
                 cohort.malformed.append(f"{name}: {kind} file {error}")
+                if kind == "outcomes":
+                    participant.outcomes_unusable = "outcomes file unreadable"
                 continue
-            if kind == "blocks":
+            if kind == "outcomes":
+                version = participant.meta.get("outcomes_definition_version", "")
+                if tuple(fields) != OUTCOME_COLUMNS:
+                    participant.outcomes_unusable = "outcomes file has other columns"
+                elif version and version != str(OUTCOME_DEFINITION_VERSION):
+                    participant.outcomes_unusable = (
+                        f"outcomes computed under definition version {version}; "
+                        f"this script reads version {OUTCOME_DEFINITION_VERSION}"
+                    )
+                if participant.outcomes_unusable:
+                    cohort.malformed.append(f"{name}: {participant.outcomes_unusable}")
+                    continue
+                participant.outcome_rows = rows
+            elif kind == "blocks":
                 participant.block_rows = rows
             elif kind == "invitations":
                 participant.invitation_rows = rows
@@ -753,8 +776,64 @@ def load(
     return cohort
 
 
+def _outcome_problem(row: dict) -> str | None:
+    """Why one row of an outcomes file cannot be used, or None."""
+    reason = _text(row, "censor_reason")
+    labels = [
+        _text(row, key)
+        for key in ("sustained_anchor_900s", "departure_free_600s", "seconds_to_sustained_return")
+    ]
+    category = _text(row, "departure_category")
+    if category and category not in SERVICE_CATEGORIES + ("unrecognized",):
+        return f"departure_category {category!r} is not one of the service's categories"
+    if reason in OUTCOME_CENSOR_REASONS:
+        return None if labels == ["", "", ""] else f"censored ({reason}) but labelled"
+    if reason != "none":
+        return f"censor_reason {reason!r}"
+    if labels[0] not in ("0", "1") or labels[1] not in ("0", "1"):
+        return "uncensored without both 0/1 labels"
+    if labels[2]:
+        latest = PRIMARY_HORIZON_SECONDS - SUSTAINED_RUN_SECONDS
+        value = _int(row, "seconds_to_sustained_return")
+        if value is None or not 0 <= value <= latest:
+            return f"seconds_to_sustained_return {labels[2]!r} is not 0 to {latest}"
+    return None
+
+
+def _outcome_disagreement(decision: dict, outcome: dict, exported_at: int | None) -> str | None:
+    """Where an outcome row contradicts what the decisions file says on its own."""
+    occurred = _int(decision, "occurred_at") or 0
+    horizon_end = occurred + PRIMARY_HORIZON_SECONDS
+    ended = _int(decision, "block_ended_at")
+    reason = _text(outcome, "censor_reason")
+    block_ended = ended is not None and ended < horizon_end
+    if block_ended != (reason == "block_ended"):
+        return f"censor_reason {reason!r}, but the block ended at {ended}"
+    if reason == "export_ended" and ended is not None:
+        return "export_ended on a block that had ended"
+    if ended is None and exported_at is not None and exported_at < horizon_end and reason != "export_ended":
+        return f"censor_reason {reason!r} on a horizon still running at export"
+    return None
+
+
 def _load_participant(cohort: Cohort, participant: Participant) -> None:
     name = participant.name
+
+    # --- Outcome labels, by decision ----------------------------------------
+    outcomes: dict[str, dict] = {}
+    unusable: dict[str, str] = {}
+    for row in participant.outcome_rows or []:
+        decision_id = _text(row, "decision_id")
+        problem = _outcome_problem(row)
+        if decision_id in outcomes or decision_id in unusable:
+            problem = "a second row for this decision"
+        if problem:
+            cohort.malformed.append(f"{name}: outcome for decision {decision_id or '?'}: {problem}")
+            outcomes.pop(decision_id, None)
+            unusable[decision_id] = problem
+            continue
+        outcomes[decision_id] = row
+    exported_at = _int(participant.meta, "exported_at")
 
     # --- Decisions, and the attribution map --------------------------------
     attribution: dict[str, set[int]] = {}
@@ -795,7 +874,27 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
                          WARMUP_CATEGORY)
             )
             continue
-        cohort.eligible.append({"participant": name, "row": row, "meta": participant.meta})
+        point = {"participant": name, "row": row, "meta": participant.meta,
+                 "outcome": None, "no_outcome": None}
+        decision_id = _text(row, "decision_id")
+        if participant.outcome_rows is None:
+            point["no_outcome"] = (
+                participant.outcomes_unusable
+                or "no outcomes file (an export from before export format 4)"
+            )
+        elif decision_id in unusable:
+            point["no_outcome"] = "outcome row malformed"
+        elif decision_id not in outcomes:
+            point["no_outcome"] = "no row for this decision in the outcomes file"
+            cohort.malformed.append(f"{name}: eligible decision {decision_id} has no outcome row")
+        else:
+            disagreement = _outcome_disagreement(row, outcomes[decision_id], exported_at)
+            if disagreement:
+                point["no_outcome"] = "outcome row contradicts the decisions file"
+                cohort.malformed.append(f"{name}: outcome for decision {decision_id}: {disagreement}")
+            else:
+                point["outcome"] = outcomes[decision_id]
+        cohort.eligible.append(point)
 
     # Rows with no policy column of their own (blocks, invitations, explain
     # weeks) are counted under the analysed policy only if they come after this
@@ -1005,38 +1104,116 @@ def _share(numerator: int, denominator: int) -> str:
     return f"{numerator}/{denominator}" if denominator else "not computable (denominator is 0)"
 
 
+def _censoring_verdict(censored: int, measured: int) -> tuple[str, bool]:
+    """(verdict, reportable) under the 2026-08-21 thresholds."""
+    if measured == 0:
+        return "not computable: no eligible point has an outcome row", False
+    share = censored / measured
+    if share > CENSORED_INSUFFICIENT_SHARE:
+        return (
+            f"above {CENSORED_INSUFFICIENT_SHARE:.0%} of eligible points censored: "
+            "INSUFFICIENT, reported as counts and not as an estimate",
+            False,
+        )
+    if share > CENSORED_REPORT_SHARE:
+        return (
+            f"above {CENSORED_REPORT_SHARE:.0%} of eligible points censored: the censored "
+            "count is reported beside every result",
+            True,
+        )
+    return f"at or below {CENSORED_REPORT_SHARE:.0%} of eligible points censored", True
+
+
+def _time_to_return(seconds: list[int | None], estimate: bool) -> dict:
+    """Time to sustained return on uncensored points. None is no run inside the
+    horizon, which ends follow-up at 600 s: right-censored, never a failure.
+    Without `estimate` (censoring above 25%) only the counts are given."""
+    horizon = PRIMARY_HORIZON_SECONDS - SUSTAINED_RUN_SECONDS
+    reached = sorted(s for s in seconds if s is not None)
+    n = len(seconds)
+    if not estimate:
+        return {
+            "points": n,
+            "reached_within_horizon": len(reached),
+            "not_reached_within_horizon": n - len(reached),
+            "median_seconds": None,
+            "restricted_mean_seconds": None,
+            "withheld": "censoring above 25%: counts only, no estimate",
+        }
+    median = None
+    # Kaplan-Meier median: every point is followed to the same 600 s, so it is
+    # the first time by which half of the points have returned.
+    for count, value in enumerate(reached, start=1):
+        if 2 * count >= n:
+            median = value
+            break
+    return {
+        "definition": (
+            "Seconds from the decision point to the start of the first unbroken run "
+            f"of at least {SUSTAINED_RUN_SECONDS} confident anchor seconds inside the "
+            f"horizon (so it starts within {horizon} s). A point with no such run is "
+            f"followed to {horizon} s and has not returned by then."
+        ),
+        "points": n,
+        "reached_within_horizon": len(reached),
+        "not_reached_within_horizon": n - len(reached),
+        "median_seconds": median,
+        "median_note": (
+            None if median is not None or n == 0
+            else f"fewer than half returned within {horizon} s; the median is above {horizon} s"
+        ),
+        "restricted_mean_seconds": (
+            round(sum(horizon if s is None else s for s in seconds) / n, 1) if n else None
+        ),
+        "restricted_mean_note": f"the mean of min(time, {horizon} s)",
+    }
+
+
 def _primary(cohort: Cohort) -> dict:
-    censored = Counter()
-    uncensored = 0
+    # What the decisions file alone shows: a floor on censoring, and the check
+    # the outcome rows are held to (`_outcome_disagreement`).
+    visible = Counter()
+    not_visible = 0
     for point in cohort.eligible:
         row, meta = point["row"], point["meta"]
-        occurred = _int(row, "occurred_at") or 0
-        horizon_end = occurred + PRIMARY_HORIZON_SECONDS
+        horizon_end = (_int(row, "occurred_at") or 0) + PRIMARY_HORIZON_SECONDS
         ended = _int(row, "block_ended_at")
         exported = _int(meta, "exported_at")
         if ended is not None:
             if ended < horizon_end:
-                censored["block ended before the horizon elapsed"] += 1
+                visible["block ended before the horizon elapsed"] += 1
                 continue
         elif exported is None:
-            censored["block still open and export time unknown"] += 1
+            visible["block still open and export time unknown"] += 1
             continue
         elif exported < horizon_end:
-            censored["the export ends inside the horizon"] += 1
+            visible["the export ends inside the horizon"] += 1
             continue
-        uncensored += 1
+        not_visible += 1
+
     eligible = len(cohort.eligible)
+    not_measurable = Counter(p["no_outcome"] for p in cohort.eligible if p["no_outcome"])
+    measured = [p["outcome"] for p in cohort.eligible if p["outcome"] is not None]
+    censored = Counter(_text(o, "censor_reason") for o in measured)
+    uncensored = [o for o in measured if _text(o, "censor_reason") == "none"]
+    censored_total = len(measured) - len(uncensored)
+    verdict, reportable = _censoring_verdict(censored_total, len(measured))
+    departure_categories = Counter(
+        _text(o, "departure_category") or "none (at the anchor, or no evidence yet)" for o in measured
+    )
     return {
         "status": (
-            "NOT COMPUTED. Pre-registered 2026-08-21. The numerator needs "
-            "per-second anchor coverage from work_block_observation, which no "
-            "export carries, and the script does not approximate it."
+            "COMPUTED from the per-decision outcomes file, which the exporter works out "
+            "on each tester's Mac (export format 4)."
+            if measured else
+            "NOT MEASURABLE from these exports: no eligible point has an outcome row. "
+            "Exports from before export format 4 carry no outcomes file."
         ),
         "definition": (
             "Sustained anchor engagement: at each eligible decision point, whether "
             f"at least {PRIMARY_THRESHOLD_SECONDS} of the following "
             f"{PRIMARY_HORIZON_SECONDS} seconds were spent in the anchor category "
-            "recorded on the decision row."
+            "recorded on the decision row, counting confident seconds only."
         ),
         "eligible_decision_points": eligible,
         "eligible_definition": (
@@ -1045,17 +1222,42 @@ def _primary(cohort: Cohort) -> dict:
             "gate_verdict CHECK has no eligible-but-silent value, so the eligible "
             "set and the offered set are the same (2026-08-31 correction)."
         ),
-        "censored_visible_in_export": dict(sorted(censored.items())),
-        "not_censored_by_block_or_export_end": uncensored,
-        "censoring_not_derivable": (
-            "the service stopped, slept or lost the Accessibility observer inside "
-            "the horizon: needs observation coverage the export does not carry"
+        "not_measurable": dict(sorted(not_measurable.items())),
+        "with_outcome_row": len(measured),
+        "censored": {reason: censored[reason] for reason in OUTCOME_CENSOR_REASONS},
+        "censored_total": censored_total,
+        "censored_share": _share(censored_total, len(measured)),
+        "censoring_verdict": verdict,
+        "reportable": reportable and bool(uncensored),
+        "numerator": (
+            sum(1 for o in uncensored if _text(o, "sustained_anchor_900s") == "1")
+            if measured else None
         ),
-        "numerator": None,
-        "secondary_outcomes_not_computed": [
-            "departure-free interval (no further anchor departure within 600 s)",
-            "time to sustained return (first anchor run of at least 300 s)",
-        ],
+        "denominator": len(uncensored),
+        "secondary": {
+            "departure_free_600s": {
+                "definition": (
+                    "No further departure from the anchor, by the gate's own rule, "
+                    f"beginning within {DEPARTURE_FREE_SECONDS} s of the decision point. "
+                    "A person who left and never came back has no further departure: "
+                    "read it beside the primary outcome, never alone."
+                ),
+                "numerator": sum(1 for o in uncensored if _text(o, "departure_free_600s") == "1"),
+                "denominator": len(uncensored),
+            },
+            "time_to_sustained_return": _time_to_return(
+                [_int(o, "seconds_to_sustained_return") for o in uncensored],
+                estimate=reportable,
+            ),
+        },
+        "departure_category_counts": dict(sorted(departure_categories.items())),
+        "departure_category_note": (
+            "Where the gate's evidence had the person at each eligible decision point "
+            "with an outcome row, censored or not. Marginal counts only: this script "
+            "prints no outcome broken down by category or any other context."
+        ),
+        "censored_visible_in_export": dict(sorted(visible.items())),
+        "not_censored_by_block_or_export_end": not_visible,
     }
 
 
@@ -1310,6 +1512,7 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
 
     withheld_counts = Counter(o.outcome for o in withheld)
     eligible = len(cohort.eligible)
+    primary = _primary(cohort)
     excluded_reasons = Counter(e.category for e in cohort.excluded)
     if cohort.excluded_whole:
         excluded_reasons["participant excluded whole"] += len(cohort.excluded_whole)
@@ -1363,6 +1566,7 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
         "power": {
             "required_decision_points": POWER_REQUIRED_DECISION_POINTS,
             "observed_eligible_decision_points": eligible,
+            "observed_uncensored_decision_points": primary["denominator"],
             "assumptions": POWER_ASSUMPTIONS,
             "sufficient": eligible >= POWER_REQUIRED_DECISION_POINTS,
             "note": (
@@ -1370,7 +1574,7 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
                 "censoring, so it is an upper bound on how close this data gets."
             ),
         },
-        "primary_outcome": _primary(cohort),
+        "primary_outcome": primary,
         "retired_return_within_10min": {
             "status": (
                 "DESCRIPTIVE. Pre-registered 2026-08-09, retired 2026-08-21, "
@@ -1523,23 +1727,58 @@ def render(result: dict) -> str:
     add("  points, under assumptions none of which are measured:")
     para(f"{power['assumptions']}.", "    ")
     add(f"  This data carries {power['observed_eligible_decision_points']} "
-        f"(policy_version {ANALYSED_POLICY_VERSION}, before censoring).")
+        f"(policy_version {ANALYSED_POLICY_VERSION}, before censoring), "
+        f"{power['observed_uncensored_decision_points']} with an uncensored outcome.")
     if not power["sufficient"]:
         add("  Every ratio below is reported for completeness and is not a finding.")
 
     primary = result["primary_outcome"]
-    heading("PRIMARY OUTCOME: sustained anchor engagement (2026-08-21) — NOT COMPUTED HERE")
+    heading("PRIMARY OUTCOME: sustained anchor engagement (2026-08-21)")
     para(primary["definition"])
-    add(f"  eligible decision points (denominator before censoring): "
+    add(f"  eligible decision points (policy_version {ANALYSED_POLICY_VERSION}, before censoring): "
         f"{primary['eligible_decision_points']}")
-    for reason, count in primary["censored_visible_in_export"].items():
-        add(f"  censored, {reason}: {count}")
-    add(f"  not censored by block end or export end: "
-        f"{primary['not_censored_by_block_or_export_end']}")
-    para(f"censoring the export cannot see: {primary['censoring_not_derivable']}.")
-    add("  NUMERATOR NOT COMPUTED: it needs per-second anchor coverage from")
-    add("  work_block_observation, which no export carries. This script does not")
-    add("  approximate it, and anchor_seen_within_600s is not a substitute.")
+    for reason, count in primary["not_measurable"].items():
+        add(f"  not measurable, {reason}: {count}")
+    add(f"  with an outcome row: {primary['with_outcome_row']}")
+    if not primary["with_outcome_row"]:
+        para(f"NOT MEASURABLE. {primary['status']} Nothing is approximated, and "
+             "anchor_seen_within_600s is not a substitute.")
+    else:
+        censored = primary["censored"]
+        add(f"  censored: {primary['censored_share']} "
+            f"(block_ended {censored['block_ended']}, observer_gap {censored['observer_gap']}, "
+            f"export_ended {censored['export_ended']}); never counted as 0, never imputed")
+        para(primary["censoring_verdict"] + ".")
+        beside = ""
+        if primary["censored_total"] and primary["censoring_verdict"].startswith("above"):
+            beside = f"; censored {primary['censored_share']}"
+        secondary = primary["secondary"]
+        free = secondary["departure_free_600s"]
+        ret = secondary["time_to_sustained_return"]
+        if primary["reportable"]:
+            add(f"  sustained: {_ratio(primary['numerator'], primary['denominator'])}{beside}")
+            add(f"  secondary, departure-free 600 s: "
+                f"{_ratio(free['numerator'], free['denominator'])}{beside}")
+        else:
+            add("  INSUFFICIENT, not an estimate:")
+            add(f"    sustained at {primary['numerator']} of {primary['denominator']} "
+                "uncensored point(s)")
+            add(f"    departure-free 600 s at {free['numerator']} of {free['denominator']}")
+        para(free["definition"], "    ")
+        if "withheld" in ret:
+            add(f"    returned to a sustained run within the horizon at "
+                f"{ret['reached_within_horizon']} of {ret['points']}")
+        else:
+            median = (f"{ret['median_seconds']} s" if ret["median_seconds"] is not None
+                      else (ret["median_note"] or "none"))
+            add(f"  secondary, time to sustained return: returned within the horizon at "
+                f"{ret['reached_within_horizon']} of {ret['points']}; median {median}; "
+                f"restricted mean {ret['restricted_mean_seconds']} s{beside}")
+        add(f"  departure category at each point (marginal counts only): "
+            f"{primary['departure_category_counts'] or '{}'}")
+    visible = primary["censored_visible_in_export"]
+    add(f"  censoring the decisions file shows on its own: {visible or '{}'}; "
+        f"not censored by block or export end: {primary['not_censored_by_block_or_export_end']}")
 
     retired = result["retired_return_within_10min"]
     heading("DESCRIPTIVE — RETIRED 2026-08-21, NOT THE PRIMARY OUTCOME")

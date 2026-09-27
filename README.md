@@ -349,15 +349,18 @@ is now an ordered ladder, most specific evidence first:
       compiled-in table of sites. The host decides the category and the
       label; title words can only tell a Google Sheets or Slides tab on
       `docs.google.com` from a Docs one.
-   2. `BrowserContextPlugin` — for a browser, the focused site and the
-      title, against curated keyword rules.
+   2. `BrowserContextPlugin` — for a browser window whose site cannot be
+      read (no URL, `localhost`, an address), the title against curated
+      keyword rules. A tab whose site can be read is the site tiers' to
+      decide.
    3. `BundleSeedPlugin` — the taxonomy's bundle-identifier seeds.
    4. `SeedDictionaryPlugin` — the taxonomy's application-name seeds. A
       pattern matches the whole normalized name, or a `*` glob; there is no
       fuzzy or substring matching, which is why macOS's `Code` for VS Code
       needed the bundle seed above.
    5. `LocalPurposeHeuristicPlugin` — curated keyword families over the name
-      and title.
+      and title, for every application that is not a browser and for a
+      browser window whose site cannot be read.
    6. `DocumentTypePlugin` — the document types the application declares in
       its own `Info.plist`.
    7. `DeclaredCategoryPlugin` — the application's declared

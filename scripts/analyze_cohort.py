@@ -110,13 +110,22 @@ WARMUP_EXCLUSION_SECONDS = 180
 # is now classified by its site. A tab on a host in the compiled-in site table
 # is confident evidence in that host's category whatever its title says, and a
 # tab on a site the table does not name is confident evidence when its own
-# hostname's signals agree. Under v4 such a tab counted only when a keyword rule
-# (or, rarely, Tier 2) named it; otherwise it was the ambiguous browser prior,
-# or UNLOGGED where two rules disagreed, and the gate counted neither. The anchor, the switch counts
-# and the decision points differ wherever a browser was open. Rows from v1 to v5
-# are never pooled, and every cohort result uses policy_version 5 only. No note
-# for v5 has been drafted in pitch-deck-inputs yet: it has to be written and
-# appended to traction-summary.md by the founder before a v5 result is reported.
+# hostname's signals agree; a tab filed as SYSTEM (a sign-in or account page)
+# is never evidence, as under v4. Under v4 such a tab counted only when a
+# keyword rule (or, rarely, Tier 2) named it; otherwise it was the ambiguous
+# browser prior, or UNLOGGED where two rules disagreed, and the gate counted
+# neither. The change also runs the other way: under v5 the title-keyword rules
+# stand aside for a tab whose site can be read, so a tab they made confident
+# under v4 on a site the table neither names nor can infer (a Jira ticket on
+# *.atlassian.net, the LinkedIn feed) is, short of a rare Tier 2 match, the
+# ambiguous prior under v5, and the v4 switch or return there disappears.
+# Browser time moves both ways, mostly from unclear to a category. The anchor,
+# the switch counts and the decision points differ wherever a browser was
+# open. Rows from v1 to v5 are never pooled, and every cohort result uses
+# policy_version 5 only. The note is
+# `pitch-deck-inputs/evidence/drafts/2026-09-27-policy-v5-note.md` until the
+# founder appends it to traction-summary.md, which has to happen before a v5
+# result is reported.
 ANALYSED_POLICY_VERSION = 5
 
 # A `work_block_intervention` row has no policy column. It takes the

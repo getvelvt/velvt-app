@@ -5,7 +5,11 @@
 - Rust now classifies a browser tab by the site its `focused_document_url`
   names: a host in a compiled-in site table decides the tab's category at high
   confidence whatever its title says, and a site the table does not name is
-  classified by its own hostname's labels when they agree. A rule about a site
+  classified by its own hostname's labels when they agree. The title-keyword
+  rules (browser-context and purpose) no longer decide a tab whose site can be
+  read. They still decide a tab with no readable site (no URL, `localhost`, an
+  address), and the purpose rules still read every window that is not a
+  browser's. A rule about a site
   (migration 0040) applies in every browser; no command writes one yet.
 - Every field, bound and value on the socket and in the upload is unchanged:
   the upload's `classification_tier` is still one of `exact_match`,
@@ -14,9 +18,13 @@
 - Drift policy version 5 (`DRIFT_POLICY_VERSION` 4 → 5). The gate's code,
   constants, branches and timing are version 4's. A browser tab that was the
   ambiguous browser prior, or UNLOGGED because two keyword rules disagreed, is
-  now confident evidence when its site is seeded or read, so the anchor, the
-  switch counts and the decision points differ from version 4, and the two are
-  never pooled.
+  now confident evidence when its site is seeded or read (unless it is filed
+  as SYSTEM, which the gate never counts). The other way, a tab that title
+  keywords made confident under version 4 is, short of a rare Tier 2 match,
+  the ambiguous prior under version 5 when its site can be read but is neither
+  seeded nor inferred (a Jira ticket on `*.atlassian.net`, the LinkedIn feed). Browser time moves both ways,
+  mostly from unclear to a category, so the anchor, the switch counts and the
+  decision points differ from version 4, and the two are never pooled.
 - Privacy: nothing new is sent. On disk, the hostname of a site Velvt could not
   categorize is kept in `local_site_name` (migration 0040) so it can be named
   when Velvt asks about it; `PRIVACY.md` describes the table and its 14-day

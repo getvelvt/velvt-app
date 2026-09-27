@@ -124,10 +124,10 @@ now runs:
 | Order | Plugin | Evidence | Tier / source |
 |---|---|---|---|
 | 1 | `SiteSeedPlugin` | a browser tab's site (a hostname reduced locally from the tab URL, with `www.` removed) against the compiled-in site table (`site_seeds.rs`); the host decides the category and the label, and the title can only tell a Google Sheets or Slides tab on `docs.google.com` from a Docs one | exact match / seed |
-| 2 | `BrowserContextPlugin` | a browser's focused site (a hostname reduced locally from the tab URL) plus the title, against curated site rules | heuristic |
+| 2 | `BrowserContextPlugin` | a browser window whose site cannot be read (no URL, `localhost`, an address): the title against curated site rules. It stands aside for a tab whose site can be read, which the site tiers decide | heuristic |
 | 3 | `BundleSeedPlugin` | the taxonomy's bundle-identifier seeds (`seed_bundles`, `bundle_identifier`) | exact match / seed |
 | 4 | `SeedDictionaryPlugin` | the taxonomy's application-name seeds | exact match / seed |
-| 5 | `LocalPurposeHeuristicPlugin` | curated keyword families over name and title | heuristic |
+| 5 | `LocalPurposeHeuristicPlugin` | curated keyword families over name and title, for every application that is not a browser and a browser window whose site cannot be read; never for a tab whose site can be read | heuristic |
 | 6 | `DocumentTypePlugin` | `LSItemContentTypes` the app declares | heuristic tier / declared document types |
 | 7 | `DeclaredCategoryPlugin` | the app's `LSApplicationCategoryType`, whitelisted values only | heuristic tier / declared app category |
 | 8 | `SiteInferencePlugin` | a browser site no seed names, read from its own hostname: a purpose subdomain (`mail.`, `docs.`), an institutional suffix (`.edu`, `.ac.uk`), a registrable-label token (`wiki`); signals that disagree give no answer, and so does a sign-in or access label in front (`login.`, `sso.`, `proxy.`) | heuristic |

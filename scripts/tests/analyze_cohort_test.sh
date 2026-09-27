@@ -449,9 +449,10 @@ PY
 
 # ===========================================================================
 # 7b. A Mac upgraded from a policy-v4 build (1.0.13) to a policy-v5 build. v4
-#     read a browser tab on a site no browser-context rule names as the
-#     ambiguous browser prior, which the gate never counts, so its decision
-#     points and switch counts mean something else: its rows are counted and
+#     filed a browser tab by keyword rules over its hostname and title, else
+#     the ambiguous prior; v5 files it by its site and drops the keyword tiers
+#     for a readable site, so decision points differ in both directions and
+#     v4's switch counts mean something else: its rows are counted and
 #     excluded, never pooled with v5.
 # ===========================================================================
 make_export "$work/upgraded/p-v4-to-v5" <<'JSON'

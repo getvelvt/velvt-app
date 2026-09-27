@@ -99,19 +99,26 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// Version 5 (2026-09-27, no protocol change) keeps every constant, branch
 /// and timing of version 4, and the gate's code with them: `is_confident` and
 /// the thresholds are version 4's. What changed is how a browser tab is
-/// classified, and so the evidence. Under version 4 a
-/// tab was confident evidence when a curated keyword rule named its site or
-/// title, or, rarely, when Tier 2 matched it; any other tab was the
-/// explicitly ambiguous browser prior, and a tab whose title named a second
-/// site made the rules disagree and abstain, and neither ever counted.
-/// Version 5 reads the tab's site: a tab on a host in the compiled-in site
-/// table is classified by that host at high confidence whatever its title
-/// says, and a tab on a site the table does not name is classified by the
-/// local site inference when its hostname's own signals agree. Both are
-/// confident evidence. A rule taught about a site applies in every browser.
-/// Browser time moves from unclear to a category, so the anchor, the switch
-/// counts and the decision points differ from version 4 wherever a browser
-/// was open, and the two are never pooled.
+/// classified, and so the evidence. Under version 4 a tab was confident
+/// evidence when a curated keyword rule (the browser-context or the purpose
+/// rules) matched words of its hostname or title, or, rarely, when Tier 2
+/// matched it; any other tab was the explicitly ambiguous browser prior, and a
+/// tab whose title named a second site made the rules disagree and abstain,
+/// and neither ever counted. Version 5 reads the tab's site: a tab on a host in
+/// the compiled-in site table is classified by that host at high confidence
+/// whatever its title says, and a tab on a site the table does not name is
+/// classified by the local site inference when its hostname's own signals
+/// agree. Both are confident evidence, unless the category is SYSTEM (a seeded
+/// sign-in or account page), which the gate never counts, as under version 4.
+/// A rule taught about a site applies in every browser. For a tab whose site
+/// can be read the title-keyword tiers stand aside, so a tab a keyword rule
+/// made confident under version 4 on a site the table neither names nor can
+/// infer (a Jira ticket on an `*.atlassian.net` workspace, the LinkedIn feed)
+/// is, short of a rare Tier 2 match, the ambiguous prior under version 5, and
+/// the version 4 switch or return there disappears. Browser time moves both
+/// ways, mostly from unclear to a category, so the anchor, the switch counts
+/// and the decision points differ from version 4 wherever a browser was open,
+/// and the two are never pooled.
 pub const DRIFT_POLICY_VERSION: u32 = 5;
 /// The realized probability of the arm actually taken. Exactly 1.0 while the
 /// policy is deterministic — there is no randomization, and none is being

@@ -56,9 +56,15 @@ public struct NudgePreviewView: View {
                         .padding(VelvtMetrics.spaceSM)
                 }
 
+            // Only what a reply actually does (work_block backoff and demotion):
+            // any answer but Back to work starts the cooldown and quiets the next
+            // offer, and only "I was focused" counts toward going quiet. No reply
+            // relabels anything, so this must not promise that Velvt gets less wrong.
             Text(
                 "At most one per block, and never outside one. Whichever reply is honest "
-                    + "is the right one — telling Velvt it was wrong is how it stops being wrong."
+                    + "is the right one — anything but Back to work makes Velvt wait longer "
+                    + "before the next one and send it without a notification, and if you "
+                    + "keep telling it you were focused, it goes quiet."
             )
             .velvtBody(12)
             .fixedSize(horizontal: false, vertical: true)

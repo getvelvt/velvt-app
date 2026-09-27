@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Local IPC only. Carries a salted site key and an optional device-local alias; never uploaded, logged, or included in crash diagnostics. Answered with menu_status carrying correction_acknowledgment, or error_response. Makes no network request.",
+  "$comment": "Local IPC only. Carries a salted site key and an optional device-local alias; never uploaded, logged, or included in crash diagnostics. Answered with menu_status carrying correction_acknowledgment, or error_response. Sends nothing about the site anywhere; the menu_status it is answered with may refresh cloud readiness, as any status poll does.",
   "title": "SetSiteCategory",
   "type": "object",
   "additionalProperties": false,

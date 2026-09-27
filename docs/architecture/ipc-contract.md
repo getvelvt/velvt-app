@@ -534,7 +534,9 @@ the full account.
   every page of the site in every browser, keyed by `site_stable_id`, with no
   event id and no hostname. Validated as `set_application_category` is
   (`invalid_site_stable_id` for a malformed key). Answered with `menu_status`
-  carrying `correction_acknowledgment`; no network request.
+  carrying `correction_acknowledgment`. Nothing about the site is sent
+  anywhere; the `menu_status` reply may refresh cloud readiness, as any
+  status poll does.
 - `request_category_prompt` / `category_prompt` [33]: Swift asks with its UTC
   offset, on connect, on wake and on the menu-status cadence; Rust always
   answers. The payload holds an optional `card` (`title`, `body`,

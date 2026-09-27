@@ -28,7 +28,8 @@
   Answered with `menu_status` carrying a Rust-authored
   `correction_acknowledgment` ("Got it — every page of <the typed name, or
   this site>, in every browser, counts as <category> from now on."), which
-  never quotes the hostname. No network request is made,
+  never quotes the hostname. Nothing about the site is sent anywhere (the
+  `menu_status` reply may refresh cloud readiness, as any status poll does),
   and the site's stored hostname is deleted when it is taught.
 - `correction_history_page.items[].scope` and
   `menu_status.correction_history[].scope` gain `site`. A site rule's

@@ -1155,17 +1155,33 @@ mod tests {
         assert_eq!(triaged.event_count, 2);
     }
 
-    /// Counts every request the router makes, so a device-local command can be
-    /// shown to make none.
+    /// Records every request made through it, its path and its body, so a
+    /// device-local command can be shown to send nothing about what it
+    /// changed.
     #[derive(Default)]
-    struct CountingHttp(std::sync::atomic::AtomicUsize);
+    struct RecordingHttp(std::sync::Mutex<Vec<String>>);
 
-    impl HttpClient for CountingHttp {
+    impl RecordingHttp {
+        fn requests(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl HttpClient for RecordingHttp {
         fn send<'a>(
             &'a self,
-            _request: HttpRequest,
+            request: HttpRequest,
         ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, AuthError>> + Send + 'a>> {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.0.lock().unwrap().push(format!(
+                "{} {} {}",
+                request.method.as_str(),
+                request.path,
+                request
+                    .json_body
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default()
+            ));
             Box::pin(async {
                 Ok(HttpResponse {
                     status: 200,
@@ -1362,11 +1378,16 @@ mod tests {
 
     /// Teaching a site: the rule is written under the site key, the site leaves
     /// the list, its stored hostname goes, the confirmation never names it,
-    /// and nothing is sent anywhere -- even signed in.
+    /// and nothing about the site is sent anywhere -- even signed in. Both
+    /// clients a teach can reach are watched: the corrections client, which
+    /// sends nothing at all, and the menu status's, which may check cloud
+    /// readiness for the status the teach answers with, as any status poll
+    /// does, and carries nothing about the site when it does.
     #[tokio::test]
     async fn teaching_a_site_from_the_list_takes_it_off_the_list_and_sends_nothing() {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
-        let http = Arc::new(CountingHttp::default());
+        let corrections_http = Arc::new(RecordingHttp::default());
+        let status_http = Arc::new(RecordingHttp::default());
         let (_sender, auth_state) = tokio::sync::watch::channel(AuthState::Authenticated {
             device_id: "device-router-tests".into(),
         });
@@ -1374,8 +1395,15 @@ mod tests {
             .with_classification_corrections(
                 persistence.abstraction_map_repo(),
                 persistence.upload_batch_repo(),
-                Arc::clone(&http) as Arc<dyn HttpClient>,
+                Arc::clone(&corrections_http) as Arc<dyn HttpClient>,
             )
+            .with_menu_status(Arc::new(MenuStatusProvider::new(
+                Arc::clone(&status_http) as Arc<dyn HttpClient>,
+                Arc::new(FakeTokenStore::default()) as Arc<dyn TokenStore>,
+                persistence.upload_batch_repo(),
+                persistence.raw_event_repo(),
+                persistence.abstraction_map_repo(),
+            )))
             .with_auth_state(auth_state);
         router
             .route(browser_tab(
@@ -1385,7 +1413,6 @@ mod tests {
             ))
             .await
             .unwrap();
-        let requests_before = http.0.load(std::sync::atomic::Ordering::SeqCst);
         let entry = triage(&router, 7).await.entries.remove(0);
         assert_eq!(entry.kind, velvt_shared_types::TriageEntryKind::Site);
 
@@ -1415,10 +1442,27 @@ mod tests {
         );
         assert!(triage(&router, 7).await.entries.is_empty());
         assert_eq!(
-            http.0.load(std::sync::atomic::Ordering::SeqCst),
-            requests_before,
-            "teaching a site made a network request"
+            corrections_http.requests(),
+            Vec::<String>::new(),
+            "teaching a site made a correction request"
         );
+        let status_requests = status_http.requests();
+        assert!(
+            !status_requests.is_empty(),
+            "the status the teach answered with checked readiness through this client"
+        );
+        assert!(
+            status_requests
+                .iter()
+                .all(|request| request == "GET /v1/ready "),
+            "the status a teach answers with sent something besides a readiness check: \
+             {status_requests:?}"
+        );
+        for request in &status_requests {
+            for site_data in ["qwybex", &entry.stable_id, "REFERENCE"] {
+                assert!(!request.contains(site_data), "{site_data} in {request}");
+            }
+        }
 
         // Idempotent: the same answer again is the same rule, counted twice,
         // and a name typed with it is what the confirmation calls the site.

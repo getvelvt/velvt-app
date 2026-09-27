@@ -203,8 +203,10 @@ name and no rule. The router merges the two (`category_prompt::needs_a_category`
   protocol 33) writes a site rule the same way, applied on every page of the
   site in every browser. It carries the key, never the hostname: the client
   sends no `activity_name` for a site unless the user typed one, and Rust
-  deletes the stored hostname once the site is taught. Idempotent,
-  acknowledged, and no network request.
+  deletes the stored hostname once the site is taught. Idempotent and
+  acknowledged, and nothing about the site is sent anywhere (the
+  `menu_status` acknowledgement may refresh cloud readiness, as any status
+  poll does).
 
 **UI.** A section in Settings → "Apps & Sites" (the destination "Teach Velvt
 Your Apps" until protocol 33), headed "Apps and sites Velvt couldn't

@@ -8,7 +8,7 @@
 # outcomes are not measurable without the participant deliberately handing
 # them over. This script is that hand-over.
 #
-# What it emits: up to seven CSV files that share one name stem, each with its
+# What it emits: up to eight CSV files that share one name stem, each with its
 # own row grain. They are kept apart on purpose: one file carrying two grains
 # would be pooled by the first person who opened it in a spreadsheet.
 #
@@ -24,6 +24,13 @@
 #                           abstentions included. It carries `policy_version`,
 #                           which the per-offer rows do not, and it is the
 #                           denominator of the replacement primary outcome.
+#   <stem>-outcomes.csv     one row per decision in that log that has an anchor:
+#                           the pre-registered outcomes of that decision point,
+#                           computed here from `work_block_observation`. Only a
+#                           censoring reason from a closed set, 0/1 flags, a
+#                           number of seconds and one of the eight broad
+#                           categories. The observation rows it is computed
+#                           from stay on this Mac.
 #   <stem>-blocks.csv       one row per declared work block, including every
 #                           block that never produced an offer. A cohort where
 #                           people declare blocks and nothing fires must not
@@ -50,6 +57,7 @@
 #
 # What none of the files can emit, by construction: the free-form block
 # intention, app names, window titles, URLs, filenames, or any observation rows.
+# The outcomes file reads observation rows and writes none of them out.
 # Every query below names every column it selects; there is no `SELECT *`
 # anywhere in this file.
 #
@@ -68,6 +76,7 @@ DB="${VELVT_DATABASE_PATH:-$HOME/.velvt/velvt-service.sqlite3}"
 OUT="${1:-./velvt-cohort-$(date -u +%Y-%m-%d).csv}"
 STEM="${OUT%.csv}"
 DECISIONS_OUT="$STEM-decisions.csv"
+OUTCOMES_OUT="$STEM-outcomes.csv"
 BLOCKS_OUT="$STEM-blocks.csv"
 INVITATIONS_OUT="$STEM-invitations.csv"
 EXPLAIN_OUT="$STEM-explain.csv"
@@ -91,6 +100,9 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 SNAP="$WORK/snapshot.sqlite"
 cp "$DB" "$SNAP"
+# One instant for the whole export: the meta file records it, and the outcomes
+# file censors a horizon still running at it.
+EXPORTED_AT="$(date -u +%s)"
 
 scalar() { sqlite3 -readonly -noheader -batch "$SNAP" "$1"; }
 has_table() {
@@ -137,8 +149,8 @@ fi
 # Companion files from an earlier run in the same folder would otherwise sit
 # beside this run's files and be read as part of it. Only this script's own
 # output names are removed.
-rm -f "$DECISIONS_OUT" "$BLOCKS_OUT" "$INVITATIONS_OUT" "$EXPLAIN_OUT" \
-  "$CORRECTIONS_OUT" "$META_OUT"
+rm -f "$DECISIONS_OUT" "$OUTCOMES_OUT" "$BLOCKS_OUT" "$INVITATIONS_OUT" \
+  "$EXPLAIN_OUT" "$CORRECTIONS_OUT" "$META_OUT"
 
 # ---------------------------------------------------------------------------
 # 1. One row per recorded intervention.
@@ -282,6 +294,197 @@ if has_table intervention_decision_log; then
      LEFT JOIN work_block AS b ON b.block_id = d.block_id
      ORDER BY d.occurred_at, d.decision_id;"
   DECISION_ROWS="$(rows_in "$DECISIONS_OUT")"
+fi
+
+# ---------------------------------------------------------------------------
+# 2b. The pre-registered outcomes of each decision point, computed here.
+#
+# The primary outcome (2026-08-21) is whether at least 600 of the 900 seconds
+# after a decision were spent in the anchor category recorded on its row. It
+# needs the observation ledger, which must not leave this Mac, so the ledger
+# is read here and only the result is written: one row per decision-log row
+# with an anchor, whatever its verdict or policy version. Nothing here reads
+# `gate_verdict`; the analysis picks the eligible rows.
+#
+# A row of `work_block_observation` covers the seconds [occurred_at, ended_at).
+# A second counts toward the anchor when a row covering it is in the decision's
+# anchor category and is evidence by the gate's own rule (`is_confident` in
+# rust-service/src/work_block/mod.rs): classified, high or medium, and not
+# SYSTEM, UNLOGGED or unclassified. Rows that overlap count a second once.
+#
+#   censor_reason   block_ended: the block ended before the horizon elapsed.
+#                   export_ended: the block is still open, and the horizon has
+#                   not elapsed or ends inside the dwell still open now.
+#                   observer_gap: a second of the horizon has no closed row
+#                   (a pause, sleep, restart, or the block's final dwell,
+#                   which the ledger closes where it began).
+#                   none: every second observed, and the labels below are set.
+#                   Censored rows leave the three labels empty, never 0.
+#   sustained_anchor_900s        1 when anchor seconds in the horizon >= 600.
+#   departure_free_600s          1 when no departure begins in the 600 s after
+#                                the decision: a confident non-anchor row whose
+#                                previous confident row was the anchor, the
+#                                gate's own rule.
+#   seconds_to_sustained_return  seconds from the decision to the start of the
+#                                first unbroken run of at least 300 anchor
+#                                seconds inside the horizon; empty with
+#                                censor_reason none when there is no such run.
+#   departure_category           the category of the latest confident row at or
+#                                before the decision when it is not the anchor,
+#                                limited to the eight the service writes.
+#
+# `scripts/analyze_cohort.py` (`label_decision`) states the same definition a
+# second at a time, and scripts/tests/fixtures/outcome-label-vectors.json
+# holds both to the same answers.
+# ---------------------------------------------------------------------------
+OUTCOMES="absent"
+OUTCOMES_DEFINITION_VERSION=""
+OUTCOME_ROWS=0
+if [[ "$DECISION_LOG" == "present" ]]; then
+  OUTCOMES="present"
+  OUTCOMES_DEFINITION_VERSION=1
+  IFS= read -r -d '' OUTCOMES_SQL <<'SQL' || true
+WITH
+  horizon AS (
+    SELECT d.decision_id           AS decision_id,
+           d.block_id              AS block_id,
+           d.occurred_at           AS t,
+           UPPER(d.anchor_category) AS anchor,
+           b.ended_at              AS block_ended_at
+    FROM intervention_decision_log AS d
+    JOIN work_block AS b ON b.block_id = d.block_id
+    WHERE d.anchor_category IS NOT NULL),
+  observed AS (
+    SELECT o.id                    AS id,
+           o.block_id              AS block_id,
+           o.occurred_at           AS started,
+           o.ended_at              AS ended,
+           UPPER(o.category)       AS category,
+           CASE WHEN o.classification_status = 'classified'
+                 AND o.classification_confidence IN ('high', 'medium')
+                 AND LOWER(o.category) NOT IN ('system', 'unclassified', 'unlogged')
+                THEN 1 ELSE 0 END  AS confident
+    FROM work_block_observation AS o
+    WHERE o.block_id IN (SELECT h.block_id FROM horizon AS h)),
+  confident_rows AS (
+    SELECT c.id AS id, c.block_id AS block_id, c.started AS started, c.category AS category,
+           LAG(c.category) OVER (PARTITION BY c.block_id ORDER BY c.started, c.id)
+                                   AS previous_category
+    FROM observed AS c
+    WHERE c.confident = 1),
+  clipped AS (
+    SELECT h.decision_id           AS decision_id,
+           MAX(o.started, h.t)     AS s,
+           MIN(o.ended, h.t + 900) AS e,
+           CASE WHEN o.confident = 1 AND o.category = h.anchor THEN 1 ELSE 0 END
+                                   AS is_anchor
+    FROM horizon AS h
+    JOIN observed AS o ON o.block_id = h.block_id
+    WHERE o.ended IS NOT NULL
+      AND o.ended > o.started
+      AND o.ended > h.t
+      AND o.started < h.t + 900),
+  -- Each span, beside the furthest any earlier span (by start) reached: the
+  -- part of it past that point is new time.
+  covered_steps AS (
+    SELECT k.decision_id AS decision_id, k.s AS s, k.e AS e,
+           MAX(k.e) OVER (PARTITION BY k.decision_id ORDER BY k.s, k.e
+                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS reach
+    FROM clipped AS k),
+  covered AS (
+    SELECT decision_id, SUM(MAX(0, e - MAX(s, COALESCE(reach, s)))) AS seconds
+    FROM covered_steps
+    GROUP BY decision_id),
+  anchor_steps AS (
+    SELECT k.decision_id AS decision_id, k.s AS s, k.e AS e,
+           MAX(k.e) OVER (PARTITION BY k.decision_id ORDER BY k.s, k.e
+                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS reach
+    FROM clipped AS k
+    WHERE k.is_anchor = 1),
+  anchor_time AS (
+    SELECT decision_id, SUM(MAX(0, e - MAX(s, COALESCE(reach, s)))) AS seconds
+    FROM anchor_steps
+    GROUP BY decision_id),
+  -- A span that begins after everything before it has ended starts a new run.
+  anchor_islands AS (
+    SELECT decision_id, s, e,
+           SUM(CASE WHEN reach IS NULL OR s > reach THEN 1 ELSE 0 END)
+             OVER (PARTITION BY decision_id ORDER BY s, e ROWS UNBOUNDED PRECEDING) AS island
+    FROM anchor_steps),
+  anchor_runs AS (
+    SELECT decision_id, MIN(s) AS s, MAX(e) AS e
+    FROM anchor_islands
+    GROUP BY decision_id, island),
+  sustained_return AS (
+    SELECT decision_id, MIN(s) AS s
+    FROM anchor_runs
+    WHERE e - s >= 300
+    GROUP BY decision_id),
+  departures AS (
+    SELECT h.decision_id AS decision_id, COUNT(*) AS n
+    FROM horizon AS h
+    JOIN confident_rows AS c ON c.block_id = h.block_id
+    WHERE c.started > h.t
+      AND c.started <= h.t + 600
+      AND c.category <> h.anchor
+      AND c.previous_category = h.anchor
+    GROUP BY h.decision_id),
+  latest_confident AS (
+    SELECT decision_id, category
+    FROM (SELECT h.decision_id AS decision_id,
+                 CASE WHEN c.category = h.anchor THEN NULL ELSE c.category END AS category,
+                 ROW_NUMBER() OVER (PARTITION BY h.decision_id
+                                    ORDER BY c.started DESC, c.id DESC) AS position
+          FROM horizon AS h
+          JOIN confident_rows AS c ON c.block_id = h.block_id AND c.started <= h.t)
+    WHERE position = 1),
+  open_rows AS (
+    SELECT block_id, MIN(started) AS started
+    FROM observed
+    WHERE ended IS NULL
+    GROUP BY block_id),
+  censoring AS (
+    SELECT h.decision_id AS decision_id, h.t AS t,
+           CASE
+             WHEN h.block_ended_at IS NOT NULL AND h.block_ended_at < h.t + 900
+               THEN 'block_ended'
+             WHEN h.block_ended_at IS NULL
+                  AND (h.t + 900 > @EXPORTED_AT@ OR COALESCE(p.started < h.t + 900, 0) = 1)
+               THEN 'export_ended'
+             WHEN COALESCE(v.seconds, 0) < 900
+               THEN 'observer_gap'
+             ELSE 'none'
+           END AS reason
+    FROM horizon AS h
+    LEFT JOIN open_rows AS p ON p.block_id = h.block_id
+    LEFT JOIN covered AS v ON v.decision_id = h.decision_id)
+SELECT
+    z.decision_id,
+    z.reason,
+    CASE WHEN z.reason = 'none'
+         THEN CASE WHEN COALESCE(a.seconds, 0) >= 600 THEN 1 ELSE 0 END END,
+    CASE WHEN z.reason = 'none'
+         THEN CASE WHEN COALESCE(x.n, 0) = 0 THEN 1 ELSE 0 END END,
+    CASE WHEN z.reason = 'none' THEN r.s - z.t END,
+    CASE
+        WHEN l.category IS NULL THEN NULL
+        WHEN l.category IN ('FOCUS_WORK', 'PASSIVE_CONSUMPTION', 'SOCIAL_FEED',
+                            'COMMUNICATION', 'TASK_MANAGEMENT', 'REFERENCE',
+                            'SYSTEM', 'UNLOGGED') THEN l.category
+        ELSE 'unrecognized'
+    END
+FROM censoring AS z
+LEFT JOIN anchor_time AS a ON a.decision_id = z.decision_id
+LEFT JOIN departures AS x ON x.decision_id = z.decision_id
+LEFT JOIN sustained_return AS r ON r.decision_id = z.decision_id
+LEFT JOIN latest_confident AS l ON l.decision_id = z.decision_id
+ORDER BY z.t, z.decision_id;
+SQL
+  OUTCOMES_SQL="${OUTCOMES_SQL/@EXPORTED_AT@/$EXPORTED_AT}"
+  write_csv "$OUTCOMES_OUT" \
+    'decision_id,censor_reason,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category' \
+    "$OUTCOMES_SQL"
+  OUTCOME_ROWS="$(rows_in "$OUTCOMES_OUT")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -454,10 +657,12 @@ if has_table initiation_settings; then
 fi
 {
   printf 'key,value\n'
-  printf 'export_format,3\n'
-  printf 'exported_at,%s\n' "$(date -u +%s)"
+  printf 'export_format,4\n'
+  printf 'exported_at,%s\n' "$EXPORTED_AT"
   printf 'schema_version,%s\n' "$SCHEMA_VERSION"
   printf 'decision_log,%s\n' "$DECISION_LOG"
+  printf 'outcomes,%s\n' "$OUTCOMES"
+  printf 'outcomes_definition_version,%s\n' "$OUTCOMES_DEFINITION_VERSION"
   printf 'invitations,%s\n' "$INVITATIONS"
   printf 'explain_probe,%s\n' "$EXPLAIN_PROBE"
   printf 'corrections,%s\n' "$CORRECTIONS"
@@ -480,6 +685,12 @@ if [[ "$DECISION_LOG" == "present" ]]; then
   cat <<SUMMARY
 Wrote $DECISION_ROWS recorded decision(s) to:
   $DECISIONS_OUT
+SUMMARY
+fi
+if [[ "$OUTCOMES" == "present" ]]; then
+  cat <<SUMMARY
+Wrote $OUTCOME_ROWS decision outcome(s) to:
+  $OUTCOMES_OUT
 SUMMARY
 fi
 if [[ "$INVITATIONS" == "present" ]]; then
@@ -538,7 +749,14 @@ epoch seconds.
 The decisions file adds each time the detector looked: when, the broad anchor
 category, switch count, elapsed and remaining seconds, the policy version, the
 verdict (including every time it chose to stay quiet), and whether you were
-back in the anchor category within 10 minutes. The blocks file lists every
+back in the anchor category within 10 minutes. The outcomes file adds, for
+each of those moments, whether you then spent at least 10 of the next 15
+minutes in the anchor category, whether you left it again within 10 minutes,
+how many seconds passed before you stayed in it for 5 minutes straight, why
+that could not be told when it could not (the session ended, Velvt was paused
+or not observing, or the session was still running), and the broad category
+you were in at that moment. It is worked out on this Mac, and the record of
+your session it is worked out from stays here. The blocks file lists every
 session you started, with how it started (by you or from an invitation), how
 it ended, and its timings. The invitations file lists each invitation and your
 answer. The explain file counts "Explain this nudge" taps per week, next to

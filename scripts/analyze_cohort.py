@@ -68,6 +68,56 @@ RETURN_WINDOW_SECONDS = 600
 PRIMARY_HORIZON_SECONDS = 900
 PRIMARY_THRESHOLD_SECONDS = 600
 
+# The two secondary outcomes of 2026-08-21, on the same horizon: no further
+# departure from the anchor within 600 s, and the time to the first anchor run
+# of at least 300 s.
+DEPARTURE_FREE_SECONDS = 600
+SUSTAINED_RUN_SECONDS = 300
+
+# The 2026-08-21 censoring rule: above 10% of eligible points censored, the
+# censored count is reported beside every result; above 25%, the result is
+# reported as insufficient rather than as an estimate.
+CENSORED_REPORT_SHARE = 0.10
+CENSORED_INSUFFICIENT_SHARE = 0.25
+
+# The per-decision outcomes file (`-outcomes.csv`, export format 4). The
+# exporter computes it on the tester's Mac from `work_block_observation`, which
+# never leaves; `label_decision` below restates the exporter's SQL, and both are
+# held to `scripts/tests/fixtures/outcome-label-vectors.json`.
+#
+# Censoring reasons, the closed set of 2026-08-21 as the export can see it:
+#   block_ended   the block ended before the horizon elapsed;
+#   export_ended  the block was still open when the export ran, and the
+#                 horizon had not elapsed or ends inside the open dwell, whose
+#                 length is not known yet;
+#   observer_gap  some second of the horizon is covered by no closed
+#                 observation row of the block (a pause, sleep, restart, or a
+#                 final dwell the ledger never measured).
+# `none` means the horizon was fully observed and the labels are set.
+OUTCOME_CENSOR_REASONS = ("block_ended", "export_ended", "observer_gap")
+OUTCOME_DEFINITION_VERSION = 1
+OUTCOME_COLUMNS = (
+    "decision_id",
+    "censor_reason",
+    "sustained_anchor_900s",
+    "departure_free_600s",
+    "seconds_to_sustained_return",
+    "departure_category",
+)
+
+# The eight categories the service writes, and the only values the exporter
+# lets out in `departure_category`. Anything else becomes `unrecognized`.
+SERVICE_CATEGORIES = (
+    "FOCUS_WORK",
+    "PASSIVE_CONSUMPTION",
+    "SOCIAL_FEED",
+    "COMMUNICATION",
+    "TASK_MANAGEMENT",
+    "REFERENCE",
+    "SYSTEM",
+    "UNLOGGED",
+)
+
 # Pre-registered 2026-08-09. `was_focused` disputes the judgment; the offer
 # should never have fired. `wrong_classification` disputes a label. They are
 # reported separately as well as combined, because they are different failures.
@@ -238,6 +288,7 @@ COMPANION_SUFFIXES = {
     "invitations": "-invitations.csv",
     "explain": "-explain.csv",
     "corrections": "-corrections.csv",
+    "outcomes": "-outcomes.csv",
     "meta": "-meta.csv",
 }
 FILE_KINDS = ("offers",) + tuple(COMPANION_SUFFIXES)
@@ -248,6 +299,7 @@ META_TABLE_KEYS = {
     "invitations": "invitations",
     "explain": "explain_probe",
     "corrections": "corrections",
+    "outcomes": "outcomes",
 }
 
 WEEK_SECONDS = 7 * 24 * 3600
@@ -390,6 +442,123 @@ def _classify(path: Path) -> tuple[str, str]:
         if name.endswith(suffix):
             return kind, name[: -len(suffix)]
     return "offers", path.stem
+
+
+# ---------------------------------------------------------------------------
+# Per-decision outcome labels
+#
+# The exporter's SQL computes these on the tester's Mac, because the
+# observation rows they need never leave it. This is the same definition,
+# written second by second so it can be read against the pre-registration
+# rather than against SQL. The analysis itself reads the exported labels; this
+# function exists so the two can be held to one set of test vectors.
+# ---------------------------------------------------------------------------
+
+
+def _is_confident(category: str, status: str, confidence: str) -> bool:
+    """The drift gate's bar for evidence (`is_confident` in work_block/mod.rs)."""
+    return (
+        status == "classified"
+        and confidence in ("high", "medium")
+        and category.lower() not in ("system", "unclassified", "unlogged")
+    )
+
+
+def label_decision(
+    occurred_at: int,
+    anchor_category: str,
+    block_ended_at: int | None,
+    exported_at: int,
+    observations: list[dict],
+) -> dict:
+    """The outcome labels for one decision row with an anchor.
+
+    `observations` are the block's `work_block_observation` rows as dicts with
+    `occurred_at`, `ended_at` (None while open), `category`,
+    `classification_status` and `classification_confidence`, in id order.
+    They are read in the ledger's order, occurred_at then id, as the gate
+    reads them. Times are epoch seconds; a row covers [occurred_at, ended_at).
+    """
+    t = occurred_at
+    horizon_end = t + PRIMARY_HORIZON_SECONDS
+    anchor = anchor_category.upper()
+    ledger = sorted(enumerate(observations), key=lambda pair: (pair[1]["occurred_at"], pair[0]))
+    rows = [
+        dict(
+            start=o["occurred_at"],
+            end=o["ended_at"],
+            category=o["category"].upper(),
+            confident=_is_confident(
+                o["category"], o["classification_status"], o["classification_confidence"]
+            ),
+        )
+        for _, o in ledger
+    ]
+
+    # Where the gate's evidence had the person at the decision: the latest
+    # confident row that began at or before it, when that is not the anchor.
+    departure_category = None
+    latest = [r for r in rows if r["confident"] and r["start"] <= t]
+    if latest and latest[-1]["category"] != anchor:
+        category = latest[-1]["category"]
+        departure_category = category if category in SERVICE_CATEGORIES else "unrecognized"
+
+    labels = {
+        "censor_reason": "none",
+        "sustained_anchor_900s": None,
+        "departure_free_600s": None,
+        "seconds_to_sustained_return": None,
+        "departure_category": departure_category,
+    }
+    seconds = range(t, horizon_end)
+    closed = [r for r in rows if r["end"] is not None]
+    covered = [any(r["start"] <= s < r["end"] for r in closed) for s in seconds]
+    in_anchor = [
+        any(r["confident"] and r["category"] == anchor and r["start"] <= s < r["end"] for r in closed)
+        for s in seconds
+    ]
+
+    if block_ended_at is not None and block_ended_at < horizon_end:
+        labels["censor_reason"] = "block_ended"
+    elif block_ended_at is None and (
+        horizon_end > exported_at
+        or any(r["end"] is None and r["start"] < horizon_end for r in rows)
+    ):
+        labels["censor_reason"] = "export_ended"
+    elif not all(covered):
+        labels["censor_reason"] = "observer_gap"
+    if labels["censor_reason"] != "none":
+        return labels
+
+    labels["sustained_anchor_900s"] = int(sum(in_anchor) >= PRIMARY_THRESHOLD_SECONDS)
+
+    # A departure is the gate's: a confident non-anchor row whose previous
+    # confident row was the anchor. The decision's own row is not "further".
+    departures = 0
+    previous = None
+    for r in rows:
+        if not r["confident"]:
+            continue
+        if (
+            r["category"] != anchor
+            and previous == anchor
+            and t < r["start"] <= t + DEPARTURE_FREE_SECONDS
+        ):
+            departures += 1
+        previous = r["category"]
+    labels["departure_free_600s"] = int(departures == 0)
+
+    run_start = None
+    for index, anchored in enumerate(in_anchor):
+        if not anchored:
+            run_start = None
+            continue
+        if run_start is None:
+            run_start = index
+        if index - run_start + 1 >= SUSTAINED_RUN_SECONDS:
+            labels["seconds_to_sustained_return"] = run_start
+            break
+    return labels
 
 
 # ---------------------------------------------------------------------------

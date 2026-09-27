@@ -4,10 +4,12 @@
 # Three things are pinned here, and the first two pull in opposite directions.
 #
 # 1. The export must carry ENOUGH: block timings on every offer, the decision
-#    log with `policy_version`, a row for every declared block (offer or not),
-#    `card_seen_at`, invitation outcomes, the explain-tap counts and the
-#    correction counts, so every measure pre-registered in `traction-summary.md`
-#    can be computed from what a tester sends back.
+#    log with `policy_version`, the outcome labels of each decision, a row for
+#    every declared block (offer or not), `card_seen_at`, invitation outcomes,
+#    the explain-tap counts and the correction counts, so every measure
+#    pre-registered in `traction-summary.md` can be computed from what a
+#    tester sends back. (outcome_labels_test.sh holds the labels themselves to
+#    the shared vectors.)
 #
 # 2. The export must carry NOTHING ELSE. The script's own disclosure promises a
 #    participant that no intention, app name, window title, URL or filename can
@@ -86,10 +88,14 @@ INSERT INTO personal_app_override (app_key_hash, category, activity_name)
 VALUES ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2','FOCUS_WORK','$S_OVERRIDE');
 INSERT INTO personal_override (key_hash, category, activity_name)
 VALUES ('ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc3','REFERENCE','$S_URLHOST');
--- Observation rows exist and must not be exported at all.
+-- Observation rows exist and must not be exported at all. The second is a
+-- confident row whose category is free text nothing in the service writes; it
+-- is where block-1's offer happened, so it is the departure category the
+-- outcomes file would name if its closed set did not stop it.
 INSERT INTO work_block_observation (block_id, occurred_at, ended_at, category,
     classification_status, classification_confidence)
-VALUES ('block-1', $((T0 + 10)), $((T0 + 400)), 'FOCUS_WORK', 'classified', 'high');
+VALUES ('block-1', $((T0 + 10)), $((T0 + 400)), 'FOCUS_WORK', 'classified', 'high'),
+       ('block-1', $((T0 + 500)), $((T0 + 700)), '$S_CATEGORY', 'classified', 'high');
 SQL
 }
 
@@ -216,6 +222,7 @@ assert_no_sentinel() { # FILE...
 
 OFFERS_HEADER='block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention,card_seen_at,card_seen'
 DECISIONS_HEADER='decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds'
+OUTCOMES_HEADER='decision_id,censor_reason,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category'
 BLOCKS_HEADER='block_id,origin,phase,started_at,ended_at,total_paused_seconds,planned_duration_seconds'
 INVITATIONS_HEADER='invitation_id,offered_at,action_id,policy_version,backoff_policy_version,outcome,outcome_at'
 EXPLAIN_HEADER='week_start_local_date,taps,delivered_interventions,blocks_declared'
@@ -245,7 +252,7 @@ chmod 644 "$pasted/export_cohort_evidence.sh"
   || fail "bash export_cohort_evidence.sh failed from a pasted copy:$(printf '\n')$(cat "$work/stdout30.txt")"
 
 stem="$pasted/velvt-cohort-$(date -u +%Y-%m-%d)"
-for suffix in "" -decisions -blocks -invitations -explain -corrections -meta; do
+for suffix in "" -decisions -outcomes -blocks -invitations -explain -corrections -meta; do
   [[ -f "$stem$suffix.csv" ]] || fail "missing $(basename "$stem$suffix.csv")"
 done
 
@@ -262,6 +269,7 @@ check_header() {
 }
 check_header "$stem.csv" "$OFFERS_HEADER"
 check_header "$stem-decisions.csv" "$DECISIONS_HEADER"
+check_header "$stem-outcomes.csv" "$OUTCOMES_HEADER"
 check_header "$stem-blocks.csv" "$BLOCKS_HEADER"
 check_header "$stem-invitations.csv" "$INVITATIONS_HEADER"
 check_header "$stem-explain.csv" "$EXPLAIN_HEADER"
@@ -311,6 +319,25 @@ assert rows["d-03"]["block_total_paused_seconds"] == "300", rows["d-03"]
 assert rows["d-06"]["block_ended_at"] == str(T0 + 40100), rows["d-06"]
 PY
 
+# 3b. The outcome labels: one row per decision with an anchor (d-01 and d-06
+#     have none). No block here has observations covering a whole horizon, so
+#     every row is censored, and a censored row leaves its labels empty rather
+#     than 0. block-7's offer came after its block ended. block-1's offer came
+#     on the free-text row seeded above, which leaves only as `unrecognized`.
+python3 - "$stem-outcomes.csv" <<'PY' || fail "outcome rows are wrong"
+import csv, sys
+rows = {r["decision_id"]: r for r in csv.DictReader(open(sys.argv[1]))}
+assert sorted(rows) == ["d-02", "d-03", "d-04", "d-05", "d-07"], sorted(rows)
+reasons = {k: r["censor_reason"] for k, r in rows.items()}
+assert reasons == {"d-02": "observer_gap", "d-03": "observer_gap", "d-04": "observer_gap",
+                   "d-05": "observer_gap", "d-07": "block_ended"}, reasons
+for r in rows.values():
+    assert (r["sustained_anchor_900s"], r["departure_free_600s"],
+            r["seconds_to_sustained_return"]) == ("", "", ""), r
+assert rows["d-02"]["departure_category"] == "unrecognized", rows["d-02"]
+assert {rows[k]["departure_category"] for k in ("d-03", "d-04", "d-05", "d-07")} == {""}, rows
+PY
+
 # 4. Every declared block, including the ones that never produced an offer.
 python3 - "$stem-blocks.csv" <<'PY' || fail "per-block rows are wrong"
 import csv, sys
@@ -341,8 +368,10 @@ assert meta["explain_probe"] == "present", meta
 assert meta["card_seen_recorded_since"] == str(1800000000 - 86400), meta
 assert meta["invitations_enabled"] == "0", meta
 assert meta["exported_at"].isdigit(), meta
-assert meta["export_format"] == "3", meta
+assert meta["export_format"] == "4", meta
 assert meta["corrections"] == "present", meta
+assert meta["outcomes"] == "present", meta
+assert meta["outcomes_definition_version"] == "1", meta
 PY
 
 # 5b. The corrections file: the two rules seed_sentinels wrote, as counts, and
@@ -364,8 +393,11 @@ for probe in \
   count="$(sqlite3 "$db30" "$probe")"
   [[ "$count" -ge 1 ]] || fail "seeding failed, the leak test would be vacuous: $probe"
 done
-# And no file carries observation rows: the one observation is at T0+10.
-grep -qF "$((T0 + 10))" "$stem".csv "$stem"-*.csv && fail "an observation timestamp was exported"
+# And no file carries observation rows: the observations begin at T0+10 and
+# T0+500 and end at T0+400 and T0+700, and no decision or offer shares those.
+for observed_at in $((T0 + 10)) $((T0 + 400)) $((T0 + 500)) $((T0 + 700)); do
+  grep -qF "$observed_at" "$stem".csv "$stem"-*.csv && fail "an observation timestamp was exported"
+done
 
 # 7. The disclosure the participant reads names what the files contain. It is
 #    hard-wrapped, so match against a whitespace-folded copy.
@@ -375,6 +407,9 @@ for phrase in "block start and end times" "total time paused" \
               "when the nudge card was first on screen" \
               "Times are plain epoch seconds." \
               "the policy version" "every session you started" \
+              "The outcomes file adds" \
+              "at least 10 of the next 15 minutes in the anchor category" \
+              "the record of your session it is worked out from stays here." \
               "named by the date of its Monday" \
               "It does not say which apps or windows they were." \
               "Please send every file listed above."; do
@@ -431,6 +466,7 @@ mkdir -p "$work/p28"
 run_export "$db28" "$out28" "$work/stdout28.txt"
 check_header "$out28" "$OFFERS_HEADER"
 check_header "$work/p28/export-decisions.csv" "$DECISIONS_HEADER"
+check_header "$work/p28/export-outcomes.csv" "$OUTCOMES_HEADER"
 check_header "$work/p28/export-blocks.csv" "$BLOCKS_HEADER"
 python3 - "$out28" "$work/p28/export-meta.csv" <<'PY' || fail "protocol 28 card_seen handling"
 import csv, sys
@@ -514,9 +550,11 @@ VALUES ('old-1',$((T0 + 600)),'protect_next_10','FOCUS_WORK',4,600,'returned',$(
 SQL
 mkdir -p "$work/p25"
 echo "stale" > "$work/p25/export-decisions.csv"
+echo "stale" > "$work/p25/export-outcomes.csv"
 echo "stale" > "$work/p25/export-explain.csv"
 run_export "$db25" "$work/p25/export.csv" "$work/stdout25.txt"
 [[ ! -e "$work/p25/export-decisions.csv" ]] || fail "a stale decisions file survived"
+[[ ! -e "$work/p25/export-outcomes.csv" ]] || fail "a stale outcomes file survived"
 [[ ! -e "$work/p25/export-explain.csv" ]] || fail "a stale explain file survived"
 [[ ! -e "$work/p25/export-invitations.csv" ]] || fail "an invitations file was written with no table"
 check_header "$work/p25/export.csv" "$OFFERS_HEADER"
@@ -524,6 +562,7 @@ check_header "$work/p25/export-blocks.csv" "$BLOCKS_HEADER"
 [[ "$(field_of "$work/p25/export-blocks.csv" old-1 origin)" == "" ]] || fail "origin invented on a pre-0022 database"
 [[ "$(field_of "$work/p25/export.csv" old-1 card_seen)" == "unknown" ]] || fail "card_seen on a pre-0032 database"
 [[ "$(meta_of "$work/p25/export-meta.csv" decision_log)" == "absent" ]] || fail "meta: decision_log"
+[[ "$(meta_of "$work/p25/export-meta.csv" outcomes)" == "absent" ]] || fail "meta: outcomes"
 [[ "$(meta_of "$work/p25/export-meta.csv" invitations)" == "absent" ]] || fail "meta: invitations"
 [[ "$(meta_of "$work/p25/export-meta.csv" invitations_enabled)" == "" ]] || fail "meta: invitations_enabled"
 grep -qF "no decisions file was" <(tr '\n' ' ' < "$work/stdout25.txt" | tr -s ' ') \

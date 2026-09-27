@@ -1,0 +1,336 @@
+{
+  "about": [
+    "Shared test vectors for the per-decision outcome labels: the exporter's SQL (export_cohort_evidence.sh, section 2b) and label_decision in analyze_cohort.py must both give these answers. A future on-Mac resolver should be held to them too.",
+    "Every time is seconds after the case's `base` (epoch seconds). An observation is [occurred_at, ended_at, category, classification_status, classification_confidence] and covers [occurred_at, ended_at); ended_at null is a row still open. Rows are listed in ledger (id) order.",
+    "`expect` null means the exporter writes no row for that decision (it has no anchor). Otherwise every label is given; null is an empty cell.",
+    "Bases in 2023 are in the past for any export run today; the base in 2099 keeps an open block's horizon in the future."
+  ],
+  "cases": [
+    {
+      "name": "returns_and_stays",
+      "why": "The plain success: back at the anchor 30 s after the decision and there for the rest of the horizon. A medium-confidence row is evidence. A decision made at the anchor has no departure category and a return at 0 s. A decision with no anchor gets no row.",
+      "base": 1700000000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1030, "SOCIAL_FEED", "classified", "high"],
+        [1030, 2500, "FOCUS_WORK", "classified", "medium"],
+        [2500, 3000, "COMMUNICATION", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-warmup", "at": 100, "anchor": null, "verdict": "abstained_warmup", "expect": null},
+        {"id": "v-returns", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 30, "departure_category": "SOCIAL_FEED"}},
+        {"id": "v-at-anchor", "at": 1030, "anchor": "FOCUS_WORK", "verdict": "abstained_block_cap",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 0, "departure_category": null}}
+      ]
+    },
+    {
+      "name": "stays_away",
+      "why": "Never back inside the horizon: not sustained and no sustained return, yet departure-free, because leaving once and staying away has no FURTHER departure. That is what the 2026-08-21 secondary outcome says; read it beside the primary.",
+      "base": 1700100000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 2500, "SOCIAL_FEED", "classified", "high"],
+        [2500, 3000, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-away", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "oscillates",
+      "why": "650 anchor seconds in short stretches: sustained by the 600 s rule, with a further departure and no run of 300 s. The later decision is 500 anchor seconds, not sustained.",
+      "base": 1700200000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "COMMUNICATION", "classified", "high"],
+        [1100, 1300, "FOCUS_WORK", "classified", "high"],
+        [1300, 1400, "COMMUNICATION", "classified", "high"],
+        [1400, 1650, "FOCUS_WORK", "classified", "high"],
+        [1650, 1700, "SOCIAL_FEED", "classified", "high"],
+        [1700, 1950, "FOCUS_WORK", "classified", "high"],
+        [1950, 3000, "REFERENCE", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-osc-1", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": null, "departure_category": "COMMUNICATION"}},
+        {"id": "v-osc-2", "at": 1300, "anchor": "FOCUS_WORK", "verdict": "abstained_block_cap",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 0, "seconds_to_sustained_return": null, "departure_category": "COMMUNICATION"}}
+      ]
+    },
+    {
+      "name": "exactly_600_anchor_seconds",
+      "why": "At least 600 includes 600. The run of 600 s starts 300 s in.",
+      "base": 1700300000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1300, "SOCIAL_FEED", "classified", "high"],
+        [1300, 1900, "FOCUS_WORK", "classified", "high"],
+        [1900, 3000, "COMMUNICATION", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-600", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 300, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "599_anchor_seconds",
+      "why": "One second short of the threshold is not sustained. The run is still 599 s, so it counts as a sustained return at 301 s.",
+      "base": 1700400000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1301, "SOCIAL_FEED", "classified", "high"],
+        [1301, 1900, "FOCUS_WORK", "classified", "high"],
+        [1900, 3000, "COMMUNICATION", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-599", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": 301, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "departure_at_600_s_counts",
+      "why": "A departure 600 s after the decision is within 600 s: the bound is inclusive, as for anchor_seen_within_600s.",
+      "base": 1700500000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, 1600, "FOCUS_WORK", "classified", "high"],
+        [1600, 1700, "COMMUNICATION", "classified", "high"],
+        [1700, 3000, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-dep-600", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "departure_at_601_s_does_not",
+      "why": "One second later it is outside the window.",
+      "base": 1700600000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, 1601, "FOCUS_WORK", "classified", "high"],
+        [1601, 1700, "COMMUNICATION", "classified", "high"],
+        [1700, 3000, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-dep-601", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "unconfident_time_is_observed_not_anchor",
+      "why": "An ambiguous row in the anchor's category is observed time, so nothing is censored, but it is not anchor time and not a departure or a return.",
+      "base": 1700700000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, 1900, "FOCUS_WORK", "ambiguous", "low"],
+        [1900, 3000, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-ambiguous", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "system_row_breaks_a_run",
+      "why": "Ten seconds of SYSTEM between two anchor stretches of 250 s and 240 s: never a departure (SYSTEM is not evidence), but not anchor time either, so there is no unbroken run of 300 s.",
+      "base": 1700800000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1050, "SOCIAL_FEED", "classified", "high"],
+        [1050, 1300, "FOCUS_WORK", "classified", "high"],
+        [1300, 1310, "SYSTEM", "classified", "high"],
+        [1310, 1550, "FOCUS_WORK", "classified", "high"],
+        [1550, 3000, "SOCIAL_FEED", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-system", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 0, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "block_end_against_the_horizon",
+      "why": "A block that ends 100 s before the horizon does censors it (block_ended). One that ends exactly as the horizon closes does not.",
+      "base": 1700900000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 1800, "planned_duration_seconds": 1800},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, 1800, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-ended", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "block_ended", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}},
+        {"id": "v-ends-at-horizon", "at": 900, "anchor": "FOCUS_WORK", "verdict": "abstained_min_switches",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": 200, "departure_category": null}}
+      ]
+    },
+    {
+      "name": "pause_inside_the_horizon",
+      "why": "A pause closes the ledger and nothing is observed until the block resumes: observer_gap, never a failure.",
+      "base": 1701000000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3300, "total_paused_seconds": 300},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1200, "SOCIAL_FEED", "classified", "high"],
+        [1500, 3300, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-paused", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "observer_gap", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "final_dwell_never_measured",
+      "why": "The dwell the person is in when the block ends is closed where it began (its closed report arrives after the block is finalized), so its time is unobserved: observer_gap, even though the person may have stayed at the anchor to the end.",
+      "base": 1701100000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, 1100, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-final-dwell", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "observer_gap", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "open_block_horizon_still_running",
+      "why": "The export ran before the horizon closed.",
+      "base": 4100000000,
+      "block": {"phase": "active", "started_at": 0, "ended_at": null},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, null, "SOCIAL_FEED", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-running", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "export_ended", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "open_block_open_dwell_inside_the_horizon",
+      "why": "The horizon is long past, but the dwell still open began inside it, and how long it lasts is not known yet.",
+      "base": 1701200000,
+      "block": {"phase": "active", "started_at": 0, "ended_at": null},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, null, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-open-dwell", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "export_ended", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "open_block_horizon_closed_before_the_open_dwell",
+      "why": "Still open at export, but every second of the horizon is in closed rows, so it is labelled.",
+      "base": 1701300000,
+      "block": {"phase": "active", "started_at": 0, "ended_at": null},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, 2000, "FOCUS_WORK", "classified", "high"],
+        [2000, null, "COMMUNICATION", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-open-labelled", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "paused_at_export",
+      "why": "A paused block has no open row; the time since the pause is simply unobserved.",
+      "base": 1701400000,
+      "block": {"phase": "paused", "started_at": 0, "ended_at": null, "paused_at": 1500},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, 1500, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-paused-now", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "observer_gap", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "overlapping_rows_count_once",
+      "why": "Rows can overlap when reports arrive out of order. A second counts once, and as anchor time if any confident anchor row covers it: 590 anchor seconds, not the 690 a sum of rows would give.",
+      "base": 1701500000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1300, "SOCIAL_FEED", "classified", "high"],
+        [1200, 1790, "FOCUS_WORK", "classified", "high"],
+        [1300, 1400, "FOCUS_WORK", "classified", "high"],
+        [1790, 3000, "COMMUNICATION", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-overlap", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": 200, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "an_unknown_category_never_leaves",
+      "why": "A confident row whose category is none of the eight (nothing in the service writes one, but the table would hold it) is exported as `unrecognized`, never as its text.",
+      "base": 1701600000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "ZZ Private Label", "classified", "high"],
+        [1100, 3000, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-unknown", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "unrecognized"}}
+      ]
+    },
+    {
+      "name": "categories_match_regardless_of_case",
+      "why": "The gate compares categories ignoring ASCII case (eq_ignore_ascii_case), and so do the labels.",
+      "base": 1701700000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "focus_work", "classified", "high"],
+        [1000, 1100, "social_feed", "classified", "high"],
+        [1100, 3000, "focus_work", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-case", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "departure_category_is_the_latest_confident_row",
+      "why": "A decision made on an ambiguous row takes its departure category from the latest confident row before it, not from the ambiguous one.",
+      "base": 1701800000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, 1200, "REFERENCE", "ambiguous", "low"],
+        [1200, 3000, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-latest", "at": 1100, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+      ]
+    }
+  ]
+}

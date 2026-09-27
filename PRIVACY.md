@@ -225,7 +225,9 @@ is the key of the tab's site: an HMAC-SHA-256 of the hostname, with a leading
 `www.` removed, under this install's `stable_key_salt`. It is the same in every
 browser, which is what lets one rule you teach about a site apply in all of
 them, and it is NULL for any window that is not a browser tab on a named site —
-an address such as `192.168.1.20`, `localhost`, and `.local` names get no key.
+an address such as `192.168.1.20`, `localhost`, and names only a private
+network answers (`.local`, `home.arpa`, `.internal`, `.lan`, `.localdomain`)
+get no key.
 It holds the digest, never the hostname, but a hostname is a guessable input:
 anyone holding the whole file can hash a list of sites under the salt beside it
 and read off which ones you visited. Treat it as naming the site. Like the seven

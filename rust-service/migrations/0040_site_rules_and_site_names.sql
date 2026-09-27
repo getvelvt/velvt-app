@@ -13,8 +13,9 @@
 -- of its own (`velvt:abstraction-site-key:v1`), so it never equals an
 -- application, bundle or window key. The host is normalized first
 -- (`sites::site_identity`): one leading `www.` is stripped, and an address, a
--- `localhost` or `.local` name, or a name without a dot has no identity at
--- all. NULL on every event that is not a browser window on such a site, and on
+-- name only a private network answers (`localhost`, `.local`, `home.arpa`,
+-- `.internal`, `.lan`, `.localdomain`), or a name without a dot has no
+-- identity at all. NULL on every event that is not a browser window on such a site, and on
 -- every row written before this migration: the host was discarded at
 -- abstraction and a key cannot be reversed, so there is nothing to backfill
 -- from. A holder of the whole file can hash a list of popular hosts under the

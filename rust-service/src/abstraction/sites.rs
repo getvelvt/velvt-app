@@ -20,8 +20,9 @@ use super::{
 /// `host` is what `focused_site_context` kept of a tab's URL. Exactly one
 /// leading `www.` is stripped, because a site serves the same thing with and
 /// without it and a rule taught on one must reach the other. There is no
-/// identity for an IP literal (a dotted quad, or anything with a `:`),
-/// `localhost` or a name under it, a `.local` name, or a host without a dot:
+/// identity for an IP literal (a dotted quad, or anything with a `:`), a host
+/// without a dot, or a name under one of [`PRIVATE_NETWORK_NAMES`] --
+/// `localhost`, `.local`, `home.arpa`, `.internal`, `.lan`, `.localdomain`:
 /// each of those names a machine rather than a site, usually a different
 /// machine on each network, so a rule about one would follow whatever answers
 /// at that name next.
@@ -39,9 +40,12 @@ pub(crate) fn site_identity(host: &str) -> Option<String> {
         })
         && site.split('.').all(|label| !label.is_empty());
     let names_a_site = site.contains('.')
-        && site != "localhost"
-        && !site.ends_with(".localhost")
-        && !site.ends_with(".local")
+        && !PRIVATE_NETWORK_NAMES.iter().any(|name| {
+            site == *name
+                || site
+                    .strip_suffix(name)
+                    .is_some_and(|under| under.ends_with('.'))
+        })
         // The WHATWG URL standard reads a host whose last label is all digits
         // as an IPv4 address, and no top-level domain is numeric.
         && !site
@@ -50,6 +54,20 @@ pub(crate) fn site_identity(host: &str) -> Option<String> {
             .is_some_and(|label| label.bytes().all(|byte| byte.is_ascii_digit()));
     (well_formed && names_a_site).then(|| site.to_owned())
 }
+
+/// Names only a private network answers, each covering itself and every name
+/// under it: `localhost` (RFC 6761), `.local` (multicast DNS), `home.arpa`
+/// (RFC 8375, a home network), `.internal` (reserved by ICANN for private
+/// use), and the `.lan` and `.localdomain` that home routers and Linux hosts
+/// commonly hand out.
+const PRIVATE_NETWORK_NAMES: &[&str] = &[
+    "localhost",
+    "local",
+    "home.arpa",
+    "internal",
+    "lan",
+    "localdomain",
+];
 
 /// How far a seed's host reaches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -495,6 +513,12 @@ mod tests {
             "app.localhost",
             "printer.local",
             "www.printer.local",
+            "home.arpa",
+            "router.home.arpa",
+            "www.home.arpa",
+            "gitlab.internal",
+            "nas.lan",
+            "printer.localdomain",
             "intranet",
             "www.com",
             "",
@@ -506,6 +530,17 @@ mod tests {
             assert_eq!(site_identity(host), None, "{host:?}");
         }
         assert_eq!(site_identity(&format!("{}.com", "a".repeat(250))), None);
+        // Only a private name's own suffix: the same words elsewhere in a
+        // public host, or inside a label, are a site like any other.
+        for host in [
+            "internal.example.com",
+            "lan.example.org",
+            "home.arpa.example.net",
+            "mylan.com",
+            "example.plan",
+        ] {
+            assert_eq!(site_identity(host).as_deref(), Some(host), "{host:?}");
+        }
     }
 
     /// What `site_identity` returns is what migration 0040's CHECK on

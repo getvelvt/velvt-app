@@ -324,6 +324,11 @@ const SUBDOMAIN_LABEL_VOTES: &[(&str, &[&str])] = &[
             "guide",
             "guides",
             "handbook",
+            // A code forge a company or project runs itself (GitHub
+            // Enterprise, a self-hosted GitLab), which the seeds for
+            // github.com and gitlab.com cannot reach.
+            "github",
+            "gitlab",
         ],
     ),
     ("TASK_MANAGEMENT", &["jira", "tasks", "tracker", "issues"]),
@@ -467,8 +472,8 @@ mod tests {
     use crate::abstraction::{
         normalize::normalize_classifier_text,
         plugin::{
-            browser_context_rule_categories, ClassificationPlugin, ClassificationResult,
-            ClassificationTier, DeclaredMetadata,
+            browser_context_rule_categories, browser_context_rule_keywords, ClassificationPlugin,
+            ClassificationResult, ClassificationTier, DeclaredMetadata,
         },
         taxonomy::is_valid_label,
         Taxonomy,
@@ -776,6 +781,77 @@ mod tests {
         }
     }
 
+    /// The other direction: every whole host a browser-context rule names is
+    /// seeded, in the rule's category, unless it is listed here as left out on
+    /// purpose. A browser tab whose site can be read is not the rules' to
+    /// decide, so a host they name that no seed covers loses its answer; this
+    /// makes that a decision someone wrote down rather than an accident.
+    ///
+    /// A keyword names a host when a word after its first is the last label
+    /// of a seeded host or a common top-level domain (`github com`,
+    /// `docs google com spreadsheets`); the host is its words up to and
+    /// including the last such word.
+    #[test]
+    fn every_host_a_browser_rule_names_is_seeded_or_left_out_on_purpose() {
+        // Keyword -> why its host has no seed.
+        const LEFT_OUT: &[(&str, &str)] = &[
+            (
+                "atlassian net",
+                "Jira and Confluence share each workspace's host",
+            ),
+            (
+                "linkedin com feed",
+                "the feed shares its host with messaging, jobs and Learning",
+            ),
+        ];
+        let top_level_domains: HashSet<&str> = SITE_SEEDS
+            .iter()
+            .filter_map(|seed| seed.host.rsplit('.').next())
+            .chain([
+                "com", "org", "net", "io", "ai", "app", "dev", "co", "so", "me",
+            ])
+            .collect();
+        let matcher = SiteMatcher::new(SITE_SEEDS);
+        let mut named = HashSet::new();
+
+        for (keyword, category) in browser_context_rule_keywords() {
+            let words: Vec<&str> = keyword.split(' ').collect();
+            let Some(last) = (1..words.len())
+                .rev()
+                .find(|&index| top_level_domains.contains(words[index]))
+            else {
+                continue;
+            };
+            let host = words[..=last].join(".");
+            named.insert(keyword);
+            let seed = matcher.lookup(&host);
+            if LEFT_OUT.iter().any(|(left_out, _)| *left_out == keyword) {
+                assert!(
+                    seed.is_none(),
+                    "{host} is seeded, so {keyword:?} is no longer left out"
+                );
+                continue;
+            }
+            let seed = seed.unwrap_or_else(|| {
+                panic!(
+                    "a browser-context rule names {host} ({keyword:?}) and no seed covers it; \
+                     seed it, or list it in LEFT_OUT with the reason"
+                )
+            });
+            assert_eq!(
+                seed.category, category,
+                "{host} is seeded as {} and the rule naming it ({keyword:?}) says {category}",
+                seed.category
+            );
+        }
+        for (keyword, _) in LEFT_OUT {
+            assert!(
+                named.contains(keyword),
+                "{keyword:?} is listed as left out but no rule names it as a host"
+            );
+        }
+    }
+
     #[test]
     fn a_seeded_site_is_an_exact_match_with_a_seeds_confidence() {
         for browser in ["Safari", "Google Chrome", "Arc", "Firefox"] {
@@ -940,6 +1016,8 @@ mod tests {
             ("mail.qwzx.io", "COMMUNICATION", "communication:inferred"),
             ("docs.qwzx.io", "REFERENCE", "reference:inferred"),
             ("jira.qwzx.io", "TASK_MANAGEMENT", "task:inferred"),
+            ("github.qwzx.com", "REFERENCE", "reference:inferred"),
+            ("gitlab.qwzx.org", "REFERENCE", "reference:inferred"),
             ("cs.qwzx.edu", "REFERENCE", "reference:inferred"),
             ("library.qwzx.ac.uk", "REFERENCE", "reference:inferred"),
             ("qwzx.gov.au", "REFERENCE", "reference:inferred"),

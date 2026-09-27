@@ -371,8 +371,9 @@ impl ClassificationPlugin for LocalPurposeHeuristicPlugin {
     /// article's headline, a product it mentions -- so on a tab the same
     /// keywords read the content rather than the tool: an essay titled
     /// "How to do great work" is not task management. The site tiers decide
-    /// such a tab from its host, and a site they cannot place goes to the
-    /// "needs a category" list instead of a confident guess from its title.
+    /// such a tab from its host, and a site they cannot place is left to
+    /// Tier 2 and the browser prior -- and so, most often, to the "needs a
+    /// category" list -- instead of a confident guess from its title.
     fn classify_declared(
         &self,
         app_name: &str,
@@ -406,11 +407,20 @@ impl ClassificationPlugin for BrowserContextPlugin {
 
     /// Answers only for a browser window whose site Velvt cannot read.
     ///
-    /// Every host these rules name is in the site table, so for a tab with a
-    /// readable site the rules could add only title words, and title words
-    /// about another product ("Why we moved from Jira to Linear") are how
-    /// they misfire. The seed tier still reads them to refine a seeded
-    /// site's label within its own category.
+    /// For a tab with a readable site these rules could add only title words,
+    /// and title words about another product ("Why we moved from Jira to
+    /// Linear") are how they misfire. The site tiers decide such a tab from its
+    /// host instead, and they do not cover every host the rules name. A test
+    /// holds every whole host a rule names to a seed, except the two left out
+    /// on purpose: `*.atlassian.net`, where Jira and Confluence share each
+    /// workspace's host, and `linkedin.com`, which serves far more than the
+    /// feed its rule names. And the rules match a host by any of its words, so
+    /// they also named hosts no seed can list: a self-hosted GitHub or GitLab,
+    /// a `*.notion.site` page. Site inference reads a `github.` or `gitlab.`
+    /// label in front of a host; every other such tab is left to Tier 2 and
+    /// the browser prior, and so, most often, to the "needs a category" list.
+    /// The seed tier still reads the rules, to tell a Google Sheets or Slides
+    /// tab from a Docs one.
     fn classify_declared(
         &self,
         app_name: &str,
@@ -424,10 +434,13 @@ impl ClassificationPlugin for BrowserContextPlugin {
     }
 }
 
-/// A browser window whose hostname normalizes to a site the site tiers key on.
+/// A browser window whose hostname normalizes to a site the site tiers key on,
+/// whether or not either of them has an answer for it: for such a tab the
+/// title-keyword tiers stand aside either way.
 ///
-/// Addresses and machine names (`localhost`, an IP) have no site identity, so
-/// a tab on a local development server keeps the title-keyword tiers.
+/// Addresses and private-network names (`localhost`, an IP, `nas.lan`) have
+/// no site identity, so a tab on a local development server keeps the
+/// title-keyword tiers.
 fn has_readable_site(app_name: &str, declared: DeclaredMetadata<'_>) -> bool {
     is_browser_app(app_name)
         && declared
@@ -459,6 +472,20 @@ pub(super) fn browser_context_rule_categories(haystack: &str) -> Vec<&'static st
         .iter()
         .filter(|rule| rule.matches(haystack))
         .map(|rule| rule.category)
+        .collect()
+}
+
+/// Every browser-context rule keyword with its rule's category, in rule
+/// order, for the test that holds the hosts the rules name to the seed table.
+#[cfg(test)]
+pub(super) fn browser_context_rule_keywords() -> Vec<(&'static str, &'static str)> {
+    BROWSER_CONTEXT_RULES
+        .iter()
+        .flat_map(|rule| {
+            rule.keywords
+                .iter()
+                .map(|keyword| (*keyword, rule.category))
+        })
         .collect()
 }
 

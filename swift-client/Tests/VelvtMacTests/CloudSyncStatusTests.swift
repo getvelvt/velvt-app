@@ -13,8 +13,8 @@ final class CloudSyncStatusPresentationTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_790_000_000)
     private let signedIn = AccountState.loggedIn(userId: "u1")
     private static let dropRule =
-        "Events that still can't upload after about three days of retries are dropped; "
-        + "your history on this Mac is not affected."
+        "Events that still can't upload after about three days of retrying, or within 30 days, "
+        + "are dropped; your history on this Mac is not affected."
 
     private func presentation(
         _ accountState: AccountState?,
@@ -126,6 +126,16 @@ final class CloudSyncStatusPresentationTests: XCTestCase {
         XCTAssertEqual(sut.detail, "Sign in again to resume uploads. 40 events are waiting. " + Self.dropRule)
     }
 
+    /// Signing in again after the server ended the session reads as signing
+    /// in: the ended-session flag clears only once that sign-in succeeds.
+    func testSigningInAgainOutranksTheEndedSession() {
+        let sut = presentation(.loggingIn, reauth: true, status(cloudReady: true, pending: 1, queued: 40))
+
+        XCTAssertEqual(sut.state, .signingIn)
+        XCTAssertEqual(sut.headline, "Signing in…")
+        XCTAssertNil(sut.detail)
+    }
+
     func testAccountTransitions() {
         XCTAssertEqual(presentation(.loggingIn, nil).headline, "Signing in…")
         XCTAssertEqual(presentation(.loggingOut, nil).headline, "Signing out…")
@@ -193,7 +203,7 @@ final class CloudSyncStatusPresentationTests: XCTestCase {
         XCTAssertEqual(sut.headline, "Uploads paused · everything local still works")
         XCTAssertEqual(
             sut.detail,
-            "The server didn't accept this Mac's sign-in on the last try. Velvt tries again every 15 minutes. "
+            "Velvt tries these uploads again every 15 minutes. "
                 + "30 events are waiting. " + Self.dropRule
         )
     }

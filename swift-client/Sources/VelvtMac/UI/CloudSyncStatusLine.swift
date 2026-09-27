@@ -53,13 +53,15 @@ public struct CloudSyncStatusPresentation: Equatable {
     ///
     /// `UPLOAD_BATCH_ATTEMPT_CEILING` (288, `rust-service/src/persistence/models.rs`)
     /// abandons a batch on its 288th failed attempt, and attempts run at the
-    /// fifteen-minute backoff cap while the server stays away: about three days.
-    /// An abandoned batch is never sent. The local views read the service's own
+    /// fifteen-minute backoff cap while the server stays away: about three days
+    /// of retrying. Separately, the queue's retention sweeps any batch older than
+    /// 30 days, which can come first on a Mac that is rarely running. An
+    /// abandoned batch is never sent. The local views read the service's own
     /// event store, not the upload queue, so dropping a batch removes nothing
-    /// the person can see on this Mac. Change this sentence with the ceiling.
+    /// the person can see on this Mac. Change this sentence with either limit.
     public static let dropRule =
-        "Events that still can't upload after about three days of retries are dropped; "
-        + "your history on this Mac is not affected."
+        "Events that still can't upload after about three days of retrying, or within 30 days, "
+        + "are dropped; your history on this Mac is not affected."
 
     public init(
         accountState: AccountState?,
@@ -90,8 +92,11 @@ public struct CloudSyncStatusPresentation: Equatable {
             lead = "Uploads resume when Velvt can reach its server."
         case .uploadsPaused:
             // `BatchUploadError::AuthenticationRequired` reschedules the
-            // batch fifteen minutes out (`upload/coordinator.rs`).
-            lead = "The server didn't accept this Mac's sign-in on the last try. Velvt tries again every 15 minutes."
+            // batch fifteen minutes out (`upload/coordinator.rs`). A batch
+            // keeps that code after the person signs in again until its next
+            // attempt, so the sentence says only what happens next, not that
+            // the current sign-in failed.
+            lead = "Velvt tries these uploads again every 15 minutes."
         case .backingOff:
             if let retryAt = status?.nextUploadAttemptAt, retryAt > now {
                 let time = retryAt.formatted(
@@ -111,6 +116,9 @@ public struct CloudSyncStatusPresentation: Equatable {
         status: MenuStatus?
     ) -> State {
         guard let accountState else { return .unavailable }
+        // A sign-in in progress outranks the ended session: the flag clears
+        // only once that sign-in succeeds.
+        if case .loggingIn = accountState { return .signingIn }
         if requiresReauthentication { return .signInAgain }
         switch accountState {
         case .loggingIn: return .signingIn

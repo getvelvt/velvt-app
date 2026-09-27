@@ -234,6 +234,35 @@ pub struct DeclaredAppMetadata {
     pub document_type_ids: Vec<String>,
 }
 
+/// A rule taught about one site, in every browser (`personal_site_override`,
+/// migration 0040).
+#[derive(Clone, PartialEq, Eq)]
+pub struct SiteScopeOverride {
+    /// The site key. The row's primary key; never the hostname.
+    pub site_key_hash: String,
+    pub category: String,
+    /// Device-local name the user typed. Never uploaded, never logged.
+    pub activity_name: Option<String>,
+    pub correction_count: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for SiteScopeOverride {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SiteScopeOverride")
+            .field("site_key_hash", &"[local_identifier]")
+            .field("category", &self.category)
+            .field(
+                "activity_name",
+                &self.activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .field("correction_count", &self.correction_count)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
 impl DeclaredAppMetadata {
     /// The all-absent value: exactly what a client that reports no declared
     /// metadata produces, and what every event written before protocol 30 has.
@@ -278,8 +307,9 @@ impl std::fmt::Debug for DeclaredAppMetadata {
 pub struct UnclassifiedAppEntry {
     /// The app-scoped key an app rule is written under.
     pub app_stable_id: String,
-    /// The device-local name Velvt already holds for this application.
-    pub display_name: String,
+    /// The device-local name Velvt already holds for this application, or
+    /// `None` when it holds none.
+    pub display_name: Option<String>,
     pub seconds_observed: u64,
     pub event_count: u64,
     /// The bundle key hash, when the application reported a bundle identifier,
@@ -292,7 +322,10 @@ impl std::fmt::Debug for UnclassifiedAppEntry {
         formatter
             .debug_struct("UnclassifiedAppEntry")
             .field("app_stable_id", &"[local_identifier]")
-            .field("display_name", &"[redacted]")
+            .field(
+                "display_name",
+                &self.display_name.as_ref().map(|_| "[redacted]"),
+            )
             .field("seconds_observed", &self.seconds_observed)
             .field("event_count", &self.event_count)
             .field(

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 32;
+pub const PROTOCOL_VERSION: u32 = 33;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,12 +46,16 @@ pub enum ClientMessage {
     RemoveClassificationOverride(RemoveClassificationOverride),
     /// Removes every device-local personal rule.
     ResetClassificationOverrides(ResetClassificationOverrides),
-    /// Asks which applications Velvt could not read in the recent window, so
-    /// the user can teach it per app instead of per event.
+    /// Asks which applications and sites Velvt could not categorize in the
+    /// recent window, so the user can teach it once per app or site instead
+    /// of per event.
     RequestUnclassifiedTriage(RequestUnclassifiedTriage),
     /// Teaches Velvt what one application is, with no source event: the user
     /// is naming an app, not correcting a single moment.
     SetApplicationCategory(SetApplicationCategory),
+    /// Teaches Velvt what one site is, on every page and in every browser,
+    /// with no source event (protocol 33).
+    SetSiteCategory(SetSiteCategory),
     /// Starts one bounded, device-local meaningful-work block.
     StartWorkBlock(StartWorkBlock),
     /// Pauses the current work block.
@@ -180,7 +184,8 @@ pub enum ServerMessage {
     WeeklyDigest(WeeklyDigest),
     /// Exactly one grounded sentence explaining a shown intervention.
     InterventionExplanation(InterventionExplanation),
-    /// The bounded list of applications Velvt could not read in the window.
+    /// The bounded list of applications and sites Velvt could not
+    /// categorize in the window.
     UnclassifiedTriage(UnclassifiedTriage),
 }
 
@@ -807,10 +812,11 @@ pub struct ResetClassificationOverrides {}
 
 /// Which identity a persisted rule is keyed on.
 ///
-/// The UI has to be able to say "this window" or "this app" in the user's own
-/// terms, because the two rules behave differently and a list that shows them
-/// identically cannot be trusted or edited. Defaults to [`Self::Window`]: every
-/// rule a client saw before this field existed was a window rule.
+/// The UI has to be able to say "this window", "this app" or "this site" in
+/// the user's own terms, because the rules behave differently and a list that
+/// shows them identically cannot be trusted or edited. Defaults to
+/// [`Self::Window`]: every rule a client saw before this field existed was a
+/// window rule.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CorrectionScope {
@@ -819,6 +825,10 @@ pub enum CorrectionScope {
     Window,
     /// Every window of one application.
     App,
+    /// Every page of one site, in every browser (protocol 33). The rule's
+    /// `stable_id` is the site key; the hostname is not kept once the site
+    /// is taught.
+    Site,
 }
 
 impl CorrectionScope {
@@ -826,11 +836,13 @@ impl CorrectionScope {
         match self {
             Self::Window => "window",
             Self::App => "app",
+            Self::Site => "site",
         }
     }
 }
 
-/// Asks which applications Velvt could not read in the recent window.
+/// Asks which applications and sites Velvt could not categorize in the recent
+/// window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestUnclassifiedTriage {
@@ -839,15 +851,38 @@ pub struct RequestUnclassifiedTriage {
     pub lookback_days: u32,
 }
 
-/// One application Velvt observed but could not classify.
+/// What one entry of the needs-a-category list is, and so which message
+/// answers it (protocol 33).
+///
+/// Ordered as the list breaks ties: an application ahead of a site with the
+/// same observed time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageEntryKind {
+    /// An application; answered with [`SetApplicationCategory`].
+    Application,
+    /// A browser site, in every browser; answered with [`SetSiteCategory`].
+    Site,
+}
+
+impl TriageEntryKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Application => "application",
+            Self::Site => "site",
+        }
+    }
+}
+
+/// One application or site Velvt observed but could not categorize.
 ///
 /// Facts only: how long it was on screen and how many times it was seen. No
 /// category, no guess, and no total presented as a score.
 ///
-/// `app_stable_id` is the only identifier here, and deliberately. The bundle
-/// identity of the application matters — it is what makes the saved rule
+/// `stable_id` is the only identifier here, and deliberately. The bundle
+/// identity of an application matters — it is what makes the saved rule
 /// survive a rename — but it is Rust's to look up from the rows it already
-/// holds, keyed by this same `app_stable_id`, and Rust does exactly that when
+/// holds, keyed by this same key, and Rust does exactly that when
 /// [`SetApplicationCategory`] comes back. Sending a second
 /// application-identifying value to a client with no use for it would put an
 /// identifier on the wire to earn nothing, and an unused identifier is pure
@@ -855,11 +890,17 @@ pub struct RequestUnclassifiedTriage {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnclassifiedTriageEntry {
-    /// The app-scoped correction key, as
-    /// [`SetApplicationCategory::app_stable_id`] expects it back.
-    pub app_stable_id: String,
-    /// The device-local name Velvt already holds for this application.
-    pub display_name: String,
+    pub kind: TriageEntryKind,
+    /// The salted key: an application key, as
+    /// [`SetApplicationCategory::app_stable_id`] expects it back, or a site
+    /// key, as [`SetSiteCategory::site_stable_id`] does.
+    pub stable_id: String,
+    /// Display text only. For an application, the device-local name Velvt
+    /// holds, or `None` when it holds none: the client shows its own
+    /// placeholder, which must never come back as the name of a rule. For a
+    /// site, its hostname, never `None`. Always on the wire, as `null` when
+    /// absent.
+    pub display_name: Option<String>,
     pub seconds_observed: u64,
     pub event_count: u64,
 }
@@ -868,15 +909,20 @@ impl std::fmt::Debug for UnclassifiedTriageEntry {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("UnclassifiedTriageEntry")
-            .field("app_stable_id", &"[local_identifier]")
-            .field("display_name", &"[redacted]")
+            .field("kind", &self.kind)
+            .field("stable_id", &"[local_identifier]")
+            .field(
+                "display_name",
+                &self.display_name.as_ref().map(|_| "[redacted]"),
+            )
             .field("seconds_observed", &self.seconds_observed)
             .field("event_count", &self.event_count)
             .finish()
     }
 }
 
-/// The bounded list of applications Velvt could not read in the window.
+/// The bounded list of applications and sites Velvt could not categorize in
+/// the window.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnclassifiedTriage {
@@ -919,6 +965,39 @@ impl std::fmt::Debug for SetApplicationCategory {
         formatter
             .debug_struct("SetApplicationCategory")
             .field("app_stable_id", &"[local_identifier]")
+            .field("category", &self.category)
+            .field(
+                "activity_name",
+                &self.activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
+}
+
+/// Teaches Velvt what one site is, on every page and in every browser
+/// (protocol 33).
+///
+/// The site-list sibling of [`SetApplicationCategory`], validated the same
+/// way. It carries the site key and never the hostname: Velvt keeps a
+/// hostname only in `local_site_name`, and deletes it when the site is
+/// taught. No network request is made for it.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSiteCategory {
+    /// The site key, exactly as [`UnclassifiedTriageEntry`] reported it.
+    pub site_stable_id: String,
+    pub category: String,
+    /// Optional device-local name the user typed for the site. Never the
+    /// hostname, never uploaded, never logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_name: Option<String>,
+}
+
+impl std::fmt::Debug for SetSiteCategory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SetSiteCategory")
+            .field("site_stable_id", &"[local_identifier]")
             .field("category", &self.category)
             .field(
                 "activity_name",
@@ -2112,7 +2191,7 @@ mod v28_demotion_receipts_probe_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 32);
+        assert_eq!(PROTOCOL_VERSION, 33);
     }
 
     #[test]
@@ -2702,7 +2781,7 @@ mod v30_classification_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 32);
+        assert_eq!(PROTOCOL_VERSION, 33);
     }
 
     /// A v29 raw event — no declared metadata at all — must decode, and must
@@ -2859,8 +2938,9 @@ mod v30_classification_contract {
 
         let triage = ServerMessage::UnclassifiedTriage(UnclassifiedTriage {
             entries: vec![UnclassifiedTriageEntry {
-                app_stable_id: "a".repeat(64),
-                display_name: "PRIVATE_APP_NAME".into(),
+                kind: TriageEntryKind::Application,
+                stable_id: "a".repeat(64),
+                display_name: Some("PRIVATE_APP_NAME".into()),
                 seconds_observed: 4_200,
                 event_count: 31,
             }],
@@ -3024,7 +3104,7 @@ mod v32_in_progress_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 32);
+        assert_eq!(PROTOCOL_VERSION, 33);
     }
 
     /// A closed dwell is the only thing a pre-32 client ever sent, and it has
@@ -3061,5 +3141,123 @@ mod v32_in_progress_contract {
         for forbidden in ["PRIVATE_APP", "PRIVATE_TITLE"] {
             assert!(!debug.contains(forbidden), "{debug}");
         }
+    }
+}
+
+#[cfg(test)]
+mod v33_needs_a_category_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_current() {
+        assert_eq!(PROTOCOL_VERSION, 33);
+    }
+
+    /// Both kinds on one list, in the exact wire shape: `kind` and
+    /// `stable_id` in place of v32's `app_stable_id`, and `display_name`
+    /// always present, `null` for an application Velvt holds no name for.
+    #[test]
+    fn a_triage_entry_names_its_kind_and_may_have_no_name() {
+        let triage = ServerMessage::UnclassifiedTriage(UnclassifiedTriage {
+            entries: vec![
+                UnclassifiedTriageEntry {
+                    kind: TriageEntryKind::Site,
+                    stable_id: "b".repeat(64),
+                    display_name: Some("PRIVATE_HOST.example".into()),
+                    seconds_observed: 900,
+                    event_count: 4,
+                },
+                UnclassifiedTriageEntry {
+                    kind: TriageEntryKind::Application,
+                    stable_id: "a".repeat(64),
+                    display_name: None,
+                    seconds_observed: 600,
+                    event_count: 2,
+                },
+            ],
+            window_days: 7,
+        });
+        let encoded = serde_json::to_string(&triage).unwrap();
+        assert_eq!(
+            encoded,
+            format!(
+                r#"{{"type":"unclassified_triage","payload":{{"entries":[{{"kind":"site","stable_id":"{}","display_name":"PRIVATE_HOST.example","seconds_observed":900,"event_count":4}},{{"kind":"application","stable_id":"{}","display_name":null,"seconds_observed":600,"event_count":2}}],"window_days":7}}}}"#,
+                "b".repeat(64),
+                "a".repeat(64)
+            )
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            triage
+        );
+        let debug = format!("{triage:?}");
+        assert!(!debug.contains("PRIVATE_HOST"), "{debug}");
+        let entry_debug = format!("{:?}", {
+            let ServerMessage::UnclassifiedTriage(list) = &triage else {
+                unreachable!()
+            };
+            list.entries[0].clone()
+        });
+        assert!(!entry_debug.contains("PRIVATE_HOST"), "{entry_debug}");
+        assert!(!entry_debug.contains(&"b".repeat(64)), "{entry_debug}");
+
+        // A v32 entry is not a v33 entry: the old key is refused, not read.
+        let v32 = format!(
+            r#"{{"app_stable_id":"{}","display_name":"App","seconds_observed":600,"event_count":1}}"#,
+            "a".repeat(64)
+        );
+        assert!(serde_json::from_str::<UnclassifiedTriageEntry>(&v32).is_err());
+    }
+
+    #[test]
+    fn set_site_category_round_trips_and_stays_out_of_debug_output() {
+        let set = ClientMessage::SetSiteCategory(SetSiteCategory {
+            site_stable_id: "c".repeat(64),
+            category: "REFERENCE".into(),
+            activity_name: Some("PRIVATE_ALIAS".into()),
+        });
+        let encoded = serde_json::to_string(&set).unwrap();
+        assert_eq!(
+            encoded,
+            format!(
+                r#"{{"type":"set_site_category","payload":{{"site_stable_id":"{}","category":"REFERENCE","activity_name":"PRIVATE_ALIAS"}}}}"#,
+                "c".repeat(64)
+            )
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            set
+        );
+        let debug = format!("{set:?}");
+        assert!(!debug.contains("PRIVATE_ALIAS"), "{debug}");
+        assert!(!debug.contains(&"c".repeat(64)), "{debug}");
+
+        let bare = ClientMessage::SetSiteCategory(SetSiteCategory {
+            site_stable_id: "c".repeat(64),
+            category: "REFERENCE".into(),
+            activity_name: None,
+        });
+        assert!(!serde_json::to_string(&bare)
+            .unwrap()
+            .contains("activity_name"));
+    }
+
+    #[test]
+    fn a_site_rule_says_so_in_the_history() {
+        assert_eq!(CorrectionScope::Site.as_str(), "site");
+        let summary = ClassificationCorrectionSummary {
+            stable_id: "d".repeat(64),
+            label: "reference:inferred".into(),
+            local_label: None,
+            category: "REFERENCE".into(),
+            updated_at: "2026-09-27T10:00:00Z".parse().unwrap(),
+            scope: CorrectionScope::Site,
+        };
+        let encoded = serde_json::to_string(&summary).unwrap();
+        assert!(encoded.contains(r#""scope":"site""#), "{encoded}");
+        assert_eq!(
+            serde_json::from_str::<ClassificationCorrectionSummary>(&encoded).unwrap(),
+            summary
+        );
     }
 }

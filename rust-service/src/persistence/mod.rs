@@ -15,9 +15,9 @@ pub use models::{
     InitiationInvitationOutcome, InitiationInvitationRecord, InsightCacheEntry,
     InterventionDecision, InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata,
     NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord, QuietHoursOfferResponse,
-    QuietHoursOfferState, RawEventEntry, UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch,
-    UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
-    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
+    QuietHoursOfferState, RawEventEntry, SiteScopeOverride, UnclassifiedAppEntry,
+    UnclassifiedSiteEntry, UploadBatch, UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours,
+    WeeklyDigestRecord, WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
     WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
     WrongInterventionCounts,
 };

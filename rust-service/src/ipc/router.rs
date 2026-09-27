@@ -13,7 +13,7 @@ use velvt_shared_types::{
     CacheEmpty, ClassificationConfidence, ClassificationCorrectionSummary, ClassificationSource,
     ClassificationStatus, ClientMessage, CorrectionHistoryPage, InterventionSalience, MenuStatus,
     QueuedEventSummary, RawEventAck, RawEventMetadataError, RawEventStatus, RequestLocalDashboard,
-    ServerMessage, SetApplicationCategory, UnclassifiedTriage, UnclassifiedTriageEntry,
+    ServerMessage, SetApplicationCategory, SetSiteCategory, UnclassifiedTriage,
 };
 
 use crate::abstraction::{AbstractedEvent, AbstractionEngine};
@@ -25,8 +25,7 @@ use crate::focus::FocusManager;
 use crate::initiation::InitiationManager;
 use crate::persistence::{
     AbstractionMapRepo, DeclaredAppMetadata, PersistenceError, RawEventEntry, RawEventRepo,
-    UnclassifiedAppEntry, UploadBatchRepo, UploadQueueDiagnostics, MAX_REPORTED_DWELL_SECONDS,
-    TRIAGE_MAX_ENTRIES, TRIAGE_MAX_LOOKBACK_DAYS, TRIAGE_MIN_SECONDS,
+    UploadBatchRepo, UploadQueueDiagnostics, MAX_REPORTED_DWELL_SECONDS, TRIAGE_MAX_LOOKBACK_DAYS,
 };
 use crate::receipts::ReceiptsManager;
 use crate::upload::EventIngestor;
@@ -272,13 +271,14 @@ fn normalized_correction_query(value: Option<&str>) -> Result<Option<String>, ()
     Ok((!trimmed.is_empty()).then(|| trimmed.to_owned()))
 }
 
-/// Accepts an application key only in the shape Velvt itself issues.
+/// Accepts an application or site key only in the shape Velvt itself issues.
 ///
-/// Every app key Velvt hands out is an HMAC-SHA-256 digest rendered as 64
-/// lowercase hex characters (`key.rs`), and the client's only source for one is
-/// the triage list it is answering. Anything else is a defect or a forgery, and accepting
-/// it would write a rule under a key no event can ever match — invisible in the
-/// history's app rules, unreachable by removal, and impossible to explain.
+/// Every app key and site key Velvt hands out is an HMAC-SHA-256 digest
+/// rendered as 64 lowercase hex characters (`key.rs`), and the client's only
+/// source for one is the list it is answering. Anything else is a defect or a
+/// forgery, and accepting it would write a rule under a key no event can ever
+/// match — invisible in the history's rules, unreachable by removal, and
+/// impossible to explain.
 fn normalized_app_stable_id(value: &str) -> Option<&str> {
     (value.len() == 64
         && value
@@ -456,6 +456,8 @@ mod tests {
             removal_acknowledgment(false),
             reset_acknowledgment(),
             application_acknowledgment(Some("Qwybex"), "FOCUS_WORK"),
+            site_acknowledgment(Some("qwybex-forum.example"), "REFERENCE"),
+            site_acknowledgment(None, "SOCIAL_FEED"),
         ];
 
         assert_eq!(
@@ -465,6 +467,11 @@ mod tests {
         assert_eq!(
             application_acknowledgment(None, "REFERENCE"),
             "Got it — This app counts as reference from now on."
+        );
+        assert_eq!(
+            site_acknowledgment(Some("qwybex-forum.example"), "SOCIAL_FEED"),
+            "Got it — every page of qwybex-forum.example, in every browser, counts as social \
+             feed from now on."
         );
         for sentence in sentences {
             for forbidden in [
@@ -813,7 +820,7 @@ mod tests {
         let status = menu_status(
             &router,
             ClientMessage::SetApplicationCategory(velvt_shared_types::SetApplicationCategory {
-                app_stable_id: entry.app_stable_id.clone(),
+                app_stable_id: entry.stable_id.clone(),
                 category: "FOCUS_WORK".into(),
                 activity_name: Some("Qwybex".into()),
             }),
@@ -824,8 +831,9 @@ mod tests {
         // A request past the retention window reports the window actually used.
         assert_eq!(listed.window_days, 14);
         assert_eq!(listed.entries.len(), 1);
-        assert_eq!(entry.app_stable_id, app_key(&persistence, "Qwybex"));
-        assert_eq!(entry.display_name, "Qwybex");
+        assert_eq!(entry.kind, velvt_shared_types::TriageEntryKind::Application);
+        assert_eq!(entry.stable_id, app_key(&persistence, "Qwybex"));
+        assert_eq!(entry.display_name.as_deref(), Some("Qwybex"));
         assert_eq!(entry.seconds_observed, 600);
         assert_eq!(entry.event_count, 1);
         // No bundle identity on the wire in either form: the raw identifier is
@@ -990,9 +998,17 @@ mod tests {
         assert_eq!(entries[0].display_name, "qwybex-forum.example");
         assert_eq!(entries[0].seconds_observed, 900);
         assert_eq!(entries[0].event_count, 2);
-        // The application list is untouched: a tab is never an application
-        // Velvt can be taught about as a whole.
-        assert!(triage(&router, 14).await.entries.is_empty());
+        // The list the client reads holds the site, and no application: a
+        // tab is never an application Velvt can be taught about as a whole.
+        let listed = triage(&router, 14).await.entries;
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].kind, velvt_shared_types::TriageEntryKind::Site);
+        assert_eq!(listed[0].stable_id, entries[0].site_stable_id);
+        assert_eq!(
+            listed[0].display_name.as_deref(),
+            Some("qwybex-forum.example")
+        );
+        assert_eq!(listed[0].seconds_observed, 900);
     }
 
     /// A sign-in page Velvt files as SYSTEM is categorized, even though the
@@ -1041,7 +1057,7 @@ mod tests {
             ServerMessage::RawEventAck(ref ack) if ack.status == RawEventStatus::Accepted
         ));
         let entry = triage(&router, 14).await.entries.remove(0);
-        assert_eq!(entry.display_name, "Qwybex");
+        assert_eq!(entry.display_name.as_deref(), Some("Qwybex"));
         assert_eq!(entry.seconds_observed, 600);
     }
 
@@ -1123,9 +1139,443 @@ mod tests {
 
         // And the observed time reaches the surface that exists to collect it.
         let triaged = triage(&router, 14).await.entries.remove(0);
-        assert_eq!(triaged.display_name, "Qwybex");
+        assert_eq!(triaged.display_name.as_deref(), Some("Qwybex"));
         assert_eq!(triaged.seconds_observed, 1200);
         assert_eq!(triaged.event_count, 2);
+    }
+
+    /// Counts every request the router makes, so a device-local command can be
+    /// shown to make none.
+    #[derive(Default)]
+    struct CountingHttp(std::sync::atomic::AtomicUsize);
+
+    impl HttpClient for CountingHttp {
+        fn send<'a>(
+            &'a self,
+            _request: HttpRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, AuthError>> + Send + 'a>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(HttpResponse {
+                    status: 200,
+                    error_code: None,
+                    tokens: None,
+                    retry_after: None,
+                    message: None,
+                    raw_body: None,
+                    user_id: None,
+                    device_id: None,
+                })
+            })
+        }
+    }
+
+    fn site_key(persistence: &SqlitePersistence, host: &str) -> String {
+        let salt = persistence
+            .abstraction_map_repo()
+            .stable_key_salt()
+            .unwrap();
+        crate::abstraction::site_stable_key_for(&salt, host)
+    }
+
+    fn teach_site(site_stable_id: &str, category: &str, name: Option<&str>) -> ClientMessage {
+        ClientMessage::SetSiteCategory(SetSiteCategory {
+            site_stable_id: site_stable_id.to_owned(),
+            category: category.to_owned(),
+            activity_name: name.map(str::to_owned),
+        })
+    }
+
+    async fn history(router: &R7Router) -> Vec<ClassificationCorrectionSummary> {
+        match router
+            .route(ClientMessage::RequestCorrectionHistory(
+                velvt_shared_types::RequestCorrectionHistory {
+                    query: None,
+                    offset: 0,
+                    page_size: 20,
+                },
+            ))
+            .await
+            .unwrap()
+        {
+            Some(ServerMessage::CorrectionHistoryPage(page)) => page.items,
+            other => panic!("expected a correction history page, got {other:?}"),
+        }
+    }
+
+    /// Applications and sites are one list, ranked by time together, over the
+    /// window the client asked for.
+    #[tokio::test]
+    async fn the_list_holds_applications_and_sites_ranked_together() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        for message in [
+            raw_event("Qwybex", "Zarniwoop", Some("com.example.qwybex"), 600),
+            browser_tab("Safari", "https://qwybex-forum.example/a", 900),
+        ] {
+            router.route(message).await.unwrap();
+        }
+
+        let listed = triage(&router, 7).await;
+
+        assert_eq!(listed.window_days, 7);
+        let kinds: Vec<_> = listed
+            .entries
+            .iter()
+            .map(|entry| (entry.kind, entry.seconds_observed))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (velvt_shared_types::TriageEntryKind::Site, 900),
+                (velvt_shared_types::TriageEntryKind::Application, 600),
+            ]
+        );
+        assert_eq!(
+            listed.entries[0].stable_id,
+            site_key(&persistence, "qwybex-forum.example")
+        );
+    }
+
+    /// An application Velvt holds no name for is listed with no name, and a
+    /// rule taught for it carries no name either, so "Unnamed application" is
+    /// never written as the name of every later window of it.
+    #[tokio::test]
+    async fn an_unnamed_application_is_listed_without_a_name_and_taught_without_one() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        let key = "7".repeat(64);
+        persistence
+            .raw_event_repo()
+            .insert(&RawEventEntry {
+                event_id: Uuid::new_v4().to_string(),
+                stable_id: "abs_unnamed".into(),
+                label: "unlogged".into(),
+                local_display_label: None,
+                local_name_suggestion: None,
+                category: "UNLOGGED".into(),
+                taxonomy_version: "mvp-2".into(),
+                classification_tier: "fallback".into(),
+                classification_status: "unclassified".into(),
+                classification_confidence: "none".into(),
+                classification_source: "fallback".into(),
+                occurred_at: Utc::now(),
+                duration_seconds: 1_200,
+                upload_eligible: false,
+                app_stable_id: Some(key.clone()),
+                app_scope_eligible: true,
+                site_stable_id: None,
+            })
+            .unwrap();
+
+        let entry = triage(&router, 7).await.entries.remove(0);
+        assert_eq!(entry.stable_id, key);
+        assert_eq!(entry.display_name, None);
+        let encoded = serde_json::to_string(&entry).unwrap();
+        assert!(encoded.contains(r#""display_name":null"#), "{encoded}");
+
+        let status = menu_status(
+            &router,
+            ClientMessage::SetApplicationCategory(SetApplicationCategory {
+                app_stable_id: key.clone(),
+                category: "FOCUS_WORK".into(),
+                activity_name: None,
+            }),
+        )
+        .await;
+        assert_eq!(
+            status.correction_acknowledgment.as_deref(),
+            Some("Got it — This app counts as focus work from now on.")
+        );
+        let rule = persistence
+            .abstraction_map_repo()
+            .app_scope_override(&key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rule.activity_name, None);
+    }
+
+    /// The bundle key is looked up for the application being taught, not read
+    /// off a list recomputed over fourteen days: an application eighth-or-lower
+    /// there, but on the seven-day list the client showed, was taught under its
+    /// name key alone.
+    #[tokio::test]
+    async fn teaching_an_app_records_its_bundle_key_wherever_it_ranks() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        for index in 0..9 {
+            router
+                .route(raw_event(
+                    &format!("Qwybex {index}"),
+                    "Zarniwoop",
+                    Some(&format!("com.example.qwybex{index}")),
+                    3_600,
+                ))
+                .await
+                .unwrap();
+        }
+        router
+            .route(raw_event(
+                "Vorlath",
+                "Zarniwoop",
+                Some("com.example.vorlath"),
+                600,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            triage(&router, 14)
+                .await
+                .entries
+                .iter()
+                .all(|entry| entry.stable_id != app_key(&persistence, "Vorlath")),
+            "the fixture puts the application below the cap"
+        );
+
+        menu_status(
+            &router,
+            ClientMessage::SetApplicationCategory(SetApplicationCategory {
+                app_stable_id: app_key(&persistence, "Vorlath"),
+                category: "REFERENCE".into(),
+                activity_name: Some("Vorlath".into()),
+            }),
+        )
+        .await;
+
+        assert!(persistence
+            .abstraction_map_repo()
+            .bundle_app_override(&bundle_key(&persistence, "com.example.vorlath"))
+            .unwrap()
+            .is_some());
+    }
+
+    /// Teaching a site: the rule is written under the site key, the site leaves
+    /// the list, its stored hostname goes, the confirmation names it once, and
+    /// nothing is sent anywhere -- even signed in.
+    #[tokio::test]
+    async fn teaching_a_site_from_the_list_takes_it_off_the_list_and_sends_nothing() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let http = Arc::new(CountingHttp::default());
+        let (_sender, auth_state) = tokio::sync::watch::channel(AuthState::Authenticated {
+            device_id: "device-router-tests".into(),
+        });
+        let router = correction_router(&persistence)
+            .with_classification_corrections(
+                persistence.abstraction_map_repo(),
+                persistence.upload_batch_repo(),
+                Arc::clone(&http) as Arc<dyn HttpClient>,
+            )
+            .with_auth_state(auth_state);
+        router
+            .route(browser_tab(
+                "Safari",
+                "https://qwybex-forum.example/t/1",
+                900,
+            ))
+            .await
+            .unwrap();
+        let requests_before = http.0.load(std::sync::atomic::Ordering::SeqCst);
+        let entry = triage(&router, 7).await.entries.remove(0);
+        assert_eq!(entry.kind, velvt_shared_types::TriageEntryKind::Site);
+
+        let status = menu_status(&router, teach_site(&entry.stable_id, "REFERENCE", None)).await;
+
+        assert_eq!(
+            status.correction_acknowledgment.as_deref(),
+            Some(
+                "Got it — every page of qwybex-forum.example, in every browser, counts as \
+                 reference from now on."
+            )
+        );
+        let rules = persistence.abstraction_map_repo();
+        let rule = rules
+            .site_scope_override(&entry.stable_id)
+            .unwrap()
+            .expect("the site rule was written");
+        assert_eq!(rule.category, "REFERENCE");
+        assert_eq!(rule.activity_name, None);
+        assert_eq!(
+            persistence
+                .raw_event_repo()
+                .local_site_name(&entry.stable_id)
+                .unwrap(),
+            None,
+            "the hostname goes when the site is taught"
+        );
+        assert!(triage(&router, 7).await.entries.is_empty());
+        assert_eq!(
+            http.0.load(std::sync::atomic::Ordering::SeqCst),
+            requests_before,
+            "teaching a site made a network request"
+        );
+
+        // Idempotent: the same answer again is the same rule, counted twice,
+        // and with the name gone the confirmation says "this site".
+        let again = menu_status(&router, teach_site(&entry.stable_id, "REFERENCE", None)).await;
+        assert_eq!(
+            again.correction_acknowledgment.as_deref(),
+            Some(
+                "Got it — every page of this site, in every browser, counts as reference \
+                 from now on."
+            )
+        );
+        assert_eq!(
+            rules
+                .site_scope_override(&entry.stable_id)
+                .unwrap()
+                .unwrap()
+                .correction_count,
+            2
+        );
+        // And a later visit to the site, in another browser, is the rule's.
+        router
+            .route(browser_tab(
+                "Google Chrome",
+                "https://www.qwybex-forum.example/t/2",
+                600,
+            ))
+            .await
+            .unwrap();
+        assert!(triage(&router, 7).await.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn teaching_a_site_refuses_a_key_category_or_name_velvt_does_not_recognise() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        let key = site_key(&persistence, "qwybex-forum.example");
+
+        for (message, code) in [
+            (
+                teach_site("qwybex-forum.example", "REFERENCE", None),
+                "invalid_site_stable_id",
+            ),
+            (
+                teach_site(&key.to_ascii_uppercase(), "REFERENCE", None),
+                "invalid_site_stable_id",
+            ),
+            (
+                teach_site(&key, "PROCRASTINATION", None),
+                "invalid_classification_category",
+            ),
+            (
+                teach_site(&key, "REFERENCE", Some(&"x".repeat(49))),
+                "invalid_local_activity_name",
+            ),
+            (
+                teach_site(&key, "REFERENCE", Some("line\nbreak")),
+                "invalid_local_activity_name",
+            ),
+        ] {
+            let reply = router.route(message).await.unwrap().unwrap();
+            assert!(
+                matches!(reply, ServerMessage::ErrorResponse(ref error) if error.code == code),
+                "expected {code}, got {reply:?}"
+            );
+        }
+        assert!(persistence
+            .abstraction_map_repo()
+            .site_scope_override(&key)
+            .unwrap()
+            .is_none());
+
+        // Without the correction store attached the command is unavailable,
+        // exactly as the application command is.
+        let bare = R7Router::new(
+            Arc::new(crate::delivery::FakeCacheManager::new()),
+            Arc::new(
+                crate::abstraction::AbstractionEngine::from_builtin_taxonomy(
+                    persistence.abstraction_mapping_store(),
+                )
+                .unwrap(),
+            ),
+            persistence.raw_event_repo(),
+            Arc::new(NoopIngestor),
+            Arc::new(AccountAuthService::new(
+                Arc::new(ReadyHttp) as Arc<dyn HttpClient>,
+                Arc::new(ReadyHttp) as Arc<dyn HttpClient>,
+                Arc::new(FakeTokenStore::default()) as Arc<dyn TokenStore>,
+                Arc::new(crate::auth::AuthStateMachine::new(
+                    crate::auth::AuthState::Unauthenticated,
+                )),
+            )),
+        );
+        let reply = bare
+            .route(teach_site(&key, "REFERENCE", None))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            reply,
+            ServerMessage::ErrorResponse(ref error)
+                if error.code == "classification_correction_unavailable"
+        ));
+    }
+
+    /// A site rule is in the history as a site rule, can be edited there, and
+    /// can be removed there, through the same two messages as every other rule.
+    #[tokio::test]
+    async fn a_site_rule_is_listed_edited_and_removed_from_the_history() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        router
+            .route(browser_tab(
+                "Safari",
+                "https://qwybex-forum.example/t/1",
+                900,
+            ))
+            .await
+            .unwrap();
+        let key = site_key(&persistence, "qwybex-forum.example");
+        menu_status(&router, teach_site(&key, "REFERENCE", Some("Forum"))).await;
+
+        let listed = history(&router).await;
+        let rule = listed
+            .iter()
+            .find(|rule| rule.stable_id == key)
+            .expect("the site rule is listed");
+        assert_eq!(rule.scope, velvt_shared_types::CorrectionScope::Site);
+        assert_eq!(rule.category, "REFERENCE");
+        assert_eq!(rule.local_label.as_deref(), Some("Forum"));
+        assert!(
+            listed
+                .iter()
+                .all(|rule| rule.local_label.as_deref() != Some("qwybex-forum.example")),
+            "the history never names the host"
+        );
+
+        let edited = menu_status(&router, update(&key, "FOCUS_WORK")).await;
+        assert_eq!(
+            edited.correction_acknowledgment.as_deref(),
+            Some("Got it — every page of this site, in every browser, counts as focus work from now on.")
+        );
+        let rules = persistence.abstraction_map_repo();
+        let stored = rules.site_scope_override(&key).unwrap().unwrap();
+        assert_eq!(stored.category, "FOCUS_WORK");
+        assert_eq!(stored.activity_name.as_deref(), Some("Forum"));
+
+        let remove = || {
+            ClientMessage::RemoveClassificationOverride(
+                velvt_shared_types::RemoveClassificationOverride {
+                    stable_id: key.clone(),
+                },
+            )
+        };
+        let removed = menu_status(&router, remove()).await;
+        assert_eq!(
+            removed.correction_acknowledgment.as_deref(),
+            Some("Removed — Velvt classifies this on its own again.")
+        );
+        assert!(rules.site_scope_override(&key).unwrap().is_none());
+        assert!(history(&router)
+            .await
+            .iter()
+            .all(|rule| rule.stable_id != key));
+        let again = menu_status(&router, remove()).await;
+        assert_eq!(
+            again.correction_acknowledgment.as_deref(),
+            Some("Nothing to remove — Velvt is already classifying this on its own.")
+        );
     }
 
     /// The two tiers that read declared metadata have to survive the round trip
@@ -1612,6 +2062,42 @@ impl MessageRouter for R7Router {
                         false
                     }
                 };
+                // A site rule's key is the third kind of id the history hands
+                // out (protocol 33). The site key domain collides with neither
+                // of the other two, so the stored rule decides here as well.
+                let editing_site_rule = !editing_app_rule
+                    && match abstraction_map.site_scope_override(&correction.stable_id) {
+                        Ok(found) => found.is_some(),
+                        Err(err) => {
+                            tracing::warn!(
+                                error_code = "site_scope_rule_read_failed",
+                                error = %err,
+                                "could not tell whether this rule is site-scoped; editing it as a window rule"
+                            );
+                            false
+                        }
+                    };
+                if editing_site_rule {
+                    if abstraction_map
+                        .save_site_scope_override(
+                            &correction.stable_id,
+                            &correction.category,
+                            local_activity_name.as_deref(),
+                        )
+                        .is_err()
+                    {
+                        return Ok(Some(classification_correction_error(
+                            "classification_correction_persistence_failed",
+                        )));
+                    }
+                    return Ok(Some(ServerMessage::MenuStatus(
+                        self.menu_status_saying(site_acknowledgment(
+                            local_activity_name.as_deref(),
+                            &correction.category,
+                        ))
+                        .await,
+                    )));
+                }
                 if editing_app_rule {
                     // `None` for the bundle key on purpose: the write
                     // coalesces, so an edit keeps the bundle identity the rule
@@ -1691,31 +2177,33 @@ impl MessageRouter for R7Router {
                         "classification_correction_unavailable",
                     )));
                 };
-                // Window rung first, then the app rung, with no scope from the
-                // client: the two key domains cannot collide, so an id belongs
-                // to exactly one of them and trying both in order is
-                // unambiguous. `remove_personal_override` already removes the
-                // app rule a window correction generalized to, so `Ok(false)`
-                // here means this id was never a window rule — which is
-                // precisely the app rule the history can now show, and which
-                // until protocol 30 nothing could delete.
-                let removed = match abstraction_map.remove_personal_override(&request.stable_id) {
-                    Ok(true) => true,
-                    Ok(false) => {
-                        match abstraction_map.remove_app_scope_override(&request.stable_id) {
-                            Ok(removed) => removed,
-                            Err(_) => {
-                                return Ok(Some(classification_correction_error(
-                                    "classification_correction_persistence_failed",
-                                )))
-                            }
+                // Window rung first, then the app rung, then the site rung,
+                // with no scope from the client: the three key domains cannot
+                // collide, so an id belongs to exactly one of them and trying
+                // each in order is unambiguous. `remove_personal_override`
+                // already removes the app rule a window correction generalized
+                // to, so `Ok(false)` here means this id was never a window rule
+                // — which is precisely the app rule the history can show, and
+                // which until protocol 30 nothing could delete, or since
+                // protocol 33 the site rule it shows beside them.
+                let removed = abstraction_map
+                    .remove_personal_override(&request.stable_id)
+                    .and_then(|removed| {
+                        if removed {
+                            return Ok(true);
                         }
-                    }
-                    Err(_) => {
-                        return Ok(Some(classification_correction_error(
-                            "classification_correction_persistence_failed",
-                        )))
-                    }
+                        abstraction_map.remove_app_scope_override(&request.stable_id)
+                    })
+                    .and_then(|removed| {
+                        if removed {
+                            return Ok(true);
+                        }
+                        abstraction_map.remove_site_scope_override(&request.stable_id)
+                    });
+                let Ok(removed) = removed else {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_persistence_failed",
+                    )));
                 };
                 Ok(Some(ServerMessage::MenuStatus(
                     self.menu_status_saying(removal_acknowledgment(removed))
@@ -1740,21 +2228,21 @@ impl MessageRouter for R7Router {
             }
 
             ClientMessage::RequestUnclassifiedTriage(request) => {
-                // Facts only, and bounded: the applications Velvt could not
-                // read, longest observed first. All three bounds are re-clamped
-                // inside the query, so this reports the window that was
+                // Facts only, and bounded: the applications and sites Velvt
+                // could not categorize, longest observed first, over the
+                // window the client asked for. All three bounds are re-clamped
+                // inside the queries, so this reports the window that was
                 // actually used rather than the one that was asked for.
-                let entries = match self.raw_event_repo.unclassified_triage(
+                let entries = match crate::category_prompt::needs_a_category(
+                    &*self.raw_event_repo,
                     request.lookback_days,
-                    TRIAGE_MIN_SECONDS,
-                    TRIAGE_MAX_ENTRIES,
                 ) {
                     Ok(entries) => entries,
                     Err(err) => {
                         tracing::warn!(
                             error_code = "unclassified_triage_failed",
                             error = %err,
-                            "could not read the list of applications Velvt cannot read"
+                            "could not read the list of applications and sites Velvt cannot categorize"
                         );
                         // An empty list is the good state and the UI says so,
                         // so a failure must not borrow that sentence.
@@ -1763,7 +2251,7 @@ impl MessageRouter for R7Router {
                 };
                 Ok(Some(ServerMessage::UnclassifiedTriage(
                     UnclassifiedTriage {
-                        entries: entries.into_iter().map(triage_entry).collect(),
+                        entries,
                         window_days: request.lookback_days.clamp(1, TRIAGE_MAX_LOOKBACK_DAYS),
                     },
                 )))
@@ -1771,6 +2259,10 @@ impl MessageRouter for R7Router {
 
             ClientMessage::SetApplicationCategory(request) => {
                 Ok(Some(self.set_application_category(request).await))
+            }
+
+            ClientMessage::SetSiteCategory(request) => {
+                Ok(Some(self.set_site_category(request).await))
             }
 
             ClientMessage::StartWorkBlock(request) => {
@@ -2170,25 +2662,10 @@ fn classification_correction_error(code: &str) -> ServerMessage {
 fn triage_error() -> ServerMessage {
     ServerMessage::ErrorResponse(velvt_shared_types::ErrorResponse {
         code: "unclassified_triage_failed".to_owned(),
-        message: "Unable to list the apps Velvt could not read. Try again later.".into(),
+        message: "Unable to list the apps and sites Velvt could not categorize. Try again later."
+            .into(),
         related_event_id: None,
     })
-}
-
-/// One stored triage row as the client sees it.
-///
-/// Facts only, and only the ones the client needs: a key to send back, a name
-/// to show, and the time observed. The bundle identity Velvt holds for the
-/// application stays here — the rule the user saves is keyed on it in Rust,
-/// which already reads it out of the stored row, so sending it to Swift would
-/// hand the client an identifier it has no use for and cannot display.
-fn triage_entry(entry: UnclassifiedAppEntry) -> UnclassifiedTriageEntry {
-    UnclassifiedTriageEntry {
-        app_stable_id: entry.app_stable_id,
-        display_name: entry.display_name,
-        seconds_observed: entry.seconds_observed,
-        event_count: entry.event_count,
-    }
 }
 
 /// Confirms a correction in the user's own terms.
@@ -2220,6 +2697,20 @@ fn application_acknowledgment(activity: Option<&str>, category: &str) -> String 
     let subject = activity.unwrap_or("This app");
     let category = spoken_category(category);
     format!("Got it — {subject} counts as {category} from now on.")
+}
+
+/// Confirms what a whole site was taught (protocol 33).
+///
+/// The site-list sibling of `application_acknowledgment`, in the same voice and
+/// with the same absence of a block qualifier, and it says the one thing a
+/// site rule does that an app rule does not: it holds in every browser. The
+/// subject is the site's hostname, read before the rule deleted it, or else
+/// the name the user typed; the sentence is shown once, beside the list, and
+/// is not stored.
+fn site_acknowledgment(site: Option<&str>, category: &str) -> String {
+    let subject = site.unwrap_or("this site");
+    let category = spoken_category(category);
+    format!("Got it — every page of {subject}, in every browser, counts as {category} from now on.")
 }
 
 /// Confirms an undo, including the case where there was nothing left to undo.
@@ -2349,7 +2840,28 @@ impl R7Router {
             Ok(value) => value,
             Err(()) => return classification_correction_error("invalid_local_activity_name"),
         };
-        let bundle_key_hash = self.bundle_key_for_app(app_stable_id);
+        // Read off the stored rows rather than taken from the message, for
+        // two reasons. Swift reports facts and this is a conclusion about
+        // which stored rows are one application; and the raw bundle
+        // identifier never survives the abstraction boundary, so the only
+        // bundle key that exists anywhere is the hash the event rows already
+        // hold. Best-effort by design: with no key the rule is keyed on the
+        // name alone, which is how every rule worked before protocol 30, and a
+        // repeat never loses a stored key, because the write coalesces.
+        let bundle_key_hash = match self
+            .raw_event_repo
+            .unclassified_app_bundle_key(app_stable_id)
+        {
+            Ok(found) => found,
+            Err(err) => {
+                tracing::warn!(
+                    error_code = "app_bundle_key_read_failed",
+                    error = %err,
+                    "teaching the application under its name key only"
+                );
+                None
+            }
+        };
         if abstraction_map
             .save_app_scope_override(
                 app_stable_id,
@@ -2370,31 +2882,51 @@ impl R7Router {
         )
     }
 
-    /// The bundle identity Velvt recorded for an application, if it has one.
+    /// Teaches Velvt one site, on every page and in every browser, with no
+    /// source event (protocol 33).
     ///
-    /// Read back out of the same list the client is answering rather than taken
-    /// from the message, for two reasons. Swift reports facts and this is a
-    /// conclusion about which stored rows are one application; and the raw
-    /// bundle identifier never survives the abstraction boundary, so the only
-    /// bundle key that exists anywhere is the hash the event rows already hold.
-    ///
-    /// Best-effort by design. When the application is no longer on the list —
-    /// it fell below the cap, or a rule for it already exists, which is exactly
-    /// the repeat case — the rule is keyed on the name alone, which is how
-    /// every rule worked before protocol 30. A repeat never loses the stored
-    /// bundle key either: `save_app_scope_override` coalesces, so `None` here
-    /// leaves whatever was written the first time.
-    fn bundle_key_for_app(&self, app_stable_id: &str) -> Option<String> {
-        self.raw_event_repo
-            .unclassified_triage(
-                TRIAGE_MAX_LOOKBACK_DAYS,
-                TRIAGE_MIN_SECONDS,
-                TRIAGE_MAX_ENTRIES,
-            )
-            .ok()?
-            .into_iter()
-            .find(|entry| entry.app_stable_id == app_stable_id)?
-            .app_bundle_stable_id
+    /// Validated exactly as `set_application_category` is, and like it makes
+    /// no network request: the rule is device-local. The site's hostname is
+    /// read first, for the confirmation only, because the save deletes it --
+    /// it was kept so Velvt could ask about the site, and it has been told.
+    async fn set_site_category(&self, request: SetSiteCategory) -> ServerMessage {
+        if crate::abstraction::override_label_for_category(&request.category).is_none() {
+            return classification_correction_error("invalid_classification_category");
+        }
+        let Some(abstraction_map) = &self.abstraction_map else {
+            return classification_correction_error("classification_correction_unavailable");
+        };
+        let Some(site_stable_id) = normalized_app_stable_id(&request.site_stable_id) else {
+            return classification_correction_error("invalid_site_stable_id");
+        };
+        let activity_name = match normalized_local_activity_name(request.activity_name.as_deref()) {
+            Ok(value) => value,
+            Err(()) => return classification_correction_error("invalid_local_activity_name"),
+        };
+        let host = self
+            .raw_event_repo
+            .local_site_name(site_stable_id)
+            .unwrap_or_else(|err| {
+                tracing::warn!(
+                    error_code = "local_site_name_read_failed",
+                    error = %err,
+                    "confirming the site rule without the site's name"
+                );
+                None
+            });
+        if abstraction_map
+            .save_site_scope_override(site_stable_id, &request.category, activity_name.as_deref())
+            .is_err()
+        {
+            return classification_correction_error("classification_correction_persistence_failed");
+        }
+        ServerMessage::MenuStatus(
+            self.menu_status_saying(site_acknowledgment(
+                host.as_deref().or(activity_name.as_deref()),
+                &request.category,
+            ))
+            .await,
+        )
     }
 
     /// Deletes every upload batch that can still be sent, and the events

@@ -245,11 +245,14 @@ classify. The other two are kept so a later reading of the same evidence does
 not need the event back, and they are named here because they are on your disk
 now — not because something is using them.
 
-The triage list is the one place an application name leaves the Rust service
-on purpose: `unclassified_triage` carries each unclassified application's
-local name, as `display_name`, over the local socket to the Swift app so it can
-ask you what the application is. The local dashboard carries the same names for
-the Daily Activity chart. Both stay on the socket; neither is uploaded.
+The needs-a-category list is the one place an application name or a hostname
+leaves the Rust service on purpose: `unclassified_triage` carries each
+unclassified application's local name, and since protocol 33 each unclassified
+site's hostname from `local_site_name`, as `display_name`, over the local
+socket to the Swift app so it can ask you what the application or site is. The
+local dashboard carries application names for the Daily Activity chart. Both
+stay on the socket; neither is uploaded. Teaching a site sends its key, never
+its hostname, and deletes the stored hostname.
 
 ### The embedding sketch, and what can be read back out of it
 
@@ -375,8 +378,11 @@ this is the whole of what it reaches:
   **Undo** does the same for one window:
   its own override row and prototype, the application-scoped override behind it,
   and the `display_name` on that window and on the other windows of the same
-  application. Neither rewrites `raw_event_buffer`: a name you typed stays in
-  the `local_display_label` of the events it was applied to until they expire.
+  application. Removing a site rule from the list of saved rules deletes its
+  `personal_site_override` row and the `display_name` on the windows of that
+  site still in `raw_event_buffer`. None of these rewrites `raw_event_buffer`:
+  a name you typed stays in the `local_display_label` of the events it was
+  applied to until they expire.
 - **Clear Local Work Blocks** deletes `work_block` and everything that cascades
   from it — `work_block_observation`, `work_block_result`,
   `work_block_intervention`, `work_block_category_correction`,

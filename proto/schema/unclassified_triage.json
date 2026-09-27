@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Local IPC only. Device-local application names and identifiers; never uploaded, logged, or included in crash diagnostics.",
+  "$comment": "Local IPC only. Device-local application names, the hostnames of sites Velvt could not categorize, and salted identifiers; never uploaded, logged, or included in crash diagnostics.",
   "title": "UnclassifiedTriage",
   "type": "object",
   "additionalProperties": false,
@@ -15,20 +15,25 @@
         "entries": {
           "type": "array",
           "maxItems": 8,
-          "description": "Ranked by seconds_observed, longest first. Capped at 8 and floored at 5 minutes observed: a list of thirty one-second curiosities is not a task anyone will do. An empty array is the good state.",
+          "description": "Applications and browser sites together, ranked by seconds_observed, longest first, then applications ahead of sites, then by stable_id. Capped at 8 and floored at 5 minutes observed: a list of thirty one-second curiosities is not a task anyone will do. An empty array is the good state.",
           "items": {
             "type": "object",
-            "$comment": "app_stable_id is the only identifier, on purpose. The bundle identity that lets a saved rule survive a rename is looked up in Rust from the rows it already holds when set_application_category comes back; sending it to the client would put a second application identifier on the socket for no use. Until 2026-09-25 this schema declared an optional bundle_id that no Rust build ever sent.",
+            "$comment": "stable_id is the only identifier, on purpose. For an application, the bundle identity that lets a saved rule survive a rename is looked up in Rust from the rows it already holds when set_application_category comes back. Protocol 33 replaced app_stable_id with kind and stable_id so one list can hold sites.",
             "additionalProperties": false,
-            "required": ["app_stable_id", "display_name", "seconds_observed", "event_count"],
+            "required": ["kind", "stable_id", "display_name", "seconds_observed", "event_count"],
             "properties": {
-              "app_stable_id": {
+              "kind": {
+                "enum": ["application", "site"],
+                "description": "Which answer this row takes: set_application_category for an application, set_site_category for a site."
+              },
+              "stable_id": {
                 "type": "string",
-                "description": "The app-scoped correction key, returned verbatim in set_application_category."
+                "pattern": "^[0-9a-f]{64}$",
+                "description": "The salted application key or site key, returned verbatim as app_stable_id or site_stable_id."
               },
               "display_name": {
-                "type": "string",
-                "description": "Device-local application name Velvt already holds. Display text only."
+                "type": ["string", "null"],
+                "description": "Display text only. For an application, the device-local name Velvt holds, or null when it holds none; the client shows its own placeholder and never sends one back as a rule name. For a site, its hostname, never null."
               },
               "seconds_observed": { "type": "integer", "minimum": 300 },
               "event_count": { "type": "integer", "minimum": 1 }

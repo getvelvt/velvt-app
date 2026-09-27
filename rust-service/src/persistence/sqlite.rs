@@ -8,11 +8,11 @@ use super::{
     InterventionDecision, InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata,
     NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord, QuietHoursOfferResponse,
     QuietHoursOfferState, RawEventEntry, RawEventRepo, ReceiptsRepo, ReportedDwell,
-    UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch, UploadBatchRepo, UploadBatchStatus,
-    UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection,
-    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
-    WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
-    MAX_REPORTED_DWELL_SECONDS,
+    SiteScopeOverride, UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch, UploadBatchRepo,
+    UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
+    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
+    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
+    WorkBlockRepo, WrongInterventionCounts, MAX_REPORTED_DWELL_SECONDS,
 };
 // Named through the defining module because `persistence::mod` re-exports types
 // rather than constants; the retry ceiling is policy that belongs beside the
@@ -732,7 +732,8 @@ impl SqlitePersistence {
     }
 }
 
-/// Every persisted personal rule, window-scoped and app-scoped, in one shape.
+/// Every persisted personal rule -- window-scoped, app-scoped and, since
+/// protocol 33, site-scoped -- in one shape.
 ///
 /// The history listed window rules only until protocol 30, which made an
 /// app-scoped rule invisible and unremovable: the user could neither see what
@@ -792,6 +793,25 @@ const RULE_SOURCE: &str = "
      -- takes both rungs with it, so what the user sees is what they can undo. A
      -- rule taught through triage has no window rung at all and appears.
      WHERE rule.app_only = 1
+    UNION ALL
+    -- A site rule (0040) is always a rule in its own right: only the site list
+    -- writes one. Its label comes from the most recent event on the site, on
+    -- `idx_raw_event_buffer_site_stable_id`, for the reason the app rung's
+    -- does. Its only name is one the user typed: the hostname was deleted from
+    -- `local_site_name` when the site was taught, and the history does not
+    -- bring it back.
+    SELECT 'site' AS scope,
+           rule.site_key_hash AS stable_id,
+           COALESCE(
+               (SELECT recent.label FROM raw_event_buffer recent
+                 WHERE recent.site_stable_id = rule.site_key_hash
+                 ORDER BY recent.occurred_at DESC LIMIT 1),
+               'site'
+           ) AS label,
+           rule.activity_name AS local_label,
+           rule.category AS category,
+           rule.updated_at AS updated_at
+      FROM personal_site_override rule
 ";
 
 /// The one search predicate both the count and the page apply. `?1` is the
@@ -1567,6 +1587,30 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         Ok(())
     }
 
+    fn site_scope_override(
+        &self,
+        site_key_hash: &str,
+    ) -> Result<Option<SiteScopeOverride>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT site_key_hash, category, activity_name, correction_count, updated_at
+                 FROM personal_site_override WHERE site_key_hash = ?1",
+                [site_key_hash],
+                |row| {
+                    Ok(SiteScopeOverride {
+                        site_key_hash: row.get(0)?,
+                        category: row.get(1)?,
+                        activity_name: row.get(2)?,
+                        correction_count: row.get(3)?,
+                        updated_at: timestamp_from_row(row, 4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     fn remove_site_scope_override(&self, site_key_hash: &str) -> Result<bool, PersistenceError> {
         let mut connection = self.0.connection()?;
         let transaction = connection.transaction()?;
@@ -1712,6 +1756,7 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
                 Ok(PersonalOverrideRecord {
                     scope: match row.get::<_, String>(0)?.as_str() {
                         "app" => CorrectionScope::App,
+                        "site" => CorrectionScope::Site,
                         _ => CorrectionScope::Window,
                     },
                     stable_id: row.get(1)?,
@@ -2252,16 +2297,15 @@ impl RawEventRepo for SqliteRawEventRepo {
         let mut statement = connection.prepare(
             "SELECT app_stable_id,
                     -- An application Velvt holds no name for is still time the
-                    -- user spent, so it is named plainly rather than dropped:
-                    -- omitting the row hid real minutes from a list whose whole
-                    -- claim is \"this is the time Velvt could not read\", and the
-                    -- user can usually still answer -- they know what they had
-                    -- open for an hour, and the row carries that hour. The
-                    -- literal lives here for the reason `RULE_SOURCE`'s
-                    -- 'application' does: it is a last-resort word, not a
-                    -- category-derived label, so no mapping is duplicated into
-                    -- SQL where it could drift.
-                    COALESCE(display_name, 'Unnamed application') AS display_name,
+                    -- user spent, so it is kept rather than dropped: omitting
+                    -- the row hid real minutes from a list whose whole claim is
+                    -- \"this is the time Velvt could not read\", and the user can
+                    -- usually still answer -- they know what they had open for
+                    -- an hour, and the row carries that hour. It is kept with
+                    -- NULL, not a placeholder: a placeholder here came back from
+                    -- the client as the name of the rule it taught (protocol 33
+                    -- sends the NULL and the client words the row itself).
+                    display_name,
                     seconds_observed, event_count,
                     app_bundle_stable_id
              FROM (
@@ -2356,6 +2400,25 @@ impl RawEventRepo for SqliteRawEventRepo {
         Ok(entries)
     }
 
+    fn unclassified_app_bundle_key(
+        &self,
+        app_stable_id: &str,
+    ) -> Result<Option<String>, PersistenceError> {
+        let connection = self.0.connection()?;
+        // The rows the list sums for this application, on
+        // `idx_raw_event_buffer_category_app` (0033). One application name
+        // resolves to one bundle identifier, so any non-null value is that
+        // identifier; MAX is how SQLite says "any", as in the list's query.
+        connection
+            .query_row(
+                "SELECT MAX(app_bundle_stable_id) FROM raw_event_buffer
+                  WHERE category = 'UNLOGGED' AND app_stable_id = ?1",
+                [app_stable_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
     fn record_local_site_name(
         &self,
         event_id: &str,
@@ -2389,6 +2452,18 @@ impl RawEventRepo for SqliteRawEventRepo {
             params![event_id, host, seen_at.timestamp()],
         )?;
         Ok(written > 0)
+    }
+
+    fn local_site_name(&self, site_key_hash: &str) -> Result<Option<String>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT host FROM local_site_name WHERE site_key_hash = ?1",
+                [site_key_hash],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     fn unclassified_site_triage(
@@ -6498,7 +6573,7 @@ mod tests {
 
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].app_stable_id, key(1));
-        assert_eq!(entries[0].display_name, "Figma");
+        assert_eq!(entries[0].display_name.as_deref(), Some("Figma"));
         assert_eq!(entries[0].seconds_observed, 300);
         assert_eq!(entries[0].event_count, 2);
     }
@@ -6551,7 +6626,7 @@ mod tests {
 
         let fortnight = events.unclassified_triage(14, 300, 8).unwrap();
         assert_eq!(fortnight.len(), 1, "{fortnight:?}");
-        assert_eq!(fortnight[0].display_name, "Obsidian");
+        assert_eq!(fortnight[0].display_name.as_deref(), Some("Obsidian"));
 
         // Clamped, not honoured: a 90-day request returns the same fortnight.
         let asked_for_more = events.unclassified_triage(90, 300, 8).unwrap();
@@ -6583,7 +6658,7 @@ mod tests {
         let entries = events.unclassified_triage(14, 300, 8).unwrap();
 
         assert_eq!(entries.len(), 8);
-        assert_eq!(entries[0].display_name, "App 9");
+        assert_eq!(entries[0].display_name.as_deref(), Some("App 9"));
         assert!(entries
             .windows(2)
             .all(|pair| pair[0].seconds_observed >= pair[1].seconds_observed));
@@ -6614,12 +6689,17 @@ mod tests {
     }
 
     /// An hour Velvt holds no name for is still an hour the user spent, so the
-    /// row is named plainly instead of dropped. Omitting it hid real time from
-    /// the one list whose entire claim is that it shows the time Velvt could not
-    /// read -- and the user can usually still answer, because the row carries the
+    /// row is kept instead of dropped. Omitting it hid real time from the one
+    /// list whose entire claim is that it shows the time Velvt could not read
+    /// -- and the user can usually still answer, because the row carries the
     /// time observed and they know what they had open for an hour.
+    ///
+    /// It is kept with no name rather than a placeholder. Until protocol 33 the
+    /// query answered 'Unnamed application', the client sent that back as the
+    /// rule's name, and every later window of the application was labelled
+    /// "Unnamed application" by the rule the user had just taught.
     #[test]
-    fn an_application_velvt_holds_no_name_for_is_named_plainly() {
+    fn an_application_velvt_holds_no_name_for_is_listed_without_one() {
         let database = SqlitePersistence::open_in_memory().unwrap();
         let events = database.raw_event_repo();
         let now = Utc::now();
@@ -6631,7 +6711,7 @@ mod tests {
 
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].app_stable_id, key(8));
-        assert_eq!(entries[0].display_name, "Unnamed application");
+        assert_eq!(entries[0].display_name, None);
         assert_eq!(entries[0].seconds_observed, 3_600);
         // The floor still applies to it: unnamed does not mean exempt.
         assert!(events.unclassified_triage(14, 7_200, 8).unwrap().is_empty());

@@ -5,7 +5,7 @@ use super::{
     DemotionStateRecord, FocusTransition, HistoryCacheEntry, InitiationInvitationOutcome,
     InitiationInvitationRecord, InsightCacheEntry, InterventionDecision, LocalDisplayAggregate,
     LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersistenceError, PersonalOverrideRecord,
-    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, ReportedDwell,
+    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, ReportedDwell, SiteScopeOverride,
     UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch, UploadQueueDiagnostics,
     VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection, WorkBlockCompletion,
     WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
@@ -134,6 +134,16 @@ pub trait AbstractionMapRepo: Send + Sync {
         category: &str,
         local_activity_name: Option<&str>,
     ) -> Result<(), PersistenceError>;
+
+    /// Reads the rule taught about one site, by its site key.
+    ///
+    /// The correction history lists site rules beside window and app rules,
+    /// and an edit or a removal arrives with the key alone; this is how the
+    /// router tells a site rule's key from the other two.
+    fn site_scope_override(
+        &self,
+        site_key_hash: &str,
+    ) -> Result<Option<SiteScopeOverride>, PersistenceError>;
 
     /// Removes one site rule, and the typed name it mirrored into the windows
     /// buffered under that site. Returns whether a rule was removed.
@@ -406,14 +416,27 @@ pub trait RawEventRepo: Send + Sync {
     /// `lookback_days` is clamped to [`TRIAGE_MAX_LOOKBACK_DAYS`],
     /// `min_seconds` is raised to at least [`TRIAGE_MIN_SECONDS`], and `limit`
     /// is capped at [`TRIAGE_MAX_ENTRIES`]. Applications the user has already
-    /// taught are excluded, and so are ones Velvt holds no local name for,
-    /// because neither is a task anybody can act on.
+    /// taught are excluded. One Velvt holds no local name for is kept, with
+    /// `display_name` `None`: the time is real, and the user can usually
+    /// still say what they had open.
     fn unclassified_triage(
         &self,
         lookback_days: u32,
         min_seconds: u64,
         limit: usize,
     ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError>;
+    /// The bundle key recorded on the events that put an application on the
+    /// list, if any recorded one, over the whole buffer.
+    ///
+    /// Read when the user answers the list, so the rule answers under the
+    /// identity that survives a rename. A key lookup rather than a re-run of
+    /// the list: the list is capped and windowed, so an application the
+    /// client was shown over seven days could be outside a list computed over
+    /// fourteen, and its rule was then keyed on the name alone.
+    fn unclassified_app_bundle_key(
+        &self,
+        app_stable_id: &str,
+    ) -> Result<Option<String>, PersistenceError>;
     /// Keeps the hostname of the site the stored event `event_id` was on, so
     /// Velvt can name the site when it asks what it is. Returns whether a row
     /// was written.
@@ -436,6 +459,10 @@ pub trait RawEventRepo: Send + Sync {
         host: &str,
         seen_at: DateTime<Utc>,
     ) -> Result<bool, PersistenceError>;
+    /// The hostname kept for the site `site_key_hash`, while it needs a
+    /// category (`local_site_name`). `None` once the site is taught, or its
+    /// name was swept or never kept.
+    fn local_site_name(&self, site_key_hash: &str) -> Result<Option<String>, PersistenceError>;
     /// The browser sites Velvt observed but could not categorize, ranked by
     /// observed time, longest first.
     ///

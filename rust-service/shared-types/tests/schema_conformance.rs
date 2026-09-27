@@ -332,8 +332,10 @@ fn string_for(schema: &Value) -> String {
         Some("date") => return "2026-09-25".into(),
         _ => {}
     }
-    if schema.get("pattern").and_then(Value::as_str) == Some(r"^\d{4}-\d{2}-\d{2}$") {
-        return "2026-09-25".into();
+    match schema.get("pattern").and_then(Value::as_str) {
+        Some(r"^\d{4}-\d{2}-\d{2}$") => return "2026-09-25".into(),
+        Some(r"^[0-9a-f]{64}$") => return "0123456789abcdef".repeat(4),
+        _ => {}
     }
     let minimum = schema.get("minLength").and_then(Value::as_u64).unwrap_or(1) as usize;
     let maximum = schema

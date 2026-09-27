@@ -40,8 +40,9 @@ use velvt_service::persistence::{RawEventEntry, SqlitePersistence};
 use velvt_service::upload::EventIngestor;
 use velvt_service::work_block::WorkBlockManager;
 use velvt_shared_types::{
-    ClientMessage, RawEvent, RequestLocalDashboard, RequestMenuStatus, RequestWorkBlockState,
-    ServerMessage, StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose,
+    ClientMessage, RawEvent, RequestCorrectionHistory, RequestLocalDashboard, RequestMenuStatus,
+    RequestUnclassifiedTriage, RequestWorkBlockState, ServerMessage, SetSiteCategory,
+    StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose,
 };
 
 #[path = "../shared-types/tests/support/json_schema.rs"]
@@ -373,6 +374,11 @@ async fn the_emitted_menu_status_validates_against_its_schema() {
         .abstraction_map_repo()
         .save_app_scope_override(&"a".repeat(64), None, "REFERENCE", Some("Qwybex"))
         .unwrap();
+    // A site rule too (protocol 33), which the history lists as scope `site`.
+    persistence
+        .abstraction_map_repo()
+        .save_site_scope_override(&"b".repeat(64), "FOCUS_WORK", None)
+        .unwrap();
 
     let response = router
         .route(ClientMessage::RequestMenuStatus(RequestMenuStatus {}))
@@ -394,9 +400,142 @@ async fn the_emitted_menu_status_validates_against_its_schema() {
             "{source} was not emitted: {encoded}"
         );
     }
+    let scopes: Vec<&str> = encoded["payload"]["correction_history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| rule["scope"].as_str().unwrap())
+        .collect();
+    assert!(scopes.contains(&"app"), "{encoded}");
+    assert!(scopes.contains(&"site"), "{encoded}");
+    assert_valid("menu_status.json", &encoded);
+}
+
+fn unlogged_event(
+    stable_id: &str,
+    seconds: u64,
+    app_key: &str,
+    name: Option<&str>,
+) -> RawEventEntry {
+    RawEventEntry {
+        event_id: uuid::Uuid::new_v4().to_string(),
+        stable_id: stable_id.into(),
+        label: "unlogged".into(),
+        local_display_label: None,
+        local_name_suggestion: name.map(str::to_owned),
+        category: "UNLOGGED".into(),
+        taxonomy_version: "mvp-2".into(),
+        classification_tier: "fallback".into(),
+        classification_status: "unclassified".into(),
+        classification_confidence: "none".into(),
+        classification_source: "fallback".into(),
+        occurred_at: Utc::now() - ChronoDuration::minutes(5),
+        duration_seconds: seconds,
+        upload_eligible: false,
+        app_stable_id: Some(app_key.into()),
+        app_scope_eligible: true,
+        site_stable_id: None,
+    }
+}
+
+/// The needs-a-category list as protocol 33 sends it: an application with a
+/// name, one without (`display_name: null`), and a site, on one list; and the
+/// history page with a rule of each scope.
+#[tokio::test]
+async fn the_emitted_needs_a_category_list_and_history_validate_against_their_schemas() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let router = router_over(&persistence);
+    let events = persistence.raw_event_repo();
+    events
+        .insert(&unlogged_event(
+            "abs_named",
+            1_200,
+            &"1".repeat(64),
+            Some("Qwybex"),
+        ))
+        .unwrap();
+    events
+        .insert(&unlogged_event("abs_nameless", 900, &"2".repeat(64), None))
+        .unwrap();
+    router
+        .route(ClientMessage::RawEvent(RawEvent {
+            event_id: uuid::Uuid::new_v4(),
+            occurred_at: Utc::now() - ChronoDuration::minutes(3),
+            duration_seconds: 600,
+            app_name: "Safari".into(),
+            window_title: "Zarniwoop".into(),
+            bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
+            focused_document_url: Some("https://qwybex-forum.example/t/1".into()),
+            in_progress: false,
+        }))
+        .await
+        .unwrap();
+
+    let response = router
+        .route(ClientMessage::RequestUnclassifiedTriage(
+            RequestUnclassifiedTriage { lookback_days: 7 },
+        ))
+        .await
+        .unwrap();
+    let Some(message @ ServerMessage::UnclassifiedTriage(_)) = response else {
+        panic!("request_unclassified_triage answers with unclassified_triage, got {response:?}");
+    };
+    let encoded = serde_json::to_value(message).unwrap();
+    let entries = encoded["payload"]["entries"].as_array().unwrap();
+    let kinds: Vec<(&str, &Value)> = entries
+        .iter()
+        .map(|entry| (entry["kind"].as_str().unwrap(), &entry["display_name"]))
+        .collect();
     assert_eq!(
-        encoded["payload"]["correction_history"][0]["scope"], "app",
+        kinds,
+        vec![
+            ("application", &Value::from("Qwybex")),
+            ("application", &Value::Null),
+            ("site", &Value::from("qwybex-forum.example")),
+        ],
         "{encoded}"
     );
-    assert_valid("menu_status.json", &encoded);
+    assert_valid("unclassified_triage.json", &encoded);
+
+    let rules = persistence.abstraction_map_repo();
+    rules
+        .save_app_scope_override(&"1".repeat(64), None, "REFERENCE", None)
+        .unwrap();
+    let site = entries[2]["stable_id"].as_str().unwrap().to_owned();
+    router
+        .route(ClientMessage::SetSiteCategory(SetSiteCategory {
+            site_stable_id: site,
+            category: "FOCUS_WORK".into(),
+            activity_name: None,
+        }))
+        .await
+        .unwrap();
+    let response = router
+        .route(ClientMessage::RequestCorrectionHistory(
+            RequestCorrectionHistory {
+                query: None,
+                offset: 0,
+                page_size: 20,
+            },
+        ))
+        .await
+        .unwrap();
+    let Some(ServerMessage::CorrectionHistoryPage(page)) = response else {
+        panic!("request_correction_history answers with a page, got {response:?}");
+    };
+    // `correction_history_page.json` describes the payload alone.
+    let encoded = serde_json::to_value(page).unwrap();
+    let scopes: Vec<&str> = encoded["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| rule["scope"].as_str().unwrap())
+        .collect();
+    assert!(
+        scopes.contains(&"app") && scopes.contains(&"site"),
+        "{encoded}"
+    );
+    assert_valid("correction_history_page.json", &encoded);
 }

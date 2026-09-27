@@ -27,7 +27,8 @@
 #   <stem>-outcomes.csv     one row per decision in that log that has an anchor:
 #                           the pre-registered outcomes of that decision point,
 #                           computed here from `work_block_observation`. Only a
-#                           censoring reason from a closed set, 0/1 flags, a
+#                           censoring reason from a closed set, for an
+#                           observer gap its cause from another, 0/1 flags, a
 #                           number of seconds and one of the eight broad
 #                           categories. The observation rows it is computed
 #                           from stay on this Mac.
@@ -320,6 +321,30 @@ fi
 #                   which the ledger closes where it began).
 #                   none: every second observed, and the labels below are set.
 #                   Censored rows leave the three labels empty, never 0.
+#                   What observer_gap cannot see: the rows tile the block by
+#                   construction. A closed report for the row still open is
+#                   dropped, and that row closes where the next one begins
+#                   (`observe_safe_category`), so only a pause (sleep pauses),
+#                   a service restart or the block's end leaves a gap. A
+#                   stretch where collection stopped while the block stayed
+#                   active, with no pause, sleep, restart or block end (the
+#                   Accessibility observer revoked and restored inside the
+#                   block, say), is not a gap: it counts as observed time in
+#                   the category of the row open before it, and as anchor
+#                   time when that row was confident anchor evidence. How
+#                   often that happens is unknown; nothing in the ledger
+#                   records it.
+#   observer_gap_cause  why an observer_gap point is unobserved, a closed set
+#                   beside the reason (never a reason of its own); empty for
+#                   every other point. final_dwell: the block ended and every
+#                   unobserved second comes after its last row began, the
+#                   dwell it ended in (that stretch can also hold a pause or
+#                   restart after which nothing was reported). pause: any other
+#                   observer_gap point in a block that recorded paused time,
+#                   or is paused now, and never restarted
+#                   (`recovered_after_restart`): only a pause or a restart
+#                   opens a gap before a later row. other: the block also
+#                   restarted, or recorded neither.
 #   sustained_anchor_900s        1 when anchor seconds in the horizon >= 600.
 #   departure_free_600s          1 when no departure begins in the 600 s after
 #                                the decision: a confident non-anchor row whose
@@ -350,7 +375,10 @@ WITH
            d.block_id              AS block_id,
            d.occurred_at           AS t,
            UPPER(d.anchor_category) AS anchor,
-           b.ended_at              AS block_ended_at
+           b.ended_at              AS block_ended_at,
+           b.phase                 AS phase,
+           b.total_paused_seconds  AS paused_seconds,
+           b.recovered_after_restart AS restarted
     FROM intervention_decision_log AS d
     JOIN work_block AS b ON b.block_id = d.block_id
     WHERE d.anchor_category IS NOT NULL),
@@ -443,6 +471,29 @@ WITH
     FROM observed
     WHERE ended IS NULL
     GROUP BY block_id),
+  -- The part of each horizon before its block's last row began. An
+  -- unobserved second there has a later row after it; one past it is in the
+  -- final stretch. With no row at all, the bound is NULL and nothing is final.
+  last_rows AS (
+    SELECT block_id, MAX(started) AS started
+    FROM observed
+    GROUP BY block_id),
+  interior AS (
+    SELECT h.decision_id AS decision_id,
+           MIN(h.t + 900, MAX(h.t, l.started)) AS bound
+    FROM horizon AS h
+    LEFT JOIN last_rows AS l ON l.block_id = h.block_id),
+  interior_steps AS (
+    SELECT k.decision_id AS decision_id, k.s AS s, MIN(k.e, i.bound) AS e,
+           MAX(MIN(k.e, i.bound)) OVER (PARTITION BY k.decision_id ORDER BY k.s, MIN(k.e, i.bound)
+                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS reach
+    FROM clipped AS k
+    JOIN interior AS i ON i.decision_id = k.decision_id
+    WHERE k.s < i.bound),
+  interior_covered AS (
+    SELECT decision_id, SUM(MAX(0, e - MAX(s, COALESCE(reach, s)))) AS seconds
+    FROM interior_steps
+    GROUP BY decision_id),
   censoring AS (
     SELECT h.decision_id AS decision_id, h.t AS t,
            CASE
@@ -461,6 +512,17 @@ WITH
 SELECT
     z.decision_id,
     z.reason,
+    CASE WHEN z.reason = 'observer_gap' THEN
+      CASE
+        WHEN h.block_ended_at IS NOT NULL
+             AND i.bound IS NOT NULL
+             AND COALESCE(c.seconds, 0) >= i.bound - h.t
+          THEN 'final_dwell'
+        WHEN (h.paused_seconds > 0 OR h.phase = 'paused') AND h.restarted = 0
+          THEN 'pause'
+        ELSE 'other'
+      END
+    END,
     CASE WHEN z.reason = 'none'
          THEN CASE WHEN COALESCE(a.seconds, 0) >= 600 THEN 1 ELSE 0 END END,
     CASE WHEN z.reason = 'none'
@@ -474,6 +536,9 @@ SELECT
         ELSE 'unrecognized'
     END
 FROM censoring AS z
+JOIN horizon AS h ON h.decision_id = z.decision_id
+JOIN interior AS i ON i.decision_id = z.decision_id
+LEFT JOIN interior_covered AS c ON c.decision_id = z.decision_id
 LEFT JOIN anchor_time AS a ON a.decision_id = z.decision_id
 LEFT JOIN departures AS x ON x.decision_id = z.decision_id
 LEFT JOIN sustained_return AS r ON r.decision_id = z.decision_id
@@ -482,7 +547,7 @@ ORDER BY z.t, z.decision_id;
 SQL
   OUTCOMES_SQL="${OUTCOMES_SQL/@EXPORTED_AT@/$EXPORTED_AT}"
   write_csv "$OUTCOMES_OUT" \
-    'decision_id,censor_reason,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category' \
+    'decision_id,censor_reason,observer_gap_cause,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category' \
     "$OUTCOMES_SQL"
   OUTCOME_ROWS="$(rows_in "$OUTCOMES_OUT")"
 fi
@@ -754,8 +819,9 @@ each of those moments, whether you then spent at least 10 of the next 15
 minutes in the anchor category, whether you left it again within 10 minutes,
 how many seconds passed before you stayed in it for 5 minutes straight, why
 that could not be told when it could not (the session ended, Velvt was paused
-or not observing, or the session was still running), and the broad category
-you were in at that moment. It is worked out on this Mac, and the record of
+or restarted, it had not measured how long your last stretch of the session
+lasted, or the session was still running), and the broad category you were in
+at that moment. It is worked out on this Mac, and the record of
 your session it is worked out from stays here. The blocks file lists every
 session you started, with how it started (by you or from an invitation), how
 it ended, and its timings. The invitations file lists each invitation and your

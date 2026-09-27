@@ -9,7 +9,8 @@
 # second at a time (`label_decision`).
 #
 # 1. Both must give the answers in fixtures/outcome-label-vectors.json, which
-#    were worked out by hand from the definition, one rule per case.
+#    were worked out by hand from the definition, one rule per case, and
+#    say why each observer_gap point is unobserved (`observer_gap_cause`).
 # 2. Both must agree with each other on a few hundred random ledgers with
 #    gaps, overlaps, open rows, unconfident rows and odd categories. Agreement
 #    is not correctness; the vectors are. It catches the two drifting apart.
@@ -62,10 +63,12 @@ for number, case in enumerate(cases):
         planned = max(300, min(10800, span - block.get("total_paused_seconds", 0)))
     connection.execute(
         "INSERT INTO work_block (block_id, phase, purpose, intensity, planned_duration_seconds,"
-        " started_at, paused_at, total_paused_seconds, ended_at, intention_expires_at, origin)"
-        " VALUES (?, ?, 'deep_work', 'medium', ?, ?, ?, ?, ?, ?, 'manual')",
+        " started_at, paused_at, total_paused_seconds, ended_at, recovered_after_restart,"
+        " intention_expires_at, origin)"
+        " VALUES (?, ?, 'deep_work', 'medium', ?, ?, ?, ?, ?, ?, ?, 'manual')",
         (block_id, block["phase"], planned, started, paused_at,
-         block.get("total_paused_seconds", 0), ended, started + 86400),
+         block.get("total_paused_seconds", 0), ended, block.get("recovered_after_restart", 0),
+         started + 86400),
     )
     for start, end, category, status, confidence in case["observations"]:
         connection.execute(
@@ -135,7 +138,10 @@ for case in cases:
             continue
         expected_ids.add(did)
         reference = analyze.label_decision(
-            base + decision["at"], decision["anchor"], ended, exported_at, observations
+            base + decision["at"], decision["anchor"], ended, exported_at, observations,
+            block_phase=block["phase"],
+            block_total_paused_seconds=block.get("total_paused_seconds", 0),
+            block_recovered_after_restart=bool(block.get("recovered_after_restart", 0)),
         )
         reference = {key: cell(reference[key]) for key in LABELS}
         reference["censor_reason"] = reference["censor_reason"] or "none"
@@ -202,6 +208,9 @@ assert all(c.get("why") for c in cases), "a case without its reason"
 expects = [d["expect"] for c in cases for d in c["decisions"] if d["expect"] is not None]
 reasons = {e["censor_reason"] for e in expects}
 assert reasons == {"none", "block_ended", "observer_gap", "export_ended"}, reasons
+causes = {e["observer_gap_cause"] for e in expects if e["censor_reason"] == "observer_gap"}
+assert causes == {"pause", "final_dwell", "other"}, causes
+assert all(e["observer_gap_cause"] is None for e in expects if e["censor_reason"] != "observer_gap")
 for key in ("sustained_anchor_900s", "departure_free_600s"):
     assert {e[key] for e in expects if e["censor_reason"] == "none"} == {0, 1}, key
 returns = [e["seconds_to_sustained_return"] for e in expects if e["censor_reason"] == "none"]
@@ -249,6 +258,12 @@ for number in range(240):
         rows[-1][1] = None                            # the dwell still open
     else:
         block = {"phase": "paused", "started_at": 0, "ended_at": None, "paused_at": t}
+    # What the ledger does not say, and the gap's cause reads: paused time
+    # (any gap above may or may not be one) and a restart.
+    if rng.random() < 0.5:
+        block["total_paused_seconds"] = rng.randint(1, 400)
+    if rng.random() < 0.3:
+        block["recovered_after_restart"] = 1
     starts = [row[0] for row in rows]
     decisions = []
     for index in range(rng.randint(1, 6)):
@@ -268,6 +283,9 @@ from collections import Counter
 rows = list(csv.DictReader(open(sys.argv[1])))
 reasons = Counter(r["censor_reason"] for r in rows)
 assert all(reasons[k] >= 5 for k in ("none", "block_ended", "observer_gap", "export_ended")), reasons
+causes = Counter(r["observer_gap_cause"] for r in rows if r["censor_reason"] == "observer_gap")
+assert all(causes[k] >= 5 for k in ("pause", "final_dwell", "other")), causes
+assert not any(r["observer_gap_cause"] for r in rows if r["censor_reason"] != "observer_gap")
 labelled = [r for r in rows if r["censor_reason"] == "none"]
 for key in ("sustained_anchor_900s", "departure_free_600s"):
     assert {r[key] for r in labelled} == {"0", "1"}, key

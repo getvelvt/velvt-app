@@ -3,7 +3,8 @@
     "Shared test vectors for the per-decision outcome labels: the exporter's SQL (export_cohort_evidence.sh, section 2b) and label_decision in analyze_cohort.py must both give these answers. A future on-Mac resolver should be held to them too.",
     "Every time is seconds after the case's `base` (epoch seconds). An observation is [occurred_at, ended_at, category, classification_status, classification_confidence] and covers [occurred_at, ended_at); ended_at null is a row still open. Rows are listed in ledger (id) order.",
     "`expect` null means the exporter writes no row for that decision (it has no anchor). Otherwise every label is given; null is an empty cell.",
-    "Bases in 2023 are in the past for any export run today; the base in 2099 keeps an open block's horizon in the future."
+    "Bases in 2023 are in the past for any export run today; the base in 2099 keeps an open block's horizon in the future.",
+    "A block may give `total_paused_seconds`, `paused_at` and `recovered_after_restart` (0 or 1, default 0). They decide only `observer_gap_cause`, which is empty unless `censor_reason` is observer_gap."
   ],
   "cases": [
     {
@@ -20,9 +21,9 @@
       "decisions": [
         {"id": "v-warmup", "at": 100, "anchor": null, "verdict": "abstained_warmup", "expect": null},
         {"id": "v-returns", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 30, "departure_category": "SOCIAL_FEED"}},
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 30, "departure_category": "SOCIAL_FEED"}},
         {"id": "v-at-anchor", "at": 1030, "anchor": "FOCUS_WORK", "verdict": "abstained_block_cap",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 0, "departure_category": null}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 0, "departure_category": null}}
       ]
     },
     {
@@ -37,7 +38,7 @@
       ],
       "decisions": [
         {"id": "v-away", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -57,9 +58,9 @@
       ],
       "decisions": [
         {"id": "v-osc-1", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": null, "departure_category": "COMMUNICATION"}},
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": null, "departure_category": "COMMUNICATION"}},
         {"id": "v-osc-2", "at": 1300, "anchor": "FOCUS_WORK", "verdict": "abstained_block_cap",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 0, "seconds_to_sustained_return": null, "departure_category": "COMMUNICATION"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 0, "departure_free_600s": 0, "seconds_to_sustained_return": null, "departure_category": "COMMUNICATION"}}
       ]
     },
     {
@@ -75,7 +76,7 @@
       ],
       "decisions": [
         {"id": "v-600", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 300, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 300, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -91,7 +92,7 @@
       ],
       "decisions": [
         {"id": "v-599", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": 301, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": 301, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -108,7 +109,7 @@
       ],
       "decisions": [
         {"id": "v-dep-600", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -125,7 +126,7 @@
       ],
       "decisions": [
         {"id": "v-dep-601", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -141,7 +142,7 @@
       ],
       "decisions": [
         {"id": "v-ambiguous", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -159,7 +160,7 @@
       ],
       "decisions": [
         {"id": "v-system", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 0, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 0, "departure_free_600s": 0, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -174,9 +175,9 @@
       ],
       "decisions": [
         {"id": "v-ended", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "block_ended", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}},
+         "expect": {"censor_reason": "block_ended", "observer_gap_cause": null, "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}},
         {"id": "v-ends-at-horizon", "at": 900, "anchor": "FOCUS_WORK", "verdict": "abstained_min_switches",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": 200, "departure_category": null}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": 200, "departure_category": null}}
       ]
     },
     {
@@ -191,7 +192,7 @@
       ],
       "decisions": [
         {"id": "v-paused", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "observer_gap", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "observer_gap", "observer_gap_cause": "pause", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -206,7 +207,7 @@
       ],
       "decisions": [
         {"id": "v-final-dwell", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "observer_gap", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "observer_gap", "observer_gap_cause": "final_dwell", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -220,7 +221,7 @@
       ],
       "decisions": [
         {"id": "v-running", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "export_ended", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "export_ended", "observer_gap_cause": null, "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -235,7 +236,7 @@
       ],
       "decisions": [
         {"id": "v-open-dwell", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "export_ended", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "export_ended", "observer_gap_cause": null, "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -251,7 +252,7 @@
       ],
       "decisions": [
         {"id": "v-open-labelled", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -266,7 +267,7 @@
       ],
       "decisions": [
         {"id": "v-paused-now", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "observer_gap", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "observer_gap", "observer_gap_cause": "pause", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -283,7 +284,7 @@
       ],
       "decisions": [
         {"id": "v-overlap", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": 200, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": 200, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -298,7 +299,7 @@
       ],
       "decisions": [
         {"id": "v-unknown", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "unrecognized"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "unrecognized"}}
       ]
     },
     {
@@ -313,7 +314,7 @@
       ],
       "decisions": [
         {"id": "v-case", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
       ]
     },
     {
@@ -329,7 +330,84 @@
       ],
       "decisions": [
         {"id": "v-latest", "at": 1100, "anchor": "FOCUS_WORK", "verdict": "offered",
-         "expect": {"censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+         "expect": {"censor_reason": "none", "observer_gap_cause": null, "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 100, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "restart_opens_a_gap_that_is_not_a_pause",
+      "why": "A service restart closes the open row at its reported end, and nothing is observed until the next report. The block never paused and did restart, so the gap is `other`, not a pause.",
+      "base": 1701900000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3000, "recovered_after_restart": 1},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1200, "SOCIAL_FEED", "classified", "high"],
+        [1500, 3000, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-restart", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "observer_gap", "observer_gap_cause": "other", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "a_pause_and_a_restart_cannot_be_told_apart",
+      "why": "The block recorded both paused time and a restart, and the ledger does not say which one opened this gap: `other`.",
+      "base": 1702000000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3300, "total_paused_seconds": 300, "recovered_after_restart": 1},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1200, "SOCIAL_FEED", "classified", "high"],
+        [1500, 3300, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-pause-and-restart", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "observer_gap", "observer_gap_cause": "other", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "a_gap_before_the_final_dwell_is_the_pause",
+      "why": "A pause gap and then the unmeasured final dwell in one horizon. Measuring the final dwell would not label this point, so it is filed under the pause, not the final dwell.",
+      "base": 1702100000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 1900, "total_paused_seconds": 200, "planned_duration_seconds": 1700},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1300, 1400, "FOCUS_WORK", "classified", "high"],
+        [1400, 1400, "COMMUNICATION", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-pause-then-final", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "observer_gap", "observer_gap_cause": "pause", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "final_dwell_after_a_measured_report",
+      "why": "The last row's report did arrive (it closed at its reported end, 50 s in), but the block ran on without another report. Only that final stretch is unobserved, so the cause is the final dwell, even in a block that paused earlier, outside this horizon.",
+      "base": 1702200000,
+      "block": {"phase": "completed", "started_at": 0, "ended_at": 3300, "total_paused_seconds": 300},
+      "observations": [
+        [0, 400, "FOCUS_WORK", "classified", "high"],
+        [700, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, 1150, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-final-reported", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "observer_gap", "observer_gap_cause": "final_dwell", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
+      ]
+    },
+    {
+      "name": "open_block_after_a_restart_is_not_a_final_dwell",
+      "why": "Still active at export with no open row: a restart closed it and nothing has been reported since. The block has not ended, so nothing is a final dwell; it never paused, so the cause is `other`.",
+      "base": 1702300000,
+      "block": {"phase": "active", "started_at": 0, "ended_at": null, "recovered_after_restart": 1},
+      "observations": [
+        [0, 1000, "FOCUS_WORK", "classified", "high"],
+        [1000, 1100, "SOCIAL_FEED", "classified", "high"],
+        [1100, 1300, "FOCUS_WORK", "classified", "high"]
+      ],
+      "decisions": [
+        {"id": "v-open-restart", "at": 1000, "anchor": "FOCUS_WORK", "verdict": "offered",
+         "expect": {"censor_reason": "observer_gap", "observer_gap_cause": "other", "sustained_anchor_900s": null, "departure_free_600s": null, "seconds_to_sustained_return": null, "departure_category": "SOCIAL_FEED"}}
       ]
     }
   ]

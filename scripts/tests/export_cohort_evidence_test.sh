@@ -222,7 +222,7 @@ assert_no_sentinel() { # FILE...
 
 OFFERS_HEADER='block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention,card_seen_at,card_seen'
 DECISIONS_HEADER='decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds'
-OUTCOMES_HEADER='decision_id,censor_reason,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category'
+OUTCOMES_HEADER='decision_id,censor_reason,observer_gap_cause,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category'
 BLOCKS_HEADER='block_id,origin,phase,started_at,ended_at,total_paused_seconds,planned_duration_seconds'
 INVITATIONS_HEADER='invitation_id,offered_at,action_id,policy_version,backoff_policy_version,outcome,outcome_at'
 EXPLAIN_HEADER='week_start_local_date,taps,delivered_interventions,blocks_declared'
@@ -324,6 +324,9 @@ PY
 #     every row is censored, and a censored row leaves its labels empty rather
 #     than 0. block-7's offer came after its block ended. block-1's offer came
 #     on the free-text row seeded above, which leaves only as `unrecognized`.
+#     Each gap has a cause: block-1's horizon runs past its last row into the
+#     dwell it ended in; block-2 has no rows and 300 s paused, so its gap is a
+#     pause; block-3 and block-4 have no rows, no pause and no restart.
 python3 - "$stem-outcomes.csv" <<'PY' || fail "outcome rows are wrong"
 import csv, sys
 rows = {r["decision_id"]: r for r in csv.DictReader(open(sys.argv[1]))}
@@ -331,6 +334,9 @@ assert sorted(rows) == ["d-02", "d-03", "d-04", "d-05", "d-07"], sorted(rows)
 reasons = {k: r["censor_reason"] for k, r in rows.items()}
 assert reasons == {"d-02": "observer_gap", "d-03": "observer_gap", "d-04": "observer_gap",
                    "d-05": "observer_gap", "d-07": "block_ended"}, reasons
+causes = {k: r["observer_gap_cause"] for k, r in rows.items()}
+assert causes == {"d-02": "final_dwell", "d-03": "pause", "d-04": "other",
+                  "d-05": "other", "d-07": ""}, causes
 for r in rows.values():
     assert (r["sustained_anchor_900s"], r["departure_free_600s"],
             r["seconds_to_sustained_return"]) == ("", "", ""), r
@@ -438,6 +444,7 @@ assert r["primary_outcome"]["eligible_decision_points"] == 3, r["primary_outcome
 primary = r["primary_outcome"]
 assert primary["with_outcome_row"] == 3, primary
 assert primary["censored"] == {"block_ended": 1, "export_ended": 0, "observer_gap": 2}, primary
+assert primary["observer_gap_by_cause"] == {"pause": 0, "final_dwell": 1, "other": 1}, primary
 assert (primary["numerator"], primary["denominator"], primary["reportable"]) == (0, 0, False), primary
 assert primary["departure_category_counts"] == {"none (at the anchor, or no evidence yet)": 2, "unrecognized": 1}, primary
 assert r["card_seen"]["no_response"] == {"seen": 0, "unseen": 1, "unknown": 0}, r["card_seen"]

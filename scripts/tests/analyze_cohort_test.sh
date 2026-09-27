@@ -36,7 +36,7 @@
 #      the two secondary outcomes, and every way a label can be missing or
 #      wrong, which is reported and never imputed. Every result carries the
 #      2026-08-21 label: associational, since every eligible point was offered
-#      and there is no silence arm.
+#      and there is no silence arm. observer_gap is broken down by cause.
 #
 # Fixtures are CSVs written the way export_cohort_evidence.sh writes them.
 # export_cohort_evidence_test.sh covers the databases behind them, across
@@ -79,7 +79,7 @@ HEADERS = {
     "invitations": "invitation_id,offered_at,action_id,policy_version,backoff_policy_version,outcome,outcome_at",
     "explain": "week_start_local_date,taps,delivered_interventions,blocks_declared",
     "corrections": "scope,category,rules,corrections",
-    "outcomes": "decision_id,censor_reason,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category",
+    "outcomes": "decision_id,censor_reason,observer_gap_cause,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category",
 }
 T0 = 1800000000
 spec = json.load(sys.stdin)
@@ -808,7 +808,7 @@ make_export "$work/outcomes/p-labelled" <<'JSON'
    {"decision_id": "d7", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 10, "departure_category": "PASSIVE_CONSUMPTION"},
    {"decision_id": "d8", "censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "departure_category": "SOCIAL_FEED"},
    {"decision_id": "d9", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": 200, "departure_category": "COMMUNICATION"},
-   {"decision_id": "d10", "censor_reason": "observer_gap", "departure_category": "SOCIAL_FEED"}
+   {"decision_id": "d10", "censor_reason": "observer_gap", "observer_gap_cause": "final_dwell", "departure_category": "SOCIAL_FEED"}
  ]}
 JSON
 "$analyze" --json "$work/outcomes/p-labelled" > "$work/outcomes-a.json"
@@ -821,6 +821,9 @@ assert p["eligible_decision_points"] == 10, p
 assert p["not_measurable"] == {}, p
 assert p["with_outcome_row"] == 10, p
 assert p["censored"] == {"block_ended": 0, "export_ended": 0, "observer_gap": 1}, p
+assert p["observer_gap_by_cause"] == {"pause": 0, "final_dwell": 1, "other": 0}, p
+assert "not censoring reasons of their own" in p["observer_gap_by_cause_note"], p
+assert "how often that happens is unknown" in p["observer_gap_by_cause_note"], p
 # 2026-08-21: associational until randomization is on, in the JSON too.
 for needle in ("Associational, not an effect of the nudge", "propensity 1.0", "no silence arm"):
     assert needle in p["associational"], p["associational"]
@@ -843,6 +846,7 @@ report_a="$("$analyze" "$work/outcomes/p-labelled")"
 check_power_markers "$report_a"
 for needle in "PRIMARY OUTCOME: sustained anchor engagement (2026-08-21)" \
               "censored: 1/10 (block_ended 0, observer_gap 1, export_ended 0); never counted as 0, never imputed" \
+              "observer_gap by cause: final dwell never measured 1, pause (yours, or sleep) 0, other (a restart, or not attributable) 0" \
               "sustained: 5/9 = 55.6% — underpowered, see POWER above; associational, not an effect of the nudge" \
               "secondary, departure-free 600 s: 5/9 = 55.6% — underpowered, see POWER above; associational, not an effect of the nudge" \
               "returned within the horizon at 6 of 9; median 200 s; restricted mean 296.7 s; associational, not an effect of the nudge" \
@@ -911,12 +915,13 @@ make_export "$work/outcomes/p-gappy" <<'JSON'
 {"blocks": [{"block_id": "g", "started_at": 1800200000}],
  "offers": [],
  "decisions": [{"decision_id": "g1", "block_id": "g", "gate_verdict": "offered"}],
- "outcomes": [{"decision_id": "g1", "censor_reason": "observer_gap"}]}
+ "outcomes": [{"decision_id": "g1", "censor_reason": "observer_gap", "observer_gap_cause": "pause"}]}
 JSON
 "$analyze" --json "$work/outcomes"/*/ > "$work/outcomes-c.json"
 check "$work/outcomes-c.json" "censoring above 25% (scenario C)" <<'PY'
 p = r["primary_outcome"]
 assert p["censored_share"] == "4/13", p
+assert p["observer_gap_by_cause"] == {"pause": 1, "final_dwell": 1, "other": 0}, p
 assert p["censoring_verdict"].startswith("above 25%"), p["censoring_verdict"]
 assert p["reportable"] is False, p
 assert (p["numerator"], p["denominator"]) == (5, 9), p
@@ -944,7 +949,9 @@ make_export "$work/outcomes-bad/p-bad" <<'JSON'
    {"block_id": "m1", "started_at": 1800000000}, {"block_id": "m2", "started_at": 1800010000},
    {"block_id": "m3", "started_at": 1800020000}, {"block_id": "m4", "started_at": 1800030000},
    {"block_id": "m5", "started_at": 1800040000, "ended_at": 1800040700},
-   {"block_id": "m6", "started_at": 1800050000}
+   {"block_id": "m6", "started_at": 1800050000},
+   {"block_id": "m7", "started_at": 1800060000}, {"block_id": "m8", "started_at": 1800070000},
+   {"block_id": "m9", "started_at": 1800080000, "ended_at": null, "phase": "active"}
  ],
  "offers": [],
  "decisions": [
@@ -953,15 +960,21 @@ make_export "$work/outcomes-bad/p-bad" <<'JSON'
    {"decision_id": "missing", "block_id": "m3", "gate_verdict": "offered"},
    {"decision_id": "odd-category", "block_id": "m4", "gate_verdict": "offered"},
    {"decision_id": "contradicted", "block_id": "m5", "gate_verdict": "offered"},
-   {"decision_id": "fine", "block_id": "m6", "gate_verdict": "offered"}
+   {"decision_id": "fine", "block_id": "m6", "gate_verdict": "offered"},
+   {"decision_id": "odd-cause", "block_id": "m7", "gate_verdict": "offered"},
+   {"decision_id": "cause-uncensored", "block_id": "m8", "gate_verdict": "offered"},
+   {"decision_id": "final-in-open-block", "block_id": "m9", "gate_verdict": "offered"}
  ],
  "outcomes": [
-   {"decision_id": "labelled-censored", "censor_reason": "observer_gap", "sustained_anchor_900s": 0},
+   {"decision_id": "labelled-censored", "censor_reason": "observer_gap", "observer_gap_cause": "other", "sustained_anchor_900s": 0},
    {"decision_id": "twice", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1},
    {"decision_id": "twice", "censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1},
    {"decision_id": "odd-category", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "departure_category": "Slack"},
    {"decision_id": "contradicted", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1},
-   {"decision_id": "fine", "censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": 601}
+   {"decision_id": "fine", "censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": 601},
+   {"decision_id": "odd-cause", "censor_reason": "observer_gap", "observer_gap_cause": "lost_observer"},
+   {"decision_id": "cause-uncensored", "censor_reason": "none", "observer_gap_cause": "pause", "sustained_anchor_900s": 1, "departure_free_600s": 1},
+   {"decision_id": "final-in-open-block", "censor_reason": "observer_gap", "observer_gap_cause": "final_dwell"}
  ]}
 JSON
 make_export "$work/outcomes-bad/p-v2" <<'JSON'
@@ -992,14 +1005,17 @@ assert has("p-bad: eligible decision missing has no outcome row"), malformed
 assert has("p-bad: outcome for decision odd-category: departure_category 'Slack'"), malformed
 assert has("p-bad: outcome for decision contradicted: censor_reason 'none', but the block ended at 1800040700"), malformed
 assert has("p-bad: outcome for decision fine: seconds_to_sustained_return '601' is not 0 to 600"), malformed
+assert has("p-bad: outcome for decision odd-cause: observer_gap_cause 'lost_observer' is not one of pause, final_dwell, other"), malformed
+assert has("p-bad: outcome for decision cause-uncensored: observer_gap_cause 'pause' on a point censored as 'none'"), malformed
+assert has("p-bad: outcome for decision final-in-open-block: an unmeasured final dwell in a block that had not ended"), malformed
 assert has("p-v2: outcomes computed under definition version 2"), malformed
 assert has("p-lost: the export wrote a outcomes file and it was not received"), malformed
 assert not any(m.startswith("p-old:") for m in malformed), malformed
 assert p["not_measurable"] == {
     "no outcomes file (an export from before export format 4)": 1,
     "no row for this decision in the outcomes file": 1,
-    "outcome row contradicts the decisions file": 1,
-    "outcome row malformed": 4,
+    "outcome row contradicts the decisions file": 2,
+    "outcome row malformed": 6,
     "outcomes computed under definition version 2; this script reads version 1": 1,
     "outcomes file written and not received": 1,
 }, p["not_measurable"]

@@ -109,11 +109,33 @@ ASSOCIATIONAL_STATEMENT = (
 #                 observation row of the block (a pause, sleep, restart, or a
 #                 final dwell the ledger never measured).
 # `none` means the horizon was fully observed and the labels are set.
+#
+# What observer_gap does NOT catch: ledger rows tile the block by
+# construction (a closed report for the row still open is dropped, and the row
+# closes where the next one begins), so only a pause (sleep pauses), a restart
+# or the block's end leaves a gap. A stretch where collection stopped while the
+# block stayed active, such as Accessibility revoked and restored inside the
+# block, counts as observed time in the category of the row open before it.
+# How often that happens is unknown.
 OUTCOME_CENSOR_REASONS = ("block_ended", "export_ended", "observer_gap")
+# Why an observer_gap point is unobserved: a second closed set, beside the
+# reason and not a reason of its own, so the 2026-08-21 set stays as it is.
+#   final_dwell  the block ended, and every unobserved second comes after its
+#                last ledger row began: the dwell the person was in when the
+#                block ended, which the ledger never measures (it can also
+#                hold a pause or restart after which nothing was reported);
+#   pause        any other observer_gap point (an unobserved second before a
+#                later row, or a block still open) whose block recorded paused
+#                time (the person's own pause, or sleep, which pauses) and no
+#                restart: only a pause or a restart opens such a gap;
+#   other        the same, but the block also restarted, or recorded neither:
+#                a gap the export cannot attribute to a pause.
+OBSERVER_GAP_CAUSES = ("pause", "final_dwell", "other")
 OUTCOME_DEFINITION_VERSION = 1
 OUTCOME_COLUMNS = (
     "decision_id",
     "censor_reason",
+    "observer_gap_cause",
     "sustained_anchor_900s",
     "departure_free_600s",
     "seconds_to_sustained_return",
@@ -489,6 +511,10 @@ def label_decision(
     block_ended_at: int | None,
     exported_at: int,
     observations: list[dict],
+    *,
+    block_phase: str = "completed",
+    block_total_paused_seconds: int = 0,
+    block_recovered_after_restart: bool = False,
 ) -> dict:
     """The outcome labels for one decision row with an anchor.
 
@@ -497,6 +523,8 @@ def label_decision(
     `classification_status` and `classification_confidence`, in id order.
     They are read in the ledger's order, occurred_at then id, as the gate
     reads them. Times are epoch seconds; a row covers [occurred_at, ended_at).
+    The `block_*` facts are the `work_block` row's, and are read only to say
+    why an observer_gap point is unobserved (`OBSERVER_GAP_CAUSES`).
     """
     t = occurred_at
     horizon_end = t + PRIMARY_HORIZON_SECONDS
@@ -524,6 +552,7 @@ def label_decision(
 
     labels = {
         "censor_reason": "none",
+        "observer_gap_cause": None,
         "sustained_anchor_900s": None,
         "departure_free_600s": None,
         "seconds_to_sustained_return": None,
@@ -546,6 +575,22 @@ def label_decision(
         labels["censor_reason"] = "export_ended"
     elif not all(covered):
         labels["censor_reason"] = "observer_gap"
+        # A second after the block's last row began has no later row: it is
+        # the final stretch. Any unobserved second before it was followed by
+        # more observation, so something stopped the ledger and restarted it.
+        last_start = max((r["start"] for r in rows), default=None)
+        unobserved = [s for s, seen in zip(seconds, covered) if not seen]
+        paused = block_total_paused_seconds > 0 or block_phase == "paused"
+        if (
+            block_ended_at is not None
+            and last_start is not None
+            and all(s >= last_start for s in unobserved)
+        ):
+            labels["observer_gap_cause"] = "final_dwell"
+        elif paused and not block_recovered_after_restart:
+            labels["observer_gap_cause"] = "pause"
+        else:
+            labels["observer_gap_cause"] = "other"
     if labels["censor_reason"] != "none":
         return labels
 
@@ -799,6 +844,11 @@ def _outcome_problem(row: dict) -> str | None:
     category = _text(row, "departure_category")
     if category and category not in SERVICE_CATEGORIES + ("unrecognized",):
         return f"departure_category {category!r} is not one of the service's categories"
+    cause = _text(row, "observer_gap_cause")
+    if reason == "observer_gap" and cause not in OBSERVER_GAP_CAUSES:
+        return f"observer_gap_cause {cause!r} is not one of {', '.join(OBSERVER_GAP_CAUSES)}"
+    if reason != "observer_gap" and cause:
+        return f"observer_gap_cause {cause!r} on a point censored as {reason!r}"
     if reason in OUTCOME_CENSOR_REASONS:
         return None if labels == ["", "", ""] else f"censored ({reason}) but labelled"
     if reason != "none":
@@ -824,6 +874,8 @@ def _outcome_disagreement(decision: dict, outcome: dict, exported_at: int | None
         return f"censor_reason {reason!r}, but the block ended at {ended}"
     if reason == "export_ended" and ended is not None:
         return "export_ended on a block that had ended"
+    if _text(outcome, "observer_gap_cause") == "final_dwell" and ended is None:
+        return "an unmeasured final dwell in a block that had not ended"
     if ended is None and exported_at is not None and exported_at < horizon_end and reason != "export_ended":
         return f"censor_reason {reason!r} on a horizon still running at export"
     return None
@@ -1208,6 +1260,10 @@ def _primary(cohort: Cohort) -> dict:
     not_measurable = Counter(p["no_outcome"] for p in cohort.eligible if p["no_outcome"])
     measured = [p["outcome"] for p in cohort.eligible if p["outcome"] is not None]
     censored = Counter(_text(o, "censor_reason") for o in measured)
+    gap_causes = Counter(
+        _text(o, "observer_gap_cause") for o in measured
+        if _text(o, "censor_reason") == "observer_gap"
+    )
     uncensored = [o for o in measured if _text(o, "censor_reason") == "none"]
     censored_total = len(measured) - len(uncensored)
     verdict, reportable = _censoring_verdict(censored_total, len(measured))
@@ -1238,6 +1294,16 @@ def _primary(cohort: Cohort) -> dict:
         "not_measurable": dict(sorted(not_measurable.items())),
         "with_outcome_row": len(measured),
         "censored": {reason: censored[reason] for reason in OUTCOME_CENSOR_REASONS},
+        "observer_gap_by_cause": {cause: gap_causes[cause] for cause in OBSERVER_GAP_CAUSES},
+        "observer_gap_by_cause_note": (
+            "Sub-counts of observer_gap, not censoring reasons of their own: the "
+            "2026-08-21 closed set is unchanged. final_dwell is the dwell a block ended "
+            "in, which the ledger never measures; pause is the person's pause or sleep; "
+            "other is a restart, or a gap the export cannot attribute to a pause. A "
+            "stretch where collection stopped while the block stayed active and nothing "
+            "paused, slept, restarted or ended it is not a gap at all: it counts as "
+            "observed, and how often that happens is unknown."
+        ),
         "associational": ASSOCIATIONAL_STATEMENT,
         "censored_total": censored_total,
         "censored_share": _share(censored_total, len(measured)),
@@ -1762,6 +1828,14 @@ def render(result: dict) -> str:
         add(f"  censored: {primary['censored_share']} "
             f"(block_ended {censored['block_ended']}, observer_gap {censored['observer_gap']}, "
             f"export_ended {censored['export_ended']}); never counted as 0, never imputed")
+        causes = primary["observer_gap_by_cause"]
+        add(f"    observer_gap by cause: final dwell never measured {causes['final_dwell']}, "
+            f"pause (yours, or sleep) {causes['pause']}, other (a restart, or not "
+            f"attributable) {causes['other']}")
+        para("A sub-count, not a censoring reason: the closed set is unchanged. Collection "
+             "that stopped while the block stayed active and nothing paused, slept, "
+             "restarted or ended it leaves no gap and counts as observed; how often is "
+             "unknown.", "    ")
         para(primary["censoring_verdict"] + ".")
         beside = ""
         if primary["censored_total"] and primary["censoring_verdict"].startswith("above"):

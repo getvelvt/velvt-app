@@ -1291,6 +1291,7 @@ async fn no_declared_fact_reaches_an_upload_payload() {
 #[tokio::test]
 async fn a_hostname_is_stored_only_in_local_site_name() {
     let scratch = ScratchDatabase::new();
+    pin_sentinel_embedding_salt(&scratch.path);
     let persistence = SqlitePersistence::open(&scratch.path).unwrap();
     let router = sentinel_router(&persistence);
 
@@ -1409,6 +1410,32 @@ async fn a_hostname_is_stored_only_in_local_site_name() {
         "the cached sketch of a browser tab is not the one PRIVACY.md describes: \
          `browser name [SEP] hostname window title`"
     );
+}
+
+/// The embedding salt the hostname test runs under.
+///
+/// Its positive control needs the sentinel tab to be one Velvt cannot
+/// categorize, and Tier 2 is the one tier whose answer for it depends on the
+/// salt: about one random salt in several thousand gives the tab a Medium
+/// answer, its name is then rightly not kept, and the test would fail for a
+/// reason that has nothing to do with where a hostname can go. This value
+/// leaves the tab uncategorized. The router still reads the salt out of the
+/// database, as `main.rs` does, so the sketch is still checked against the
+/// per-install salt path.
+const SENTINEL_EMBEDDING_SALT: [u8; 32] = [0x5a; 32];
+
+/// Migrates the scratch database, then writes [`SENTINEL_EMBEDDING_SALT`]
+/// over the salt migration 0031 minted.
+fn pin_sentinel_embedding_salt(database: &std::path::Path) {
+    drop(SqlitePersistence::open(database).expect("the scratch database migrates"));
+    let changed = Connection::open(database)
+        .unwrap()
+        .execute(
+            "UPDATE embedding_salt SET salt = ?1 WHERE id = 1",
+            [SENTINEL_EMBEDDING_SALT.as_slice()],
+        )
+        .expect("the embedding salt is writable before the router starts");
+    assert_eq!(changed, 1, "migration 0031 wrote the salt row");
 }
 
 /// No part of a browser tab's web address, and neither key made from it, may

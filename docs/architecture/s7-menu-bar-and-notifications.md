@@ -247,6 +247,30 @@ needs-a-category list in Settings and sends `acknowledge_category_prompt`
 with `opened`; the card's secondary action sends `not_now`. Either answer
 quiets the card until a new entry joins the list.
 
+In Swift:
+
+- `CategoryPromptCoordinator` (`Delivery/`) does the pulling, holds the card
+  (`prompt`), answers it, and posts a reminder through
+  `CategoryPromptNotificationScheduling.scheduleCategoryPrompt(title:body:)`.
+  It shares `MenuStatusViewModel.cadence`, the menu status's own 60-second
+  timer, rather than running one. A tap on the reminder after its card was
+  closed still answers `opened`, with the last card's id: the service records
+  `opened` against the latest reminder.
+- The reminder's `userInfo` is `["velvt_category_prompt": true]` and nothing
+  else: no prompt id, no text. It is posted under one identifier,
+  `velvt.category_prompt`, so a new reminder replaces the last in
+  Notification Center. Its delivery lines carry `surface=category_prompt`.
+- `CategoryPromptCardView` (`UI/CategoryPromptCard.swift`) draws the card in
+  the panel's proactive stack, after `WorkBlockProactiveCards`, and draws
+  nothing while the block phase is active or paused, even with a card in
+  hand. `presentedPrompt` is the testable list.
+- A tap reaches `NotificationResponseRouter`'s `openNeedsACategory`, which
+  answers the card and calls `MenuBarController.showNeedsACategory()`.
+  Opening the panel resets it to the Now tab (`popoverWillOpen`), so the
+  destination is held in `MenuBarDestinationRequests` and taken by that
+  reset (`MenuBarPopoverNavigator.resetForPopoverOpening(requested:)`); a
+  panel that is already open takes it at once.
+
 ## Notification Tap → Popover Scroll-to-Date
 
 ```swift
@@ -256,9 +280,10 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
         openPopover: () -> Void,
         scrollToDate: ScrollToDateAction,
         isDriftCardInFront: () -> Bool,
+        openNeedsACategory: () -> Void,
         reporter: any NotificationDeliveryReporting)
-    func handle(userInfo: [AnyHashable: Any])  // extracts "insight_date", calls openPopover() + scrollToDate(date)
-    func presentationWhileActive(isDriftOffer: Bool) -> UNNotificationPresentationOptions
+    func handle(userInfo: [AnyHashable: Any])  // drift offer: openPopover(); reminder: openNeedsACategory(); else "insight_date": openPopover() + scrollToDate(date)
+    func presentationWhileActive(for surface: NotificationDeliverySurface) -> UNNotificationPresentationOptions
 }
 ```
 

@@ -64,6 +64,7 @@ public final class MenuStatusViewModel: ObservableObject {
     private let ipcClient: any IPCClientProtocol
     private var cancellables = Set<AnyCancellable>()
     private var timer: AnyCancellable?
+    private let ticks = PassthroughSubject<Void, Never>()
     private var classificationCommand: Task<Void, Never>?
     private var correctionHistoryRequest: Task<Void, Never>?
     private var triageRequest: Task<Void, Never>?
@@ -120,8 +121,15 @@ public final class MenuStatusViewModel: ObservableObject {
 
     public func start() {
         refresh()
-        timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.refresh() }
+        timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect().sink { [weak self] _ in
+            self?.refresh()
+            self?.ticks.send()
+        }
     }
+
+    /// Fires on each tick of the 60-second status refresh, so another pull
+    /// can share this cadence rather than run a timer of its own.
+    public var cadence: AnyPublisher<Void, Never> { ticks.eraseToAnyPublisher() }
 
     public func refresh() { Task { try? await ipcClient.send(.requestMenuStatus) } }
 

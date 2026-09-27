@@ -1596,6 +1596,49 @@ public struct MenuBarPopoverNavigator {
     public mutating func resetForPopoverOpening() {
         selectedWorkspaceTab = .workBlock
     }
+
+    /// An opening lands on Now, unless a Settings destination was asked for
+    /// before the panel opened, which the reset must not wipe. Returns the
+    /// destination to select, if any.
+    ///
+    /// This is the one place the reset and the request meet, in that order.
+    /// Applied any earlier, a request is undone by the reset of the opening
+    /// it asked for.
+    mutating func resetForPopoverOpening(requested destination: SettingsSubmenu?) -> SettingsSubmenu? {
+        resetForPopoverOpening()
+        guard let destination else { return nil }
+        showSettings()
+        return destination
+    }
+}
+
+/// A Settings destination the panel has been asked to open on, from outside
+/// it: the needs-a-category reminder's tap (protocol 33).
+///
+/// Opening the panel resets it to the Now tab and clears Settings
+/// (`popoverWillOpen`), which is right for every other opening and would
+/// swallow this one. So a request for a closed panel is held until that
+/// opening's reset has run, and taken after it; a request for a panel that is
+/// already open, which no opening will reset, is delivered at once.
+public final class MenuBarDestinationRequests {
+    private(set) var pending: SettingsSubmenu?
+    /// Fires for a request the open panel should take now.
+    let deliverNow = PassthroughSubject<Void, Never>()
+
+    public init() {}
+
+    func request(_ destination: SettingsSubmenu, panelIsOpen: Bool) {
+        pending = destination
+        if panelIsOpen {
+            deliverNow.send()
+        }
+    }
+
+    /// The pending destination, once.
+    func take() -> SettingsSubmenu? {
+        defer { pending = nil }
+        return pending
+    }
 }
 
 /// What Escape does, given what is open.
@@ -1727,6 +1770,8 @@ public struct MenuBarPopoverView: View {
     @ObservedObject private var collectionSettings: CollectionSettingsModel
     @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
     @ObservedObject private var localDashboardCoordinator: LocalDashboardCoordinator
+    private let categoryPromptCoordinator: CategoryPromptCoordinator?
+    private let destinationRequests: MenuBarDestinationRequests
     private let accountStateManager: AccountStateManager?
     private let ipcClient: (any IPCClientProtocol)?
     private let menuStatusViewModel: MenuStatusViewModel?
@@ -1764,6 +1809,8 @@ public struct MenuBarPopoverView: View {
         collectionSettings: CollectionSettingsModel = CollectionSettingsModel(),
         workBlockCoordinator: WorkBlockCoordinator? = nil,
         localDashboardCoordinator: LocalDashboardCoordinator? = nil,
+        categoryPromptCoordinator: CategoryPromptCoordinator? = nil,
+        destinationRequests: MenuBarDestinationRequests = MenuBarDestinationRequests(),
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
@@ -1792,6 +1839,8 @@ public struct MenuBarPopoverView: View {
         self.localDashboardCoordinator =
             localDashboardCoordinator
             ?? LocalDashboardCoordinator(ipcClient: UnavailableLocalDashboardIPCClient())
+        self.categoryPromptCoordinator = categoryPromptCoordinator
+        self.destinationRequests = destinationRequests
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
@@ -1887,7 +1936,12 @@ public struct MenuBarPopoverView: View {
         }
         .onReceive(popoverWillOpen) {
             clearSettingsSelection()
-            navigator.resetForPopoverOpening()
+            selectedSettingsDestination = navigator.resetForPopoverOpening(
+                requested: destinationRequests.take())
+        }
+        .onReceive(destinationRequests.deliverNow) {
+            guard let destination = destinationRequests.take() else { return }
+            showSettingsDestination(destination)
         }
         // The app re-checks notifications when it becomes active, but clicking
         // this panel does not activate the app, and coming back from System
@@ -2115,6 +2169,16 @@ public struct MenuBarPopoverView: View {
                 coordinator: workBlockCoordinator,
                 surfaceIsOnScreen: panelIsOnScreen
             )
+            // Beside the invitation and for the same reason: a card that asks
+            // for something is useless on a tab nobody opens. It hides itself
+            // while a block is active or paused.
+            if let categoryPromptCoordinator {
+                CategoryPromptCardView(
+                    coordinator: categoryPromptCoordinator,
+                    workBlockCoordinator: workBlockCoordinator,
+                    onOpen: { showSettingsDestination(.teachApps) }
+                )
+            }
             switch navigator.selectedWorkspaceTab {
             case .workBlock:
                 MinimalDashboardWorkspaceView(
@@ -2899,6 +2963,11 @@ public struct MenuBarPopoverView: View {
 
     private func clearSettingsSelection() {
         selectedSettingsDestination = nil
+    }
+
+    private func showSettingsDestination(_ destination: SettingsSubmenu) {
+        navigator.showSettings()
+        selectedSettingsDestination = destination
     }
 
     private func runDebugInsightSimulation() {

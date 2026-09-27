@@ -1,0 +1,172 @@
+import AppKit
+import Combine
+import Foundation
+
+/// The needs-a-category card as the service last worded it, with the id it is
+/// answered by.
+public struct PresentedCategoryPrompt: Equatable, Sendable {
+    public let promptID: String
+    public let card: CategoryPromptCard
+}
+
+/// Carries the needs-a-category card and its daily reminder (protocol 33) from
+/// the Rust service to the panel and to Notification Center.
+///
+/// Rust owns every judgement and every word: whether the card shows, whether a
+/// reminder is due today (never during an active or paused work block, never
+/// in Velvt's quiet hours or a known Focus, at most once a local day, only for
+/// something new, with a backoff), and what both say. This type asks, renders
+/// what it is told, and reports the answer.
+///
+/// It asks on the three occasions every other pulled card is asked for: when
+/// the socket connects, when the Mac wakes, and on the 60-second cadence the
+/// menu status already runs on. It keeps no timer of its own.
+///
+/// A reminder is handed over once and is consumed whether or not it is
+/// posted, so it is posted at once or not at all: only if notifications are
+/// already allowed. It is not worth a permission dialog, so it never asks for
+/// one, and it is not an intervention, so it never touches that counter.
+@MainActor
+public final class CategoryPromptCoordinator: ObservableObject {
+    /// The card to show, or `nil` for none. An empty `category_prompt` clears
+    /// it; answering it clears it at once.
+    @Published public private(set) var prompt: PresentedCategoryPrompt?
+
+    /// The most recent reminder's posting work. Exposed so tests can await it
+    /// rather than race it.
+    public private(set) var inFlightNotification: Task<Void, Never>?
+
+    private let ipcClient: any IPCClientProtocol
+    private let scheduler: any CategoryPromptNotificationScheduling
+    private let permissionManager: any PermissionManagerProtocol
+    private let reporter: any NotificationDeliveryReporting
+    private let utcOffsetSeconds: () -> Int
+    private var cancellables = Set<AnyCancellable>()
+    private var sendChain: Task<Void, Never>?
+    /// The id of the last card the service showed in this session, kept after
+    /// the card is answered. A tap on the reminder can come after the card
+    /// was closed, and `opened` is still the truth about what the person did:
+    /// the service records it against the latest reminder whatever the card.
+    private var lastPromptID: String?
+    /// The card last answered here. A request already on its way when the
+    /// person answered comes back with that same card; showing it again for
+    /// the moment before the answer's own reply lands would undo their tap.
+    private var answeredPromptID: String?
+
+    public init(
+        ipcClient: any IPCClientProtocol,
+        scheduler: any CategoryPromptNotificationScheduling,
+        permissionManager: any PermissionManagerProtocol,
+        reporter: any NotificationDeliveryReporting = OSLogNotificationDeliveryReporter(),
+        utcOffsetSeconds: @escaping () -> Int = { TimeZone.current.secondsFromGMT() }
+    ) {
+        self.ipcClient = ipcClient
+        self.scheduler = scheduler
+        self.permissionManager = permissionManager
+        self.reporter = reporter
+        self.utcOffsetSeconds = utcOffsetSeconds
+    }
+
+    /// - Parameter cadence: the menu status's 60-second refresh
+    ///   (`MenuStatusViewModel.cadence`).
+    public func start(
+        messages: some Publisher<ServerMessage, Never>,
+        connectionStatus: some Publisher<ConnectionStatus, Never>,
+        cadence: some Publisher<Void, Never>,
+        workspaceNotifications: NotificationCenter = NSWorkspace.shared.notificationCenter
+    ) {
+        messages
+            .receive(on: RunLoop.main)
+            .sink { [weak self] message in
+                guard case .categoryPrompt(let prompt) = message else { return }
+                self?.apply(prompt)
+            }
+            .store(in: &cancellables)
+
+        connectionStatus
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] status in
+                guard status == .connected else { return }
+                self?.refresh()
+            }
+            .store(in: &cancellables)
+
+        workspaceNotifications.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.refresh() }
+            .store(in: &cancellables)
+
+        cadence
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.refresh() }
+            .store(in: &cancellables)
+    }
+
+    /// Asks the service for the card and any reminder due. Always safe: the
+    /// service answers every request, and a reminder it has handed over once
+    /// is never handed over again.
+    public func refresh() {
+        send(.requestCategoryPrompt(.init(utcOffsetSeconds: utcOffsetSeconds())))
+    }
+
+    /// The list was opened, from the card's primary action or from a tap on
+    /// the reminder. Routing is the caller's; this closes the card and says so.
+    public func open() {
+        answer(.opened)
+    }
+
+    /// The card's secondary action. The card stays away until something it
+    /// never showed joins the list.
+    public func notNow() {
+        answer(.notNow)
+    }
+
+    func apply(_ prompt: CategoryPrompt) {
+        if let promptID = prompt.promptID, let card = prompt.card, promptID != answeredPromptID {
+            self.prompt = PresentedCategoryPrompt(promptID: promptID, card: card)
+            lastPromptID = promptID
+        } else {
+            self.prompt = nil
+        }
+        if let notification = prompt.notification {
+            post(notification)
+        }
+    }
+
+    private func answer(_ response: CategoryPromptResponse) {
+        let promptID = prompt?.promptID ?? (response == .opened ? lastPromptID : nil)
+        // Closed now, not when the service answers: it is the person's own
+        // action, and the reply carries the card as it stands afterwards.
+        prompt = nil
+        guard let promptID else { return }
+        answeredPromptID = promptID
+        send(.acknowledgeCategoryPrompt(.init(promptID: promptID, response: response)))
+    }
+
+    /// Posts a reminder only if notifications are already allowed. `unknown`
+    /// is not asked about: the reminder is not worth a permission dialog.
+    /// Nothing retries it, because the service will not hand it over again.
+    private func post(_ notification: CategoryPromptNotification) {
+        inFlightNotification = Task { [scheduler, permissionManager, reporter] in
+            let status = await permissionManager.checkStatus(for: .notifications)
+            guard status == .granted else {
+                reporter.report(.blockedByPermission(status), surface: .categoryPrompt)
+                return
+            }
+            let posted = await scheduler.scheduleCategoryPrompt(
+                title: notification.title, body: notification.body)
+            reporter.report(posted ? .delivered : .rejectedByNotificationCentre, surface: .categoryPrompt)
+        }
+    }
+
+    private func send(_ message: ClientMessage) {
+        let previous = sendChain
+        sendChain = Task { [ipcClient] in
+            await previous?.value
+            // A failed send is left for the next pull: the service answers
+            // every request, and nothing here is lost by waiting for it.
+            try? await ipcClient.send(message)
+        }
+    }
+}

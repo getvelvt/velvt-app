@@ -35,6 +35,19 @@ final class NotificationDeliveryReporterTests: XCTestCase {
         XCTAssertEqual(levels, [.default, .default, .default, .error, .error, .default, .default])
     }
 
+    /// The three kinds Velvt posts, as the log names them.
+    func testEachSurfaceIsNamedOnTheLine() {
+        XCTAssertEqual(
+            [NotificationDeliverySurface.driftOffer, .dailyInsight, .categoryPrompt].map {
+                OSLogNotificationDeliveryReporter.line(for: .delivered, surface: $0).message
+            },
+            [
+                "notification_delivered surface=drift_offer",
+                "notification_delivered surface=daily_insight",
+                "notification_delivered surface=category_prompt",
+            ])
+    }
+
     func testLinesCarryTheTokensTheWatchScriptLooksFor() {
         let messages = outcomes.map {
             OSLogNotificationDeliveryReporter.line(for: $0, surface: .driftOffer).message

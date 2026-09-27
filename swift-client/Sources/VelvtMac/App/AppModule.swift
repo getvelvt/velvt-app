@@ -36,6 +36,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingWindowController: OnboardingWindowController?
     private var notificationDeliveryCoordinator: NotificationDeliveryCoordinator?
     private var interventionNotifier: InterventionNotifier?
+    private var categoryPromptCoordinator: CategoryPromptCoordinator?
     private var notificationResponseRouter: NotificationResponseRouter?
     private var menuBarDataLoader: MenuBarDataLoader?
     private var menuStatusViewModel: MenuStatusViewModel?
@@ -168,6 +169,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         interventionNotifier.start(snapshots: workBlocks.$snapshot)
         self.interventionNotifier = interventionNotifier
 
+        // The needs-a-category card and its at-most-daily reminder. Rust
+        // decides both and words both; this asks on connect, on wake and on
+        // the menu status's own 60-second cadence, and posts a reminder only
+        // if notifications are already allowed.
+        let categoryPrompt = CategoryPromptCoordinator(
+            ipcClient: client,
+            scheduler: scheduler,
+            permissionManager: permissionManager,
+            reporter: deliveryReporter
+        )
+        categoryPrompt.start(
+            messages: accountStateManager.serverMessages,
+            connectionStatus: client.connectionStatus,
+            cadence: statusViewModel.cadence
+        )
+        categoryPromptCoordinator = categoryPrompt
+
         let menuBar = MenuBarController(
             presentation: permissionPresentation,
             permissionManager: permissionManager,
@@ -181,6 +199,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             collectionSettings: collectionSettings,
             workBlockCoordinator: workBlocks,
             localDashboardCoordinator: localDashboard,
+            categoryPromptCoordinator: categoryPrompt,
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
             simulateNotification: {
@@ -238,6 +257,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             openPopover: { [weak menuBar] in menuBar?.showPopover() },
             scrollToDate: displayCoord.historyViewModel.scrollToDateAction,
             isDriftCardInFront: { [weak menuBar] in menuBar?.isPopoverInFront ?? false },
+            openNeedsACategory: { [weak menuBar, weak categoryPrompt] in
+                categoryPrompt?.open()
+                menuBar?.showNeedsACategory()
+            },
             reporter: deliveryReporter
         )
         UNUserNotificationCenter.current().delegate = responseRouter

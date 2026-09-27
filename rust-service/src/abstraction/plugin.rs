@@ -2639,17 +2639,6 @@ mod tests {
         assert_eq!(result.label(), "unlogged");
     }
 
-    /// The shapes this tier actually sees, which is what the cases below are.
-    ///
-    /// `AbstractionEngine::process` composes the browser context as the site
-    /// from `focused_site_context` followed by the abstracted title, and
-    /// `focused_site_context` keeps the host and drops the path. So a Google
-    /// Sheet arrives as `docs.google.com` plus `... - Google Sheets`, never as a
-    /// `/spreadsheets/` path and never from a `sheets.google.com` host. The
-    /// cases that used to stand here asserted `sheets.google.com` and
-    /// `slides.google.com`, which no Google document is served from, so they
-    /// passed while `document:sheets` and `document:slides` were unreachable for
-    /// every real spreadsheet and deck.
     /// A tab whose site Velvt can read is the site tiers' to decide. Title
     /// words about another product must not file it: this essay mentions two
     /// task trackers and is neither.
@@ -2717,6 +2706,17 @@ mod tests {
         );
     }
 
+    /// The shapes these rules actually see, which is what the cases below are.
+    ///
+    /// `AbstractionEngine::process` composes the browser context as the site
+    /// from `focused_site_context` followed by the abstracted title, and
+    /// `focused_site_context` keeps the host and drops the path. So a Google
+    /// Sheet arrives as `docs.google.com` plus `... - Google Sheets`, never as a
+    /// `/spreadsheets/` path and never from a `sheets.google.com` host. The
+    /// cases that used to stand here asserted `sheets.google.com` and
+    /// `slides.google.com`, which no Google document is served from, so they
+    /// passed while `document:sheets` and `document:slides` were unreachable for
+    /// every real spreadsheet and deck.
     #[test]
     fn browser_context_classifies_domain_like_tab_hints() {
         let plugin = super::BrowserContextPlugin::new("mvp-1".to_owned());

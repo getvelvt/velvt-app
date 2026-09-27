@@ -25,16 +25,20 @@ final class NeedsACategoryListTests: XCTestCase {
         XCTAssertEqual(sut.unclassifiedTriage?.entries.map(\.id), [site.id, unnamed.id])
         XCTAssertEqual(sut.unclassifiedTriage?.windowDays, 7)
         try await waitUntil { client.sentMessages.count >= before + 3 }
+        let sent = Array(client.sentMessages[before...])
         XCTAssertEqual(
-            Array(client.sentMessages[before...]),
-            [
-                .setApplicationCategory(
-                    .init(appStableID: appKey, category: "FOCUS_WORK", activityName: "Code")),
-                .requestCorrectionHistory(.init(query: nil, offset: 0)),
-                // Re-read after the write, on the same chain, because the list
-                // is on screen.
-                .requestUnclassifiedTriage(.init(lookbackDays: MenuStatusViewModel.triageLookbackDays)),
-            ])
+            sent.first,
+            .setApplicationCategory(.init(appStableID: appKey, category: "FOCUS_WORK", activityName: "Code")))
+        // Both re-reads follow the write; they travel on separate tasks, so
+        // not in a fixed order between themselves. The list is re-read
+        // because it is on screen.
+        XCTAssertEqual(
+            Set(sent.dropFirst().map { String(describing: $0) }),
+            Set(
+                [
+                    ClientMessage.requestCorrectionHistory(.init(query: nil, offset: 0)),
+                    .requestUnclassifiedTriage(.init(lookbackDays: MenuStatusViewModel.triageLookbackDays)),
+                ].map { String(describing: $0) }))
 
         messages.send(.menuStatus(status(acknowledging: "Got it — Code counts as focus work from now on.")))
         try await waitUntil { sut.correctionAcknowledgment != nil }

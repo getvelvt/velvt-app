@@ -1763,6 +1763,21 @@ mod tests {
         );
     }
 
+    /// `block` moved later by `spacing * index`, as block `index`.
+    fn shifted(mut block: BlockEvidence, index: usize, spacing: Duration) -> BlockEvidence {
+        let shift = spacing * i32::try_from(index).unwrap();
+        block.block_id = format!("b{index:03}");
+        block.ended_at = block.ended_at.map(|t| t + shift);
+        for observation in &mut block.observations {
+            observation.occurred_at += shift;
+            observation.ended_at = observation.ended_at.map(|t| t + shift);
+        }
+        for decision in &mut block.decisions {
+            decision.occurred_at += shift;
+        }
+        block
+    }
+
     /// One one-departure block per outcome, `spacing` apart, each returning
     /// or not.
     fn history(outcomes: &[(bool, &str)], spacing: Duration) -> Vec<BlockEvidence> {
@@ -1770,20 +1785,163 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, &(returned, away))| {
-                let mut block = one_departure(away, if returned { 120 } else { 450 }, 3_000);
-                let shift = spacing * i32::try_from(index).unwrap();
-                block.block_id = format!("b{index:03}");
-                block.ended_at = block.ended_at.map(|t| t + shift);
-                for observation in &mut block.observations {
-                    observation.occurred_at += shift;
-                    observation.ended_at = observation.ended_at.map(|t| t + shift);
-                }
-                for decision in &mut block.decisions {
-                    decision.occurred_at += shift;
-                }
-                block
+                let block = one_departure(away, if returned { 120 } else { 450 }, 3_000);
+                shifted(block, index, spacing)
             })
             .collect()
+    }
+
+    /// Two departures in one block, so rows share a block: one at 500 s, in
+    /// the first third of a 5400 s block, and one at 2000 s, in the middle
+    /// third. Each is `(category, returned)`.
+    fn two_departures(first: (&str, bool), second: (&str, bool)) -> BlockEvidence {
+        let away = |returned: bool| if returned { 120 } else { 450 };
+        let (a, b) = (away(first.1), away(second.1));
+        BlockEvidence {
+            block_id: "b".to_owned(),
+            ended_at: Some(at(5_000)),
+            observations: vec![
+                observation(10, 500, "FOCUS_WORK"),
+                observation(500, 500 + a, first.0),
+                observation(500 + a, 2_000, "FOCUS_WORK"),
+                observation(2_000, 2_000 + b, second.0),
+                observation(2_000 + b, 5_000, "FOCUS_WORK"),
+            ],
+            decisions: vec![
+                decision(10, None, 0, GateVerdict::AbstainedWarmup),
+                decision(
+                    500,
+                    Some("FOCUS_WORK"),
+                    1,
+                    GateVerdict::AbstainedMinSwitches,
+                ),
+                decision(
+                    2_000,
+                    Some("FOCUS_WORK"),
+                    1,
+                    GateVerdict::AbstainedMinSwitches,
+                ),
+            ],
+            intervention: None,
+            category_corrections: Vec::new(),
+            utc_offset_seconds: None,
+        }
+    }
+
+    /// `scripts/simulate_nudge_designs.py` carries a port of the declared
+    /// rule's arithmetic, so that what it simulates is this rule and not a
+    /// cousin of it. These numbers are pinned here and in its test
+    /// (`scripts/tests/simulate_nudge_designs_test.sh`): a change to the
+    /// priors, the weighting, the floors or the interval that is not made in
+    /// both places fails one of the two.
+    ///
+    /// Block `k`, 8 hours apart: at 500 s a departure to REFERENCE when `k` is
+    /// even and COMMUNICATION when odd, returning unless `k % 4 == 3`; at
+    /// 2000 s one to SOCIAL_FEED when `k % 3 == 0` and REFERENCE otherwise,
+    /// returning unless `k % 5 == 0`. Block `k` falls in the morning, the
+    /// afternoon or the evening as `k % 3` is 0, 1 or 2.
+    #[test]
+    fn the_declared_rule_matches_its_offline_port() {
+        let blocks: Vec<BlockEvidence> = (0..20_usize)
+            .map(|k| {
+                let first = (
+                    if k % 2 == 0 {
+                        "REFERENCE"
+                    } else {
+                        "COMMUNICATION"
+                    },
+                    k % 4 != 3,
+                );
+                let second = (
+                    if k % 3 == 0 {
+                        "SOCIAL_FEED"
+                    } else {
+                        "REFERENCE"
+                    },
+                    k % 5 != 0,
+                );
+                shifted(two_departures(first, second), k, Duration::hours(8))
+            })
+            .collect();
+        let ledger = ReturnLedger::build(&blocks, &LedgerConfig::new(at(10 * 86_400), 0));
+        assert_eq!(ledger.abstention, None);
+        // (cell, returned, resolved, blocks, lower end of the 80% interval)
+        let pinned = [
+            (Cell::Communication, 5, 10, 10, 0.392_546_752_285),
+            (Cell::FeedsAndVideo, 5, 7, 7, 0.536_916_437_166),
+            (Cell::WorkAdjacent, 21, 23, 17, 0.792_387_031_023),
+            (Cell::FirstThird, 15, 20, 20, 0.627_717_218_147),
+            (Cell::MiddleThird, 16, 20, 20, 0.675_806_342_703),
+            (Cell::FinalThird, 0, 0, 0, 0.422_990_126_298),
+            (Cell::Morning, 10, 14, 7, 0.561_184_701_132),
+            (Cell::Afternoon, 11, 14, 7, 0.622_012_140_453),
+            (Cell::EveningAndNight, 10, 12, 6, 0.651_963_632_261),
+        ];
+        for (cell, returned, resolved, blocks, lower) in pinned {
+            let estimate = ledger.cell(cell).estimate;
+            assert_eq!(
+                (estimate.returned, estimate.resolved, estimate.blocks),
+                (returned, resolved, blocks),
+                "{}",
+                cell.id()
+            );
+            assert!(
+                approx(estimate.lower, lower, 1e-9),
+                "{}: {}",
+                cell.id(),
+                estimate.lower
+            );
+        }
+        // One point fires, two fall short of 0.60, one fails a cell's floor.
+        let point = |departure, elapsed, hour| {
+            ledger.would_withhold(&DecisionContext {
+                departure,
+                elapsed,
+                hour,
+                switch_count: 1,
+                verdict: GateVerdict::AbstainedMinSwitches,
+            })
+        };
+        for (departure, elapsed, hour, fires, min_lower) in [
+            (
+                Cell::WorkAdjacent,
+                Cell::MiddleThird,
+                Cell::Afternoon,
+                true,
+                Some(0.622_012_140_453),
+            ),
+            (
+                Cell::WorkAdjacent,
+                Cell::FirstThird,
+                Cell::Morning,
+                false,
+                Some(0.561_184_701_132),
+            ),
+            (
+                Cell::Communication,
+                Cell::FirstThird,
+                Cell::Afternoon,
+                false,
+                Some(0.392_546_752_285),
+            ),
+            (
+                Cell::FeedsAndVideo,
+                Cell::MiddleThird,
+                Cell::Morning,
+                false,
+                None,
+            ),
+        ] {
+            let candidate = point(departure, elapsed, hour);
+            assert_eq!(
+                candidate.would_withhold, fires,
+                "{departure:?} {elapsed:?} {hour:?}"
+            );
+            match (candidate.min_lower, min_lower) {
+                (Some(found), Some(pinned)) => assert!(approx(found, pinned, 1e-9)),
+                (found, pinned) => assert_eq!(found, pinned),
+            }
+        }
     }
 
     #[test]

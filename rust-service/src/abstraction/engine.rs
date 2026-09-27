@@ -501,10 +501,12 @@ impl AbstractionEngineBuilder {
         // first plugin that answers. It runs from the most specific identifier
         // to the least:
         //   site seed             — a curated site, for a browser window
-        //   browser site context  — the tab, for a browser window
+        //   browser site context  — a browser window's title, only when its
+        //                           site cannot be read
         //   bundle seed           — the identifier the developer chose
         //   name seed            — the localized name macOS reports
-        //   name/title heuristic  — curated keyword families
+        //   name/title heuristic  — curated keyword families, never for a
+        //                           browser tab whose site can be read
         //   declared document types — what the application says it opens
         //   declared App Store category — a whitelist of unambiguous values
         //   site inference        — a site no seed names, read from its labels

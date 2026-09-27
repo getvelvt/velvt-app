@@ -363,6 +363,27 @@ impl ClassificationPlugin for LocalPurposeHeuristicPlugin {
         let haystack = normalized_purpose_input(app_name, window_title);
         classify_matching_rules(&haystack, PURPOSE_RULES, &self.taxonomy_version)
     }
+
+    /// Stands aside for a browser tab whose site Velvt can read.
+    ///
+    /// These keyword families were written for application names and window
+    /// titles. A page title is whatever the page says about itself -- an
+    /// article's headline, a product it mentions -- so on a tab the same
+    /// keywords read the content rather than the tool: an essay titled
+    /// "How to do great work" is not task management. The site tiers decide
+    /// such a tab from its host, and a site they cannot place goes to the
+    /// "needs a category" list instead of a confident guess from its title.
+    fn classify_declared(
+        &self,
+        app_name: &str,
+        window_title: &str,
+        declared: DeclaredMetadata<'_>,
+    ) -> Option<ClassificationResult> {
+        if has_readable_site(app_name, declared) {
+            return None;
+        }
+        self.classify(app_name, window_title)
+    }
 }
 
 pub(crate) struct BrowserContextPlugin {
@@ -382,6 +403,37 @@ impl ClassificationPlugin for BrowserContextPlugin {
         }
         browser_context_verdict(app_name, window_title, &self.taxonomy_version)
     }
+
+    /// Answers only for a browser window whose site Velvt cannot read.
+    ///
+    /// Every host these rules name is in the site table, so for a tab with a
+    /// readable site the rules could add only title words, and title words
+    /// about another product ("Why we moved from Jira to Linear") are how
+    /// they misfire. The seed tier still reads them to refine a seeded
+    /// site's label within its own category.
+    fn classify_declared(
+        &self,
+        app_name: &str,
+        window_title: &str,
+        declared: DeclaredMetadata<'_>,
+    ) -> Option<ClassificationResult> {
+        if has_readable_site(app_name, declared) {
+            return None;
+        }
+        self.classify(app_name, window_title)
+    }
+}
+
+/// A browser window whose hostname normalizes to a site the site tiers key on.
+///
+/// Addresses and machine names (`localhost`, an IP) have no site identity, so
+/// a tab on a local development server keeps the title-keyword tiers.
+fn has_readable_site(app_name: &str, declared: DeclaredMetadata<'_>) -> bool {
+    is_browser_app(app_name)
+        && declared
+            .site
+            .and_then(super::sites::site_identity)
+            .is_some()
 }
 
 /// What the curated browser-context rules say about a window, without the
@@ -2571,6 +2623,73 @@ mod tests {
     /// `slides.google.com`, which no Google document is served from, so they
     /// passed while `document:sheets` and `document:slides` were unreachable for
     /// every real spreadsheet and deck.
+    /// A tab whose site Velvt can read is the site tiers' to decide. Title
+    /// words about another product must not file it: this essay mentions two
+    /// task trackers and is neither.
+    #[test]
+    fn title_keyword_tiers_stand_aside_for_a_tab_with_a_readable_site() {
+        let title = "stripe-press.example Why we moved from Jira to Linear";
+        let declared = DeclaredMetadata {
+            site: Some("stripe-press.example"),
+            ..DeclaredMetadata::default()
+        };
+        for browser in ["Safari", "Google Chrome", "Arc"] {
+            let browser_rules = super::BrowserContextPlugin::new("mvp-2".to_owned());
+            let purpose_rules = super::LocalPurposeHeuristicPlugin::new("mvp-2".to_owned());
+            assert!(
+                browser_rules
+                    .classify_declared(browser, title, declared)
+                    .is_none(),
+                "{browser}: the browser-context rules read the title of a tab with a site"
+            );
+            assert!(
+                purpose_rules
+                    .classify_declared(browser, title, declared)
+                    .is_none(),
+                "{browser}: the purpose rules read the title of a tab with a site"
+            );
+        }
+    }
+
+    /// Without a readable site the title is all there is, so the keyword tiers
+    /// answer exactly as they did before sites existed: a browser whose page
+    /// address could not be read, and a local development server, which has
+    /// no site identity.
+    #[test]
+    fn title_keyword_tiers_still_answer_without_a_readable_site() {
+        let browser_rules = super::BrowserContextPlugin::new("mvp-2".to_owned());
+        for site in [None, Some("localhost"), Some("127.0.0.1")] {
+            let declared = DeclaredMetadata {
+                site,
+                ..DeclaredMetadata::default()
+            };
+            let result = browser_rules
+                .classify_declared("Google Chrome", "Sprint board - Linear", declared)
+                .unwrap_or_else(|| panic!("{site:?}: the title still decides"));
+            assert_eq!(result.category(), "TASK_MANAGEMENT", "{site:?}");
+            assert_eq!(
+                result.status(),
+                ClassificationStatus::Classified,
+                "{site:?}"
+            );
+        }
+    }
+
+    /// The stand-aside is for browsers only. An application that is not a
+    /// browser keeps its title heuristics whatever it reports.
+    #[test]
+    fn a_non_browser_application_keeps_its_title_heuristics() {
+        let purpose_rules = super::LocalPurposeHeuristicPlugin::new("mvp-2".to_owned());
+        let declared = DeclaredMetadata {
+            site: Some("example.com"),
+            ..DeclaredMetadata::default()
+        };
+        assert_eq!(
+            purpose_rules.classify_declared("Zoom", "Zoom Meeting", declared),
+            purpose_rules.classify("Zoom", "Zoom Meeting"),
+        );
+    }
+
     #[test]
     fn browser_context_classifies_domain_like_tab_hints() {
         let plugin = super::BrowserContextPlugin::new("mvp-1".to_owned());

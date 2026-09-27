@@ -413,7 +413,8 @@ final class DeclaredAppMetadataTests: XCTestCase {
 
         let answer = ClientMessage.setApplicationCategory(
             SetApplicationCategory(
-                appStableID: "app_key_hash", category: "FOCUS_WORK", activityName: "Editing"))
+                appStableID: String(repeating: "a", count: 64), category: "FOCUS_WORK",
+                activityName: "Editing"))
         let answerData = try encoder.encode(answer)
         XCTAssertTrue(
             try XCTUnwrap(String(data: answerData, encoding: .utf8))
@@ -424,10 +425,23 @@ final class DeclaredAppMetadataTests: XCTestCase {
             UnclassifiedTriage(
                 entries: [
                     UnclassifiedTriageEntry(
-                        appStableID: "app_key_hash",
+                        kind: .application,
+                        stableID: String(repeating: "a", count: 64),
                         displayName: "Code",
                         secondsObserved: 4 * 3600,
-                        eventCount: 12)
+                        eventCount: 12),
+                    UnclassifiedTriageEntry(
+                        kind: .site,
+                        stableID: String(repeating: "b", count: 64),
+                        displayName: "wiki.example",
+                        secondsObserved: 900,
+                        eventCount: 4),
+                    UnclassifiedTriageEntry(
+                        kind: .application,
+                        stableID: String(repeating: "c", count: 64),
+                        displayName: nil,
+                        secondsObserved: 600,
+                        eventCount: 2),
                 ],
                 windowDays: 7))
         let triageData = try encoder.encode(triage)
@@ -436,7 +450,9 @@ final class DeclaredAppMetadataTests: XCTestCase {
 
     /// The entry carries exactly the keys `proto/schema/unclassified_triage.json`
     /// declares. Until 2026-09-25 the schema and this type both had an optional
-    /// `bundle_id` that the Rust type omits and no Rust build ever sent.
+    /// `bundle_id` that the Rust type omits and no Rust build ever sent. Since
+    /// protocol 33 `display_name` is required and nullable, so an unnamed
+    /// application still writes the key, as `null`.
     func testTriageEntryEncodesExactlyTheSchemaKeys() throws {
         let schemaURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -449,12 +465,22 @@ final class DeclaredAppMetadataTests: XCTestCase {
             node = (node as? [String: Any])?[key]
         }
         let properties = try XCTUnwrap(node as? [String: Any])
-        let entry = UnclassifiedTriageEntry(
-            appStableID: "app_key_hash", displayName: "Code", secondsObserved: 600, eventCount: 3)
-        let encoded = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: IPCMessageCodec.makeEncoder().encode(entry))
-                as? [String: Any])
-        XCTAssertEqual(Set(encoded.keys), Set(properties.keys))
+        for entry in [
+            UnclassifiedTriageEntry(
+                kind: .application, stableID: String(repeating: "a", count: 64), displayName: "Code",
+                secondsObserved: 600, eventCount: 3),
+            UnclassifiedTriageEntry(
+                kind: .application, stableID: String(repeating: "a", count: 64), displayName: nil,
+                secondsObserved: 600, eventCount: 3),
+            UnclassifiedTriageEntry(
+                kind: .site, stableID: String(repeating: "b", count: 64), displayName: "wiki.example",
+                secondsObserved: 600, eventCount: 3),
+        ] {
+            let encoded = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: IPCMessageCodec.makeEncoder().encode(entry))
+                    as? [String: Any])
+            XCTAssertEqual(Set(encoded.keys), Set(properties.keys))
+        }
     }
 
     func testTriageLookbackIsClampedToTheRetentionWindow() {

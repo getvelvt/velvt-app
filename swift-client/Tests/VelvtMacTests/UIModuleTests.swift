@@ -227,14 +227,14 @@ final class MenuBarNavigationTests: XCTestCase {
             XCTAssertEqual(
                 SettingsSubmenu.allCases.map(\.title),
                 [
-                    "App Info", "Teach Velvt Your Apps", "Collection Settings", "Onboarding & Tour",
+                    "App Info", "Apps & Sites", "Collection Settings", "Onboarding & Tour",
                     "Debug/Testing",
                 ])
         #else
             XCTAssertEqual(
                 SettingsSubmenu.allCases.map(\.title),
                 [
-                    "App Info", "Teach Velvt Your Apps", "Collection Settings", "Onboarding & Tour",
+                    "App Info", "Apps & Sites", "Collection Settings", "Onboarding & Tour",
                 ])
         #endif
     }
@@ -886,7 +886,7 @@ final class CorrectionWorkbenchViewTests: XCTestCase {
             rootView: CorrectionWorkbenchView(
                 menuStatus: menuStatus,
                 localDashboard: dashboard,
-                title: "Teach Velvt Your Apps"
+                title: "Apps & Sites"
             )
             .frame(width: 380, height: 560)
         )
@@ -919,7 +919,7 @@ final class CorrectionWorkbenchViewTests: XCTestCase {
 
     func testAWorkbenchWithNoServiceBehindItSaysSoRatherThanShowingAnEmptyList() {
         let host = NSHostingView(
-            rootView: CorrectionWorkbenchUnavailableView(title: "Teach Velvt Your Apps")
+            rootView: CorrectionWorkbenchUnavailableView(title: "Apps & Sites")
                 .frame(width: 380)
         )
         host.frame = NSRect(x: 0, y: 0, width: 380, height: 200)
@@ -985,7 +985,7 @@ final class CorrectionWorkbenchSnapshotTests: XCTestCase {
 
         let view = ScrollView {
             CorrectionWorkbenchView(
-                menuStatus: menuStatus, localDashboard: dashboard, title: "Teach Velvt Your Apps")
+                menuStatus: menuStatus, localDashboard: dashboard, title: "Apps & Sites")
         }
         .frame(width: width, height: height, alignment: .top)
         .background(Color.velvtSurface)

@@ -177,6 +177,29 @@ final class NeedsACategoryListTests: XCTestCase {
         XCTAssertEqual(UnclassifiedTriageSection.counts(sites: 1, apps: 2), "1 site and 2 apps")
     }
 
+    /// An empty list is the good state, said as no more than the list checks:
+    /// it holds what was used for five minutes or more this week, so it cannot
+    /// vouch for every app and site.
+    func testTheEmptyStateClaimsOnlyWhatTheListChecks() {
+        XCTAssertEqual(
+            UnclassifiedTriageSection.emptyCopy,
+            "Nothing you used for five minutes or more this week needs a category.")
+        XCTAssertFalse(UnclassifiedTriageSection.emptyCopy.lowercased().contains("every"))
+    }
+
+    /// Reset Corrections deletes every site rule as well, so its confirmation
+    /// says so. Asserted against the source: a dialog's title is not
+    /// observable from a unit test.
+    func testTheResetConfirmationNamesSitesToo() throws {
+        let panel = try String(
+            contentsOf: repositoryRoot.appendingPathComponent(
+                "swift-client/Sources/VelvtMac/UI/MenuBarPopoverView.swift"),
+            encoding: .utf8)
+        XCTAssertTrue(
+            panel.contains(
+                "\"Reset every correction and every app and site you have taught Velvt on this Mac?\""))
+    }
+
     /// Settings words this section in Swift, so it is held to the contract that
     /// quotes it.
     func testTheSectionCopyIsTheContractsCopy() throws {

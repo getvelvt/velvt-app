@@ -3122,9 +3122,10 @@ struct UnclassifiedTriageSection: View {
     static let invitationCopy =
         "Choose once and it covers every page of a site, in every browser, and every window of an app."
 
-    /// The good state, said as one: what is done, not a count of zero.
-    static let emptyCopy =
-        "Every app and site you used this week has a category. There is nothing here to choose."
+    /// The good state, said as one: what is done, not a count of zero. Only
+    /// as much as the list checks: it lists what was used for five minutes or
+    /// more (the service's floor), so a shorter visit is not vouched for.
+    static let emptyCopy = "Nothing you used for five minutes or more this week needs a category."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -3152,9 +3153,9 @@ struct UnclassifiedTriageSection: View {
     @ViewBuilder
     private var content: some View {
         if let triageError = menuStatus.triageError {
-            // A failure must not borrow the empty state's sentence: "every
-            // app and site has a category" would be a claim the service just
-            // said it could not make.
+            // A failure must not borrow the empty state's sentence: "nothing
+            // needs a category" would be a claim the service just said it
+            // could not make.
             Text(triageError)
                 .font(VelvtType.body(11))
                 .lineSpacing(VelvtType.bodySpacing(11))
@@ -3440,10 +3441,11 @@ struct CorrectionWorkbenchView: View {
             localDashboard.refresh()
         }
         .confirmationDialog(
-            // Names the apps too: since protocol 30 this also removes every
-            // rule taught from the triage list, and a dialog that only warned
-            // about "corrections" would be understating what the button does.
-            "Reset every correction and every app you have taught Velvt on this Mac?",
+            // Names the apps and sites too: since protocol 30 this also removes
+            // every rule taught from the triage list, and since protocol 33
+            // every site rule, and a dialog that only warned about
+            // "corrections" would be understating what the button does.
+            "Reset every correction and every app and site you have taught Velvt on this Mac?",
             isPresented: $confirmsReset,
             titleVisibility: .visible
         ) {

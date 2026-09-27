@@ -15,6 +15,10 @@
 //!   which is absent whenever no offer is pending. Every generated instance
 //!   filled them in.
 //!
+//! A third survived until 2026-09-27: `menu_status.queued_events[]
+//! .classification_source` did not list `declared_document_types` or
+//! `declared_app_category`, which Rust has emitted since protocol 30.
+//!
 //! This file drives the real router, abstraction engine and SQLite store,
 //! sends requests exactly as the Swift client does, and validates what would
 //! cross the socket.
@@ -31,13 +35,13 @@ use velvt_service::auth::{
 };
 use velvt_service::dashboard::DAILY_ACTIVITY_DAYS;
 use velvt_service::delivery::{FakeCacheManager, PushAdapter, PushQueue};
-use velvt_service::ipc::{MessageRouter, R7Router};
-use velvt_service::persistence::SqlitePersistence;
+use velvt_service::ipc::{MenuStatusProvider, MessageRouter, R7Router};
+use velvt_service::persistence::{RawEventEntry, SqlitePersistence};
 use velvt_service::upload::EventIngestor;
 use velvt_service::work_block::WorkBlockManager;
 use velvt_shared_types::{
-    ClientMessage, RawEvent, RequestLocalDashboard, RequestWorkBlockState, ServerMessage,
-    StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose,
+    ClientMessage, RawEvent, RequestLocalDashboard, RequestMenuStatus, RequestWorkBlockState,
+    ServerMessage, StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose,
 };
 
 #[path = "../shared-types/tests/support/json_schema.rs"]
@@ -121,7 +125,13 @@ impl EventIngestor for NullIngestor {
 }
 
 fn router() -> R7Router {
-    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    router_over(&SqlitePersistence::open_in_memory().unwrap())
+}
+
+/// The router over `persistence`, with the menu status the service wires in
+/// production and the correction store, so a test can plant rows and read
+/// them back through the real provider.
+fn router_over(persistence: &SqlitePersistence) -> R7Router {
     let push = PushAdapter::new(PushQueue::new(50));
     let work_blocks = Arc::new(WorkBlockManager::new(persistence.work_block_repo()));
     let abstraction_engine = Arc::new(
@@ -141,6 +151,18 @@ fn router() -> R7Router {
         account,
     )
     .with_work_blocks(work_blocks, push)
+    .with_classification_corrections(
+        persistence.abstraction_map_repo(),
+        persistence.upload_batch_repo(),
+        Arc::new(OfflineHttp) as Arc<dyn HttpClient>,
+    )
+    .with_menu_status(Arc::new(MenuStatusProvider::new(
+        Arc::new(OfflineHttp) as Arc<dyn HttpClient>,
+        Arc::new(FakeTokenStore::default()),
+        persistence.upload_batch_repo(),
+        persistence.raw_event_repo(),
+        persistence.abstraction_map_repo(),
+    )))
 }
 
 fn raw_event(
@@ -303,4 +325,78 @@ fn the_schema_row_count_is_daily_activity_days() {
              that many rows and the shaper rejects any other count"
         );
     }
+}
+
+/// One queued event per classification source the service can store, read
+/// back through the real menu-status provider. The two declared-metadata
+/// sources are the ones the schema was missing; an app rule puts a row in
+/// `correction_history` too.
+#[tokio::test]
+async fn the_emitted_menu_status_validates_against_its_schema() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let router = router_over(&persistence);
+    let events = persistence.raw_event_repo();
+    let sources = [
+        "seed",
+        "heuristic",
+        "embedding",
+        "user_rule",
+        "declared_document_types",
+        "declared_app_category",
+        "fallback",
+    ];
+    let now = Utc::now();
+    for (index, source) in sources.iter().enumerate() {
+        events
+            .insert(&RawEventEntry {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                stable_id: format!("abs_{index}"),
+                label: "document:inferred".into(),
+                local_display_label: None,
+                local_name_suggestion: None,
+                category: "FOCUS_WORK".into(),
+                taxonomy_version: "mvp-2".into(),
+                classification_tier: "local_purpose_heuristic".into(),
+                classification_status: "classified".into(),
+                classification_confidence: "medium".into(),
+                classification_source: (*source).into(),
+                occurred_at: now - ChronoDuration::minutes(index as i64),
+                duration_seconds: 60,
+                upload_eligible: true,
+                app_stable_id: None,
+                app_scope_eligible: true,
+                site_stable_id: None,
+            })
+            .unwrap();
+    }
+    persistence
+        .abstraction_map_repo()
+        .save_app_scope_override(&"a".repeat(64), None, "REFERENCE", Some("Qwybex"))
+        .unwrap();
+
+    let response = router
+        .route(ClientMessage::RequestMenuStatus(RequestMenuStatus {}))
+        .await
+        .unwrap();
+    let Some(message @ ServerMessage::MenuStatus(_)) = response else {
+        panic!("request_menu_status answers with menu_status, got {response:?}");
+    };
+    let encoded = serde_json::to_value(message).unwrap();
+    let emitted: Vec<&str> = encoded["payload"]["queued_events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["classification_source"].as_str().unwrap())
+        .collect();
+    for source in sources {
+        assert!(
+            emitted.contains(&source),
+            "{source} was not emitted: {encoded}"
+        );
+    }
+    assert_eq!(
+        encoded["payload"]["correction_history"][0]["scope"], "app",
+        "{encoded}"
+    );
+    assert_valid("menu_status.json", &encoded);
 }

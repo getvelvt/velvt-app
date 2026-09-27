@@ -1,5 +1,19 @@
 # IPC Protocol Changelog
 
+## Schema correction: menu_status sources - 2026-09-27 (no wire change; the protocol stays 32)
+
+- `menu_status.queued_events[].classification_source` listed `seed`,
+  `heuristic`, `embedding`, `user_rule` and `fallback`. Rust has emitted
+  `declared_document_types` and `declared_app_category` there since protocol
+  30, when the two tiers that read an application's own declarations
+  arrived, and the Swift decoder has accepted both since then. The schema now
+  lists them. No Rust or Swift type changed and the bytes on the socket are
+  the same.
+- `rust-service/tests/emitted_payload_schema.rs` now validates a real
+  `menu_status`, with one queued event per stored source and an app rule in
+  `correction_history`, against the schema, so the enum cannot drift again
+  unnoticed.
+
 ## Browser tabs classified by their site - 2026-09-27 (no wire change; the protocol stays 32)
 
 - Rust now classifies a browser tab by the site its `focused_document_url`

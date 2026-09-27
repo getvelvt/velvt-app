@@ -78,7 +78,8 @@
                 "enum": ["high", "medium", "low", "none"]
               },
               "classification_source": {
-                "enum": ["seed", "heuristic", "embedding", "user_rule", "fallback"]
+                "enum": ["seed", "heuristic", "embedding", "user_rule", "declared_document_types", "declared_app_category", "fallback"],
+                "description": "declared_document_types and declared_app_category are the two tiers that read what an application declares about itself (protocol 30). Rust has emitted both since then; this schema declared them on 2026-09-27."
               },
               "occurred_at": { "type": "string", "format": "date-time" }
             },

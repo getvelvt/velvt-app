@@ -92,7 +92,7 @@ Passive event capture via macOS Accessibility APIs, IPC relay of raw events to t
 - **UI:** SwiftUI + AppKit, `NSStatusItem` for menu bar
 - **Dependencies:** Sparkle is the only third-party package (`Package.swift`, exact 2.9.4; the updater is off in alpha builds). There is no Swift-side SQLite and no GRDB — all persistence is in the Rust service.
 - **IPC:** Unix domain socket client (no URLSession for local IPC)
-- **Notifications:** UserNotifications, local only. Two kinds are posted: the in-block drift offer and the daily insight. There is no APNs registration (`registerForRemoteNotifications` is never called); the APNs environment setting and token-store protocol are unused seams.
+- **Notifications:** UserNotifications, local only. Three kinds are posted: the in-block drift offer, the daily insight, and the needs-a-category reminder (at most one a day, never during a work block). All three carry Rust-authored copy, and the reminder names no app or site. There is no APNs registration (`registerForRemoteNotifications` is never called); the APNs environment setting and token-store protocol are unused seams.
 - **Permissions:** Accessibility and Notifications, plus the optional Focus status permission offered at onboarding (one boolean: whether a Focus mode is on) — no screen recording, microphone, camera, or filesystem access
 
 ## Project Structure
@@ -160,7 +160,7 @@ Unix socket IPC server, raw event ingestion, abstraction engine, SQLite persiste
 **The Rust service does NOT:**
 - Render any UI
 - Request macOS permissions
-- Make decisions about notification scheduling (it delivers payloads; Swift schedules)
+- Schedule notifications (it decides whether one is due and writes its copy; Swift checks permission and posts it)
 
 ## Architecture Constraints
 - **The service is the privacy enforcement boundary.** Abstraction happens here before any data is written to the upload queue. Raw fields must never appear in `upload_batch` / `batch_event` rows or in any outbound payload; `BatchEventPayload`'s hand-written `Serialize` (`src/upload/dto.rs`) is the only thing that crosses to the cloud.
@@ -191,6 +191,7 @@ rust-service/
 │   ├── work_block/     # Work-block state machine, drift gate and offer, outcomes, decision log
 │   ├── focus/          # Focus/DND evidence and the quiet-hours offer
 │   ├── initiation/     # Good-hours windows and the capped daily soft-start invitation
+│   ├── category_prompt/ # The needs-a-category list, card and daily reminder
 │   ├── receipts/       # Weekly receipts digest and the explain-tap bucket
 │   ├── dashboard.rs    # Focus Fragmentation and Daily Activity aggregates
 │   ├── retention/      # RetentionScheduler and its RetentionTarget implementations
@@ -268,8 +269,8 @@ Cross-workspace changes (anything touching `proto/`) require updating both works
 **What governs scope.** This repository does not grant scope on its own. The founder's plans in the private Velvt workspace do: `GOAL.md`, `RUNBOOK.md`, `plan/README.md`, and `pivot-engineering/10-BUNDLE-ABSORPTION.md`. The last one rejected, as item GOV-1, the rewrite of this file that pre-authorized local behavioral analytics and experiment modeling; that text cited an implementation master plan that is not one of the governing documents, and it was removed on 2026-09-25. Engine work — new behavioral models, experiments or randomization, or wiring `src/behavior/` into a shipped path — waits on Gate D (`10-BUNDLE-ABSORPTION.md` § 5), which has not been met, or on a dated founder decision that overrides it. If a task asks for such work and cites neither, stop and ask.
 
 **In scope (what ships in 1.0.11):**
-- `swift-client/`: passive event capture, IPC relay, menu bar UI, onboarding, permissions, work-block controls and the in-app drift card, drift-offer and daily-insight notifications, 14-day history and daily activity, corrections and unclassified-app triage, the weekly digest card, the soft-start invitation card, local data controls
-- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, cloud sync, insight payload delivery, work blocks and the deterministic drift gate (`work_block`), Focus/DND evidence (`focus`), initiation invitations (`initiation`), the weekly receipts digest (`receipts`), and the two 0.1.5 display surfaces (`dashboard`)
+- `swift-client/`: passive event capture, IPC relay, menu bar UI, onboarding, permissions, work-block controls and the in-app drift card, drift-offer, daily-insight and needs-a-category notifications, 14-day history and daily activity, corrections and the needs-a-category list of apps and sites with its card, the weekly digest card, the soft-start invitation card, local data controls
+- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, cloud sync, insight payload delivery, work blocks and the deterministic drift gate (`work_block`), Focus/DND evidence (`focus`), initiation invitations (`initiation`), the needs-a-category card and reminder (`category_prompt`), the weekly receipts digest (`receipts`), and the two 0.1.5 display surfaces (`dashboard`)
 
 **Explicitly deferred — do not build:**
 - Local LLM inference, opaque general sequence models, autonomous or adaptive intervention policies, and new behavioral analytics or experiment machinery (see above).

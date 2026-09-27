@@ -7,9 +7,13 @@ Velvt requests exactly two macOS permissions:
 1. **Accessibility** allows the client to detect which application and window
    are focused. It does not grant Velvt screen recording, microphone, camera,
    contacts, location, or filesystem access.
-2. **Notifications** allow the client to deliver daily insights supplied by the
-   Rust service. Denying notifications does not disable collection or prevent
-   insights from appearing in the menu bar popover.
+2. **Notifications** allow the client to post the three kinds of notification
+   the Rust service decides and words: the drift offer inside a work block, the
+   daily insight, and the needs-a-category reminder (at most one a day, never
+   during a work block, counts only). Denying notifications does not disable
+   collection or prevent any of them from appearing in the menu bar popover.
+   The needs-a-category reminder is posted only when notifications are already
+   allowed; it never triggers a permission request.
 
 `PermissionType` is the exhaustive compile-time permission allowlist. Adding a
 case requires explicit PR review. Swift extensions cannot add enum cases, so a

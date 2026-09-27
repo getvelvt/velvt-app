@@ -200,7 +200,7 @@ a Release build, so this is unavailable in the DMG.
 Device-local, deterministic, and independent of the cloud, so it works on a
 fresh install with no account and no baseline history:
 
-This is drift policy v5 (`DRIFT_POLICY_VERSION = 5`, protocol 32). The gate
+This is drift policy v5 (`DRIFT_POLICY_VERSION = 5`, protocol 33). The gate
 constants are in `rust-service/src/work_block/mod.rs`:
 ≥ 3 confident switches away from the anchor inside a rolling 10-minute window,
 after ≥ 3 minutes elapsed, with ≥ 2 minutes remaining. They are v2's (PR #40,

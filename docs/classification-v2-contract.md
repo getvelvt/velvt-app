@@ -163,38 +163,72 @@ SYSTEM except Terminal, which is focus work.
 
 ## 5. Triage surface
 
-Converts teaching from per-event and reactive to per-app and once.
+Converts teaching from per-event and reactive to per-app and once. Since
+protocol 33 the same list covers browser sites, taught once per site in every
+browser, and a card and a daily reminder say when something new is on it.
 
-**Backend.** New IPC pair (protocol v30):
+**Backend.** IPC pair (protocol v30; sites since v33):
 - `RequestUnclassifiedTriage { lookback_days: u32 }` (Swift→Rust)
 - `UnclassifiedTriage { entries: [...], window_days }` (Rust→Swift)
 
-Each entry: `app_stable_id`, `display_name` (the local activity name Velvt
-already holds), `seconds_observed`, `event_count`. `app_stable_id` is the only
-identifier: Rust resolves the bundle key itself from the rows it holds when
-`SetApplicationCategory` comes back. (Corrected 2026-09-25: this section said
-entries carry `bundle_id` when known. The Rust type never did.)
-Rank by `seconds_observed` descending, **cap at 8**, and only include apps with
-at least 5 minutes observed in the window — a list of thirty one-second
+Each entry: `kind` (`application` or `site`), `stable_id` (the salted app or
+site key, 64 lowercase hex), `display_name`, `seconds_observed`,
+`event_count`. For an application `display_name` is the local activity name
+Velvt already holds, or `null` when it holds none; for a site it is the
+hostname kept in `local_site_name` (migration 0040), never `null`. `stable_id`
+is the only identifier: Rust resolves an application's bundle key itself from
+the rows it holds when `SetApplicationCategory` comes back. (Corrected
+2026-09-25: this section said entries carry `bundle_id` when known. The Rust
+type never did. Changed 2026-09-27, protocol 33: `kind` and `stable_id`
+replace `app_stable_id`, and an unnamed application is `null` rather than the
+literal `Unnamed application`, which the client used to send back as the
+rule's name.)
+Applications and sites are ranked together by `seconds_observed` descending,
+then applications ahead of sites, then by key; **cap at 8**, and only entries
+with at least 5 minutes observed in the window — a list of thirty one-second
 curiosities is not a task anyone will do.
 
-Query over `raw_event_buffer` where the resolved category is `UNLOGGED`,
-grouped by the app key, bounded to the retention window (14 days).
+Applications: a query over `raw_event_buffer` where the resolved category is
+`UNLOGGED`, grouped by the app key, bounded to the requested window (at most
+the 14-day retention window). Sites: the browser time the drift gate cannot
+use (`is_confident` negated), grouped by the site key, for sites with a stored
+name and no rule. The router merges the two (`category_prompt::needs_a_category`).
 
 - `SetApplicationCategory { app_stable_id, category, activity_name }`
   (Swift→Rust) writes an app-scope override directly, with no event id — the
   whole point is that the user is teaching Velvt about an *app*, not correcting
-  one moment. Must be idempotent and must emit an acknowledgement.
+  one moment. Must be idempotent and must emit an acknowledgement. The client
+  sends `activity_name` only when the entry had a `display_name`.
+- `SetSiteCategory { site_stable_id, category, activity_name }` (Swift→Rust,
+  protocol 33) writes a site rule the same way, applied on every page of the
+  site in every browser. It carries the key, never the hostname: the client
+  sends no `activity_name` for a site unless the user typed one, and Rust
+  deletes the stored hostname once the site is taught. Idempotent,
+  acknowledged, and no network request.
 
-**UI.** A section in Settings → "Teach Velvt Your Apps" (the destination
-already exists). Copy, exactly:
+**UI.** A section in Settings → "Apps & Sites" (the destination "Teach Velvt
+Your Apps" until protocol 33), headed "Apps and sites Velvt couldn't
+categorize". Copy, exactly:
 
-> Velvt could not read {n} apps you used this week.
-> Tell it what they are and it will know from now on.
+> {counts} you used this week don't have a category yet.
+> Choose once and it covers every page of a site, in every browser, and every window of an app.
 
-Each row: the app name, the time observed, and a category picker. No guilt
-framing, no "wasted", no totals presented as a score. If the list is empty, say
-so plainly and positively — that is the good state.
+where `{counts}` is "2 sites and 1 app", "1 site", "3 apps" and so on, and a
+list of one reads "doesn't have". Each row: the app name or the site's
+hostname, a small "App" or "Site" marker, the time observed, and a category
+picker. An application with no name reads "Unnamed application" and that
+placeholder is never sent back. No guilt framing, no "wasted", no totals
+presented as a score. If the list is empty, say so plainly and positively —
+that is the good state.
+
+**Card and reminder (protocol 33).** `request_category_prompt` /
+`category_prompt` / `acknowledge_category_prompt`: Rust decides and words an
+in-app card while anything on the last seven days' list is unanswered, and at
+most one notification a local day for something new on it, never during an
+active or paused work block, in Velvt's quiet hours, or while macOS Focus is
+known to be on. Both are counts only and never name an app or a site. The
+card's primary action opens this section; either answer quiets the card until
+a new entry joins the list.
 
 ## Client responsibilities (Swift)
 

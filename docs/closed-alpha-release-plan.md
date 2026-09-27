@@ -13,7 +13,7 @@
 > - **Notifications:** testers are asked to allow them; the drift offer is
 >   what is being measured.
 > - **Instrument:** the pre-registered outcome is sustained anchor engagement
->   under drift policy v5 (`DRIFT_POLICY_VERSION = 5`, protocol 32), analysed
+>   under drift policy v5 (`DRIFT_POLICY_VERSION = 5`, protocol 33), analysed
 >   on policy-v5 rows only, from the exported CSVs — not the insight-centred
 >   interview and weekly-review measures below.
 > - **Privacy explanation:** use the kit's consent wording. Velvt reads app

@@ -15,6 +15,12 @@ messages. It:
 4. Routes a tapped notification back to "open the popover, scroll to the
    insight date."
 
+Velvt posts three kinds of notification, and Rust decides and words every one:
+the daily insight (`notification_payload`, below), the in-block drift offer
+(`work_block_state.active_intervention`, "Drift Offer Delivery" below), and,
+since protocol 33, the needs-a-category reminder (`category_prompt`,
+"Needs-a-Category Reminder" below).
+
 `MenuBarController` is the **only** type that creates or touches an
 `NSStatusItem`. No other module should import `NSStatusItem` directly.
 
@@ -217,6 +223,30 @@ Not Disturb or another Focus — and it went to Notification Center. Velvt reads
 Focus state only through the optional Focus-status permission; without it the
 service cannot hold the offer as `suppressed_dnd`.
 
+## Needs-a-Category Reminder
+
+The third kind (protocol 33). Swift pulls `request_category_prompt` with its
+UTC offset on the `.connected` edge, on wake, and on the 60-second menu-status
+cadence; Rust always answers with `category_prompt`. Rust owns every rule
+(`rust-service/src/category_prompt/mod.rs`, `CATEGORY_PROMPT_POLICY_VERSION`
+1): nothing at all while a work block is active or paused; the in-app `card`
+while anything on the last seven days' needs-a-category list is unanswered;
+and a `notification` at most once per local day, only for an entry no reminder
+has counted and no answer has reached, never in Velvt's quiet hours or a known
+Focus, and paused for seven days after three reminders in a row that were not
+followed by an `opened` answer.
+
+A `notification` is claimed in Rust when it is handed over and is never handed
+over again, so Swift posts it at once or not at all: only if notifications are
+already authorised (it never asks for permission for it), with no
+`insight_date`, and without touching the interventions counter. Its copy is
+counts only ("2 sites and 1 app you used this week don't have a category
+yet. Choose once in Velvt."), because Notification Center keeps a
+notification's text. A tap, or the card's primary action, opens the
+needs-a-category list in Settings and sends `acknowledge_category_prompt`
+with `opened`; the card's secondary action sends `not_now`. Either answer
+quiets the card until a new entry joins the list.
+
 ## Notification Tap → Popover Scroll-to-Date
 
 ```swift
@@ -248,6 +278,11 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
   `.id(day.id)` so a `ScrollViewReader` can anchor to it.
 
 ## Adding a New Notification Type
+
+The needs-a-category reminder (protocol 33) is the worked example of a kind
+whose decision lives in Rust: a pulled `ServerMessage` carrying Rust-authored
+copy, claimed once in a Rust ledger, and a sibling scheduler method with its own
+`userInfo` marker and delivery surface in Swift. For a variant of the insight:
 
 1. Add one field (or, if structurally distinct, one new payload variant) to
    `NotificationPayload` / `proto/schema/`, following the existing

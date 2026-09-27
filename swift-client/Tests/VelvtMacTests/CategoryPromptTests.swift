@@ -182,6 +182,30 @@ final class CategoryPromptCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.client.sentMessages.count, 3)
     }
 
+    /// A failed answer does not wait for a reconnect: a send can fail while
+    /// the connection still reads as connected, and the next regular pull
+    /// sends the answer ahead of its request.
+    func testAnAnswerThatCouldNotBeSentIsSentOnTheNextPull() async throws {
+        let harness = Harness()
+        harness.messages.send(.categoryPrompt(cardOnly(promptID)))
+        try await waitUntil { harness.sut.prompt != nil }
+        harness.client.shouldThrowOnSend = IPCError.notConnected
+
+        harness.sut.open()
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(harness.client.sentMessages, [])
+
+        harness.client.shouldThrowOnSend = nil
+        harness.cadence.send()
+        try await waitUntil { harness.client.sentMessages.count == 2 }
+        XCTAssertEqual(
+            harness.client.sentMessages,
+            [
+                .acknowledgeCategoryPrompt(.init(promptID: promptID, response: .opened)),
+                .requestCategoryPrompt(.init(utcOffsetSeconds: 0)),
+            ])
+    }
+
     /// A tap on the reminder with no card id known here (the app was
     /// relaunched, or the tap launched it) asks, and answers `opened` for the
     /// card the reply carries. The card is not drawn over the list the tap

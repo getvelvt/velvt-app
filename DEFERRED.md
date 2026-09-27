@@ -9,8 +9,9 @@ Velvt today.
 is protocol 30).** That
 review rewrote three entries the shipped code had overtaken — the weekly
 report (a local weekly digest shipped in protocol 28), notification
-scheduling (there are now two notification kinds), and the helper lifecycle
-(orphan recovery is now automatic) — and re-confirmed the rest.
+scheduling (there were then two notification kinds; protocol 33 added a
+third), and the helper lifecycle (orphan recovery is now automatic) — and
+re-confirmed the rest.
 
 ---
 

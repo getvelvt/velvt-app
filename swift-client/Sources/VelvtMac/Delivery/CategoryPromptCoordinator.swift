@@ -102,12 +102,6 @@ public final class CategoryPromptCoordinator: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] status in
                 guard status == .connected, let self else { return }
-                // The answer first: the request's reply is then the card as
-                // it stands after it.
-                if let pendingAnswer {
-                    self.pendingAnswer = nil
-                    acknowledge(pendingAnswer)
-                }
                 refresh()
             }
             .store(in: &cancellables)
@@ -126,7 +120,15 @@ public final class CategoryPromptCoordinator: ObservableObject {
     /// Asks the service for the card and any reminder due. Always safe: the
     /// service answers every request, and a reminder it has handed over once
     /// is never handed over again.
+    ///
+    /// An answer whose send failed goes first, on whichever pull comes next
+    /// (a reconnect, a wake or the regular cadence), so the reply is the card
+    /// as it stands after that answer.
     public func refresh() {
+        if let pendingAnswer {
+            self.pendingAnswer = nil
+            acknowledge(pendingAnswer)
+        }
         send(.requestCategoryPrompt(.init(utcOffsetSeconds: utcOffsetSeconds())))
     }
 

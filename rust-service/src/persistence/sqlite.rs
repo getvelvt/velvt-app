@@ -563,8 +563,8 @@ impl SqlitePersistence {
         Arc::new(SqliteInitiationRepo(self.clone()))
     }
 
-    /// The needs-a-category prompt's ledger (`category_prompt_entry` and
-    /// `category_prompt_notification`, 0041).
+    /// The needs-a-category prompt's ledger (`category_prompt_entry`,
+    /// `category_prompt_card_entry` and `category_prompt_notification`, 0041).
     pub fn category_prompt_repo(&self) -> Arc<dyn CategoryPromptRepo> {
         Arc::new(SqliteCategoryPromptRepo(self.clone()))
     }

@@ -1702,6 +1702,9 @@ public struct MenuBarPopoverView: View {
     /// card's sighting is reported only while it is.
     @State private var panelIsOnScreen = false
     @State private var showsSystemState = false
+    /// Whether the header's sync line shows its detail. Collapsed every time
+    /// the panel opens, so the queue size is seen only when asked for.
+    @State private var showsSyncDetail = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
@@ -1839,6 +1842,7 @@ public struct MenuBarPopoverView: View {
         .onReceive(popoverWillOpen) {
             clearSettingsSelection()
             navigator.resetForPopoverOpening()
+            showsSyncDetail = false
         }
         // The app re-checks notifications when it becomes active, but clicking
         // this panel does not activate the app, and coming back from System
@@ -1861,8 +1865,9 @@ public struct MenuBarPopoverView: View {
     /// up the space instead of the header. And both status lines wrap
     /// (`fixedSize(horizontal: false, vertical: true)`, no `lineLimit`) so a
     /// long label such as "Collection paused: Accessibility permission
-    /// required" or "Checking cloud synchronization…" takes a second line at a
-    /// narrow width instead of being truncated at the right edge.
+    /// required" or "Uploads paused briefly · everything local still works"
+    /// takes a second line at a narrow width instead of being truncated at the
+    /// right edge.
     private var mainHeader: some View {
         HStack(alignment: .top, spacing: 8) {
             Image("VelvtWordmark")
@@ -1887,11 +1892,7 @@ public struct MenuBarPopoverView: View {
                         .frame(width: 7, height: 7)
                         .layoutPriority(1)
                 }
-                Text(backendStatusLabel)
-                    .font(VelvtType.caption(10))
-                    .foregroundStyle(VelvtInk.secondaryOnInk)
-                    .multilineTextAlignment(.trailing)
-                    .fixedSize(horizontal: false, vertical: true)
+                cloudSyncStatusLine
             }
             .frame(maxWidth: 360, alignment: .trailing)
         }
@@ -2681,26 +2682,26 @@ public struct MenuBarPopoverView: View {
         )
     }
 
-    private var backendStatusLabel: String {
-        guard let accountStateManager else { return "Cloud status unavailable" }
-        if accountStateManager.requiresReauthentication {
-            return "Sign in required"
+    /// Observed through `ObservedCloudSyncStatusLine`, not computed here: this
+    /// view holds both models as plain optionals, and a line computed in this
+    /// body redrew only when something unrelated published.
+    @ViewBuilder private var cloudSyncStatusLine: some View {
+        if let accountStateManager, let menuStatusViewModel {
+            ObservedCloudSyncStatusLine(
+                accountStateManager: accountStateManager,
+                menuStatus: menuStatusViewModel,
+                isExpanded: $showsSyncDetail
+            )
+        } else {
+            CloudSyncStatusLine(
+                presentation: CloudSyncStatusPresentation(
+                    accountState: nil,
+                    requiresReauthentication: false,
+                    status: nil
+                ),
+                isExpanded: $showsSyncDetail
+            )
         }
-        guard case .loggedIn = accountStateManager.accountState else {
-            return "Sign in required for synchronization"
-        }
-        guard let status = menuStatusViewModel?.status else {
-            return "Checking cloud synchronization…"
-        }
-        if !status.cloudReady {
-            return status.queuedEventCount > 0
-                ? "Working offline · \(status.queuedEventCount) queued"
-                : "Cloud unreachable"
-        }
-        if status.uploadStatus == "retrying" || status.uploadStatus == "rate_limited" {
-            return "Cloud synchronization retrying"
-        }
-        return "Cloud synchronized"
     }
 
     private var appVersion: String {

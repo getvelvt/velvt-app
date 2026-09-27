@@ -1,12 +1,15 @@
 use super::{
-    AbstractionMapping, BatchEvent, CompletedBlockDwellSpan, DemotionStateRecord, FocusTransition,
-    HistoryCacheEntry, InitiationInvitationOutcome, InitiationInvitationRecord, InsightCacheEntry,
-    LocalDisplayAggregate, LocalEventMetadata, NewUploadBatch, PersistenceError,
-    PersonalOverrideRecord, QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry,
-    UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
+    AbstractionMapping, AntecedentFinding, AntecedentFindingState, AntecedentRetractionReason,
+    AppScopeOverride, BatchEvent, BlockAntecedent, CompletedBlockDwellSpan, DeclaredAppMetadata,
+    DemotionStateRecord, FocusTransition, HistoryCacheEntry, InitiationInvitationOutcome,
+    InitiationInvitationRecord, InsightCacheEntry, InterventionDecision, LocalDisplayAggregate,
+    LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersistenceError, PersonalOverrideRecord,
+    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, ReportedDwell,
+    UnclassifiedAppEntry, UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
     WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
     WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WrongInterventionCounts,
 };
+use crate::abstraction::{EmbeddingSalt, StableKeySalt};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use velvt_shared_types::WorkBlockResult;
@@ -45,12 +48,142 @@ pub trait AbstractionMapRepo: Send + Sync {
         local_activity_name: Option<&str>,
     ) -> Result<bool, PersistenceError>;
 
+    /// Generalizes an EDIT of a saved rule to every window of its application.
+    ///
+    /// The same generalization `save_personal_app_override` performs, reached
+    /// from a stable id instead of an event id, because an edit arrives after
+    /// the source event has left the queue and the client has only the rule.
+    /// Without it, editing a saved rule left the app rung holding the previous
+    /// category for every other window of that application: the window the user
+    /// was looking at changed and nothing else did.
+    ///
+    /// Returns `Ok(false)` when no event under this rule recorded an app
+    /// identity, or when none of them is app-scope eligible — a browser window
+    /// whose identity came from the site, where one tab says nothing about the
+    /// next.
+    fn save_personal_app_override_by_stable_id(
+        &self,
+        stable_id: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<bool, PersistenceError>;
+
+    /// Writes an app-scoped rule from its keys alone, with no source event.
+    ///
+    /// The triage surface teaches Velvt about an *application*, not about one
+    /// moment of it, so there is no event id to resolve an identity from. Pass
+    /// `bundle_key_hash` whenever one is known: the rule then also matches under
+    /// the bundle identity, which survives a rename or a localized name.
+    ///
+    /// Idempotent. Saving the same answer twice is saving it once, and a repeat
+    /// still counts as a correction so the count reflects how often the user had
+    /// to say it.
+    fn save_app_scope_override(
+        &self,
+        app_key_hash: &str,
+        bundle_key_hash: Option<&str>,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<(), PersistenceError>;
+
+    /// Reads the app-scoped rule keyed on an application name hash.
+    fn app_scope_override(
+        &self,
+        app_key_hash: &str,
+    ) -> Result<Option<AppScopeOverride>, PersistenceError>;
+
+    /// Reads the app-scoped rule keyed on an application bundle hash.
+    ///
+    /// The rung between the window rule and the name rule: it answers for the
+    /// same application under a name that has since changed, been localized, or
+    /// was never the one anyone recognised.
+    fn bundle_app_override(
+        &self,
+        bundle_key_hash: &str,
+    ) -> Result<Option<AppScopeOverride>, PersistenceError>;
+
+    /// Removes one app-scoped rule, and the typed name it mirrored.
+    ///
+    /// Until the history could show app rules, this was unreachable: a user
+    /// could neither see nor undo what they had taught at app scope, and
+    /// removing the window rule left the engine falling through into the
+    /// surviving app rule and answering exactly as before.
+    fn remove_app_scope_override(&self, app_key_hash: &str) -> Result<bool, PersistenceError>;
+
     fn remove_personal_override(&self, stable_id: &str) -> Result<bool, PersistenceError>;
     fn reset_personal_overrides(&self) -> Result<u64, PersistenceError>;
     fn personal_override_count(&self) -> Result<u64, PersistenceError>;
     fn personal_semantic_prototype_count(&self) -> Result<u64, PersistenceError>;
     fn classifier_artifact_count(&self, artifact_version: &str) -> Result<u64, PersistenceError>;
     fn display_name_for_label(&self, label: &str) -> Result<Option<String>, PersistenceError>;
+    /// Deletes at most `limit` rows from `semantic_embedding_cache` whose
+    /// `updated_at` is before `cutoff`.
+    ///
+    /// The cache is a derivation of the application name and window title, so
+    /// it is evidence with the same shape as a raw event and it expires on the
+    /// same horizon. `personal_semantic_prototype` is deliberately not swept
+    /// here: it holds corrections the user made on purpose, which is learned
+    /// state rather than a cache, and it is cleared by the reset that offers to
+    /// clear it.
+    fn delete_expired_semantic_embeddings(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
+    /// This install's embedding salt, minting one if the row is absent.
+    ///
+    /// Migration 0031 creates the row, so the read is the only path a migrated
+    /// database takes. The create path exists because the alternative is worse:
+    /// a startup that cannot produce a salt would otherwise fall back to
+    /// [`EmbeddingSalt::UNSALTED`], and every sketch cached after that would be
+    /// recoverable from the published source with nothing taken off the device.
+    ///
+    /// Read and create happen in one transaction, so two processes racing on
+    /// first launch cannot mint two salts and write vectors from two spaces into
+    /// the same table. Minting also empties `semantic_embedding_cache` and
+    /// `personal_semantic_prototype` in that same transaction, for the reason
+    /// 0031 empties them: a different salt is a different vector space, and a
+    /// vector from the old one compared against a vector from the new one is a
+    /// similarity score about nothing.
+    fn embedding_salt(&self) -> Result<EmbeddingSalt, PersistenceError>;
+
+    /// This install's stable-key salt (migration 0037), minting one if the row
+    /// is absent.
+    ///
+    /// 0037 creates the row in the same transaction that re-keys every stored
+    /// digest under it, so the read is the only path a migrated database takes.
+    /// The row can be absent only if someone deleted it by hand, and then every
+    /// key on disk was computed under a salt nothing can reproduce: no
+    /// correction can match its window again, and a rule the history lists but
+    /// that never applies is worse than no rule. So minting also removes every
+    /// row keyed under the lost salt, in the same transaction -- the corrections,
+    /// the mappings, both vector stores, and the application keys on buffered
+    /// events -- for the reason [`Self::embedding_salt`] empties the vector
+    /// stores when it mints: a key from the old salt compared against a key from
+    /// the new one is an equality test about nothing.
+    fn stable_key_salt(&self) -> Result<StableKeySalt, PersistenceError>;
+
+    /// Deletes at most `limit` rows from `abstraction_map` that have not been
+    /// observed since `cutoff` and that nothing still points at.
+    ///
+    /// A mapping is the one place a window's (application, title) key outlives
+    /// the event that produced it, so until this existed the table held one row
+    /// for every window ever seen, forever. `updated_at` is rewritten on every
+    /// observation (`upsert`), so it is the last time the window was open, and
+    /// the horizon runs from there.
+    ///
+    /// Two references keep a row past the horizon, because deleting it would
+    /// break something the user can still do: a `personal_override` keyed on
+    /// it (the history lists a window rule through this row, and removing the
+    /// rule finds it here), and a `raw_event_buffer` row carrying its stable id
+    /// (correcting that event resolves the window through this row). The
+    /// second is what keeps a longer `VELVT_RAW_EVENT_TTL_HOURS` safe: a mapping
+    /// outlives its horizon for exactly as long as an event that needs it does.
+    fn delete_expired_mappings(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
 }
 
 pub trait UploadBatchRepo: Send + Sync {
@@ -113,6 +246,25 @@ pub trait UploadBatchRepo: Send + Sync {
         cutoff: DateTime<Utc>,
         limit: usize,
     ) -> Result<u64, PersistenceError>;
+    /// Deletes at most `limit` batches of any status whose `created_at` is
+    /// before `cutoff`. Cascade deletes the associated `batch_event` rows.
+    ///
+    /// The backstop for everything the status-scoped sweeps above do not name.
+    /// A queued batch has no expiry of its own, and the path that fills the
+    /// queue without bound is sustained transport failure rather than anything
+    /// the user did, so the queue needs a horizon that does not depend on the
+    /// batch ever reaching a terminal status.
+    ///
+    /// Defaulted to "nothing was stale" for the test doubles that wrap a real
+    /// repository and model only the upload path. A repository that stores
+    /// batches must override it; `SqliteUploadBatchRepo` does.
+    fn delete_stale_queued_batch(
+        &self,
+        _cutoff: DateTime<Utc>,
+        _limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        Ok(0)
+    }
 }
 
 pub trait HistoryCacheRepo: Send + Sync {
@@ -152,8 +304,35 @@ pub trait InsightCacheRepo: Send + Sync {
     ) -> Result<u64, PersistenceError>;
 }
 
+/// The longest window the triage surface may look back over.
+///
+/// The published raw-event TTL is 14 days, so a longer request cannot return
+/// evidence that still exists; it would only promise a completeness the store
+/// cannot deliver.
+pub const TRIAGE_MAX_LOOKBACK_DAYS: u32 = 14;
+
+/// The least observed time an application needs before it is worth asking
+/// about. A list of thirty one-second curiosities is not a task anyone will do.
+pub const TRIAGE_MIN_SECONDS: u64 = 300;
+
+/// The most applications one triage list may hold, for the same reason.
+pub const TRIAGE_MAX_ENTRIES: usize = 8;
+
 pub trait RawEventRepo: Send + Sync {
     fn insert(&self, event: &RawEventEntry) -> Result<(), PersistenceError>;
+    /// Inserts an event together with what its application declared about
+    /// itself.
+    ///
+    /// Separate from [`Self::insert`] rather than folded into `RawEventEntry`
+    /// because absent metadata has to behave exactly as it did before the
+    /// columns existed, and the clearest way to keep that true is for the old
+    /// call to remain the old call: `insert` writes the same row it always did,
+    /// with NULL in all three new columns.
+    fn insert_with_declared_metadata(
+        &self,
+        event: &RawEventEntry,
+        metadata: &DeclaredAppMetadata,
+    ) -> Result<(), PersistenceError>;
     fn unbatched_events(&self, limit: usize) -> Result<Vec<RawEventEntry>, PersistenceError>;
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError>;
     /// Returns at most `limit` abstracted events in a bounded time window.
@@ -181,6 +360,25 @@ pub trait RawEventRepo: Send + Sync {
         category: &str,
         local_activity_name: Option<&str>,
     ) -> Result<(), PersistenceError>;
+    /// The applications Velvt observed but could not read, ranked by observed
+    /// time, longest first.
+    ///
+    /// Only UNLOGGED events count. UNLOGGED is precisely the state that is
+    /// invisible everywhere else — `is_confident_evidence` excludes it, so those
+    /// hours reach neither the drift gate nor the anchor — which is what makes
+    /// a list of them worth a user's attention at all.
+    ///
+    /// `lookback_days` is clamped to [`TRIAGE_MAX_LOOKBACK_DAYS`],
+    /// `min_seconds` is raised to at least [`TRIAGE_MIN_SECONDS`], and `limit`
+    /// is capped at [`TRIAGE_MAX_ENTRIES`]. Applications the user has already
+    /// taught are excluded, and so are ones Velvt holds no local name for,
+    /// because neither is a task anybody can act on.
+    fn unclassified_triage(
+        &self,
+        lookback_days: u32,
+        min_seconds: u64,
+        limit: usize,
+    ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError>;
     fn delete_before(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError>;
     /// Deletes at most `limit` rows whose `created_at` is before `cutoff`.
     /// Returns the number of rows actually deleted.
@@ -269,6 +467,21 @@ pub trait WorkBlockRepo: Send + Sync {
         &self,
         block_id: &str,
     ) -> Result<Option<WorkBlockObservation>, PersistenceError>;
+    /// Every dwell reported to `raw_event_buffer` that overlaps `[from, until)`,
+    /// oldest first, including one that began before `from` and was still
+    /// running at it.
+    ///
+    /// The observation ledger records when each category began; how long it
+    /// lasted is known only here. The work-block engine reads it at a block
+    /// boundary to close the open row where its dwell ended, and at the end
+    /// to measure how much of the block was reported at all
+    /// (`00-GROUND-TRUTH.md` § 6c and § 6d). An index range scan on
+    /// `occurred_at`, never a table scan.
+    fn reported_dwells(
+        &self,
+        from: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<Vec<ReportedDwell>, PersistenceError>;
     fn finalize(
         &self,
         block_id: &str,
@@ -331,6 +544,17 @@ pub trait WorkBlockRepo: Send + Sync {
     fn set_demotion_state(&self, record: &DemotionStateRecord) -> Result<(), PersistenceError>;
     /// Transitions an offer to a terminal outcome. Only an `offered` row is
     /// updated, so a recorded return is never overwritten by block expiry.
+    /// Records that the in-app card for `block_id` was on screen at `at`.
+    ///
+    /// First sighting wins: a card re-rendered when the popover reopens is the
+    /// same delivery, and overwriting would misreport when the offer actually
+    /// reached the user. Returns whether this call was the first sighting.
+    fn mark_intervention_card_seen(
+        &self,
+        block_id: &str,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError>;
+
     fn resolve_intervention(
         &self,
         block_id: &str,
@@ -339,6 +563,82 @@ pub trait WorkBlockRepo: Send + Sync {
     ) -> Result<bool, PersistenceError>;
     fn expire_intentions(&self, now: DateTime<Utc>) -> Result<u64, PersistenceError>;
     fn clear_all(&self) -> Result<u64, PersistenceError>;
+
+    /// Appends one drift-policy decision, including an abstention.
+    ///
+    /// Writes to `intervention_decision_log` and nothing else. It must never
+    /// touch `work_block_intervention`: that table's `PRIMARY KEY(block_id)` is
+    /// the denominator of the pre-registered primary outcome, and a silence
+    /// decision recorded there would silently change a pre-registered metric.
+    ///
+    /// `decision_id` is unique per decision; a replayed id is a no-op rather
+    /// than an error, so a retried write cannot double-count an evaluation.
+    fn record_decision(&self, decision: &InterventionDecision) -> Result<(), PersistenceError>;
+
+    /// Every logged decision for a block, oldest first.
+    fn decisions(&self, block_id: &str) -> Result<Vec<InterventionDecision>, PersistenceError>;
+
+    /// The most recent decisions across every block, newest first.
+    fn recent_decisions(&self, limit: usize)
+        -> Result<Vec<InterventionDecision>, PersistenceError>;
+
+    /// Decisions whose 600-second horizon closed at or before
+    /// `horizon_closed_by` and whose proximal outcome is still unresolved,
+    /// oldest first.
+    ///
+    /// A decision that abstained before the gate had computed an anchor is
+    /// excluded rather than resolved: there is no anchor to look for, so the
+    /// horizon is unanswerable, and NULL keeps meaning exactly what migration
+    /// 0026 says it means. Excluding it in SQL is also what stops the resolver
+    /// re-reading the same unanswerable rows on every pass forever.
+    ///
+    /// The three outcome-resolution methods carry defaults describing a
+    /// repository that has no decision log — nothing unresolved, nothing
+    /// observed, nothing to write. That is true of the wrapping test doubles
+    /// and false of anything that stores rows, so a storage-backed repository
+    /// must override all three; `SqliteWorkBlockRepo` does.
+    fn unresolved_decisions(
+        &self,
+        _horizon_closed_by: DateTime<Utc>,
+        _limit: usize,
+    ) -> Result<Vec<InterventionDecision>, PersistenceError> {
+        Ok(Vec::new())
+    }
+
+    /// Whether an observation of `category` was recorded in the block after
+    /// `from` and up to and including `until`.
+    ///
+    /// The lower bound is exclusive on purpose. `from` is the decision's own
+    /// timestamp, and the observation the decision was made on already carries
+    /// it — `observe_safe_category` appends before it evaluates. Including it
+    /// would resolve `AbstainedAtAnchor` to "returned" by construction, since
+    /// that verdict fires precisely when the latest confident observation is the
+    /// anchor. The live return path has the same shape: `record_return_if_pending`
+    /// runs before the gate, so it can never resolve an offer against the
+    /// observation that produced it. Same category equality on both sides, so a
+    /// backfilled outcome and a `returned` outcome cannot disagree about what
+    /// counts as coming back.
+    fn observed_category_between(
+        &self,
+        _block_id: &str,
+        _category: &str,
+        _from: DateTime<Utc>,
+        _until: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        Ok(false)
+    }
+
+    /// Writes the proximal outcome of one decision. Only an unresolved row
+    /// transitions, so the resolver is idempotent and a rerun can never rewrite
+    /// an answer already given. Returns whether a row changed.
+    fn resolve_decision(
+        &self,
+        _decision_id: &str,
+        _anchor_seen: bool,
+        _at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        Ok(false)
+    }
 }
 
 /// Storage seam for the deterministic initiation-invitation policy: the
@@ -485,4 +785,119 @@ pub trait ReceiptsRepo: Send + Sync {
     fn prune_receipts_before(&self, week_start_local_date: &str) -> Result<u64, PersistenceError>;
     /// Deletes every digest row and probe bucket (clear-all-data).
     fn clear_receipts(&self) -> Result<u64, PersistenceError>;
+}
+
+/// Storage seam for the durable behavioural substrate: out-of-block runs and
+/// the bounded pre-block window.
+///
+/// Separate from `WorkBlockRepo` deliberately. Everything behind this trait is
+/// derived evidence with its own retention, and none of it is representable in
+/// the upload path. Keeping it out of `WorkBlockRepo` means the block state
+/// machine cannot accidentally acquire a dependency on the behavioural model,
+/// which is the direction that would let a model result start driving delivery.
+pub trait BehaviorRepo: Send + Sync {
+    /// Appends one closed out-of-block run. Broad category and coarse time
+    /// only; the type carries no field that could hold app identity.
+    fn record_out_of_block_run(&self, run: &OutOfBlockRun) -> Result<(), PersistenceError>;
+
+    /// Runs whose start bucket is at or after `since_bucket`, oldest first.
+    fn out_of_block_runs(&self, since_bucket: i64) -> Result<Vec<OutOfBlockRun>, PersistenceError>;
+
+    /// Deletes at most `batch_size` runs whose start bucket is strictly before
+    /// `cutoff_bucket`. Batched so retention never holds the write lock for an
+    /// unbounded time.
+    fn delete_out_of_block_runs_before(
+        &self,
+        cutoff_bucket: i64,
+        batch_size: usize,
+    ) -> Result<u64, PersistenceError>;
+
+    /// Records the pre-block window once, at block start. A second write for
+    /// the same block is a no-op: the antecedent is recorded once and never
+    /// updated, so a later evaluation cannot rewrite history.
+    fn record_block_antecedent(&self, antecedent: &BlockAntecedent)
+        -> Result<(), PersistenceError>;
+
+    /// The recorded antecedent for a block, if one exists.
+    fn block_antecedent(&self, block_id: &str)
+        -> Result<Option<BlockAntecedent>, PersistenceError>;
+}
+
+/// Storage seam for discovered antecedent patterns (`0029`).
+///
+/// Separate from [`BehaviorRepo`] deliberately, and for the same reason
+/// `BehaviorRepo` is separate from [`WorkBlockRepo`]: a finding is a *claim*,
+/// the substrate is *evidence*, and keeping the two seams apart means the block
+/// state machine cannot acquire a dependency on a claim. That is the direction
+/// in which a model result would start driving delivery.
+///
+/// **Nothing in the shipped path implements a caller for this trait.** Findings
+/// are written by the miner and read by tests. There is no IPC message that
+/// carries one and no copy template that renders one; surfacing is Week 8+ and
+/// gated on real data.
+///
+/// The honesty rule — a finding cannot be surfaced without held-out
+/// confirmation — is enforced by the schema, not here. [`mark_surfaced`] can be
+/// called on an unconfirmed finding and it will fail, which is the point: a
+/// rule a caller has to remember is a rule that will be forgotten during a
+/// rushed change.
+///
+/// [`mark_surfaced`]: AntecedentFindingRepo::mark_antecedent_finding_surfaced
+pub trait AntecedentFindingRepo: Send + Sync {
+    /// Records one discovered finding. The unique index on
+    /// `(candidate_id, registry_version, window_start, window_end)` makes
+    /// recording the same look twice an error rather than a doubling of the
+    /// apparent evidence.
+    fn record_antecedent_finding(
+        &self,
+        finding: &AntecedentFinding,
+    ) -> Result<(), PersistenceError>;
+
+    fn antecedent_finding(
+        &self,
+        finding_id: &str,
+    ) -> Result<Option<AntecedentFinding>, PersistenceError>;
+
+    /// Findings in a given state, most recently discovered first.
+    fn antecedent_findings_in_state(
+        &self,
+        state: AntecedentFindingState,
+    ) -> Result<Vec<AntecedentFinding>, PersistenceError>;
+
+    /// Attaches a held-out confirmation and moves the finding to `confirmed`.
+    /// Returns `false` when no such finding exists.
+    fn confirm_antecedent_finding(
+        &self,
+        finding_id: &str,
+        confirmed_at: i64,
+        support_episodes: u32,
+        effect_size: f64,
+    ) -> Result<bool, PersistenceError>;
+
+    /// Moves a finding to `surfaced`. **Fails** — by database trigger, not by
+    /// application check — when `confirmed_at` is NULL.
+    fn mark_antecedent_finding_surfaced(
+        &self,
+        finding_id: &str,
+        surfaced_at: i64,
+    ) -> Result<bool, PersistenceError>;
+
+    fn retract_antecedent_finding(
+        &self,
+        finding_id: &str,
+        retracted_at: i64,
+        reason: AntecedentRetractionReason,
+    ) -> Result<bool, PersistenceError>;
+
+    /// The user says this finding is wrong. Records the dispute, retracts, and
+    /// leaves the row in place so the same candidate is not re-surfaced without
+    /// new evidence.
+    fn dispute_antecedent_finding(
+        &self,
+        finding_id: &str,
+        disputed_at: i64,
+    ) -> Result<bool, PersistenceError>;
+
+    /// Deletes every finding (clear-all-data).
+    fn clear_antecedent_findings(&self) -> Result<u64, PersistenceError>;
 }

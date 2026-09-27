@@ -21,7 +21,6 @@ public final class PermissionCollectionCoordinator {
     private let statusSubject = CurrentValueSubject<PermissionCollectionStatus, Never>(.unknown)
     private var cancellable: AnyCancellable?
     private var lifecycleCancellables = Set<AnyCancellable>()
-    private var isCollecting = false
     private var isSuspendedForSleep = false
     private var lastInputs: (PermissionStatus, ConnectionStatus, Bool)?
 
@@ -124,23 +123,39 @@ public final class PermissionCollectionCoordinator {
         )
     }
 
+    /// Whether collection is running is the agent's fact, not this type's.
+    ///
+    /// There used to be an `isCollecting` flag here that was set on a
+    /// successful start and cleared on a stop this type issued. The agent also
+    /// stops itself — `stopAfterPermissionRevocation` runs when the AX observer
+    /// reports the permission is gone — and it does not tell anyone, so the
+    /// flag survived the thing it described. Revoking Accessibility and
+    /// granting it again without activating the app in between is enough:
+    /// `PermissionManager.publish` drops the granted-to-granted non-transition,
+    /// nothing here re-evaluates on a permission change, and the next time
+    /// anything did re-evaluate the flag said collection was already running.
+    /// It never started again, and no surface said a word about it.
     private func startCollection() {
-        guard !isCollecting else {
+        guard !collectionAgent.isRunning else {
             statusSubject.send(.collecting)
             return
         }
         do {
             try collectionAgent.start()
-            isCollecting = true
             statusSubject.send(.collecting)
+        } catch CollectionError.permissionRevoked {
+            // The agent checked the permission at the moment of starting and
+            // found it gone. That is the same condition `.denied` reports, and
+            // it is what the recovery surface is for; `.error` would send a
+            // person looking for a fault that is a setting.
+            statusSubject.send(.permissionRequired)
         } catch {
             statusSubject.send(.error)
         }
     }
 
     private func stopCollection(force: Bool = false) {
-        guard isCollecting || force else { return }
+        guard collectionAgent.isRunning || force else { return }
         collectionAgent.stop()
-        isCollecting = false
     }
 }

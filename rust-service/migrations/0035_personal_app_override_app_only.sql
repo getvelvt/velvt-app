@@ -1,0 +1,47 @@
+-- Whether an app-scoped rule is a rule in its own right, or the second rung of
+-- a correction that also wrote a window rule.
+--
+-- WHY. Every correction has written both rungs since 0017: `personal_override`
+-- for the window the user was looking at, and `personal_app_override` for the
+-- application it belonged to, so the next window of the same application is not
+-- unclassified again. Protocol 30 added the app rung to the correction history
+-- -- until then a user could neither see nor undo what they had taught at app
+-- scope -- and that made one past action read as TWO rules for every existing
+-- user: the same correction, listed once per rung.
+--
+-- There is no pairing to recover after the fact. The two rungs are keyed in
+-- different hash domains (a window key and an application key), and the only
+-- thing that ever joined them is `raw_event_buffer`, which holds 14 days; every
+-- correction older than that has no event left to join through, and the raw
+-- application name is gone at the abstraction boundary. So the distinction is
+-- recorded at write time from here on.
+--
+-- 0 means "written alongside a window rule". That is the DEFAULT, and the
+-- default is what repairs the rules already on disk: before this column existed
+-- the only writer of this table was the paired correction path, so 0 is true of
+-- every pre-0035 row. 1 is written by `save_app_scope_override` alone -- the
+-- triage surface, where the user teaches Velvt about an *application* with no
+-- event and no window in sight, and where the app rung is the whole rule.
+--
+-- The history therefore lists the 1 rows, and represents a 0 row by its window
+-- rule -- which is also the row whose removal takes both rungs with it, so what
+-- the user can see is exactly what they can undo.
+--
+-- Sticky, never cleared: once a rule has been taught about the application
+-- itself it keeps its own row even if a window correction later touches it,
+-- because those are two separate things the user said and folding them would
+-- silently discard one. `save_app_scope_override` therefore raises this to 1 and
+-- the paired path can only leave it where it is (`MAX`, in the upsert).
+--
+-- The cost, stated plainly rather than hidden: a pre-0035 app rung whose window
+-- rule was removed after its events had aged out is now invisible in the history
+-- instead of listed there. It still classifies, and Reset still clears it. That
+-- is one unreachable row in a rare case, weighed against a duplicate of every
+-- correction for everybody.
+--
+-- Additive: one new column with a constant default, no table rebuild and no
+-- CHECK widened. It is an integer flag -- it holds no raw text, carries no
+-- identity, enters no upload DTO, and there is no field in `upload/dto.rs` it
+-- could occupy.
+ALTER TABLE personal_app_override ADD COLUMN app_only INTEGER NOT NULL DEFAULT 0
+    CHECK (app_only IN (0, 1));

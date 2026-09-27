@@ -1,5 +1,6 @@
 import Combine
 import XCTest
+
 @testable import VelvtMac
 
 @MainActor
@@ -29,7 +30,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.granted, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
         sut.start(serverMessages: accountManager.serverMessages)
 
         let payload = makePayload()
@@ -51,7 +53,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.denied, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
         sut.start(serverMessages: accountManager.serverMessages)
 
         client.inject(.notificationPayload(makePayload()))
@@ -68,7 +71,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.granted, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
 
         let payload = makePayload()
         await sut.handle(payload).value
@@ -182,7 +186,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.granted, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
 
         let now = ISO8601DateFormatter().date(from: "2026-06-15T12:00:00Z")!
         let result = await sut.simulateDebugInsightReceipt(now: now).value
@@ -197,7 +202,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
     func testDebugSimulationRequestsNotificationPermissionWhenUnknown() async {
         let scheduler = FakeNotificationScheduler()
         let permissions = RequestGrantingPermissionManager()
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
 
         let now = ISO8601DateFormatter().date(from: "2026-06-15T12:00:00Z")!
         let result = await sut.simulateDebugInsightReceipt(now: now).value
@@ -229,7 +235,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.granted, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(20))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(20))
 
         let now = ISO8601DateFormatter().date(from: "2026-06-15T12:00:00Z")!
         let first = sut.simulateDebugInsightReceipt(now: now)
@@ -249,7 +256,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.denied, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
 
         await sut.handle(makePayload()).value
 
@@ -260,7 +268,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.restricted, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
 
         await sut.handle(makePayload()).value
 
@@ -271,7 +280,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         // .unknown is the FakePermissionManager default for .notifications.
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
 
         await sut.handle(makePayload()).value
 
@@ -287,7 +297,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.granted, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
 
         let first = makePayload(body: "first")
         let second = makePayload(body: "second")
@@ -308,7 +319,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.granted, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
 
         let dayA = makePayload(insightDate: "2026-06-14")
         let dayB = makePayload(insightDate: "2026-06-15")
@@ -330,7 +342,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.granted, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
         sut.start(serverMessages: accountManager.serverMessages)
 
         let third = makePayload(body: "third")
@@ -351,7 +364,8 @@ final class NotificationDeliveryCoordinatorTests: XCTestCase {
         let scheduler = FakeNotificationScheduler()
         let permissions = FakePermissionManager()
         permissions.setStatus(.granted, for: .notifications)
-        let sut = NotificationDeliveryCoordinator(scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
+        let sut = NotificationDeliveryCoordinator(
+            scheduler: scheduler, permissionManager: permissions, debounceInterval: .milliseconds(5))
         let relay = PassthroughSubject<ServerMessage, Never>()
         sut.start(serverMessages: relay)
 

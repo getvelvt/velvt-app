@@ -18,7 +18,12 @@
           "label": { "type": "string" },
           "local_label": { "type": ["string", "null"], "maxLength": 48 },
           "category": { "type": "string" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "updated_at": { "type": "string", "format": "date-time" },
+          "scope": {
+            "enum": ["window", "app"],
+            "default": "window",
+            "description": "Whether the rule covers one window or every window of an application. stable_id is an abstraction stable id for a window rule and the application's own key hash for an app rule, so a client cannot act on the id without reading this."
+          }
         }
       }
     },

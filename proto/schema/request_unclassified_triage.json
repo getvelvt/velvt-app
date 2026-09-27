@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Local IPC only. The reply names applications the user ran and must never enter cloud requests, telemetry, logs, or crash diagnostics.",
+  "title": "RequestUnclassifiedTriage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "request_unclassified_triage" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lookback_days"],
+      "properties": {
+        "lookback_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14,
+          "description": "Clamped in Rust to the published 14-day retention window; a longer request cannot return evidence that still exists."
+        }
+      }
+    }
+  }
+}

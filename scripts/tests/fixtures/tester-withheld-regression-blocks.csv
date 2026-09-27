@@ -1,0 +1,5 @@
+block_id,origin,phase,started_at,ended_at,total_paused_seconds,planned_duration_seconds
+block-1,manual,completed,1800000000,1800003000,0,3000
+block-2,manual,completed,1800010000,1800013000,0,3000
+block-3,invitation,completed,1800020000,1800023000,0,3000
+block-4,manual,completed,1800030000,1800033600,0,3600

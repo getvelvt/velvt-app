@@ -1,5 +1,6 @@
 import Combine
 import XCTest
+
 @testable import VelvtMac
 
 final class DeliveryModuleTests: XCTestCase {
@@ -25,11 +26,13 @@ final class DeliveryModuleTests: XCTestCase {
         let messages = PassthroughSubject<ServerMessage, Never>()
         let sut = MenuStatusViewModel(ipcClient: client, messages: messages)
 
-        messages.send(.errorResponse(ErrorResponse(
-            code: "upload_flush_failed",
-            message: "Unable to send queued events.",
-            relatedEventID: nil
-        )))
+        messages.send(
+            .errorResponse(
+                ErrorResponse(
+                    code: "upload_flush_failed",
+                    message: "Unable to send queued events.",
+                    relatedEventID: nil
+                )))
         await Task.yield()
 
         XCTAssertEqual(sut.sendError, "Unable to send queued events.")
@@ -59,13 +62,16 @@ final class DeliveryModuleTests: XCTestCase {
 
         XCTAssertEqual(
             client.sentMessages,
-            [.correctEventClassification(.init(
-                eventID: eventID,
-                stableID: "abs_safe",
-                category: "COMMUNICATION",
-                localActivityName: "Client messages"
-            )),
-            .requestCorrectionHistory(.init(query: nil, offset: 0))]
+            [
+                .correctEventClassification(
+                    .init(
+                        eventID: eventID,
+                        stableID: "abs_safe",
+                        category: "COMMUNICATION",
+                        localActivityName: "Client messages"
+                    )),
+                .requestCorrectionHistory(.init(query: nil, offset: 0)),
+            ]
         )
     }
 
@@ -140,15 +146,42 @@ final class DeliveryModuleTests: XCTestCase {
         sut.resetClassificationLearning()
         try? await Task.sleep(nanoseconds: 10_000_000)
 
+        // The two commands are chained, so they are sent in order, and each
+        // one queues a history refresh once it has been sent. The refresh runs
+        // on its own chain, so whether the first refresh goes out before or
+        // after the reset is a scheduling race, not a contract: CI has seen
+        // both orders. Assert what is guaranteed.
+        let sent = client.sentMessages
+        let history = ClientMessage.requestCorrectionHistory(.init(query: nil, offset: 0))
         XCTAssertEqual(
-            client.sentMessages,
+            sent.filter { $0 != history },
             [
                 .removeClassificationOverride(.init(stableID: "abs_safe")),
-                .requestCorrectionHistory(.init(query: nil, offset: 0)),
                 .resetClassificationOverrides,
-                .requestCorrectionHistory(.init(query: nil, offset: 0)),
             ]
         )
+        XCTAssertEqual(sent.filter { $0 == history }.count, 2)
+        XCTAssertEqual(sent.first, .removeClassificationOverride(.init(stableID: "abs_safe")))
+        XCTAssertEqual(sent.last, history, "the reset is followed by a refresh")
+    }
+
+    /// The failure copy names what the reset removes, stored corrections,
+    /// and claims nothing about learning (FACTS: nothing in Velvt learns).
+    @MainActor
+    func testResetCorrectionsFailureNamesCorrectionsNotLearning() async {
+        let client = FakeIPCClient()
+        client.shouldThrowOnSend = IPCError.notConnected
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let sut = MenuStatusViewModel(ipcClient: client, messages: messages)
+
+        sut.resetClassificationLearning()
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(
+            sut.sendError,
+            "Unable to reset your category corrections. Try again later."
+        )
+        XCTAssertFalse(sut.sendError?.lowercased().contains("learn") ?? true)
     }
 
     @MainActor
@@ -165,13 +198,15 @@ final class DeliveryModuleTests: XCTestCase {
                 updatedAt: Date()
             )
         }
-        messages.send(.correctionHistoryPage(.init(
-            items: items,
-            offset: 0,
-            pageSize: 20,
-            totalCount: 41,
-            hasMore: true
-        )))
+        messages.send(
+            .correctionHistoryPage(
+                .init(
+                    items: items,
+                    offset: 0,
+                    pageSize: 20,
+                    totalCount: 41,
+                    hasMore: true
+                )))
         await Task.yield()
 
         sut.refreshCorrectionHistory(query: "Research", offset: 0)

@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import os
 
 // MARK: - NotificationSchedulerProtocol
 
@@ -58,6 +59,8 @@ extension UNUserNotificationCenter: UNUserNotificationCenterProtocol {}
 /// type only schedules. `content` and `payload` fall out of scope once the
 /// request is built; nothing is cached or logged.
 public final class UNNotificationScheduler: NotificationSchedulerProtocol {
+    private static let log = Logger(subsystem: "com.velvt.mac", category: "NotificationScheduler")
+
     private let center: any UNUserNotificationCenterProtocol
     private let now: () -> Date
     private let metrics: (any AppMetricsCounting)?
@@ -97,8 +100,26 @@ public final class UNNotificationScheduler: NotificationSchedulerProtocol {
             metrics?.incrementInterventions()
             return true
         } catch {
+            // A swallowed rejection is how a channel that delivers nothing
+            // passes for a healthy one. The error code is diagnostic only —
+            // no title, body, or insight text is ever logged.
+            Self.logRejection(error, surface: .dailyInsight)
             return false
         }
+    }
+
+    /// Records why the notification centre refused a request. Deliberately
+    /// takes the `NSError` domain and code rather than a localized
+    /// description, which is both locale-dependent and free-form.
+    fileprivate static func logRejection(_ error: Error, surface: NotificationDeliverySurface) {
+        let nsError = error as NSError
+        log.error(
+            """
+            error_code=notification_add_rejected \
+            surface=\(surface.rawValue, privacy: .public) \
+            domain=\(nsError.domain, privacy: .public) \
+            code=\(nsError.code, privacy: .public)
+            """)
     }
 
     public func cancelAll() {
@@ -128,6 +149,7 @@ extension UNNotificationScheduler: InterventionNotificationScheduling {
             metrics?.incrementInterventions()
             return true
         } catch {
+            UNNotificationScheduler.logRejection(error, surface: .driftOffer)
             return false
         }
     }
@@ -184,11 +206,25 @@ extension FakeNotificationScheduler: InterventionNotificationScheduling {
 public final class FakeUNUserNotificationCenter: UNUserNotificationCenterProtocol, @unchecked Sendable {
     public private(set) var addedRequests: [UNNotificationRequest] = []
     public private(set) var removeAllCallCount = 0
+    private var rejection: Error?
     private let lock = NSLock()
 
     public init() {}
 
+    /// Makes the next and every subsequent `add(_:)` fail, so a caller's
+    /// handling of a rejected request can be exercised.
+    public func rejectAdds(with error: Error) {
+        lock.withLock { rejection = error }
+    }
+
+    public func acceptAdds() {
+        lock.withLock { rejection = nil }
+    }
+
     public func add(_ request: UNNotificationRequest) async throws {
+        if let rejection = lock.withLock({ rejection }) {
+            throw rejection
+        }
         lock.withLock { addedRequests.append(request) }
     }
 

@@ -38,9 +38,26 @@ public protocol AppMetricsCounting: AnyObject, Sendable {
     func incrementInterventions()
 }
 
+/// Local, count-only diagnostics surfaced in the menu bar.
+///
+/// **Threading contract.** Facts arrive from whichever queue observed them — the
+/// Accessibility collection queue is the hot one — so the counters themselves live
+/// behind `lock` and are never touched by SwiftUI. The `@Published` properties are
+/// main-thread mirrors of that state: SwiftUI requires every publish on the main
+/// actor, so off-main mutations hand the publish to the main queue instead of
+/// writing the mirrors directly. The collection path itself never hops; it takes
+/// the lock, persists, and returns.
+///
+/// Publish hops are coalesced behind `isPublishScheduled`: a burst of Accessibility
+/// events enqueues at most one pending main-queue block (plus, at worst, one already
+/// executing), and that block republishes the newest snapshot rather than a queued
+/// per-event value. Nothing accumulates on the hot path.
 public final class AppMetricsStore: ObservableObject, AppMetricsCounting, @unchecked Sendable {
+    /// Main-thread mirror of `counters.actionsLogged`. Written only on the main thread.
     @Published public private(set) var actionsLogged: Int
+    /// Main-thread mirror of `counters.interventions`. Written only on the main thread.
     @Published public private(set) var interventions: Int
+    /// Main-thread mirror of `counters.isAuthenticated`. Written only on the main thread.
     @Published public private(set) var isAuthenticated = false
 
     private enum Key {
@@ -48,21 +65,48 @@ public final class AppMetricsStore: ObservableObject, AppMetricsCounting, @unche
         static let interventions = "velvt.metrics.interventions"
     }
 
+    /// Source of truth for the counters, guarded by `lock`.
+    private struct Counters {
+        var actionsLogged: Int
+        var interventions: Int
+        var isAuthenticated: Bool
+    }
+
     private let defaults: UserDefaults
     private let lock = NSLock()
+    /// Guarded by `lock`.
+    private var counters: Counters
+    /// Guarded by `lock`. True while a publish hop is already queued on the main
+    /// queue, so concurrent increments coalesce into that one hop.
+    private var isPublishScheduled = false
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        actionsLogged = defaults.integer(forKey: Key.actionsLogged)
-        interventions = defaults.integer(forKey: Key.interventions)
+        let storedActions = defaults.integer(forKey: Key.actionsLogged)
+        let storedInterventions = defaults.integer(forKey: Key.interventions)
+        counters = Counters(
+            actionsLogged: storedActions,
+            interventions: storedInterventions,
+            isAuthenticated: false
+        )
+        actionsLogged = storedActions
+        interventions = storedInterventions
     }
 
     public func incrementActionsLogged() {
-        increment(\.actionsLogged, key: Key.actionsLogged)
+        lock.withLock {
+            counters.actionsLogged += 1
+            defaults.set(counters.actionsLogged, forKey: Key.actionsLogged)
+        }
+        publishLatest()
     }
 
     public func incrementInterventions() {
-        increment(\.interventions, key: Key.interventions)
+        lock.withLock {
+            counters.interventions += 1
+            defaults.set(counters.interventions, forKey: Key.interventions)
+        }
+        publishLatest()
     }
 
     /// Keeps local diagnostics scoped to the authenticated account session.
@@ -73,18 +117,54 @@ public final class AppMetricsStore: ObservableObject, AppMetricsCounting, @unche
             if !authenticated {
                 defaults.removeObject(forKey: Key.actionsLogged)
                 defaults.removeObject(forKey: Key.interventions)
-                actionsLogged = 0
-                interventions = 0
+                counters.actionsLogged = 0
+                counters.interventions = 0
             }
-            isAuthenticated = authenticated
+            counters.isAuthenticated = authenticated
+        }
+        publishLatest()
+    }
+
+    // MARK: - Publishing
+
+    /// Mirrors the latest locked snapshot onto the `@Published` properties.
+    ///
+    /// On the main thread this is synchronous, so main-thread callers (and views
+    /// reading straight after a main-thread update) observe the new value at once.
+    /// Off the main thread the publish is handed to the main queue and coalesced.
+    private func publishLatest() {
+        if Thread.isMainThread {
+            applyLatestSnapshotOnMain()
+            return
+        }
+        let alreadyScheduled = lock.withLock { () -> Bool in
+            let wasScheduled = isPublishScheduled
+            isPublishScheduled = true
+            return wasScheduled
+        }
+        guard !alreadyScheduled else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.applyLatestSnapshotOnMain()
         }
     }
 
-    private func increment(_ keyPath: ReferenceWritableKeyPath<AppMetricsStore, Int>, key: String) {
-        lock.withLock {
-            let value = self[keyPath: keyPath] + 1
-            defaults.set(value, forKey: key)
-            self[keyPath: keyPath] = value
+    /// Must run on the main thread — these assignments publish into SwiftUI.
+    /// Always reads the newest snapshot under the lock so a coalesced hop can
+    /// never publish a value older than one already mirrored.
+    private func applyLatestSnapshotOnMain() {
+        assert(Thread.isMainThread, "AppMetricsStore must publish on the main thread")
+        let snapshot = lock.withLock { () -> Counters in
+            isPublishScheduled = false
+            return counters
+        }
+        if actionsLogged != snapshot.actionsLogged {
+            actionsLogged = snapshot.actionsLogged
+        }
+        if interventions != snapshot.interventions {
+            interventions = snapshot.interventions
+        }
+        if isAuthenticated != snapshot.isAuthenticated {
+            isAuthenticated = snapshot.isAuthenticated
         }
     }
 }

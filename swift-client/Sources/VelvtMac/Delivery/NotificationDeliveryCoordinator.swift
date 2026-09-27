@@ -53,14 +53,19 @@ public final class UserDefaultsScheduledNotificationTracker: ScheduledNotificati
 /// Listens for `notificationPayload` server pushes and forwards them to a
 /// `NotificationSchedulerProtocol` after a notifications-permission check.
 ///
-/// Denied/restricted/unknown permission status discards the payload
-/// silently: no crash, no retry, no re-request, and — since the payload is
-/// simply dropped — no logging of its content.
+/// Denied/restricted/unknown permission status discards the payload: no
+/// crash, no re-request, and — since the payload is simply dropped — no
+/// logging of its content. The drop is reported as an outcome, because a
+/// permission gate that returns in silence makes a channel that has never
+/// delivered anything indistinguishable from a healthy one. The payload is
+/// not recorded in `scheduledNotifications`, so it stays eligible if Rust
+/// re-sends it.
 @MainActor
 public final class NotificationDeliveryCoordinator {
     private let scheduler: any NotificationSchedulerProtocol
     private let permissionManager: any PermissionManagerProtocol
     private let scheduledNotifications: any ScheduledNotificationTracking
+    private let reporter: any NotificationDeliveryReporting
     private let debounceInterval: Duration
     private var cancellables = Set<AnyCancellable>()
 
@@ -81,11 +86,13 @@ public final class NotificationDeliveryCoordinator {
         scheduler: any NotificationSchedulerProtocol,
         permissionManager: any PermissionManagerProtocol,
         scheduledNotifications: any ScheduledNotificationTracking = UserDefaultsScheduledNotificationTracker(),
+        reporter: any NotificationDeliveryReporting = OSLogNotificationDeliveryReporter(),
         debounceInterval: Duration = .milliseconds(250)
     ) {
         self.scheduler = scheduler
         self.permissionManager = permissionManager
         self.scheduledNotifications = scheduledNotifications
+        self.reporter = reporter
         self.debounceInterval = debounceInterval
     }
 
@@ -112,7 +119,8 @@ public final class NotificationDeliveryCoordinator {
     @discardableResult
     public func handle(_ payload: NotificationPayload) -> Task<Void, Never> {
         pendingTasksByDate[payload.insightDate]?.cancel()
-        let task = Task { @MainActor [weak self, scheduler, permissionManager, scheduledNotifications, debounceInterval] in
+        let task = Task {
+            @MainActor [weak self, scheduler, permissionManager, scheduledNotifications, reporter, debounceInterval] in
             // Briefly wait so a near-simultaneous newer payload for the same
             // date can cancel this task before any scheduling work happens.
             try? await Task.sleep(for: debounceInterval)
@@ -128,12 +136,20 @@ public final class NotificationDeliveryCoordinator {
             // something worth showing, exactly as the debug path does.
             let checked = await permissionManager.checkStatus(for: .notifications)
             guard !Task.isCancelled else { return }
-            let status = checked == .unknown
+            let status =
+                checked == .unknown
                 ? await permissionManager.requestPermission(for: .notifications)
                 : checked
-            guard status == .granted, !Task.isCancelled else { return }
+            guard status == .granted, !Task.isCancelled else {
+                reporter.report(.blockedByPermission(status), surface: .dailyInsight)
+                self?.pendingTasksByDate.removeValue(forKey: payload.insightDate)
+                return
+            }
             if await scheduler.schedule(payload) {
                 scheduledNotifications.record(payload.notificationID)
+                reporter.report(.delivered, surface: .dailyInsight)
+            } else {
+                reporter.report(.rejectedByNotificationCentre, surface: .dailyInsight)
             }
             self?.pendingTasksByDate.removeValue(forKey: payload.insightDate)
         }
@@ -149,15 +165,22 @@ public final class NotificationDeliveryCoordinator {
         now: Date = Date()
     ) -> Task<DebugInsightSimulationResult, Never> {
         let payload = Self.debugNotificationPayload(now: now)
-        return Task { @MainActor [scheduler, permissionManager, debounceInterval] in
+        return Task { @MainActor [scheduler, permissionManager, reporter, debounceInterval] in
             try? await Task.sleep(for: debounceInterval)
             guard !Task.isCancelled else { return .schedulingFailed }
             let currentStatus = await permissionManager.checkStatus(for: .notifications)
-            let status = currentStatus == .unknown
+            let status =
+                currentStatus == .unknown
                 ? await permissionManager.requestPermission(for: .notifications)
                 : currentStatus
-            guard status == .granted, !Task.isCancelled else { return .permissionDenied }
-            return await scheduler.schedule(payload) ? .scheduled : .schedulingFailed
+            guard status == .granted, !Task.isCancelled else {
+                reporter.report(.blockedByPermission(status), surface: .dailyInsight)
+                return .permissionDenied
+            }
+            let scheduled = await scheduler.schedule(payload)
+            reporter.report(
+                scheduled ? .delivered : .rejectedByNotificationCentre, surface: .dailyInsight)
+            return scheduled ? .scheduled : .schedulingFailed
         }
     }
 
@@ -190,10 +213,22 @@ public final class NotificationDeliveryCoordinator {
 public final class NotificationResponseRouter: NSObject, UNUserNotificationCenterDelegate {
     private let openPopover: () -> Void
     private let scrollToDate: ScrollToDateAction
+    private let isDriftCardInFront: () -> Bool
+    private let reporter: any NotificationDeliveryReporting
 
-    public init(openPopover: @escaping () -> Void, scrollToDate: ScrollToDateAction) {
+    /// - Parameter isDriftCardInFront: whether the menu-bar window, which
+    ///   draws the live drift card above every tab, is the surface in front of
+    ///   the person right now.
+    public init(
+        openPopover: @escaping () -> Void,
+        scrollToDate: ScrollToDateAction,
+        isDriftCardInFront: @escaping () -> Bool = { false },
+        reporter: any NotificationDeliveryReporting = OSLogNotificationDeliveryReporter()
+    ) {
         self.openPopover = openPopover
         self.scrollToDate = scrollToDate
+        self.isDriftCardInFront = isDriftCardInFront
+        self.reporter = reporter
     }
 
     /// `nonisolated` so it satisfies the (non-isolated) protocol requirement;
@@ -210,12 +245,38 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
         completionHandler()
     }
 
+    /// Asked only while Velvt is the active app; from the background the
+    /// system presents the notification without consulting the app.
     nonisolated public func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .list, .sound])
+        let isDriftOffer =
+            notification.request.content.userInfo[interventionNotificationUserInfoKey] as? Bool == true
+        Task { @MainActor in
+            completionHandler(self.presentationWhileActive(isDriftOffer: isDriftOffer))
+        }
+    }
+
+    /// How a notification is shown while Velvt is the active app.
+    ///
+    /// Being active is not the same as showing the offer. The app is active
+    /// whenever any of its windows has focus — settings, onboarding, the
+    /// history view — and then the banner is the only thing that says an
+    /// offer exists, so it is presented exactly as it would be from the
+    /// background. The one exception is a drift offer while the menu-bar
+    /// window is in front: that window draws the offer's card above every
+    /// tab, so a banner and a sound would announce what the person is already
+    /// looking at. It is still listed in Notification Center.
+    func presentationWhileActive(isDriftOffer: Bool) -> UNNotificationPresentationOptions {
+        let surface: NotificationDeliverySurface = isDriftOffer ? .driftOffer : .dailyInsight
+        if isDriftOffer, isDriftCardInFront() {
+            reporter.report(.listedBehindVisibleCard, surface: surface)
+            return [.list]
+        }
+        reporter.report(.bannerWhileActive, surface: surface)
+        return [.banner, .list, .sound]
     }
 
     func handle(userInfo: [AnyHashable: Any]) {

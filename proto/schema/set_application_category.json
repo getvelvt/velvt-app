@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Local IPC only. Carries a device-local alias and identifier; never uploaded, logged, or included in crash diagnostics.",
+  "title": "SetApplicationCategory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "set_application_category" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app_stable_id", "category"],
+      "description": "Carries no event id on purpose: the user is telling Velvt what an application is, not correcting one moment of it. Saving the same answer twice is the same as saving it once.",
+      "properties": {
+        "app_stable_id": {
+          "type": "string",
+          "description": "The app-scoped key exactly as unclassified_triage reported it."
+        },
+        "category": {
+          "enum": ["FOCUS_WORK", "PASSIVE_CONSUMPTION", "SOCIAL_FEED", "COMMUNICATION", "TASK_MANAGEMENT", "REFERENCE", "SYSTEM", "UNLOGGED"]
+        },
+        "activity_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48,
+          "description": "Device-local user label. Never include it in cloud requests, telemetry, logs, or crash diagnostics."
+        }
+      }
+    }
+  }
+}

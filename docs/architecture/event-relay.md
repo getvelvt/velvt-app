@@ -8,6 +8,14 @@ The event relay sits between the collection agent and the IPC layer. It:
 2. Forwards each event to the Rust service as a `raw_event` IPC message.
 3. Buffers events in memory while the IPC socket is unavailable.
 4. Flushes buffered events in chronological order when the socket reconnects.
+5. Sends each activity that has just begun, received via
+   `EventSink.activityBegan(_:)`, as a `raw_event` with `in_progress: true`
+   (protocol 32) — live only. It travels on the same ordered stream as the
+   closed dwells and is sent only while connected with nothing buffered, so
+   the service always reads a dwell's closed report before the next dwell's
+   in-progress one. Otherwise it is dropped, never buffered or replayed, and
+   never counted as an action or a dropped event: the dwell's closed report
+   is buffered as usual and carries the same facts.
 
 The relay has no abstraction, persistence, filtering, or network responsibilities.
 Raw app names and window titles must never appear in any log statement.

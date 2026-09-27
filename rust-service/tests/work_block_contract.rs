@@ -157,12 +157,23 @@ fn migration_upgrades_a_current_v8_database_without_losing_existing_rows() {
                 include_str!("../migrations/0008_classification_contract.sql"),
             ),
         ];
-        for (version, sql) in migrations {
+        // Recorded under the file names the runner uses, which it now checks.
+        let names = [
+            "0001_initial_persistence.sql",
+            "0002_harden_indexes_and_probe.sql",
+            "0003_upload_retry_state.sql",
+            "0004_insight_cache_negative.sql",
+            "0005_local_queue_display_label.sql",
+            "0006_classification_provenance.sql",
+            "0007_personal_overrides.sql",
+            "0008_classification_contract.sql",
+        ];
+        for ((version, sql), name) in migrations.into_iter().zip(names) {
             connection.execute_batch(sql).unwrap();
             connection
                 .execute(
                     "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
-                    (version, format!("migration-{version}")),
+                    (version, name),
                 )
                 .unwrap();
         }

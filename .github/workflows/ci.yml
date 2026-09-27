@@ -2,8 +2,12 @@ name: CI
 
 on:
   pull_request:
+  # develop is where every change merges first; main only moves when develop is
+  # promoted. Without develop here, the bench and package jobs below (which
+  # skip pull requests) never ran on anything merged between promotions.
   push:
     branches:
+      - develop
       - main
   workflow_dispatch:
 
@@ -44,6 +48,52 @@ jobs:
       - name: Test Rust
         run: make test-rust
 
+      # `onnx` is off by default, and the only job that compiled it was
+      # `package`, which does not run on pull requests -- so the whole of
+      # src/abstraction/onnx.rs was type-checked by nothing before merge. A
+      # check is the whole of what is possible here: running the feature needs
+      # model artifacts that are not in the repository.
+      - name: Check Rust with the onnx feature
+        run: make check-rust-onnx
+
+  bench:
+    name: Rust latency budgets
+    # Where the Tier 2 p95 budget published in README.md and ARCHITECTURE.md is
+    # enforced. It is deliberately off the pull-request path: a 25 ms wall-clock
+    # tail bound on a shared runner fails under a busy neighbour about as
+    # readily as under a regression, and a required check that goes red for
+    # reasons unrelated to the change teaches everyone to re-run it. The pull
+    # request still carries the Tier 2 median bound, in `make test-rust`, which
+    # runner load cannot move.
+    #
+    # What that timing trades away, stated so nobody has to rediscover it: a
+    # Tier 2 tail regression is caught on develop within one merge, not before
+    # it lands, and not at all on a branch that is never merged.
+    #
+    # Its own job rather than a step in `rust` so a benchmark failure reports as
+    # itself and does not withhold `package` from an otherwise green build. The
+    # extra runner is ubuntu, the cheap rate this file's concurrency note names.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Install pinned Rust toolchain
+        working-directory: rust-service
+        run: rustup show active-toolchain
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: rust-service
+
+      # Fails if it measures nothing, not only if a budget is exceeded.
+      - name: Measure Tier 2 latency budgets
+        run: make bench-rust
+
   swift:
     name: Swift lint, test, and release policy
     runs-on: macos-15
@@ -53,13 +103,34 @@ jobs:
       - name: Check out source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
+      # Release DMGs are built with the Xcode named in .xcode-version, and the
+      # runner's default Xcode is newer. Select the pinned one so the compiler,
+      # the SDK, and swift-format here are the ones a release is built with.
+      # The runner image installs each Xcode as /Applications/Xcode_<version>.app.
+      - name: Select pinned Xcode
+        run: |
+          version="$(cat .xcode-version)"
+          sudo xcode-select --switch "/Applications/Xcode_${version}.app"
+          xcodebuild -version
+          test "$(xcodebuild -version | head -n 1)" = "Xcode ${version}"
+
+      # Keyed on the Xcode pin as well: a .build restored from another
+      # compiler can fail to import its own modules.
       - name: Cache SwiftPM build directory
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: swift-client/.build
-          key: swiftpm-${{ runner.os }}-${{ hashFiles('swift-client/Package.resolved') }}
+          key: swiftpm-${{ runner.os }}-xcode-${{ hashFiles('.xcode-version') }}-${{ hashFiles('swift-client/Package.resolved') }}
           restore-keys: |
-            swiftpm-${{ runner.os }}-
+            swiftpm-${{ runner.os }}-xcode-${{ hashFiles('.xcode-version') }}-
+
+      # SwiftPM globs Sources/VelvtMac, so `swift test` is green whether or not
+      # a file is in the Xcode target, which lists its files explicitly. Without
+      # this step the omission first surfaces minutes into a DMG build, as a
+      # link error naming a symbol rather than a file -- and it has reached main
+      # three times. This is sub-second and needs no Xcode, so it runs first.
+      - name: Verify Xcode target membership
+        run: ./scripts/verify_pbxproj_membership.sh
 
       - name: Lint Swift
         run: make lint-swift
@@ -72,11 +143,30 @@ jobs:
       - name: Test updater release gate
         run: make test-update-release
 
+      - name: Install pinned Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version-file: .python-version
+
+      # Every shipped Swift and Rust string literal, checked for the capability
+      # claims the product cannot make ("learns", "adapts", "predicts", "gets
+      # smarter"). The Swift client shipped "Learning from your recent
+      # sessions" with a test pinning it, because nothing checked Swift copy.
+      - name: Check copy for banned capability claims
+        run: make lint-copy
+
+      # The cohort export, the analysis harness, the boundary proof, the trace
+      # generator, and the guards' own tests. Seconds. No CI job ran them
+      # before, and they were committed without executable bits, so `make
+      # test-measurement` could not even start.
+      - name: Test measurement scripts and CI guards
+        run: make test-measurement
+
   package:
     name: Package universal DMG
     # Packaging a universal Release DMG does not inform code review and is the
-    # most expensive step in this workflow. Run it on main, before a release,
-    # and on demand -- not on every pull request.
+    # most expensive step in this workflow. Run it on every push to develop and
+    # main, and on demand -- not on every pull request.
     if: github.event_name != 'pull_request'
     needs: [rust, swift]
     runs-on: macos-15
@@ -85,6 +175,20 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # The same pin as the swift job; `make package-release` refuses any other.
+      - name: Select pinned Xcode
+        run: |
+          version="$(cat .xcode-version)"
+          sudo xcode-select --switch "/Applications/Xcode_${version}.app"
+          xcodebuild -version
+          test "$(xcodebuild -version | head -n 1)" = "Xcode ${version}"
+
+      # prepare-dmg-tool builds the pinned dmgbuild in a venv from python3.
+      - name: Install pinned Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version-file: .python-version
 
       - name: Install pinned Rust toolchain
         working-directory: rust-service

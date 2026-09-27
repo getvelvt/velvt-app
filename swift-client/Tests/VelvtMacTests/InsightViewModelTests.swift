@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import VelvtMac
 
 @MainActor
@@ -45,13 +46,14 @@ final class InsightViewModelTests: XCTestCase {
 
     func testOlderCloudInsightIsNotEligibleForToday() {
         let sut = InsightViewModel()
-        sut.update(from: InsightPayload(
-            date: "2026-07-17",
-            text: "Older observation",
-            confidenceLevel: .medium,
-            lowConfidence: false,
-            generatedAt: Date()
-        ))
+        sut.update(
+            from: InsightPayload(
+                date: "2026-07-17",
+                text: "Older observation",
+                confidenceLevel: .medium,
+                lowConfidence: false,
+                generatedAt: Date()
+            ))
 
         XCTAssertFalse(sut.isForLocalDate("2026-07-18"))
         XCTAssertTrue(sut.isForLocalDate("2026-07-17"))
@@ -74,8 +76,9 @@ final class InsightViewModelTests: XCTestCase {
         // Verify it is neither "Today" nor "Yesterday" and contains a month name.
         XCTAssertNotEqual(result, "Today")
         XCTAssertNotEqual(result, "Yesterday")
-        XCTAssertTrue(result.contains("January") || result.contains("Jan"),
-                      "Expected a formatted month name; got: \(result)")
+        XCTAssertTrue(
+            result.contains("January") || result.contains("Jan"),
+            "Expected a formatted month name; got: \(result)")
     }
 
     func testMalformedDateStringPassedThrough() {
@@ -154,13 +157,15 @@ final class InsightViewModelTests: XCTestCase {
 
     func testLongInsightTextStoredVerbatimWithoutTruncation() {
         // 500+ characters: view model must not shorten, clip, or append ellipsis.
-        let long = String(repeating: "Focus held steady. ", count: 30) // 570 chars
+        let long = String(repeating: "Focus held steady. ", count: 30)  // 570 chars
         let sut = InsightViewModel()
         sut.update(from: makeInsight(text: long))
-        XCTAssertEqual(sut.text, long,
-                       "Insight text must pass through verbatim regardless of length")
-        XCTAssertEqual(sut.text.count, long.count,
-                       "Character count must be unchanged after update")
+        XCTAssertEqual(
+            sut.text, long,
+            "Insight text must pass through verbatim regardless of length")
+        XCTAssertEqual(
+            sut.text.count, long.count,
+            "Character count must be unchanged after update")
     }
 
     // MARK: - Rapid successive pushes
@@ -168,12 +173,13 @@ final class InsightViewModelTests: XCTestCase {
     func testTwoRapidPushesShowOnlyLatest() {
         // Simulates Rust resending an updated insight without an intermediate render cycle.
         let sut = InsightViewModel()
-        let first  = makeInsight(text: "Initial baseline insight from earlier processing.")
+        let first = makeInsight(text: "Initial baseline insight from earlier processing.")
         let second = makeInsight(text: "Revised insight reflecting afternoon context shift.")
         sut.update(from: first)
         sut.update(from: second)
-        XCTAssertEqual(sut.text, second.text,
-                       "Latest push must win; earlier text must not persist")
+        XCTAssertEqual(
+            sut.text, second.text,
+            "Latest push must win; earlier text must not persist")
         XCTAssertNotEqual(sut.text, first.text)
     }
 
@@ -207,14 +213,15 @@ final class InsightViewModelTests: XCTestCase {
         )
         let sut = InsightViewModel()
 
-        sut.update(from: InsightPayload(
-            date: "2026-06-15",
-            text: "Approved combined copy.",
-            evidence: evidence,
-            confidenceLevel: .high,
-            lowConfidence: false,
-            generatedAt: Date(timeIntervalSince1970: 1_750_000_000)
-        ))
+        sut.update(
+            from: InsightPayload(
+                date: "2026-06-15",
+                text: "Approved combined copy.",
+                evidence: evidence,
+                confidenceLevel: .high,
+                lowConfidence: false,
+                generatedAt: Date(timeIntervalSince1970: 1_750_000_000)
+            ))
 
         XCTAssertEqual(sut.observation, evidence.observation)
         XCTAssertEqual(sut.baselineComparison, evidence.comparison)
@@ -246,10 +253,11 @@ final class InsightViewModelTests: XCTestCase {
                 repetitionDays: 1
             )
             let sut = InsightViewModel()
-            sut.update(from: InsightPayload(
-                date: "2026-06-15", text: "Safe copy.", evidence: evidence,
-                confidenceLevel: .high, lowConfidence: false, generatedAt: Date()
-            ))
+            sut.update(
+                from: InsightPayload(
+                    date: "2026-06-15", text: "Safe copy.", evidence: evidence,
+                    confidenceLevel: .high, lowConfidence: false, generatedAt: Date()
+                ))
             XCTAssertEqual(sut.emotionalStage, stage)
         }
     }

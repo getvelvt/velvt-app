@@ -1,5 +1,9 @@
 {
-  "category_taxonomy_version": "mvp-1",
+  "category_taxonomy_version": "mvp-2",
+  "notes": [
+    "Browser seed entries were deleted in mvp-2. SeedDictionaryPlugin refuses any seed whose pattern is a browser name, so the eight entries for Safari, Google Chrome, Chrome, Arc, Firefox, Brave Browser, Microsoft Edge and Orion could never match anything. A browser window is classified by its focused site (BrowserContextPlugin) and falls back to an explicitly ambiguous reference:browser prior (GenericBrowserPriorPlugin) when the site says nothing. Do not re-add them, by name or by bundle identifier: configuration that looks live and is not is worse than none.",
+    "bundle_identifier keys a seed on the developer's chosen identifier instead of the localized name macOS reports. Add one only when it has been read out of that application's own Info.plist: a wrong identifier is a silent classification failure with no error anywhere. seed_bundles is for applications whose displayed name is too generic to match on at all (Messages, Notes, TextEdit, Freeform, Contacts)."
+  ],
   "default_category": "UNLOGGED",
   "categories": [
     "FOCUS_WORK",
@@ -20,7 +24,8 @@
     {
       "app_name_pattern": "Visual Studio Code",
       "label": "document:code",
-      "category": "FOCUS_WORK"
+      "category": "FOCUS_WORK",
+      "bundle_identifier": "com.microsoft.VSCode"
     },
     {
       "app_name_pattern": "Code - OSS",
@@ -35,7 +40,8 @@
     {
       "app_name_pattern": "Xcode",
       "label": "document:edit",
-      "category": "FOCUS_WORK"
+      "category": "FOCUS_WORK",
+      "bundle_identifier": "com.apple.dt.Xcode"
     },
     {
       "app_name_pattern": "Zed",
@@ -45,7 +51,8 @@
     {
       "app_name_pattern": "Cursor",
       "label": "document:edit",
-      "category": "FOCUS_WORK"
+      "category": "FOCUS_WORK",
+      "bundle_identifier": "com.todesktop.230313mzl4w4u92"
     },
     {
       "app_name_pattern": "Windsurf",
@@ -85,12 +92,14 @@
     {
       "app_name_pattern": "Notion",
       "label": "document:notion",
-      "category": "FOCUS_WORK"
+      "category": "FOCUS_WORK",
+      "bundle_identifier": "notion.id"
     },
     {
       "app_name_pattern": "Obsidian",
       "label": "document:obsidian",
-      "category": "FOCUS_WORK"
+      "category": "FOCUS_WORK",
+      "bundle_identifier": "md.obsidian"
     },
     {
       "app_name_pattern": "Overleaf",
@@ -220,7 +229,8 @@
     {
       "app_name_pattern": "Spotify",
       "label": "audio:spotify",
-      "category": "PASSIVE_CONSUMPTION"
+      "category": "PASSIVE_CONSUMPTION",
+      "bundle_identifier": "com.spotify.client"
     },
     {
       "app_name_pattern": "Apple Music",
@@ -265,12 +275,14 @@
     {
       "app_name_pattern": "Slack",
       "label": "communication:slack",
-      "category": "COMMUNICATION"
+      "category": "COMMUNICATION",
+      "bundle_identifier": "com.tinyspeck.slackmacgap"
     },
     {
       "app_name_pattern": "Discord",
       "label": "communication:discord",
-      "category": "COMMUNICATION"
+      "category": "COMMUNICATION",
+      "bundle_identifier": "com.hnc.Discord"
     },
     {
       "app_name_pattern": "iMessage",
@@ -428,46 +440,6 @@
       "category": "REFERENCE"
     },
     {
-      "app_name_pattern": "Safari",
-      "label": "reference:browser",
-      "category": "REFERENCE"
-    },
-    {
-      "app_name_pattern": "Google Chrome",
-      "label": "reference:browser",
-      "category": "REFERENCE"
-    },
-    {
-      "app_name_pattern": "Chrome",
-      "label": "reference:browser",
-      "category": "REFERENCE"
-    },
-    {
-      "app_name_pattern": "Arc",
-      "label": "reference:browser",
-      "category": "REFERENCE"
-    },
-    {
-      "app_name_pattern": "Firefox",
-      "label": "reference:browser",
-      "category": "REFERENCE"
-    },
-    {
-      "app_name_pattern": "Brave Browser",
-      "label": "reference:browser",
-      "category": "REFERENCE"
-    },
-    {
-      "app_name_pattern": "Microsoft Edge",
-      "label": "reference:browser",
-      "category": "REFERENCE"
-    },
-    {
-      "app_name_pattern": "Orion",
-      "label": "reference:browser",
-      "category": "REFERENCE"
-    },
-    {
       "app_name_pattern": "Finder",
       "label": "system:manage",
       "category": "SYSTEM"
@@ -480,12 +452,14 @@
     {
       "app_name_pattern": "Terminal",
       "label": "document:code",
-      "category": "FOCUS_WORK"
+      "category": "FOCUS_WORK",
+      "bundle_identifier": "com.apple.Terminal"
     },
     {
       "app_name_pattern": "iTerm2",
       "label": "document:code",
-      "category": "FOCUS_WORK"
+      "category": "FOCUS_WORK",
+      "bundle_identifier": "com.googlecode.iterm2"
     },
     {
       "app_name_pattern": "Warp",
@@ -680,7 +654,8 @@
     {
       "app_name_pattern": "Figma",
       "label": "document:edit",
-      "category": "FOCUS_WORK"
+      "category": "FOCUS_WORK",
+      "bundle_identifier": "com.figma.Desktop"
     },
     {
       "app_name_pattern": "Sketch",
@@ -824,8 +799,9 @@
     },
     {
       "app_name_pattern": "WhatsApp",
-      "label": "communication:telegram",
-      "category": "COMMUNICATION"
+      "label": "communication:chat",
+      "category": "COMMUNICATION",
+      "bundle_identifier": "net.whatsapp.WhatsApp"
     },
     {
       "app_name_pattern": "Signal",
@@ -1036,6 +1012,33 @@
       "app_name_pattern": "Rectangle",
       "label": "system:manage",
       "category": "SYSTEM"
+    }
+  ],
+  "seed_bundles": [
+    {
+      "bundle_identifier": "com.apple.MobileSMS",
+      "label": "communication:chat",
+      "category": "COMMUNICATION"
+    },
+    {
+      "bundle_identifier": "com.apple.Notes",
+      "label": "document:write",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "bundle_identifier": "com.apple.TextEdit",
+      "label": "document:edit",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "bundle_identifier": "com.apple.freeform",
+      "label": "design:visual",
+      "category": "FOCUS_WORK"
+    },
+    {
+      "bundle_identifier": "com.apple.AddressBook",
+      "label": "reference:contacts",
+      "category": "REFERENCE"
     }
   ]
 }

@@ -1,16 +1,10 @@
 import XCTest
 
 final class BuildConfigurationTests: XCTestCase {
-    func testAppBundleDoesNotDeclareLSUIElementSoLaunchServicesCanIndexIt() throws {
-        let packageRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let configPaths = [
-            packageRoot.appendingPathComponent("Configs/Debug.xcconfig"),
-            packageRoot.appendingPathComponent("Configs/Release.xcconfig"),
-        ]
+    private let focusStatusUsageDescription =
+        "Velvt reads whether Focus is active to avoid interrupting you and report notification protection accurately."
 
+    func testAppBundleDoesNotDeclareLSUIElementSoLaunchServicesCanIndexIt() throws {
         for path in configPaths {
             let contents = try String(contentsOf: path, encoding: .utf8)
             XCTAssertTrue(contents.contains("INFOPLIST_KEY_CFBundleName = Velvt"))
@@ -22,5 +16,29 @@ final class BuildConfigurationTests: XCTestCase {
                 "\(path.lastPathComponent) must not make the app an LSUIElement agent; runtime activation policy keeps it menu-bar-only."
             )
         }
+    }
+
+    func testBuildConfigurationsDeclareFocusStatusUsageDescription() throws {
+        let expectedSetting =
+            "INFOPLIST_KEY_NSFocusStatusUsageDescription = \(focusStatusUsageDescription)"
+
+        for path in configPaths {
+            let contents = try String(contentsOf: path, encoding: .utf8)
+            XCTAssertTrue(
+                contents.contains(expectedSetting),
+                "\(path.lastPathComponent) must declare the nonempty Focus status usage description."
+            )
+        }
+    }
+
+    private var configPaths: [URL] {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return [
+            packageRoot.appendingPathComponent("Configs/Debug.xcconfig"),
+            packageRoot.appendingPathComponent("Configs/Release.xcconfig"),
+        ]
     }
 }

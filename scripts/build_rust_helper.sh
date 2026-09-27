@@ -36,6 +36,33 @@ if [[ "$distributable" == "NO" ]]; then
   exit 0
 fi
 
+# A shipped helper must not carry the build machine's paths. Without this, the
+# 1.0.11 helper held 867 strings naming the builder's home directory and
+# checkout (panic locations and debug info from every crate). Later flags win
+# when several prefixes match, so the most specific directory comes last.
+# CARGO_ENCODED_RUSTFLAGS rather than RUSTFLAGS so a path with a space survives;
+# flags the caller already set in either variable are carried over, since the
+# encoded form replaces both.
+remap_rustflags() {
+  local flags=()
+  local flag
+  if [[ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]]; then
+    IFS=$'\x1f' read -r -a flags <<<"$CARGO_ENCODED_RUSTFLAGS"
+  else
+    for flag in ${RUSTFLAGS:-}; do flags+=("$flag"); done
+  fi
+  flags+=("--remap-path-prefix=$HOME=/build-home")
+  flags+=("--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo")
+  flags+=("--remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup")
+  if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+    flags+=("--remap-path-prefix=$(cd "$CARGO_TARGET_DIR" 2>/dev/null && pwd -P || echo "$CARGO_TARGET_DIR")=/velvt/target")
+  fi
+  flags+=("--remap-path-prefix=$(pwd -P)=/velvt/rust-service")
+  local IFS=$'\x1f'
+  printf '%s' "${flags[*]}"
+}
+export CARGO_ENCODED_RUSTFLAGS="$(remap_rustflags)"
+
 for arch in arm64 x86_64; do
   case "$arch" in
     arm64) target="aarch64-apple-darwin" ;;

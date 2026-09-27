@@ -1,5 +1,6 @@
 import Combine
 import XCTest
+
 @testable import VelvtMac
 
 /// Covers the "multiple publishers change simultaneously" race the pure
@@ -87,7 +88,9 @@ final class MenuBarStateStreamTests: XCTestCase {
         client.inject(.deviceRevoked(DeviceRevoked(message: "revoked")))
         await fulfillment(of: [revocationSettled], timeout: 2)
 
-        XCTAssertEqual(recorded, [.normal, .deviceRevoked], "No intermediate non-revoked state must be delivered once the revoke push starts")
+        XCTAssertEqual(
+            recorded, [.normal, .deviceRevoked],
+            "No intermediate non-revoked state must be delivered once the revoke push starts")
         cancellable.cancel()
     }
 

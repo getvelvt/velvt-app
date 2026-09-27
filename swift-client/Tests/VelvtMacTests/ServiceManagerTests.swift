@@ -1,5 +1,4 @@
 import XCTest
-import Combine
 @testable import VelvtMac
 
 // MARK: - Mock registrar
@@ -42,8 +41,7 @@ private func makeManager(
     tempDir: URL,
     registrar: any ServiceRegistrar,
     bundledBinaryURL: URL? = nil,
-    bundledVersion: String = "1.0.0",
-    installedVersion: String? = nil
+    bundledVersion: String = "1.0.0"
 ) throws -> ServiceManager {
     let support = tempDir.appendingPathComponent("support", isDirectory: true)
     let launchAgents = tempDir.appendingPathComponent("LaunchAgents", isDirectory: true)
@@ -53,12 +51,6 @@ private func makeManager(
     // Write bundled version sidecar.
     let bundledVersionURL = tempDir.appendingPathComponent("bundled.version")
     try bundledVersion.write(to: bundledVersionURL, atomically: true, encoding: .utf8)
-
-    // Optionally write installed version sidecar (simulates a prior install).
-    if let iv = installedVersion {
-        let ivURL = support.appendingPathComponent("velvt-service.version")
-        try iv.write(to: ivURL, atomically: true, encoding: .utf8)
-    }
 
     // Write a minimal plist template.
     let templateURL = tempDir.appendingPathComponent("com.velvt.service.plist.template")
@@ -107,7 +99,6 @@ private func makeManager(
 final class ServiceManagerTests: XCTestCase {
 
     private var tempDir: URL!
-    private var cancellables = Set<AnyCancellable>()
 
     override func setUp() async throws {
         try await super.setUp()
@@ -118,7 +109,6 @@ final class ServiceManagerTests: XCTestCase {
 
     override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tempDir)
-        cancellables.removeAll()
         try await super.tearDown()
     }
 
@@ -134,58 +124,6 @@ final class ServiceManagerTests: XCTestCase {
         XCTAssertEqual(registrar.registerCallCount, 1,
             "register() must be called exactly once even when ensureInstalled is called twice")
         XCTAssertEqual(manager.state, .running)
-    }
-
-    // MARK: 2 — ensureUpToDate no-op when versions match
-
-    func testEnsureUpToDateVersionsMatchIsNoOp() async throws {
-        let registrar = MockServiceRegistrar()
-        let manager = try makeManager(
-            tempDir: tempDir,
-            registrar: registrar,
-            bundledVersion: "1.0.0",
-            installedVersion: "1.0.0"   // same version already installed
-        )
-
-        await manager.ensureUpToDate()
-
-        XCTAssertEqual(registrar.registerCallCount, 0,
-            "register() must not be called when versions match")
-        XCTAssertEqual(registrar.unregisterCallCount, 0,
-            "unregister() must not be called when versions match")
-        XCTAssertEqual(manager.state, .notInstalled, "state must not change on version match no-op")
-    }
-
-    // MARK: 3 — ensureUpToDate triggers update cycle with correct state transitions
-
-    func testEnsureUpToDateVersionMismatchTriggersCycle() async throws {
-        let registrar = MockServiceRegistrar()
-        let manager = try makeManager(
-            tempDir: tempDir,
-            registrar: registrar,
-            bundledVersion: "1.1.0",
-            installedVersion: "1.0.0"   // stale installed version
-        )
-        manager.state = .running
-
-        var observedStates: [ManagedServiceState] = []
-        manager.$state
-            .sink { observedStates.append($0) }
-            .store(in: &cancellables)
-
-        await manager.ensureUpToDate()
-
-        XCTAssertEqual(registrar.unregisterCallCount, 1,
-            "unregister() must be called before overwriting the binary")
-        XCTAssertEqual(registrar.registerCallCount, 1,
-            "register() must be called after overwriting the binary")
-        XCTAssertEqual(manager.state, .running)
-        XCTAssertTrue(
-            observedStates.contains(.updateInProgress),
-            "state must pass through .updateInProgress during the update cycle"
-        )
-        XCTAssertEqual(observedStates.last, .running,
-            "state must be .running after a successful update")
     }
 
     // MARK: 4 — ensureInstalled with missing bundle binary → .failed

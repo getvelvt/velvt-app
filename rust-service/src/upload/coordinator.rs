@@ -10,10 +10,29 @@ use std::{
     time::Duration as StdDuration,
 };
 
+/// Whether a persisted batch must be deleted instead of resumed.
+///
+/// `resume_pending` and `flush_all_pending` both ask this before rebuilding a
+/// payload, and a `true` answer routes the batch to `discard_batch` rather than
+/// to the uploader. Both, because the second is the user-facing "Send all now"
+/// and a rule enforced on the retry loop alone would be bypassed by a button.
+/// That is the
+/// shape an ownership rule needs — a batch queued under one account has to be
+/// destroyed, not uploaded under the next account's bearer token — but no such
+/// rule can be written against this trait yet. `UploadBatch` carries no device
+/// or user identifier, and neither does the `upload_batch` row behind it, so no
+/// implementation can tell one owner from another.
+///
+/// Nothing in `src/` calls `with_retention_policy`, so the coordinator runs on
+/// `KeepAllBatches` and discards nothing; the only other implementation is a
+/// test double. This is a seam, not a bound, and the `should_discard` call in
+/// `resume_pending` should not be read as one.
 pub trait BatchRetentionPolicy: Send + Sync {
     fn should_discard(&self, batch: &crate::persistence::UploadBatch) -> bool;
 }
 
+/// The policy the coordinator is constructed with, and in `src/` the only one
+/// it ever holds.
 #[derive(Debug, Default)]
 pub struct KeepAllBatches;
 
@@ -215,6 +234,28 @@ where
         Ok(())
     }
 
+    /// Deletes the batch and reports `true` when the retention policy refuses
+    /// it, leaving the caller to move on to the next one.
+    ///
+    /// Shared by both send paths on purpose. `flush_all_pending` backs the
+    /// user-facing "Send all now", so a policy consulted only by the retry loop
+    /// would be one button press away from being ignored.
+    fn discard_disowned(
+        &self,
+        batch: &crate::persistence::UploadBatch,
+    ) -> Result<bool, CoordinatorError> {
+        if !self.retention.should_discard(batch) {
+            return Ok(false);
+        }
+        self.repository.discard_batch(&batch.batch_id)?;
+        tracing::info!(
+            batch_id = batch.batch_id,
+            reason = "retention_boundary",
+            "discarded upload batch before upload"
+        );
+        Ok(true)
+    }
+
     pub async fn flush_all_pending(
         &self,
         schema_version: &str,
@@ -223,35 +264,11 @@ where
         let batches = self.repository.pending_batches()?;
         let count = batches.len();
         for batch in batches {
-            let taxonomy = batch
-                .events
-                .first()
-                .map(|event| event.taxonomy_version.clone())
-                .unwrap_or_default();
-            let events: Vec<_> = batch
-                .events
-                .into_iter()
-                .map(|event| BatchEventPayload {
-                    event_id: event.event_id,
-                    stable_id: event.stable_id,
-                    label: event.label,
-                    category: event.category,
-                    taxonomy_version: event.taxonomy_version,
-                    classification_tier: event.classification_tier,
-                    occurred_at: event.occurred_at,
-                    duration_seconds: event.duration_seconds,
-                })
-                .collect();
-            let supported_abstraction_types = unique_abstraction_types(&events);
+            if self.discard_disowned(&batch)? {
+                continue;
+            }
             self.upload_batch_with_backoff(
-                BatchPayload::new(
-                    batch.batch_id,
-                    schema_version,
-                    client_version,
-                    supported_abstraction_types,
-                    taxonomy,
-                    events,
-                ),
+                payload_for_queued_batch(batch, schema_version, client_version),
                 false,
             )
             .await?;
@@ -296,42 +313,13 @@ where
         let batches = self.repository.resumable_batches(Utc::now())?;
         let count = batches.len();
         for batch in batches {
-            if self.retention.should_discard(&batch) {
-                self.repository.discard_batch(&batch.batch_id)?;
-                tracing::info!(
-                    batch_id = batch.batch_id,
-                    reason = "retention_boundary",
-                    "discarded upload batch before upload"
-                );
+            if self.discard_disowned(&batch)? {
                 continue;
             }
-            let taxonomy = batch
-                .events
-                .first()
-                .map(|event| event.taxonomy_version.clone())
-                .unwrap_or_default();
-            let events: Vec<_> = batch
-                .events
-                .into_iter()
-                .map(|event| BatchEventPayload {
-                    event_id: event.event_id,
-                    stable_id: event.stable_id,
-                    label: event.label,
-                    category: event.category,
-                    taxonomy_version: event.taxonomy_version,
-                    classification_tier: event.classification_tier,
-                    occurred_at: event.occurred_at,
-                    duration_seconds: event.duration_seconds,
-                })
-                .collect();
-            let supported_abstraction_types = unique_abstraction_types(&events);
-            self.upload_batch(BatchPayload::new(
-                batch.batch_id,
+            self.upload_batch(payload_for_queued_batch(
+                batch,
                 schema_version,
                 client_version,
-                supported_abstraction_types,
-                taxonomy,
-                events,
             ))
             .await?;
         }
@@ -385,6 +373,46 @@ where
             }
         }
     }
+}
+
+/// The payload a batch already on disk is sent as.
+///
+/// `resume_pending` and `flush_all_pending` send exactly this, and
+/// `velvt-service --dry-run-egress` prints it, so the three cannot disagree
+/// about what a queued batch looks like on the wire.
+pub fn payload_for_queued_batch(
+    batch: crate::persistence::UploadBatch,
+    schema_version: &str,
+    client_version: &str,
+) -> BatchPayload {
+    let taxonomy = batch
+        .events
+        .first()
+        .map(|event| event.taxonomy_version.clone())
+        .unwrap_or_default();
+    let events: Vec<_> = batch
+        .events
+        .into_iter()
+        .map(|event| BatchEventPayload {
+            event_id: event.event_id,
+            stable_id: event.stable_id,
+            label: event.label,
+            category: event.category,
+            taxonomy_version: event.taxonomy_version,
+            classification_tier: event.classification_tier,
+            occurred_at: event.occurred_at,
+            duration_seconds: event.duration_seconds,
+        })
+        .collect();
+    let supported_abstraction_types = unique_abstraction_types(&events);
+    BatchPayload::new(
+        batch.batch_id,
+        schema_version,
+        client_version,
+        supported_abstraction_types,
+        taxonomy,
+        events,
+    )
 }
 
 fn unique_abstraction_types(events: &[BatchEventPayload]) -> Vec<String> {

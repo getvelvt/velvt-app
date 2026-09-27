@@ -1,0 +1,9 @@
+key,value
+export_format,2
+exported_at,1800100000
+schema_version,31
+decision_log,present
+invitations,present
+explain_probe,present
+card_seen_recorded_since,
+invitations_enabled,1

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Every test for the measurement and evidence scripts, in one command.
+#
+# These cover `analyze_cohort.py`, `export_cohort_evidence.sh`,
+# `prove_local.sh`, `prove_egress.sh`, `antecedent_probe.py`,
+# `generate_traces.py`, the pbxproj target-membership guard, the Swift lint
+# gate, the banned-copy guard, and the executable bit on every script. They need only python3, perl,
+# and the sqlite3 that ships with macOS — no cargo, no Xcode — so they run in
+# seconds and there is no excuse for skipping them. CI runs them in the `swift`
+# job, under the Python in `.python-version`.
+#
+# The Rust half of the trace harness lives in
+# `rust-service/tests/trace_replay.rs` and runs under `cargo test`.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+
+tests=(
+  analyze_cohort_test.sh
+  export_cohort_evidence_test.sh
+  prove_local_test.sh
+  prove_egress_test.sh
+  antecedent_probe_test.sh
+  generate_traces_test.sh
+  verify_pbxproj_membership_test.sh
+  lint_swift_test.sh
+  check_banned_copy_test.sh
+  script_modes_test.sh
+)
+
+failed=0
+for test in "${tests[@]}"; do
+  printf '\n=== %s\n' "$test"
+  if ! "$here/$test"; then
+    failed=$((failed + 1))
+  fi
+done
+
+printf '\n'
+if (( failed > 0 )); then
+  echo "$failed of ${#tests[@]} measurement test(s) FAILED" >&2
+  exit 1
+fi
+echo "all ${#tests[@]} measurement tests passed"

@@ -227,17 +227,18 @@ scheduler cycle** — no looping within a single call.  If a table still has row
 to clean up, the scheduler calls the same target again on the next tick.
 
 Pending and in-flight upload batches (`status = 'pending'` or `'failed'`) are
-**never** touched by any retention target.  Only `sent` and `rejected` batches
-are eligible.
+swept by age rather than by status, at the same horizon as `sent`.  A queue
+whose host never comes back would otherwise grow without a bound, and a batch
+that old describes a window the cloud has finished summarising anyway.
 
 #### Retention configuration
 
 | Env var | Default | Description |
 |---|---|---|
-| `VELVT_RAW_EVENT_TTL_HOURS` | `168` | Raw events older than this are eligible for expiry. Must cover the local dashboard's 7-day window, or the oldest days render empty |
+| `VELVT_RAW_EVENT_TTL_HOURS` | `336` | Raw events older than this are eligible for expiry. The default is `DAILY_ACTIVITY_DAYS * 24` (`src/dashboard.rs`), so it covers the local dashboard's 14-day window. A shorter TTL does not render the oldest days as absent — it renders deleted evidence as zeroes |
 | `VELVT_RAW_EVENT_EXPIRY_INTERVAL_MINUTES` | `30` | How often the expiry scheduler runs |
 | `VELVT_RETENTION_BATCH_SIZE` | `500` | Max rows deleted per target per cycle |
-| `VELVT_SENT_BATCH_RETENTION_DAYS` | `30` | How long sent upload batches are kept |
+| `VELVT_SENT_BATCH_RETENTION_DAYS` | `30` | How long sent upload batches are kept, and the same horizon at which pending and failed batches are swept by age |
 | `VELVT_REJECTED_BATCH_AUDIT_DAYS` | `7` | How long rejected batches are kept for audit |
 | `VELVT_CACHE_EXPIRY_GRACE_SECONDS` | `3600` | Extra window after TTL before cache rows are deleted |
 

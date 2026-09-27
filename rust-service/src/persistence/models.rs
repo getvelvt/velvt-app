@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, InterventionSalience, WorkBlockIntensity,
-    WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
+    ClassificationConfidence, ClassificationStatus, CorrectionScope, InterventionSalience,
+    WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
 };
 
 #[derive(Clone, PartialEq, Eq)]
@@ -142,6 +142,12 @@ pub struct PersonalOverrideRecord {
     pub local_activity_name: Option<String>,
     pub category: String,
     pub updated_at: DateTime<Utc>,
+    /// Whether this rule covers one window or every window of an application.
+    ///
+    /// `stable_id` means different things in the two cases -- an abstraction
+    /// stable id for a window rule, the application's own key hash for an app
+    /// rule -- so a caller that removes or edits a rule has to read this first.
+    pub scope: CorrectionScope,
 }
 
 impl std::fmt::Debug for PersonalOverrideRecord {
@@ -156,6 +162,136 @@ impl std::fmt::Debug for PersonalOverrideRecord {
             )
             .field("category", &self.category)
             .field("updated_at", &self.updated_at)
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+/// One app-scoped rule as it is stored: the two identities it answers to and
+/// the answer itself.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AppScopeOverride {
+    /// Hash of the application name. The row's primary key, always present.
+    pub app_key_hash: String,
+    /// Hash of the application's bundle identifier, when one was known at the
+    /// time the rule was written. `None` for every rule taught before bundle
+    /// keying existed, and for an application macOS reported no bundle
+    /// identifier for; those rules still match by name.
+    pub bundle_key_hash: Option<String>,
+    pub category: String,
+    /// Device-local name the user typed. Never uploaded, never logged.
+    pub activity_name: Option<String>,
+    pub correction_count: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for AppScopeOverride {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AppScopeOverride")
+            .field("app_key_hash", &"[local_identifier]")
+            .field(
+                "bundle_key_hash",
+                &self.bundle_key_hash.as_ref().map(|_| "[local_identifier]"),
+            )
+            .field("category", &self.category)
+            .field(
+                "activity_name",
+                &self.activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .field("correction_count", &self.correction_count)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+/// What one application declared about itself, as read off its own bundle.
+///
+/// Facts, not conclusions: every field here is something the developer wrote
+/// into `Info.plist`, and what any of it means is decided elsewhere. An
+/// all-absent value is the pre-protocol-30 case and must classify identically.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct DeclaredAppMetadata {
+    /// Hash of the application's bundle identifier under its own domain
+    /// separator. The raw identifier is never persisted.
+    pub app_bundle_stable_id: Option<String>,
+    /// Raw `LSApplicationCategoryType`, e.g.
+    /// `public.app-category.developer-tools`. A closed vocabulary of public
+    /// Apple constants, most of which deliberately mean nothing to Velvt.
+    pub declared_app_category: Option<String>,
+    /// Declared `LSItemContentTypes`, deduplicated and sorted by the client.
+    /// Empty when the application declared none or the plist was unreadable.
+    pub document_type_ids: Vec<String>,
+}
+
+impl DeclaredAppMetadata {
+    /// The all-absent value: exactly what a client that reports no declared
+    /// metadata produces, and what every event written before protocol 30 has.
+    pub const ABSENT: Self = Self {
+        app_bundle_stable_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
+    };
+
+    /// Whether there is nothing here to record.
+    pub fn is_absent(&self) -> bool {
+        self.app_bundle_stable_id.is_none()
+            && self.declared_app_category.is_none()
+            && self.document_type_ids.is_empty()
+    }
+}
+
+impl std::fmt::Debug for DeclaredAppMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeclaredAppMetadata")
+            .field(
+                "app_bundle_stable_id",
+                &self
+                    .app_bundle_stable_id
+                    .as_ref()
+                    .map(|_| "[local_identifier]"),
+            )
+            // Redacted on the same terms as the bundle id: developer-authored
+            // metadata still identifies the application.
+            .field(
+                "declared_app_category",
+                &self.declared_app_category.as_ref().map(|_| "[redacted]"),
+            )
+            .field("document_type_count", &self.document_type_ids.len())
+            .finish()
+    }
+}
+
+/// One application Velvt observed but could not classify, ranked for triage.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UnclassifiedAppEntry {
+    /// The app-scoped key an app rule is written under.
+    pub app_stable_id: String,
+    /// The device-local name Velvt already holds for this application.
+    pub display_name: String,
+    pub seconds_observed: u64,
+    pub event_count: u64,
+    /// The bundle key hash, when the application reported a bundle identifier,
+    /// so the rule the user saves survives a rename.
+    pub app_bundle_stable_id: Option<String>,
+}
+
+impl std::fmt::Debug for UnclassifiedAppEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UnclassifiedAppEntry")
+            .field("app_stable_id", &"[local_identifier]")
+            .field("display_name", &"[redacted]")
+            .field("seconds_observed", &self.seconds_observed)
+            .field("event_count", &self.event_count)
+            .field(
+                "app_bundle_stable_id",
+                &self
+                    .app_bundle_stable_id
+                    .as_ref()
+                    .map(|_| "[local_identifier]"),
+            )
             .finish()
     }
 }
@@ -183,6 +319,9 @@ pub enum UploadBatchStatus {
     Sent,
     Failed,
     Rejected,
+    /// Retried until the ceiling and given up on. Terminal: nothing schedules
+    /// another attempt, and the age sweep collects it like a sent batch.
+    Abandoned,
 }
 
 impl UploadBatchStatus {
@@ -192,9 +331,36 @@ impl UploadBatchStatus {
             Self::Sent => "sent",
             Self::Failed => "failed",
             Self::Rejected => "rejected",
+            Self::Abandoned => "abandoned",
         }
     }
 }
+
+/// How many failed attempts a batch gets before it is abandoned.
+///
+/// Derived from observed recovery, not from the backoff arithmetic. The first
+/// value here was ninety-six — one day at the fifteen-minute backoff cap — on
+/// the reasoning that no outage a device comes back from lasts a day. The
+/// development device's own history falsifies that. `mark_sent` does not reset
+/// `attempt_count`, so a delivered batch carries the cumulative cost of every
+/// outage it sat through, and across 2,604 delivered batches the counts read
+/// 2,489 at zero, 39 at 1–9, 15 at 10–47, 60 at 48–95, and one at 116. That
+/// last batch was created 2026-08-21 14:42 UTC and delivered 2026-08-22 20:50
+/// UTC: a single ~30-hour outage the device fully recovered from. A ceiling of
+/// ninety-six would have abandoned it at attempt 96, 5.2 hours before the host
+/// returned, and its events would never have reached the account.
+///
+/// The 76 delivered batches with ten or more attempts retried at 3.53–3.87
+/// attempts an hour, which is the fifteen-minute cap as actually realized. 288
+/// is 74–82 hours at that rate — about three days — and 2.5× the longest
+/// recovery the device has made. A host that is simply gone reaches it in three
+/// days instead of one and stops generating retry traffic then.
+///
+/// The ceiling is the belt, not the braces: `delete_stale_queued_batch` bounds
+/// the queue by age on its own, so this errs long. The cost of a ceiling that is
+/// too high is three days of retry traffic; the cost of one that is too low is
+/// activity that will never reach the user's account.
+pub const UPLOAD_BATCH_ATTEMPT_CEILING: u32 = 288;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadBatch {
@@ -311,6 +477,36 @@ pub struct WorkBlockObservation {
     pub category: String,
     pub classification_status: ClassificationStatus,
     pub classification_confidence: ClassificationConfidence,
+}
+
+/// The longest dwell a reported event can stand for, in seconds. The router
+/// caps `duration_seconds` here before the row is written
+/// (`ipc/router.rs::handle_raw_event`), so it is also how far before a window a
+/// dwell overlapping that window can have started.
+pub const MAX_REPORTED_DWELL_SECONDS: u32 = 30 * 60;
+
+/// One dwell Swift reported, read back out of `raw_event_buffer` for the
+/// work-block engine: when it began, how long it was measured to last, and
+/// the category evidence it was classified under.
+///
+/// Deliberately narrower than [`RawEventEntry`]: no label, stable ID, display
+/// label, name suggestion, or application identity. It carries what a
+/// `work_block_observation` row already carries, plus the one fact that row
+/// does not have — the dwell's length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedDwell {
+    pub occurred_at: DateTime<Utc>,
+    pub duration_seconds: u32,
+    pub category: String,
+    pub classification_status: ClassificationStatus,
+    pub classification_confidence: ClassificationConfidence,
+}
+
+impl ReportedDwell {
+    /// When the user left this dwell.
+    pub fn ended_at(&self) -> DateTime<Utc> {
+        self.occurred_at + chrono::Duration::seconds(i64::from(self.duration_seconds))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -647,4 +843,321 @@ pub struct WorkBlockIntervention {
     /// How the offer was delivered. Recorded because an outcome cannot be read
     /// without it: an ignored quiet offer never rang.
     pub salience: InterventionSalience,
+    /// When the in-app card was first observed on screen, if it ever was.
+    ///
+    /// `None` separates "they saw it and said nothing" from "it never reached
+    /// them", which `no_response` alone cannot. Orthogonal to `outcome`: this
+    /// records delivery, never an answer.
+    pub card_seen_at: Option<DateTime<Utc>>,
+}
+
+/// The closed verdict vocabulary of the drift gate.
+///
+/// Every variant is a real branch of `evaluate_drift`, and there is a test that
+/// constructs a scenario for each: a closed enum with unreachable variants is a
+/// lie about what the gate does.
+///
+/// Ordering of the variants follows the order the gate evaluates them, so the
+/// enum reads as the policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GateVerdict {
+    /// The block has not run long enough to have an anchor.
+    AbstainedWarmup,
+    /// Too little time remains for a return to mean anything.
+    AbstainedRemaining,
+    /// One offer per block, already spent.
+    AbstainedBlockCap,
+    /// Inside the re-offer cooldown earned by a negative reply.
+    AbstainedBackoff,
+    /// No confident dominant category yet, so there is nothing to drift from.
+    AbstainedNoAnchor,
+    /// Departures observed, but below the evidence threshold.
+    AbstainedMinSwitches,
+    /// The latest confident evidence is the anchor: the user is already back.
+    AbstainedAtAnchor,
+    /// The versioned demotion policy is in `demoted`; recorded, never shown.
+    WithheldDemotion,
+    /// System Focus/DND was active; recorded and held, never shown.
+    SuppressedDnd,
+    /// The gate cleared and an offer was delivered.
+    Offered,
+}
+
+impl GateVerdict {
+    /// Every variant, in policy-evaluation order. The reachability test walks
+    /// this, so a variant added without a scenario fails the build's tests
+    /// rather than silently becoming a dead enum arm.
+    pub const ALL: [GateVerdict; 10] = [
+        GateVerdict::AbstainedWarmup,
+        GateVerdict::AbstainedRemaining,
+        GateVerdict::AbstainedBlockCap,
+        GateVerdict::AbstainedBackoff,
+        GateVerdict::AbstainedNoAnchor,
+        GateVerdict::AbstainedMinSwitches,
+        GateVerdict::AbstainedAtAnchor,
+        GateVerdict::WithheldDemotion,
+        GateVerdict::SuppressedDnd,
+        GateVerdict::Offered,
+    ];
+
+    /// The stored token. Must match the schema's CHECK vocabulary exactly;
+    /// a mismatch is a constraint violation at the first write, not a silent
+    /// downgrade.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AbstainedWarmup => "abstained_warmup",
+            Self::AbstainedRemaining => "abstained_remaining",
+            Self::AbstainedBlockCap => "abstained_block_cap",
+            Self::AbstainedBackoff => "abstained_backoff",
+            Self::AbstainedNoAnchor => "abstained_no_anchor",
+            Self::AbstainedMinSwitches => "abstained_min_switches",
+            Self::AbstainedAtAnchor => "abstained_at_anchor",
+            Self::WithheldDemotion => "withheld_demotion",
+            Self::SuppressedDnd => "suppressed_dnd",
+            Self::Offered => "offered",
+        }
+    }
+
+    /// Total by construction: an unrecognised token is `None`, never a
+    /// defaulted verdict. A row written by a newer binary must not read back
+    /// as an older meaning.
+    pub fn from_stored(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == value)
+    }
+
+    /// Whether this verdict actually put something in front of the user.
+    /// `withheld_demotion` and `suppressed_dnd` decided to offer and then held
+    /// it; nothing rang, so nothing was delivered.
+    pub fn was_delivered(self) -> bool {
+        matches!(self, Self::Offered)
+    }
+}
+
+/// One evaluation of the drift policy and the decision it produced, including
+/// every abstention.
+///
+/// Deliberately not `WorkBlockIntervention`: that table's `PRIMARY KEY(block_id)`
+/// is the denominator of the pre-registered primary outcome. This record never
+/// touches it.
+///
+/// `anchor_category` is `None` when the gate abstained before it had computed an
+/// anchor. That is evidence about the gate, not missing data — the log states
+/// what the gate knew at the instant it decided.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterventionDecision {
+    pub decision_id: String,
+    pub occurred_at: DateTime<Utc>,
+    pub block_id: Option<String>,
+    pub policy_version: u32,
+    pub anchor_category: Option<String>,
+    pub switch_count: u32,
+    pub elapsed_seconds: u32,
+    pub remaining_seconds: u32,
+    pub gate_verdict: GateVerdict,
+    /// The realized probability of the arm that was taken. 1.0 while the policy
+    /// is deterministic. Stored now so that off-policy evaluation is possible
+    /// later; a decision made without one can never be corrected after the fact.
+    pub propensity: f64,
+    /// Proximal outcome on the same horizon regardless of verdict. `None` means
+    /// unresolved, never "did not return".
+    pub anchor_seen_within_600s: Option<bool>,
+    pub outcome_at: Option<DateTime<Utc>>,
+}
+
+/// The bucket granularity for `out_of_block_run.started_at_bucket`, matching the
+/// five-minute precision class `focus_state_evidence` (migration 0019) already
+/// established. Defined once so no caller can introduce a finer one — a new
+/// precision class is a privacy change, and it should require editing this line.
+pub const OUT_OF_BLOCK_RUN_BUCKET_SECONDS: i64 = 300;
+
+/// Floors a unix timestamp onto the five-minute bucket grid.
+///
+/// `div_euclid` rather than `/` so a pre-epoch timestamp floors downwards too,
+/// instead of rounding towards zero into the following bucket.
+pub fn out_of_block_run_bucket(at: DateTime<Utc>) -> i64 {
+    at.timestamp()
+        .div_euclid(OUT_OF_BLOCK_RUN_BUCKET_SECONDS)
+        .saturating_mul(OUT_OF_BLOCK_RUN_BUCKET_SECONDS)
+}
+
+/// One closed run of activity that happened outside any declared work block.
+///
+/// Broad category and coarse time only. There is deliberately no field that
+/// could hold a label, a stable id, an application name, a window title, a URL,
+/// or intention text — the durable store knows less than the 7-day buffer it is
+/// folded from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutOfBlockRun {
+    /// Unix seconds floored to the 300-second bucket.
+    pub started_at_bucket: i64,
+    pub duration_seconds: u32,
+    pub category: String,
+    /// Carried so that `is_confident_evidence` is reconstructible out of block.
+    /// Without it the feature layer and the shipped gate could disagree about
+    /// what counts as evidence, and every comparison between them would be
+    /// meaningless.
+    pub classification_status: ClassificationStatus,
+    pub classification_confidence: ClassificationConfidence,
+    pub local_hour: u8,
+    pub local_date: String,
+}
+
+/// Whether a block started on a weekday or at the weekend. Closed vocabulary:
+/// the schema constrains it, so an unrecognised day type cannot be stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DayType {
+    Weekday,
+    Weekend,
+}
+
+impl DayType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Weekday => "weekday",
+            Self::Weekend => "weekend",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "weekday" => Some(Self::Weekday),
+            "weekend" => Some(Self::Weekend),
+            _ => None,
+        }
+    }
+}
+
+/// The bounded pre-block window, recorded once at block start and never updated.
+///
+/// `categories` is a *set*, not a sequence: a sequence would be both more
+/// informative to the model and more identifying. `window_seconds` is bounded by
+/// the schema at 30 minutes, so the amount of pre-block context recorded cannot
+/// grow without a migration and a privacy review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockAntecedent {
+    pub block_id: String,
+    pub window_seconds: u32,
+    /// Distinct categories present in the window, sorted, no duplicates.
+    /// Serialized as a JSON array; no ordering information, no per-item dwell.
+    pub categories: Vec<String>,
+    pub switch_count: u32,
+    pub dominant_category: Option<String>,
+    pub dominant_dwell_seconds: Option<u32>,
+    pub day_type: DayType,
+    pub hour_bucket: u8,
+    pub is_first_block_of_day: bool,
+    pub antecedent_version: u32,
+}
+
+/// The lifecycle of a discovered antecedent pattern (`0029`).
+///
+/// Closed vocabulary, constrained by the schema. `Surfaced` is unreachable
+/// without `confirmed_at`, and that is enforced by the database rather than by
+/// this enum — an invariant a caller can hold wrong is not an invariant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AntecedentFindingState {
+    /// Discovered on one window; not yet carried to a held-out window.
+    Candidate,
+    /// Replicated on a later, unseen window.
+    Confirmed,
+    /// Shown to the user. **Unreachable today**: nothing surfaces.
+    Surfaced,
+    Retracted,
+    /// The user said this is wrong.
+    Disputed,
+}
+
+impl AntecedentFindingState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Candidate => "candidate",
+            Self::Confirmed => "confirmed",
+            Self::Surfaced => "surfaced",
+            Self::Retracted => "retracted",
+            Self::Disputed => "disputed",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "candidate" => Some(Self::Candidate),
+            "confirmed" => Some(Self::Confirmed),
+            "surfaced" => Some(Self::Surfaced),
+            "retracted" => Some(Self::Retracted),
+            "disputed" => Some(Self::Disputed),
+            _ => None,
+        }
+    }
+}
+
+/// Why a finding stopped being asserted. Closed vocabulary, constrained by the
+/// schema.
+///
+/// `RegistryVersionChange` exists because a finding discovered under one
+/// candidate registry is not comparable to one discovered under another: the
+/// family size moved, so the correction that licensed it no longer applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AntecedentRetractionReason {
+    EffectDisappeared,
+    SupportLost,
+    UserDisputed,
+    RegistryVersionChange,
+}
+
+impl AntecedentRetractionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EffectDisappeared => "effect_disappeared",
+            Self::SupportLost => "support_lost",
+            Self::UserDisputed => "user_disputed",
+            Self::RegistryVersionChange => "registry_version_change",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "effect_disappeared" => Some(Self::EffectDisappeared),
+            "support_lost" => Some(Self::SupportLost),
+            "user_disputed" => Some(Self::UserDisputed),
+            "registry_version_change" => Some(Self::RegistryVersionChange),
+            _ => None,
+        }
+    }
+}
+
+/// One discovered antecedent pattern (`0029_antecedent_findings.sql`).
+///
+/// `effect_size` and `confirm_effect_size` are **risk differences**,
+/// `P(Y=1|A) - P(Y=1|not A)`, on `[-1, 1]`. Not odds ratios, and there is no
+/// field for one: the analysis computes only the quantity a surface could
+/// state, so a surface cannot render a quantity the analysis did not compute.
+///
+/// `candidate_id` is a key from the closed compile-time registry in
+/// `behavior/candidates.rs`. It cannot hold an application name, a label, a
+/// stable id, a window title, a URL, or intention text, because the registry
+/// that mints it has no constructor that could.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AntecedentFinding {
+    pub finding_id: String,
+    pub candidate_id: String,
+    pub candidate_registry_version: u32,
+    pub discovered_at: i64,
+    /// `YYYY-MM-DD`, enforced by the schema.
+    pub discovery_window_start: String,
+    pub discovery_window_end: String,
+    pub support_episodes: u32,
+    /// Risk difference on the discovery window.
+    pub effect_size: f64,
+    /// Benjamini-Hochberg q-value over the logged family size.
+    pub q_value: f64,
+    /// `None` means never confirmed, which means never shown.
+    pub confirmed_at: Option<i64>,
+    pub confirm_support_episodes: Option<u32>,
+    /// Risk difference on the held-out window.
+    pub confirm_effect_size: Option<f64>,
+    pub state: AntecedentFindingState,
+    pub surfaced_at: Option<i64>,
+    pub retracted_at: Option<i64>,
+    pub retraction_reason: Option<AntecedentRetractionReason>,
+    pub user_disputed_at: Option<i64>,
 }

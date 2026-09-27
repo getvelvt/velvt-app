@@ -51,6 +51,10 @@ update matrix.
   - `VELVT_RELEASE_VERSION`
   - `VELVT_RELEASE_BUILD`
   - `VELVT_PREVIOUS_RELEASE_BUILD`
+
+  The first two must equal `swift-client/Configs/Version.xcconfig` at the
+  commit being released; `make release` refuses anything else. Record the
+  result in `docs/RELEASES.md`.
 - [ ] Approve the minimum supported macOS version.
 - [ ] Confirm that production support remains universal **Apple Silicon and
   Intel** (`arm64 x86_64`), or explicitly approve a different policy.

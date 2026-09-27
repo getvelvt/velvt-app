@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Direction: Swift to Rust. Local IPC only. A delivery fact, never a response: the payload has exactly one field and no place a user answer could be carried, so a sighting can never be widened into an outcome the person did not give. The service timestamps it; the client reports only that the card rendered. Reporting it twice is idempotent -- the first sighting is the one stored.",
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "intervention_card_seen" },
+    "payload": {
+      "type": "object",
+      "required": ["block_id"],
+      "properties": {
+        "block_id": { "type": "string", "format": "uuid" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

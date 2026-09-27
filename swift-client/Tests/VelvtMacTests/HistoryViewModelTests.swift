@@ -60,7 +60,9 @@ final class HistoryViewModelTests: XCTestCase {
     sut.update(from: makeHistoryPayload(readyCount: 2))
 
     XCTAssertEqual(sut.baselineProgress.collectedDays, 2)
-    XCTAssertEqual(sut.baselineProgress.label, "Learning from your recent sessions")
+    XCTAssertEqual(
+      sut.baselineProgress.label,
+      "Comparing with your recent days — 2 observed days")
     XCTAssertFalse(sut.baselineProgress.isComplete)
   }
 

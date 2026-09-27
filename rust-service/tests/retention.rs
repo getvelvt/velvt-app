@@ -10,10 +10,19 @@ use std::{
 };
 
 use chrono::Utc;
-use velvt_service::persistence::{BatchEvent, NewUploadBatch, RawEventEntry, SqlitePersistence};
+use velvt_service::persistence::{
+    AbstractionMapping, BatchEvent, GateVerdict, InterventionDecision, NewUploadBatch,
+    RawEventEntry, SqlitePersistence, UploadBatchStatus, WorkBlockObservation, WorkBlockOrigin,
+    WorkBlockRecord,
+};
 use velvt_service::retention::{
-    CleanupReport, RawEventRetentionTarget, RetentionError, RetentionScheduler, RetentionTarget,
-    UploadBatchRetentionTarget,
+    AbstractionMapRetentionTarget, CleanupReport, InterventionDecisionOutcomeTarget,
+    RawEventRetentionTarget, RetentionError, RetentionScheduler, RetentionTarget,
+    SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+    ABSTRACTION_MAP_RETENTION_DAYS, DECISION_OUTCOME_HORIZON_SECONDS,
+};
+use velvt_shared_types::{
+    ClassificationConfidence, ClassificationStatus, WorkBlockIntensity, WorkBlockPhase,
 };
 
 fn open_db() -> SqlitePersistence {
@@ -327,14 +336,19 @@ fn upload_batch_retention_deletes_rejected_batches_after_audit_period() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6 — Pending batches are never deleted (in-progress batch protection)
+// Test 6 — Queued batches expire on the sent horizon, and only then
 // ---------------------------------------------------------------------------
 
-/// Even when `created_at` is far in the past and retention windows are zero,
-/// batches with `status = 'pending'` must survive every cleanup pass.
-/// This covers the "retention while batcher is assembling a batch" edge case.
+/// A batch the backend never accepted used to have no expiry at all: the sweep
+/// named `sent` and `rejected`, and a queue filled by an unreachable host
+/// reaches neither. Aged `pending` and `failed` rows are collected on the sent
+/// horizon like everything else.
+///
+/// The other half of the assertion is the case the old test was protecting: a
+/// batch inside the horizon is still owed to the backend, and retention running
+/// while the batcher assembles one must not take it.
 #[test]
-fn upload_batch_retention_never_deletes_pending_batches() {
+fn upload_batch_retention_expires_queued_batches_past_the_sent_horizon() {
     let db = open_db();
     let repo = db.upload_batch_repo();
 
@@ -344,29 +358,119 @@ fn upload_batch_retention_never_deletes_pending_batches() {
         })
         .unwrap();
     }
+    repo.mark_failed(
+        "batch-pend-2",
+        Utc::now() + chrono::Duration::minutes(15),
+        "transport",
+    )
+    .unwrap();
 
     // Age the rows as aggressively as possible.
     let old_ts = (Utc::now() - chrono::Duration::days(365)).timestamp();
     db.set_all_upload_batch_created_at_for_test(old_ts).unwrap();
+    // The batch the assembler is still filling, created now.
+    repo.insert_batch(&NewUploadBatch {
+        batch_id: "batch-in-progress".into(),
+    })
+    .unwrap();
 
-    assert_eq!(db.count_upload_batches_for_test().unwrap(), 3);
+    assert_eq!(db.count_upload_batches_for_test().unwrap(), 4);
 
-    // Zero-second retention means "everything is past the cutoff" — but only
-    // for the matching status columns.  Pending rows have no sent_at, and the
-    // SQL filter requires status = 'sent' or status = 'rejected'.
     let target = UploadBatchRetentionTarget::new(
         Arc::clone(&repo),
-        Duration::ZERO, // sent_retention: cutoff = now
-        Duration::ZERO, // audit period: cutoff = now
+        Duration::from_secs(30 * 24 * 3600), // 30d sent retention
+        Duration::from_secs(7 * 24 * 3600),  // 7d audit period
         500,
     );
     let report = target.run_cleanup().unwrap();
 
     assert_eq!(
-        report.deleted, 0,
-        "pending batches must never be deleted by retention"
+        report.deleted, 3,
+        "queued batches older than the sent horizon must expire whatever their status"
     );
-    assert_eq!(db.count_upload_batches_for_test().unwrap(), 3);
+    assert_eq!(db.count_upload_batches_for_test().unwrap(), 1);
+    assert_eq!(
+        repo.batch_status("batch-in-progress").unwrap(),
+        UploadBatchStatus::Pending,
+        "a batch inside the horizon is still owed to the backend"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 6b — A batch that has spent its attempts stops being retried
+// ---------------------------------------------------------------------------
+
+/// Sustained transport failure kept a batch resumable forever: every attempt
+/// wrote `pending` or `failed` back, and nothing counted the attempts. A batch
+/// that has failed enough times becomes terminal instead, so the queue stops
+/// re-reading it and the menu bar stops describing it as retrying.
+///
+/// The ceiling is pinned against a measured recovery rather than a round
+/// number. The first version of this test asserted `attempts >= 48` — half a
+/// day at the backoff cap — which is a floor no plausible ceiling fails, and it
+/// stayed green under a ceiling of 96 that sat *below* the longest outage the
+/// development device has actually come back from. A floor cannot catch a
+/// ceiling that is too low; only the observed maximum can.
+#[test]
+fn a_batch_retried_past_its_ceiling_becomes_terminal() {
+    let db = open_db();
+    let repo = db.upload_batch_repo();
+    repo.insert_batch(&NewUploadBatch {
+        batch_id: "batch-doomed".into(),
+    })
+    .unwrap();
+
+    let mut attempts = 0;
+    while repo.batch_status("batch-doomed").unwrap() != UploadBatchStatus::Abandoned {
+        repo.mark_pending_retry(
+            "batch-doomed",
+            Utc::now() + chrono::Duration::minutes(15),
+            "transport",
+        )
+        .unwrap();
+        attempts += 1;
+        assert!(
+            attempts <= 1_000,
+            "a retried batch must reach a terminal status"
+        );
+    }
+    // 116 attempts is the most a batch on the development device ever
+    // accumulated and still delivered: created 2026-08-21 14:42 UTC, sent
+    // 2026-08-22 20:50 UTC, one ~30-hour outage it fully recovered from.
+    // `mark_sent` does not reset `attempt_count`, so that is the cumulative
+    // cost of the outage rather than a per-session count. Read out of
+    // `~/.velvt/velvt-service.sqlite3` on 2026-08-31; `migrations/0030` quotes
+    // the whole distribution.
+    const OBSERVED_RECOVERED_OUTAGE_ATTEMPTS: u32 = 116;
+    assert!(
+        attempts >= 2 * OBSERVED_RECOVERED_OUTAGE_ATTEMPTS,
+        "the ceiling abandons at {attempts} attempts, against a real outage of \
+         {OBSERVED_RECOVERED_OUTAGE_ATTEMPTS} attempts that the device recovered from. \
+         A ceiling at or below an observed recovery throws away events that would \
+         have been delivered; the age sweep already bounds the queue, so this one \
+         errs long"
+    );
+
+    assert!(
+        repo.resumable_batches(Utc::now() + chrono::Duration::days(1))
+            .unwrap()
+            .is_empty(),
+        "an abandoned batch is never resumed"
+    );
+    // Terminal, and collected by the sweep that already existed.
+    db.set_all_upload_batch_created_at_for_test(
+        (Utc::now() - chrono::Duration::days(365)).timestamp(),
+    )
+    .unwrap();
+    let report = UploadBatchRetentionTarget::new(
+        Arc::clone(&repo),
+        Duration::from_secs(30 * 24 * 3600),
+        Duration::from_secs(7 * 24 * 3600),
+        500,
+    )
+    .run_cleanup()
+    .unwrap();
+    assert_eq!(report.deleted, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -431,4 +535,413 @@ async fn db_slow_during_retention_does_not_block_async_tasks() {
     fast_task_result
         .expect("async task was deadlocked by blocking retention")
         .expect("async task must not panic");
+}
+
+// ---------------------------------------------------------------------------
+// Test 8 — The decision log's proximal outcome is resolved on its horizon
+// ---------------------------------------------------------------------------
+
+fn decision_block(db: &SqlitePersistence, block_id: &str, started_at: chrono::DateTime<Utc>) {
+    db.work_block_repo()
+        .create(&WorkBlockRecord {
+            block_id: block_id.to_owned(),
+            phase: WorkBlockPhase::Active,
+            intention: None,
+            purpose: None,
+            intensity: WorkBlockIntensity::Medium,
+            planned_duration_seconds: 3_600,
+            started_at,
+            paused_at: None,
+            total_paused_seconds: 0,
+            ended_at: None,
+            recovered_after_restart: false,
+            recovery_of: None,
+            origin: WorkBlockOrigin::Manual,
+            intention_expires_at: started_at + chrono::Duration::hours(24),
+            updated_at: started_at,
+        })
+        .unwrap();
+}
+
+fn observe(db: &SqlitePersistence, block_id: &str, category: &str, at: chrono::DateTime<Utc>) {
+    db.work_block_repo()
+        .append_observation(
+            block_id,
+            &WorkBlockObservation {
+                occurred_at: at,
+                ended_at: Some(at + chrono::Duration::seconds(60)),
+                category: category.to_owned(),
+                classification_status: ClassificationStatus::Classified,
+                classification_confidence: ClassificationConfidence::High,
+            },
+        )
+        .unwrap();
+}
+
+fn log_decision(
+    db: &SqlitePersistence,
+    decision_id: &str,
+    block_id: &str,
+    anchor: Option<&str>,
+    at: chrono::DateTime<Utc>,
+) {
+    db.work_block_repo()
+        .record_decision(&InterventionDecision {
+            decision_id: decision_id.to_owned(),
+            occurred_at: at,
+            block_id: Some(block_id.to_owned()),
+            policy_version: 1,
+            anchor_category: anchor.map(str::to_owned),
+            switch_count: 4,
+            elapsed_seconds: 600,
+            remaining_seconds: 3_000,
+            gate_verdict: GateVerdict::AbstainedBackoff,
+            propensity: 1.0,
+            anchor_seen_within_600s: None,
+            outcome_at: None,
+        })
+        .unwrap();
+}
+
+fn logged(db: &SqlitePersistence, decision_id: &str) -> InterventionDecision {
+    db.work_block_repo()
+        .recent_decisions(32)
+        .unwrap()
+        .into_iter()
+        .find(|decision| decision.decision_id == decision_id)
+        .expect("decision is on disk")
+}
+
+/// The write site records the outcome as unresolved and says a later pass fills
+/// it in. This is that pass, and the evidence it reads outlives the decision by
+/// sharing its cascade parent — so it answers history, not only what happens
+/// next.
+///
+/// Four cases, because each one is a different meaning of NULL: an anchor seen
+/// inside the horizon, an anchor seen only after it, a horizon that has not
+/// closed, and a gate that abstained before it had an anchor at all.
+#[test]
+fn decision_outcomes_resolve_on_the_horizon_and_only_once() {
+    let db = open_db();
+    let now = Utc::now();
+    let closed = now - chrono::Duration::minutes(30);
+
+    decision_block(&db, "block-seen", closed - chrono::Duration::minutes(1));
+    log_decision(&db, "seen", "block-seen", Some("FOCUS_WORK"), closed);
+    observe(
+        &db,
+        "block-seen",
+        "COMMUNICATION",
+        closed + chrono::Duration::seconds(60),
+    );
+    observe(
+        &db,
+        "block-seen",
+        "FOCUS_WORK",
+        closed + chrono::Duration::seconds(300),
+    );
+    // The gate abstained before it had an anchor. There is nothing to look for,
+    // so this stays unresolved rather than being recorded as "did not return".
+    log_decision(&db, "no-anchor", "block-seen", None, closed);
+
+    decision_block(&db, "block-unseen", closed - chrono::Duration::minutes(1));
+    log_decision(&db, "unseen", "block-unseen", Some("FOCUS_WORK"), closed);
+    observe(
+        &db,
+        "block-unseen",
+        "FOCUS_WORK",
+        closed + chrono::Duration::seconds(900),
+    );
+
+    decision_block(&db, "block-early", now - chrono::Duration::minutes(2));
+    log_decision(
+        &db,
+        "early",
+        "block-early",
+        Some("FOCUS_WORK"),
+        now - chrono::Duration::minutes(1),
+    );
+    observe(
+        &db,
+        "block-early",
+        "FOCUS_WORK",
+        now - chrono::Duration::seconds(30),
+    );
+
+    let target = InterventionDecisionOutcomeTarget::new(db.work_block_repo(), 500);
+    assert_eq!(target.run_cleanup().unwrap().deleted, 2);
+
+    assert_eq!(logged(&db, "seen").anchor_seen_within_600s, Some(true));
+    assert_eq!(
+        logged(&db, "seen").outcome_at,
+        Some(
+            chrono::DateTime::from_timestamp(
+                closed.timestamp() + DECISION_OUTCOME_HORIZON_SECONDS,
+                0
+            )
+            .unwrap()
+        ),
+        "the outcome is dated when the horizon closed, so resolving it late \
+         records what resolving it on time would have"
+    );
+    assert_eq!(
+        logged(&db, "unseen").anchor_seen_within_600s,
+        Some(false),
+        "an anchor seen after the horizon is not an anchor seen within it"
+    );
+    assert_eq!(
+        logged(&db, "early").anchor_seen_within_600s,
+        None,
+        "a horizon that has not closed is unresolved, not negative"
+    );
+    assert_eq!(
+        logged(&db, "no-anchor").anchor_seen_within_600s,
+        None,
+        "a decision with no anchor has no horizon to answer"
+    );
+
+    assert_eq!(
+        target.run_cleanup().unwrap().deleted,
+        0,
+        "nothing is left to resolve"
+    );
+    assert!(
+        !db.work_block_repo()
+            .resolve_decision("seen", false, Utc::now())
+            .unwrap(),
+        "an answered decision keeps the answer it was given, so a rerun over \
+         history cannot move a number someone has already read"
+    );
+    assert_eq!(logged(&db, "seen").anchor_seen_within_600s, Some(true));
+}
+
+// ---------------------------------------------------------------------------
+// Test 7b — The sparing rule's horizon ordering
+// ---------------------------------------------------------------------------
+
+/// `delete_expired_batch` spares upload-eligible rows that have no
+/// `batch_event`, because those are exactly the rows `recover_unbatched`
+/// re-queues at the next start. The rule is only safe while a batched row dies
+/// before its batch does: a row whose `batch_event` cascades away re-enters the
+/// spared set and is never collected again, and it is then also re-uploaded.
+///
+/// Two assertions, because the ordering has two halves that fail differently.
+/// The first is the relationship itself, read from the config the service
+/// actually loads, so an environment that inverts it fails here rather than
+/// leaking rows in the field. The second is the mechanism, so the relationship
+/// is not just a comparison of numbers whose consequence nobody checked.
+#[test]
+fn the_raw_event_horizon_stays_inside_the_batch_horizon() {
+    let config = velvt_service::config::ServiceConfig::load().expect("service config loads");
+    assert!(
+        config.raw_event_ttl < config.sent_batch_retention,
+        "raw events expire at {:?} and their batches at {:?}. With the TTL at or \
+         past the batch horizon, a batched row outlives the sweep that deletes its \
+         batch, the cascade removes its `batch_event`, and it is spared by \
+         `delete_expired_batch` forever and re-queued by `recover_unbatched`",
+        config.raw_event_ttl,
+        config.sent_batch_retention
+    );
+
+    // The mechanism, with the horizons inverted on purpose: this is what the
+    // assertion above is protecting against, demonstrated once so the ordering
+    // is not an unexplained inequality.
+    let db = open_db();
+    let repo = db.raw_event_repo();
+    repo.insert(&make_event(1)).unwrap();
+    batch_events(&db, "batch-orphaning", 1..2);
+    assert!(
+        repo.unbatched_events(10).unwrap().is_empty(),
+        "a batched row is not in the spared set"
+    );
+
+    db.set_all_upload_batch_created_at_for_test(
+        (Utc::now() - chrono::Duration::days(365)).timestamp(),
+    )
+    .unwrap();
+    let deleted = db
+        .upload_batch_repo()
+        .delete_stale_queued_batch(Utc::now(), 500)
+        .unwrap();
+    assert_eq!(deleted, 1);
+
+    assert_eq!(
+        repo.unbatched_events(10).unwrap().len(),
+        1,
+        "the cascade put the row back in the spared set"
+    );
+    let report = RawEventRetentionTarget::new(Arc::clone(&repo), Duration::from_secs(0), 500)
+        .run_cleanup()
+        .unwrap();
+    assert_eq!(
+        report.deleted, 0,
+        "and it is now permanently spared: at a zero TTL it is still not collected. \
+         The shipped ordering is what keeps this state unreachable"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8b — The evidence a decision was made on is not evidence of a return
+// ---------------------------------------------------------------------------
+
+/// `observe_safe_category` appends the observation and then evaluates the gate,
+/// so the observation that produced a decision is already on disk carrying the
+/// decision's own timestamp. With an inclusive lower bound the resolver read
+/// that row back as a return, which made the `AbstainedAtAnchor` verdict — the
+/// one that fires exactly when the latest confident observation IS the anchor —
+/// resolve to `true` for every row of it, definitionally. Zero rows of that
+/// verdict existed when this was found, which is the only reason no published
+/// number was wrong.
+#[test]
+fn an_observation_at_the_decision_instant_is_not_a_return() {
+    let db = open_db();
+    let now = Utc::now();
+    let closed = now - chrono::Duration::minutes(30);
+
+    // The anchor is observed at exactly the instant the gate decided. This is
+    // the `AbstainedAtAnchor` shape, reproduced through the same repository the
+    // gate writes through.
+    decision_block(
+        &db,
+        "block-at-anchor",
+        closed - chrono::Duration::minutes(1),
+    );
+    observe(&db, "block-at-anchor", "FOCUS_WORK", closed);
+    log_decision(
+        &db,
+        "at-anchor",
+        "block-at-anchor",
+        Some("FOCUS_WORK"),
+        closed,
+    );
+
+    // One second later is a return, and stays one. The bound moved by exactly
+    // the row that cannot be evidence of anything.
+    decision_block(&db, "block-after", closed - chrono::Duration::minutes(1));
+    observe(&db, "block-after", "FOCUS_WORK", closed);
+    log_decision(&db, "after", "block-after", Some("FOCUS_WORK"), closed);
+    observe(
+        &db,
+        "block-after",
+        "FOCUS_WORK",
+        closed + chrono::Duration::seconds(1),
+    );
+
+    let target = InterventionDecisionOutcomeTarget::new(db.work_block_repo(), 500);
+    assert_eq!(target.run_cleanup().unwrap().deleted, 2);
+
+    assert_eq!(
+        logged(&db, "at-anchor").anchor_seen_within_600s,
+        Some(false),
+        "the observation the decision was made on is not a return from it; \
+         resolving it as one makes the verdict true by construction"
+    );
+    assert_eq!(
+        logged(&db, "after").anchor_seen_within_600s,
+        Some(true),
+        "an anchor observed after the decision is still a return"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 9 — The embedding cache expires on the raw-event horizon
+// ---------------------------------------------------------------------------
+
+/// The cache holds a sketch derived from the window title, and its only bound
+/// was a 512-row cap that a frequently revisited window never falls out of.
+/// A row not re-observed inside the window expires like the raw event it was
+/// derived from.
+#[test]
+fn semantic_embedding_cache_expires_on_the_raw_event_horizon() {
+    let db = open_db();
+    let learning = db.semantic_learning_store();
+    for index in 0..3u8 {
+        learning
+            .record_embedding(&format!("{index:064x}"), &[1.0, index as f32])
+            .unwrap();
+    }
+    db.set_semantic_embedding_updated_at_for_test(
+        &[format!("{:064x}", 0), format!("{:064x}", 1)],
+        (Utc::now() - chrono::Duration::days(15)).timestamp(),
+    )
+    .unwrap();
+
+    let target = SemanticEmbeddingCacheRetentionTarget::with_default_retention(
+        db.abstraction_map_repo(),
+        500,
+    );
+    assert_eq!(
+        target.run_cleanup().unwrap().deleted,
+        2,
+        "an embedding not re-observed inside the window expires"
+    );
+    assert!(
+        learning
+            .embedding(&format!("{:064x}", 2))
+            .unwrap()
+            .is_some(),
+        "a row inside the window is still a live cache entry"
+    );
+    assert_eq!(target.run_cleanup().unwrap().deleted, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Test 10 — A window's mapping expires on the raw-event horizon
+// ---------------------------------------------------------------------------
+
+fn mapping(index: u8) -> AbstractionMapping {
+    AbstractionMapping {
+        key_hash: format!("{index:064x}"),
+        stable_id: format!("abs_mapping_{index}"),
+        label: "unlogged".into(),
+        category: "UNLOGGED".into(),
+        taxonomy_version: "mvp-2".into(),
+        classification_tier: "fallback".into(),
+        classification_status: "ambiguous".into(),
+        classification_confidence: "low".into(),
+        classification_source: "fallback".into(),
+        display_name: None,
+    }
+}
+
+/// `abstraction_map` kept one row per window ever observed and had no target
+/// at all. A mapping not observed inside the horizon now expires like the
+/// raw event that produced it -- unless the user corrected that window, in
+/// which case it lives as long as the correction does.
+#[test]
+fn a_window_mapping_expires_on_the_raw_event_horizon_unless_it_was_corrected() {
+    assert_eq!(ABSTRACTION_MAP_RETENTION_DAYS, 14);
+    let db = open_db();
+    let maps = db.abstraction_map_repo();
+    for index in 0..3u8 {
+        maps.upsert(&mapping(index)).unwrap();
+    }
+    maps.save_personal_override("abs_mapping_1", "FOCUS_WORK", None)
+        .unwrap();
+    db.set_abstraction_map_updated_at_for_test(
+        &["abs_mapping_0".into(), "abs_mapping_1".into()],
+        (Utc::now() - chrono::Duration::days(15)).timestamp(),
+    )
+    .unwrap();
+
+    let target = AbstractionMapRetentionTarget::with_default_retention(maps.clone(), 500);
+    assert_eq!(target.name(), "abstraction_map");
+    assert_eq!(
+        target.run_cleanup().unwrap().deleted,
+        1,
+        "only the stale mapping nothing points at expires"
+    );
+    assert!(
+        maps.get("abs_mapping_0").is_err(),
+        "the stale mapping is gone"
+    );
+    assert!(
+        maps.get("abs_mapping_1").is_ok(),
+        "a corrected window keeps its mapping, or the rule could not be listed or removed"
+    );
+    assert!(
+        maps.get("abs_mapping_2").is_ok(),
+        "an observed window is live"
+    );
+    assert_eq!(target.run_cleanup().unwrap().deleted, 0);
 }

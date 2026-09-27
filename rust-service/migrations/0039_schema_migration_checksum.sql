@@ -1,0 +1,36 @@
+-- A content checksum for every applied migration.
+--
+-- WHY. `schema_migration` recorded a version and a file name, and since PR #47
+-- the runner refuses a database whose recorded name for a version differs from
+-- the file this build embeds for it (a reused or renumbered migration). An
+-- EDITED migration keeps its name, so a database that applied one version of a
+-- file and a build that carries another looked identical to the runner. This
+-- column is what lets it tell them apart.
+--
+-- WHAT IT HOLDS. The SHA-256, as 64 lowercase hex digits, of the migration's
+-- SQL with every comment removed and every run of whitespace outside a quoted
+-- token collapsed to one space (`migration_checksum` in
+-- `src/persistence/sqlite.rs`). Comments are left out on purpose: headers like
+-- this one are where a migration's privacy claims are written down, and
+-- correcting them is right. That was done to 0001 and 0011 on 2026-08-21 and
+-- to 0027 and 0028 on 2026-09-14, all four comment-only, and none of them is a
+-- change to what the migration does. A change to any statement is. The value
+-- is computed from the public source file; nothing in it comes from this Mac.
+-- `migrations/CHECKSUMS` lists the value for every file, and a test holds
+-- each file to its line.
+--
+-- BACKFILL. Rows recorded before this migration have no checksum. The runner
+-- gives each one the checksum of the file this build embeds under that version
+-- and name, in the same transaction that applies this migration. That trusts
+-- the embedded file to be the one that ran, which is what the name check
+-- already trusts; from then on, what is recorded is checked.
+--
+-- ON A MISMATCH. Debug builds -- every test and every CI run -- refuse the
+-- database, roll the whole run back, and name the migration. Release builds
+-- open it, log `migration_checksum_mismatch` at error level on every start,
+-- keep the recorded checksum so the report repeats until someone resolves it,
+-- and report the service as degraded to the app. The schema that ran is the
+-- one on disk either way; refusing to start would stop local collection on a
+-- tester's Mac over a difference that tester cannot fix.
+ALTER TABLE schema_migration ADD COLUMN checksum TEXT
+    CHECK (checksum IS NULL OR (length(checksum) = 64 AND checksum NOT GLOB '*[^0-9a-f]*'));

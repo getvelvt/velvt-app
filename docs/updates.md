@@ -166,6 +166,10 @@ preservation, helper restart, or database migration behavior.
 
 - `CFBundleVersion` is the monotonically increasing update/build identifier.
 - `CFBundleShortVersionString` is the user-facing version.
+- Both come from `swift-client/Configs/Version.xcconfig` and nowhere else.
+  `make release` refuses a `VELVT_RELEASE_VERSION`/`VELVT_RELEASE_BUILD` that
+  differs from that file, a dirty tree, a version tagged at another commit, and
+  a build number not above every build in [`RELEASES.md`](RELEASES.md).
 - Each app archive contains exactly one compatible Swift/Rust pair. The embedded
   helper's protocol version must match `VelvtProtocolVersion`; the existing
   release verifier enforces that invariant.

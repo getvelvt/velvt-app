@@ -23,7 +23,7 @@ use std::time::Duration as StdDuration;
 use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use serde_json::json;
-use velvt_service::abstraction::AbstractionEngine;
+use velvt_service::abstraction::{app_stable_key_for, AbstractionEngine};
 use velvt_service::auth::{
     AccountAuthService, AuthError, AuthManager, AuthState, AuthStateMachine, FakeTokenStore,
     HttpClient, HttpRequest, HttpResponse, RedactedString, TokenPair, TokenStore,
@@ -39,10 +39,10 @@ use velvt_service::upload::{
     IpcPrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator, UploadOutcome,
 };
 use velvt_shared_types::{
-    Acknowledged, ClientHello, ClientMessage, CorrectEventClassification, FlushUploadQueue,
-    PrivacyViolationAlert, RawEvent, RawEventAck, RawEventStatus, RemoveClassificationOverride,
-    RequestCorrectionHistory, RequestMenuStatus, ServerMessage, ShuttingDown,
-    UpdateClassificationOverride, PROTOCOL_VERSION,
+    Acknowledged, ClientHello, ClientMessage, CorrectEventClassification, CorrectionScope,
+    FlushUploadQueue, PrivacyViolationAlert, RawEvent, RawEventAck, RawEventStatus,
+    RemoveClassificationOverride, RequestCorrectionHistory, RequestMenuStatus, ServerMessage,
+    ShuttingDown, UpdateClassificationOverride, PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,10 @@ fn raw_event(seconds: i64, app_name: &str, window_title: &str) -> RawEvent {
         app_name: app_name.into(),
         window_title: window_title.into(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
+        in_progress: false,
         duration_seconds: 0,
     }
 }
@@ -530,13 +533,39 @@ async fn local_activity_name_stays_off_cloud_and_remains_in_correction_history()
     let Some(ServerMessage::MenuStatus(status)) = response else {
         panic!("expected menu_status");
     };
+    // One correction teaches two rungs: this window, and every window of this
+    // application. The history lists the pair ONCE, represented by its window
+    // rule (migration 0035's `app_only`). Listing both would read as two
+    // separate things the user said when they said one, and would duplicate
+    // every correction already on disk the moment the app rung reached this
+    // list. The window rule is also the row whose removal takes both rungs with
+    // it, so what the user can see stays exactly what they can undo --- the
+    // assertion at the end of this test.
     assert_eq!(status.correction_history.len(), 1);
-    assert_eq!(status.correction_history[0].stable_id, stable_id);
-    assert_eq!(
-        status.correction_history[0].local_label.as_deref(),
-        Some("Research reading")
-    );
-    assert_eq!(status.correction_history[0].category, "REFERENCE");
+    let window_rule = &status.correction_history[0];
+    assert_eq!(window_rule.scope, CorrectionScope::Window);
+    assert_eq!(window_rule.stable_id, stable_id);
+    assert_eq!(window_rule.local_label.as_deref(), Some("Research reading"));
+    assert_eq!(window_rule.category, "REFERENCE");
+    // The app rung was still written --- without it the next window of this
+    // application is unclassified again. It is unlisted, not unwritten.
+    // Keyed on the application name the event reported, which is what
+    // `AbstractedEvent::app_stable_id` carries, under this database's salt
+    // (migration 0037). (`events_before` does not select that column, so it is
+    // derived here rather than read back.)
+    let salt = persistence
+        .abstraction_map_repo()
+        .stable_key_salt()
+        .unwrap();
+    let app_key = app_stable_key_for(&salt, "Private Research App");
+    let app_rung = persistence
+        .abstraction_map_repo()
+        .app_scope_override(&app_key)
+        .unwrap()
+        .expect("a correction must also teach the application it belonged to");
+    assert_eq!(app_rung.category, "REFERENCE");
+    assert_eq!(app_rung.activity_name.as_deref(), Some("Research reading"));
+    assert_ne!(app_key, stable_id);
     // Invariant 3: the correction is believed instantly *and visibly*. Without
     // a confirmation, a correction that worked looks exactly like one that was
     // ignored, and users stop making them.
@@ -569,6 +598,7 @@ async fn local_activity_name_stays_off_cloud_and_remains_in_correction_history()
     let Some(ServerMessage::CorrectionHistoryPage(page)) = response else {
         panic!("expected correction_history_page");
     };
+    // One correction, one row --- the window rule that represents both rungs.
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.total_count, 1);
     assert!(!page.has_more);
@@ -604,11 +634,16 @@ async fn local_activity_name_stays_off_cloud_and_remains_in_correction_history()
         panic!("expected correction_history_page");
     };
     assert_eq!(page.page_size, 20);
-    assert_eq!(page.items[0].category, "COMMUNICATION");
-    assert_eq!(
-        page.items[0].local_label.as_deref(),
-        Some("Edited private alias")
-    );
+    // Found by scope rather than by position: two rules can share an
+    // `updated_at` second, and which of them sorts first is then decided by a
+    // hash, which is not something a test should depend on.
+    let edited = page
+        .items
+        .iter()
+        .find(|rule| rule.scope == CorrectionScope::Window)
+        .expect("the edited window rule must be listed");
+    assert_eq!(edited.category, "COMMUNICATION");
+    assert_eq!(edited.local_label.as_deref(), Some("Edited private alias"));
 
     let response = router
         .route(ClientMessage::RemoveClassificationOverride(
@@ -617,6 +652,18 @@ async fn local_activity_name_stays_off_cloud_and_remains_in_correction_history()
         .await
         .unwrap();
     assert!(matches!(response, Some(ServerMessage::MenuStatus(_))));
+    // Removing the one row the user could see removes the app rung with it.
+    // This is what makes listing the pair once honest: if the app rung outlived
+    // its window rule the engine would fall through into it and answer exactly
+    // as before, and the undo the user asked for would change nothing.
+    assert!(
+        persistence
+            .abstraction_map_repo()
+            .app_scope_override(&app_key)
+            .unwrap()
+            .is_none(),
+        "removing the listed window rule must take the unlisted app rung with it"
+    );
 }
 
 // ---------------------------------------------------------------------------

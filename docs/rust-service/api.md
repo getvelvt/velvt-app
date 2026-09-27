@@ -265,6 +265,36 @@ Rust uses an internal `HttpClient` trait and `ReqwestHttpClient` implementation.
 
 Cloud DTOs must be audited against the forbidden-field list. Tests in `rust-service/tests/upload_batching.rs` are the first place to update when upload shape changes.
 
+The table above omits two requests the source also makes: `GET /v1/auth/session`
+(`AuthManager`, restoring a saved session) and
+`PATCH /v1/events/{event_id}/classification` (the router, syncing a
+classification correction). `src/egress/mod.rs` (`ENDPOINTS`) is the complete
+list, and `rust-service/tests/egress_ledger.rs` fails when it stops matching the
+paths the source builds.
+
+### Egress Ledger
+
+`ReqwestHttpClient` is the only network client in the service, and its
+constructor takes an `EgressLedgerRepo`. Before every send it appends a row to
+`egress_ledger` (migration 0038): time, method, URL, body byte count, SHA-256 of
+the exact body bytes, whether a bearer token is attached, and the previous row's
+hash. If the append fails the request is not sent and `send` returns
+`AuthError::Transport`. Redirects are not followed, since a followed redirect is
+a second send the ledger never saw. Sign-up, log-in, and refresh bodies are
+hashed with the password or refresh token replaced by `[redacted]`
+(`body_redacted = 1`).
+
+Retention is 30 days or 100,000 rows, oldest first, behind an
+`egress_ledger_checkpoint` row naming the last entry removed. The schema's
+triggers refuse updates, out-of-order inserts, and deletes the checkpoint does
+not cover.
+
+`velvt-service --dry-run-egress` opens the database read-only and prints each
+queued upload exactly as the next attempt sends it, with the SHA-256 the ledger
+will record, then the not-yet-batched events in their wire shape and the
+`ENDPOINTS` list. It sends nothing. `scripts/prove_egress.sh` recomputes the
+chain with sqlite3 and perl and prints the rows.
+
 ### Insight Long-Polling
 
 `PollScheduler` runs as a service-owned background task after startup. It

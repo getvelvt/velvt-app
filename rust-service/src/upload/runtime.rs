@@ -122,7 +122,7 @@ where
             }
             if let Err(error) = self
                 .coordinator
-                .flush_all_pending("1", env!("CARGO_PKG_VERSION"))
+                .flush_all_pending("1", crate::build_info::SERVICE_VERSION)
                 .await
             {
                 Self::log_submit_failure(&error);
@@ -131,7 +131,7 @@ where
             return Ok(true);
         }
         self.coordinator
-            .flush_all_pending("1", env!("CARGO_PKG_VERSION"))
+            .flush_all_pending("1", crate::build_info::SERVICE_VERSION)
             .await?;
         Ok(false)
     }
@@ -205,6 +205,54 @@ impl<U, A> SharedUploadBatcher<U, A> {
     }
 }
 
+impl<U, A> SharedUploadBatcher<U, A>
+where
+    U: BatchUploader,
+    A: PrivacyAlertSink,
+{
+    /// Persists and uploads a batch the assembler has already given up, with
+    /// `inner` released for the duration of the network call.
+    ///
+    /// The lock must not span the POST. The router awaits `route()` serially on
+    /// the single Swift connection, so a request hanging against an unreachable
+    /// host would stall every IPC message and every queued push behind it for
+    /// the full HTTP timeout — a whole batch flush of head-of-line blocking for
+    /// something the user never asked for. Taking the batch out of the
+    /// assembler is the only part that needs the lock, and the batch is owned
+    /// once taken, so nothing else can observe it half-submitted.
+    ///
+    /// Requeue semantics are unchanged from [`UploadBatcher::submit`]: a
+    /// persist failure hands the events back to the assembler, because they
+    /// were already acked to the client and exist nowhere else; an upload
+    /// failure does not, because the batch is durable by then and the
+    /// pending-retry path resumes it.
+    ///
+    /// Two network paths can now overlap where holding `inner` used to keep
+    /// them apart: a queue drain started by "Send all now" reads
+    /// `pending_batches`, which includes the durable row this call is still
+    /// POSTing. That costs one redundant upload of data the account has already
+    /// been given — the server answers a repeat of the same `batch_id` with
+    /// `Duplicate`, which `upload_batch_with_backoff` records as sent.
+    /// Serializing the two instead would mean taking `flush_gate` here, which
+    /// is the head-of-line block this method exists to remove.
+    async fn submit_with_inner_released(
+        &self,
+        batch: super::BatchPayload,
+        coordinator: Arc<UploadCoordinator<U, A>>,
+    ) -> Result<(), CoordinatorError> {
+        if let Err(error) = coordinator.persist_batch(&batch) {
+            UploadBatcher::<U, A>::log_submit_failure(&error);
+            self.inner.lock().await.assembler.requeue(batch);
+            return Err(error);
+        }
+        if let Err(error) = coordinator.upload_batch(batch).await {
+            UploadBatcher::<U, A>::log_submit_failure(&error);
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
 impl<U, A> EventIngestor for SharedUploadBatcher<U, A>
 where
     U: BatchUploader,
@@ -218,11 +266,18 @@ where
         now: DateTime<Utc>,
     ) -> Pin<Box<dyn Future<Output = Result<(), CoordinatorError>> + Send + 'a>> {
         Box::pin(async move {
-            self.inner
-                .lock()
-                .await
-                .ingest_abstracted(event_id, event, duration_seconds, now)
-                .await
+            let (batch, coordinator) = {
+                let mut batcher = self.inner.lock().await;
+                let payload = BatchEventPayload::from_abstracted(event_id, event, duration_seconds);
+                (
+                    batcher.assembler.push(payload, now),
+                    Arc::clone(&batcher.coordinator),
+                )
+            };
+            let Some(batch) = batch else {
+                return Ok(());
+            };
+            self.submit_with_inner_released(batch, coordinator).await
         })
     }
 
@@ -230,13 +285,39 @@ where
         &'a self,
         now: DateTime<Utc>,
     ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
-        Box::pin(async move { self.inner.lock().await.flush_due(now).await })
+        Box::pin(async move {
+            let (batch, coordinator) = {
+                let mut batcher = self.inner.lock().await;
+                (
+                    batcher.assembler.flush_due(now),
+                    Arc::clone(&batcher.coordinator),
+                )
+            };
+            let Some(batch) = batch else {
+                return Ok(false);
+            };
+            self.submit_with_inner_released(batch, coordinator).await?;
+            Ok(true)
+        })
     }
 
     fn flush_shutdown<'a>(
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<bool, CoordinatorError>> + Send + 'a>> {
-        Box::pin(async move { self.inner.lock().await.flush_shutdown().await })
+        Box::pin(async move {
+            let (batch, coordinator) = {
+                let mut batcher = self.inner.lock().await;
+                (
+                    batcher.assembler.flush_shutdown(),
+                    Arc::clone(&batcher.coordinator),
+                )
+            };
+            let Some(batch) = batch else {
+                return Ok(false);
+            };
+            self.submit_with_inner_released(batch, coordinator).await?;
+            Ok(true)
+        })
     }
 
     fn flush_now<'a>(
@@ -258,7 +339,7 @@ where
                     return Err(error);
                 }
                 if let Err(error) = coordinator
-                    .flush_all_pending("1", env!("CARGO_PKG_VERSION"))
+                    .flush_all_pending("1", crate::build_info::SERVICE_VERSION)
                     .await
                 {
                     UploadBatcher::<U, A>::log_submit_failure(&error);
@@ -267,7 +348,7 @@ where
                 return Ok(true);
             }
             coordinator
-                .flush_all_pending("1", env!("CARGO_PKG_VERSION"))
+                .flush_all_pending("1", crate::build_info::SERVICE_VERSION)
                 .await?;
             Ok(false)
         })

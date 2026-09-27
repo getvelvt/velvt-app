@@ -1,0 +1,37 @@
+[
+  {
+    "path": "rust-service/src/work_block/mod.rs",
+    "literal": "learned",
+    "why": "An entry in BANNED_COPY_TOKENS, the run-time registry that rejects this word in rendered copy. It names the banned word; it is never shown to anyone."
+  },
+  {
+    "path": "rust-service/src/work_block/mod.rs",
+    "literal": "learns",
+    "why": "An entry in BANNED_COPY_TOKENS, the run-time registry that rejects this word in rendered copy. It names the banned word; it is never shown to anyone."
+  },
+  {
+    "path": "rust-service/src/work_block/mod.rs",
+    "literal": "learning",
+    "why": "An entry in BANNED_COPY_TOKENS, the run-time registry that rejects this word in rendered copy. It names the banned word; it is never shown to anyone."
+  },
+  {
+    "path": "rust-service/src/work_block/mod.rs",
+    "literal": "adaptive",
+    "why": "An entry in BANNED_COPY_TOKENS, the run-time registry that rejects this word in rendered copy. It names the banned word; it is never shown to anyone."
+  },
+  {
+    "path": "rust-service/src/work_block/mod.rs",
+    "literal": "adapts",
+    "why": "An entry in BANNED_COPY_TOKENS, the run-time registry that rejects this word in rendered copy. It names the banned word; it is never shown to anyone."
+  },
+  {
+    "path": "rust-service/src/work_block/mod.rs",
+    "literal": "predicts",
+    "why": "An entry in BANNED_COPY_TOKENS, the run-time registry that rejects this word in rendered copy. It names the banned word; it is never shown to anyone."
+  },
+  {
+    "path": "rust-service/src/work_block/mod.rs",
+    "literal": "gets smarter",
+    "why": "An entry in BANNED_COPY_TOKENS, the run-time registry that rejects this word in rendered copy. It names the banned word; it is never shown to anyone."
+  }
+]

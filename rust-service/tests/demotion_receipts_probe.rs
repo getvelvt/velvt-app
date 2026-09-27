@@ -249,6 +249,7 @@ fn seed_intervention(
                 outcome_at: (outcome != WorkBlockInterventionOutcome::Offered)
                     .then(|| offered_at + ChronoDuration::seconds(10)),
                 salience: InterventionSalience::Normal,
+                card_seen_at: None,
             },
         )
         .unwrap();
@@ -423,9 +424,11 @@ async fn digest_counts_match_stored_aggregates_exactly() {
     assert_eq!(digest.recoveries, summed);
 
     // Recoveries and completions lead; the headline mentions no misses.
+    // `withheld` trails as the second clause, so the user stays the subject.
     assert_eq!(
         digest.headline,
-        "You returned 4 times and completed 5 of 7 blocks this week."
+        "You returned 4 times and completed 5 of 7 blocks this week, and Velvt chose not to send \
+         2 nudges."
     );
 
     // Frozen: a second request re-serves the same stored row.

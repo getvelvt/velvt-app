@@ -12,9 +12,10 @@ The Rust service is organized around narrow modules that own one runtime concern
 | `src/abstraction/` | Taxonomy loading, classification plugins, stable key generation, abstracted event creation |
 | `src/persistence/` | SQLite opening, migrations, repository traits, database models |
 | `src/upload/` | Batch assembly, queueing, retry/backoff, cloud upload transport |
-| `src/auth/` | Account auth relay, token store traits, auth state machine, refresh/reissue logic |
+| `src/auth/` | Account auth relay, token store traits, auth state machine, refresh/reissue logic, and `ReqwestHttpClient`, the only network client |
+| `src/egress/` | Egress-ledger hashing and chain verification, the endpoint list, and `--dry-run-egress` |
 | `src/delivery/` | Fetching history/insight, cache management, payload shaping, IPC push adapter |
-| `src/retention/` | Scheduled cleanup for raw events, sent/rejected batches, and caches |
+| `src/retention/` | Scheduled cleanup for raw events, sent/rejected batches, caches, and the egress ledger |
 | `src/work_block/` | Versioned work-block state machine, safe observation aggregation, deterministic copy, restart recovery, and one-shot deadline |
 | `src/lifecycle/` | Cancellation token used by long-running tasks |
 | `shared-types/` | IPC DTOs and protocol constants shared by service tests and Swift-equivalent schemas |
@@ -85,7 +86,8 @@ SQLite access is centralized under `persistence/`. Repositories expose domain-or
 
 Design decisions:
 
-- Migrations are explicit SQL files in `rust-service/migrations/`.
+- Migrations are explicit SQL files in `rust-service/migrations/`, embedded by `build.rs`, which refuses two files with the same number.
+- `schema_migration` records each applied migration's version, file name and, since migration 0039, content checksum: SHA-256 of the SQL with comments removed and whitespace collapsed, so correcting a comment is not an edit and changing a statement is. `run_migrations` refuses a database whose recorded name for a version differs from the embedded file for that version, in every build: it rolls the whole run back, and startup halts with `migration_name_mismatch` naming both files. A recorded checksum that differs from the embedded file's is an edited migration. A debug build (every test and CI run) refuses the database the same way, with `migration_checksum_mismatch`. A release build applies what is pending, logs `migration_checksum_mismatch` at error level, keeps the recorded checksum so the report repeats on every start, and pushes `service_status` `degraded` with reason `migration_checksum_mismatch`. Rows recorded before 0039 get the embedded file's checksum on the run that applies it. `migrations/CHECKSUMS` lists every file's checksum, and a test fails CI when a file no longer matches its line. Never rename, renumber or reuse a shipped migration, and never change its statements.
 - Hot-path cleanup and batching use indexed queries.
 - Raw event storage is limited to privacy-safe audit/display fields after abstraction.
 - Upload DTO construction reads from persisted abstracted events and upload batches, not from original raw IPC payloads.
@@ -106,7 +108,10 @@ idempotent.
 `WorkBlockManager` receives safe category/status/confidence evidence after the
 abstraction engine. It alone derives coverage, longest uninterrupted stretch,
 neutral category transitions, returns, evidence category, observation copy,
-and the singular recovery action. Swift receives a ready-to-render snapshot.
+and the singular recovery action. At a block boundary it reads the reported
+dwells overlapping the block back from `raw_event_buffer` (start, duration,
+and category evidence only) to close the last observation where its dwell
+ended and to measure coverage against what was actually reported. Swift receives a ready-to-render snapshot.
 Deadline scheduling uses a replaceable one-shot sleep rather than polling. See
 `docs/architecture/work-block-loop.md` for the state machine and field boundary.
 

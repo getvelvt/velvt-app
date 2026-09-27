@@ -43,7 +43,7 @@ The most critical invariant of the entire project. Violations are fatal bugs.
 - **Cloud allowed:** abstracted labels, coarse categories, timestamps, durations, session summaries, derived event metadata.
 - **The Rust service owns the privacy enforcement boundary.** It is the last gate before any data leaves the device. The Swift client MUST NOT perform its own upload to the cloud — all outbound traffic flows through the Rust service.
 - **Never upload forbidden raw fields.** The cloud will reject them with `raw_field_rejected`. Unit tests in `rust-service/` must prove forbidden fields cannot appear in upload payloads.
-- Auth and refresh tokens go in **Keychain only** (Swift) or the **platform credential store** (Rust). Never SQLite.
+- Auth and refresh tokens go in the **Keychain only** (Swift, service `com.velvt.mac`). Rust holds the session Swift gives it **in memory only** (`VolatileTokenStore`) and has no credential store of its own. Never SQLite, never a log.
 
 ***
 
@@ -64,7 +64,8 @@ NSWorkspace / AXObserver events  →   Raw event ingestion
 - Message schema is defined in `proto/` as JSON Schema. Both workspaces must conform to the version declared in `proto/version`.
 - The Rust service sends `server_hello`, then the Swift client declares its supported protocol version in `client_hello` on every connection.
 - The Rust service must negotiate gracefully — reject unsupported versions with a clear error code, never silently drop messages.
-- The Swift client sends raw events and reads confirmations/payloads. It never reads abstraction maps, analytics state, or intermediate processing results — those are internal to the Rust service.
+- The Swift client sends raw events and commands and renders Rust-authored snapshots (work-block state, dashboard, digest, invitations). It never reads abstraction maps, intermediate processing results, or the SQLite file — those are internal to the Rust service. Swift reports facts; Rust owns every judgement (category, drift, timing, copy).
+- `docs/architecture/ipc-contract.md` is the message catalog; `proto/schema/` and `proto/CHANGELOG.md` are authoritative where they differ.
 - Do not add new message types to the IPC protocol without updating `proto/` and confirming the change spans both workspaces.
 
 ***
@@ -89,28 +90,38 @@ Passive event capture via macOS Accessibility APIs, IPC relay of raw events to t
 ## Technology Stack
 - **Language:** Swift
 - **UI:** SwiftUI + AppKit, `NSStatusItem` for menu bar
-- **Local cache:** SQLite via GRDB.swift — for UI read cache and Keychain-adjacent state only
+- **Dependencies:** Sparkle is the only third-party package (`Package.swift`, exact 2.9.4; the updater is off in alpha builds). There is no Swift-side SQLite and no GRDB — all persistence is in the Rust service.
 - **IPC:** Unix domain socket client (no URLSession for local IPC)
-- **Notifications:** UserNotifications + APNs
-- **Permissions:** Accessibility and Notifications only — no screen recording, microphone, camera, or filesystem access
+- **Notifications:** UserNotifications, local only. Two kinds are posted: the in-block drift offer and the daily insight. There is no APNs registration (`registerForRemoteNotifications` is never called); the APNs environment setting and token-store protocol are unused seams.
+- **Permissions:** Accessibility and Notifications, plus the optional Focus status permission offered at onboarding (one boolean: whether a Focus mode is on) — no screen recording, microphone, camera, or filesystem access
 
 ## Project Structure
 ```
 swift-client/
-├── App/           # Entry point, lifecycle, AppDelegate, NSStatusItem
-├── Collection/    # AXObserver agent, workspace notification handling
-├── IPC/           # Unix socket client, message serialization, version handshake
-├── Delivery/      # Insight payload receipt, notification scheduling, history cache
-├── UI/            # Menu bar popover, onboarding, permission status, privacy disclosure
-├── Auth/          # Auth client, token management, Keychain storage
-├── Device/        # Device registration, APNs token management
-└── Config/        # Typed build config (socket path, APNs environment, client version)
+├── Package.swift          # SwiftPM: executable product `Velvt`, test harness
+├── VelvtMac.xcodeproj     # Xcode target/scheme `velvt-mac`, product `Velvt.app`
+├── Configs/               # Debug/Release xcconfig, entitlements
+└── Sources/VelvtMac/
+    ├── App/          # AppDelegate, menu bar controller, bundled-helper launcher, orphaned-helper recovery, updater
+    ├── Collection/   # AXObserver agent, declared app metadata, Focus/DND observer
+    ├── Relay/        # EventRelay: in-memory ring buffer between collection and IPC
+    ├── IPC/          # Unix socket client, message types, version handshake, reconnect backoff
+    ├── Delivery/     # Display-data coordinator, insight and drift-offer notification delivery
+    ├── UI/           # Menu bar popover, work-block view, onboarding, history, digest, corrections
+    ├── Auth/         # Account state, Keychain session storage
+    ├── Device/       # Local device identity
+    ├── Permissions/  # Accessibility and Notifications permission state
+    ├── Service/      # Bundled Rust service lifecycle state
+    ├── Config/       # Typed build config (socket path, protocol and client version)
+    └── Resources/    # Bundled fonts
 ```
+
+Every new `.swift` file must also join the Xcode target: run `./scripts/verify_pbxproj_membership.sh` (CI runs it on every pull request).
 
 ## Key Commands
 - Build: `xcodebuild -project swift-client/VelvtMac.xcodeproj -scheme velvt-mac -destination 'generic/platform=macOS' build`
 - Tests: `swift test --package-path swift-client`
-- Lint: `cd swift-client && swift format lint --recursive Sources Tests`
+- Lint: `make lint-swift` (`scripts/lint_swift.sh`: swift-format under `swift-client/.swift-format`, failing on any finding not in `swift-client/.swift-format-baseline`)
 
 ## Development Guide
 
@@ -121,13 +132,12 @@ swift-client/
 
 ### IPC
 - Open the Unix socket connection at app launch. Reconnect with exponential backoff if the service is unavailable.
-- Buffer raw events in memory (not SQLite) for up to 30 seconds if the socket is unavailable. Drop oldest events beyond that window — do not accumulate unbounded memory.
+- Buffer raw events in memory only (never disk, SQLite, or `UserDefaults`) while the socket is unavailable: `EventRelay` holds a bounded ring buffer (default 500 events) and drops the oldest on overflow — never accumulate unbounded memory.
 - Log socket errors with error code only. Never log message content.
 
 ### Delivery
-- Insight payloads are received from the Rust service and cached locally for UI display.
-- Schedule UserNotifications from received payloads — do not generate notification text in the Swift layer.
-- Cache up to 7 days of insight history for UI display.
+- Insight, history, and work-block payloads are received from the Rust service and held in memory for display; Swift keeps no copy of them on disk (it records only which notification IDs it has scheduled). The client requests 14 days of history, and the local Daily Activity chart covers 14 days, the same horizon as raw-event retention.
+- Schedule UserNotifications from received payloads — do not generate notification text in the Swift layer. Drift-offer copy comes from the work-block snapshot's `active_intervention`; daily-insight copy from `notification_payload`.
 
 ### Logging
 - Logs must never include raw window titles, app names, bundle IDs, URLs, paths, filenames, contacts, emails, or insight text.
@@ -145,7 +155,7 @@ swift-client/
 # Rust Service (`rust-service/`)
 
 ## Scope
-Unix socket IPC server, raw event ingestion, abstraction engine, SQLite persistence, upload batching, cloud sync, and privacy-preserving local behavioral analytics.
+Unix socket IPC server, raw event ingestion, abstraction engine, SQLite persistence, upload batching, cloud sync, and the device-local decisions the shipped product makes: work blocks and the deterministic drift gate, Focus/DND evidence, initiation invitations, the weekly receipts digest, and the local dashboard aggregates.
 
 **The Rust service does NOT:**
 - Render any UI
@@ -153,15 +163,16 @@ Unix socket IPC server, raw event ingestion, abstraction engine, SQLite persiste
 - Make decisions about notification scheduling (it delivers payloads; Swift schedules)
 
 ## Architecture Constraints
-- **The service is the privacy enforcement boundary.** Abstraction happens here before any data is written to the upload queue. Raw fields must never appear in `abstracted_events` or `upload_batches` tables.
-- **Local behavioral analytics belong in Rust.** Detailed task-context, episode, longitudinal evidence, and experiment modeling must remain behind the Rust privacy boundary. Introduce new behavioral-model capabilities behind runtime feature flags until their phase acceptance gates pass. Local LLM inference and opaque models over raw activity remain out of scope.
+- **The service is the privacy enforcement boundary.** Abstraction happens here before any data is written to the upload queue. Raw fields must never appear in `upload_batch` / `batch_event` rows or in any outbound payload; `BatchEventPayload`'s hand-written `Serialize` (`src/upload/dto.rs`) is the only thing that crosses to the cloud.
+- **Every policy is deterministic.** The drift gate, initiation, demotion and digest policies are fixed, versioned rules (`DRIFT_POLICY_VERSION` and its siblings); no policy learns or adapts its own thresholds. A drift-gate constant change needs a `DRIFT_POLICY_VERSION` bump, because decisions logged under two policy versions are never pooled.
+- **No new behavioral-engine work without a dated decision.** The models in `src/behavior/` (BOCPD, HMM, antecedent miner) are shadow code with no caller in the shipped path; do not wire them into a shipped path, add a new one, or add experiment/randomization machinery unless the task cites a dated founder decision (see [Scope Boundary](#scope-boundary)). Local LLM inference and opaque models over raw activity are out of scope.
 - **No full-table scans on hot paths.** Use indexed queries only for event ingestion and batching.
 - **Auto-update aware.** The service must support being replaced on disk and restarted by the Swift client's update mechanism. It must not hold exclusive file locks that prevent replacement.
 
 ## Technology Stack
 - **Language:** Rust (stable toolchain, version pinned in `rust-toolchain.toml`)
 - **IPC:** Unix domain socket server (`tokio` async runtime)
-- **Persistence:** SQLite via `sqlx` or `rusqlite` with explicit migrations
+- **Persistence:** SQLite via `rusqlite` (bundled) with numbered, embedded migrations
 - **HTTP client:** `reqwest` for cloud upload
 - **Serialization:** `serde` + `serde_json`; proto schema in `proto/` is the source of truth
 
@@ -169,37 +180,53 @@ Unix socket IPC server, raw event ingestion, abstraction engine, SQLite persiste
 ```
 rust-service/
 ├── src/
-│   ├── main.rs         # Entry point, service lifecycle
+│   ├── main.rs         # Entry point, service wiring and lifecycle; declares `behavior`
+│   ├── lib.rs          # Library crate: every module below except `behavior`
 │   ├── ipc/            # Unix socket server, message dispatch, version negotiation
-│   ├── abstraction/    # Raw-to-abstract mapping engine, category assignment
-│   ├── persistence/    # SQLite schema, migrations, DAL
-│   ├── upload/         # Batch assembly, retry logic, cloud HTTP client
-│   ├── auth/           # Token storage (platform credential store), refresh logic
-│   ├── delivery/       # Insight fetch, payload formatting, push to Swift client
-│   └── analytics/      # Feature-flagged stub — DO NOT activate in MVP
-├── tests/              # Integration tests
+│   ├── abstraction/    # Classification ladder, taxonomy, stable keys, embedding (Tier 2), optional ONNX
+│   ├── persistence/    # SQLite DAL: models, traits, the one rusqlite implementation
+│   ├── upload/         # Batch assembly, retry, transport; the only cloud-bound DTO
+│   ├── auth/           # Account and device auth, token refresh/reissue, credential store
+│   ├── delivery/       # Insight/history fetch, cache, polling, push to Swift
+│   ├── work_block/     # Work-block state machine, drift gate and offer, outcomes, decision log
+│   ├── focus/          # Focus/DND evidence and the quiet-hours offer
+│   ├── initiation/     # Good-hours windows and the capped daily soft-start invitation
+│   ├── receipts/       # Weekly receipts digest and the explain-tap bucket
+│   ├── dashboard.rs    # Focus Fragmentation and Daily Activity aggregates
+│   ├── retention/      # RetentionScheduler and its RetentionTarget implementations
+│   ├── lifecycle/      # CancellationToken and graceful shutdown
+│   ├── config/         # Typed, validated runtime configuration
+│   └── behavior/       # Shadow models (BOCPD, HMM, antecedent miner): no caller in the shipped path
+├── migrations/         # 0001_…sql onward, embedded by build.rs
+├── shared-types/       # IPC DTOs (ClientMessage / ServerMessage)
+├── resources/          # Taxonomy JSON (optional model artifacts are not in the repository)
+├── tests/              # Integration tests, including published_claims.rs
 └── Cargo.toml
 ```
+There is no `src/analytics/` module.
 
 ## Key Commands
 - Build: `cargo build --release`
 - Tests: `cargo test`
-- Lint: `cargo clippy -- -D warnings`
-- Format: `cargo fmt --check`
+- Lint: `cargo clippy --workspace --all-targets -- -D warnings` (`make lint-rust`, which CI runs)
+- Format: `cargo fmt --all --check`
+- onnx feature: `make check-rust-onnx` (type-checks `src/abstraction/onnx.rs`; CI runs it)
 
 ## Development Guide
 
 ### Abstraction Engine
-- Build a stable key from `app_name::window_title`. Hash to a stable local identifier.
-- Assign abstract labels (`document:edit`, `tab:A`, etc.) and categories (lower-case: `document`, `communication`, `reference`, `passive_consumption`, `focus_work`, `system`, `unclassified`).
-- MVP supports `document:edit` abstraction type. Do not add new types without a corresponding `proto/` contract update.
+- Stable keys are domain-separated SHA-256 digests — one over (app name, window context), one over the app name, and one over the bundle identifier — each keyed to the install as HMAC-SHA-256 under `stable_key_salt` (migration 0037). Compute them only through `abstraction/key.rs` with the salt of the store they will be looked up in (`AbstractionMappingStore::stable_key_salt`). The event's stable ID is a random `abs_…` identifier, not a hash.
+- Classification order is: window correction → bundle correction → app-name correction → classifier plugins in registry order (`register_builtin_plugins_with_embedding`). `ARCHITECTURE.md` lists the ladder.
+- Categories are the taxonomy's (`mvp-2`): `FOCUS_WORK`, `PASSIVE_CONSUMPTION`, `SOCIAL_FEED`, `COMMUNICATION`, `TASK_MANAGEMENT`, `REFERENCE`, `SYSTEM`, and the default `UNLOGGED`. Local labels are `<type>:<behavior>` (`document:code`, `video:youtube`, …).
+- Local labels never upload. The upload serializer collapses each event to one category-scoped `abstraction_type` (`cloud_abstraction_type` in `src/upload/dto.rs`, e.g. `document:inferred`); a new uploaded type is a cloud-contract change as well as a local one.
 - Abstraction mappings are persisted in SQLite and never leave the device.
 
 ### Persistence
 - Migrations must be safe and additive. Use versioned migration files.
-- Current feature tables: `abstraction_map`, `raw_event_buffer`, `upload_batch`, `batch_event`, `history_cache`, `insight_cache`, and `upload_host_backoff`.
+- The migrations are the schema (0001–0039 on `develop` as of 2026-09-25). Do not keep a table list here: `MIGRATED_TABLES` in `tests/published_claims.rs` is the closed inventory the migrated schema is tested against, and `PRIVACY.md`'s storage table describes every store that holds anything drawn from the Mac. A new table goes in both, in the same commit.
+- Migration numbers are sequential and shared across branches: take the next free number when you merge, and never renumber or edit a migration that has shipped. Comments may be corrected. Statements may not: `schema_migration.checksum` (0039) records each one, and `migrations/CHECKSUMS` holds every file to its line in CI. A new migration adds its line there.
 - `raw_event_buffer.occurred_at` and `raw_event_buffer.created_at` must have explicit indexes. Retention cleanup must use an indexed path.
-- Default retention: raw cache 7 days, uploaded abstracted events compacted after 7 days, cached insights 7 days.
+- Default retention (`src/config/mod.rs`; `PRIVACY.md` is the per-table reference and `published_claims` pins its numbers): raw events 14 days (`VELVT_RAW_EVENT_TTL_HOURS`, tied to the 14-day activity chart); window mappings (`abstraction_map`) 14 days from the window's last observation unless a correction or a buffered event points at them; sent upload batches 30 days; rejected batches 7 days; history cache 10 minutes and insight cache 30 minutes (`VELVT_HISTORY_TTL_SECONDS` / `VELVT_INSIGHT_TTL_SECONDS`).
 
 ### Upload
 - Batch every 60 seconds while active, after 50 pending abstracted events, or on service shutdown signal.
@@ -222,11 +249,12 @@ rust-service/
 # Monorepo Structure
 
 ```
-velvt/
+velvt-app/
 ├── swift-client/        # SwiftUI/AppKit macOS app
 ├── rust-service/        # Core processing service
 ├── proto/               # IPC message schema (JSON Schema), socket path, protocol version
-├── cloud/               # Python FastAPI backend (separate agent scope)
+├── scripts/             # Build, sign, verify, release, and measurement scripts (+ scripts/tests/)
+├── cloud/               # Empty placeholder; the FastAPI backend is the separate, private velvt-core repository
 └── docs/
     └── architecture/
 ```
@@ -235,14 +263,16 @@ Cross-workspace changes (anything touching `proto/`) require updating both works
 
 ***
 
-# MVP Scope Boundary
+# Scope Boundary
 
-**In scope:**
-- `swift-client/`: passive event capture, IPC relay, menu bar UI, onboarding, permissions, notification display, 7-day history display, daily insight display, local retention controls
-- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, cloud sync, insight payload delivery, work-block state and drift-intervention evidence (`work_block`), the two approved 0.1.5 display surfaces (`dashboard`), and phase-gated local task-context, longitudinal evidence, and experiment modeling defined by `VELVT_IMPLEMENTATION_MASTER_PLAN.md` in the parent workspace
+**What governs scope.** This repository does not grant scope on its own. The founder's plans in the private Velvt workspace do: `GOAL.md`, `RUNBOOK.md`, `plan/README.md`, and `pivot-engineering/10-BUNDLE-ABSORPTION.md`. The last one rejected, as item GOV-1, the rewrite of this file that pre-authorized local behavioral analytics and experiment modeling; that text cited an implementation master plan that is not one of the governing documents, and it was removed on 2026-09-25. Engine work — new behavioral models, experiments or randomization, or wiring `src/behavior/` into a shipped path — waits on Gate D (`10-BUNDLE-ABSORPTION.md` § 5), which has not been met, or on a dated founder decision that overrides it. If a task asks for such work and cites neither, stop and ask.
+
+**In scope (what ships in 1.0.11):**
+- `swift-client/`: passive event capture, IPC relay, menu bar UI, onboarding, permissions, work-block controls and the in-app drift card, drift-offer and daily-insight notifications, 14-day history and daily activity, corrections and unclassified-app triage, the weekly digest card, the soft-start invitation card, local data controls
+- `rust-service/`: IPC server, abstraction engine, SQLite persistence, batched upload, auth, device registration, cloud sync, insight payload delivery, work blocks and the deterministic drift gate (`work_block`), Focus/DND evidence (`focus`), initiation invitations (`initiation`), the weekly receipts digest (`receipts`), and the two 0.1.5 display surfaces (`dashboard`)
 
 **Explicitly deferred — do not build:**
-- Local LLM inference, opaque general sequence models, or autonomous intervention policies. Transparent local behavioral analytics and experiments are now in scope under `VELVT_IMPLEMENTATION_MASTER_PLAN.md` in the parent workspace.
+- Local LLM inference, opaque general sequence models, autonomous or adaptive intervention policies, and new behavioral analytics or experiment machinery (see above).
 - Charts or streak counters beyond the two restrained 0.1.5 surfaces (Focus Fragmentation and Daily Activity) already served by `rust-service/src/dashboard.rs`
 - Unabstracted cloud personalization
 - Cross-platform Swift client (Windows/Linux)

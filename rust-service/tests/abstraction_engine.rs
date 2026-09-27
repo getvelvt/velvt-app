@@ -6,10 +6,11 @@ use std::{
 };
 use uuid::Uuid;
 use velvt_service::abstraction::{
-    AbstractionEngine, ClassificationConfidence, ClassificationPlugin, ClassificationResult,
-    ClassificationSource, ClassificationStatus, ClassificationTier, DefaultTitleAbstractor,
-    EmbeddingError, EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin,
-    InMemoryMappingStore, Taxonomy, TitleAbstractor,
+    AbstractionEngine, AbstractionMappingStore, ClassificationConfidence, ClassificationPlugin,
+    ClassificationResult, ClassificationSource, ClassificationStatus, ClassificationTier,
+    DefaultTitleAbstractor, EmbeddingError, EmbeddingMetrics, EmbeddingModel,
+    EmbeddingSimilarityPlugin, InMemoryMappingStore, Taxonomy, TitleAbstractor,
+    API_EXPECTED_TAXONOMY_VERSION,
 };
 use velvt_shared_types::RawEvent;
 
@@ -20,7 +21,10 @@ fn raw_event(app_name: &str, window_title: &str) -> RawEvent {
         app_name: app_name.to_owned(),
         window_title: window_title.to_owned(),
         bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
         focused_document_url: None,
+        in_progress: false,
         duration_seconds: 0,
     }
 }
@@ -56,7 +60,7 @@ fn tier1_is_deterministic_and_completes_under_one_millisecond() {
     assert_eq!(first.label(), second.label());
     assert_eq!(first.category(), second.category());
     assert_eq!(first.category(), "FOCUS_WORK");
-    assert_eq!(first.taxonomy_version(), "mvp-1");
+    assert_eq!(first.taxonomy_version(), API_EXPECTED_TAXONOMY_VERSION);
     assert_eq!(first.classification_tier(), ClassificationTier::ExactMatch);
     assert_eq!(
         first.classification_status(),
@@ -170,10 +174,11 @@ fn every_seed_entry_routes_through_tier1() {
 
 #[test]
 fn unknown_app_uses_unlogged_fallback() {
+    let engine = engine();
+    let event = raw_event("Unknown App", "private title");
     let started = Instant::now();
-    let result = engine()
-        .process(raw_event("Unknown App", "private title"))
-        .unwrap();
+    let result = engine.process(event).unwrap();
+    let elapsed = started.elapsed();
 
     assert_eq!(result.label(), "unlogged");
     assert_eq!(result.category(), "UNLOGGED");
@@ -191,7 +196,10 @@ fn unknown_app_uses_unlogged_fallback() {
         ClassificationSource::Fallback
     );
     assert_eq!(result.local_name_suggestion(), None);
-    assert!(started.elapsed() < Duration::from_millis(20));
+    assert!(
+        elapsed < Duration::from_millis(20),
+        "fallback classification took {elapsed:?}"
+    );
 }
 
 #[test]
@@ -537,7 +545,7 @@ impl ClassificationPlugin for TestPlugin {
             ClassificationResult::new(
                 "test:target",
                 "UNLOGGED",
-                "mvp-1",
+                API_EXPECTED_TAXONOMY_VERSION,
                 ClassificationTier::ExactMatch,
             )
         })
@@ -551,7 +559,7 @@ impl ClassificationPlugin for UnsafePlugin {
         Some(ClassificationResult::new(
             window_title,
             "UNLOGGED",
-            "mvp-1",
+            API_EXPECTED_TAXONOMY_VERSION,
             ClassificationTier::ExactMatch,
         ))
     }
@@ -611,6 +619,30 @@ fn abstracted_event_serialization_excludes_raw_inputs_and_stable_key() {
     ] {
         assert!(!json.contains(forbidden), "{forbidden}");
     }
+}
+
+/// The per-install salt (migration 0037) changes every key on disk and must
+/// change nothing on the wire: the same event, classified on two installs with
+/// different salts, serializes to the same upload bytes.
+#[test]
+fn the_stable_key_salt_never_changes_the_upload_payload() {
+    use velvt_service::upload::BatchEventPayload;
+
+    let first_store = Arc::new(InMemoryMappingStore::default());
+    let second_store = Arc::new(InMemoryMappingStore::default());
+    assert_ne!(
+        first_store.stable_key_salt().unwrap(),
+        second_store.stable_key_salt().unwrap()
+    );
+    let wire = |store: Arc<InMemoryMappingStore>| {
+        let event = AbstractionEngine::from_builtin_taxonomy(store)
+            .unwrap()
+            .process(raw_event("Obscure Editor", "release notes"))
+            .unwrap();
+        serde_json::to_string(&BatchEventPayload::from_abstracted("event-1", &event, 60)).unwrap()
+    };
+
+    assert_eq!(wire(first_store), wire(second_store));
 }
 
 #[test]
@@ -805,7 +837,8 @@ fn invalid_taxonomy_returns_clear_error() {
 #[test]
 fn an_app_scoped_correction_survives_a_window_title_change() {
     let store = Arc::new(InMemoryMappingStore::default());
-    let app_key = velvt_service::abstraction::app_stable_key_for("Obscure Editor");
+    let salt = store.stable_key_salt().unwrap();
+    let app_key = velvt_service::abstraction::app_stable_key_for(&salt, "Obscure Editor");
     store.set_app_override(
         &app_key,
         velvt_service::abstraction::PersonalOverride {
@@ -833,15 +866,16 @@ fn an_app_scoped_correction_survives_a_window_title_change() {
 #[test]
 fn a_window_scoped_correction_outranks_the_app_scoped_one() {
     let store = Arc::new(InMemoryMappingStore::default());
+    let salt = store.stable_key_salt().unwrap();
     store.set_app_override(
-        &velvt_service::abstraction::app_stable_key_for("Obscure Editor"),
+        &velvt_service::abstraction::app_stable_key_for(&salt, "Obscure Editor"),
         velvt_service::abstraction::PersonalOverride {
             category: "FOCUS_WORK".to_owned(),
             local_activity_name: None,
         },
     );
     store.set_override(
-        &velvt_service::abstraction::stable_key_for("Obscure Editor", "release notes"),
+        &velvt_service::abstraction::stable_key_for(&salt, "Obscure Editor", "release notes"),
         velvt_service::abstraction::PersonalOverride {
             category: "COMMUNICATION".to_owned(),
             local_activity_name: None,
@@ -873,8 +907,9 @@ fn a_window_scoped_correction_outranks_the_app_scoped_one() {
 #[test]
 fn an_app_scoped_correction_does_not_leak_across_apps() {
     let store = Arc::new(InMemoryMappingStore::default());
+    let salt = store.stable_key_salt().unwrap();
     store.set_app_override(
-        &velvt_service::abstraction::app_stable_key_for("Obscure Editor"),
+        &velvt_service::abstraction::app_stable_key_for(&salt, "Obscure Editor"),
         velvt_service::abstraction::PersonalOverride {
             category: "FOCUS_WORK".to_owned(),
             local_activity_name: None,
@@ -891,5 +926,164 @@ fn an_app_scoped_correction_does_not_leak_across_apps() {
             .unwrap()
             .category(),
         "FOCUS_WORK"
+    );
+}
+
+/// What the Mac client sends for an application it cannot observe at window
+/// level (drift policy 4): the application's identity and what it declares,
+/// with an empty title and no document URL.
+fn application_level_event(
+    app_name: &str,
+    bundle_id: &str,
+    declared_app_category: Option<&str>,
+    document_type_ids: &[&str],
+) -> RawEvent {
+    RawEvent {
+        bundle_id: Some(bundle_id.to_owned()),
+        declared_app_category: declared_app_category.map(str::to_owned),
+        document_type_ids: document_type_ids
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect(),
+        ..raw_event(app_name, "")
+    }
+}
+
+/// An application-level dwell goes down the same ladder as any other and is
+/// decided by the rungs that need no window: the bundle seed, the name seed,
+/// the declared document types, the declared category, and for a browser with
+/// no page to read, the explicitly ambiguous prior. No rung reads a title that
+/// is not there, and an application nothing recognises stays unclassified.
+#[test]
+fn an_application_level_dwell_is_classified_by_the_application_rungs() {
+    let engine = engine();
+    let cases = [
+        (
+            application_level_event("Messages", "com.apple.MobileSMS", None, &[]),
+            "COMMUNICATION",
+            ClassificationStatus::Classified,
+            ClassificationSource::Seed,
+        ),
+        (
+            application_level_event("Slack", "com.tinyspeck.slackmacgap", None, &[]),
+            "COMMUNICATION",
+            ClassificationStatus::Classified,
+            ClassificationSource::Seed,
+        ),
+        (
+            application_level_event(
+                "Obscure Studio",
+                "com.example.studio",
+                None,
+                &["public.source-code", "public.swift-source"],
+            ),
+            "FOCUS_WORK",
+            ClassificationStatus::Classified,
+            ClassificationSource::DeclaredDocumentTypes,
+        ),
+        (
+            application_level_event(
+                "Obscure Player",
+                "com.example.player",
+                Some("public.app-category.video"),
+                &[],
+            ),
+            "PASSIVE_CONSUMPTION",
+            ClassificationStatus::Classified,
+            ClassificationSource::DeclaredAppCategory,
+        ),
+        (
+            application_level_event(
+                "Google Chrome",
+                "com.google.Chrome",
+                Some("public.app-category.productivity"),
+                &["public.html", "public.movie"],
+            ),
+            "REFERENCE",
+            ClassificationStatus::Ambiguous,
+            ClassificationSource::Fallback,
+        ),
+        (
+            application_level_event("Velvt", "com.velvt.mac", None, &[]),
+            "SYSTEM",
+            ClassificationStatus::Classified,
+            ClassificationSource::Seed,
+        ),
+        (
+            application_level_event("Qwzx Tool", "com.example.qwzx", None, &[]),
+            "UNLOGGED",
+            ClassificationStatus::Unclassified,
+            ClassificationSource::Fallback,
+        ),
+    ];
+
+    for (event, category, status, source) in cases {
+        let app_name = event.app_name.clone();
+        let abstracted = engine.process(event).unwrap();
+        assert_eq!(abstracted.category(), category, "{app_name}");
+        assert_eq!(abstracted.classification_status(), status, "{app_name}");
+        assert_eq!(abstracted.classification_source(), source, "{app_name}");
+    }
+}
+
+/// Corrections reach an application-level dwell through the application
+/// rungs, and a correction made on one binds to the empty title only: it is
+/// never taken for a correction of the application's titled windows.
+#[test]
+fn corrections_reach_an_application_level_dwell_without_leaking_onto_windows() {
+    let store = Arc::new(InMemoryMappingStore::default());
+    let salt = store.stable_key_salt().unwrap();
+    store.set_app_override(
+        &velvt_service::abstraction::app_bundle_key_for(&salt, "com.example.editor"),
+        velvt_service::abstraction::PersonalOverride {
+            category: "FOCUS_WORK".to_owned(),
+            local_activity_name: None,
+        },
+    );
+    store.set_override(
+        &velvt_service::abstraction::stable_key_for(&salt, "Qwzx Chat", ""),
+        velvt_service::abstraction::PersonalOverride {
+            category: "COMMUNICATION".to_owned(),
+            local_activity_name: None,
+        },
+    );
+    let engine = AbstractionEngine::builder(store, Taxonomy::from_builtin().unwrap())
+        .register_builtin_plugins()
+        .build()
+        .unwrap();
+
+    let corrected_app = engine
+        .process(application_level_event(
+            "Qwzx Editor",
+            "com.example.editor",
+            None,
+            &[],
+        ))
+        .unwrap();
+    assert_eq!(corrected_app.category(), "FOCUS_WORK");
+    assert_eq!(
+        corrected_app.classification_source(),
+        ClassificationSource::UserRule
+    );
+
+    assert_eq!(
+        engine
+            .process(application_level_event(
+                "Qwzx Chat",
+                "com.example.chat",
+                None,
+                &[]
+            ))
+            .unwrap()
+            .category(),
+        "COMMUNICATION"
+    );
+    assert_ne!(
+        engine
+            .process(raw_event("Qwzx Chat", "quarterly plan"))
+            .unwrap()
+            .category(),
+        "COMMUNICATION",
+        "a correction of the application-level dwell must not leak onto a titled window"
     );
 }

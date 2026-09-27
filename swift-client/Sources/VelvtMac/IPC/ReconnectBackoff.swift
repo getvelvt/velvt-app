@@ -9,7 +9,7 @@ public struct ReconnectBackoff: Sendable {
     public init(
         baseDelay: TimeInterval = 1,
         maximumDelay: TimeInterval = 60,
-        jitter: @escaping @Sendable () -> Double = { Double.random(in: 0.8 ... 1.2) }
+        jitter: @escaping @Sendable () -> Double = { Double.random(in: 0.8...1.2) }
     ) {
         self.baseDelay = baseDelay
         self.maximumDelay = maximumDelay

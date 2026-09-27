@@ -95,7 +95,7 @@ quarantine.
 The keychain currently holds only:
 
 ```text
-"Apple Development: kevinz09302009@gmail.com (5W9BP4J4UF)"
+"Apple Development: <developer email> (<team ID>)"
 ```
 
 `Apple Development` runs on your own registered devices only and is not valid

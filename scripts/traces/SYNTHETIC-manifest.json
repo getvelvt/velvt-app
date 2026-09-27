@@ -1,0 +1,99 @@
+{
+  "antecedents": {
+    "antecedent_prevalence": 0.35,
+    "baseline_risk": 0.7,
+    "day_effect_sd": 0.1,
+    "generator_version": 1,
+    "history_weeks": [
+      2,
+      4,
+      6,
+      8,
+      12
+    ],
+    "null_traces": 100,
+    "null_weeks": 8,
+    "planted_candidate_id": "prevcat_COMMUNICATION",
+    "planted_seeds_per_cell": 16,
+    "read_by": "rust-service/tests/behavior_antecedents.rs",
+    "risk_given_antecedent": [
+      0.4,
+      0.55,
+      0.65,
+      0.7
+    ],
+    "saturated_traces": 8,
+    "saturated_weeks": 26,
+    "schema": "velvt-episodes/1",
+    "sparse_traces": 16,
+    "sparse_weeks": 2
+  },
+  "block_seconds": 3600,
+  "blocks_per_trace": 5,
+  "compressed_blocks_per_trace": 2,
+  "compressed_dwell_scale": 0.05,
+  "compressed_traces": 30,
+  "files": {
+    "SYNTHETIC-suite-a-recovery.jsonl": {
+      "acceptance": "every trace's observed offer matches its expect_offer field",
+      "sha256": "4fc387c3f8c173dbe6e2a8287a39a5ccf0fe9840d5e61876d83e7377130d24a7",
+      "traces": 17
+    },
+    "SYNTHETIC-suite-b-null-compressed.jsonl": {
+      "acceptance": "at least one offer, in aggregate. Not scored per trace.",
+      "sha256": "b0828c24cc3f3b4f99ed7c0f3affc588b6f0b808b9de1abe29ad07b5d315a2d9",
+      "traces": 30
+    },
+    "SYNTHETIC-suite-b-null.jsonl": {
+      "acceptance": "ZERO offers across every trace. Any offer is a false discovery.",
+      "sha256": "8f452c17307ef0298bda7b734182bfbe4c6a573ae482230ac9ab6829d78bf903",
+      "traces": 100
+    },
+    "SYNTHETIC-suite-c-segmentation.jsonl": {
+      "acceptance": "NULL: the change-point detector's false-alarm rate is reported at every threshold, not asserted to be zero. REGIME: the planted change point is recovered, with the lag reported in runs and in minutes. SPARSE: both models abstain, with a stated reason.",
+      "sha256": "a18b9fff2a86b8c98b7eaa1cef02aa50abae6981744183d376589f1fd27c7026",
+      "traces": 188
+    },
+    "SYNTHETIC-suite-d-antecedents.jsonl": {
+      "acceptance": "NULL: ZERO surfaced findings across every trace. Any surfaced finding is a false discovery and the acceptance fails. SATURATED: at least one surfaced finding in aggregate, so the NULL zero is falsifiable. PLANTED: the recovery fraction is REPORTED at every cell, not asserted. SPARSE: abstain, with a stated reason.",
+      "sha256": "79e9d15695d77c085ee6767d4a50c816257647173eada5fa818245a3ca492eeb",
+      "traces": 444
+    }
+  },
+  "gate_constants": {
+    "DRIFT_MIN_ELAPSED_SECONDS": 180,
+    "DRIFT_MIN_REMAINING_SECONDS": 120,
+    "DRIFT_MIN_SWITCHES": 3,
+    "DRIFT_WINDOW_SECONDS": 600
+  },
+  "generator": "scripts/generate_traces.py",
+  "generator_version": 1,
+  "label": "SYNTHETIC \u2014 generated fixtures, no real user data",
+  "null_traces": 100,
+  "replayed_by": "rust-service/tests/trace_replay.rs",
+  "schema": "velvt-trace/1",
+  "seed": 20260821,
+  "segmentation": {
+    "drifting_traces": 16,
+    "drifting_weeks": 12,
+    "generator_version": 1,
+    "null_traces": 100,
+    "null_weeks": 4,
+    "planted_baseline": 0.3,
+    "planted_effect_sizes": [
+      0.7,
+      0.55,
+      0.45,
+      0.3
+    ],
+    "planted_seeds_per_effect": 8,
+    "planted_weeks": 8,
+    "read_by": "rust-service/tests/behavior_segmentation.rs",
+    "regime_change_week": 4,
+    "regime_traces": 24,
+    "regime_weeks": 8,
+    "schema": "velvt-runs/1",
+    "sparse_traces": 16,
+    "sparse_weeks": 2
+  }
+}

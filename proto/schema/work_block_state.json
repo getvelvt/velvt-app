@@ -28,11 +28,11 @@
         "paused_at",
         "recovered_after_restart",
         "current_category",
+        "anchor_category",
         "classification_status",
         "confidence",
         "status_line",
-        "result",
-        "active_intervention"
+        "result"
       ],
       "properties": {
         "state_version": {
@@ -139,6 +139,14 @@
             "string",
             "null"
           ]
+        },
+        "anchor_category": {
+          "$comment": "Protocol 31. The broad category the drift gate treats as this block's anchor: the one with the most confidently observed, closed time so far. The same value the gate compares departures against and records on an offer. Null when no block is active or paused, and until a confident observation has closed. A category label only, never an app identity, title, URL, or intention. Pre-31 payloads omit the key.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
         },
         "classification_status": {
           "enum": [

@@ -1,9 +1,12 @@
 use super::{AuthError, RedactedString, TokenPair};
+use crate::egress::EgressRecord;
+use crate::persistence::EgressLedgerRepo;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,6 +15,17 @@ pub enum HttpMethod {
     Post,
     Patch,
     Delete,
+}
+
+impl HttpMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+            Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -97,13 +111,53 @@ pub trait HttpClient: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, AuthError>> + Send + 'a>>;
 }
 
+/// The JSON a request's body encodes and the exact bytes it is sent as.
+///
+/// `ReqwestHttpClient` sends these bytes and records their hash, and the egress
+/// dry run prints them, so both go through this one function.
+pub fn encode_body(request: &HttpRequest) -> Result<Option<(Value, Vec<u8>)>, AuthError> {
+    let value = match (&request.refresh_token, &request.json_body) {
+        (Some(token), _) => serde_json::json!({ "refresh_token": token.expose() }),
+        (None, Some(body)) => body.clone(),
+        (None, None) => return Ok(None),
+    };
+    let bytes = serde_json::to_vec(&value).map_err(|_| AuthError::Transport)?;
+    Ok(Some((value, bytes)))
+}
+
+/// The ledger's description of `request` sent to `base_url`, and the body bytes
+/// it describes.
+pub fn describe_request(
+    base_url: &str,
+    request: &HttpRequest,
+) -> Result<(EgressRecord, Option<Vec<u8>>), AuthError> {
+    let url = format!("{}{}", base_url.trim_end_matches('/'), request.path);
+    let body = encode_body(request)?;
+    let record = EgressRecord::new(
+        request.method.as_str(),
+        &url,
+        body.as_ref().map_or(&[][..], |(_, bytes)| bytes.as_slice()),
+        body.as_ref().map(|(value, _)| value),
+        request.authorization.is_some(),
+    );
+    Ok((record, body.map(|(_, bytes)| bytes)))
+}
+
+/// The only network client in rust-service.
+///
+/// Every request is appended to the egress ledger before it is sent, and a
+/// request the ledger cannot record is not sent: `send` returns
+/// `AuthError::Transport`, which every caller already treats as "try later".
+/// Redirects are not followed, because a followed redirect is a second send
+/// the ledger never saw.
 pub struct ReqwestHttpClient {
     base_url: String,
     client: reqwest::Client,
+    ledger: Arc<dyn EgressLedgerRepo>,
 }
 
 impl ReqwestHttpClient {
-    pub fn new(base_url: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, ledger: Arc<dyn EgressLedgerRepo>) -> Self {
         Self {
             base_url: base_url.into(),
             // An unreachable or slow cloud host (e.g. during startup device
@@ -111,8 +165,10 @@ impl ReqwestHttpClient {
             // test that exercises real startup.
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
+            ledger,
         }
     }
 }
@@ -124,6 +180,17 @@ impl HttpClient for ReqwestHttpClient {
     ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, AuthError>> + Send + 'a>> {
         Box::pin(async move {
             let url = format!("{}{}", self.base_url.trim_end_matches('/'), request.path);
+            let (record, body) = describe_request(&self.base_url, &request)?;
+            let ledger = Arc::clone(&self.ledger);
+            let recorded =
+                tokio::task::spawn_blocking(move || ledger.append(&record, Utc::now())).await;
+            if !matches!(recorded, Ok(Ok(_))) {
+                tracing::error!(
+                    error_code = "egress_ledger_append_failed",
+                    "request not sent because the egress ledger could not record it"
+                );
+                return Err(AuthError::Transport);
+            }
             let mut builder = match request.method {
                 HttpMethod::Get => self.client.get(url),
                 HttpMethod::Post => self.client.post(url),
@@ -136,10 +203,10 @@ impl HttpClient for ReqwestHttpClient {
             if let Some(token) = request.authorization {
                 builder = builder.bearer_auth(token.expose());
             }
-            if let Some(token) = request.refresh_token {
-                builder = builder.json(&serde_json::json!({ "refresh_token": token.expose() }));
-            } else if let Some(body) = request.json_body {
-                builder = builder.json(&body);
+            if let Some(body) = body {
+                builder = builder
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(body);
             }
             let response = builder.send().await.map_err(|_| AuthError::Transport)?;
             let status = response.status().as_u16();

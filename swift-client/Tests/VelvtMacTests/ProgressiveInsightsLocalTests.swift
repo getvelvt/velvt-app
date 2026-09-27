@@ -79,6 +79,7 @@ final class ProgressiveInsightsLocalTests: XCTestCase {
     /// synced day can still arrive this short.
     func testADayUnderAMinuteIsNotDescribedAsZeroMinutes() throws {
         let history = HistoryViewModel()
+        history.today = { "2026-09-27" }
         history.update(
             from: HistoryPayload(
                 days: 1,

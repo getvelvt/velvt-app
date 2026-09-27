@@ -616,7 +616,7 @@ compares with this list.
   **`GET /v1/insights/daily?date=YYYY-MM-DD`** — every 10 minutes while signed
   in, and, while signed in, when the app asks for history or an insight that
   is not cached: read-only requests for already-abstracted,
-  server-side-derived summaries. N is 7, the most days the server keeps, so
+  server-side-derived summaries. N is 7, the most days the server returns, so
   the 10-minute request usually leaves the app's own asks for history
   nothing to fetch. The app asks for history when it connects and when the
   account signs in or out; and, while the history it shows is not the synced

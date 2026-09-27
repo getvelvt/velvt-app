@@ -286,8 +286,9 @@ Direction: Rust to Swift. Purpose: deliver a ready-to-display multi-day history.
 - `source` (protocol 33): `cloud` for synced daily summaries (UTC days), or
   `this_mac` for summaries Rust built from this Mac's own retained events (up
   to 14 local calendar days at the request's offset) because the account is
-  signed out or the cloud could not be read. Rust asks the cloud first when
-  signed in. In a `this_mac` history the cloud-only fields are null
+  signed out, the cloud could not be read, or the cloud's week has no ready
+  day while this Mac has one. Rust asks the cloud first when signed in, and the
+  fetch scheduler never pushes a cloud week with no ready day. In a `this_mac` history the cloud-only fields are null
   (`focus_score`, `fragmentation_score`) or `unavailable` (`baseline_status`,
   `baseline_comparison.status`), `type_proportions` is empty,
   `confidence_level` is `low` on a ready day, and a day is `ready` from a

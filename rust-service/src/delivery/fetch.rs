@@ -23,7 +23,9 @@ use crate::{
         HistoryCacheEntry, HistoryCacheRepo, InsightCacheEntry, InsightCacheRepo, PersistenceError,
     },
 };
-use velvt_shared_types::{DailySummary, HistoryPayload, HistorySource, InsightPayload};
+use velvt_shared_types::{
+    DailySummary, HistoryPayload, HistorySource, HistoryStatus, InsightPayload,
+};
 
 use super::parser::{self, ParseError};
 use super::push::PushAdapter;
@@ -53,6 +55,14 @@ fn cloud_history_dates(days: u8) -> Vec<NaiveDate> {
 /// to say `days: 14` over those seven rows. Swift padded the difference with
 /// empty days, so week-over-week read a prior week that did not exist and
 /// could never count.
+/// Whether any day in the history has a summary to show.
+pub(crate) fn has_a_ready_day(history: &HistoryPayload) -> bool {
+    history
+        .summaries
+        .iter()
+        .any(|day| day.status == HistoryStatus::Ready)
+}
+
 fn cloud_history(mut summaries: Vec<DailySummary>) -> HistoryPayload {
     summaries.sort_by_key(|s| s.date);
     HistoryPayload {
@@ -223,8 +233,15 @@ impl<H: HttpClient> FetchService<H> {
             })?;
         }
         let result = cloud_history(summaries);
+        // A synced week with no ready day is not pushed. While uploads are
+        // stalled it is empty for want of uploaded evidence, not of activity,
+        // and a push would replace the summaries the card built on this Mac.
+        // A request still receives it as its answer, and the router decides
+        // what the card is sent.
         if let Some(adapter) = &self.push_adapter {
-            adapter.push_history(result.clone()).await;
+            if has_a_ready_day(&result) {
+                adapter.push_history(result.clone()).await;
+            }
         }
         Ok(result)
     }
@@ -882,6 +899,65 @@ mod tests {
             queue.try_pop().await.is_none(),
             "only the claim-once long-poll path may enqueue a user notification"
         );
+    }
+
+    /// While uploads are stalled the cloud answers with days and no data. The
+    /// scheduler must not push that over the summaries built on this Mac; a
+    /// week with a ready day is pushed as before.
+    #[tokio::test]
+    async fn a_synced_week_with_no_ready_day_is_not_pushed() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let today = Utc::now().date_naive();
+        let empty_day = json!({
+            "summaries": [{
+                "date": today.format("%Y-%m-%d").to_string(),
+                "status": "no_data",
+                "event_count": 0,
+                "active_seconds": 0,
+                "confidence_level": "low"
+            }]
+        });
+        let http = Arc::new(FakeHttpClient::new().with_route("/v1/history/daily", 200, empty_day));
+        let queue = crate::delivery::PushQueue::new(10);
+        let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+        let service = FetchService::new(
+            Arc::clone(&http),
+            db.history_cache_repo(),
+            db.insight_cache_repo(),
+            test_config(),
+        )
+        .with_push_adapter(push);
+
+        let result = service.daily_history(1).await.unwrap();
+
+        assert_eq!(result.summaries[0].status, HistoryStatus::NoData);
+        assert!(
+            queue.try_pop().await.is_none(),
+            "a synced week with no ready day was pushed"
+        );
+
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let http = Arc::new(FakeHttpClient::new().with_route(
+            "/v1/history/daily",
+            200,
+            history_api_body(today),
+        ));
+        let queue = crate::delivery::PushQueue::new(10);
+        let push = crate::delivery::PushAdapter::new(Arc::clone(&queue));
+        let service = FetchService::new(
+            Arc::clone(&http),
+            db.history_cache_repo(),
+            db.insight_cache_repo(),
+            test_config(),
+        )
+        .with_push_adapter(push);
+
+        service.daily_history(1).await.unwrap();
+
+        assert!(matches!(
+            queue.try_pop().await,
+            Some(velvt_shared_types::ServerMessage::HistoryPayload(_))
+        ));
     }
 
     #[tokio::test]

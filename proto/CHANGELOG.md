@@ -88,7 +88,10 @@
   - `history_payload` gains a required `source`, `cloud` or `this_mac`. Rust
     answers cloud-first: signed in, the cloud's history is sent whenever it
     can be read. Signed out, or when the read fails for any reason (a
-    timeout, a non-200, an unparseable body, no rows), Rust builds the
+    timeout, a non-200, an unparseable body, no rows) or the cloud's week has
+    no ready day while this Mac has one (uploads can stall for days while
+    collection goes on, and the cloud then answers with empty days; such a
+    week is also never pushed by the fetch scheduler), Rust builds the
     summaries from this Mac's own retained events (`dashboard.rs`
     `local_daily_history`) and sends them with `source: this_mac` instead of
     `cache_empty(backend_unavailable)`. They cover up to 14 local calendar

@@ -2231,6 +2231,60 @@ mod tests {
         assert_eq!(history.days, 14);
     }
 
+    /// Seven synced days with nothing in them, as the cloud answers while no
+    /// upload has reached it.
+    fn empty_synced_week() -> velvt_shared_types::HistoryPayload {
+        let mut week = synced_week();
+        for day in &mut week.summaries {
+            day.status = velvt_shared_types::HistoryStatus::NoData;
+            day.event_count = 0;
+            day.active_seconds = 0;
+            day.focused_seconds = 0;
+            day.meaningful_switch_count = 0;
+            day.longest_uninterrupted_seconds = 0;
+            day.focus_score = None;
+            day.fragmentation_score = None;
+        }
+        week
+    }
+
+    /// While uploads are stalled the cloud answers with seven empty days. When
+    /// this Mac has activity of its own, the card is built here instead of
+    /// saying nothing was recorded; when it has none either, the synced answer
+    /// stands.
+    #[tokio::test]
+    async fn an_empty_synced_week_gives_way_to_this_macs_activity() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        an_observed_half_hour(&persistence);
+        let router = history_router(
+            &persistence,
+            Arc::new(
+                crate::delivery::FakeCacheManager::new().with_history(14, empty_synced_week()),
+            ),
+            signed_in(),
+        );
+
+        let history = this_mac_history(daily_history(&router).await);
+
+        assert!(history
+            .summaries
+            .iter()
+            .any(|day| day.status == velvt_shared_types::HistoryStatus::Ready));
+
+        let empty = SqlitePersistence::open_in_memory().unwrap();
+        let router = history_router(
+            &empty,
+            Arc::new(
+                crate::delivery::FakeCacheManager::new().with_history(14, empty_synced_week()),
+            ),
+            signed_in(),
+        );
+        let ServerMessage::HistoryPayload(history) = daily_history(&router).await else {
+            panic!("the synced answer stands when this Mac has nothing either");
+        };
+        assert_eq!(history, empty_synced_week());
+    }
+
     /// When the cloud answers, its history is sent as it came: cloud-first,
     /// labelled `cloud`, and labelled with the seven days it carries even
     /// though fourteen were asked for.
@@ -3540,7 +3594,7 @@ impl R7Router {
             if let Some(history) = self.cache.cached_daily_history(request.days).await {
                 if let Ok(validated) = shaper::shape_history(history) {
                     self.forget_cloud_history_outage();
-                    return ServerMessage::HistoryPayload(validated.into_inner());
+                    return self.synced_or_local_history(&request, validated.into_inner());
                 }
             }
             return self.local_history_response(&request);
@@ -3548,7 +3602,7 @@ impl R7Router {
         match self.cache.daily_history(request.days).await {
             Ok(history) => match shaper::shape_history(history) {
                 Ok(validated) => {
-                    return ServerMessage::HistoryPayload(validated.into_inner());
+                    return self.synced_or_local_history(&request, validated.into_inner());
                 }
                 Err(err) => {
                     tracing::warn!(
@@ -3570,6 +3624,29 @@ impl R7Router {
         }
         self.cloud_history_outage.store(true, Ordering::Relaxed);
         self.local_history_response(&request)
+    }
+
+    /// The synced history, unless it has no ready day and this Mac has one.
+    ///
+    /// A synced week with no ready day is empty for want of uploaded evidence,
+    /// not of activity: uploads can stall for days while collection goes on,
+    /// and the cloud then answers with seven empty days. When this Mac has
+    /// summaries of its own, they are the truer answer, and the card says they
+    /// were built here.
+    fn synced_or_local_history(
+        &self,
+        request: &RequestLatestHistory,
+        synced: velvt_shared_types::HistoryPayload,
+    ) -> ServerMessage {
+        if crate::delivery::has_a_ready_day(&synced) {
+            return ServerMessage::HistoryPayload(synced);
+        }
+        match self.local_history_response(request) {
+            ServerMessage::HistoryPayload(local) if crate::delivery::has_a_ready_day(&local) => {
+                ServerMessage::HistoryPayload(local)
+            }
+            _ => ServerMessage::HistoryPayload(synced),
+        }
     }
 
     /// The next signed-in history request asks the cloud again.

@@ -14,6 +14,7 @@ mod scheduler;
 pub mod shaper;
 
 pub use cache::{CacheError, CacheManager, FakeCacheManager};
+pub(crate) use fetch::has_a_ready_day;
 pub use fetch::{FetchConfig, FetchError, FetchService, Fetchable};
 pub use parser::{parse_insight, parse_insight_with_rehydrator};
 pub use poll::{PollClient, PollConfig, PollScheduler};

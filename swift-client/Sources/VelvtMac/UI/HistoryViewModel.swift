@@ -113,6 +113,10 @@ public final class HistoryViewModel: ObservableObject {
     /// tapped notification. Views observe this to drive a `ScrollViewReader`.
     @Published public private(set) var scrollTarget: String?
 
+    /// Today's local date, as `yyyy-MM-dd`. A seam for tests; the app reads
+    /// the clock.
+    var today: () -> String = { HistoryViewModel.localDateString() }
+
     public init() {}
 
     public var latestReadyDay: DaySummaryViewModel? {
@@ -143,7 +147,7 @@ public final class HistoryViewModel: ObservableObject {
     }
 
     public var progressiveInsight: ProgressiveInsight? {
-        ProgressiveInsight.make(from: days)
+        ProgressiveInsight.make(from: days, today: today())
     }
 
     public func update(from payload: HistoryPayload) {
@@ -246,7 +250,13 @@ public struct ProgressiveInsight: Equatable, Sendable {
     public let recentObservedDays: Int
     public let priorObservedDays: Int
 
-    static func make(from days: [DaySummaryViewModel]) -> ProgressiveInsight? {
+    /// `today` is the local date the "Today so far" tier may describe. A single
+    /// ready day that is not today, such as yesterday on a morning with
+    /// nothing observed yet, is described as a partial week instead.
+    static func make(
+        from days: [DaySummaryViewModel],
+        today: String = HistoryViewModel.localDateString()
+    ) -> ProgressiveInsight? {
         let recentWindow = Array(days.suffix(7))
         let recent = recentWindow.filter { !$0.isNoData }
         guard !recent.isEmpty else { return nil }
@@ -261,7 +271,7 @@ public struct ProgressiveInsight: Equatable, Sendable {
         {
             return weekOverWeek(recent: recent, prior: prior)
         }
-        if recent.count == 1 {
+        if recent.count == 1, recent[0].id == today {
             return todaySoFar(day: recent[0], priorObservedDays: prior.count)
         }
         return thisWeekSoFar(days: recent, priorObservedDays: prior.count)
@@ -370,7 +380,7 @@ public struct ProgressiveInsight: Equatable, Sendable {
             let averageShare = share(focused: focused, active: active)
             let range = ((shares.max() ?? 0) - (shares.min() ?? 0)) * 100
             observation =
-                "Focus-oriented work represented \(Int((averageShare * 100).rounded()))% of observed active time across \(days.count) days."
+                "Focus-oriented work represented \(Int((averageShare * 100).rounded()))% of observed active time across \(days.count) \(days.count == 1 ? "day" : "days")."
             comparison =
                 shares.count > 1
                 ? "Available days varied by \(Int(range.rounded())) focus-share points; this is a partial-window comparison, not week over week."

@@ -392,6 +392,7 @@ final class HistoryViewModelTests: XCTestCase {
 
   func testOneObservedDayProducesTodaySoFarInsight() throws {
     let sut = HistoryViewModel()
+    sut.today = { "2026-07-26" }
     sut.update(from: HistoryPayload(days: 7, summaries: [
       DailySummary(
         date: "2026-07-26", status: .ready, eventCount: 12,
@@ -428,6 +429,7 @@ final class HistoryViewModelTests: XCTestCase {
 
   func testZeroActivityDayProducesGroundedNonComparativeInsight() throws {
     let sut = HistoryViewModel()
+    sut.today = { "2026-07-26" }
     sut.update(from: HistoryPayload(days: 7, summaries: [
       DailySummary(
         date: "2026-07-26", status: .ready, eventCount: 0,
@@ -439,6 +441,25 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertEqual(insight.tier, .todaySoFar)
     XCTAssertTrue(insight.observation.contains("No qualifying activity"))
     XCTAssertTrue(insight.comparison.contains("not enough active time"))
+  }
+
+  /// The only ready day is yesterday, as on a morning before a minute has
+  /// been observed. It is not "Today so far".
+  func testOneObservedDayThatIsNotTodayIsAPartialWeek() throws {
+    let sut = HistoryViewModel()
+    sut.today = { "2026-07-27" }
+    sut.update(from: HistoryPayload(days: 7, summaries: [
+      DailySummary(
+        date: "2026-07-26", status: .ready, eventCount: 12,
+        focusScore: 60, fragmentationScore: 20,
+        confidenceLevel: .low, activeSeconds: 3600, focusedSeconds: 1800,
+        meaningfulSwitchCount: 3)
+    ]))
+
+    let insight = try XCTUnwrap(sut.progressiveInsight)
+    XCTAssertEqual(insight.tier, .thisWeekSoFar)
+    XCTAssertTrue(insight.observation.hasSuffix("across 1 day."), insight.observation)
+    XCTAssertFalse(insight.evidenceSummary.contains("may be incomplete"), insight.evidenceSummary)
   }
 
   // MARK: - Helpers

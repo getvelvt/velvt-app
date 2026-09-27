@@ -346,8 +346,9 @@ is now an ordered ladder, most specific evidence first:
 2. **Classifier plugins**, in registry order; the first one that answers wins:
    1. `SiteSeedPlugin` — for a browser, the focused site (a hostname Rust
       derives from the tab URL; the URL itself is discarded) against a
-      compiled-in table of sites. The host decides the category; title words
-      can only refine the label within it.
+      compiled-in table of sites. The host decides the category and the
+      label; title words can only tell a Google Sheets or Slides tab on
+      `docs.google.com` from a Docs one.
    2. `BrowserContextPlugin` — for a browser, the focused site and the
       title, against curated keyword rules.
    3. `BundleSeedPlugin` — the taxonomy's bundle-identifier seeds.

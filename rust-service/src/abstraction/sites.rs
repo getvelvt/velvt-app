@@ -147,12 +147,13 @@ impl<'a> SiteMatcher<'a> {
 /// category, with a seed's confidence: a curated statement about one site, as
 /// a name seed is about one application.
 ///
-/// The browser-context rules still refine the label where they agree with the
-/// host. Google serves Docs, Sheets and Slides from `docs.google.com`, so only
-/// the title names the product, and a rule verdict in the seed's own category
-/// keeps `document:sheets` where the table can only say `document:docs`. A
-/// verdict in any other category, or an ambiguous one, is ignored: title words
-/// never move a seeded site's category.
+/// The browser-context rules may refine the label in one listed case,
+/// [`SEED_LABEL_REFINEMENTS`]. Google serves Docs, Sheets and Slides from
+/// `docs.google.com`, so only the title names the product, and a rule verdict
+/// of `document:sheets` or `document:slides` replaces the seed's
+/// `document:docs`. Every other verdict is ignored: title words never move a
+/// seeded site's category, and never swap its label for another product's --
+/// a Wikipedia article about GitHub is still Wikipedia.
 pub(crate) struct SiteSeedPlugin {
     seeds: SiteMatcher<'static>,
     taxonomy_version: String,
@@ -192,6 +193,7 @@ impl ClassificationPlugin for SiteSeedPlugin {
             .filter(|refined| {
                 refined.status() == ClassificationStatus::Classified
                     && refined.category() == seed.category
+                    && refines_seed_label(seed.label, refined.label())
             })
             .map_or_else(
                 || seed.label.to_owned(),
@@ -204,6 +206,25 @@ impl ClassificationPlugin for SiteSeedPlugin {
             ClassificationTier::ExactMatch,
         ))
     }
+}
+
+/// The only labels a browser-context verdict may put in place of a seed's
+/// own: a seed label, and the labels that can replace it. Each is a product
+/// the host cannot tell apart from its siblings and the title names, in the
+/// seed's category.
+///
+/// A rule verdict in the seed's category is not enough on its own. The rules
+/// name products in titles as well as hosts, so without this list a Stack
+/// Overflow question about GitHub was labelled GitHub, and a rule that also
+/// matches the host (`developer mozilla org` in `reference:read`) replaced a
+/// curated label (`reference:mdn`) on every visit.
+const SEED_LABEL_REFINEMENTS: &[(&str, &[&str])] =
+    &[("document:docs", &["document:sheets", "document:slides"])];
+
+fn refines_seed_label(seed_label: &str, label: &str) -> bool {
+    SEED_LABEL_REFINEMENTS
+        .iter()
+        .any(|(from, to)| *from == seed_label && to.contains(&label))
 }
 
 /// The long tail: a site no seed names, read from its own hostname.
@@ -443,6 +464,24 @@ mod tests {
             scope: SiteScope::WithSubdomains,
             label: "video:netflix",
             category: "PASSIVE_CONSUMPTION",
+        },
+        SiteSeed {
+            host: "wikipedia.org",
+            scope: SiteScope::WithSubdomains,
+            label: "reference:wikipedia",
+            category: "REFERENCE",
+        },
+        SiteSeed {
+            host: "stackoverflow.com",
+            scope: SiteScope::WithSubdomains,
+            label: "reference:stack_overflow",
+            category: "REFERENCE",
+        },
+        SiteSeed {
+            host: "notion.so",
+            scope: SiteScope::HostOnly,
+            label: "document:notion",
+            category: "FOCUS_WORK",
         },
     ];
 
@@ -734,9 +773,10 @@ mod tests {
         }
     }
 
-    /// Title words decide nothing about a seeded site's category. The
-    /// browser-context rules would read this tab as GitHub and YouTube at once
-    /// and abstain; the host is GitHub, so the tab is REFERENCE.
+    /// Title words decide nothing about a seeded site's category, or its
+    /// label. The browser-context rules would read this tab as GitHub and
+    /// YouTube at once and abstain; the host is GitHub, so the tab is
+    /// REFERENCE.
     #[test]
     fn title_words_cannot_override_a_seeded_host() {
         for title in [
@@ -759,6 +799,33 @@ mod tests {
             .expect("the seeded host classifies");
         assert_eq!(result.category(), "PASSIVE_CONSUMPTION");
         assert_eq!(result.label(), "video:netflix");
+
+        // A verdict in the seed's own category is not a label either: a title
+        // naming another product, or a rule that matches the host itself,
+        // leaves the seed's label as it is.
+        for (site, title, label) in [
+            (
+                "en.wikipedia.org",
+                "GitHub - Wikipedia",
+                "reference:wikipedia",
+            ),
+            (
+                "stackoverflow.com",
+                "How to cache GitHub Actions - Stack Overflow",
+                "reference:stack_overflow",
+            ),
+            ("notion.so", "", "document:notion"),
+            ("notion.so", "Roadmap - Notion", "document:notion"),
+        ] {
+            let result = classify_tab(&seed_plugin(), "Safari", site, title)
+                .expect("the seeded host classifies");
+            assert_eq!(result.label(), label, "{site} {title}");
+            assert_eq!(
+                result.source(),
+                ClassificationSource::Seed,
+                "{site} {title}"
+            );
+        }
     }
 
     /// Google serves all three editors from `docs.google.com`, so the table

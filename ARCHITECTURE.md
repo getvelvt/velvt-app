@@ -123,7 +123,7 @@ now runs:
 
 | Order | Plugin | Evidence | Tier / source |
 |---|---|---|---|
-| 1 | `SiteSeedPlugin` | a browser tab's site (a hostname reduced locally from the tab URL, with `www.` removed) against the compiled-in site table (`site_seeds.rs`); the host decides the category, and the browser-context rules may only refine the label within it | exact match / seed |
+| 1 | `SiteSeedPlugin` | a browser tab's site (a hostname reduced locally from the tab URL, with `www.` removed) against the compiled-in site table (`site_seeds.rs`); the host decides the category and the label, and the title can only tell a Google Sheets or Slides tab on `docs.google.com` from a Docs one | exact match / seed |
 | 2 | `BrowserContextPlugin` | a browser's focused site (a hostname reduced locally from the tab URL) plus the title, against curated site rules | heuristic |
 | 3 | `BundleSeedPlugin` | the taxonomy's bundle-identifier seeds (`seed_bundles`, `bundle_identifier`) | exact match / seed |
 | 4 | `SeedDictionaryPlugin` | the taxonomy's application-name seeds | exact match / seed |

@@ -54,7 +54,7 @@ const INTENTION_RETENTION_HOURS: i64 = 24;
 /// which accepts none. `DRIFT_WINDOW_SECONDS` and `DRIFT_MIN_REMAINING_SECONDS`
 /// are unchanged — neither appears in the abstention record, and widening the
 /// window would change what "recently" means in copy that is frozen. These
-/// constants are policy version 2 and, unchanged, versions 3 and 4
+/// constants are policy version 2 and, unchanged, versions 3, 4 and 5
 /// (`DRIFT_POLICY_VERSION`); version 1 was 4 switches after a 5-minute
 /// warm-up.
 ///
@@ -95,7 +95,24 @@ const DRIFT_MIN_REMAINING_SECONDS: u32 = 2 * 60;
 /// classified by the application's own rungs. The set of decision points,
 /// the switch counts and the anchor all differ from version 3, so the two are
 /// never pooled.
-pub const DRIFT_POLICY_VERSION: u32 = 4;
+///
+/// Version 5 (2026-09-27, no protocol change) keeps every constant, branch
+/// and timing of version 4, and the gate's code with them: `is_confident` and
+/// the thresholds are version 4's. What changed is how a browser tab is
+/// classified, and so the evidence. Under version 4 a
+/// tab was confident evidence when a curated keyword rule named its site or
+/// title, or, rarely, when Tier 2 matched it; any other tab was the
+/// explicitly ambiguous browser prior, and a tab whose title named a second
+/// site made the rules disagree and abstain, and neither ever counted.
+/// Version 5 reads the tab's site: a tab on a host in the compiled-in site
+/// table is classified by that host at high confidence whatever its title
+/// says, and a tab on a site the table does not name is classified by the
+/// local site inference when its hostname's own signals agree. Both are
+/// confident evidence. A rule taught about a site applies in every browser.
+/// Browser time moves from unclear to a category, so the anchor, the switch
+/// counts and the decision points differ from version 4 wherever a browser
+/// was open, and the two are never pooled.
+pub const DRIFT_POLICY_VERSION: u32 = 5;
 /// The realized probability of the arm actually taken. Exactly 1.0 while the
 /// policy is deterministic — there is no randomization, and none is being
 /// introduced here. The value is recorded now because a propensity cannot be

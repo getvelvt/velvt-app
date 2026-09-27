@@ -1,5 +1,27 @@
 # IPC Protocol Changelog
 
+## Browser tabs classified by their site - 2026-09-27 (no wire change; the protocol stays 32)
+
+- Rust now classifies a browser tab by the site its `focused_document_url`
+  names: a host in a compiled-in site table decides the tab's category at high
+  confidence whatever its title says, and a site the table does not name is
+  classified by its own hostname's labels when they agree. A rule about a site
+  (migration 0040) applies in every browser; no command writes one yet.
+- Every field, bound and value on the socket and in the upload is unchanged:
+  the upload's `classification_tier` is still one of `exact_match`,
+  `local_purpose_heuristic`, `embedding_similarity` and `fallback`, and no new
+  status or source reaches `menu_status`.
+- Drift policy version 5 (`DRIFT_POLICY_VERSION` 4 → 5). The gate's code,
+  constants, branches and timing are version 4's. A browser tab that was the
+  ambiguous browser prior, or UNLOGGED because two keyword rules disagreed, is
+  now confident evidence when its site is seeded or read, so the anchor, the
+  switch counts and the decision points differ from version 4, and the two are
+  never pooled.
+- Privacy: nothing new is sent. On disk, the hostname of a site Velvt could not
+  categorize is kept in `local_site_name` (migration 0040) so it can be named
+  when Velvt asks about it; `PRIVACY.md` describes the table and its 14-day
+  horizon.
+
 ## Application-level dwells - 2026-09-26 (no wire change; the protocol stays 32)
 
 - Swift now reports a dwell for an application it cannot observe at window

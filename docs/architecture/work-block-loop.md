@@ -115,6 +115,27 @@ anchor differ, which is why the version changed.
 `tests/drift_offer_live_helper.rs` replays one block both ways against the real
 helper.
 
+Drift policy version 5 (2026-09-27, `DRIFT_POLICY_VERSION = 5`, no protocol
+change) keeps every constant, branch and timing of version 4, and the gate code
+and its thresholds are unchanged; what changes is how a browser tab is
+classified, and so the evidence. Under version 4 a tab was confident evidence
+when a curated keyword rule named its site or title, or, rarely, when Tier 2
+matched it; a tab on any other site was the explicitly ambiguous browser prior,
+and a tab whose title named a second site made the rules disagree and abstain,
+and the gate counted neither. Version 5 reads the tab's site. A tab on a host
+in the compiled-in site table (`abstraction/site_seeds.rs`) is classified by
+that host at high confidence, whatever its title says; a tab on a site the
+table does not name is classified by what its own hostname says (a `mail.` or
+`wiki.` label, an `.edu` suffix) when those signals agree, at medium
+confidence. Both are confident evidence: they count toward the anchor, a
+switch, a return and coverage like any other. A rule taught about a site
+(migration 0040) applies in every browser, though no IPC command writes one
+yet. Browser time moves from unclear to a category, so the anchor, the switch
+counts and the decision points differ from version 4 wherever a browser was
+open, which is why the version changed. `tests/drift_offer_live_helper.rs`
+replays one block with the departure on a site nothing names, on a seeded
+site, and on a site whose name is read.
+
 An observation row's end is the next row's start. At a boundary — pause or
 sleep, a service restart, or the end of the block — there is no next row, and
 the dwell the user is in has not been measured yet. The open row is therefore

@@ -16,7 +16,7 @@
 #   5. The warm-up exclusion compared planned_duration_seconds with 300, which
 #      the schema makes impossible to trigger. Since 2026-09-25 it is 180 s of
 #      ELAPSED time: ended_at - started_at - total_paused_seconds.
-#   6. Policy v1 to v4 are never pooled (2026-09-25, 2026-09-26), and only v4
+#   6. Policy v1 to v5 are never pooled (2026-09-25 to 2026-09-27), and only v5
 #      is analysed. An intervention takes the policy of its block's
 #      offered/withheld_demotion/suppressed_dnd decision; without one it is
 #      counted and excluded. Exports without a decision log are excluded whole.
@@ -127,7 +127,7 @@ if spec.get("decisions") is not None:
             decision_id=d.get("decision_id", f"{name}-d{i}"),
             occurred_at=d.get("occurred_at", b.get("started_at", T0) + 600),
             # Unless a row says otherwise, it is under the analysed policy.
-            block_id=d.get("block_id"), policy_version=d.get("policy_version", 4),
+            block_id=d.get("block_id"), policy_version=d.get("policy_version", 5),
             anchor_category="FOCUS_WORK", switch_count=3, elapsed_seconds=600,
             remaining_seconds=600, gate_verdict=d["gate_verdict"],
             propensity=d.get("propensity", "1.0"),
@@ -384,30 +384,30 @@ PY
 make_export "$work/policy/p-policy" <<'JSON'
 {"blocks": [
    {"block_id": "v1-offer",      "started_at": 1800000000},
-   {"block_id": "v4-offer",      "started_at": 1800100000},
+   {"block_id": "v5-offer",      "started_at": 1800100000},
    {"block_id": "no-decision",   "started_at": 1800200000},
    {"block_id": "abstained-only","started_at": 1800300000},
    {"block_id": "conflicting",   "started_at": 1800400000},
-   {"block_id": "v4-dnd",        "started_at": 1800500000},
+   {"block_id": "v5-dnd",        "started_at": 1800500000},
    {"block_id": "v1-era-block",  "started_at": 1800050000, "ended_at": 1800050600, "phase": "abandoned"}
  ],
  "offers": [
    {"block_id": "v1-offer",       "outcome": "returned", "outcome_at": 1800000700},
-   {"block_id": "v4-offer",       "outcome": "no_response", "card_seen": "seen", "card_seen_at": 1800100601},
+   {"block_id": "v5-offer",       "outcome": "no_response", "card_seen": "seen", "card_seen_at": 1800100601},
    {"block_id": "no-decision",    "outcome": "no_response"},
    {"block_id": "abstained-only", "outcome": "no_response"},
    {"block_id": "conflicting",    "outcome": "dismissed"},
-   {"block_id": "v4-dnd",         "outcome": "delivery_suppressed_dnd"}
+   {"block_id": "v5-dnd",         "outcome": "delivery_suppressed_dnd"}
  ],
  "decisions": [
    {"block_id": "v1-offer", "gate_verdict": "abstained_warmup", "policy_version": 1, "occurred_at": 1800000100},
    {"block_id": "v1-offer", "gate_verdict": "offered", "policy_version": 1, "occurred_at": 1800060000},
-   {"block_id": "v4-offer", "gate_verdict": "abstained_min_switches"},
-   {"block_id": "v4-offer", "gate_verdict": "offered", "anchor_seen_within_600s": 1},
+   {"block_id": "v5-offer", "gate_verdict": "abstained_min_switches"},
+   {"block_id": "v5-offer", "gate_verdict": "offered", "anchor_seen_within_600s": 1},
    {"block_id": "abstained-only", "gate_verdict": "abstained_min_switches"},
    {"block_id": "conflicting", "gate_verdict": "offered", "policy_version": 1, "occurred_at": 1800000200},
-   {"block_id": "conflicting", "gate_verdict": "offered", "policy_version": 4},
-   {"block_id": "v4-dnd", "gate_verdict": "suppressed_dnd", "anchor_seen_within_600s": 0}
+   {"block_id": "conflicting", "gate_verdict": "offered", "policy_version": 5},
+   {"block_id": "v5-dnd", "gate_verdict": "suppressed_dnd", "anchor_seen_within_600s": 0}
  ],
  "invitations": [
    {"offered_at": 1800040000, "outcome": "accepted"},
@@ -421,21 +421,21 @@ JSON
 "$analyze" --json "$work/policy/p-policy" > "$work/policy.json"
 check "$work/policy.json" "policy attribution and the never-pooled rule" <<'PY'
 p = r["policy"]
-assert p["analysed_policy_version"] == 4, p
-assert p["decisions_by_policy_version"] == {"1": 3, "4": 5}, p
-# v1-offer -> 1; v4-offer, v4-dnd -> 4; no-decision and abstained-only have no
+assert p["analysed_policy_version"] == 5, p
+assert p["decisions_by_policy_version"] == {"1": 3, "5": 5}, p
+# v1-offer -> 1; v5-offer, v5-dnd -> 5; no-decision and abstained-only have no
 # attributing verdict; conflicting has both.
-assert p["interventions_by_attribution"] == {"1": 1, "4": 2, "conflicting": 1, "unattributed": 2}, p
+assert p["interventions_by_attribution"] == {"1": 1, "5": 2, "conflicting": 1, "unattributed": 2}, p
 d = r["decisions_recorded"]
 assert (d["delivered"], d["withheld"]) == (1, 1), d
 assert r["retired_return_within_10min"]["numerator"] == 0, r["retired_return_within_10min"]
 assert r["card_seen"]["no_response"] == {"seen": 1, "unseen": 0, "unknown": 0}, r["card_seen"]
-# Eligible: v4 'offered' rows only (v4-offer, conflicting's v4 row).
+# Eligible: v5 'offered' rows only (v5-offer, conflicting's v5 row).
 assert r["power"]["observed_eligible_decision_points"] == 2, r["power"]
 integrity = r["decision_log_integrity"]
 assert integrity["rows"] == 5, integrity
 assert integrity["by_gate_verdict"] == {"abstained_min_switches": 2, "offered": 2, "suppressed_dnd": 1}, integrity
-# Rows with no policy column are v4 only after this Mac's last decision under
+# Rows with no policy column are v5 only after this Mac's last decision under
 # another policy (1800060000): the v1-era block and the first invitation are
 # excluded, and the explain week holding that decision is too.
 assert p["rows_before_last_other_policy_decision_excluded"] == {"blocks": 2, "explain_weeks": 1, "invitations": 1}, p
@@ -448,44 +448,45 @@ assert p["non_monotonic_policy_history"] == [], p
 PY
 
 # ===========================================================================
-# 7b. A Mac upgraded from a policy-v3 build (1.0.12) to a policy-v4 build. v3
-#     never saw a departure to an application the client could not observe at
-#     window level, so its decision points and switch counts mean something
-#     else: its rows are counted and excluded, never pooled with v4.
+# 7b. A Mac upgraded from a policy-v4 build (1.0.13) to a policy-v5 build. v4
+#     read a browser tab on a site no browser-context rule names as the
+#     ambiguous browser prior, which the gate never counts, so its decision
+#     points and switch counts mean something else: its rows are counted and
+#     excluded, never pooled with v5.
 # ===========================================================================
-make_export "$work/upgraded/p-v3-to-v4" <<'JSON'
+make_export "$work/upgraded/p-v4-to-v5" <<'JSON'
 {"blocks": [
-   {"block_id": "v3-block", "started_at": 1800000000},
-   {"block_id": "v4-block", "started_at": 1800200000}
+   {"block_id": "v4-block", "started_at": 1800000000},
+   {"block_id": "v5-block", "started_at": 1800200000}
  ],
  "offers": [
-   {"block_id": "v3-block", "outcome": "returned", "outcome_at": 1800000650},
-   {"block_id": "v4-block", "outcome": "returned", "outcome_at": 1800200650}
+   {"block_id": "v4-block", "outcome": "returned", "outcome_at": 1800000650},
+   {"block_id": "v5-block", "outcome": "returned", "outcome_at": 1800200650}
  ],
  "decisions": [
-   {"block_id": "v3-block", "gate_verdict": "abstained_min_switches", "policy_version": 3, "occurred_at": 1800000300},
-   {"block_id": "v3-block", "gate_verdict": "offered", "policy_version": 3, "occurred_at": 1800000600},
-   {"block_id": "v4-block", "gate_verdict": "abstained_min_switches"},
-   {"block_id": "v4-block", "gate_verdict": "offered"}
+   {"block_id": "v4-block", "gate_verdict": "abstained_min_switches", "policy_version": 4, "occurred_at": 1800000300},
+   {"block_id": "v4-block", "gate_verdict": "offered", "policy_version": 4, "occurred_at": 1800000600},
+   {"block_id": "v5-block", "gate_verdict": "abstained_min_switches"},
+   {"block_id": "v5-block", "gate_verdict": "offered"}
  ]}
 JSON
-"$analyze" --json "$work/upgraded/p-v3-to-v4" > "$work/upgraded.json"
-check "$work/upgraded.json" "policy v3 rows pooled with v4" <<'PY'
+"$analyze" --json "$work/upgraded/p-v4-to-v5" > "$work/upgraded.json"
+check "$work/upgraded.json" "policy v4 rows pooled with v5" <<'PY'
 p = r["policy"]
-assert p["decisions_by_policy_version"] == {"3": 2, "4": 2}, p
-assert p["interventions_by_attribution"] == {"3": 1, "4": 1}, p
+assert p["decisions_by_policy_version"] == {"4": 2, "5": 2}, p
+assert p["interventions_by_attribution"] == {"4": 1, "5": 1}, p
 assert r["power"]["observed_eligible_decision_points"] == 1, r["power"]
 assert r["decision_log_integrity"]["rows"] == 2, r["decision_log_integrity"]
 assert r["decisions_recorded"]["total"] == 1, r["decisions_recorded"]
 assert p["rows_before_last_other_policy_decision_excluded"] == {"blocks": 1}, p
 reasons = r["exclusions"]["by_reason"]
-assert reasons["intervention under policy_version 3"] == 1, reasons
-assert reasons["decision rows not under policy_version 4"] == 2, reasons
+assert reasons["intervention under policy_version 4"] == 1, reasons
+assert reasons["decision rows not under policy_version 5"] == 2, reasons
 PY
-upgraded_report="$("$analyze" "$work/upgraded/p-v3-to-v4")"
-for needle in "COHORT ANALYSIS (drift policy v4 only)" \
-              "every result uses policy_version 4 only" \
-              "DECISION-LOG INTEGRITY (policy_version 4 rows)"; do
+upgraded_report="$("$analyze" "$work/upgraded/p-v4-to-v5")"
+for needle in "COHORT ANALYSIS (drift policy v5 only)" \
+              "every result uses policy_version 5 only" \
+              "DECISION-LOG INTEGRITY (policy_version 5 rows)"; do
   grep -qF -- "$needle" <<<"$upgraded_report" || fail "upgraded report omits: $needle"
 done
 
@@ -734,7 +735,7 @@ corr_report="$("$analyze" "$work/corr"/*/)"
 check_power_markers "$corr_report"
 for needle in "p-teacher                   6 app-scoped correction(s) on 3 app(s); 3 window rule(s)" \
               "no corrections file: ['p-lost', 'p-older']" \
-              "counts include time before policy v4, not separable: ['p-upgraded']" \
+              "counts include time before policy v5, not separable: ['p-upgraded']" \
               "Each count is a lower bound."; do
   grep -qF -- "$needle" <<<"$corr_report" || fail "corrections report omits: $needle"
 done

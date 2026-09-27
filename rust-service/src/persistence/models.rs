@@ -908,7 +908,8 @@ pub struct CategoryPromptEntry {
     pub last_listed_at: DateTime<Utc>,
     /// When an answer to a card that covered this entry arrived, either one.
     pub acknowledged_at: Option<DateTime<Utc>>,
-    /// When a reminder counted this entry.
+    /// When the first reminder posted while this entry was listed was
+    /// posted, whether or not the entry was among the eight it counted.
     pub notified_at: Option<DateTime<Utc>>,
 }
 

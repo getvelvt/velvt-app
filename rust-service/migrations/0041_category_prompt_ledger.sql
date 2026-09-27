@@ -19,11 +19,11 @@
 -- list itself carries (`raw_event_buffer.app_stable_id` or `.site_stable_id`,
 -- HMAC-SHA-256 under `stable_key_salt`, 0037). It records when the entry was
 -- first and last on the list, when an answer to a card that covered it
--- arrived, and when a reminder counted it. The key is the only thing here
--- drawn from the Mac, and it is disclosed in PRIVACY.md as naming the
--- application or site, because a holder of the whole file can hash guesses
--- under the salt beside it. No name, no hostname, no category, no time
--- observed.
+-- arrived, and when a reminder was first posted while it was listed. The key
+-- is the only thing here drawn from the Mac, and it is disclosed in
+-- PRIVACY.md as naming the application or site, because a holder of the whole
+-- file can hash guesses under the salt beside it. No name, no hostname, no
+-- category, no time observed.
 --
 -- `category_prompt_card_entry` files entries under the card that covered
 -- them, so an answer reaches exactly what that card covered even when it

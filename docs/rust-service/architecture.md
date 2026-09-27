@@ -65,13 +65,15 @@ The abstraction engine is the privacy boundary. It accepts `RawEvent` and return
 
 Classification is plugin-based:
 
-1. Device-local user rule.
-2. Specific browser context heuristic.
-3. Seed dictionary exact/glob application match from `resources/abstraction-taxonomy-mvp-1.json`.
-4. Local-purpose heuristic.
-5. Optional embedding similarity when the `onnx` feature and model/centroid paths are configured.
-6. Generic browser prior.
-7. Captured-but-unclassified fallback using the legacy `unlogged`/`UNLOGGED` wire values.
+1. Device-local user rule: this window, this site in any browser, then this application.
+2. Curated site seed, for a browser tab (`abstraction/site_seeds.rs`).
+3. Specific browser context heuristic.
+4. Seed dictionary exact/glob application match from `resources/abstraction-taxonomy-mvp-1.json`.
+5. Local-purpose heuristic.
+6. Local site inference, for a browser site no seed names.
+7. Optional embedding similarity when the `onnx` feature and model/centroid paths are configured.
+8. Generic browser prior.
+9. Captured-but-unclassified fallback using the legacy `unlogged`/`UNLOGGED` wire values.
 
 Every result carries typed `classified`/`ambiguous`/`unclassified` status,
 `high`/`medium`/`low`/`none` confidence, and

@@ -6,11 +6,11 @@ use std::{
 };
 use uuid::Uuid;
 use velvt_service::abstraction::{
-    AbstractionEngine, AbstractionMappingStore, ClassificationConfidence, ClassificationPlugin,
-    ClassificationResult, ClassificationSource, ClassificationStatus, ClassificationTier,
-    DefaultTitleAbstractor, EmbeddingError, EmbeddingMetrics, EmbeddingModel,
-    EmbeddingSimilarityPlugin, InMemoryMappingStore, Taxonomy, TitleAbstractor,
-    API_EXPECTED_TAXONOMY_VERSION,
+    site_stable_key_for, stable_key_for, AbstractionEngine, AbstractionMappingStore,
+    ClassificationConfidence, ClassificationPlugin, ClassificationResult, ClassificationSource,
+    ClassificationStatus, ClassificationTier, DefaultTitleAbstractor, EmbeddingError,
+    EmbeddingMetrics, EmbeddingModel, EmbeddingSimilarityPlugin, InMemoryMappingStore,
+    PersonalOverride, Taxonomy, TitleAbstractor, API_EXPECTED_TAXONOMY_VERSION,
 };
 use velvt_shared_types::RawEvent;
 
@@ -1086,4 +1086,338 @@ fn corrections_reach_an_application_level_dwell_without_leaking_onto_windows() {
         "COMMUNICATION",
         "a correction of the application-level dwell must not leak onto a titled window"
     );
+}
+
+/// A browser tab as the client reports one: the browser's name, the tab title,
+/// and the URL the service reduces to a hostname.
+fn browser_tab(browser: &str, url: &str, title: &str) -> RawEvent {
+    RawEvent {
+        focused_document_url: Some(url.to_owned()),
+        ..raw_event(browser, title)
+    }
+}
+
+fn site_rule(category: &str, local_activity_name: Option<&str>) -> PersonalOverride {
+    PersonalOverride {
+        category: category.to_owned(),
+        local_activity_name: local_activity_name.map(str::to_owned),
+    }
+}
+
+/// A seeded site is a curated statement about that site, so it classifies with
+/// a seed's confidence in every browser, and one site identity spans them all:
+/// `www.` or not, Safari or Chrome. The window identity stays per browser.
+#[test]
+fn a_seeded_site_is_an_exact_match_in_every_browser() {
+    let store = Arc::new(InMemoryMappingStore::default());
+    let salt = store.stable_key_salt().unwrap();
+    let engine = AbstractionEngine::from_builtin_taxonomy(store).unwrap();
+
+    let safari = engine
+        .process(browser_tab(
+            "Safari",
+            "https://github.com/velvt/private/pull/7",
+            "Pull request",
+        ))
+        .unwrap();
+    let chrome = engine
+        .process(browser_tab(
+            "Google Chrome",
+            "https://www.github.com/velvt/private",
+            "Watch later - YouTube",
+        ))
+        .unwrap();
+
+    for tab in [&safari, &chrome] {
+        assert_eq!(tab.label(), "reference:github");
+        assert_eq!(tab.category(), "REFERENCE");
+        assert_eq!(tab.classification_tier(), ClassificationTier::ExactMatch);
+        assert_eq!(
+            tab.classification_status(),
+            ClassificationStatus::Classified
+        );
+        assert_eq!(
+            tab.classification_confidence(),
+            ClassificationConfidence::High
+        );
+        assert_eq!(tab.classification_source(), ClassificationSource::Seed);
+        assert_eq!(tab.local_site_name(), Some("github.com"));
+        assert_eq!(
+            tab.site_stable_id(),
+            Some(site_stable_key_for(&salt, "github.com").as_str())
+        );
+        assert_eq!(
+            tab.local_name_suggestion(),
+            None,
+            "a seeded site keeps no browser name to suggest"
+        );
+    }
+    assert_ne!(safari.stable_id(), chrome.stable_id());
+}
+
+/// The site rule is the correction that follows a site across browsers. It
+/// outranks the classifier, the seed table included, and is reported exactly
+/// as the application rungs are: a user rule, with the name the user typed as
+/// the local display label.
+#[test]
+fn a_site_rule_applies_in_every_browser_and_outranks_a_seed() {
+    let store = Arc::new(InMemoryMappingStore::default());
+    let salt = store.stable_key_salt().unwrap();
+    let engine = AbstractionEngine::from_builtin_taxonomy(Arc::clone(&store) as _).unwrap();
+    let before = engine
+        .process(browser_tab("Safari", "https://github.com/velvt", "Issues"))
+        .unwrap();
+    assert_eq!(before.category(), "REFERENCE");
+    assert_eq!(before.classification_source(), ClassificationSource::Seed);
+
+    store.set_site_override(
+        &site_stable_key_for(&salt, "github.com"),
+        site_rule("FOCUS_WORK", Some("Velvt code review")),
+    );
+
+    for (browser, url) in [
+        ("Safari", "https://github.com/velvt/private/pull/7"),
+        ("Google Chrome", "https://www.github.com/velvt"),
+        ("Arc", "https://github.com/"),
+        ("Firefox", "https://github.com/notifications?query=private"),
+    ] {
+        let tab = engine.process(browser_tab(browser, url, "Issues")).unwrap();
+
+        assert_eq!(tab.category(), "FOCUS_WORK", "{browser}");
+        assert_eq!(tab.label(), "document:inferred", "{browser}");
+        assert_eq!(
+            tab.classification_source(),
+            ClassificationSource::UserRule,
+            "{browser}"
+        );
+        assert_eq!(
+            tab.classification_tier(),
+            ClassificationTier::ExactMatch,
+            "{browser}"
+        );
+        assert_eq!(
+            tab.classification_status(),
+            ClassificationStatus::Classified,
+            "{browser}"
+        );
+        assert_eq!(
+            tab.classification_confidence(),
+            ClassificationConfidence::High,
+            "{browser}"
+        );
+        assert_eq!(
+            tab.local_display_label(),
+            Some("Velvt code review"),
+            "{browser}"
+        );
+        assert_eq!(tab.local_name_suggestion(), None, "{browser}");
+    }
+
+    // A site rule names that site: a subdomain is another site.
+    let gist = engine
+        .process(browser_tab("Safari", "https://gist.github.com/private", ""))
+        .unwrap();
+    assert_eq!(gist.category(), "REFERENCE");
+    assert_eq!(gist.classification_source(), ClassificationSource::Seed);
+}
+
+/// A browser tab's window rule names one site in one browser, which is the more
+/// specific statement, so it still wins where both exist -- and only in that
+/// browser.
+#[test]
+fn a_window_rule_still_outranks_the_site_rule() {
+    let store = Arc::new(InMemoryMappingStore::default());
+    let salt = store.stable_key_salt().unwrap();
+    store.set_site_override(
+        &site_stable_key_for(&salt, "github.com"),
+        site_rule("FOCUS_WORK", None),
+    );
+    store.set_override(
+        &stable_key_for(&salt, "Google Chrome", "github.com"),
+        site_rule("SOCIAL_FEED", None),
+    );
+    let engine = AbstractionEngine::from_builtin_taxonomy(store).unwrap();
+
+    let chrome = engine
+        .process(browser_tab(
+            "Google Chrome",
+            "https://github.com/explore",
+            "",
+        ))
+        .unwrap();
+    let safari = engine
+        .process(browser_tab("Safari", "https://github.com/explore", ""))
+        .unwrap();
+
+    assert_eq!(chrome.category(), "SOCIAL_FEED");
+    assert_eq!(
+        chrome.classification_source(),
+        ClassificationSource::UserRule
+    );
+    assert_eq!(safari.category(), "FOCUS_WORK");
+    assert_eq!(
+        safari.classification_source(),
+        ClassificationSource::UserRule
+    );
+}
+
+/// The site rung is a browser's. An application that is not a browser keeps
+/// its application rungs and its classifier answer even when it reports a URL
+/// on a site with a rule, and carries no site identity at all.
+#[test]
+fn a_site_rule_leaves_the_application_rungs_untouched() {
+    let store = Arc::new(InMemoryMappingStore::default());
+    let salt = store.stable_key_salt().unwrap();
+    store.set_site_override(
+        &site_stable_key_for(&salt, "github.com"),
+        site_rule("SOCIAL_FEED", None),
+    );
+    store.set_app_override(
+        &velvt_service::abstraction::app_stable_key_for(&salt, "Obscure Editor"),
+        site_rule("FOCUS_WORK", None),
+    );
+    let engine = AbstractionEngine::from_builtin_taxonomy(store).unwrap();
+
+    let corrected_app = engine
+        .process(browser_tab(
+            "Obscure Editor",
+            "https://github.com/velvt/private",
+            "main.rs",
+        ))
+        .unwrap();
+    let seeded_app = engine
+        .process(browser_tab("Slack", "https://github.com/velvt", "general"))
+        .unwrap();
+    let plain_app = engine
+        .process(raw_event("Obscure Editor", "main.rs"))
+        .unwrap();
+
+    assert_eq!(corrected_app.category(), "FOCUS_WORK");
+    assert_eq!(
+        corrected_app.classification_source(),
+        ClassificationSource::UserRule
+    );
+    assert_eq!(seeded_app.category(), "COMMUNICATION");
+    assert_eq!(
+        seeded_app.classification_source(),
+        ClassificationSource::Seed
+    );
+    assert_eq!(plain_app.category(), "FOCUS_WORK");
+    for event in [&corrected_app, &seeded_app, &plain_app] {
+        assert_eq!(event.site_stable_id(), None);
+        assert_eq!(event.local_site_name(), None);
+    }
+}
+
+/// A browser window with no site, or with an address rather than a site, has
+/// no site identity and reaches neither the site rung nor the site tiers.
+#[test]
+fn a_browser_window_without_a_site_identity_carries_none() {
+    let engine = engine();
+    let cases = [
+        raw_event("Google Chrome", "private title"),
+        browser_tab(
+            "Google Chrome",
+            "http://localhost:3000/private",
+            "Dev server",
+        ),
+        browser_tab("Safari", "http://192.168.1.20/admin", "Router"),
+        browser_tab("Arc", "http://printer.local/", "Printer"),
+        browser_tab("Firefox", "file:///Users/private/notes.html", "Notes"),
+    ];
+
+    for event in cases {
+        let abstracted = engine.process(event).unwrap();
+        assert_eq!(abstracted.site_stable_id(), None);
+        assert_eq!(abstracted.local_site_name(), None);
+        assert_ne!(
+            abstracted.classification_source(),
+            ClassificationSource::Seed
+        );
+    }
+}
+
+/// The long tail: an unseeded site whose own labels agree is inferred on the
+/// Mac at Medium confidence, and one whose labels disagree is left to the tiers
+/// below -- here the explicitly ambiguous browser prior -- with its site
+/// identity intact, so it can be asked about.
+#[test]
+fn an_unseeded_site_is_inferred_only_when_its_signals_agree() {
+    let engine = engine();
+
+    let inferred = engine
+        .process(browser_tab(
+            "Google Chrome",
+            "https://cs.qwzx.edu/courses/private",
+            "Syllabus",
+        ))
+        .unwrap();
+    let disputed = engine
+        .process(browser_tab(
+            "Google Chrome",
+            "https://webmail.qwzx.edu/",
+            "Welcome",
+        ))
+        .unwrap();
+
+    assert_eq!(inferred.category(), "REFERENCE");
+    assert_eq!(inferred.label(), "reference:inferred");
+    assert_eq!(
+        inferred.classification_tier(),
+        ClassificationTier::LocalPurposeHeuristic
+    );
+    assert_eq!(
+        inferred.classification_status(),
+        ClassificationStatus::Classified
+    );
+    assert_eq!(
+        inferred.classification_confidence(),
+        ClassificationConfidence::Medium
+    );
+    assert_eq!(
+        inferred.classification_source(),
+        ClassificationSource::Heuristic
+    );
+
+    assert_eq!(disputed.label(), "reference:browser");
+    assert_eq!(
+        disputed.classification_status(),
+        ClassificationStatus::Ambiguous
+    );
+    assert_eq!(disputed.local_site_name(), Some("webmail.qwzx.edu"));
+    assert!(disputed.site_stable_id().is_some());
+}
+
+/// The hostname is device-local. It is kept on the event for the local list
+/// and nowhere else: not in the event's serialized form, not in its `Debug`,
+/// and not in the upload payload.
+#[test]
+fn the_site_name_is_never_serialized_logged_or_uploaded() {
+    use velvt_service::upload::BatchEventPayload;
+
+    let host = "kervanth-sentinel.example";
+    let event = engine()
+        .process(browser_tab(
+            "Safari",
+            &format!("https://www.{host}/private?q=1"),
+            "Welcome",
+        ))
+        .unwrap();
+    assert_eq!(event.local_site_name(), Some(host));
+
+    let serialized = serde_json::to_string(&event).unwrap();
+    let debug = format!("{event:?}");
+    let wire =
+        serde_json::to_string(&BatchEventPayload::from_abstracted("event-1", &event, 60)).unwrap();
+    for (surface, text) in [
+        ("serialized", &serialized),
+        ("debug", &debug),
+        ("wire", &wire),
+    ] {
+        assert!(!text.contains("kervanth"), "{surface}: {text}");
+        assert!(
+            !text.contains(event.site_stable_id().unwrap()),
+            "{surface}: {text}"
+        );
+    }
 }

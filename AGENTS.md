@@ -215,8 +215,8 @@ There is no `src/analytics/` module.
 ## Development Guide
 
 ### Abstraction Engine
-- Stable keys are domain-separated SHA-256 digests — one over (app name, window context), one over the app name, and one over the bundle identifier — each keyed to the install as HMAC-SHA-256 under `stable_key_salt` (migration 0037). Compute them only through `abstraction/key.rs` with the salt of the store they will be looked up in (`AbstractionMappingStore::stable_key_salt`). The event's stable ID is a random `abs_…` identifier, not a hash.
-- Classification order is: window correction → bundle correction → app-name correction → classifier plugins in registry order (`register_builtin_plugins_with_embedding`). `ARCHITECTURE.md` lists the ladder.
+- Stable keys are domain-separated SHA-256 digests — one over (app name, window context), one over the app name, one over the bundle identifier, and one over a browser site's normalized hostname — each keyed to the install as HMAC-SHA-256 under `stable_key_salt` (migration 0037). Compute them only through `abstraction/key.rs` with the salt of the store they will be looked up in (`AbstractionMappingStore::stable_key_salt`). The event's stable ID is a random `abs_…` identifier, not a hash.
+- Classification order is: window correction → site correction → bundle correction → app-name correction → classifier plugins in registry order (`register_builtin_plugins_with_embedding`). `ARCHITECTURE.md` lists the ladder.
 - Categories are the taxonomy's (`mvp-2`): `FOCUS_WORK`, `PASSIVE_CONSUMPTION`, `SOCIAL_FEED`, `COMMUNICATION`, `TASK_MANAGEMENT`, `REFERENCE`, `SYSTEM`, and the default `UNLOGGED`. Local labels are `<type>:<behavior>` (`document:code`, `video:youtube`, …).
 - Local labels never upload. The upload serializer collapses each event to one category-scoped `abstraction_type` (`cloud_abstraction_type` in `src/upload/dto.rs`, e.g. `document:inferred`); a new uploaded type is a cloud-contract change as well as a local one.
 - Abstraction mappings are persisted in SQLite and never leave the device.

@@ -1029,6 +1029,28 @@ impl crate::abstraction::AbstractionMappingStore for SqliteAbstractionMapRepo {
             .map_err(Into::into)
     }
 
+    fn personal_site_override(
+        &self,
+        site_key: &str,
+    ) -> Result<Option<crate::abstraction::PersonalOverride>, crate::abstraction::StoreError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT category, activity_name FROM personal_site_override
+                 WHERE site_key_hash = ?1",
+                [site_key],
+                |row| {
+                    Ok(crate::abstraction::PersonalOverride {
+                        category: row.get(0)?,
+                        local_activity_name: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+            .map_err(Into::into)
+    }
+
     fn resolve_id(
         &self,
         request: crate::abstraction::MappingResolution<'_>,
@@ -8389,5 +8411,80 @@ ALTER TABLE raw_event_buffer ADD COLUMN local_name_suggestion TEXT
         for unterminated in ["SELECT 'open", "SELECT 1 /* open", "SELECT [open", "--"] {
             let _ = migration_checksum(unterminated);
         }
+    }
+}
+
+#[cfg(test)]
+mod site_rule_tests {
+    use super::SqlitePersistence;
+    use crate::abstraction::{
+        site_stable_key_for, AbstractionEngine, ClassificationConfidence, ClassificationSource,
+    };
+    use chrono::{TimeZone, Utc};
+    use rusqlite::params;
+    use uuid::Uuid;
+    use velvt_shared_types::RawEvent;
+
+    fn browser_tab(browser: &str, url: &str) -> RawEvent {
+        RawEvent {
+            event_id: Uuid::new_v4(),
+            occurred_at: Utc.with_ymd_and_hms(2026, 9, 27, 9, 0, 0).unwrap(),
+            duration_seconds: 60,
+            app_name: browser.to_owned(),
+            window_title: "Issues".to_owned(),
+            bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
+            focused_document_url: Some(url.to_owned()),
+            in_progress: false,
+        }
+    }
+
+    /// The site rung reads migration 0040's table, under the database's own
+    /// salt: a row keyed for `github.com` answers for that site in any browser,
+    /// with or without `www.`, and an empty table leaves every other site to
+    /// the classifier.
+    #[test]
+    fn a_site_rule_in_the_database_applies_in_every_browser() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let salt = database.abstraction_map_repo().stable_key_salt().unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO personal_site_override(site_key_hash, category, activity_name)
+                 VALUES (?1, 'FOCUS_WORK', 'Code review')",
+                params![site_stable_key_for(&salt, "github.com")],
+            )
+            .unwrap();
+        let engine =
+            AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store()).unwrap();
+
+        for (browser, url) in [
+            ("Safari", "https://github.com/velvt/private"),
+            ("Google Chrome", "https://www.github.com/velvt"),
+        ] {
+            let tab = engine.process(browser_tab(browser, url)).unwrap();
+            assert_eq!(tab.category(), "FOCUS_WORK", "{browser}");
+            assert_eq!(
+                tab.classification_source(),
+                ClassificationSource::UserRule,
+                "{browser}"
+            );
+            assert_eq!(tab.local_display_label(), Some("Code review"), "{browser}");
+        }
+
+        let untaught = engine
+            .process(browser_tab(
+                "Safari",
+                "https://www.youtube.com/watch?v=private",
+            ))
+            .unwrap();
+        assert_eq!(untaught.category(), "PASSIVE_CONSUMPTION");
+        assert_eq!(untaught.classification_source(), ClassificationSource::Seed);
+        assert_eq!(
+            untaught.classification_confidence(),
+            ClassificationConfidence::High
+        );
     }
 }

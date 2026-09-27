@@ -176,6 +176,11 @@ impl ClassificationResult {
 /// exactly as it did before this type existed, which is why
 /// [`ClassificationPlugin::classify_declared`] defaults to the metadata-free
 /// path and the tiers that key on it return `None` rather than guessing.
+///
+/// One field is not a declaration. `site` is the hostname of a browser tab,
+/// carried here so the site tiers can read it bare where the registration order
+/// puts them; every other tier sees it only as the first words of the window
+/// context. It is device-local on the same terms as the three above.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DeclaredMetadata<'a> {
     /// `CFBundleIdentifier`, e.g. `com.microsoft.VSCode`.
@@ -185,6 +190,11 @@ pub struct DeclaredMetadata<'a> {
     /// The `LSItemContentTypes` declared across `CFBundleDocumentTypes`,
     /// flattened, deduplicated and sorted by the client.
     pub document_type_ids: &'a [String],
+    /// Not declared by the application: the hostname Rust derived on this Mac
+    /// from a browser window's focused document URL (`focused_site_context`),
+    /// before `sites::site_identity` normalizes it. `None` for every
+    /// other window, and for a browser window that reported no URL.
+    pub site: Option<&'a str>,
 }
 
 /// One independently registrable classification strategy.
@@ -370,9 +380,34 @@ impl ClassificationPlugin for BrowserContextPlugin {
         if !is_browser_app(app_name) {
             return None;
         }
-        let haystack = normalized_purpose_input(app_name, window_title);
-        classify_matching_rules(&haystack, BROWSER_CONTEXT_RULES, &self.taxonomy_version)
+        browser_context_verdict(app_name, window_title, &self.taxonomy_version)
     }
+}
+
+/// What the curated browser-context rules say about a window, without the
+/// check that the window is a browser's.
+///
+/// [`BrowserContextPlugin`] is this plus that check. The site seed tier reads it
+/// too, to keep a Workspace tab's `document:sheets` or `document:slides` label
+/// where the seed table can only name the host.
+pub(super) fn browser_context_verdict(
+    app_name: &str,
+    window_title: &str,
+    taxonomy_version: &str,
+) -> Option<ClassificationResult> {
+    let haystack = normalized_purpose_input(app_name, window_title);
+    classify_matching_rules(&haystack, BROWSER_CONTEXT_RULES, taxonomy_version)
+}
+
+/// The category of every browser-context rule a normalized haystack matches,
+/// in rule order, for the site seed table's consistency test.
+#[cfg(test)]
+pub(super) fn browser_context_rule_categories(haystack: &str) -> Vec<&'static str> {
+    BROWSER_CONTEXT_RULES
+        .iter()
+        .filter(|rule| rule.matches(haystack))
+        .map(|rule| rule.category)
+        .collect()
 }
 
 pub(crate) struct GenericBrowserPriorPlugin {
@@ -401,7 +436,7 @@ impl ClassificationPlugin for GenericBrowserPriorPlugin {
     }
 }
 
-fn is_browser_app(app_name: &str) -> bool {
+pub(super) fn is_browser_app(app_name: &str) -> bool {
     let app_name = normalize_classifier_text(app_name);
     [
         "safari",
@@ -1870,7 +1905,7 @@ impl EmbeddingModel for HashedEmbeddingModel {
     }
 }
 
-fn inferred_label_for_category(category: &str) -> Option<&'static str> {
+pub(super) fn inferred_label_for_category(category: &str) -> Option<&'static str> {
     match category {
         "FOCUS_WORK" => Some("document:inferred"),
         "PASSIVE_CONSUMPTION" => Some("video:inferred"),

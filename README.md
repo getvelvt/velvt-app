@@ -339,32 +339,39 @@ match, embedding, fallback) until Classification v2 (protocol 30, 1.0.11); it
 is now an ordered ladder, most specific evidence first:
 
 1. **Your corrections.** A rule for this exact window (`personal_override`),
-   then for this application by bundle identifier, then for this application
-   by name (both `personal_app_override`). A correction always outranks a
+   then for this site in any browser (`personal_site_override`), then for
+   this application by bundle identifier, then for this application by name
+   (both `personal_app_override`). A correction always outranks a
    classifier.
 2. **Classifier plugins**, in registry order; the first one that answers wins:
-   1. `BrowserContextPlugin` — for a browser, the focused site (a hostname
-      Rust derives from the tab URL; the URL itself is discarded) and the
-      title.
-   2. `BundleSeedPlugin` — the taxonomy's bundle-identifier seeds.
-   3. `SeedDictionaryPlugin` — the taxonomy's application-name seeds. A
+   1. `SiteSeedPlugin` — for a browser, the focused site (a hostname Rust
+      derives from the tab URL; the URL itself is discarded) against a
+      compiled-in table of sites. The host decides the category; title words
+      can only refine the label within it.
+   2. `BrowserContextPlugin` — for a browser, the focused site and the
+      title, against curated keyword rules.
+   3. `BundleSeedPlugin` — the taxonomy's bundle-identifier seeds.
+   4. `SeedDictionaryPlugin` — the taxonomy's application-name seeds. A
       pattern matches the whole normalized name, or a `*` glob; there is no
       fuzzy or substring matching, which is why macOS's `Code` for VS Code
       needed the bundle seed above.
-   4. `LocalPurposeHeuristicPlugin` — curated keyword families over the name
+   5. `LocalPurposeHeuristicPlugin` — curated keyword families over the name
       and title.
-   5. `DocumentTypePlugin` — the document types the application declares in
+   6. `DocumentTypePlugin` — the document types the application declares in
       its own `Info.plist`.
-   6. `DeclaredCategoryPlugin` — the application's declared
+   7. `DeclaredCategoryPlugin` — the application's declared
       `LSApplicationCategoryType`, through a whitelist of unambiguous values.
-   7. `EmbeddingSimilarityPlugin` (Tier 2) — a local embedding of name and
+   8. `SiteInferencePlugin` — for a browser site no seed names, what its own
+      hostname says: a purpose subdomain, an institutional suffix, a token of
+      the registrable label. Signals that disagree give no answer.
+   9. `EmbeddingSimilarityPlugin` (Tier 2) — a local embedding of name and
       title compared with versioned category prototypes, plus the bounded
       device-local prototypes your corrections create. Multiple prototypes
       may represent distinct modes of one category.
-   8. `GenericBrowserPriorPlugin` — a browser whose site said nothing becomes
-      an explicitly ambiguous `REFERENCE`.
-   9. `UnloggedFallbackPlugin` — anything left is captured as `UNLOGGED`
-      rather than dropped.
+   10. `GenericBrowserPriorPlugin` — a browser whose site said nothing becomes
+       an explicitly ambiguous `REFERENCE`.
+   11. `UnloggedFallbackPlugin` — anything left is captured as `UNLOGGED`
+       rather than dropped.
 
 `docs/classification-v2-contract.md` is the design this ladder implements, and
 `ARCHITECTURE.md` carries the same order. The built-in registry is in

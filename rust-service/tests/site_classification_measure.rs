@@ -2,10 +2,10 @@
 //! against the persona corpus in `tests/fixtures/site_classification` (see its
 //! README for how the corpus was made and why it is never edited to fit).
 //!
-//! This measures; it does not gate. The only assertions are that the corpus is
-//! well formed and that every visit was classified without a Tier 2 timeout,
-//! so a run that finishes printed numbers that describe the engine. Run it
-//! with
+//! This measures; it does not gate on the numbers. The only assertions are
+//! that the corpus is well formed and that every visit was classified, with no
+//! engine error and in a pass without a Tier 2 timeout, so a run that finishes
+//! printed numbers that describe the engine. Run it with
 //!
 //! ```text
 //! cargo test --test site_classification_measure -- --ignored --nocapture
@@ -19,8 +19,10 @@
 //! A prediction is *confident* exactly when the drift gate would count it as
 //! evidence (`is_confident` in `src/work_block/mod.rs`): classified, High or
 //! Medium confidence, and not SYSTEM, UNCLASSIFIED or UNLOGGED. Every other
-//! second is time the person would have to categorize themselves, which the
-//! report calls needs-a-category time.
+//! second is time the gate cannot use, which the report calls
+//! needs-a-category time. That includes a visit confidently classified as
+//! SYSTEM, which the gate never counts although it is categorized: the site
+//! list does not ask about one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -108,7 +110,11 @@ fn measure_site_classification() {
 struct Visit {
     persona: String,
     app_name: String,
+    // Required but nullable. A plain `Option` field would read a line without
+    // the key as `null`, and a missing `host` as a native visit.
+    #[serde(deserialize_with = "Option::deserialize")]
     bundle_id: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     host: Option<String>,
     title: String,
     seconds: u64,
@@ -126,10 +132,24 @@ impl Visit {
     }
 
     /// What the visit is about: its normalized host in a browser, the
-    /// application otherwise. The split rule hashes exactly this.
+    /// application otherwise.
     fn subject(&self) -> String {
         match &self.host {
             Some(host) => normalized_host(host),
+            None => self.app_name.clone(),
+        }
+    }
+
+    /// What the split rule hashes: the registrable domain of the normalized
+    /// host in a browser, the application otherwise.
+    ///
+    /// Not the host, because the engine decides a whole domain at once: a seed
+    /// reaches every host under it, and leaving a seed out moves all of them.
+    /// Split by host, one such decision reached hosts in both halves, so a
+    /// change made on `dev` moved `test` as well.
+    fn split_key(&self) -> String {
+        match &self.host {
+            Some(host) => registrable_domain(&normalized_host(host)),
             None => self.app_name.clone(),
         }
     }
@@ -165,9 +185,43 @@ fn normalized_host(host: &str) -> String {
     }
 }
 
-/// dev when the first byte of sha256(subject) is even, test otherwise.
-fn split_for(subject: &str) -> &'static str {
-    if Sha256::digest(subject.as_bytes())[0] % 2 == 0 {
+/// Public suffixes of two labels, under which a registrable domain is three
+/// labels long (`example.co.uk`); under any other it is the last two.
+///
+/// The same list as the engine's site inference on the branches that have it,
+/// copied here because this harness has to build where that module does not
+/// exist. It is the ICANN kind of suffix only: a platform's shared domain
+/// (`atlassian.net`, `github.io`) is one registrable domain, because a seed
+/// decides all of its tenants at once.
+const MULTI_LABEL_PUBLIC_SUFFIXES: &[&str] = &[
+    "co.uk", "ac.uk", "gov.uk", "org.uk", "me.uk", "nhs.uk", "com.au", "net.au", "org.au",
+    "edu.au", "gov.au", "co.jp", "ac.jp", "go.jp", "or.jp", "ne.jp", "co.nz", "ac.nz", "govt.nz",
+    "org.nz", "co.in", "ac.in", "gov.in", "org.in", "com.br", "gov.br", "org.br", "com.cn",
+    "edu.cn", "gov.cn", "org.cn", "co.kr", "ac.kr", "go.kr", "com.sg", "edu.sg", "gov.sg",
+    "com.hk", "edu.hk", "gov.hk", "com.tw", "edu.tw", "gov.tw", "co.za", "ac.za", "gov.za",
+    "com.mx", "edu.mx", "com.tr", "edu.tr", "gov.tr", "co.il", "ac.il", "gov.il",
+];
+
+/// The registrable domain of a normalized host: its last two labels, or its
+/// last three under one of [`MULTI_LABEL_PUBLIC_SUFFIXES`]. A host with no
+/// more labels than that (`gov.uk`, `localhost`) is its own.
+fn registrable_domain(host: &str) -> String {
+    let labels = host.split('.').collect::<Vec<_>>();
+    let suffix_labels = if MULTI_LABEL_PUBLIC_SUFFIXES.iter().any(|suffix| {
+        host.strip_suffix(suffix)
+            .is_some_and(|registrable| registrable.ends_with('.'))
+    }) {
+        2
+    } else {
+        1
+    };
+    let kept = (suffix_labels + 1).min(labels.len());
+    labels[labels.len() - kept..].join(".")
+}
+
+/// dev when the first byte of sha256(split key) is even, test otherwise.
+fn split_for(split_key: &str) -> &'static str {
+    if Sha256::digest(split_key.as_bytes())[0] % 2 == 0 {
         "dev"
     } else {
         "test"
@@ -200,7 +254,7 @@ fn load_corpus(path: &Path) -> Vec<Visit> {
             );
             assert_eq!(
                 visit.split,
-                split_for(&visit.subject()),
+                split_for(&visit.split_key()),
                 "corpus line {number}: split does not follow the split rule"
             );
             visit
@@ -371,7 +425,8 @@ impl Prediction {
     }
 }
 
-/// Mirrors `is_confident` in `src/work_block/mod.rs`, which is private.
+/// Mirrors `is_confident` in `src/work_block/mod.rs`, which an integration test
+/// cannot reach.
 fn is_confident(
     category: &str,
     status: ClassificationStatus,
@@ -434,14 +489,23 @@ fn measure_config(config: Config, visits: &[Visit]) -> ConfigReport {
             Section::new(split, kind, &selected)
         })
         .collect();
+    let abstraction_errors = predictions
+        .iter()
+        .filter(|prediction| prediction.status == "error")
+        .count();
+    // An engine error would otherwise be counted as needs-a-category time and
+    // the run would print numbers about a broken engine.
+    assert_eq!(
+        abstraction_errors,
+        0,
+        "{}: {abstraction_errors} visits failed to classify at all",
+        config.name()
+    );
     ConfigReport {
         name: config.name(),
         description: config.description(),
         discarded_passes_for_tier2_timeouts: discarded_passes,
-        abstraction_errors: predictions
-            .iter()
-            .filter(|prediction| prediction.status == "error")
-            .count(),
+        abstraction_errors,
         sections,
         predictions,
     }

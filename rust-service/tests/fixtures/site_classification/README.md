@@ -10,8 +10,11 @@ cargo test --test site_classification_measure -- --ignored --nocapture
 ```
 
 That prints a report and writes JSON to the path in `VELVT_MEASURE_OUT`. The
-test measures and does not gate: the only things it asserts are about this
-file (see the last section).
+test measures and does not gate on the numbers. It fails only when this file
+breaks the rules in the last section, when the engine returns an error for a
+visit, or when five passes in a row each hit a Tier 2 timeout (a pass that
+hits one is thrown away and rerun, because it measured the machine's load), so
+a run that finishes printed numbers that describe the engine.
 
 ## What is in it
 
@@ -29,7 +32,8 @@ file (see the last section).
 | `split`     | `dev` or `test` (below)                                                      |
 
 1,522 visits are browser tabs across 561 hosts (after removing a leading
-`www.`); 212 are native app windows in 55 applications. Ten personas wrote
+`www.`) in 382 registrable domains; 212 are native app windows in 55
+applications. Ten personas wrote
 them, two per source file: backend engineer, data scientist, product designer,
 frontend engineer, sales and marketing lead, support lead, product manager,
 founder/operations, PhD researcher and technical writer. The organisations,
@@ -77,19 +81,35 @@ pages.
 
 ### Split
 
-`split` is assigned by host, so a host is never in both halves:
+`split` is assigned by registrable domain, so a domain is never in both
+halves:
 
 1. Normalize the host: lowercase it and strip one leading `www.`.
-2. `split` is `dev` if the first byte of `sha256(normalized host)` is even,
+2. Take its registrable domain: the last two labels, or the last three under
+   a two-label public suffix such as `co.uk` or `ac.uk` (the harness's
+   `MULTI_LABEL_PUBLIC_SUFFIXES`). `acme.atlassian.net` and
+   `other.atlassian.net` are both `atlassian.net`; a host with no more labels
+   than that, such as `localhost`, is its own.
+3. `split` is `dev` if the first byte of `sha256(registrable domain)` is even,
    otherwise `test`.
-3. A native visit (`host` is `null`) is split the same way on
+4. A native visit (`host` is `null`) is split the same way on
    `sha256(app_name)`.
 
+The unit is the registrable domain because the engine decides a whole domain
+at once: a site seed reaches every host under it, and leaving one out moves
+all of them. Until 2026-09-27 the split was by exact host, so one such
+decision reached hosts in both halves and a change justified on `dev` moved
+`test` too; `split` was regenerated when the rule changed, and a baseline
+from before then is not comparable with one after. A signal that reads a label
+any site can carry (a `docs.` in front, an `.edu` at the end) still reaches
+both halves: no split by site can hold that out.
+
 Use `dev` when looking at examples while changing classification. Treat
-`test` as held out: report it, do not tune against its hosts. Because a large
-host lands wholly in one half (Google Docs, Meet and YouTube are in `test`;
-Spotify, Figma and GitHub are in `dev`), the two halves differ in make-up.
-Compare a change with its baseline within a split, not `dev` against `test`.
+`test` as held out: report it, do not tune against its domains. Because a
+large domain lands wholly in one half (every `google.com` host, Figma and
+GitHub are in `dev`; YouTube, Spotify and the `atlassian.net` workspaces are
+in `test`), the two halves differ in make-up. Compare a change with its
+baseline within a split, not `dev` against `test`.
 
 ## Never edit it to fit a classifier
 
@@ -108,5 +128,6 @@ well. So:
   never with lines written to exercise a particular rule.
 
 The test enforces the parts that can be checked mechanically: every line must
-parse with exactly these fields, `truth` must be a category or `UNSURE`,
-`seconds` must be positive, and `split` must follow the split rule.
+parse with exactly these fields (`bundle_id` and `host` may be `null` but not
+missing), `truth` must be a category or `UNSURE`, `seconds` must be positive,
+and `split` must follow the split rule.

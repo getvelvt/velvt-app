@@ -135,8 +135,10 @@ annotation_for() {
       echo "application: or site: and the same salted key as raw_event_buffer, for an app or site that needed a category — read as naming the app or site; no name, hostname or category" ;;
     category_prompt_card_entry.prompt_id)
       echo "a needs-a-category card's id: 32 random bytes, drawn on this Mac — says nothing about any app or site" ;;
-    personal_override.activity_name|personal_app_override.activity_name|personal_site_override.activity_name)
+    personal_override.activity_name|personal_site_override.activity_name)
       echo "a name YOU typed when you corrected a classification" ;;
+    personal_app_override.activity_name)
+      echo "a name YOU typed when you corrected a classification — or, for an app taught from the needs-a-category list, the APP'S OWN LOCAL NAME, which the list sends back as the rule's name; kept until you remove the rule or use Reset Corrections" ;;
     work_block.intention)
       echo "the sentence you typed when you started a block — expires after 24h" ;;
     schema_migration.checksum)

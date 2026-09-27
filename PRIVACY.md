@@ -123,7 +123,7 @@ reminder, also described below.
 | `local_site_name` | **the hostname of a site Velvt could not categorize**, in `host` (such as `forum.example.org`, with a leading `www.` removed), beside the site's key and `last_seen_at`, so Velvt can name the site when it asks you what it is. Written, and `last_seen_at` moved, only on a visit Velvt could not confidently classify, to a site you have taught no rule for, and not when one of your own corrections decided the visit. A visit it did classify confidently neither writes the row nor moves `last_seen_at`. It is the only column in the database that holds the hostname of a site you visited, and it holds nothing else from the address: no path, query, port, or credentials | removed when you teach a rule for that site; otherwise 14 days after `last_seen_at`, the last visit to the site Velvt could not categorize |
 | `category_prompt_entry` | one row per application or site that needed a category in the last seven days (migration 0041) — every one above the needs-a-category list's five-minute floor, not only the eight the list and its card show: `entry_key`, which is `application:` or `site:` followed by the same salted key as `raw_event_buffer.app_stable_id` or `raw_event_buffer.site_stable_id` — the digest, never the name or the hostname — when the entry was first and last on the list (`first_listed_at`, `last_listed_at`), when you answered a card that covered it (`acknowledged_at`), and when a reminder was posted while it was listed (`notified_at`). No name, hostname, category, or time observed. The key is a guessable digest like the two it copies, so treat `entry_key` as naming the application or site | 14 days after `last_listed_at`, the last time the entry needed a category; all of them when the key salt is minted again |
 | `category_prompt_card_entry` | which needs-a-category card covered which entry (migration 0041), so an answer to a card reaches exactly the entries it covered: `prompt_id`, the card's id — 32 random bytes, drawn again whenever the entries the card counts change, so it says nothing about any of them — `entry_key`, the same prefixed salted key as `category_prompt_entry.entry_key`, and `counted`, 1 for an entry the card counted and 0 for one listed below those eight while it was the latest card. No name, hostname, category, or time. Treat `entry_key` as naming the application or site | the latest card and the one before it only: a card's rows go when a card two newer is drawn, and each row goes with its entry's row in `category_prompt_entry`, at most 14 days after that entry last needed a category; all of them when the key salt is minted again |
-| `personal_app_override` | the same correction applied to a whole application rather than one window: app-key hash, category, `activity_name`, a correction count, since migration 0034 `bundle_key_hash` — the same bundle-identifier digest described under `raw_event_buffer` below, NULL on every rule taught before that migration — and since migration 0035 `app_only`, which records whether you taught the rule for the whole application from the triage list (1) or it was written beside a single-window correction (0) | until you undo the correction it came from or use Reset Corrections. No sweep expires it |
+| `personal_app_override` | the same correction applied to a whole application rather than one window: app-key hash, category, `activity_name` — the name you typed, or, for a rule taught from the needs-a-category list, **the application's own local name**, which the list sends back as the rule's name — a correction count, since migration 0034 `bundle_key_hash` — the same bundle-identifier digest described under `raw_event_buffer` below, NULL on every rule taught before that migration — and since migration 0035 `app_only`, which records whether you taught the rule for the whole application from the triage list (1) or it was written beside a single-window correction (0) | until you undo the correction it came from, remove the rule from the list of saved rules, or use Reset Corrections. No sweep expires it |
 | `semantic_embedding_cache` | one hashed sketch per application-and-title pair the classifier has scored (for a browser tab, per browser-and-site pair), keyed by the same salted window key as `abstraction_map`. The sketch is derived from the raw application name and the raw window title, and for a browser tab from the tab's hostname as well, computed under this install's `embedding_salt`, and individual words are partially recoverable from it by someone holding the whole file — described below | the 512 most recently observed pairs; a pair is swept once 14 days pass with no further observation of it. The clock restarts on every observation, so a window you keep returning to is never swept |
 | `personal_semantic_prototype` | a copy of that same sketch, kept for a category you corrected so the classifier can recognise the activity again | the 64 most-corrected pairs, at most 12 per category; removed by undoing that correction or by Reset Corrections. No sweep expires it |
 | `history_cache` / `insight_cache` | ready-to-display summaries fetched from the cloud | minutes to tens of minutes, per `VELVT_HISTORY_TTL_SECONDS`/`VELVT_INSIGHT_TTL_SECONDS` |
@@ -251,11 +251,14 @@ The needs-a-category list is the one place a hostname leaves the Rust service
 on purpose: since protocol 33 `unclassified_triage` carries each unclassified
 site's hostname from `local_site_name`, as `display_name`, over the local
 socket to the Swift app so it can ask you what the site is. It carries each
-unclassified application's local name the same way, and the local dashboard
-carries application names for the Daily Activity chart. All of it stays on the
-socket; none of it is uploaded. Teaching a site sends its key, never its
-hostname, and deletes the stored hostname, and its confirmation says "this
-site", or the name you typed, never the hostname.
+unclassified application's local name the same way. Application names reach
+the app on two other paths as well: the local dashboard carries them for the
+Daily Activity chart, and a rule taught from the list keeps the application's
+own name as the rule's name (`personal_app_override`, above), which the list of
+saved rules shows and the one-line confirmation of the teach repeats. All of it
+stays on the socket; none of it is uploaded. Teaching a site sends its key,
+never its hostname, and deletes the stored hostname, and its confirmation says
+"this site", or the name you typed, never the hostname.
 
 ### The embedding sketch, and what can be read back out of it
 
@@ -695,7 +698,11 @@ publishes about itself, in `raw_event_buffer.declared_app_category` and
 `raw_event_buffer.document_type_ids`; the names you type when you correct a
 classification, in `abstraction_map.display_name`, `personal_override`,
 `personal_app_override`, `personal_site_override`, and
-`raw_event_buffer.local_display_label`; and a hashed sketch of
+`raw_event_buffer.local_display_label`; the raw application name again, in
+`personal_app_override.activity_name`, for an application you taught from the
+needs-a-category list, which sends the application's own local name back as
+the rule's name, kept until you remove that rule or use Reset Corrections; and
+a hashed sketch of
 `app name [SEP] window title` (with the hostname before the title, for a
 browser tab), in `semantic_embedding_cache`
 and `personal_semantic_prototype`. The sketch is not the title and cannot be

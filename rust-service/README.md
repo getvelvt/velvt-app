@@ -173,7 +173,7 @@ the cache or fetch layers.
 | Positive insight cache write (R6 slow path) | `InsightPayload` | `PushAdapter::push_insight` |
 | History fetch completes (R6 slow path) | `HistoryPayload` | `PushAdapter::push_history` |
 | `RequestLatestInsight` from Swift (on-demand) | `InsightPayload` or `CacheEmpty` | `R7Router` → direct response |
-| `RequestLatestHistory` from Swift (on-demand) | `HistoryPayload` or `CacheEmpty` | `R7Router` → direct response |
+| `RequestLatestHistory` from Swift (on-demand) | `HistoryPayload` (`source: cloud`, or `this_mac` when signed out or the cloud cannot be read), or `CacheEmpty` only if neither can be built | `R7Router` → direct response |
 | Privacy violation detected (R5 upload boundary) | `PrivacyViolationAlert` | `PushAdapterAlertSink::alert` |
 
 On-demand requests receive a synchronous pull response; the push queue is only

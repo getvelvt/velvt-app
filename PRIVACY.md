@@ -614,8 +614,11 @@ compares with this list.
   open up to 70 seconds, then asked again. No body.
 - **`GET /v1/history/daily?days=N`** and
   **`GET /v1/insights/daily?date=YYYY-MM-DD`** — every 10 minutes while signed
-  in, and when the app asks for history or an insight that is not cached:
-  read-only requests for already-abstracted, server-side-derived summaries.
+  in, and, while signed in, when the app asks for history or an insight that
+  is not cached: read-only requests for already-abstracted,
+  server-side-derived summaries. The app also asks for history while signed
+  out; that answer is built on this Mac from its own events and makes no
+  request.
 - **`GET /v1/ready`** — when the menu asks whether the server is reachable, at
   most once a minute. No body and no account token.
 

@@ -63,6 +63,14 @@ on demand via `request_latest_insight`/`request_latest_history`) → SQLite
 `AccountStateManager` → `DisplayDataCoordinator` → `InsightViewModel` /
 `HistoryViewModel` (`@Published` properties) → `MenuBarPopoverView`.
 
+History has a second source that never touches the cloud (protocol 33). When
+the account is signed out, or `request_latest_history` cannot read the cloud's
+history, the router answers with daily summaries Rust builds from
+`raw_event_buffer` (`dashboard.rs` `local_daily_history`), marked
+`source: this_mac`. Nothing is stored or sent. The Patterns card renders
+either source; the Today tab's baseline label and day metrics read only the
+cloud's.
+
 Daily insights additionally produce a `notification_payload` IPC push (see
 "IPC framing and versioning" below), consumed by
 `NotificationDeliveryCoordinator` → `UNNotificationScheduler`.
@@ -108,7 +116,7 @@ allowed. Neither is shown during an active or paused block.
 | S3 — Permissions | Swift | Accessibility/Notifications permission state | `PermissionManaging` | Gates collection start on granted permission |
 | S4 — Event relay | Swift | In-memory ring buffer while IPC is offline | `EventRelayProtocol` | Drops oldest on overflow; never spills to disk |
 | S5 — Auth/onboarding | Swift | Sign up/log in/log out/delete account UI, Keychain session storage | `AccountStateManaging`, `KeychainProtocol` | Session tokens in Keychain only, never SQLite |
-| S6 — Display | Swift | History/insight view models and views | `DisplayDataCoordinating` | Renders only abstracted, server-derived summaries |
+| S6 — Display | Swift | History/insight view models and views | `DisplayDataCoordinating` | Renders only abstracted summaries: server-derived, or built on this Mac by Rust (`history_payload` `source: this_mac`) |
 | S7 — Menu bar & notifications | Swift | Menu bar state, work-block surface, notification scheduling (daily insight, drift offer and needs-a-category reminder) | `NotificationScheduling`, `InterventionNotificationScheduling` | Schedules exactly the Rust-authored copy; never generates notification text itself |
 | App lifecycle | Swift | Launches the bundled helper, reclaims the socket from an orphaned helper of an earlier run (at most twice, then an alert) | `ServiceProcessLauncher`, `OrphanedHelperReaper` | Only terminates a process running this bundle's own helper executable, as this user, that this app did not start |
 

@@ -420,7 +420,8 @@ pub trait RawEventRepo: Send + Sync {
     /// `local_site_name` is the only place a hostname is stored, and this is
     /// the only writer. It writes only when that event is one the site list
     /// counts -- a browser tab with a site key whose classification was not
-    /// confident and was not decided by a rule of the user's -- and its site
+    /// confident (a confident SYSTEM one counts as confident here) and was not
+    /// decided by a rule of the user's -- and its site
     /// has no site rule. A confident visit, a visit a rule decided, and a site
     /// already taught write nothing and leave any stored row as it was.
     ///
@@ -437,12 +438,14 @@ pub trait RawEventRepo: Send + Sync {
     /// The browser sites Velvt observed but could not categorize, ranked by
     /// observed time, longest first.
     ///
-    /// The time counted is the time the drift gate cannot use: events whose
-    /// classification is not confident by the gate's own rule
+    /// The time counted is the time Velvt could not categorize: events whose
+    /// classification is not confident by the drift gate's rule
     /// (`work_block::is_confident`), which for a browser tab is mostly the
-    /// ambiguous browser prior rather than UNLOGGED. A visit a rule of the
-    /// user's decided is not counted, confident or not: there is nothing left
-    /// to ask about it.
+    /// ambiguous browser prior rather than UNLOGGED, except that a confident
+    /// SYSTEM visit counts as categorized here: the gate never uses SYSTEM
+    /// time, but a sign-in or account page Velvt filed as SYSTEM is not a
+    /// question. A visit a rule of the user's decided is not counted,
+    /// confident or not: there is nothing left to ask about it.
     ///
     /// Bounded exactly as [`Self::unclassified_triage`] is. A site with a site
     /// rule is excluded, and so is one with no stored name (`local_site_name`),

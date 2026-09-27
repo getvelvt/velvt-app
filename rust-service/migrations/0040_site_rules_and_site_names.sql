@@ -36,8 +36,9 @@
 -- exception to 0001's invariant, disclosed in PRIVACY.md. One row per site
 -- key: the normalized host and when it was last seen. A row is written, or its
 -- `last_seen_at` moved, on a visit whose classification was not confident (the
--- drift gate's `is_confident` rule) and was not decided by one of the user's
--- own rules, to a site that has no rule; any other visit writes nothing. It is there so Velvt can name the site when it asks
+-- drift gate's `is_confident` rule, except that a confident SYSTEM visit counts
+-- as categorized) and was not decided by one of the user's own rules, to a site
+-- that has no rule; any other visit writes nothing. It is there so Velvt can name the site when it asks
 -- what the site is, and it is deleted when a rule is saved for the site, when
 -- `stable_key_salt` is re-minted, and 14 days after `last_seen_at` -- the
 -- horizon of the raw events it was seen in. The CHECK admits exactly what the

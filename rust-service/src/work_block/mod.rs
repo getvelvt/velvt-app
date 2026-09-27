@@ -1611,7 +1611,8 @@ fn is_confident_evidence(observation: &WorkBlockObservation) -> bool {
 ///
 /// Crate-visible for the one reader outside the gate that must agree with it:
 /// the site list (`persistence::sqlite`, `SITE_VISIT_NEEDS_A_CATEGORY`) asks
-/// about exactly the browser time this rejects, and its test compares the two.
+/// about the browser time this rejects, except a confident SYSTEM visit, which
+/// is categorized though never evidence, and its test compares the two.
 pub(crate) fn is_confident(
     category: &str,
     status: ClassificationStatus,

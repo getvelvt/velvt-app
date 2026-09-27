@@ -995,6 +995,34 @@ mod tests {
         assert!(triage(&router, 14).await.entries.is_empty());
     }
 
+    /// A sign-in page Velvt files as SYSTEM is categorized, even though the
+    /// drift gate never counts SYSTEM time: its hostname -- an SSO tenant's
+    /// name among them -- is not kept, and the site is not on the list. The
+    /// unseeded tab beside them is the control that shows names are kept.
+    #[tokio::test]
+    async fn a_sign_in_site_filed_as_system_keeps_no_name() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        for message in [
+            browser_tab("Safari", "https://accounts.google.com/v3/signin", 600),
+            browser_tab("Google Chrome", "https://x.okta.com/app/UserHome", 600),
+            browser_tab("Safari", "https://qwybex-forum.example/t/1", 600),
+        ] {
+            router.route(message).await.unwrap();
+        }
+
+        let events = persistence.raw_event_repo();
+        let entries = events.unclassified_site_triage(14, 300, 8).unwrap();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].display_name, "qwybex-forum.example");
+        // Every stored name is older than tomorrow, so this removes, and
+        // counts, all of them: the control's, and nothing else.
+        let stored_names = events
+            .delete_expired_site_names(Utc::now() + chrono::Duration::days(1), 100)
+            .unwrap();
+        assert_eq!(stored_names, 1);
+    }
+
     /// Absent declared metadata must behave exactly as it did before the
     /// columns existed: the event is stored, and the triage row reads the same.
     #[tokio::test]

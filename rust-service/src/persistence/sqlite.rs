@@ -804,13 +804,20 @@ const RULE_FILTER: &str = "
 /// `local_site_name` only for an event that passes, and
 /// `unclassified_site_triage` sums only the events that pass.
 ///
-/// The middle clause is the drift gate's `work_block::is_confident`, negated:
-/// confident is `classified` at `high` or `medium` confidence in a category
-/// other than SYSTEM, UNCLASSIFIED and UNLOGGED. Stored status and confidence
-/// are the lowercase tokens `as_str` writes and the category is compared
-/// case-insensitively, as the gate compares it. What passes is browser time the
-/// gate cannot use, which is what makes it worth asking about. A test pins this
-/// clause to the gate's function over every status, confidence and category.
+/// The middle clause is "categorized", negated: `classified` at `high` or
+/// `medium` confidence in a category other than UNCLASSIFIED and UNLOGGED.
+/// Stored status and confidence are the lowercase tokens `as_str` writes and
+/// the category is compared case-insensitively, as the drift gate compares it.
+///
+/// It is the gate's `work_block::is_confident` with one difference, on purpose:
+/// a confident SYSTEM visit counts as categorized here. The gate never counts
+/// SYSTEM time as evidence, but the list asks what a site is, not whether the
+/// gate can use it, and a sign-in, account or password-manager page Velvt filed
+/// as SYSTEM has an answer already. Asking about one would keep its hostname
+/// -- an SSO tenant's names an employer -- for as long as the person keeps
+/// signing in, and list a site Velvt did categorize as one it could not. A
+/// test pins this clause to the gate's function over every status, confidence
+/// and category, SYSTEM aside.
 ///
 /// The last clause leaves out a visit one of the user's own rules decided -- a
 /// window, site or application rule, which the engine returns as `user_rule` at
@@ -822,7 +829,7 @@ const SITE_VISIT_NEEDS_A_CATEGORY: &str = "
     AND NOT (
         visit.classification_status = 'classified'
         AND visit.classification_confidence IN ('high', 'medium')
-        AND lower(visit.category) NOT IN ('system', 'unclassified', 'unlogged')
+        AND lower(visit.category) NOT IN ('unclassified', 'unlogged')
     )
     AND NOT (
         visit.classification_source = 'user_rule'
@@ -8911,12 +8918,13 @@ mod site_triage_tests {
         );
     }
 
-    /// Only time the drift gate cannot use counts. On one site: a confident
-    /// visit adds nothing, an ambiguous one and one classified into a category
-    /// the gate never counts both do, and a visit one of the user's own rules
-    /// decided adds nothing even though the gate cannot use it either.
+    /// Only time Velvt could not categorize counts. On one site: an ambiguous
+    /// visit does; a confident visit adds nothing, and neither does one
+    /// confidently filed as SYSTEM, which the drift gate never counts but which
+    /// is categorized; and a visit one of the user's own rules decided adds
+    /// nothing even though it is not confident either.
     #[test]
-    fn only_time_the_gate_cannot_use_reaches_the_site_list() {
+    fn only_time_velvt_could_not_categorize_reaches_the_site_list() {
         let database = SqlitePersistence::open_in_memory().unwrap();
         let events = database.raw_event_repo();
         let now = Utc::now();
@@ -8931,9 +8939,12 @@ mod site_triage_tests {
             &confident_visit("confident", &site, now, 3_600),
             "mixed.example.org",
         );
-        let mut system = confident_visit("system", &site, now, 60);
+        let mut system = confident_visit("system", &site, now, 600);
         system.category = "SYSTEM".into();
-        record(events.as_ref(), &system, "mixed.example.org");
+        assert!(
+            !record(events.as_ref(), &system, "mixed.example.org"),
+            "a visit filed as SYSTEM is categorized and keeps no name"
+        );
         let mut ruled = confident_visit("ruled", &site, now, 7_200);
         ruled.category = "UNLOGGED".into();
         ruled.classification_source = "user_rule".into();
@@ -8950,16 +8961,18 @@ mod site_triage_tests {
         let entries = events.unclassified_site_triage(14, 300, 8).unwrap();
 
         assert_eq!(entries.len(), 1, "{entries:?}");
-        assert_eq!(entries[0].seconds_observed, 360);
-        assert_eq!(entries[0].event_count, 2);
+        assert_eq!(entries[0].seconds_observed, 300);
+        assert_eq!(entries[0].event_count, 1);
     }
 
-    /// The list and the name writer read confidence with one predicate, and it
-    /// is the drift gate's own rule: every status, confidence and category
-    /// (in either case) keeps a name exactly when the gate would not count the
-    /// visit.
+    /// The list and the name writer read confidence with one predicate: every
+    /// status, confidence and category (in either case) keeps a name exactly
+    /// when the visit is not `classified` at `high` or `medium` in a category
+    /// other than UNCLASSIFIED and UNLOGGED. That is the drift gate's own rule
+    /// in every category but SYSTEM, which the gate never counts and the list
+    /// takes as an answer.
     #[test]
-    fn the_site_list_reads_confidence_exactly_as_the_drift_gate_does() {
+    fn the_site_list_reads_confidence_as_the_drift_gate_does_except_for_system() {
         let database = SqlitePersistence::open_in_memory().unwrap();
         let events = database.raw_event_repo();
         let now = Utc::now();
@@ -8993,11 +9006,21 @@ mod site_triage_tests {
 
                     let kept = record(events.as_ref(), &visit, "combination.example.org");
 
-                    assert_eq!(
-                        kept,
-                        !crate::work_block::is_confident(category, status, confidence),
-                        "{category} {status:?} {confidence:?}"
-                    );
+                    let categorized = status == ClassificationStatus::Classified
+                        && matches!(
+                            confidence,
+                            ClassificationConfidence::High | ClassificationConfidence::Medium
+                        )
+                        && !category.eq_ignore_ascii_case("unclassified")
+                        && !category.eq_ignore_ascii_case("unlogged");
+                    assert_eq!(kept, !categorized, "{category} {status:?} {confidence:?}");
+                    if !category.eq_ignore_ascii_case("system") {
+                        assert_eq!(
+                            kept,
+                            !crate::work_block::is_confident(category, status, confidence),
+                            "{category} {status:?} {confidence:?}"
+                        );
+                    }
                 }
             }
         }

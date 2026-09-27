@@ -122,10 +122,8 @@ WARMUP_EXCLUSION_SECONDS = 180
 # Browser time moves both ways, mostly from unclear to a category. The anchor,
 # the switch counts and the decision points differ wherever a browser was
 # open. Rows from v1 to v5 are never pooled, and every cohort result uses
-# policy_version 5 only. The note is
-# `pitch-deck-inputs/evidence/drafts/2026-09-27-policy-v5-note.md` until the
-# founder appends it to traction-summary.md, which has to happen before a v5
-# result is reported.
+# policy_version 5 only. The founder appended the note to traction-summary.md
+# as its 2026-09-27 amendment.
 ANALYSED_POLICY_VERSION = 5
 
 # A `work_block_intervention` row has no policy column. It takes the

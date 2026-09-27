@@ -67,7 +67,10 @@ History has a second source that never touches the cloud (protocol 33). When
 the account is signed out, or `request_latest_history` cannot read the cloud's
 history, the router answers with daily summaries Rust builds from
 `raw_event_buffer` (`dashboard.rs` `local_daily_history`), marked
-`source: this_mac`. Nothing is stored or sent. The Patterns card renders
+`source: this_mac`. Nothing is stored or sent. After a failed cloud read the
+router stops waiting on the cloud for history, which would hold the whole
+connection for the HTTP timeout, until the fetch scheduler's cache holds the
+cloud's history again or the session changes. The Patterns card renders
 either source; the Today tab's baseline label and day metrics read only the
 cloud's.
 

@@ -289,8 +289,9 @@ Direction: Rust to Swift. Purpose: deliver a ready-to-display multi-day history.
   signed out or the cloud could not be read. Rust asks the cloud first when
   signed in. In a `this_mac` history the cloud-only fields are null
   (`focus_score`, `fragmentation_score`) or `unavailable` (`baseline_status`,
-  `baseline_comparison.status`), `type_proportions` is empty, and
-  `confidence_level` is `low` on a ready day. `dashboard.rs`
+  `baseline_comparison.status`), `type_proportions` is empty,
+  `confidence_level` is `low` on a ready day, and a day is `ready` from a
+  minute of active time. `dashboard.rs`
   `local_daily_history` documents how each field differs from velvt-core's.
 - `summaries`: array of daily summary objects, oldest first
 
@@ -363,10 +364,28 @@ Direction: Swift to Rust. Purpose: request a ready-to-display history window.
 - `utc_offset_seconds` (protocol 33): the client's UTC offset, -64800 to
   64800, which bounds the local days of a history built on this Mac
 
-Swift sends it signed in or not, and only after the stored session has gone
-out on the connection as `auth_session`. It is always answered: with a
-`history_payload`, or with `cache_empty` (`local_history_unavailable`) when
-not even this Mac's summaries could be built.
+Swift sends it signed in or not, only after the stored session has gone
+out on the connection as `auth_session`, and before `request_latest_insight`.
+It is always answered: with a `history_payload`, or with `cache_empty`
+(`local_history_unavailable`) when not even this Mac's summaries could be
+built.
+
+When Swift asks (`MenuBarDataLoader`): once per connection and settled
+account state (signed in or signed out); and, while the last answer was not
+the cloud's (a `this_mac` history, or `cache_empty`), each time the Patterns
+tab appears and on the menu status's 60-second cadence at most every 10
+minutes. A `cloud` history is not asked for again: Rust pushes a new
+`history_payload` each time its fetch scheduler fetches one.
+
+How Rust answers, signed in: from the cloud's history for at most 7 UTC days
+(the most `GET /v1/history/daily` returns), served from `history_cache` when
+every date is there. After a cloud read fails, later requests are answered
+from `history_cache` once the fetch scheduler has put the cloud's history
+back in it, and otherwise built on this Mac at once, without waiting on the
+cloud; a session change (`log_in`, `log_out`, `auth_session`, or a request
+made signed out) ends that. The connection reads one message at a time, so
+each cloud read that ran to the 10-second HTTP timeout held every other
+message back.
 
 ### `cache_empty`
 

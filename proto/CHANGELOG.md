@@ -97,8 +97,9 @@
     local evidence allows, and the doc comment on `local_daily_history` lists
     every place it differs. `focus_score` and `fragmentation_score` are null,
     `baseline_status` is `unavailable`, `baseline_comparison` is
-    `{"status": "unavailable"}`, `type_proportions` is empty, and
-    `confidence_level` is `low` on a ready day and `none` on a `no_data` one.
+    `{"status": "unavailable"}`, `type_proportions` is empty,
+    `confidence_level` is `low` on a ready day and `none` on a `no_data` one,
+    and a day is `ready` from a minute of active time.
   - `history_payload.days` is the number of rows the payload carries. It was
     the number requested, and the cloud answers at most 7 whatever it is
     asked, so a 7-row answer went out labelled 14 and Swift padded seven empty
@@ -109,9 +110,20 @@
     could not be built on this Mac either.
   - The client asks for history signed in or not, and only once the stored
     session has been handed to the service on the connection, so a request
-    can no longer reach the service ahead of `auth_session`. It asks again
-    when Patterns appears and, while the last history came from this Mac, on
-    the menu status's 60-second cadence at most every 10 minutes.
+    can no longer reach the service ahead of `auth_session`; and before the
+    insight, so the history does not wait on the insight's cloud read. It
+    asks again when the account settles into a different state and, while
+    the last answer was not the cloud's (a `this_mac` history or
+    `cache_empty`), when Patterns appears and on the menu status's 60-second
+    cadence at most every 10 minutes. A `cloud` history is not asked for
+    again: the service pushes one each time its fetch scheduler fetches one.
+  - Signed in, the service asks the cloud for at most 7 days, the most it
+    answers, so its cache can serve a request for 14. After a failed cloud
+    read it stops waiting on the cloud for history: requests are answered
+    from the cache once the fetch scheduler has refilled it, and otherwise
+    built on this Mac at once, until then or a session change. The
+    connection reads one message at a time, and each read that ran to the
+    10-second HTTP timeout held every other message back.
 - Compatibility: a v32 triage entry does not decode as a v33 one and a v32
   service rejects `set_site_category` and the two prompt requests, so the
   handshake requires 33 on both sides. `request_unclassified_triage` is

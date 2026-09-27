@@ -1590,7 +1590,12 @@ fn is_confident_evidence(observation: &WorkBlockObservation) -> bool {
     )
 }
 
-fn is_confident(
+/// The gate's bar for evidence, on its three inputs.
+///
+/// Crate-visible for the one reader outside the gate that must agree with it:
+/// the site list (`persistence::sqlite`, `SITE_VISIT_NEEDS_A_CATEGORY`) asks
+/// about exactly the browser time this rejects, and its test compares the two.
+pub(crate) fn is_confident(
     category: &str,
     status: ClassificationStatus,
     confidence: ClassificationConfidence,
@@ -3666,6 +3671,7 @@ mod tests {
                 upload_eligible: false,
                 app_stable_id: None,
                 app_scope_eligible: false,
+                site_stable_id: None,
             })
             .unwrap();
         manager

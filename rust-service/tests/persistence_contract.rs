@@ -68,6 +68,7 @@ fn bounded_daily_activity_query_is_indexed_and_measured() {
                 upload_eligible: true,
                 app_stable_id: None,
                 app_scope_eligible: true,
+                site_stable_id: None,
             })
             .unwrap();
     }
@@ -134,6 +135,7 @@ fn a_day_of_many_apps_survives_the_outbound_validator() {
                     upload_eligible: true,
                     app_stable_id: None,
                     app_scope_eligible: true,
+                    site_stable_id: None,
                 })
                 .unwrap();
         }
@@ -259,6 +261,7 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
         upload_eligible: true,
         app_stable_id: None,
         app_scope_eligible: true,
+        site_stable_id: None,
     };
 
     repository.insert(&event).unwrap();
@@ -306,6 +309,7 @@ fn local_display_aggregation_is_bounded_to_five_labels_plus_other() {
                 upload_eligible: true,
                 app_stable_id: None,
                 app_scope_eligible: true,
+                site_stable_id: None,
             })
             .unwrap();
     }
@@ -1097,6 +1101,7 @@ fn event_for_app(event_id: &str, app_stable_id: Option<&str>, eligible: bool) ->
         upload_eligible: true,
         app_stable_id: app_stable_id.map(str::to_owned),
         app_scope_eligible: eligible,
+        site_stable_id: None,
     }
 }
 

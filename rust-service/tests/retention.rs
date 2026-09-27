@@ -47,6 +47,7 @@ fn make_event(n: u64) -> RawEventEntry {
         upload_eligible: true,
         app_stable_id: None,
         app_scope_eligible: true,
+        site_stable_id: None,
     }
 }
 

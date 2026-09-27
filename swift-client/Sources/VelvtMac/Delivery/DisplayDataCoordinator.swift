@@ -122,9 +122,15 @@ public final class MenuStatusViewModel: ObservableObject {
     public func start() {
         refresh()
         timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect().sink { [weak self] _ in
-            self?.refresh()
-            self?.ticks.send()
+            self?.tick()
         }
+    }
+
+    /// One tick of the 60-second refresh: the status, then whatever shares
+    /// the `cadence`.
+    func tick() {
+        refresh()
+        ticks.send()
     }
 
     /// Fires on each tick of the 60-second status refresh, so another pull
@@ -402,13 +408,22 @@ public final class MenuStatusViewModel: ObservableObject {
 ///
 /// Requests go out only once the connection has the session the service
 /// needs (`AccountStateManager.isSessionHandedOver`), so the service reads
-/// them with it; the insight only while signed in, since only the cloud has
-/// one; and the history signed in or not, since a signed-out Mac is answered
-/// with summaries built on it. The history is asked for again when the
-/// account settles into a different state, when a surface showing it appears,
-/// and, while the last one came from this Mac, on the menu status's cadence
-/// at most every `localHistoryRefreshInterval`, which is how a recovered
-/// cloud replaces it.
+/// them with it; the history first, so the Patterns card waits on one cloud
+/// read at most rather than two; the insight only while signed in, since
+/// only the cloud has one; and the history signed in or not, since a
+/// signed-out Mac is answered with summaries built on it.
+///
+/// The history is asked for again when the account settles into a different
+/// state; and, while the last answer was not the cloud's (it came from this
+/// Mac, or could not be read), when a surface showing it appears and on the
+/// menu status's cadence at most every `localHistoryRefreshInterval`. A
+/// history built on this Mac goes stale as the day goes on, and those asks
+/// keep it current; they cost no wait on the cloud, which the service stops
+/// asking after a failed read until it answers its own fetch scheduler. A
+/// synced history is not asked for again: the service pushes a new one each
+/// time its scheduler fetches one, which is also how a recovered cloud
+/// replaces this Mac's, and asking on every Patterns view would tell the
+/// server when Patterns was opened.
 @MainActor
 final class MenuBarDataLoader {
     /// The days of history asked for: the Daily Activity chart's window.
@@ -516,13 +531,39 @@ final class MenuBarDataLoader {
 
         historyRefreshRequests
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.refreshHistory() }
+            .sink { [weak self] _ in self?.historySurfaceAppeared() }
             .store(in: &cancellables)
 
         cadence
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.refreshLocalHistoryIfDue() }
             .store(in: &cancellables)
+    }
+
+    /// Starts the loader on the objects the app runs it with: the account's
+    /// state and session handover, its server messages, the appearances of
+    /// the surfaces showing the history (`displayCoordinator`), and the menu
+    /// status's 60-second cadence.
+    func start(
+        accountStateManager: AccountStateManager,
+        displayCoordinator: ConcreteDisplayDataCoordinator,
+        statusViewModel: MenuStatusViewModel
+    ) {
+        start(
+            accountState: accountStateManager.$accountState.eraseToAnyPublisher(),
+            sessionHandedOver: accountStateManager.$isSessionHandedOver.eraseToAnyPublisher(),
+            messages: accountStateManager.serverMessages,
+            historyRefreshRequests: displayCoordinator.historyRefreshRequests,
+            cadence: statusViewModel.cadence
+        )
+    }
+
+    /// A surface showing the history appeared. A synced history is kept
+    /// current by the service's pushes, so only one that is not is asked for
+    /// again.
+    private func historySurfaceAppeared() {
+        guard lastHistory != .cloud else { return }
+        refreshHistory()
     }
 
     /// Asks for the history again, unless it cannot be asked for yet or a
@@ -586,12 +627,16 @@ final class MenuBarDataLoader {
         Task { [weak self] in
             guard let self else { return }
             do {
+                // The history before the insight. The service answers one
+                // request at a time, and with the backend down each cloud
+                // read waits out its timeout: asked second, the history waited
+                // on the insight's read as well as its own.
+                try await sendHistoryRequest()
                 if account == .signedIn {
                     try await ipcClient.send(
                         .requestLatestInsight(.init(date: currentLocalInsightDate()))
                     )
                 }
-                try await sendHistoryRequest()
                 openingRequestInFlight = false
                 if connectionEpoch == epoch {
                     requestedFor = account

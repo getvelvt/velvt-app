@@ -111,11 +111,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // minutes on that tick rather than on a timer of its own.
         let dataLoader = MenuBarDataLoader(ipcClient: client)
         dataLoader.start(
-            accountState: accountStateManager.$accountState.eraseToAnyPublisher(),
-            sessionHandedOver: accountStateManager.$isSessionHandedOver.eraseToAnyPublisher(),
-            messages: accountStateManager.serverMessages,
-            historyRefreshRequests: displayCoord.historyRefreshRequests,
-            cadence: statusViewModel.cadence
+            accountStateManager: accountStateManager,
+            displayCoordinator: displayCoord,
+            statusViewModel: statusViewModel
         )
         menuBarDataLoader = dataLoader
 

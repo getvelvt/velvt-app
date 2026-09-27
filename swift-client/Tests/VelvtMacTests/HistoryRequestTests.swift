@@ -1,12 +1,14 @@
+import AppKit
 import Combine
+import SwiftUI
 import XCTest
 
 @testable import VelvtMac
 
 /// When the Patterns card's history is asked for (protocol 33): only once the
-/// connection has the stored session, signed in or not, and again when the
-/// account settles, when Patterns appears, and on the menu status's cadence
-/// while the last one came from this Mac.
+/// connection has the stored session, signed in or not, and before the
+/// insight; again when the account settles; and, while the last answer was
+/// not the cloud's, when Patterns appears and on the menu status's cadence.
 @MainActor
 final class HistoryRequestTests: XCTestCase {
 
@@ -43,8 +45,8 @@ final class HistoryRequestTests: XCTestCase {
         XCTAssertEqual(
             Array(sent.dropFirst()),
             [
-                .requestLatestInsight(RequestLatestInsight(date: "2026-09-27")),
                 .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: -14_400)),
+                .requestLatestInsight(RequestLatestInsight(date: "2026-09-27")),
             ])
     }
 
@@ -101,8 +103,11 @@ final class HistoryRequestTests: XCTestCase {
     }
 
     /// Signing in asks again, for both; the history the signed-out Mac had
-    /// may now come from the cloud.
-    func testSigningInAsksAgain() async throws {
+    /// may now come from the cloud. The history goes first: the service
+    /// answers one request at a time, and with the backend down each cloud
+    /// read waits out its timeout, so a history asked second waited on the
+    /// insight's read as well as its own.
+    func testSigningInAsksAgainHistoryFirst() async throws {
         let harness = LoaderHarness(account: .loggedOut)
         try await waitUntil { harness.client.sentMessages.count == 1 }
 
@@ -113,8 +118,8 @@ final class HistoryRequestTests: XCTestCase {
         XCTAssertEqual(
             Array(harness.client.sentMessages.dropFirst()),
             [
-                .requestLatestInsight(RequestLatestInsight(date: "2026-09-27")),
                 .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: 3_600)),
+                .requestLatestInsight(RequestLatestInsight(date: "2026-09-27")),
             ])
     }
 
@@ -176,13 +181,13 @@ final class HistoryRequestTests: XCTestCase {
         XCTAssertEqual(harness.insightRequests, 1, "the cadence never asks for the insight")
     }
 
-    /// The Patterns tab appearing asks for the history again, once per
-    /// answer: a second appearance while the first request is unanswered adds
-    /// nothing.
+    /// The Patterns tab appearing asks for a history built on this Mac
+    /// again, once per answer: a second appearance while the first request is
+    /// unanswered adds nothing.
     func testAppearingAsksForTheHistoryAgainOncePerAnswer() async throws {
         let harness = LoaderHarness(account: .loggedIn(userId: "u1"))
         try await waitUntil { harness.historyRequests == 1 }
-        harness.messages.send(.historyPayload(HistoryPayload(days: 7, summaries: [], source: .cloud)))
+        harness.messages.send(.historyPayload(localHistoryWeeks(readyRecent: 3, readyPrior: 0)))
         try await settle()
 
         harness.appearances.send()
@@ -196,6 +201,86 @@ final class HistoryRequestTests: XCTestCase {
         try await settle()
         harness.appearances.send()
         try await waitUntil { harness.historyRequests == 3 }
+    }
+
+    /// A synced history is not asked for when Patterns appears. The service
+    /// pushes a new one whenever its scheduler fetches one, and a request per
+    /// view was a `GET` per view: the server could tell when Patterns was
+    /// opened.
+    func testAppearingDoesNotAskAgainForASyncedHistory() async throws {
+        let harness = LoaderHarness(account: .loggedIn(userId: "u1"))
+        try await waitUntil { harness.historyRequests == 1 }
+        harness.messages.send(.historyPayload(HistoryPayload(days: 7, summaries: [], source: .cloud)))
+        try await settle()
+
+        harness.appearances.send()
+        harness.appearances.send()
+        try await settle()
+
+        XCTAssertEqual(harness.historyRequests, 1)
+    }
+
+    /// The app's own wiring, which `AppDelegate` starts the loader with: the
+    /// Patterns card appearing reaches the loader through the display
+    /// coordinator, and the menu status's tick is its cadence. Every other
+    /// test here drives subjects of its own, so none of them would notice the
+    /// app passing the loader nothing.
+    func testTheAppsWiringAsksAgainWhenPatternsAppearsAndOnTheStatusTick() async throws {
+        let client = OrderRecordingIPCClient(authSessionDelayNanoseconds: 0)
+        let manager = AccountStateManager(keychain: FakeKeychain())
+        manager.startListening(to: client)
+        let coordinator = ConcreteDisplayDataCoordinator()
+        let status = MenuStatusViewModel(ipcClient: client, messages: manager.serverMessages)
+        let clock = TestClock()
+        let loader = MenuBarDataLoader(
+            ipcClient: client,
+            currentLocalInsightDate: { "2026-09-27" },
+            utcOffsetSeconds: { 3_600 },
+            now: { clock.now }
+        )
+        loader.start(accountStateManager: manager, displayCoordinator: coordinator, statusViewModel: status)
+
+        client.setConnectionStatus(.connected)
+        try await waitUntil { client.historyRequests == 1 }
+        manager.serverMessages.send(.historyPayload(localHistoryWeeks(readyRecent: 3, readyPrior: 0)))
+        try await settle()
+
+        coordinator.requestHistoryRefresh()
+        try await waitUntil { client.historyRequests == 2 }
+        manager.serverMessages.send(.historyPayload(localHistoryWeeks(readyRecent: 3, readyPrior: 0)))
+        try await settle()
+
+        clock.advance(by: MenuBarDataLoader.localHistoryRefreshInterval)
+        status.tick()
+        try await waitUntil { client.historyRequests == 3 }
+        withExtendedLifetime(loader) {}
+    }
+
+    /// The Patterns tab tells the coordinator when it appears, which is what
+    /// the loader above listens for.
+    func testThePatternsTabAsksForTheHistoryWhenItAppears() async throws {
+        let client = OrderRecordingIPCClient(authSessionDelayNanoseconds: 0)
+        let coordinator = ConcreteDisplayDataCoordinator()
+        let appearances = Counter()
+        let subscription = coordinator.historyRefreshRequests.sink { appearances.value += 1 }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 650),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(
+            rootView: HistoryWorkspaceView(
+                coordinator: coordinator,
+                localDashboardCoordinator: LocalDashboardCoordinator(ipcClient: client),
+                workBlockCoordinator: WorkBlockCoordinator(ipcClient: client)
+            ))
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        try await waitUntil { appearances.value == 1 }
+        withExtendedLifetime(subscription) {}
+        window.close()
     }
 
     /// Nothing is asked for before the connection has its session.
@@ -247,6 +332,11 @@ final class HistoryRequestTests: XCTestCase {
         }
         XCTFail("condition never held", file: file, line: line)
     }
+}
+
+@MainActor
+private final class Counter {
+    var value = 0
 }
 
 /// Fourteen local days ending 2026-09-27, as a history built on this Mac:
@@ -371,5 +461,12 @@ private final class OrderRecordingIPCClient: IPCClientProtocol, @unchecked Senda
 
     func setConnectionStatus(_ status: ConnectionStatus) {
         statusSubject.send(status)
+    }
+
+    var historyRequests: Int {
+        sentMessages.filter {
+            if case .requestLatestHistory = $0 { return true }
+            return false
+        }.count
     }
 }

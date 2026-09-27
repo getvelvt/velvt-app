@@ -177,13 +177,13 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         }
         await fulfillment(of: [messagesSent], timeout: 2)
 
-        guard case .requestLatestInsight(let request)? = client.sentMessages.first else {
-            return XCTFail("Expected first startup delivery request to fetch latest insight")
-        }
-        XCTAssertEqual(request.date, "2026-06-26")
-        XCTAssertTrue(
-            client.sentMessages.contains(
-                .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: -14_400))))
+        XCTAssertEqual(
+            Array(client.sentMessages.prefix(2)),
+            [
+                .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: -14_400)),
+                .requestLatestInsight(RequestLatestInsight(date: "2026-06-26")),
+            ],
+            "the history goes first, then the current local insight date")
     }
 
     func testDataLoaderRetriesStartupDeliveryRequestsAfterSendFailure() async {
@@ -217,13 +217,13 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         }
         await fulfillment(of: [retried], timeout: 2)
 
-        guard case .requestLatestInsight(let request)? = client.sentMessages.first else {
-            return XCTFail("Expected first retried startup delivery request to fetch latest insight")
-        }
-        XCTAssertEqual(request.date, "2026-06-26")
-        XCTAssertTrue(
-            client.sentMessages.contains(
-                .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: 0))))
+        XCTAssertEqual(
+            Array(client.sentMessages.prefix(2)),
+            [
+                .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: 0)),
+                .requestLatestInsight(RequestLatestInsight(date: "2026-06-26")),
+            ],
+            "the retried startup requests go history first")
     }
 
     func testPopulatedStateHoldsNoDataDayCorrectly() {
@@ -674,8 +674,8 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         XCTAssertEqual(
             client.sentMessages,
             [
-                .requestLatestInsight(RequestLatestInsight(date: "2026-07-03")),
                 .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: 0)),
+                .requestLatestInsight(RequestLatestInsight(date: "2026-07-03")),
             ])
     }
 
@@ -698,8 +698,8 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         XCTAssertEqual(
             client.sentMessages,
             [
-                .requestLatestInsight(RequestLatestInsight(date: "2026-07-03")),
                 .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: 0)),
+                .requestLatestInsight(RequestLatestInsight(date: "2026-07-03")),
             ])
     }
 

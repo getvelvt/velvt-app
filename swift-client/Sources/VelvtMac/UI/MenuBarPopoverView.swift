@@ -8,7 +8,7 @@ public enum MenuBarAccountAction: Equatable {
     case deleteAccount
 }
 
-private struct HistoryWorkspaceView: View {
+struct HistoryWorkspaceView: View {
     @ObservedObject var coordinator: ConcreteDisplayDataCoordinator
     @ObservedObject var localDashboardCoordinator: LocalDashboardCoordinator
     @ObservedObject var workBlockCoordinator: WorkBlockCoordinator

@@ -58,6 +58,11 @@
       "acceptance": "NULL: ZERO surfaced findings across every trace. Any surfaced finding is a false discovery and the acceptance fails. SATURATED: at least one surfaced finding in aggregate, so the NULL zero is falsifiable. PLANTED: the recovery fraction is REPORTED at every cell, not asserted. SPARSE: abstain, with a stated reason.",
       "sha256": "79e9d15695d77c085ee6767d4a50c816257647173eada5fa818245a3ca492eeb",
       "traces": 444
+    },
+    "SYNTHETIC-suite-e-returns.jsonl": {
+      "acceptance": "Every departure the ledger finds carries the label planted for it. NULL: ZERO surfaced cells across every trace, and the naive controls do surface cells on the same traces. SPARSE: abstain, with a stated reason. PLANTED: the communication cell surfaces as lower at the highest volume in most traces; the recovery at each volume is REPORTED. REGIME: found before the change, gone once the lookback has passed it. CORRECTED: disputed blocks are counted and down-weighted, and the pattern the misfiled tool hid is found once corrected rows fill the lookback. Every offered point is outside the rows the ledger counts.",
+      "sha256": "54b30ab9982fc80123140687c205db667a163b13836ae82b3bf0f5c1cc856b74",
+      "traces": 116
     }
   },
   "gate_constants": {
@@ -71,6 +76,29 @@
   "label": "SYNTHETIC \u2014 generated fixtures, no real user data",
   "null_traces": 100,
   "replayed_by": "rust-service/tests/trace_replay.rs",
+  "returns": {
+    "blocks_per_week": 6,
+    "change_week": 4,
+    "corrected_traces": 12,
+    "generator_version": 1,
+    "null_traces": 40,
+    "planted_blocks_per_week": [
+      3,
+      5,
+      8
+    ],
+    "planted_rates": {
+      "communication": 0.25,
+      "feeds_and_video": 0.7,
+      "work_adjacent": 0.7
+    },
+    "planted_seeds_per_level": 12,
+    "read_by": "rust-service/tests/trace_replay.rs",
+    "regime_traces": 12,
+    "schema": "velvt-return-trace/1",
+    "sparse_traces": 16,
+    "weeks": 8
+  },
   "schema": "velvt-trace/1",
   "seed": 20260821,
   "segmentation": {

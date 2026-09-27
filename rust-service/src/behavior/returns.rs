@@ -129,9 +129,12 @@ pub const MIN_CONFIRMATION_BLOCKS: usize = 2;
 pub const BASELINE_PRIOR: (f64, f64) = (4.0, 4.0);
 
 /// Pseudo-count strength of each cell's prior, centred on the person's own
-/// overall rate. With it, a cell must earn a difference against eight
-/// imaginary departures that behaved like the person's average.
-pub const CELL_PRIOR_STRENGTH: f64 = 8.0;
+/// overall rate. With it, a cell must earn a difference against four
+/// imaginary departures that behaved like the person's average. Weak on
+/// purpose: false findings are held off by the family-wise interval and the
+/// held-out window, and a stronger prior only hides real differences at the
+/// volumes a person produces in four weeks.
+pub const CELL_PRIOR_STRENGTH: f64 = 4.0;
 
 /// ASSUMPTION, not a measurement. Departures in one block are not independent:
 /// a scattered afternoon scatters all of them. Rows from one block are weighted

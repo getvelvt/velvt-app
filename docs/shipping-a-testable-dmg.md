@@ -169,11 +169,11 @@ chain, and every link has to hold.
 
 ### The chain
 
-There are two notification kinds and they take different paths. The daily
+There are three notification kinds and they take different paths. The daily
 insight: Rust pushes a `notification_payload` over the local IPC socket. The
 drift offer: Rust sets `active_intervention` on the `work_block_state`
 snapshot and Swift posts its Rust-authored copy immediately through
-`InterventionNotificationScheduling`. Both reach macOS the same way:
+`InterventionNotificationScheduling`. Those two reach macOS the same way:
 
 1. Rust decides something is worth saying and sends it over the local IPC
    socket.
@@ -181,6 +181,17 @@ snapshot and Swift posts its Rust-authored copy immediately through
    requesting it if the user has never been asked.
 3. `NotificationScheduler` hands it to `UNUserNotificationCenter`.
 4. macOS displays it, subject to Focus / Do Not Disturb.
+
+The third, the needs-a-category reminder (protocol 33), takes its own path.
+Swift pulls `request_category_prompt`; Rust returns the reminder in
+`category_prompt.notification` at most once a local day, and marks it handed
+over as it does. `CategoryPromptCoordinator` then posts it through
+`CategoryPromptNotificationScheduling` only if notifications are **already**
+allowed. It never requests authorization, and it is not retried: a reminder
+that could not be posted is spent. To test it, allow Velvt's notifications
+first (onboarding, a drift offer or an insight asks), then use a site or an
+app Velvt cannot categorize for five minutes or more, outside a work block and
+Velvt's quiet hours.
 
 Link 2 was broken until recently: the coordinator only *checked* authorization
 and dropped anything not already granted, in silence. On a fresh install the

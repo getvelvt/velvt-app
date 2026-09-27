@@ -106,7 +106,7 @@ swift-client/
     ├── Collection/   # AXObserver agent, declared app metadata, Focus/DND observer
     ├── Relay/        # EventRelay: in-memory ring buffer between collection and IPC
     ├── IPC/          # Unix socket client, message types, version handshake, reconnect backoff
-    ├── Delivery/     # Display-data coordinator, insight and drift-offer notification delivery
+    ├── Delivery/     # Display-data coordinator, insight, drift-offer and needs-a-category notification delivery
     ├── UI/           # Menu bar popover, work-block view, onboarding, history, digest, corrections
     ├── Auth/         # Account state, Keychain session storage
     ├── Device/       # Local device identity
@@ -137,7 +137,7 @@ Every new `.swift` file must also join the Xcode target: run `./scripts/verify_p
 
 ### Delivery
 - Insight, history, and work-block payloads are received from the Rust service and held in memory for display; Swift keeps no copy of them on disk (it records only which notification IDs it has scheduled). The client requests 14 days of history, and the local Daily Activity chart covers 14 days, the same horizon as raw-event retention.
-- Schedule UserNotifications from received payloads — do not generate notification text in the Swift layer. Drift-offer copy comes from the work-block snapshot's `active_intervention`; daily-insight copy from `notification_payload`.
+- Schedule UserNotifications from received payloads — do not generate notification text in the Swift layer. Drift-offer copy comes from the work-block snapshot's `active_intervention`; daily-insight copy from `notification_payload`; needs-a-category reminder copy from `category_prompt.notification`, posted by `CategoryPromptCoordinator` only if notifications are already allowed.
 
 ### Logging
 - Logs must never include raw window titles, app names, bundle IDs, URLs, paths, filenames, contacts, emails, or insight text.

@@ -29,14 +29,30 @@ use super::parser::{self, ParseError};
 use super::push::PushAdapter;
 use super::LocalInsightRehydrator;
 
+/// The most days `GET /v1/history/daily` answers, whatever `days` says
+/// (velvt-core `history_service.py`, `bounded_days = min(days, 7)`).
+///
+/// A request for more is asked, cached and served as this many. Asked for
+/// the Patterns card's fourteen, the cache used to look for fourteen dates
+/// the cloud never sends, so it could not answer one request: every one was
+/// a live `GET`, even minutes after the scheduler's fetch of seven.
+pub const CLOUD_HISTORY_MAX_DAYS: u8 = 7;
+
+/// The UTC dates a request for `days` of cloud history covers, newest first.
+fn cloud_history_dates(days: u8) -> Vec<NaiveDate> {
+    let today = Utc::now().date_naive();
+    (0..i64::from(days.min(CLOUD_HISTORY_MAX_DAYS)))
+        .filter_map(|i| today.checked_sub_signed(ChronoDuration::days(i)))
+        .collect()
+}
+
 /// A cloud history as Swift receives it: oldest day first, and labelled with
 /// the number of rows it carries rather than the number asked for.
 ///
-/// `GET /v1/history/daily` answers at most seven days whatever `days` says
-/// (velvt-core `history_service.py`, `bounded_days = min(days, 7)`), and the
-/// payload used to say `days: 14` over those seven rows. Swift padded the
-/// difference with empty days, so week-over-week read a prior week that did
-/// not exist and could never count.
+/// The cloud answers at most [`CLOUD_HISTORY_MAX_DAYS`], and the payload used
+/// to say `days: 14` over those seven rows. Swift padded the difference with
+/// empty days, so week-over-week read a prior week that did not exist and
+/// could never count.
 fn cloud_history(mut summaries: Vec<DailySummary>) -> HistoryPayload {
     summaries.sort_by_key(|s| s.date);
     HistoryPayload {
@@ -174,11 +190,12 @@ impl<H: HttpClient> FetchService<H> {
     // Public API methods (also used by CacheManager impl in cache.rs)
     // -----------------------------------------------------------------------
 
+    /// The cloud's history for the last `days` UTC days, at most
+    /// [`CLOUD_HISTORY_MAX_DAYS`]: from the cache when every date is there
+    /// and fresh, else from the API.
     pub async fn daily_history(&self, days: u8) -> Result<HistoryPayload, FetchError> {
-        let today = Utc::now().date_naive();
-        let dates: Vec<NaiveDate> = (0..days as i64)
-            .filter_map(|i| today.checked_sub_signed(ChronoDuration::days(i)))
-            .collect();
+        let days = days.min(CLOUD_HISTORY_MAX_DAYS);
+        let dates = cloud_history_dates(days);
 
         // Fast path: serve entirely from cache.
         if let Some(summaries) = self.all_history_cached(&dates).await {
@@ -210,6 +227,14 @@ impl<H: HttpClient> FetchService<H> {
             adapter.push_history(result.clone()).await;
         }
         Ok(result)
+    }
+
+    /// What [`Self::daily_history`] would answer from the cache alone, or
+    /// `None` when it would have to ask the cloud. Never makes a request.
+    pub async fn cached_daily_history(&self, days: u8) -> Option<HistoryPayload> {
+        self.all_history_cached(&cloud_history_dates(days))
+            .await
+            .map(cloud_history)
     }
 
     pub async fn daily_insight(
@@ -650,6 +675,54 @@ mod tests {
             .windows(2)
             .all(|pair| pair[0].date < pair[1].date));
         assert_eq!(history.summaries.last().unwrap().date, today);
+    }
+
+    /// The cloud keeps seven days, so fourteen are asked, cached and served
+    /// as seven. Once the scheduler's fetch of seven is cached, the Patterns
+    /// card's request for fourteen is answered from the cache with no request
+    /// at all; before, it looked for fourteen dates and was a live `GET`
+    /// every time.
+    #[tokio::test]
+    async fn a_request_for_more_days_than_the_cloud_keeps_is_served_from_the_cache() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let today = Utc::now().date_naive();
+        let rows = (0..7)
+            .map(|days_ago| {
+                let date = today - ChronoDuration::days(days_ago);
+                json!({
+                    "date": date.format("%Y-%m-%d").to_string(),
+                    "status": "ready",
+                    "event_count": 10,
+                    "active_seconds": 3600,
+                    "confidence_level": "low",
+                })
+            })
+            .collect::<Vec<_>>();
+        let http = Arc::new(FakeHttpClient::new().with_route(
+            "/v1/history/daily",
+            200,
+            json!({ "days": 7, "summaries": rows }),
+        ));
+        let service = FetchService::new(
+            Arc::clone(&http),
+            db.history_cache_repo(),
+            db.insight_cache_repo(),
+            test_config(),
+        );
+        assert_eq!(
+            service.cached_daily_history(14).await,
+            None,
+            "an empty cache has nothing to answer with"
+        );
+        assert_eq!(http.call_count(), 0, "a cache-only read made a request");
+
+        let fetched = service.daily_history(14).await.unwrap();
+        assert_eq!(http.called_paths(), vec!["/v1/history/daily?days=7"]);
+
+        let served = service.daily_history(14).await.unwrap();
+        assert_eq!(served, fetched);
+        assert_eq!(service.cached_daily_history(14).await, Some(fetched));
+        assert_eq!(http.call_count(), 1, "a cached week was asked for again");
     }
 
     #[tokio::test]

@@ -3,7 +3,10 @@ use std::{
     future::Future,
     hash::{BuildHasher, Hash, Hasher, RandomState},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -1916,9 +1919,13 @@ mod tests {
 
     // --- request_latest_history: cloud-first, built on this Mac otherwise ---
 
-    /// A cloud read that fails the way an unreachable backend fails.
+    /// A cloud read that fails the way an unreachable backend fails, over a
+    /// cache that holds `cached` once a test puts a history in it, as the
+    /// fetch scheduler does when the cloud answers it.
+    #[derive(Default)]
     struct UnreachableCloud {
         calls: std::sync::atomic::AtomicUsize,
+        cached: std::sync::Mutex<Option<velvt_shared_types::HistoryPayload>>,
     }
 
     impl crate::delivery::CacheManager for UnreachableCloud {
@@ -1938,6 +1945,15 @@ mod tests {
                     status: 522,
                 }))
             })
+        }
+
+        fn cached_daily_history<'a>(
+            &'a self,
+            _days: u8,
+        ) -> Pin<Box<dyn Future<Output = Option<velvt_shared_types::HistoryPayload>> + Send + 'a>>
+        {
+            let cached = self.cached.lock().unwrap().clone();
+            Box::pin(async move { cached })
         }
 
         fn daily_insight<'a>(
@@ -2029,6 +2045,33 @@ mod tests {
             .expect("request_latest_history is always answered")
     }
 
+    /// Seven synced days ending today, as the cloud sends them.
+    fn synced_week() -> velvt_shared_types::HistoryPayload {
+        let today = Utc::now().date_naive();
+        velvt_shared_types::HistoryPayload {
+            days: 7,
+            source: velvt_shared_types::HistorySource::Cloud,
+            summaries: (0..7)
+                .rev()
+                .map(|days_ago| velvt_shared_types::DailySummary {
+                    date: today - chrono::Duration::days(days_ago),
+                    status: velvt_shared_types::HistoryStatus::Ready,
+                    event_count: 12,
+                    focus_score: Some(61.0),
+                    fragmentation_score: Some(20.0),
+                    confidence_level: velvt_shared_types::ConfidenceLevel::Low,
+                    active_seconds: 3_600,
+                    focused_seconds: 1_800,
+                    meaningful_switch_count: 4,
+                    longest_uninterrupted_seconds: 900,
+                    baseline_status: "provisional".into(),
+                    baseline_comparison: serde_json::json!({ "status": "provisional" }),
+                    type_proportions: vec![],
+                })
+                .collect(),
+        }
+    }
+
     fn this_mac_history(message: ServerMessage) -> velvt_shared_types::HistoryPayload {
         match message {
             ServerMessage::HistoryPayload(history) => {
@@ -2045,9 +2088,7 @@ mod tests {
     async fn a_signed_out_mac_gets_history_built_on_this_mac() {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
         an_observed_half_hour(&persistence);
-        let cloud = Arc::new(UnreachableCloud {
-            calls: Default::default(),
-        });
+        let cloud = Arc::new(UnreachableCloud::default());
         let router = history_router(
             &persistence,
             Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
@@ -2077,9 +2118,7 @@ mod tests {
     async fn an_unreachable_cloud_is_answered_with_history_built_on_this_mac() {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
         an_observed_half_hour(&persistence);
-        let cloud = Arc::new(UnreachableCloud {
-            calls: Default::default(),
-        });
+        let cloud = Arc::new(UnreachableCloud::default());
         let router = history_router(
             &persistence,
             Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
@@ -2094,6 +2133,86 @@ mod tests {
             .summaries
             .iter()
             .any(|day| day.status == velvt_shared_types::HistoryStatus::Ready));
+    }
+
+    /// The connection reads one message at a time, so every request that
+    /// waited on an unreachable cloud held the connection for its timeout.
+    /// Once the cloud has failed, later requests are answered on this Mac
+    /// without asking it: Swift asks each time Patterns opens and every ten
+    /// minutes while its history is this Mac's.
+    #[tokio::test]
+    async fn an_unreachable_cloud_is_waited_on_once_per_outage() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        an_observed_half_hour(&persistence);
+        let cloud = Arc::new(UnreachableCloud::default());
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            signed_in(),
+        );
+
+        this_mac_history(daily_history(&router).await);
+        for _ in 0..3 {
+            this_mac_history(daily_history(&router.clone()).await);
+        }
+
+        assert_eq!(
+            cloud.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the cloud was waited on again during the outage"
+        );
+    }
+
+    /// The fetch scheduler keeps asking the cloud in its own task. When it
+    /// answers, its history is in the cache, and the next request is served
+    /// from there and ends the outage: the one after asks the cloud again.
+    #[tokio::test]
+    async fn a_synced_history_back_in_the_cache_ends_the_outage() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let cloud = Arc::new(UnreachableCloud::default());
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            signed_in(),
+        );
+        this_mac_history(daily_history(&router).await);
+
+        *cloud.cached.lock().unwrap() = Some(synced_week());
+        let ServerMessage::HistoryPayload(history) = daily_history(&router).await else {
+            panic!("a cached synced history is sent");
+        };
+        assert_eq!(history, synced_week());
+        assert_eq!(cloud.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        *cloud.cached.lock().unwrap() = None;
+        this_mac_history(daily_history(&router).await);
+        assert_eq!(cloud.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// A new session is a new question: after a log out, or a request made
+    /// signed out, the next signed-in request asks the cloud.
+    #[tokio::test]
+    async fn a_session_change_ends_the_outage() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let cloud = Arc::new(UnreachableCloud::default());
+        let (auth, auth_state) = tokio::sync::watch::channel(signed_in());
+        let mut router = correction_router(&persistence).with_auth_state(auth_state);
+        router.cache = Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>;
+        let calls = || cloud.calls.load(std::sync::atomic::Ordering::SeqCst);
+
+        daily_history(&router).await;
+        router
+            .route(ClientMessage::LogOut(velvt_shared_types::LogOut {}))
+            .await
+            .unwrap();
+        daily_history(&router).await;
+        assert_eq!(calls(), 2, "a log out did not end the outage");
+
+        auth.send(AuthState::Unauthenticated).unwrap();
+        daily_history(&router).await;
+        auth.send(signed_in()).unwrap();
+        daily_history(&router).await;
+        assert_eq!(calls(), 3, "a signed-out request did not end the outage");
     }
 
     /// A cloud answer with no rows is no answer: the card is built on this
@@ -2119,29 +2238,7 @@ mod tests {
     async fn a_cloud_that_answers_is_sent_first_with_the_days_it_carries() {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
         an_observed_half_hour(&persistence);
-        let today = Utc::now().date_naive();
-        let week = velvt_shared_types::HistoryPayload {
-            days: 7,
-            source: velvt_shared_types::HistorySource::Cloud,
-            summaries: (0..7)
-                .rev()
-                .map(|days_ago| velvt_shared_types::DailySummary {
-                    date: today - chrono::Duration::days(days_ago),
-                    status: velvt_shared_types::HistoryStatus::Ready,
-                    event_count: 12,
-                    focus_score: Some(61.0),
-                    fragmentation_score: Some(20.0),
-                    confidence_level: velvt_shared_types::ConfidenceLevel::Low,
-                    active_seconds: 3_600,
-                    focused_seconds: 1_800,
-                    meaningful_switch_count: 4,
-                    longest_uninterrupted_seconds: 900,
-                    baseline_status: "provisional".into(),
-                    baseline_comparison: serde_json::json!({ "status": "provisional" }),
-                    type_proportions: vec![],
-                })
-                .collect(),
-        };
+        let week = synced_week();
         let router = history_router(
             &persistence,
             Arc::new(crate::delivery::FakeCacheManager::new().with_history(14, week.clone())),
@@ -2213,6 +2310,11 @@ pub struct R7Router {
     category_prompt: Option<Arc<CategoryPromptManager>>,
     auth_state: Option<tokio::sync::watch::Receiver<AuthState>>,
     in_progress_dwells: Arc<InProgressDwells>,
+    /// Set when the cloud failed to give `request_latest_history` a usable
+    /// history, and shared by every connection's clone of the router. While
+    /// it is set a history request never waits on the cloud (see
+    /// `history_response`).
+    cloud_history_outage: Arc<AtomicBool>,
 }
 
 impl R7Router {
@@ -2242,6 +2344,7 @@ impl R7Router {
             category_prompt: None,
             auth_state: None,
             in_progress_dwells: Arc::default(),
+            cloud_history_outage: Arc::default(),
         }
     }
 
@@ -2395,11 +2498,13 @@ impl MessageRouter for R7Router {
                 // An account switch expires any invitation left over from
                 // the previous session.
                 self.expire_open_invitation();
+                self.forget_cloud_history_outage();
                 Ok(Some(self.account.log_in(req.email, req.password).await))
             }
 
             ClientMessage::AuthSession(session) => {
                 self.account.apply_session(session);
+                self.forget_cloud_history_outage();
                 if let Some(session_validator) = &self.session_validator {
                     match session_validator.validate_restored_session().await {
                         Ok(()) => {
@@ -2431,6 +2536,7 @@ impl MessageRouter for R7Router {
                 // not outlive it (requirement: logout/account switch
                 // expires invitation state).
                 self.expire_open_invitation();
+                self.forget_cloud_history_outage();
                 self.account.log_out().await;
                 Ok(None)
             }
@@ -3412,33 +3518,63 @@ impl R7Router {
     /// the cloud, so an outage, and every signed-out Mac, left it with
     /// nothing to say about days this Mac had watched. Only when the local
     /// read fails too is the answer `cache_empty(local_history_unavailable)`.
+    ///
+    /// The cloud is waited on once per outage, not once per request. The
+    /// connection reads one message at a time, so a cloud read that runs to
+    /// the 10-second HTTP timeout holds back every raw event, command and
+    /// push behind it, and Swift asks for history each time Patterns opens
+    /// and every ten minutes while its history is this Mac's. After a failed
+    /// read, requests are answered from the cache when the cloud's history is
+    /// back in it, and otherwise on this Mac at once, without a request. The
+    /// fetch scheduler keeps asking the cloud in its own task every
+    /// `VELVT_FETCH_INTERVAL_SECONDS` and pushes the history when it answers
+    /// (`FetchService::daily_history`), which is how a recovered cloud reaches
+    /// the card, and fills the cache that ends the outage here. A session
+    /// change (log in, log out, a restored session) ends it too.
     async fn history_response(&self, request: RequestLatestHistory) -> ServerMessage {
-        if self.signed_in() {
-            match self.cache.daily_history(request.days).await {
-                Ok(history) => match shaper::shape_history(history) {
-                    Ok(validated) => {
-                        return ServerMessage::HistoryPayload(validated.into_inner());
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            message_type = "history_payload",
-                            error_code = "outbound_validation_failed",
-                            error = %err,
-                            "cloud history failed validation; building it on this Mac"
-                        );
-                    }
-                },
-                Err(err) => {
-                    tracing::warn!(
-                        days = request.days,
-                        error_code = "cache_read_failed",
-                        error = %err,
-                        "cloud history unavailable; building it on this Mac"
-                    );
+        if !self.signed_in() {
+            self.forget_cloud_history_outage();
+            return self.local_history_response(&request);
+        }
+        if self.cloud_history_outage.load(Ordering::Relaxed) {
+            if let Some(history) = self.cache.cached_daily_history(request.days).await {
+                if let Ok(validated) = shaper::shape_history(history) {
+                    self.forget_cloud_history_outage();
+                    return ServerMessage::HistoryPayload(validated.into_inner());
                 }
             }
+            return self.local_history_response(&request);
         }
+        match self.cache.daily_history(request.days).await {
+            Ok(history) => match shaper::shape_history(history) {
+                Ok(validated) => {
+                    return ServerMessage::HistoryPayload(validated.into_inner());
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        message_type = "history_payload",
+                        error_code = "outbound_validation_failed",
+                        error = %err,
+                        "cloud history failed validation; building it on this Mac"
+                    );
+                }
+            },
+            Err(err) => {
+                tracing::warn!(
+                    days = request.days,
+                    error_code = "cache_read_failed",
+                    error = %err,
+                    "cloud history unavailable; building it on this Mac"
+                );
+            }
+        }
+        self.cloud_history_outage.store(true, Ordering::Relaxed);
         self.local_history_response(&request)
+    }
+
+    /// The next signed-in history request asks the cloud again.
+    fn forget_cloud_history_outage(&self) {
+        self.cloud_history_outage.store(false, Ordering::Relaxed);
     }
 
     fn local_history_response(&self, request: &RequestLatestHistory) -> ServerMessage {

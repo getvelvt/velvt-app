@@ -39,6 +39,13 @@ pub trait CacheManager: Send + Sync {
         days: u8,
     ) -> Pin<Box<dyn Future<Output = Result<HistoryPayload, CacheError>> + Send + 'a>>;
 
+    /// What `daily_history(days)` would answer from the cache alone, or `None`
+    /// when it would have to ask the cloud. Never makes a network request.
+    fn cached_daily_history<'a>(
+        &'a self,
+        days: u8,
+    ) -> Pin<Box<dyn Future<Output = Option<HistoryPayload>> + Send + 'a>>;
+
     /// Returns the insight for `date`, or `None` when none exists on the server.
     fn daily_insight<'a>(
         &'a self,
@@ -75,6 +82,13 @@ impl<H: HttpClient + 'static> CacheManager for FetchService<H> {
         days: u8,
     ) -> Pin<Box<dyn Future<Output = Result<HistoryPayload, CacheError>> + Send + 'a>> {
         Box::pin(async move { self.daily_history(days).await.map_err(CacheError::Fetch) })
+    }
+
+    fn cached_daily_history<'a>(
+        &'a self,
+        days: u8,
+    ) -> Pin<Box<dyn Future<Output = Option<HistoryPayload>> + Send + 'a>> {
+        Box::pin(async move { self.cached_daily_history(days).await })
     }
 
     fn daily_insight<'a>(
@@ -194,6 +208,16 @@ impl CacheManager for FakeCacheManager {
                 summaries: vec![],
             });
         Box::pin(async move { Ok(result) })
+    }
+
+    /// The preloaded history for `days`, as the cache holds whatever it was
+    /// given. Not counted: it is not a fetch.
+    fn cached_daily_history<'a>(
+        &'a self,
+        days: u8,
+    ) -> Pin<Box<dyn Future<Output = Option<HistoryPayload>> + Send + 'a>> {
+        let result = self.history.lock().unwrap().get(&days).cloned();
+        Box::pin(async move { result })
     }
 
     fn daily_insight<'a>(

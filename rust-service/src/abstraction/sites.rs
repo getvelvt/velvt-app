@@ -236,7 +236,9 @@ fn refines_seed_label(seed_label: &str, label: &str) -> bool {
 /// itself ([`REGISTRABLE_TOKEN_VOTES`]). At least one vote, and every vote the
 /// same, classifies at Medium confidence as a heuristic. Any disagreement is no
 /// answer: the window falls through to the embedding tier and the browser
-/// prior, exactly as it did before this tier existed.
+/// prior, exactly as it did before this tier existed. So is a host with a
+/// sign-in or access label in front ([`ACCESS_LABELS`]), whatever the signals
+/// say: it is the door to a site rather than the site.
 ///
 /// Registered after the two declared-metadata tiers and before the embedding
 /// tier. It answers only for a browser window, which both declared tiers
@@ -336,6 +338,27 @@ const REFERENCE_TOP_LEVEL_DOMAINS: &[&str] = &["edu", "gov", "mil"];
 /// last label is two letters.
 const REFERENCE_SECOND_LEVEL_DOMAINS: &[&str] = &["ac", "edu", "gov"];
 
+/// A veto on all three: a whole label left of the registrable domain that
+/// names a sign-in page or an access gateway -- `weblogin` in
+/// `weblogin.example.edu`, `proxy` in `proxy.lib.example.edu`. What such a host
+/// is for is getting somewhere else, and S2 alone would file every university's
+/// sign-in and library proxy as REFERENCE. A vetoed site gets no answer, so it
+/// reaches the "needs a category" list.
+const ACCESS_LABELS: &[&str] = &[
+    "login",
+    "logon",
+    "signin",
+    "sso",
+    "auth",
+    "idp",
+    "shibboleth",
+    "cas",
+    "weblogin",
+    "proxy",
+    "vpn",
+    "webauth",
+];
+
 /// S3: a hyphen-separated token of the registrable label -- `wiki` in
 /// `arch-wiki.org`, `mail` in `mail.com`.
 const REGISTRABLE_TOKEN_VOTES: &[(&str, &[&str])] = &[
@@ -389,6 +412,13 @@ fn split_site<'a>(site: &str, labels: &'a [&'a str]) -> Option<SiteParts<'a>> {
 fn inferred_site_category(site: &str) -> Option<&'static str> {
     let labels: Vec<&str> = site.split('.').collect();
     let parts = split_site(site, &labels)?;
+    if parts
+        .subdomain_labels
+        .iter()
+        .any(|label| ACCESS_LABELS.contains(label))
+    {
+        return None;
+    }
     let subdomain_votes = parts
         .subdomain_labels
         .iter()
@@ -955,6 +985,28 @@ mod tests {
                 "{site}"
             );
         }
+    }
+
+    /// A sign-in or access label in front is no answer whatever else the
+    /// host says: an institution's suffix alone would otherwise file its
+    /// sign-in page and its library proxy as REFERENCE. Without such a label
+    /// the suffix still counts.
+    #[test]
+    fn a_sign_in_or_access_host_infers_nothing() {
+        for site in [
+            "weblogin.qwzx.edu",
+            "proxy.lib.qwzx.edu",
+            "sso.qwzx.ac.uk",
+            "login.docs.qwzx.io",
+            "idp.qwzx.gov",
+        ] {
+            assert_eq!(inferred_site_category(site), None, "{site}");
+        }
+        assert_eq!(inferred_site_category("stat.qwzx.edu"), Some("REFERENCE"));
+        // Only a whole label: a token of one, or the registrable label itself,
+        // is not a door.
+        assert_eq!(inferred_site_category("casper.qwzx.edu"), Some("REFERENCE"));
+        assert_eq!(inferred_site_category("docs.proxy.io"), Some("REFERENCE"));
     }
 
     /// No signal is no answer too, and a label that only contains a signal

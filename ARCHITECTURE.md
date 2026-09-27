@@ -130,7 +130,7 @@ now runs:
 | 5 | `LocalPurposeHeuristicPlugin` | curated keyword families over name and title | heuristic |
 | 6 | `DocumentTypePlugin` | `LSItemContentTypes` the app declares | heuristic tier / declared document types |
 | 7 | `DeclaredCategoryPlugin` | the app's `LSApplicationCategoryType`, whitelisted values only | heuristic tier / declared app category |
-| 8 | `SiteInferencePlugin` | a browser site no seed names, read from its own hostname: a purpose subdomain (`mail.`, `docs.`), an institutional suffix (`.edu`, `.ac.uk`), a registrable-label token (`wiki`); signals that disagree give no answer | heuristic |
+| 8 | `SiteInferencePlugin` | a browser site no seed names, read from its own hostname: a purpose subdomain (`mail.`, `docs.`), an institutional suffix (`.edu`, `.ac.uk`), a registrable-label token (`wiki`); signals that disagree give no answer, and so does a sign-in or access label in front (`login.`, `sso.`, `proxy.`) | heuristic |
 | 9 | `EmbeddingSimilarityPlugin` | Tier 2, below | embedding |
 | 10 | `GenericBrowserPriorPlugin` | a browser whose site said nothing | fallback, explicitly ambiguous `REFERENCE` |
 | 11 | `UnloggedFallbackPlugin` | anything left | fallback, `UNLOGGED` |

@@ -63,7 +63,21 @@ pub const CONTRACT_TAXONOMY_VERSION: &str = "mvp-2";
 /// against a different feature space, with pre- and post-upgrade rows pooled as
 /// if they were comparable. They are not, and the version is how a later reader
 /// knows to separate them.
-pub const FEATURE_CONTRACT_VERSION: u32 = 2;
+///
+/// **3 since 2026-09-27, with drift policy v5.** The taxonomy is still `mvp-2`
+/// and no symbol changed, but what `c_t` and `q_t` observe for a browser tab
+/// did. Under v5 a tab whose address the helper can read is decided by its
+/// site: a curated host is its category at High confidence, agreeing hostname
+/// signals give Medium, a sign-in host is SYSTEM, and anything else stays on
+/// the ambiguous prior. Title keywords no longer decide such a tab. So a
+/// departure to a listed site is now a confident switch when it begins, a tab
+/// that title words made confident under v4 can now be ambiguous, and browser
+/// time now counts toward anchors. `a_t`, `s_t` and `n_t` follow. That is the
+/// same shape of change as the `mvp-2` bump above, arriving through the
+/// classifier rather than the taxonomy file, which is why the taxonomy
+/// constant alone could not record it (`traction-summary.md`, amendment of
+/// 2026-09-27).
+pub const FEATURE_CONTRACT_VERSION: u32 = 3;
 
 /// The amendment ledger: every feature-contract version, the taxonomy it was
 /// frozen against, and why it was cut.
@@ -75,7 +89,11 @@ pub const FEATURE_CONTRACT_VERSION: u32 = 2;
 /// taxonomy, so changing `CONTRACT_TAXONOMY_VERSION` without deciding, in
 /// writing, whether `x_t` still means what it meant fails the build rather than
 /// passing quietly.
-pub const FEATURE_CONTRACT_HISTORY: [(u32, &str, &str); 2] = [
+///
+/// The converse also holds, and row 3 is the example: a classifier change can
+/// move which runs count as confident evidence while the taxonomy stays put.
+/// That is a contract bump too, cut against the same taxonomy.
+pub const FEATURE_CONTRACT_HISTORY: [(u32, &str, &str); 3] = [
     (
         1,
         "mvp-1",
@@ -90,6 +108,16 @@ pub const FEATURE_CONTRACT_HISTORY: [(u32, &str, &str); 2] = [
          declared-category whitelist classify applications that were UNLOGGED \
          under mvp-1. No symbol changed; c_t, q_t, a_t and s_t are all drawn \
          from a different distribution afterwards",
+    ),
+    (
+        3,
+        "mvp-2",
+        "2026-09-27, drift policy v5: a browser tab whose address can be read \
+         is decided by its site (curated host at High, agreeing hostname \
+         signals at Medium, sign-in hosts SYSTEM, the rest the ambiguous \
+         prior), and title keywords no longer decide it. Same taxonomy and \
+         symbols; c_t and q_t observe browser time differently, so a_t, s_t \
+         and n_t move with them. Rows cut under contract 2 and 3 are not pooled",
     ),
 ];
 

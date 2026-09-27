@@ -24,8 +24,9 @@
 //!
 //! **E — the return ledger.** Multi-week synthetic people, replayed the same
 //! way, then read back out of the database exactly as stored and handed to the
-//! shadow ledger in `src/behavior/returns.rs`. Five families: PLANTED, NULL,
-//! SPARSE, REGIME and CORRECTED. What is synthetic is the person; the decision
+//! shadow ledger in `src/behavior/returns.rs`. Seven families: PLANTED, NULL,
+//! SPARSE, REGIME, CORRECTED, INFORMATIVE (offers follow non-returns) and GAPS
+//! (pauses and unmeasured final dwells). What is synthetic is the person; the decision
 //! log, offers, block cap and backoff are the shipped gate's. A suite E number
 //! is a claim about whether the ledger recovers a planted rate, never about a
 //! person, and never about what a nudge does.
@@ -139,6 +140,22 @@ struct PlantedDeparture {
     /// What the ledger must read: `returned`, `not_returned`, `censored`
     /// (the block ended), `observer_gap` or `treated`.
     label: String,
+    /// What the whole horizon held, had nothing been missed and no offer
+    /// made: `returned` or `not_returned`. Written where the label does not
+    /// say (a row censored by a gap or an offer); elsewhere it is the label.
+    #[serde(default)]
+    outcome: Option<String>,
+}
+
+impl PlantedDeparture {
+    /// The planted truth for the whole horizon, when there is one.
+    fn planted_outcome(&self) -> Option<bool> {
+        match self.outcome.as_deref().unwrap_or(&self.label) {
+            "returned" => Some(true),
+            "not_returned" => Some(false),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -943,7 +960,13 @@ fn suite_e_every_departure_carries_the_label_planted_for_it() {
          departures fell in blocks the gate held in backoff and logged without an anchor"
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    for label in ["returned", "not_returned", "censored", "treated"] {
+    for label in [
+        "returned",
+        "not_returned",
+        "censored",
+        "observer_gap",
+        "treated",
+    ] {
         assert!(
             matched.get(label).copied().unwrap_or(0) > 20,
             "too few `{label}` rows for the label check to mean anything: {matched:?}"
@@ -1253,6 +1276,236 @@ fn suite_e_corrected_follows_the_inputs_and_down_weights_disputes() {
     assert!(
         after > before,
         "the pattern the misfiled tool hid was not found once the correction flowed through"
+    );
+}
+
+/// The departure cells, which INFORMATIVE's offers treat differently.
+const DEPARTURE_CELLS: [Cell; 3] = [Cell::Communication, Cell::FeedsAndVideo, Cell::WorkAdjacent];
+
+/// Returned over total, as a proportion.
+fn rate((returned, total): (usize, usize)) -> f64 {
+    returned as f64 / total.max(1) as f64
+}
+
+/// INFORMATIVE: the own-return rate is 0.55 after every kind of departure,
+/// but a non-return after a communication departure usually turns into a run
+/// of departures the gate offers on. The ledger censors at the offer, so it
+/// drops non-returns the planted truth counts, mostly in one cell, and its
+/// rate there must read high. This is the bias the module docs disclose,
+/// shown on planted rates. Its size is reported, not asserted beyond "high":
+/// it depends on how often offers follow non-returns, which nothing measures.
+///
+/// The truth is taken over every departure the gate did not act on, the
+/// ledger's own population, from the outcome the generator planted for the
+/// whole horizon. The retired rule, which dropped any row with an offer up to
+/// the horizon's end, is computed beside it: censoring at the offer must read
+/// no higher than it did.
+#[test]
+fn suite_e_informative_offers_after_non_returns_make_the_rate_read_high() {
+    let informative = family("INFORMATIVE");
+    let mut planted: BTreeMap<Cell, (usize, usize)> = BTreeMap::new();
+    let mut ledger_read: BTreeMap<Cell, (usize, usize)> = BTreeMap::new();
+    let mut retired: BTreeMap<Cell, (usize, usize)> = BTreeMap::new();
+    let mut treated: BTreeMap<Cell, usize> = BTreeMap::new();
+    let mut surfaced_higher = 0usize;
+
+    for person in &informative {
+        let ledger = ledger_at(person, last_end(person), LedgerControls::shipped());
+        assert_eq!(
+            ledger.counts.blocks_considered,
+            person.replayed.evidence.len(),
+            "{}: INFORMATIVE fits in one lookback",
+            person.trace.trace_id
+        );
+        surfaced_higher += usize::from(
+            ledger
+                .surfaced()
+                .contains(&(Cell::Communication, CellDirection::Higher)),
+        );
+        let mut person_treated: BTreeMap<Cell, usize> = BTreeMap::new();
+        for (index, (spec, block)) in person
+            .trace
+            .blocks
+            .iter()
+            .zip(&person.replayed.evidence)
+            .enumerate()
+        {
+            let start = person.replayed.started_at[index];
+            let rows: BTreeMap<i64, returns::DepartureRow> =
+                departure_rows(block, SUITE_E_UTC_OFFSET_SECONDS)
+                    .into_iter()
+                    .map(|row| ((row.occurred_at - start).num_seconds(), row))
+                    .collect();
+            for departure in &spec.departures {
+                let row = rows.get(&departure.t).unwrap_or_else(|| {
+                    panic!(
+                        "{} block {index}: planted departure at t={} is missing",
+                        person.trace.trace_id, departure.t
+                    )
+                });
+                let cell = row.context.departure;
+                match row.outcome {
+                    RowOutcome::Resolved {
+                        returned,
+                        decided_before_offer,
+                        ..
+                    } => {
+                        let entry = ledger_read.entry(cell).or_default();
+                        entry.0 += usize::from(returned);
+                        entry.1 += 1;
+                        if !decided_before_offer {
+                            let entry = retired.entry(cell).or_default();
+                            entry.0 += usize::from(returned);
+                            entry.1 += 1;
+                        }
+                    }
+                    RowOutcome::Censored(CensorReason::Treated) => {
+                        *treated.entry(cell).or_default() += 1;
+                        *person_treated.entry(cell).or_default() += 1;
+                    }
+                    RowOutcome::Censored(_) => {}
+                }
+                let acted = matches!(
+                    row.context.verdict,
+                    GateVerdict::Offered
+                        | GateVerdict::SuppressedDnd
+                        | GateVerdict::WithheldDemotion
+                );
+                if let (false, Some(returned)) = (acted, departure.planted_outcome()) {
+                    let entry = planted.entry(cell).or_default();
+                    entry.0 += usize::from(returned);
+                    entry.1 += 1;
+                }
+            }
+        }
+        // The ledger reports the same treated count per cell.
+        for cell in DEPARTURE_CELLS {
+            assert_eq!(
+                ledger.cell(cell).accounting.censored_treated,
+                person_treated.get(&cell).copied().unwrap_or(0),
+                "{}: {}",
+                person.trace.trace_id,
+                cell.id()
+            );
+        }
+    }
+
+    let gap = |cell: Cell| {
+        rate(ledger_read.get(&cell).copied().unwrap_or_default())
+            - rate(planted.get(&cell).copied().unwrap_or_default())
+    };
+    for cell in DEPARTURE_CELLS {
+        let at = |map: &BTreeMap<Cell, (usize, usize)>| map.get(&cell).copied().unwrap_or_default();
+        println!(
+            "suite E INFORMATIVE {}: planted {}/{} = {:.3}; the ledger reads {}/{} = {:.3} \
+             ({:+.3}), with {} censored as treated; the retired exclusion read {}/{} = {:.3}",
+            cell.id(),
+            at(&planted).0,
+            at(&planted).1,
+            rate(at(&planted)),
+            at(&ledger_read).0,
+            at(&ledger_read).1,
+            rate(at(&ledger_read)),
+            gap(cell),
+            treated.get(&cell).copied().unwrap_or(0),
+            at(&retired).0,
+            at(&retired).1,
+            rate(at(&retired)),
+        );
+    }
+    println!(
+        "suite E INFORMATIVE: communication surfaced as higher in {surfaced_higher}/{} traces, \
+         where nothing was planted",
+        informative.len()
+    );
+
+    let communication = Cell::Communication;
+    assert!(
+        gap(communication) > 0.05,
+        "offers after non-returns did not make the communication rate read high: {:+.3}",
+        gap(communication)
+    );
+    for other in [Cell::FeedsAndVideo, Cell::WorkAdjacent] {
+        assert!(
+            gap(communication) > gap(other),
+            "the bias is not larger where the offers are: {:+.3} against {:+.3} in {}",
+            gap(communication),
+            gap(other),
+            other.id()
+        );
+        let count = |cell: Cell| treated.get(&cell).copied().unwrap_or(0);
+        assert!(
+            count(communication) > count(other),
+            "the treated count does not point at the cell the offers follow"
+        );
+    }
+    let retired_rate = rate(retired.get(&communication).copied().unwrap_or_default());
+    let ledger_rate = rate(ledger_read.get(&communication).copied().unwrap_or_default());
+    assert!(
+        retired_rate >= ledger_rate,
+        "censoring at the offer read higher than dropping the row: {ledger_rate:.3} against \
+         {retired_rate:.3}"
+    );
+}
+
+/// GAPS: a pause inside a horizon, or a block that ends in a dwell no row
+/// measures, is censored as `observer_gap` and never scored, whatever the
+/// person did. The label test checks every row; this checks the ledger counts
+/// the same number, that both kinds of gap occur, and that they hid returns
+/// as well as non-returns, so scoring a gap as a failure would be wrong.
+#[test]
+fn suite_e_gaps_are_censored_never_scored() {
+    let gaps = family("GAPS");
+    let mut pauses = 0usize;
+    let mut open_ends = 0usize;
+    let mut hidden: BTreeMap<bool, usize> = BTreeMap::new();
+    for person in &gaps {
+        let ledger = ledger_at(person, last_end(person), LedgerControls::shipped());
+        let planted: Vec<&PlantedDeparture> = person
+            .trace
+            .blocks
+            .iter()
+            .flat_map(|spec| &spec.departures)
+            .filter(|departure| departure.label == "observer_gap")
+            .collect();
+        assert_eq!(
+            ledger.counts.censored_observer_gap,
+            planted.len(),
+            "{}",
+            person.trace.trace_id
+        );
+        for departure in planted {
+            let outcome = departure
+                .planted_outcome()
+                .expect("a planted gap records what it hid");
+            *hidden.entry(outcome).or_default() += 1;
+        }
+        pauses += person
+            .trace
+            .blocks
+            .iter()
+            .map(|spec| spec.pauses.len())
+            .sum::<usize>();
+        open_ends += person
+            .trace
+            .blocks
+            .iter()
+            .filter(|spec| spec.end_offset_seconds.is_some())
+            .count();
+    }
+    println!(
+        "suite E GAPS: {pauses} pauses and {open_ends} unmeasured final dwells censored \
+         {} returns and {} non-returns as observer_gap",
+        hidden.get(&true).copied().unwrap_or(0),
+        hidden.get(&false).copied().unwrap_or(0)
+    );
+    assert!(
+        pauses > 0 && open_ends > 0,
+        "both kinds of gap are exercised"
+    );
+    assert!(
+        hidden.get(&true).copied().unwrap_or(0) > 0 && hidden.get(&false).copied().unwrap_or(0) > 0,
+        "the gaps hid only one kind of outcome: {hidden:?}"
     );
 }
 

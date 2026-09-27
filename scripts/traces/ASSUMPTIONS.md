@@ -150,6 +150,18 @@ Additional assumptions, none of them measured:
   COMMUNICATION is a work tool with a 0.85 rate (chat is 0.20, the rest 0.70)
   and 60% of pre-correction blocks answer an offer "Wrong category"; after it
   the tool is filed as REFERENCE.
+- INFORMATIVE: 0.55 after every kind of departure, 6 blocks a week for 4
+  weeks. A non-return turns into a run of three departures, which the shipped
+  gate offers on, 90% of the time after a communication departure and 10%
+  after anything else; the block's departures stop there. Every departure in
+  a run is a non-return over its whole horizon. The first time away is 60-100
+  s in half of the runs, so the label is still open at the offer, and 320-400
+  s in the other half, so the time before the offer decides it. Nothing is
+  known about how often real offers follow real non-returns; this family
+  exists so the ledger's disclosed bias can be seen, not sized.
+- GAPS: 0.55 everywhere, 6 blocks in one week. Half the blocks pause for
+  120-300 s inside the first departure's horizon; half end with the dwell they
+  ended in still open, which no row measures once the block closes.
 
 ## What these fixtures cannot tell you
 

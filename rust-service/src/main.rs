@@ -59,8 +59,15 @@ async fn main() {
     else {
         return;
     };
+    // Plain text, never terminal colour: stdout and stderr are a pipe the Mac
+    // app reads, and it lifts `error_code=` out of each chunk to decide
+    // whether the chunk is kept in the system log. tracing-subscriber colours
+    // its output by default, which wraps the field name and the `=` in escape
+    // codes, so no chunk ever matched and every helper failure was logged at
+    // debug level, where it is not kept.
     if tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_ansi(false)
         .try_init()
         .is_err()
     {

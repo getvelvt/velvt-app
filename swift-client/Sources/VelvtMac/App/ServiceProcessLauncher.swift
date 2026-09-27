@@ -304,10 +304,14 @@ public final class ServiceProcessLauncher {
     /// hands over reads "exited status=0" and nothing more. The token shape is
     /// enforced here rather than trusted, so a value that is not a bare token
     /// is dropped instead of logged.
+    ///
+    /// Terminal escape sequences are removed first. A helper built before its
+    /// logging was made plain text colours each field name and `=`, which would
+    /// otherwise hide every `error_code=` from this match.
     nonisolated static func errorCodes(inPipeChunk chunk: String) -> [String] {
         let tokenCharacters = Set("abcdefghijklmnopqrstuvwxyz0123456789_")
         var codes: [String] = []
-        var remainder = Substring(chunk)
+        var remainder = Substring(strippingTerminalEscapes(chunk))
         while let marker = remainder.range(of: "error_code=") {
             var value = remainder[marker.upperBound...]
             if value.first == "\"" {
@@ -320,6 +324,23 @@ public final class ServiceProcessLauncher {
             remainder = value[token.endIndex...]
         }
         return codes
+    }
+
+    /// Removes ANSI control sequences (`ESC [` parameters, then one final
+    /// letter), such as the colour codes a terminal-oriented logger writes.
+    nonisolated static func strippingTerminalEscapes(_ text: String) -> String {
+        guard text.contains("\u{1B}") else { return text }
+        var output = ""
+        var characters = text.makeIterator()
+        while let character = characters.next() {
+            guard character == "\u{1B}" else {
+                output.append(character)
+                continue
+            }
+            guard characters.next() == "[" else { continue }
+            while let next = characters.next(), !next.isLetter {}
+        }
+        return output
     }
 
     public func stop() {

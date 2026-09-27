@@ -1620,8 +1620,8 @@ fn is_confident_evidence(observation: &WorkBlockObservation) -> bool {
 /// list (`persistence::sqlite`, `SITE_VISIT_NEEDS_A_CATEGORY`) asks about the
 /// browser time this rejects, except a confident SYSTEM visit, which is
 /// categorized though never evidence, and its test compares the two. The
-/// shadow return ledger (`behavior/returns.rs`) reads `q_t` through it, as the
-/// feature contract requires. Neither reader can change what the gate decides.
+/// shadow ledger in `src/behavior` reads `q_t` through it, as the feature
+/// contract requires. Neither reader can change what the gate decides.
 pub fn is_confident(
     category: &str,
     status: ClassificationStatus,

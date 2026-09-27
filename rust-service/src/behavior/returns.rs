@@ -11,14 +11,41 @@
 //! computed the same way (`traction-summary.md`, 2026-08-21):
 //!
 //! - **returned**: at least [`SUSTAINED_ANCHOR_SECONDS`] of the next
-//!   [`HORIZON_SECONDS`] were spent in confident observations of the anchor
-//!   *recorded on the decision row*. The anchor is never recomputed.
-//! - **censored**, never imputed: the block ended inside the horizon, or the
-//!   observation ledger does not cover all of it (a pause, a sleep, a service
-//!   restart). Censored rows leave both numerator and denominator.
-//! - **treated**, and excluded: an offer exists in the block, delivered or
-//!   held, at or before the end of the horizon. What happened after an offer
-//!   is not what happens on one's own.
+//!   [`RETURN_HORIZON_SECONDS`] were spent in confident observations of the
+//!   anchor *recorded on the decision row*. The anchor is never recomputed.
+//! - **censored**, never imputed. Censored rows leave both numerator and
+//!   denominator, and every reason is counted ([`CensorReason`]):
+//!   - `block_ended`: the block ended inside the horizon;
+//!   - `observer_gap`: the observation ledger does not cover all of it (a
+//!     pause, a sleep, a service restart, or the dwell the block ended in,
+//!     which no row measures);
+//!   - `treated`: an offer, delivered or held, fell at or before the
+//!     departure, or inside the horizon while the time before it still left
+//!     the label open. What happens after an offer is not what happens on
+//!     one's own, so the row is followed only up to the offer. If the time
+//!     before the offer already decides the label (600 anchor seconds, or so
+//!     few that the rest of the horizon could not make them up), the row is
+//!     resolved on that time alone, because nothing after it could change the
+//!     label.
+//!
+//! # The treated censoring is informative: expect the rates to read high
+//!
+//! v5 offers only on a departure that makes three inside ten minutes. So an
+//! offer inside a departure's horizon means the person left again before the
+//! fifteen minutes were up, as part of a run of departures, and a horizon
+//! with a run in it usually holds less anchor time than one without. The rows
+//! the offer censors are therefore most plausibly rows that were heading for
+//! "did not return", and dropping them makes the rates here read **higher**
+//! than the person's own rate, towards "came back on their own". The size
+//! differs per cell, because offers follow some kinds of departure more than
+//! others. The direction is not guaranteed: someone who darts away and
+//! straight back three times may still have come back. Neither the size nor,
+//! per cell, the sign can be estimated from v5 rows.
+//! [`CellAccounting::censored_treated`] reports, per cell, how many
+//! departures an offer censored, so a reader can see where the bias could be
+//! large, and suite E's INFORMATIVE family shows it on planted rates.
+//! [`ReturnLedger::would_withhold`] inherits it: a rate that reads high makes
+//! a withhold rule fire more often than the person's own rate would.
 //!
 //! Resolved rows are tallied per person into a small frozen set of context
 //! cells ([`CELLS`]): which kind of category the departure went to, which third
@@ -34,9 +61,9 @@
 //! minutes. Every counted row comes from there, and [`ReturnLedger`] records
 //! the largest `switch_count` it counted so that this is checked on real rows
 //! rather than asserted. The held rows (Focus/DND, demotion) are the only v5
-//! points with an eligible departure and no delivery; they are excluded too,
-//! because the very states that held them also shape what the person does
-//! next.
+//! points with an eligible departure and no delivery; they are censored as
+//! `treated` too, because the very states that held them also shape what the
+//! person does next.
 //!
 //! So the ledger describes how often this person came back to their work on
 //! their own after a departure the gate did not act on. It says nothing about
@@ -44,11 +71,11 @@
 //! where v5 offers. [`ReturnLedger::would_withhold`] is a candidate rule
 //! declared before any data exists, for offline evaluation only. At an offered
 //! point it is an extrapolation outside every counted row, and it reports
-//! itself as one ([`Support::Extrapolated`]). Whether withholding helps can be
-//! estimated only from randomized rows: the declared v6 design (offer with
-//! p = 0.7, silence with p = 0.3, drawn only when at least 900 s remain),
-//! which is drafted and not enabled. Until those rows exist, nothing here may
-//! reach the gate, delivery, IPC or any copy.
+//! itself as one ([`WithholdSupport::Extrapolated`]). Whether withholding
+//! helps can be estimated only from randomized rows: the declared v6 design
+//! (offer with p = 0.7, silence with p = 0.3, drawn only when at least 900 s
+//! remain), which is drafted and not enabled. Until those rows exist, nothing
+//! here may reach the gate, delivery, IPC or any copy.
 //!
 //! # Determinism, and what "as of" means
 //!
@@ -56,8 +83,23 @@
 //! randomness, no stored state. Blocks are read only once closed, only if they
 //! closed at or before `as_of`, and only if they closed inside the
 //! [`LOOKBACK_DAYS`] before it; rows are visited in `(ended_at, block_id)`
-//! order. So the same rows give bit-identical output, and a block that closes
-//! after `as_of` cannot change an answer given at `as_of`.
+//! order. A dispute counts only if it was recorded at or before `as_of`: a
+//! "Wrong category" reply by its `outcome_at`, a correction by its
+//! `corrected_at`. Both can be written after the block closed. So the same
+//! rows give bit-identical output, and nothing recorded after `as_of` can
+//! change an answer given at `as_of`.
+//!
+//! # Part of the day: one offset per block, when anyone knows it
+//!
+//! A block is read at its own [`BlockEvidence::utc_offset_seconds`] when the
+//! caller has one, and at [`LedgerConfig::utc_offset_seconds`] otherwise. No
+//! table stores a per-block offset today: `focus_observer_state` keeps only
+//! the latest one. So a caller reading today's tables reads every block at
+//! the current offset, and across a daylight-saving change or travel inside
+//! the lookback, departures within the offset difference of 05:00, 12:00 or
+//! 17:00 are filed in the neighbouring part of the day. Storing the offset per
+//! block is a migration of its own. Until one exists, the hour cells are right
+//! only for a person whose offset did not change in the 28 days read.
 //!
 //! # Privacy
 //!
@@ -68,6 +110,11 @@
 //! every input it has. Its outputs are broad categories, block thirds, parts
 //! of the day, counts and rates. No application, site, title or intention
 //! text is read.
+//!
+//! `work_block_category_correction` has no production writer. Only the
+//! persistence layer's own method writes it, and only tests call that method.
+//! On a Mac the input is always empty, so a "Wrong category" reply is the only
+//! dispute the ledger can see today.
 
 // No caller in the shipped path, by design (module docs). The binary crate
 // has no notion of a symbol public for someone else to use, so every item
@@ -78,8 +125,8 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Timelike, Utc};
 use velvt_service::persistence::{
-    GateVerdict, InterventionDecision, WorkBlockIntervention, WorkBlockInterventionOutcome,
-    WorkBlockObservation,
+    GateVerdict, InterventionDecision, WorkBlockCategoryCorrection, WorkBlockIntervention,
+    WorkBlockInterventionOutcome, WorkBlockObservation,
 };
 use velvt_service::work_block::{is_confident, DRIFT_POLICY_VERSION};
 
@@ -93,7 +140,7 @@ use super::features::FEATURE_CONTRACT_VERSION;
 pub const RETURN_LEDGER_MODEL_VERSION: u32 = 1;
 
 /// The horizon of the pre-registered primary outcome.
-pub const HORIZON_SECONDS: i64 = 900;
+pub const RETURN_HORIZON_SECONDS: i64 = 900;
 
 /// Anchor seconds inside the horizon that make a departure a return.
 pub const SUSTAINED_ANCHOR_SECONDS: i64 = 600;
@@ -102,7 +149,7 @@ pub const SUSTAINED_ANCHOR_SECONDS: i64 = 600;
 // proximal outcome stored on the decision row (`anchor_seen_within_600s`),
 // which this ledger never reads: that column has no confidence filter and
 // resolves a horizon past the block end to "did not return".
-const _: () = assert!(HORIZON_SECONDS > super::features::PROXIMAL_OUTCOME_HORIZON_SECONDS);
+const _: () = assert!(RETURN_HORIZON_SECONDS > super::features::PROXIMAL_OUTCOME_HORIZON_SECONDS);
 
 /// Only blocks that closed inside this many days before `as_of` are read. It
 /// bounds how stale an answer can be after a person's routine changes; it adds
@@ -153,7 +200,7 @@ pub const DISPUTED_BLOCK_WEIGHT: f64 = 0.5;
 pub const FAMILY_ALPHA: f64 = 0.20;
 
 /// One-sided level at which the held-out window must repeat the direction.
-pub const CONFIRMATION_ALPHA: f64 = 0.10;
+pub const HELD_OUT_ALPHA: f64 = 0.10;
 
 /// The later share of contributing blocks held out for confirmation, as a
 /// fraction `numerator / denominator` of blocks, rounded down. The two windows
@@ -175,7 +222,7 @@ pub const WITHHOLD_LOWER_BOUND: f64 = 0.60;
 
 /// The three things a cell can describe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Dimension {
+pub enum CellDimension {
     /// Which kind of category the departure went to.
     Departure,
     /// Which third of the declared block the departure happened in.
@@ -235,11 +282,13 @@ impl Cell {
         }
     }
 
-    pub fn dimension(self) -> Dimension {
+    pub fn dimension(self) -> CellDimension {
         match self {
-            Self::Communication | Self::FeedsAndVideo | Self::WorkAdjacent => Dimension::Departure,
-            Self::FirstThird | Self::MiddleThird | Self::FinalThird => Dimension::Elapsed,
-            Self::Morning | Self::Afternoon | Self::EveningAndNight => Dimension::Hour,
+            Self::Communication | Self::FeedsAndVideo | Self::WorkAdjacent => {
+                CellDimension::Departure
+            }
+            Self::FirstThird | Self::MiddleThird | Self::FinalThird => CellDimension::Elapsed,
+            Self::Morning | Self::Afternoon | Self::EveningAndNight => CellDimension::Hour,
         }
     }
 }
@@ -302,16 +351,27 @@ pub struct BlockEvidence {
     pub decisions: Vec<InterventionDecision>,
     /// `work_block_intervention`: the one offer, delivered or held, if any.
     pub intervention: Option<WorkBlockIntervention>,
-    /// Rows in `work_block_category_correction` for the block.
-    pub category_corrections: usize,
+    /// `work_block_category_correction` for the block. Nothing in the shipped
+    /// path writes that table today (module docs), so on a Mac this is empty.
+    pub category_corrections: Vec<WorkBlockCategoryCorrection>,
+    /// The UTC offset in force while the block ran, if the caller knows it.
+    /// No table stores one today, so a caller reading today's tables passes
+    /// `None` and the block is read at [`LedgerConfig::utc_offset_seconds`].
+    pub utc_offset_seconds: Option<i32>,
 }
 
 impl BlockEvidence {
-    /// The person said the categories in this block were wrong.
-    pub fn disputed(&self) -> bool {
-        self.category_corrections > 0
+    /// The person had said, by `as_of`, that the categories in this block were
+    /// wrong: a "Wrong category" reply or a block-scoped correction recorded
+    /// at or before it. A reply with no time on it cannot be placed before
+    /// `as_of` and does not count; the shipped path always records one.
+    pub fn disputed_as_of(&self, as_of: DateTime<Utc>) -> bool {
+        self.category_corrections
+            .iter()
+            .any(|correction| correction.corrected_at <= as_of)
             || self.intervention.as_ref().is_some_and(|offer| {
                 offer.outcome == WorkBlockInterventionOutcome::WrongClassification
+                    && offer.outcome_at.is_some_and(|replied| replied <= as_of)
             })
     }
 }
@@ -382,14 +442,19 @@ fn confident(observation: &WorkBlockObservation) -> bool {
 // The label
 // ---------------------------------------------------------------------------
 
-/// Why a horizon could not be scored. Closed set, per the pre-registered
-/// censoring rule.
+/// Why a horizon could not be scored. Closed set: the first two are the
+/// pre-registered censoring rule's; `Treated` is this ledger's own, because it
+/// counts departures the gate did not act on and an offer is the gate acting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CensorReason {
     /// The block ended before the horizon elapsed.
     BlockEnded,
     /// Some of the horizon is covered by no observation row.
     ObserverGap,
+    /// An offer, delivered or held, fell at or before the departure, or inside
+    /// the horizon before the time preceding it decided the label. Informative:
+    /// see the module docs for the direction of the bias it leaves.
+    Treated,
 }
 
 impl CensorReason {
@@ -397,26 +462,41 @@ impl CensorReason {
         match self {
             Self::BlockEnded => "block_ended",
             Self::ObserverGap => "observer_gap",
+            Self::Treated => "treated",
         }
     }
 }
 
-/// Anchor seconds in the horizon after `at`, or why the horizon is censored.
+/// What became of the horizon after a departure at `at` from `anchor`. The
+/// core of the label function; the checks run in this order:
 ///
-/// Only confident observations of `anchor` count towards the anchor. Every
-/// observation row counts towards coverage, confident or not: an ambiguous
-/// minute was still observed.
-pub fn anchor_seconds_in_horizon(
+/// 1. The horizon runs past the block's end: censored, `block_ended`.
+/// 2. Some of it is covered by no observation row: censored, `observer_gap`.
+///    Every row counts towards coverage, confident or not: an ambiguous
+///    minute was still observed.
+/// 3. An offer, delivered or held, at or before `at`: censored, `treated`.
+///    An offer inside the horizon: the row is followed up to the offer. At
+///    least [`SUSTAINED_ANCHOR_SECONDS`] of anchor before it is a return; so
+///    little that the rest of the horizon could not make up the difference is
+///    not a return; anything between is censored, `treated`. The horizon is
+///    `[at, at + 900 s)`, so an offer at its very end does not touch it.
+/// 4. Otherwise the whole horizon is scored. Only confident observations of
+///    `anchor` count towards the anchor.
+///
+/// Checks 1 and 2 come first so that a row decided before an offer is exactly
+/// the row that would have been scored had the offer never come.
+pub fn horizon_outcome(
     anchor: &str,
     at: DateTime<Utc>,
     block_ended_at: DateTime<Utc>,
+    offered_at: Option<DateTime<Utc>>,
     observations: &[WorkBlockObservation],
-) -> Result<i64, CensorReason> {
-    let horizon_end = at + Duration::seconds(HORIZON_SECONDS);
+) -> RowOutcome {
+    let horizon_end = at + Duration::seconds(RETURN_HORIZON_SECONDS);
     if horizon_end > block_ended_at {
-        return Err(CensorReason::BlockEnded);
+        return RowOutcome::Censored(CensorReason::BlockEnded);
     }
-    let spans = |keep: &dyn Fn(&WorkBlockObservation) -> bool| {
+    let spans = |keep: &dyn Fn(&WorkBlockObservation) -> bool, until: DateTime<Utc>| {
         covered_seconds(
             observations
                 .iter()
@@ -427,15 +507,45 @@ pub fn anchor_seconds_in_horizon(
                         .map(|ended_at| (observation.occurred_at, ended_at))
                 }),
             at,
-            horizon_end,
+            until,
         )
     };
-    if spans(&|_| true) < HORIZON_SECONDS {
-        return Err(CensorReason::ObserverGap);
-    }
-    Ok(spans(&|observation| {
+    let is_anchor = |observation: &WorkBlockObservation| {
         confident(observation) && observation.category.eq_ignore_ascii_case(anchor)
-    }))
+    };
+    if spans(&|_| true, horizon_end) < RETURN_HORIZON_SECONDS {
+        return RowOutcome::Censored(CensorReason::ObserverGap);
+    }
+    match offered_at {
+        Some(offered_at) if offered_at <= at => RowOutcome::Censored(CensorReason::Treated),
+        Some(offered_at) if offered_at < horizon_end => {
+            let before = spans(&is_anchor, offered_at);
+            let rest = (horizon_end - offered_at).num_seconds();
+            if before >= SUSTAINED_ANCHOR_SECONDS {
+                RowOutcome::Resolved {
+                    returned: true,
+                    anchor_seconds: before,
+                    decided_before_offer: true,
+                }
+            } else if before + rest < SUSTAINED_ANCHOR_SECONDS {
+                RowOutcome::Resolved {
+                    returned: false,
+                    anchor_seconds: before,
+                    decided_before_offer: true,
+                }
+            } else {
+                RowOutcome::Censored(CensorReason::Treated)
+            }
+        }
+        _ => {
+            let anchor_seconds = spans(&is_anchor, horizon_end);
+            RowOutcome::Resolved {
+                returned: anchor_seconds >= SUSTAINED_ANCHOR_SECONDS,
+                anchor_seconds,
+                decided_before_offer: false,
+            }
+        }
+    }
 }
 
 /// Seconds of `[from, until)` covered by the union of `spans`.
@@ -466,12 +576,14 @@ fn covered_seconds(
 pub enum RowOutcome {
     Resolved {
         returned: bool,
+        /// Anchor seconds in the horizon; for a row decided before an offer,
+        /// only those before the offer.
         anchor_seconds: i64,
+        /// An offer fell inside the horizon and the time before it decided
+        /// the label.
+        decided_before_offer: bool,
     },
     Censored(CensorReason),
-    /// An offer, delivered or held, exists in the block at or before the end
-    /// of the horizon. Excluded from every count but its own.
-    Treated,
 }
 
 /// One departure and what became of it.
@@ -486,39 +598,35 @@ pub struct DepartureRow {
 /// Every departure in a closed block, with its outcome. This is the label
 /// function; the ledger and any later export must agree with it.
 ///
+/// The block is read at its own UTC offset when it carries one, and at
+/// `fallback_utc_offset_seconds` otherwise (module docs).
+///
 /// A block that has not closed returns nothing: its last horizons cannot be
 /// scored yet, and scoring them as censored would change once it closes.
-pub fn departure_rows(block: &BlockEvidence, utc_offset_seconds: i32) -> Vec<DepartureRow> {
+pub fn departure_rows(
+    block: &BlockEvidence,
+    fallback_utc_offset_seconds: i32,
+) -> Vec<DepartureRow> {
     let Some(ended_at) = block.ended_at else {
         return Vec::new();
     };
+    let utc_offset_seconds = block
+        .utc_offset_seconds
+        .unwrap_or(fallback_utc_offset_seconds);
+    let offered_at = block.intervention.as_ref().map(|offer| offer.offered_at);
     block
         .decisions
         .iter()
         .filter_map(|decision| {
             let context = context_of(decision, &block.observations, utc_offset_seconds)?;
             let anchor = decision.anchor_category.as_deref()?;
-            let horizon_end = decision.occurred_at + Duration::seconds(HORIZON_SECONDS);
-            let treated = block
-                .intervention
-                .as_ref()
-                .is_some_and(|offer| offer.offered_at <= horizon_end);
-            let outcome = if treated {
-                RowOutcome::Treated
-            } else {
-                match anchor_seconds_in_horizon(
-                    anchor,
-                    decision.occurred_at,
-                    ended_at,
-                    &block.observations,
-                ) {
-                    Ok(anchor_seconds) => RowOutcome::Resolved {
-                        returned: anchor_seconds >= SUSTAINED_ANCHOR_SECONDS,
-                        anchor_seconds,
-                    },
-                    Err(reason) => RowOutcome::Censored(reason),
-                }
-            };
+            let outcome = horizon_outcome(
+                anchor,
+                decision.occurred_at,
+                ended_at,
+                offered_at,
+                &block.observations,
+            );
             Some(DepartureRow {
                 occurred_at: decision.occurred_at,
                 policy_version: decision.policy_version,
@@ -533,11 +641,11 @@ pub fn departure_rows(block: &BlockEvidence, utc_offset_seconds: i32) -> Vec<Dep
 // Configuration
 // ---------------------------------------------------------------------------
 
-/// The ledger's error controls. [`Controls::shipped`] is the only configuration
+/// The ledger's error controls. [`LedgerControls::shipped`] is the only configuration
 /// any analysis may use; the others exist so that a test can show each control
 /// is load-bearing, which is the inversion discipline `antecedents.rs` follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Controls {
+pub struct LedgerControls {
     /// Weight rows from one block by the Kish design effect.
     pub clustering: bool,
     /// Bonferroni over the whole cell family.
@@ -546,7 +654,7 @@ pub struct Controls {
     pub confirmation: bool,
 }
 
-impl Controls {
+impl LedgerControls {
     pub fn shipped() -> Self {
         Self {
             clustering: true,
@@ -569,12 +677,14 @@ impl Controls {
 pub struct LedgerConfig {
     /// Nothing that closed after this instant is read.
     pub as_of: DateTime<Utc>,
-    /// `focus_observer_state.utc_offset_seconds`, for the part of the day.
+    /// The offset a block is read at when it carries none of its own:
+    /// `focus_observer_state.utc_offset_seconds`, the latest one known. The
+    /// module docs say what that misfiles.
     pub utc_offset_seconds: i32,
     /// Only rows logged under this drift policy are counted. Versions are
     /// never pooled.
     pub policy_version: u32,
-    pub controls: Controls,
+    pub controls: LedgerControls,
 }
 
 impl LedgerConfig {
@@ -583,7 +693,7 @@ impl LedgerConfig {
             as_of,
             utc_offset_seconds,
             policy_version: DRIFT_POLICY_VERSION,
-            controls: Controls::shipped(),
+            controls: LedgerControls::shipped(),
         }
     }
 }
@@ -594,7 +704,7 @@ impl LedgerConfig {
 
 /// Why the whole ledger declined to say anything beyond its raw counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Abstention {
+pub enum LedgerAbstention {
     TooFewBlocks { blocks: usize, required: usize },
     TooFewResolvedRows { rows: usize, required: usize },
 }
@@ -610,13 +720,31 @@ pub struct LedgerCounts {
     pub disputed_blocks: usize,
     /// Departures under the configured policy version, whatever became of them.
     pub departures: usize,
-    pub excluded_treated: usize,
+    /// Censored by an offer. Informative censoring (module docs).
+    pub censored_treated: usize,
     pub censored_block_ended: usize,
     pub censored_observer_gap: usize,
     pub resolved: usize,
     pub returned: usize,
+    /// Resolved rows whose label the time before an offer decided. Included in
+    /// `resolved`.
+    pub resolved_before_offer: usize,
     /// Departures logged under another drift policy version, not counted.
     pub other_policy_version: usize,
+}
+
+/// How every departure in one cell was accounted for, in raw counts. The
+/// treated count is the one to read beside the cell's rate: it is how many of
+/// the cell's departures an offer censored, which is where the rate's upward
+/// bias comes from (module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CellAccounting {
+    pub departures: usize,
+    pub censored_treated: usize,
+    pub censored_block_ended: usize,
+    pub censored_observer_gap: usize,
+    /// Resolved on the time before an offer. Included in the cell's estimate.
+    pub resolved_before_offer: usize,
 }
 
 /// A rate with its raw counts. The counts are what a person could be shown;
@@ -644,7 +772,7 @@ pub struct ContrastStat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
+pub enum CellDirection {
     /// Returns are rarer after departures in this cell than in the rest.
     Lower,
     /// Returns are more common.
@@ -668,7 +796,7 @@ pub enum CellStatus {
     /// The whole ledger abstained.
     Abstained,
     NotSurfaced(NotSurfaced),
-    Surfaced(Direction),
+    Surfaced(CellDirection),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -676,6 +804,8 @@ pub struct CellReport {
     pub cell: Cell,
     /// Over every resolved row in the lookback.
     pub estimate: RateEstimate,
+    /// What became of every departure in the cell, resolved or not.
+    pub accounting: CellAccounting,
     pub discovery: Option<ContrastStat>,
     pub confirmation: Option<ContrastStat>,
     pub status: CellStatus,
@@ -684,7 +814,7 @@ pub struct CellReport {
 /// Whether the declared withhold candidate's rows cover the point it is asked
 /// about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Support {
+pub enum WithholdSupport {
     /// The point is the kind of departure the ledger counted: one the gate did
     /// not act on, at a switch count it has counted.
     WithinCountedRows,
@@ -703,7 +833,7 @@ pub struct WithholdCandidate {
     /// The smallest lower interval end across the point's three cells, when
     /// every one of them clears the support floor.
     pub min_lower: Option<f64>,
-    pub support: Support,
+    pub support: WithholdSupport,
     pub abstained: bool,
 }
 
@@ -714,12 +844,12 @@ pub struct ReturnLedger {
     pub feature_contract_version: u32,
     pub policy_version: u32,
     pub as_of: DateTime<Utc>,
-    pub controls: Controls,
+    pub controls: LedgerControls,
     pub counts: LedgerCounts,
     pub baseline: RateEstimate,
     /// One report per cell, in [`CELLS`] order.
     pub cells: Vec<CellReport>,
-    pub abstention: Option<Abstention>,
+    pub abstention: Option<LedgerAbstention>,
     /// The largest `switch_count` among counted rows. Under v5 it is below the
     /// gate's switch threshold by construction, and the positivity argument in
     /// the module docs rests on that; it is recorded so it can be checked.
@@ -896,8 +1026,9 @@ impl ReturnLedger {
             ..LedgerCounts::default()
         };
         let mut rows: Vec<ResolvedRow> = Vec::new();
+        let mut accounting: BTreeMap<Cell, CellAccounting> = BTreeMap::new();
         for (position, (_, block)) in selected.iter().enumerate() {
-            let weight = if block.disputed() {
+            let weight = if block.disputed_as_of(config.as_of) {
                 counts.disputed_blocks += 1;
                 DISPUTED_BLOCK_WEIGHT
             } else {
@@ -909,17 +1040,37 @@ impl ReturnLedger {
                     continue;
                 }
                 counts.departures += 1;
+                let cells = row.context.cells();
+                let mut tally = |field: fn(&mut CellAccounting) -> &mut usize| {
+                    for cell in cells {
+                        *field(accounting.entry(cell).or_default()) += 1;
+                    }
+                };
+                tally(|cell| &mut cell.departures);
                 match row.outcome {
-                    RowOutcome::Treated => counts.excluded_treated += 1,
+                    RowOutcome::Censored(CensorReason::Treated) => {
+                        counts.censored_treated += 1;
+                        tally(|cell| &mut cell.censored_treated);
+                    }
                     RowOutcome::Censored(CensorReason::BlockEnded) => {
                         counts.censored_block_ended += 1;
+                        tally(|cell| &mut cell.censored_block_ended);
                     }
                     RowOutcome::Censored(CensorReason::ObserverGap) => {
                         counts.censored_observer_gap += 1;
+                        tally(|cell| &mut cell.censored_observer_gap);
                     }
-                    RowOutcome::Resolved { returned, .. } => {
+                    RowOutcome::Resolved {
+                        returned,
+                        decided_before_offer,
+                        ..
+                    } => {
                         counts.resolved += 1;
                         counts.returned += usize::from(returned);
+                        if decided_before_offer {
+                            counts.resolved_before_offer += 1;
+                            tally(|cell| &mut cell.resolved_before_offer);
+                        }
                         rows.push(ResolvedRow {
                             block: position,
                             weight,
@@ -934,12 +1085,12 @@ impl ReturnLedger {
         let all = Tally::of(rows.iter());
         counts.blocks_with_resolved_rows = all.block_count();
         let abstention = if all.block_count() < MIN_BLOCKS {
-            Some(Abstention::TooFewBlocks {
+            Some(LedgerAbstention::TooFewBlocks {
                 blocks: all.block_count(),
                 required: MIN_BLOCKS,
             })
         } else if all.rows() < MIN_RESOLVED_ROWS {
-            Some(Abstention::TooFewResolvedRows {
+            Some(LedgerAbstention::TooFewResolvedRows {
                 rows: all.rows(),
                 required: MIN_RESOLVED_ROWS,
             })
@@ -952,7 +1103,7 @@ impl ReturnLedger {
         } else {
             normal_upper_quantile(FAMILY_ALPHA / 2.0)
         };
-        let confirmation_threshold = normal_upper_quantile(CONFIRMATION_ALPHA);
+        let confirmation_threshold = normal_upper_quantile(HELD_OUT_ALPHA);
 
         // Discovery on the earlier blocks, confirmation on the later ones,
         // never sharing a block. Without the confirmation control the naive
@@ -1011,9 +1162,9 @@ impl ReturnLedger {
                         }
                         Some(found) => {
                             let direction = if found.difference < 0.0 {
-                                Direction::Lower
+                                CellDirection::Lower
                             } else {
-                                Direction::Higher
+                                CellDirection::Higher
                             };
                             if !controls.confirmation {
                                 CellStatus::Surfaced(direction)
@@ -1036,6 +1187,7 @@ impl ReturnLedger {
                 CellReport {
                     cell,
                     estimate,
+                    accounting: accounting.get(&cell).copied().unwrap_or_default(),
                     discovery: discovered,
                     confirmation: confirmed,
                     status,
@@ -1068,7 +1220,7 @@ impl ReturnLedger {
 
     /// Cells whose difference from the rest of their dimension was found in
     /// the earlier blocks and repeated in the later ones.
-    pub fn surfaced(&self) -> Vec<(Cell, Direction)> {
+    pub fn surfaced(&self) -> Vec<(Cell, CellDirection)> {
         self.cells
             .iter()
             .filter_map(|report| match report.status {
@@ -1085,7 +1237,7 @@ impl ReturnLedger {
     /// three cells clears the support floor, and in each of them the lower
     /// end of the reported interval is at least [`WITHHOLD_LOWER_BOUND`]. It
     /// can only ever describe removing a nudge, never adding one. At a point
-    /// where the gate offered or held, [`Support::Extrapolated`] says the
+    /// where the gate offered or held, [`WithholdSupport::Extrapolated`] says the
     /// counted rows do not cover it.
     pub fn would_withhold(&self, context: &DecisionContext) -> WithholdCandidate {
         let counted_switches = self.max_switch_count_counted;
@@ -1094,9 +1246,9 @@ impl ReturnLedger {
             GateVerdict::Offered | GateVerdict::SuppressedDnd | GateVerdict::WithheldDemotion
         );
         let support = if acted || counted_switches.is_none_or(|most| context.switch_count > most) {
-            Support::Extrapolated
+            WithholdSupport::Extrapolated
         } else {
-            Support::WithinCountedRows
+            WithholdSupport::WithinCountedRows
         };
         let lowers: Option<Vec<f64>> = context
             .cells()
@@ -1316,7 +1468,30 @@ mod tests {
                 ),
             ],
             intervention: None,
-            category_corrections: 0,
+            category_corrections: Vec::new(),
+            utc_offset_seconds: None,
+        }
+    }
+
+    fn offer_at(t: i64, outcome: WorkBlockInterventionOutcome) -> WorkBlockIntervention {
+        WorkBlockIntervention {
+            offered_at: at(t),
+            action_id: "protect_next_10".to_owned(),
+            anchor_category: "FOCUS_WORK".to_owned(),
+            switch_count: 3,
+            window_seconds: 600,
+            outcome,
+            outcome_at: None,
+            salience: velvt_shared_types::InterventionSalience::Normal,
+            card_seen_at: None,
+        }
+    }
+
+    fn resolved(returned: bool, anchor_seconds: i64) -> RowOutcome {
+        RowOutcome::Resolved {
+            returned,
+            anchor_seconds,
+            decided_before_offer: false,
         }
     }
 
@@ -1324,34 +1499,16 @@ mod tests {
     fn a_short_departure_is_a_return_and_a_long_one_is_not() {
         let rows = departure_rows(&one_departure("COMMUNICATION", 120, 3_000), 0);
         assert_eq!(rows.len(), 1, "only the departure is a row: {rows:?}");
-        assert_eq!(
-            rows[0].outcome,
-            RowOutcome::Resolved {
-                returned: true,
-                anchor_seconds: 780
-            }
-        );
+        assert_eq!(rows[0].outcome, resolved(true, 780));
         assert_eq!(rows[0].context.departure, Cell::Communication);
 
         let rows = departure_rows(&one_departure("SOCIAL_FEED", 400, 3_000), 0);
-        assert_eq!(
-            rows[0].outcome,
-            RowOutcome::Resolved {
-                returned: false,
-                anchor_seconds: 500
-            }
-        );
+        assert_eq!(rows[0].outcome, resolved(false, 500));
         assert_eq!(rows[0].context.departure, Cell::FeedsAndVideo);
 
         // Exactly the threshold is a return: at least 600 of 900.
         let rows = departure_rows(&one_departure("REFERENCE", 300, 3_000), 0);
-        assert_eq!(
-            rows[0].outcome,
-            RowOutcome::Resolved {
-                returned: true,
-                anchor_seconds: 600
-            }
-        );
+        assert_eq!(rows[0].outcome, resolved(true, 600));
     }
 
     #[test]
@@ -1394,35 +1551,106 @@ mod tests {
             .push(observation(1_100, 3_000, "FOCUS_WORK"));
         let rows = departure_rows(&block, 0);
         // 620..800 (180) + 1100..1400 (300) = 480 anchor seconds, fully covered.
+        assert_eq!(rows[0].outcome, resolved(false, 480));
+    }
+
+    #[test]
+    fn an_offer_censors_the_horizon_unless_the_time_before_it_decided_the_label() {
+        let with_offer = |away: i64, offered: i64| {
+            let mut block = one_departure("COMMUNICATION", away, 3_000);
+            block.intervention = Some(offer_at(offered, WorkBlockInterventionOutcome::NoResponse));
+            departure_rows(&block, 0)[0].outcome
+        };
+        let treated = RowOutcome::Censored(CensorReason::Treated);
+
+        // Departure at 500, back at 620. An offer at 700 leaves 80 anchor
+        // seconds before it and 700 after: the label is open, so censored.
+        assert_eq!(with_offer(120, 700), treated);
+        // An offer at or before the departure censors the whole horizon.
+        assert_eq!(with_offer(120, 500), treated);
+        assert_eq!(with_offer(120, 300), treated);
+        // 600 anchor seconds before the offer (620..1220) decide a return.
         assert_eq!(
-            rows[0].outcome,
+            with_offer(120, 1_220),
+            RowOutcome::Resolved {
+                returned: true,
+                anchor_seconds: 600,
+                decided_before_offer: true,
+            }
+        );
+        assert_eq!(with_offer(120, 1_219), treated);
+        // Away 500..900, offer at 901: one anchor second before it and 499
+        // left, so 600 is out of reach and the label is decided.
+        assert_eq!(
+            with_offer(400, 901),
             RowOutcome::Resolved {
                 returned: false,
-                anchor_seconds: 480
+                anchor_seconds: 1,
+                decided_before_offer: true,
             }
+        );
+        // An offer at 900 leaves 500 seconds, which cannot make 600 either;
+        // one at 800 leaves exactly 600, so the label is still open.
+        assert_eq!(
+            with_offer(400, 900),
+            RowOutcome::Resolved {
+                returned: false,
+                anchor_seconds: 0,
+                decided_before_offer: true,
+            }
+        );
+        assert_eq!(with_offer(400, 800), treated);
+        // The horizon is [500, 1400): an offer at its very end does not touch
+        // it, and the whole horizon is scored.
+        assert_eq!(with_offer(120, 1_400), resolved(true, 780));
+
+        // A decided row is the row that would have been scored with no offer:
+        // a horizon past the block end or with a gap is censored for that
+        // reason first.
+        let mut block = one_departure("SOCIAL_FEED", 400, 1_399);
+        block.intervention = Some(offer_at(901, WorkBlockInterventionOutcome::NoResponse));
+        assert_eq!(
+            departure_rows(&block, 0)[0].outcome,
+            RowOutcome::Censored(CensorReason::BlockEnded)
         );
     }
 
     #[test]
-    fn an_offer_inside_the_horizon_marks_the_departure_treated() {
-        let mut block = one_departure("COMMUNICATION", 120, 3_000);
-        block.intervention = Some(WorkBlockIntervention {
-            offered_at: at(1_400),
-            action_id: "protect_next_10".to_owned(),
-            anchor_category: "FOCUS_WORK".to_owned(),
-            switch_count: 3,
-            window_seconds: 600,
-            outcome: WorkBlockInterventionOutcome::NoResponse,
-            outcome_at: None,
-            salience: velvt_shared_types::InterventionSalience::Normal,
-            card_seen_at: None,
-        });
-        assert_eq!(departure_rows(&block, 0)[0].outcome, RowOutcome::Treated);
-        block.intervention.as_mut().unwrap().offered_at = at(1_401);
-        assert!(matches!(
-            departure_rows(&block, 0)[0].outcome,
-            RowOutcome::Resolved { .. }
-        ));
+    fn the_treated_count_is_reported_per_cell() {
+        // Two blocks, one departure each: communication censored by an offer,
+        // reference decided before one.
+        let mut blocks = history(
+            &[(true, "COMMUNICATION"), (false, "REFERENCE")],
+            Duration::days(1),
+        );
+        let shift = blocks[0].decisions[1].occurred_at - at(500);
+        blocks[0].intervention = Some(offer_at(700, WorkBlockInterventionOutcome::NoResponse));
+        blocks[0].intervention.as_mut().unwrap().offered_at += shift;
+        let shift = blocks[1].decisions[1].occurred_at - at(500);
+        blocks[1].intervention = Some(offer_at(1_000, WorkBlockInterventionOutcome::NoResponse));
+        blocks[1].intervention.as_mut().unwrap().offered_at += shift;
+        let ledger = ReturnLedger::build(&blocks, &LedgerConfig::new(at(20 * 86_400), 0));
+
+        assert_eq!(ledger.counts.departures, 2);
+        assert_eq!(ledger.counts.censored_treated, 1);
+        assert_eq!(ledger.counts.resolved, 1);
+        assert_eq!(ledger.counts.resolved_before_offer, 1);
+        let communication = ledger.cell(Cell::Communication).accounting;
+        assert_eq!(
+            communication,
+            CellAccounting {
+                departures: 1,
+                censored_treated: 1,
+                ..CellAccounting::default()
+            }
+        );
+        let adjacent = ledger.cell(Cell::WorkAdjacent).accounting;
+        assert_eq!(adjacent.censored_treated, 0);
+        assert_eq!(adjacent.resolved_before_offer, 1);
+        // Both departures fall in the first third, so that cell carries both.
+        let first = ledger.cell(Cell::FirstThird).accounting;
+        assert_eq!((first.departures, first.censored_treated), (2, 1));
+        assert_eq!(ledger.cell(Cell::Communication).estimate.resolved, 0);
     }
 
     #[test]
@@ -1464,7 +1692,11 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), CELLS.len(), "cell ids are unique");
-        for dimension in [Dimension::Departure, Dimension::Elapsed, Dimension::Hour] {
+        for dimension in [
+            CellDimension::Departure,
+            CellDimension::Elapsed,
+            CellDimension::Hour,
+        ] {
             assert_eq!(
                 CELLS
                     .iter()
@@ -1490,6 +1722,30 @@ mod tests {
         assert_eq!(elapsed_cell(1_200, 2_400), Some(Cell::MiddleThird));
         assert_eq!(elapsed_cell(2_400, 1_200), Some(Cell::FinalThird));
         assert_eq!(elapsed_cell(0, 0), None);
+    }
+
+    #[test]
+    fn each_block_is_read_at_its_own_offset_when_it_has_one() {
+        // The departure is at 08:08 UTC: 11:38 at +3:30, a morning, and 12:08
+        // at +4:00, after a daylight-saving change or a flight, an afternoon.
+        let mut block = one_departure("COMMUNICATION", 120, 3_000);
+        let fallback = 3 * 3_600 + 1_800;
+        assert_eq!(
+            departure_rows(&block, fallback)[0].context.hour,
+            Cell::Morning
+        );
+        block.utc_offset_seconds = Some(4 * 3_600);
+        assert_eq!(
+            departure_rows(&block, fallback)[0].context.hour,
+            Cell::Afternoon
+        );
+
+        // Through the ledger: one block per offset, read at its own.
+        let mut blocks = history(&[(true, "COMMUNICATION"); 2], Duration::days(1));
+        blocks[1].utc_offset_seconds = Some(4 * 3_600);
+        let ledger = ReturnLedger::build(&blocks, &LedgerConfig::new(at(20 * 86_400), fallback));
+        assert_eq!(ledger.cell(Cell::Morning).accounting.departures, 1);
+        assert_eq!(ledger.cell(Cell::Afternoon).accounting.departures, 1);
     }
 
     #[test]
@@ -1536,7 +1792,7 @@ mod tests {
         let ledger = ReturnLedger::build(&blocks, &LedgerConfig::new(at(20 * 86_400), 0));
         assert_eq!(
             ledger.abstention,
-            Some(Abstention::TooFewBlocks {
+            Some(LedgerAbstention::TooFewBlocks {
                 blocks: 5,
                 required: MIN_BLOCKS
             })
@@ -1557,7 +1813,7 @@ mod tests {
         let ledger = ReturnLedger::build(&blocks, &LedgerConfig::new(at(20 * 86_400), 0));
         assert_eq!(
             ledger.abstention,
-            Some(Abstention::TooFewResolvedRows {
+            Some(LedgerAbstention::TooFewResolvedRows {
                 rows: 12,
                 required: MIN_RESOLVED_ROWS
             })
@@ -1593,7 +1849,11 @@ mod tests {
     #[test]
     fn a_disputed_block_counts_at_half_weight() {
         let mut blocks = history(&[(true, "COMMUNICATION"); 2], Duration::days(1));
-        blocks[1].category_corrections = 1;
+        blocks[1].category_corrections = vec![WorkBlockCategoryCorrection {
+            category: "COMMUNICATION".to_owned(),
+            counts_as_category: "FOCUS_WORK".to_owned(),
+            corrected_at: blocks[1].ended_at.unwrap(),
+        }];
         let ledger = ReturnLedger::build(&blocks, &LedgerConfig::new(at(20 * 86_400), 0));
         assert_eq!(ledger.counts.disputed_blocks, 1);
         assert!(approx(
@@ -1601,6 +1861,47 @@ mod tests {
             1.0 + DISPUTED_BLOCK_WEIGHT,
             1e-12
         ));
+    }
+
+    /// A reply or a correction can be written after its block closed. At an
+    /// `as_of` before it was written, the ledger must not know about it.
+    #[test]
+    fn a_dispute_recorded_after_as_of_does_not_change_the_answer_at_as_of() {
+        let clean = history(&[(true, "COMMUNICATION"); 2], Duration::days(1));
+        let as_of = clean[1].ended_at.unwrap() + Duration::hours(1);
+        let later = as_of + Duration::hours(1);
+        let config = LedgerConfig::new(as_of, 0);
+        let answer = ReturnLedger::build(&clean, &config);
+
+        let mut replied = clean.clone();
+        let mut offer = offer_at(3_500, WorkBlockInterventionOutcome::WrongClassification);
+        offer.offered_at = replied[1].ended_at.unwrap() - Duration::seconds(100);
+        offer.outcome_at = Some(later);
+        replied[1].intervention = Some(offer);
+        let mut corrected = clean.clone();
+        corrected[0].category_corrections = vec![WorkBlockCategoryCorrection {
+            category: "COMMUNICATION".to_owned(),
+            counts_as_category: "FOCUS_WORK".to_owned(),
+            corrected_at: later,
+        }];
+        for (name, blocks) in [("reply", &replied), ("correction", &corrected)] {
+            assert_eq!(
+                ReturnLedger::build(blocks, &config),
+                answer,
+                "a {name} written after as_of changed the answer at as_of"
+            );
+            let after = ReturnLedger::build(blocks, &LedgerConfig::new(later, 0));
+            assert_eq!(after.counts.disputed_blocks, 1, "{name}");
+        }
+
+        // A reply with no time on it cannot be placed before as_of.
+        let mut untimed = replied.clone();
+        untimed[1].intervention.as_mut().unwrap().outcome_at = None;
+        let far = LedgerConfig::new(later + Duration::days(1), 0);
+        assert_eq!(
+            ReturnLedger::build(&untimed, &far).counts.disputed_blocks,
+            0
+        );
     }
 
     #[test]
@@ -1620,7 +1921,7 @@ mod tests {
         assert!(
             ledger
                 .surfaced()
-                .contains(&(Cell::Communication, Direction::Lower)),
+                .contains(&(Cell::Communication, CellDirection::Lower)),
             "{:#?}",
             ledger.cells
         );
@@ -1633,7 +1934,7 @@ mod tests {
             verdict: GateVerdict::AbstainedMinSwitches,
         };
         let candidate = ledger.would_withhold(&reference);
-        assert_eq!(candidate.support, Support::WithinCountedRows);
+        assert_eq!(candidate.support, WithholdSupport::WithinCountedRows);
         assert_eq!(candidate.model_version, RETURN_LEDGER_MODEL_VERSION);
         assert!(candidate.min_lower.is_some());
 
@@ -1645,7 +1946,7 @@ mod tests {
         };
         assert_eq!(
             ledger.would_withhold(&offered).support,
-            Support::Extrapolated
+            WithholdSupport::Extrapolated
         );
         let beyond = DecisionContext {
             switch_count: 3,
@@ -1653,7 +1954,7 @@ mod tests {
         };
         assert_eq!(
             ledger.would_withhold(&beyond).support,
-            Support::Extrapolated
+            WithholdSupport::Extrapolated
         );
 
         // Communication departures do not come back on their own, so the
@@ -1693,7 +1994,7 @@ mod tests {
 
     #[test]
     fn the_label_matches_the_pre_registered_outcome_and_the_contract() {
-        assert_eq!(HORIZON_SECONDS, 900);
+        assert_eq!(RETURN_HORIZON_SECONDS, 900);
         assert_eq!(SUSTAINED_ANCHOR_SECONDS, 600);
     }
 
@@ -1745,28 +2046,10 @@ mod tests {
         }
     }
 
-    const NEEDLES: [&str; 7] = [
-        "returns::",
-        "ReturnLedger",
-        "would_withhold",
-        "WithholdCandidate",
-        "departure_rows",
-        "return_ledger",
-        "RETURN_LEDGER_MODEL_VERSION",
-    ];
-
-    fn names_the_ledger(text: &str) -> Option<&'static str> {
-        NEEDLES.into_iter().find(|needle| text.contains(needle))
-    }
-
-    /// Nothing outside this file may name it: not the drift gate, delivery,
-    /// the IPC router, any copy, the entry point, the Swift client or the IPC
-    /// schema. The module is shadow only until randomized rows exist and a
-    /// dated decision says otherwise; this is the tripwire.
-    #[test]
-    fn nothing_in_the_shipped_path_calls_the_return_ledger() {
-        let service = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let this_file = service.join("src").join("behavior").join("returns.rs");
+    /// Every file the tripwire reads, for a service directory laid out like
+    /// `rust-service/`: its sources, the shared types, and the Swift client
+    /// and IPC schema beside it.
+    fn shipped_sources(service: &Path) -> Vec<PathBuf> {
         let mut files = Vec::new();
         sources(&service.join("src"), "rs", &mut files);
         sources(&service.join("shared-types").join("src"), "rs", &mut files);
@@ -1776,51 +2059,347 @@ mod tests {
             &mut files,
         );
         sources(&service.join("../proto"), "json", &mut files);
+        files
+    }
 
-        let offenders: Vec<String> = files
+    /// Every public item this file declares at the top level, read from the
+    /// file itself, so an item added tomorrow is covered the day it lands.
+    fn public_items() -> Vec<String> {
+        const KEYWORDS: [&str; 8] = [
+            "const ", "static ", "fn ", "struct ", "enum ", "type ", "trait ", "mod ",
+        ];
+        include_str!("returns.rs")
+            .lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("pub ")?;
+                let rest = KEYWORDS
+                    .iter()
+                    .find_map(|keyword| rest.strip_prefix(keyword))?;
+                let name: String = rest.chars().take_while(|c| is_ident(*c)).collect();
+                (!name.is_empty()).then_some(name)
+            })
+            .collect()
+    }
+
+    /// Spellings a Swift or JSON surface would give what the ledger computes.
+    const SURFACE_NEEDLES: [&str; 6] = [
+        "return_ledger",
+        "returnLedger",
+        "would_withhold",
+        "wouldWithhold",
+        "withhold_candidate",
+        "withholdCandidate",
+    ];
+
+    /// Paths that reach the module: through `behavior`, through any prefix
+    /// (`super::`, `self::`, `crate::behavior::`), or as a file.
+    const PATH_NEEDLES: [&str; 3] = ["behavior::returns", "returns::", "returns.rs"];
+
+    fn is_ident(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '_'
+    }
+
+    /// `text` with every run of whitespace made one space and none around
+    /// `::`, so a path or an alias split across lines or spaced out is still
+    /// one string.
+    fn flatten(text: &str) -> String {
+        text.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace(" ::", "::")
+            .replace(":: ", "::")
+    }
+
+    /// Whether `needle` occurs in `text` and is not part of a longer
+    /// identifier at either end.
+    fn has_token(text: &str, needle: &str) -> bool {
+        let starts_ident = needle.starts_with(is_ident);
+        let ends_ident = needle.ends_with(is_ident);
+        text.match_indices(needle).any(|(start, _)| {
+            let before = text[..start].chars().next_back();
+            let after = text[start + needle.len()..].chars().next();
+            let glued_before = starts_ident && before.is_some_and(is_ident);
+            let glued_after = ends_ident && after.is_some_and(is_ident);
+            !(glued_before || glued_after)
+        })
+    }
+
+    /// `returns as <alias>` followed by `;`, `,` or `}`: an aliased import of
+    /// the module, and not the word "returns" in a sentence.
+    fn aliases_the_module(flat: &str) -> bool {
+        flat.match_indices("returns as ").any(|(start, needle)| {
+            if flat[..start].chars().next_back().is_some_and(is_ident) {
+                return false;
+            }
+            let rest = &flat[start + needle.len()..];
+            let alias = rest.find(|c: char| !is_ident(c)).unwrap_or(rest.len());
+            alias > 0
+                && matches!(
+                    rest[alias..].trim_start().chars().next(),
+                    Some(';' | ',' | '}')
+                )
+        })
+    }
+
+    /// Why `text` names this module, if it does.
+    fn names_the_ledger(text: &str, items: &[String]) -> Option<String> {
+        let flat = flatten(text);
+        if let Some(path) = PATH_NEEDLES.iter().find(|path| has_token(&flat, path)) {
+            return Some(format!("the path `{path}`"));
+        }
+        if aliases_the_module(&flat) {
+            return Some("an aliased import of the module".to_owned());
+        }
+        if let Some(needle) = SURFACE_NEEDLES.iter().find(|needle| flat.contains(*needle)) {
+            return Some(format!("`{needle}`"));
+        }
+        items
+            .iter()
+            .find(|item| has_token(&flat, item))
+            .map(|item| format!("the item `{item}`"))
+    }
+
+    /// Every file under `service` that names this module, and why. The one
+    /// exemption is this file, `<service>/src/behavior/returns.rs`. Returns
+    /// the files read as well, so a caller can check the scan was not vacuous.
+    fn callers(service: &Path) -> (Vec<PathBuf>, Vec<String>) {
+        let this_file = service.join("src").join("behavior").join("returns.rs");
+        let items = public_items();
+        let files = shipped_sources(service);
+        let offenders = files
             .iter()
             .filter(|path| **path != this_file)
             .filter_map(|path| {
                 let text = std::fs::read_to_string(path).unwrap_or_default();
-                names_the_ledger(&text).map(|needle| format!("{} names `{needle}`", path.display()))
+                names_the_ledger(&text, &items).map(|why| format!("{} names {why}", path.display()))
             })
             .collect();
+        (files, offenders)
+    }
+
+    /// Nothing outside this file may name it: not the drift gate, delivery,
+    /// the IPC router, any copy, the entry point, the Swift client or the IPC
+    /// schema. The module is shadow only until randomized rows exist and a
+    /// dated decision says otherwise; this is the tripwire.
+    ///
+    /// Every public item is matched by name, so each must be unique in the
+    /// scanned tree. If another module ever declares one of the same name,
+    /// this fails: rename the one here rather than weaken the scan.
+    #[test]
+    fn nothing_in_the_shipped_path_calls_the_return_ledger() {
+        let service = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let (files, offenders) = callers(service);
         assert!(
             offenders.is_empty(),
             "the return ledger is shadow only and must have no caller:\n{}",
             offenders.join("\n")
         );
 
-        // The scan is not vacuous: it read the paths that matter, and it
-        // catches the ways a caller would have to name the module.
+        // The scan is not vacuous: it read the paths that matter, every kind
+        // of file, and every public item of this module.
         for must in [
             "src/work_block/mod.rs",
             "src/delivery/mod.rs",
             "src/ipc/router.rs",
             "src/receipts/mod.rs",
+            "src/behavior/mod.rs",
             "src/main.rs",
             "src/lib.rs",
+            "shared-types/src/lib.rs",
         ] {
             assert!(
                 files.iter().any(|path| path.ends_with(must)),
                 "the no-caller scan never read {must}"
             );
         }
-        assert!(
-            files
-                .iter()
-                .any(|path| path.extension().is_some_and(|ext| ext == "swift")),
-            "the no-caller scan read no Swift source"
-        );
-        for caller in [
-            "use crate::behavior::returns;",
-            "let ledger = returns::ReturnLedger::build(&blocks, &config);",
-            "if candidate.would_withhold { return None; }",
-            "\"return_ledger\": { \"type\": \"object\" }",
+        for extension in ["swift", "json"] {
+            assert!(
+                files
+                    .iter()
+                    .any(|path| path.extension().is_some_and(|ext| ext == extension)),
+                "the no-caller scan read no .{extension} file"
+            );
+        }
+        let items = public_items();
+        for item in [
+            "ReturnLedger",
+            "context_of",
+            "departure_rows",
+            "horizon_outcome",
+            "departure_cell",
+            "LedgerConfig",
+            "BlockEvidence",
+            "CellAccounting",
+            "WithholdSupport",
+            "RETURN_LEDGER_MODEL_VERSION",
         ] {
             assert!(
-                names_the_ledger(caller).is_some() || caller.ends_with("returns;"),
-                "the scan would miss: {caller}"
+                items.iter().any(|found| found == item),
+                "{item} is not in {items:?}"
+            );
+        }
+        assert!(items.len() >= 45, "only {} public items read", items.len());
+    }
+
+    /// A tripwire is worth something only if it fires. Each caller below is
+    /// planted into a copy of the layout the real scan reads, and the same
+    /// scan must name the file it is in, for the reason given. Prose and near
+    /// misses must not trip it, or it would be switched off.
+    #[test]
+    fn the_no_caller_tripwire_fires_on_planted_callers_and_only_on_them() {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        // One per process: the unit tests and `trace_replay` both run this.
+        let root =
+            std::env::temp_dir().join(format!("velvt-returns-tripwire-{}", std::process::id()));
+        let _cleanup = Cleanup(root.clone());
+        let service = root.join("rust-service");
+        let write = |relative: &str, text: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        let baseline: [(&str, &str); 5] = [
+            (
+                "rust-service/src/behavior/returns.rs",
+                include_str!("returns.rs"),
+            ),
+            (
+                "rust-service/src/behavior/mod.rs",
+                "//! [`returns`] is shadow.\npub mod features;\npub mod returns;\n",
+            ),
+            (
+                "rust-service/shared-types/src/lib.rs",
+                "pub struct Snapshot;\n",
+            ),
+            (
+                "swift-client/Sources/VelvtMac/UI/View.swift",
+                "struct View {}\n",
+            ),
+            (
+                "proto/schema/work_block_state.json",
+                "{\"type\": \"object\"}\n",
+            ),
+        ];
+        let reset = || {
+            let _ = std::fs::remove_dir_all(&root);
+            for (relative, text) in baseline {
+                write(relative, text);
+            }
+        };
+
+        reset();
+        let (files, offenders) = callers(&service);
+        assert_eq!(files.len(), baseline.len(), "{files:?}");
+        assert!(
+            offenders.is_empty(),
+            "the clean copy tripped: {offenders:?}"
+        );
+
+        let planted: [(&str, &str, &str); 13] = [
+            // The review's evasion: an aliased import, then a call through it.
+            (
+                "rust-service/src/ipc/router.rs",
+                "use crate::behavior::returns as r;\n\
+                 fn route() { let _ = r::context_of; }\n",
+                "`behavior::returns`",
+            ),
+            (
+                "rust-service/src/ipc/router.rs",
+                "use super::super::behavior::{features, returns as ledger};\n\
+                 fn route() { let _ = ledger::context_of; }\n",
+                "aliased import",
+            ),
+            (
+                "rust-service/src/ipc/router.rs",
+                "use crate::behavior::{returns\n    as\n    r};\n",
+                "aliased import",
+            ),
+            (
+                "rust-service/src/work_block/mod.rs",
+                "use crate::behavior::returns;\n",
+                "`behavior::returns`",
+            ),
+            (
+                "rust-service/src/work_block/mod.rs",
+                "use super::behavior::{returns::*};\n",
+                "`returns::`",
+            ),
+            (
+                "rust-service/src/work_block/mod.rs",
+                "fn gate() { let _ = returns :: departure_rows; }\n",
+                "`returns::`",
+            ),
+            (
+                "rust-service/src/delivery/mod.rs",
+                "#[path = \"../behavior/returns.rs\"]\nmod copy;\n",
+                "`returns.rs`",
+            ),
+            // A bare item, reached through a re-export somewhere else.
+            (
+                "rust-service/src/delivery/mod.rs",
+                "fn f(block: &Evidence) -> usize { horizon_outcome_of(block) }\n\
+                 fn g() -> u32 { RETURN_LEDGER_MODEL_VERSION }\n",
+                "`RETURN_LEDGER_MODEL_VERSION`",
+            ),
+            (
+                "rust-service/src/main.rs",
+                "fn main() { let _ = LedgerConfig::new; }\n",
+                "`LedgerConfig`",
+            ),
+            (
+                "rust-service/src/behavior/mod.rs",
+                "pub mod returns;\npub use self::returns::ReturnLedger as Profile;\n",
+                "`returns::`",
+            ),
+            (
+                "rust-service/shared-types/src/lib.rs",
+                "pub struct Snapshot { pub would_withhold: bool }\n",
+                "`would_withhold`",
+            ),
+            (
+                "swift-client/Sources/VelvtMac/UI/View.swift",
+                "let quiet = snapshot.wouldWithhold\n",
+                "`wouldWithhold`",
+            ),
+            (
+                "proto/schema/work_block_state.json",
+                "{\"return_ledger\": {\"type\": \"object\"}}\n",
+                "`return_ledger`",
+            ),
+        ];
+        for (relative, text, reason) in planted {
+            reset();
+            write(relative, text);
+            let (_, offenders) = callers(&service);
+            let named: Vec<&String> = offenders
+                .iter()
+                .filter(|offender| offender.contains(relative))
+                .collect();
+            assert!(
+                named.len() == 1 && named[0].contains(reason),
+                "the tripwire missed {relative} ({reason}):\n{text}\nit reported {offenders:?}"
+            );
+            assert_eq!(offenders.len(), 1, "{offenders:?}");
+        }
+
+        for prose in [
+            "/// The engine returns as `user_rule` once it is done.\n",
+            "// This returns as soon as the block ends.\n",
+            "use std::cell::RefCell;\nfn early_returns() -> RefCell<u8> { RefCell::new(0) }\n",
+            "fn f() { let returns = 3; let _ = returns; }\n",
+            "fn g() -> bool { self.horizon_outcomes.is_empty() }\n",
+        ] {
+            reset();
+            write("rust-service/src/ipc/router.rs", prose);
+            let (_, offenders) = callers(&service);
+            assert!(
+                offenders.is_empty(),
+                "prose tripped it: {prose}{offenders:?}"
             );
         }
     }

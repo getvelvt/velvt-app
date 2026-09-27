@@ -74,8 +74,8 @@ use velvt_shared_types::{
 };
 
 use returns::{
-    context_of, departure_rows, Abstention, BlockEvidence, Cell, CensorReason, Controls, Direction,
-    LedgerConfig, ReturnLedger, RowOutcome, Support,
+    context_of, departure_rows, BlockEvidence, Cell, CellDirection, CensorReason, LedgerAbstention,
+    LedgerConfig, LedgerControls, ReturnLedger, RowOutcome, WithholdSupport,
 };
 
 const SUITE_A: &str = "SYNTHETIC-suite-a-recovery.jsonl";
@@ -117,13 +117,27 @@ struct BlockSpec {
     /// Suite E only: every departure the generator planted, with its label.
     #[serde(default)]
     departures: Vec<PlantedDeparture>,
+    /// Suite E only: pauses, each resumed before the next observation.
+    #[serde(default)]
+    pauses: Vec<PauseSpec>,
+    /// Suite E only: when the block ends. Absent, one second after the last
+    /// observation.
+    #[serde(default)]
+    end_offset_seconds: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PauseSpec {
+    at: i64,
+    resume: i64,
 }
 
 #[derive(Debug, Deserialize)]
 struct PlantedDeparture {
     t: i64,
     cell: String,
-    /// `returned`, `not_returned`, `censored` or `treated`.
+    /// What the ledger must read: `returned`, `not_returned`, `censored`
+    /// (the block ended), `observer_gap` or `treated`.
     label: String,
 }
 
@@ -373,8 +387,21 @@ fn replay_blocks(trace_id: &str, blocks: &[BlockSpec]) -> Replayed {
             .unwrap_or_else(|| panic!("{trace_id}: an active block has no id"));
 
         let mut offers_this_block = 0usize;
+        let mut pauses = spec.pauses.iter().peekable();
         for observation in &spec.observations {
             observations += 1;
+            while let Some(pause) = pauses.next_if(|pause| pause.at < observation.t) {
+                assert!(
+                    pause.resume < observation.t,
+                    "{trace_id}: block {index} resumes after its next observation"
+                );
+                manager
+                    .pause(block_id, start + Duration::seconds(pause.at))
+                    .unwrap_or_else(|error| panic!("{trace_id}: could not pause: {error:?}"));
+                manager
+                    .resume(block_id, start + Duration::seconds(pause.resume))
+                    .unwrap_or_else(|error| panic!("{trace_id}: could not resume: {error:?}"));
+            }
             let at = start + Duration::seconds(observation.t);
             let outcome = manager
                 .observe_safe_category(
@@ -425,15 +452,26 @@ fn replay_blocks(trace_id: &str, blocks: &[BlockSpec]) -> Replayed {
                 .map(|observation| observation.occurred_at.timestamp()),
         );
 
+        assert!(
+            pauses.next().is_none(),
+            "{trace_id}: block {index} has a pause after its last observation"
+        );
+
         // End inside the planned window rather than at the deadline, so the
         // block closes as `completed` through the ordinary path instead of
-        // racing the expiry branch.
+        // racing the expiry branch. A suite E block may end later than its
+        // last observation, leaving the dwell it ended in unmeasured.
         let last_offset = spec
             .observations
             .last()
             .map(|observation| observation.t)
             .unwrap_or(0);
-        let end_at = start + Duration::seconds(last_offset + 1);
+        let end_offset = spec.end_offset_seconds.unwrap_or(last_offset + 1);
+        assert!(
+            end_offset > last_offset,
+            "{trace_id}: block {index} ends before its last observation"
+        );
+        let end_at = start + Duration::seconds(end_offset);
         manager
             .end(block_id, end_at)
             .unwrap_or_else(|error| panic!("{trace_id}: could not end block {index}: {error:?}"));
@@ -445,7 +483,9 @@ fn replay_blocks(trace_id: &str, blocks: &[BlockSpec]) -> Replayed {
             observations: repo.observations(&id).unwrap(),
             decisions: repo.decisions(&id).unwrap(),
             intervention: repo.intervention(&id).unwrap(),
-            category_corrections: repo.category_corrections(&id).unwrap().len(),
+            category_corrections: repo.category_corrections(&id).unwrap(),
+            // Nothing stores a per-block offset; the fixture is read at UTC.
+            utc_offset_seconds: None,
             block_id: id,
         });
 
@@ -786,7 +826,11 @@ fn family<'a>(name: &str) -> Vec<&'a ReplayedPerson> {
     found
 }
 
-fn ledger_at(person: &ReplayedPerson, as_of: DateTime<Utc>, controls: Controls) -> ReturnLedger {
+fn ledger_at(
+    person: &ReplayedPerson,
+    as_of: DateTime<Utc>,
+    controls: LedgerControls,
+) -> ReturnLedger {
     let mut config = LedgerConfig::new(as_of, SUITE_E_UTC_OFFSET_SECONDS);
     config.controls = controls;
     ReturnLedger::build(&person.replayed.evidence, &config)
@@ -805,7 +849,7 @@ fn last_end(person: &ReplayedPerson) -> DateTime<Utc> {
 fn communication_lower(ledger: &ReturnLedger) -> bool {
     ledger
         .surfaced()
-        .contains(&(Cell::Communication, Direction::Lower))
+        .contains(&(Cell::Communication, CellDirection::Lower))
 }
 
 fn percent(count: usize, total: usize) -> f64 {
@@ -877,7 +921,7 @@ fn suite_e_every_departure_carries_the_label_planted_for_it() {
                     } => "not_returned",
                     RowOutcome::Censored(CensorReason::BlockEnded) => "censored",
                     RowOutcome::Censored(CensorReason::ObserverGap) => "observer_gap",
-                    RowOutcome::Treated => "treated",
+                    RowOutcome::Censored(CensorReason::Treated) => "treated",
                 };
                 if found != departure.label || row.context.departure.id() != departure.cell {
                     failures.push(format!(
@@ -912,7 +956,7 @@ fn suite_e_every_departure_carries_the_label_planted_for_it() {
 /// surface something, or the zero proves only that the ledger never looked.
 ///
 /// The declared per-person rate of a false surfacing is at most
-/// `FAMILY_ALPHA * CONFIRMATION_ALPHA` = 0.02, before the within-block
+/// `FAMILY_ALPHA * HELD_OUT_ALPHA` = 0.02, before the within-block
 /// weighting and the shrinkage make it smaller. The thresholds were frozen
 /// after seeing this suite; one run afterwards on a fresh seed (777, 200 NULL
 /// traces) surfaced a cell in 1/200, and the naive controls in 149/200.
@@ -927,7 +971,7 @@ fn suite_e_null_surfaces_nothing_and_the_naive_controls_do() {
 
     for person in &null {
         let as_of = last_end(person);
-        let ledger = ledger_at(person, as_of, Controls::shipped());
+        let ledger = ledger_at(person, as_of, LedgerControls::shipped());
         if ledger.abstention.is_none() {
             tested += 1;
         }
@@ -939,7 +983,7 @@ fn suite_e_null_surfaces_nothing_and_the_naive_controls_do() {
                 ledger.surfaced()
             ));
         }
-        let naive = ledger_at(person, as_of, Controls::naive());
+        let naive = ledger_at(person, as_of, LedgerControls::naive());
         if !naive.surfaced().is_empty() {
             naive_traces += 1;
             naive_cells += naive.surfaced().len();
@@ -981,10 +1025,10 @@ fn suite_e_sparse_abstains_with_a_stated_reason() {
     let mut too_few_blocks = 0usize;
     let mut too_few_rows = 0usize;
     for person in &sparse {
-        let ledger = ledger_at(person, last_end(person), Controls::shipped());
+        let ledger = ledger_at(person, last_end(person), LedgerControls::shipped());
         match ledger.abstention {
-            Some(Abstention::TooFewBlocks { .. }) => too_few_blocks += 1,
-            Some(Abstention::TooFewResolvedRows { .. }) => too_few_rows += 1,
+            Some(LedgerAbstention::TooFewBlocks { .. }) => too_few_blocks += 1,
+            Some(LedgerAbstention::TooFewResolvedRows { .. }) => too_few_rows += 1,
             None => panic!(
                 "{}: the ledger answered on {} resolved rows from {} blocks",
                 person.trace.trace_id,
@@ -1042,7 +1086,7 @@ fn suite_e_planted_is_found_at_volume_and_nothing_else_is() {
             .truth
             .blocks_per_week
             .expect("PLANTED records its volume");
-        let ledger = ledger_at(person, last_end(person), Controls::shipped());
+        let ledger = ledger_at(person, last_end(person), LedgerControls::shipped());
         let entry = by_volume.entry(volume).or_default();
         entry.0 += 1;
         entry.1 += usize::from(ledger.abstention.is_none());
@@ -1105,8 +1149,12 @@ fn suite_e_regime_is_found_before_the_change_and_retracted_after() {
             .truth
             .change_after_block
             .expect("REGIME records its change");
-        let at_change = ledger_at(person, end_of(person, change - 1), Controls::shipped());
-        let at_end = ledger_at(person, last_end(person), Controls::shipped());
+        let at_change = ledger_at(
+            person,
+            end_of(person, change - 1),
+            LedgerControls::shipped(),
+        );
+        let at_end = ledger_at(person, last_end(person), LedgerControls::shipped());
         before += usize::from(communication_lower(&at_change));
         after += usize::from(communication_lower(&at_end));
     }
@@ -1146,12 +1194,13 @@ fn suite_e_corrected_follows_the_inputs_and_down_weights_disputes() {
             .change_after_block
             .expect("CORRECTED records its change");
         let as_of = end_of(person, change - 1);
-        let at_change = ledger_at(person, as_of, Controls::shipped());
-        let at_end = ledger_at(person, last_end(person), Controls::shipped());
+        let at_change = ledger_at(person, as_of, LedgerControls::shipped());
+        let at_end = ledger_at(person, last_end(person), LedgerControls::shipped());
         before += usize::from(communication_lower(&at_change));
         after += usize::from(communication_lower(&at_end));
 
-        // Disputes are read off the rows the gate wrote, not the fixture.
+        // Disputes are read off the rows the gate wrote, not the fixture, and
+        // only those replied by `as_of` count.
         let window_start = as_of - Duration::days(returns::LOOKBACK_DAYS);
         let expected_disputes = person
             .replayed
@@ -1165,6 +1214,7 @@ fn suite_e_corrected_follows_the_inputs_and_down_weights_disputes() {
             .filter(|block| {
                 block.intervention.as_ref().is_some_and(|offer| {
                     offer.outcome == WorkBlockInterventionOutcome::WrongClassification
+                        && offer.outcome_at.is_some_and(|replied| replied <= as_of)
                 })
             })
             .count();
@@ -1213,7 +1263,7 @@ fn suite_e_corrected_follows_the_inputs_and_down_weights_disputes() {
 fn suite_e_every_offered_point_is_outside_the_counted_rows() {
     let mut offered_points = 0usize;
     for person in suite_e() {
-        let ledger = ledger_at(person, last_end(person), Controls::shipped());
+        let ledger = ledger_at(person, last_end(person), LedgerControls::shipped());
         if let Some(most) = ledger.max_switch_count_counted {
             assert!(
                 most < DRIFT_MIN_SWITCHES,
@@ -1230,7 +1280,7 @@ fn suite_e_every_offered_point_is_outside_the_counted_rows() {
                     .expect("an offer is made on a departure");
                 assert_eq!(
                     ledger.would_withhold(&context).support,
-                    Support::Extrapolated,
+                    WithholdSupport::Extrapolated,
                     "{}: the candidate claimed support at an offered point",
                     person.trace.trace_id
                 );

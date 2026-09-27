@@ -189,7 +189,8 @@ impl CacheManager for FakeCacheManager {
             .get(&days)
             .cloned()
             .unwrap_or_else(|| HistoryPayload {
-                days: days as u32,
+                days: 0,
+                source: velvt_shared_types::HistorySource::Cloud,
                 summaries: vec![],
             });
         Box::pin(async move { Ok(result) })
@@ -236,10 +237,11 @@ mod tests {
     use std::sync::Arc;
     use velvt_shared_types::{ConfidenceLevel, DailySummary, HistoryStatus};
 
-    fn make_history(days: u8) -> HistoryPayload {
+    fn make_history() -> HistoryPayload {
         let today = chrono::Utc::now().date_naive();
         HistoryPayload {
-            days: days as u32,
+            days: 1,
+            source: velvt_shared_types::HistorySource::Cloud,
             summaries: vec![DailySummary {
                 date: today,
                 status: HistoryStatus::Ready,
@@ -260,9 +262,9 @@ mod tests {
 
     #[tokio::test]
     async fn fake_cache_manager_returns_preconfigured_history() {
-        let cache = Arc::new(FakeCacheManager::new().with_history(7, make_history(7)));
+        let cache = Arc::new(FakeCacheManager::new().with_history(7, make_history()));
         let result = cache.daily_history(7).await.unwrap();
-        assert_eq!(result.days, 7);
+        assert_eq!(result.days, 1);
         assert_eq!(result.summaries.len(), 1);
         assert_eq!(cache.call_count(), 1);
     }

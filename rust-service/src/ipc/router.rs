@@ -13,8 +13,8 @@ use velvt_shared_types::{
     CacheEmpty, CategoryPrompt, ClassificationConfidence, ClassificationCorrectionSummary,
     ClassificationSource, ClassificationStatus, ClientMessage, CorrectionHistoryPage,
     InterventionSalience, MenuStatus, QueuedEventSummary, RawEventAck, RawEventMetadataError,
-    RawEventStatus, RequestLocalDashboard, ServerMessage, SetApplicationCategory, SetSiteCategory,
-    UnclassifiedTriage,
+    RawEventStatus, RequestLatestHistory, RequestLocalDashboard, ServerMessage,
+    SetApplicationCategory, SetSiteCategory, UnclassifiedTriage,
 };
 
 use crate::abstraction::{AbstractedEvent, AbstractionEngine};
@@ -316,6 +316,7 @@ mod tests {
     use super::*;
     use crate::abstraction::{app_bundle_key_for, app_stable_key_for, StableKeySalt};
     use crate::auth::{FakeTokenStore, HttpResponse, TokenStore};
+    use crate::delivery::CacheError;
     use crate::persistence::SqlitePersistence;
     use std::future::Future;
 
@@ -1913,6 +1914,249 @@ mod tests {
         );
     }
 
+    // --- request_latest_history: cloud-first, built on this Mac otherwise ---
+
+    /// A cloud read that fails the way an unreachable backend fails.
+    struct UnreachableCloud {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::delivery::CacheManager for UnreachableCloud {
+        fn daily_history<'a>(
+            &'a self,
+            _days: u8,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<velvt_shared_types::HistoryPayload, CacheError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Err(CacheError::Fetch(crate::delivery::FetchError::ApiError {
+                    status: 522,
+                }))
+            })
+        }
+
+        fn daily_insight<'a>(
+            &'a self,
+            _date: chrono::NaiveDate,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<velvt_shared_types::InsightPayload>, CacheError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn invalidate_history<'a>(
+            &'a self,
+            _date: Option<chrono::NaiveDate>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn invalidate_insights<'a>(
+            &'a self,
+            _date: Option<chrono::NaiveDate>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn invalidate_all<'a>(
+            &'a self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn history_router(
+        persistence: &SqlitePersistence,
+        cache: Arc<dyn crate::delivery::CacheManager>,
+        auth: AuthState,
+    ) -> R7Router {
+        let (_sender, auth_state) = tokio::sync::watch::channel(auth);
+        let mut router = correction_router(persistence).with_auth_state(auth_state);
+        router.cache = cache;
+        router
+    }
+
+    fn signed_in() -> AuthState {
+        AuthState::Authenticated {
+            device_id: "device-router-tests".into(),
+        }
+    }
+
+    /// Half an hour of confident focus work that ended an hour ago.
+    fn an_observed_half_hour(persistence: &SqlitePersistence) {
+        let now = Utc::now();
+        persistence
+            .raw_event_repo()
+            .insert(&crate::persistence::RawEventEntry {
+                event_id: Uuid::new_v4().to_string(),
+                stable_id: "stable-history".into(),
+                label: "document:code".into(),
+                local_display_label: None,
+                local_name_suggestion: None,
+                category: "FOCUS_WORK".into(),
+                taxonomy_version: "mvp-2".into(),
+                classification_tier: "exact_match".into(),
+                classification_status: "classified".into(),
+                classification_confidence: "high".into(),
+                classification_source: "seed".into(),
+                occurred_at: now - chrono::Duration::minutes(90),
+                duration_seconds: 1_800,
+                upload_eligible: true,
+                app_stable_id: None,
+                app_scope_eligible: true,
+                site_stable_id: None,
+            })
+            .unwrap();
+    }
+
+    async fn daily_history(router: &R7Router) -> ServerMessage {
+        router
+            .route(ClientMessage::RequestLatestHistory(RequestLatestHistory {
+                days: 14,
+                utc_offset_seconds: 0,
+            }))
+            .await
+            .unwrap()
+            .expect("request_latest_history is always answered")
+    }
+
+    fn this_mac_history(message: ServerMessage) -> velvt_shared_types::HistoryPayload {
+        match message {
+            ServerMessage::HistoryPayload(history) => {
+                assert_eq!(history.source, velvt_shared_types::HistorySource::ThisMac);
+                history
+            }
+            other => panic!("expected a history built on this Mac, got {other:?}"),
+        }
+    }
+
+    /// Signed out, the card is built on this Mac and the cloud is never
+    /// asked: there is no session to ask it with.
+    #[tokio::test]
+    async fn a_signed_out_mac_gets_history_built_on_this_mac() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        an_observed_half_hour(&persistence);
+        let cloud = Arc::new(UnreachableCloud {
+            calls: Default::default(),
+        });
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            AuthState::Unauthenticated,
+        );
+
+        let history = this_mac_history(daily_history(&router).await);
+
+        assert_eq!(history.days, 14);
+        assert_eq!(history.summaries.len(), 14);
+        let observed = history
+            .summaries
+            .iter()
+            .map(|day| day.active_seconds)
+            .sum::<u64>();
+        assert_eq!(observed, 1_800);
+        assert_eq!(
+            cloud.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a signed-out Mac asked the cloud"
+        );
+    }
+
+    /// Signed in with the cloud unreachable, the answer is the history built
+    /// on this Mac, not `cache_empty(backend_unavailable)`.
+    #[tokio::test]
+    async fn an_unreachable_cloud_is_answered_with_history_built_on_this_mac() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        an_observed_half_hour(&persistence);
+        let cloud = Arc::new(UnreachableCloud {
+            calls: Default::default(),
+        });
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            signed_in(),
+        );
+
+        let history = this_mac_history(daily_history(&router).await);
+
+        assert_eq!(cloud.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(history.days, 14);
+        assert!(history
+            .summaries
+            .iter()
+            .any(|day| day.status == velvt_shared_types::HistoryStatus::Ready));
+    }
+
+    /// A cloud answer with no rows is no answer: the card is built on this
+    /// Mac rather than refused.
+    #[tokio::test]
+    async fn an_empty_cloud_history_is_answered_with_history_built_on_this_mac() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = history_router(
+            &persistence,
+            Arc::new(crate::delivery::FakeCacheManager::new()),
+            signed_in(),
+        );
+
+        let history = this_mac_history(daily_history(&router).await);
+
+        assert_eq!(history.days, 14);
+    }
+
+    /// When the cloud answers, its history is sent as it came: cloud-first,
+    /// labelled `cloud`, and labelled with the seven days it carries even
+    /// though fourteen were asked for.
+    #[tokio::test]
+    async fn a_cloud_that_answers_is_sent_first_with_the_days_it_carries() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        an_observed_half_hour(&persistence);
+        let today = Utc::now().date_naive();
+        let week = velvt_shared_types::HistoryPayload {
+            days: 7,
+            source: velvt_shared_types::HistorySource::Cloud,
+            summaries: (0..7)
+                .rev()
+                .map(|days_ago| velvt_shared_types::DailySummary {
+                    date: today - chrono::Duration::days(days_ago),
+                    status: velvt_shared_types::HistoryStatus::Ready,
+                    event_count: 12,
+                    focus_score: Some(61.0),
+                    fragmentation_score: Some(20.0),
+                    confidence_level: velvt_shared_types::ConfidenceLevel::Low,
+                    active_seconds: 3_600,
+                    focused_seconds: 1_800,
+                    meaningful_switch_count: 4,
+                    longest_uninterrupted_seconds: 900,
+                    baseline_status: "provisional".into(),
+                    baseline_comparison: serde_json::json!({ "status": "provisional" }),
+                    type_proportions: vec![],
+                })
+                .collect(),
+        };
+        let router = history_router(
+            &persistence,
+            Arc::new(crate::delivery::FakeCacheManager::new().with_history(14, week.clone())),
+            signed_in(),
+        );
+
+        let ServerMessage::HistoryPayload(history) = daily_history(&router).await else {
+            panic!("a cloud that answers is sent");
+        };
+
+        assert_eq!(history, week);
+        assert_eq!(history.days, 7);
+        assert_eq!(history.source, velvt_shared_types::HistorySource::Cloud);
+    }
+
     /// The two tiers that read declared metadata have to survive the round trip
     /// through the audit row, or the menu reports them as `fallback`.
     #[test]
@@ -1946,7 +2190,9 @@ impl MessageRouter for DefaultRouter {
 ///
 /// On a cache miss or validation failure the router returns `CacheEmpty` so
 /// Swift can display a loading state rather than crashing.  Cache errors are
-/// logged but never surfaced to the transport layer.
+/// logged but never surfaced to the transport layer. History is the exception
+/// since protocol 33: a failed cloud read is answered with summaries built on
+/// this Mac (`history_response`).
 #[derive(Clone)]
 pub struct R7Router {
     cache: Arc<dyn CacheManager>,
@@ -2109,6 +2355,14 @@ impl R7Router {
     }
 
     fn upload_eligible(&self) -> bool {
+        self.signed_in()
+    }
+
+    /// Whether the device holds a session the cloud can be asked with.
+    /// `RefreshInFlight` counts: the device holds a valid refresh token and is
+    /// mid-roundtrip. A router with no auth state attached knows of no
+    /// session.
+    fn signed_in(&self) -> bool {
         self.auth_state.as_ref().is_some_and(|state| {
             matches!(
                 *state.borrow(),
@@ -3019,33 +3273,7 @@ impl MessageRouter for R7Router {
                 Ok(Some(response))
             }
 
-            ClientMessage::RequestLatestHistory(req) => {
-                let result = self.cache.daily_history(req.days).await;
-                let response = match result {
-                    Ok(history) => match shaper::shape_history(history) {
-                        Ok(validated) => ServerMessage::HistoryPayload(validated.into_inner()),
-                        Err(err) => {
-                            tracing::warn!(
-                                message_type = "history_payload",
-                                error_code = "outbound_validation_failed",
-                                error = %err,
-                                "shaped history failed validation; sending cache_empty"
-                            );
-                            cache_empty("history_payload", "invalid_cached_payload")
-                        }
-                    },
-                    Err(err) => {
-                        tracing::warn!(
-                            days = req.days,
-                            error_code = "cache_read_failed",
-                            error = %err,
-                            "failed to read history from cache"
-                        );
-                        cache_empty("history_payload", "backend_unavailable")
-                    }
-                };
-                Ok(Some(response))
-            }
+            ClientMessage::RequestLatestHistory(req) => Ok(Some(self.history_response(req).await)),
 
             _ => Ok(None),
         }
@@ -3173,6 +3401,77 @@ fn parse_classification_source(value: Option<&str>) -> ClassificationSource {
 }
 
 impl R7Router {
+    /// Synced daily summaries when the cloud answers, and summaries built on
+    /// this Mac otherwise (protocol 33).
+    ///
+    /// Cloud-first: signed in, the cloud's history is sent whenever it can be
+    /// read and passes the shaper. Signed out, or when the read fails for any
+    /// reason (unreachable, a timeout, a non-200, an unparseable body, no rows
+    /// at all), the reply is built on this Mac (`source: this_mac`) instead of
+    /// `cache_empty`: until protocol 33 the Patterns card had no source but
+    /// the cloud, so an outage, and every signed-out Mac, left it with
+    /// nothing to say about days this Mac had watched. Only when the local
+    /// read fails too is the answer `cache_empty(local_history_unavailable)`.
+    async fn history_response(&self, request: RequestLatestHistory) -> ServerMessage {
+        if self.signed_in() {
+            match self.cache.daily_history(request.days).await {
+                Ok(history) => match shaper::shape_history(history) {
+                    Ok(validated) => {
+                        return ServerMessage::HistoryPayload(validated.into_inner());
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            message_type = "history_payload",
+                            error_code = "outbound_validation_failed",
+                            error = %err,
+                            "cloud history failed validation; building it on this Mac"
+                        );
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!(
+                        days = request.days,
+                        error_code = "cache_read_failed",
+                        error = %err,
+                        "cloud history unavailable; building it on this Mac"
+                    );
+                }
+            }
+        }
+        self.local_history_response(&request)
+    }
+
+    fn local_history_response(&self, request: &RequestLatestHistory) -> ServerMessage {
+        let history = match crate::dashboard::local_daily_history(
+            &*self.raw_event_repo,
+            Utc::now(),
+            request.utc_offset_seconds,
+            request.days,
+        ) {
+            Ok(history) => history,
+            Err(err) => {
+                tracing::warn!(
+                    error_code = "local_history_failed",
+                    error = %err,
+                    "daily summaries could not be built on this Mac"
+                );
+                return cache_empty("history_payload", "local_history_unavailable");
+            }
+        };
+        match shaper::shape_history(history) {
+            Ok(validated) => ServerMessage::HistoryPayload(validated.into_inner()),
+            Err(err) => {
+                tracing::warn!(
+                    message_type = "history_payload",
+                    error_code = "outbound_validation_failed",
+                    error = %err,
+                    "local history failed validation"
+                );
+                cache_empty("history_payload", "local_history_unavailable")
+            }
+        }
+    }
+
     fn local_dashboard_response(
         &self,
         request: RequestLocalDashboard,

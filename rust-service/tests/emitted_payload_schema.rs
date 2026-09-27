@@ -41,9 +41,9 @@ use velvt_service::upload::EventIngestor;
 use velvt_service::work_block::WorkBlockManager;
 use velvt_shared_types::{
     AcknowledgeCategoryPrompt, CategoryPromptResponse, ClientMessage, RawEvent,
-    RequestCategoryPrompt, RequestCorrectionHistory, RequestLocalDashboard, RequestMenuStatus,
-    RequestUnclassifiedTriage, RequestWorkBlockState, ServerMessage, SetSiteCategory,
-    StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose,
+    RequestCategoryPrompt, RequestCorrectionHistory, RequestLatestHistory, RequestLocalDashboard,
+    RequestMenuStatus, RequestUnclassifiedTriage, RequestWorkBlockState, ServerMessage,
+    SetSiteCategory, StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose,
 };
 
 #[path = "../shared-types/tests/support/json_schema.rs"]
@@ -273,6 +273,54 @@ async fn the_emitted_local_dashboard_validates_against_its_schema() {
 
     // `local_dashboard.json` describes the payload only.
     assert_valid("local_dashboard.json", payload);
+}
+
+/// The history a signed-out Mac is answered with, built on this Mac from the
+/// events it retained, as it crosses the socket (protocol 33): the request
+/// Swift sends and the `history_payload` Rust sends back, `source` and all.
+#[tokio::test]
+async fn the_history_built_on_this_mac_validates_against_its_schema() {
+    let router = router();
+    let now = Utc::now();
+    for (minutes_ago, duration, app, title) in [
+        (50, 600, "Xcode", "HistorySchema.swift"),
+        (40, 120, "Slack", "general"),
+        (38, 900, "Xcode", "HistorySchema.swift"),
+    ] {
+        router
+            .route(raw_event(
+                now - ChronoDuration::minutes(minutes_ago),
+                duration,
+                app,
+                title,
+            ))
+            .await
+            .unwrap();
+    }
+
+    let request = ClientMessage::RequestLatestHistory(RequestLatestHistory {
+        days: 14,
+        utc_offset_seconds: 0,
+    });
+    assert_valid(
+        "request_latest_history.json",
+        &serde_json::to_value(&request).unwrap(),
+    );
+
+    let response = router.route(request).await.unwrap();
+    let Some(message @ ServerMessage::HistoryPayload(_)) = response else {
+        panic!("request_latest_history answers with history_payload, got {response:?}");
+    };
+    let encoded = serde_json::to_value(message).unwrap();
+    assert_eq!(encoded["payload"]["source"], "this_mac");
+    assert_eq!(encoded["payload"]["days"], 14);
+    let summaries = encoded["payload"]["summaries"].as_array().unwrap();
+    assert_eq!(summaries.len(), 14);
+    assert!(
+        summaries.iter().any(|day| day["status"] == "ready"),
+        "the fixture should make at least one ready day: {encoded}"
+    );
+    assert_valid("history_payload.json", &encoded);
 }
 
 /// `work_block_state` with no block and with an active one. Neither has an

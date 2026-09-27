@@ -10,9 +10,10 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["days", "summaries"],
+      "required": ["days", "source", "summaries"],
       "properties": {
-        "days": { "type": "integer", "minimum": 0 },
+        "days": { "type": "integer", "minimum": 0, "description": "The number of summary rows this payload carries (protocol 33). Until protocol 33 it was the number of days requested, which the cloud does not honour: it answers at most 7." },
+        "source": { "enum": ["cloud", "this_mac"], "description": "Where the summaries were built (protocol 33). cloud: synced daily summaries, UTC calendar days. this_mac: built on this Mac from its own retained events, per local calendar day, when the account is signed out or the cloud could not answer; nothing is stored and nothing leaves the Mac, and focus_score, fragmentation_score and the baseline are null or unavailable." },
         "summaries": {
           "type": "array",
           "items": {

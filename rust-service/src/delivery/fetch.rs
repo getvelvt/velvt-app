@@ -23,11 +23,28 @@ use crate::{
         HistoryCacheEntry, HistoryCacheRepo, InsightCacheEntry, InsightCacheRepo, PersistenceError,
     },
 };
-use velvt_shared_types::{DailySummary, HistoryPayload, InsightPayload};
+use velvt_shared_types::{DailySummary, HistoryPayload, HistorySource, InsightPayload};
 
 use super::parser::{self, ParseError};
 use super::push::PushAdapter;
 use super::LocalInsightRehydrator;
+
+/// A cloud history as Swift receives it: oldest day first, and labelled with
+/// the number of rows it carries rather than the number asked for.
+///
+/// `GET /v1/history/daily` answers at most seven days whatever `days` says
+/// (velvt-core `history_service.py`, `bounded_days = min(days, 7)`), and the
+/// payload used to say `days: 14` over those seven rows. Swift padded the
+/// difference with empty days, so week-over-week read a prior week that did
+/// not exist and could never count.
+fn cloud_history(mut summaries: Vec<DailySummary>) -> HistoryPayload {
+    summaries.sort_by_key(|s| s.date);
+    HistoryPayload {
+        days: u32::try_from(summaries.len()).unwrap_or(u32::MAX),
+        source: HistorySource::Cloud,
+        summaries,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -164,12 +181,8 @@ impl<H: HttpClient> FetchService<H> {
             .collect();
 
         // Fast path: serve entirely from cache.
-        if let Some(mut summaries) = self.all_history_cached(&dates).await {
-            summaries.sort_by_key(|s| s.date);
-            return Ok(HistoryPayload {
-                days: days as u32,
-                summaries,
-            });
+        if let Some(summaries) = self.all_history_cached(&dates).await {
+            return Ok(cloud_history(summaries));
         }
 
         // Slow path: acquire per-window lock to deduplicate concurrent fetches.
@@ -177,12 +190,8 @@ impl<H: HttpClient> FetchService<H> {
         let _guard = lock.lock().await;
 
         // Recheck after acquiring the lock: another task may have populated it.
-        if let Some(mut summaries) = self.all_history_cached(&dates).await {
-            summaries.sort_by_key(|s| s.date);
-            return Ok(HistoryPayload {
-                days: days as u32,
-                summaries,
-            });
+        if let Some(summaries) = self.all_history_cached(&dates).await {
+            return Ok(cloud_history(summaries));
         }
 
         // Fetch from the API.
@@ -196,12 +205,7 @@ impl<H: HttpClient> FetchService<H> {
                 expires_at,
             })?;
         }
-        let mut sorted = summaries;
-        sorted.sort_by_key(|s| s.date);
-        let result = HistoryPayload {
-            days: days as u32,
-            summaries: sorted,
-        };
+        let result = cloud_history(summaries);
         if let Some(adapter) = &self.push_adapter {
             adapter.push_history(result.clone()).await;
         }
@@ -603,6 +607,49 @@ mod tests {
         let result2 = service.daily_history(1).await.unwrap();
         assert_eq!(http.call_count(), 1, "second call should use cache");
         assert_eq!(result2.summaries.len(), 1);
+    }
+
+    /// Asked for 14 days, the cloud answers 7 (velvt-core caps the window).
+    /// The payload says 7, oldest first, and says it came from the cloud, so
+    /// Swift has no gap to pad with a prior week that was never sent.
+    #[tokio::test]
+    async fn a_cloud_history_is_labelled_with_the_rows_it_carries() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let today = Utc::now().date_naive();
+        let rows = (0..7)
+            .map(|days_ago| {
+                let date = today - ChronoDuration::days(days_ago);
+                json!({
+                    "date": date.format("%Y-%m-%d").to_string(),
+                    "status": "ready",
+                    "event_count": 10,
+                    "active_seconds": 3600,
+                    "confidence_level": "low",
+                })
+            })
+            .collect::<Vec<_>>();
+        let http = Arc::new(FakeHttpClient::new().with_route(
+            "/v1/history/daily",
+            200,
+            json!({ "days": 7, "summaries": rows }),
+        ));
+        let service = FetchService::new(
+            Arc::clone(&http),
+            db.history_cache_repo(),
+            db.insight_cache_repo(),
+            test_config(),
+        );
+
+        let history = service.daily_history(14).await.unwrap();
+
+        assert_eq!(history.days, 7);
+        assert_eq!(history.summaries.len(), 7);
+        assert_eq!(history.source, HistorySource::Cloud);
+        assert!(history
+            .summaries
+            .windows(2)
+            .all(|pair| pair[0].date < pair[1].date));
+        assert_eq!(history.summaries.last().unwrap().date, today);
     }
 
     #[tokio::test]

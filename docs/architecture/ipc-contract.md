@@ -281,8 +281,18 @@ Direction: Rust to Swift. Purpose: deliver one ready-to-display daily insight.
 Direction: Rust to Swift. Purpose: deliver a ready-to-display multi-day history.
 
 - `type`: literal `history_payload`
-- `days`: non-negative number of requested days
-- `summaries`: array of daily summary objects
+- `days`: the number of summaries carried (protocol 33; it was the number
+  requested, and the cloud answers at most 7)
+- `source` (protocol 33): `cloud` for synced daily summaries (UTC days), or
+  `this_mac` for summaries Rust built from this Mac's own retained events (up
+  to 14 local calendar days at the request's offset) because the account is
+  signed out or the cloud could not be read. Rust asks the cloud first when
+  signed in. In a `this_mac` history the cloud-only fields are null
+  (`focus_score`, `fragmentation_score`) or `unavailable` (`baseline_status`,
+  `baseline_comparison.status`), `type_proportions` is empty, and
+  `confidence_level` is `low` on a ready day. `dashboard.rs`
+  `local_daily_history` documents how each field differs from velvt-core's.
+- `summaries`: array of daily summary objects, oldest first
 
 Each summary contains:
 
@@ -350,6 +360,13 @@ Direction: Swift to Rust. Purpose: request a ready-to-display history window.
 
 - `type`: literal `request_latest_history`
 - `days`: positive number of requested days
+- `utc_offset_seconds` (protocol 33): the client's UTC offset, -64800 to
+  64800, which bounds the local days of a history built on this Mac
+
+Swift sends it signed in or not, and only after the stored session has gone
+out on the connection as `auth_session`. It is always answered: with a
+`history_payload`, or with `cache_empty` (`local_history_unavailable`) when
+not even this Mac's summaries could be built.
 
 ### `cache_empty`
 
@@ -358,6 +375,9 @@ or `history_payload` is not cached or generated yet.
 
 - `type`: literal `cache_empty`
 - `payload_type`: `insight_payload` or `history_payload`
+- `reason` (optional): `insufficient_evidence`, `backend_unavailable` or
+  `invalid_cached_payload` for an insight; `local_history_unavailable` for a
+  history (protocol 33)
 
 ### Auth and account messages
 

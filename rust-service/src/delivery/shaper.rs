@@ -134,6 +134,11 @@ impl ValidatePayload for HistoryPayload {
         if self.days == 0 {
             return Err(ValidationError::OutOfRange { field: "days" });
         }
+        // `days` names the rows sent (protocol 33). A label larger than the
+        // rows is what Swift used to pad with a week of empty days.
+        if usize::try_from(self.days).ok() != Some(self.summaries.len()) {
+            return Err(ValidationError::OutOfRange { field: "days" });
+        }
         Ok(())
     }
 }
@@ -314,7 +319,7 @@ pub fn shape_local_dashboard(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use velvt_shared_types::ConfidenceLevel;
+    use velvt_shared_types::{ConfidenceLevel, DailySummary, HistorySource, HistoryStatus};
 
     fn valid_insight() -> InsightPayload {
         InsightPayload {
@@ -328,9 +333,27 @@ mod tests {
     }
 
     fn valid_history() -> HistoryPayload {
+        let today = Utc::now().date_naive();
         HistoryPayload {
-            days: 7,
-            summaries: vec![],
+            days: 2,
+            source: HistorySource::Cloud,
+            summaries: (0..2)
+                .map(|days_ago| DailySummary {
+                    date: today - chrono::Duration::days(1 - days_ago),
+                    status: HistoryStatus::NoData,
+                    event_count: 0,
+                    focus_score: None,
+                    fragmentation_score: None,
+                    confidence_level: ConfidenceLevel::None,
+                    active_seconds: 0,
+                    focused_seconds: 0,
+                    meaningful_switch_count: 0,
+                    longest_uninterrupted_seconds: 0,
+                    baseline_status: "no_data".into(),
+                    baseline_comparison: serde_json::json!({}),
+                    type_proportions: vec![],
+                })
+                .collect(),
         }
     }
 
@@ -356,8 +379,19 @@ mod tests {
     fn history_zero_days_fails() {
         let p = HistoryPayload {
             days: 0,
+            source: HistorySource::Cloud,
             summaries: vec![],
         };
+        let err = shape_history(p).unwrap_err();
+        assert!(matches!(err, ValidationError::OutOfRange { field: "days" }));
+    }
+
+    /// Fourteen over seven rows is the label Swift padded a phantom prior
+    /// week from; it never reaches the socket.
+    #[test]
+    fn a_history_labelled_with_more_days_than_it_carries_fails() {
+        let mut p = valid_history();
+        p.days = 14;
         let err = shape_history(p).unwrap_err();
         assert!(matches!(err, ValidationError::OutOfRange { field: "days" }));
     }

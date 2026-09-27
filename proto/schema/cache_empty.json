@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "PRIVACY: This message carries only a payload-type discriminant; no raw user data.",
+  "$comment": "PRIVACY: This message carries only a payload-type discriminant; no raw user data. Since protocol 33 a history request is answered with cache_empty only when summaries could not be built on this Mac either (reason local_history_unavailable): a signed-out Mac or an unreachable cloud gets a history_payload with source this_mac.",
   "title": "Cache Empty",
   "type": "object",
   "additionalProperties": false,
@@ -15,7 +15,7 @@
         "payload_type": { "type": "string", "enum": ["insight_payload", "history_payload"] },
         "reason": {
           "type": "string",
-          "enum": ["insufficient_evidence", "backend_unavailable", "invalid_cached_payload"]
+          "enum": ["insufficient_evidence", "backend_unavailable", "invalid_cached_payload", "local_history_unavailable"]
         }
       }
     }

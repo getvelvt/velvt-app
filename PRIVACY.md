@@ -108,7 +108,9 @@ below start with the first build after 1.0.11: the per-install
 0039), and SQLite's `secure_delete`. Each is scoped again where it is
 described. Migration 0040 starts later, with the first build after 1.0.13:
 `personal_site_override`, `local_site_name`, and `raw_event_buffer.site_stable_id`,
-all described below.
+all described below. Migration 0041 starts with the same build:
+`category_prompt_entry` and `category_prompt_notification`, the record behind the
+needs-a-category card and reminder, also described below.
 
 | Table | Contents | Default retention |
 |---|---|---|
@@ -118,6 +120,7 @@ all described below.
 | `personal_override` | one correction you made to a single window: the window's stable-key hash, the category you chose, `activity_name` (the name you typed for it), and since migration 0036 `app_key_hash` — the application key the correction also taught, the same salted app-name digest as `raw_event_buffer.app_stable_id`, so Undo can remove that application rule without reading the event buffer | until you undo that correction or use Reset Corrections. No sweep expires it |
 | `personal_site_override` | a rule you taught about one site, applied in every browser: the site's key — the same salted digest of the site's hostname as `raw_event_buffer.site_stable_id`, never the hostname itself — the category you chose, `activity_name` (the name you typed for it), a correction count, and when the rule was made and last changed | until you remove that rule or use Reset Corrections. No sweep expires it |
 | `local_site_name` | **the hostname of a site Velvt could not categorize**, in `host` (such as `forum.example.org`, with a leading `www.` removed), beside the site's key and `last_seen_at`, so Velvt can name the site when it asks you what it is. Written, and `last_seen_at` moved, only on a visit Velvt could not confidently classify, to a site you have taught no rule for, and not when one of your own corrections decided the visit. A visit it did classify confidently neither writes the row nor moves `last_seen_at`. It is the only column in the database that holds the hostname of a site you visited, and it holds nothing else from the address: no path, query, port, or credentials | removed when you teach a rule for that site; otherwise 14 days after `last_seen_at`, the last visit to the site Velvt could not categorize |
+| `category_prompt_entry` | one row per application or site the needs-a-category card or reminder spoke about (migration 0041): `entry_key`, which is `application:` or `site:` followed by the same salted key as `raw_event_buffer.app_stable_id` or `raw_event_buffer.site_stable_id` — the digest, never the name or the hostname — when the entry was first and last on the list (`first_listed_at`, `last_listed_at`), the card it was last shown on (`prompt_id`, a SHA-256 over the keys that card showed), when you answered that card (`acknowledged_at`), and when a reminder counted it (`notified_at`). No name, hostname, category, or time observed. The key is a guessable digest like the two it copies, so treat `entry_key` as naming the application or site | 14 days after `last_listed_at`, the last time the entry was on the list; all of them when the key salt is minted again |
 | `personal_app_override` | the same correction applied to a whole application rather than one window: app-key hash, category, `activity_name`, a correction count, since migration 0034 `bundle_key_hash` — the same bundle-identifier digest described under `raw_event_buffer` below, NULL on every rule taught before that migration — and since migration 0035 `app_only`, which records whether you taught the rule for the whole application from the triage list (1) or it was written beside a single-window correction (0) | until you undo the correction it came from or use Reset Corrections. No sweep expires it |
 | `semantic_embedding_cache` | one hashed sketch per application-and-title pair the classifier has scored (for a browser tab, per browser-and-site pair), keyed by the same salted window key as `abstraction_map`. The sketch is derived from the raw application name and the raw window title, and for a browser tab from the tab's hostname as well, computed under this install's `embedding_salt`, and individual words are partially recoverable from it by someone holding the whole file — described below | the 512 most recently observed pairs; a pair is swept once 14 days pass with no further observation of it. The clock restarts on every observation, so a window you keep returning to is never swept |
 | `personal_semantic_prototype` | a copy of that same sketch, kept for a category you corrected so the classifier can recognise the activity again | the 64 most-corrected pairs, at most 12 per category; removed by undoing that correction or by Reset Corrections. No sweep expires it |
@@ -328,11 +331,12 @@ generates the salt and re-keys every digest already on disk under it.
 
 The first table above is every store that holds something drawn from your Mac. It is
 not every table in the file. A database with every migration in this source
-tree applied holds 39 tables, plus SQLite's own `sqlite_sequence`. A Velvt
+tree applied holds 41 tables, plus SQLite's own `sqlite_sequence`. A Velvt
 1.0.11 database (migrations 0001–0036) holds 34: it has no `stable_key_salt`,
-`egress_ledger`, `egress_ledger_checkpoint`, `personal_site_override`, or
-`local_site_name`, which migrations 0037, 0038 and 0040 add. Of the 39,
-the 20 that are not in that table hold counters, settings, keys, feature state,
+`egress_ledger`, `egress_ledger_checkpoint`, `personal_site_override`,
+`local_site_name`, `category_prompt_entry`, or `category_prompt_notification`,
+which migrations 0037, 0038, 0040 and 0041 add. Of the 41,
+the 21 that are not in that table hold counters, settings, keys, feature state,
 and the record of what was sent. They are listed here for the same reason the
 three empty ones are — you will see them if you open the file.
 
@@ -343,7 +347,7 @@ three empty ones are — you will see them if you open the file.
 | `egress_ledger` | one row per HTTP request the helper made, written before it was sent: when, the method and URL, the body's byte count, the SHA-256 of the body, whether an account token was attached, and a hash chaining the row to the one before. No body is stored. For the sign-up, log-in, and token-refresh bodies the hash is taken with the password or token replaced by `[redacted]`. Described under "How to audit what is sent" below | 30 days or 100,000 rows, whichever is tighter, oldest first. No in-app removal |
 | `egress_ledger_checkpoint` | the sequence number and hash of the last `egress_ledger` row retention removed, so the rows that remain still verify | the newest checkpoint only |
 | `embedding_salt` | a 32-byte random value generated on this device by migration 0031: the per-install key the embedding feature hash is computed under, as described above. No activity data | singleton, and never rewritten: a second salt would invalidate every sketch stored under the first. No sweep |
-| `stable_key_salt` | a second 32-byte random value generated on this device, by migration 0037: the per-install key every stable key, application key, and bundle digest in this file is an HMAC under. It stops a guess being checked offline from this repository alone and stops two Macs' keys matching; it does not stop someone who holds this whole file, because it is in it. No activity data. Not in a Velvt 1.0.11 database, which stops at migration 0036; it starts with the first build after 1.0.11 | singleton, and never rewritten while it exists: a second salt would orphan every correction keyed under the first, so if the row is deleted by hand Velvt mints a new one and removes the corrections, mappings and site names it can no longer match. No sweep |
+| `stable_key_salt` | a second 32-byte random value generated on this device, by migration 0037: the per-install key every stable key, application key, and bundle digest in this file is an HMAC under. It stops a guess being checked offline from this repository alone and stops two Macs' keys matching; it does not stop someone who holds this whole file, because it is in it. No activity data. Not in a Velvt 1.0.11 database, which stops at migration 0036; it starts with the first build after 1.0.11 | singleton, and never rewritten while it exists: a second salt would orphan every correction keyed under the first, so if the row is deleted by hand Velvt mints a new one and removes the corrections, mappings, site names and needs-a-category entries it can no longer match. No sweep |
 | `upload_host_backoff` | one row per upload host — the configured API hostname, its consecutive-failure count, and the earliest time a next attempt is allowed. No event content | removed for a host as soon as a batch upload to it succeeds; otherwise it persists |
 | `work_block_intervention` | the drift offer a block received: broad anchor category, switch count, window length, salience, the fixed action id, when it was offered, when its in-app card was first on screen (`card_seen_at`, migration 0032), and the outcome you gave it and when. The block id is the primary key, so a block holds at most one. No label, app identity, window title, URL, or intention text | removed with its block, and by Clear Local Work Blocks |
 | `work_block_category_correction` | when you answer an offer with "wrong classification", the broad category that counts as focus work for that block. Categories only | removed with its block, and by Clear Local Work Blocks |
@@ -353,6 +357,7 @@ three empty ones are — you will see them if you open the file.
 | `quiet_hours_offer_state` | one row remembering whether the quiet-hours offer was triggered, offered, accepted, or declined, when, and under which rule version | singleton; removed by Clear Local Work Blocks |
 | `velvt_quiet_hours` | Velvt's own quiet-hours window, if you accepted that offer: start and end local minutes, the rule version, and when it was configured. Not the macOS Focus configuration, which Velvt never reads or writes | singleton; no sweep, and it survives Clear Local Work Blocks — it is a setting you chose, not evidence |
 | `initiation_invitation` | one row per soft-start invitation: when it was offered, its local date, the fixed action id, and its outcome. No app identity, title, or intention text | no sweep; removed by Clear Local Work Blocks |
+| `category_prompt_notification` | one row per local day on which Velvt handed the app a needs-a-category reminder to post (migration 0041): the local date (`local_date`, the primary key, which is what makes one reminder a day a property of the table), when (`posted_at`), how many entries it counted (`entry_count`), the policy version it was decided under, and when you next opened the list from the card or a reminder (`opened_at`), which is what the reminder's backoff reads. No key, name, hostname, or notification text | 30 days after `posted_at`; it survives Clear Local Work Blocks |
 | `initiation_settings` | the single invitations on/off switch | singleton; no sweep, and it survives Clear Local Work Blocks for the same reason |
 | `weekly_digest` | one row per completed local week: bounded counts — blocks declared and completed, recoveries, wrong interventions, invitations accepted, withheld — and when the digest was shown and closed. No categories, copy, or per-day breakdown is representable | 12 completed weeks, pruned when the next digest is generated; removed by Clear Local Work Blocks |
 | `explain_probe_week` | one tap counter per local week, for the explain-tap metric. Which nudge was explained is not representable | pruned on the same 12-week rule; removed by Clear Local Work Blocks |
@@ -379,7 +384,8 @@ this is the whole of what it reaches:
   `intervention_demotion_state`, `focus_state_evidence`, `focus_observer_state`,
   `quiet_hours_offer_state`, `initiation_invitation`, `weekly_digest`, and
   `explain_probe_week`. It does not reach the classification and correction
-  tables, `out_of_block_run`, or `antecedent_finding`.
+  tables, the needs-a-category prompt's two tables, `out_of_block_run`, or
+  `antecedent_finding`.
 - **Delete Account** is a request to the cloud. The Rust service marks an open
   invitation expired, relays the deletion to the account-deletion endpoint, and
   on acceptance clears the session it holds in memory and destroys the upload
@@ -455,6 +461,8 @@ fails until this list is updated in the same commit.
 | `antecedent_finding` | `finding_id`, `candidate_id`, `candidate_registry_version`, `discovered_at`, `discovery_window_start`, `discovery_window_end`, `support_episodes`, `effect_size`, `q_value`, `confirmed_at`, `confirm_support_episodes`, `confirm_effect_size`, `state`, `surfaced_at`, `retracted_at`, `retraction_reason`, `user_disputed_at` |
 | `batch_event` | `id`, `batch_id`, `event_id`, `stable_id`, `label`, `category`, `taxonomy_version`, `classification_tier`, `occurred_at`, `duration_seconds`, `created_at` |
 | `block_antecedent` | `block_id`, `window_seconds`, `categories`, `switch_count`, `dominant_category`, `dominant_dwell_seconds`, `day_type`, `hour_bucket`, `is_first_block_of_day`, `antecedent_version` |
+| `category_prompt_entry` | `entry_key`, `first_listed_at`, `last_listed_at`, `prompt_id`, `acknowledged_at`, `notified_at` |
+| `category_prompt_notification` | `local_date`, `posted_at`, `entry_count`, `policy_version`, `opened_at` |
 | `classification_telemetry` | `taxonomy_version`, `classification_tier`, `event_count`, `updated_at` |
 | `classifier_artifact_telemetry` | `artifact_version`, `classification_count`, `updated_at` |
 | `egress_ledger` | `seq`, `recorded_at`, `method`, `endpoint`, `body_bytes`, `body_sha256`, `body_redacted`, `bearer`, `prev_hash`, `entry_hash` |
@@ -663,7 +671,8 @@ which a holder of the whole file can reverse by hashing known names and bundle
 identifiers under the salt stored beside them; salted digests of browser sites,
 in `raw_event_buffer.site_stable_id`, `personal_site_override.site_key_hash`, and
 `local_site_name.site_key_hash`, which can be reversed the same way with a list
-of hostnames; the hostname of a site Velvt could not categorize, in
+of hostnames; either kind of digest behind a prefix, in
+`category_prompt_entry.entry_key`, reversible the same way; the hostname of a site Velvt could not categorize, in
 `local_site_name.host`; the metadata an application
 publishes about itself, in `raw_event_buffer.declared_app_category` and
 `raw_event_buffer.document_type_ids`; the names you type when you correct a

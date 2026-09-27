@@ -1,17 +1,18 @@
 use super::{
     AbstractionMapRepo, AbstractionMapping, AntecedentFinding, AntecedentFindingRepo,
     AntecedentFindingState, AntecedentRetractionReason, AppScopeOverride, BatchEvent, BehaviorRepo,
-    BlockAntecedent, CompletedBlockDwellSpan, DayType, DeclaredAppMetadata, DemotionStateRecord,
-    FocusRepo, FocusTransition, GateVerdict, HistoryCacheEntry, HistoryCacheRepo,
-    InitiationInvitationOutcome, InitiationInvitationRecord, InitiationRepo, InsightCacheEntry,
-    InsightCacheRepo, InterventionDecision, InterventionDemotionState, LocalDisplayAggregate,
-    LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord,
-    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, RawEventRepo, ReceiptsRepo,
-    ReportedDwell, UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch, UploadBatchRepo,
-    UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
-    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
-    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
-    WorkBlockRepo, WrongInterventionCounts, MAX_REPORTED_DWELL_SECONDS,
+    BlockAntecedent, CategoryPromptEntry, CategoryPromptNotificationRecord, CategoryPromptRepo,
+    CompletedBlockDwellSpan, DayType, DeclaredAppMetadata, DemotionStateRecord, FocusRepo,
+    FocusTransition, GateVerdict, HistoryCacheEntry, HistoryCacheRepo, InitiationInvitationOutcome,
+    InitiationInvitationRecord, InitiationRepo, InsightCacheEntry, InsightCacheRepo,
+    InterventionDecision, InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata,
+    NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord, QuietHoursOfferResponse,
+    QuietHoursOfferState, RawEventEntry, RawEventRepo, ReceiptsRepo, ReportedDwell,
+    UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch, UploadBatchRepo, UploadBatchStatus,
+    UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection,
+    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
+    WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
+    MAX_REPORTED_DWELL_SECONDS,
 };
 // Named through the defining module because `persistence::mod` re-exports types
 // rather than constants; the retry ceiling is policy that belongs beside the
@@ -560,6 +561,12 @@ impl SqlitePersistence {
 
     pub fn initiation_repo(&self) -> Arc<dyn InitiationRepo> {
         Arc::new(SqliteInitiationRepo(self.clone()))
+    }
+
+    /// The needs-a-category prompt's ledger (`category_prompt_entry` and
+    /// `category_prompt_notification`, 0041).
+    pub fn category_prompt_repo(&self) -> Arc<dyn CategoryPromptRepo> {
+        Arc::new(SqliteCategoryPromptRepo(self.clone()))
     }
 
     pub fn behavior_repo(&self) -> Arc<dyn BehaviorRepo> {
@@ -1971,11 +1978,16 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
                 // neither can be reached under the new salt: the rule would
                 // never apply, and the hostname would sit on disk until the
                 // sweep for a list that can no longer show it.
+                //
+                // The needs-a-category prompt's record of entries (0041) goes
+                // too: each row is filed under an application or site key, and
+                // a key under the lost salt names nothing the list can offer.
                 transaction.execute_batch(
                     "DELETE FROM personal_override;
                      DELETE FROM personal_app_override;
                      DELETE FROM personal_site_override;
                      DELETE FROM local_site_name;
+                     DELETE FROM category_prompt_entry;
                      DELETE FROM personal_semantic_prototype;
                      DELETE FROM semantic_embedding_cache;
                      DELETE FROM abstraction_map;
@@ -4158,6 +4170,208 @@ impl InitiationRepo for SqliteInitiationRepo {
         let connection = self.0.connection()?;
         let removed = connection.execute("DELETE FROM initiation_invitation", [])? as u64;
         Ok(removed)
+    }
+}
+
+struct SqliteCategoryPromptRepo(SqlitePersistence);
+
+fn category_prompt_entry_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CategoryPromptEntry> {
+    Ok(CategoryPromptEntry {
+        entry_key: row.get(0)?,
+        first_listed_at: timestamp_from_row(row, 1)?,
+        last_listed_at: timestamp_from_row(row, 2)?,
+        prompt_id: row.get(3)?,
+        acknowledged_at: optional_timestamp_from_row(row, 4)?,
+        notified_at: optional_timestamp_from_row(row, 5)?,
+    })
+}
+
+impl CategoryPromptRepo for SqliteCategoryPromptRepo {
+    fn record_listed(
+        &self,
+        entry_keys: &[String],
+        at: DateTime<Utc>,
+    ) -> Result<Vec<CategoryPromptEntry>, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let mut entries = Vec::with_capacity(entry_keys.len());
+        {
+            // `last_listed_at` is overwritten rather than maximised, for the
+            // reason `record_local_site_name` overwrites `last_seen_at`: a
+            // clock that once ran ahead would otherwise hold the row past its
+            // sweep for as long as it had run ahead.
+            let mut upsert = transaction.prepare(
+                "INSERT INTO category_prompt_entry(entry_key, first_listed_at, last_listed_at)
+                 VALUES (?1, ?2, ?2)
+                 ON CONFLICT(entry_key) DO UPDATE SET last_listed_at = excluded.last_listed_at",
+            )?;
+            let mut read = transaction.prepare(
+                "SELECT entry_key, first_listed_at, last_listed_at, prompt_id,
+                        acknowledged_at, notified_at
+                 FROM category_prompt_entry WHERE entry_key = ?1",
+            )?;
+            for key in entry_keys {
+                upsert.execute(params![key, at.timestamp()])?;
+                entries.push(read.query_row([key], category_prompt_entry_from_row)?);
+            }
+        }
+        transaction.commit()?;
+        Ok(entries)
+    }
+
+    fn file_under_prompt(
+        &self,
+        entry_keys: &[String],
+        prompt_id: &str,
+    ) -> Result<(), PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        {
+            let mut file = transaction.prepare(
+                "UPDATE category_prompt_entry SET prompt_id = ?2
+                 WHERE entry_key = ?1 AND prompt_id IS NOT ?2",
+            )?;
+            for key in entry_keys {
+                file.execute(params![key, prompt_id])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn acknowledge_prompt(
+        &self,
+        prompt_id: &str,
+        opened: bool,
+        at: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        // On `idx_category_prompt_entry_prompt_id`. Either answer closes the
+        // card for exactly the entries it showed; a later entry is not
+        // answered by a card it was never on.
+        let stamped = transaction.execute(
+            "UPDATE category_prompt_entry SET acknowledged_at = ?2
+             WHERE prompt_id = ?1 AND acknowledged_at IS NULL",
+            params![prompt_id, at.timestamp()],
+        )? as u64;
+        if opened {
+            // The latest reminder only. The backoff asks whether each reminder
+            // was followed by an open before the next one, and an open now can
+            // only have followed the latest.
+            transaction.execute(
+                "UPDATE category_prompt_notification SET opened_at = ?1
+                 WHERE local_date = (
+                     SELECT local_date FROM category_prompt_notification
+                      ORDER BY posted_at DESC, local_date DESC LIMIT 1
+                 )
+                   AND opened_at IS NULL
+                   AND posted_at <= ?1",
+                [at.timestamp()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(stamped)
+    }
+
+    fn claim_notification(
+        &self,
+        local_date: &str,
+        entry_keys: &[String],
+        entry_count: u32,
+        policy_version: u32,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let claimed = transaction.execute(
+            "INSERT INTO category_prompt_notification(
+                local_date, posted_at, entry_count, policy_version
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(local_date) DO NOTHING",
+            params![local_date, at.timestamp(), entry_count, policy_version],
+        )?;
+        if claimed == 0 {
+            // Today's reminder exists. Nothing is stamped: these entries were
+            // not announced by it, and a later day's reminder may still count
+            // them.
+            return Ok(false);
+        }
+        {
+            let mut stamp = transaction.prepare(
+                "UPDATE category_prompt_entry SET notified_at = ?2
+                 WHERE entry_key = ?1 AND notified_at IS NULL",
+            )?;
+            for key in entry_keys {
+                stamp.execute(params![key, at.timestamp()])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    fn recent_notifications(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<CategoryPromptNotificationRecord>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT local_date, posted_at, entry_count, policy_version, opened_at
+             FROM category_prompt_notification
+             ORDER BY posted_at DESC, local_date DESC LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([limit as i64], |row| {
+                Ok(CategoryPromptNotificationRecord {
+                    local_date: row.get(0)?,
+                    posted_at: timestamp_from_row(row, 1)?,
+                    entry_count: row.get(2)?,
+                    policy_version: row.get(3)?,
+                    opened_at: optional_timestamp_from_row(row, 4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    fn delete_expired_entries(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Oldest first, on `idx_category_prompt_entry_last_listed_at` (0041).
+        let deleted = connection.execute(
+            "DELETE FROM category_prompt_entry WHERE entry_key IN (
+                 SELECT entry_key FROM category_prompt_entry
+                  WHERE last_listed_at < ?1
+                  ORDER BY last_listed_at
+                  LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+
+    fn delete_expired_notifications(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Oldest first, on `idx_category_prompt_notification_posted_at` (0041).
+        let deleted = connection.execute(
+            "DELETE FROM category_prompt_notification WHERE local_date IN (
+                 SELECT local_date FROM category_prompt_notification
+                  WHERE posted_at < ?1
+                  ORDER BY posted_at
+                  LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
     }
 }
 
@@ -9302,5 +9516,290 @@ mod site_triage_tests {
             let rows: i64 = connection.query_row(query, [], |row| row.get(0)).unwrap();
             assert_eq!(rows, 0, "{query}");
         }
+    }
+}
+
+#[cfg(test)]
+mod category_prompt_ledger_tests {
+    use super::SqlitePersistence;
+    use crate::persistence::CategoryPromptRepo;
+    use chrono::{DateTime, Utc};
+    use std::sync::Arc;
+
+    /// 2027-01-15T08:00:00Z, the anchor the initiation tests use.
+    fn at(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_800_000_000 + seconds, 0).unwrap()
+    }
+
+    fn application(seed: u8) -> String {
+        format!("application:{}", format!("{seed:02x}").repeat(32))
+    }
+
+    fn site(seed: u8) -> String {
+        format!("site:{}", format!("{seed:02x}").repeat(32))
+    }
+
+    fn prompt(seed: u8) -> String {
+        format!("{seed:02x}").repeat(32)
+    }
+
+    fn ledger() -> (SqlitePersistence, Arc<dyn CategoryPromptRepo>) {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.category_prompt_repo();
+        (database, repo)
+    }
+
+    /// A key is first listed once and last listed every time, and the rows
+    /// come back in the order asked for, so the caller can zip them with the
+    /// list it holds.
+    #[test]
+    fn listing_keeps_the_first_time_and_moves_the_last() {
+        let (_database, ledger) = ledger();
+        let first = ledger
+            .record_listed(&[site(1), application(2)], at(0))
+            .unwrap();
+        let second = ledger
+            .record_listed(&[application(2), site(1), site(3)], at(600))
+            .unwrap();
+
+        assert_eq!(first.len(), 2);
+        assert_eq!(
+            second
+                .iter()
+                .map(|entry| entry.entry_key.clone())
+                .collect::<Vec<_>>(),
+            vec![application(2), site(1), site(3)]
+        );
+        assert_eq!(second[0].first_listed_at, at(0));
+        assert_eq!(second[0].last_listed_at, at(600));
+        assert_eq!(second[2].first_listed_at, at(600));
+        assert!(second.iter().all(|entry| entry.acknowledged_at.is_none()
+            && entry.notified_at.is_none()
+            && entry.prompt_id.is_none()));
+    }
+
+    /// An answer reaches the entries its card showed and nothing else, and a
+    /// second answer never moves the first one's time.
+    #[test]
+    fn an_answer_reaches_exactly_the_entries_its_card_showed() {
+        let (_database, ledger) = ledger();
+        let shown = vec![site(1), application(2)];
+        ledger.record_listed(&shown, at(0)).unwrap();
+        ledger.file_under_prompt(&shown, &prompt(0xa1)).unwrap();
+        // Listed after the card was drawn, on no card yet.
+        ledger.record_listed(&[site(3)], at(30)).unwrap();
+
+        assert_eq!(
+            ledger
+                .acknowledge_prompt(&prompt(0xa1), false, at(60))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            ledger
+                .acknowledge_prompt(&prompt(0xa1), false, at(120))
+                .unwrap(),
+            0,
+            "a repeated answer stamps nothing"
+        );
+        assert_eq!(
+            ledger
+                .acknowledge_prompt(&prompt(0xb2), true, at(120))
+                .unwrap(),
+            0,
+            "an unknown card reaches no entry"
+        );
+
+        let entries = ledger
+            .record_listed(&[site(1), application(2), site(3)], at(180))
+            .unwrap();
+        assert_eq!(entries[0].acknowledged_at, Some(at(60)));
+        assert_eq!(entries[1].acknowledged_at, Some(at(60)));
+        assert_eq!(entries[2].acknowledged_at, None);
+    }
+
+    /// The primary key on the local date is the daily cap: a second claim for
+    /// the same day changes nothing, and a new day may claim again.
+    #[test]
+    fn one_reminder_a_local_day_and_a_refused_claim_stamps_nothing() {
+        let (_database, ledger) = ledger();
+        ledger
+            .record_listed(&[site(1), application(2)], at(0))
+            .unwrap();
+
+        assert!(ledger
+            .claim_notification("2027-01-15", &[site(1)], 2, 1, at(0))
+            .unwrap());
+        assert!(!ledger
+            .claim_notification("2027-01-15", &[application(2)], 2, 1, at(60))
+            .unwrap());
+        let entries = ledger
+            .record_listed(&[site(1), application(2)], at(120))
+            .unwrap();
+        assert_eq!(entries[0].notified_at, Some(at(0)));
+        assert_eq!(entries[1].notified_at, None, "the refused claim stamped it");
+
+        assert!(ledger
+            .claim_notification("2027-01-16", &[site(1), application(2)], 2, 1, at(86_400))
+            .unwrap());
+        let entries = ledger
+            .record_listed(&[site(1), application(2)], at(86_460))
+            .unwrap();
+        assert_eq!(
+            entries[0].notified_at,
+            Some(at(0)),
+            "an announced entry keeps the time it was first announced"
+        );
+        assert_eq!(entries[1].notified_at, Some(at(86_400)));
+
+        let reminders = ledger.recent_notifications(8).unwrap();
+        assert_eq!(
+            reminders
+                .iter()
+                .map(|reminder| reminder.local_date.as_str())
+                .collect::<Vec<_>>(),
+            vec!["2027-01-16", "2027-01-15"],
+            "most recent first"
+        );
+        assert_eq!(reminders[0].entry_count, 2);
+        assert_eq!(reminders[0].policy_version, 1);
+    }
+
+    /// An open is evidence about the latest reminder only: it can have
+    /// followed no earlier one.
+    #[test]
+    fn an_open_stamps_the_latest_reminder_once() {
+        let (_database, ledger) = ledger();
+        ledger
+            .claim_notification("2027-01-15", &[], 1, 1, at(0))
+            .unwrap();
+        ledger
+            .claim_notification("2027-01-16", &[], 1, 1, at(86_400))
+            .unwrap();
+
+        ledger
+            .acknowledge_prompt(&prompt(1), false, at(86_500))
+            .unwrap();
+        assert!(ledger
+            .recent_notifications(2)
+            .unwrap()
+            .iter()
+            .all(|reminder| reminder.opened_at.is_none()));
+
+        ledger
+            .acknowledge_prompt(&prompt(1), true, at(86_600))
+            .unwrap();
+        ledger
+            .acknowledge_prompt(&prompt(1), true, at(86_700))
+            .unwrap();
+        let reminders = ledger.recent_notifications(2).unwrap();
+        assert_eq!(reminders[0].opened_at, Some(at(86_600)));
+        assert_eq!(reminders[1].opened_at, None);
+    }
+
+    /// The table admits what the policy writes and nothing else: a key under
+    /// one of the two prefixes and 64 lowercase hex digits, a card id of 64
+    /// hex digits, a `YYYY-MM-DD` date, and a count the list can hold.
+    #[test]
+    fn the_schema_refuses_anything_but_keys_dates_and_counts() {
+        let (database, ledger) = ledger();
+        for key in [
+            "application:Qwybex".to_owned(),
+            format!("window:{}", "a".repeat(64)),
+            format!("site:{}", "A".repeat(64)),
+            "a".repeat(64),
+        ] {
+            assert!(
+                ledger
+                    .record_listed(std::slice::from_ref(&key), at(0))
+                    .is_err(),
+                "{key} was accepted"
+            );
+        }
+        ledger.record_listed(&[site(1)], at(0)).unwrap();
+        assert!(ledger
+            .file_under_prompt(&[site(1)], "not-a-card-id")
+            .is_err());
+        for (date, count) in [("15/01/2027", 1), ("2027-01-15", 0), ("2027-01-15", 9)] {
+            assert!(
+                ledger
+                    .claim_notification(date, &[], count, 1, at(0))
+                    .is_err(),
+                "{date} {count} was accepted"
+            );
+        }
+        let rows: i64 = database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM category_prompt_notification",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    /// Both sweeps delete oldest first, within their limit, and leave what is
+    /// inside the horizon.
+    #[test]
+    fn the_sweeps_delete_only_what_is_past_the_horizon() {
+        let (_database, ledger) = ledger();
+        ledger.record_listed(&[site(1)], at(0)).unwrap();
+        ledger.record_listed(&[site(2)], at(100)).unwrap();
+        ledger.record_listed(&[site(3)], at(10_000)).unwrap();
+        ledger
+            .claim_notification("2027-01-15", &[], 1, 1, at(0))
+            .unwrap();
+        ledger
+            .claim_notification("2027-01-16", &[], 1, 1, at(86_400))
+            .unwrap();
+
+        assert_eq!(ledger.delete_expired_entries(at(5_000), 1).unwrap(), 1);
+        assert_eq!(ledger.delete_expired_entries(at(5_000), 8).unwrap(), 1);
+        assert_eq!(ledger.delete_expired_entries(at(5_000), 8).unwrap(), 0);
+        let survivors = ledger.record_listed(&[site(3)], at(20_000)).unwrap();
+        assert_eq!(survivors[0].first_listed_at, at(10_000));
+
+        assert_eq!(
+            ledger.delete_expired_notifications(at(86_400), 8).unwrap(),
+            1
+        );
+        let reminders = ledger.recent_notifications(8).unwrap();
+        assert_eq!(reminders.len(), 1);
+        assert_eq!(reminders[0].local_date, "2027-01-16");
+    }
+
+    /// A re-minted salt orphans every application and site key, so the
+    /// prompt's entries go with them. The reminder rows hold no key and stay.
+    #[test]
+    fn a_minted_stable_key_salt_removes_the_prompt_entries() {
+        let (database, ledger) = ledger();
+        ledger
+            .record_listed(&[site(1), application(2)], at(0))
+            .unwrap();
+        ledger
+            .claim_notification("2027-01-15", &[site(1)], 2, 1, at(0))
+            .unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute("DELETE FROM stable_key_salt", [])
+            .unwrap();
+
+        database.abstraction_map_repo().stable_key_salt().unwrap();
+
+        // The count is read, and the guard released, before the ledger is
+        // asked anything: an in-memory store has one connection behind a
+        // mutex, and holding it across a repo call would deadlock.
+        let entries: i64 = database
+            .connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM category_prompt_entry", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(entries, 0);
+        assert_eq!(ledger.recent_notifications(8).unwrap().len(), 1);
     }
 }

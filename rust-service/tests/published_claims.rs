@@ -91,7 +91,8 @@ use velvt_service::egress::ENDPOINTS;
 use velvt_service::ipc::{MessageRouter, R7Router};
 use velvt_service::persistence::{AbstractionMapping, SqlitePersistence};
 use velvt_service::retention::{
-    ABSTRACTION_MAP_RETENTION_DAYS, LOCAL_SITE_NAME_RETENTION_DAYS,
+    ABSTRACTION_MAP_RETENTION_DAYS, CATEGORY_PROMPT_ENTRY_RETENTION_DAYS,
+    CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS, LOCAL_SITE_NAME_RETENTION_DAYS,
     SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
 };
 use velvt_service::upload::{
@@ -281,6 +282,12 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
         // Migration 0040's site name, on its own constant: the raw-event
         // horizon, counted from the last visit that needed a category.
         ("local_site_name", vec![LOCAL_SITE_NAME_RETENTION_DAYS]),
+        // Migration 0041's record of what the needs-a-category prompt asked
+        // about: the raw-event horizon, counted from the last listing.
+        (
+            "category_prompt_entry",
+            vec![CATEGORY_PROMPT_ENTRY_RETENTION_DAYS],
+        ),
         (
             "semantic_embedding_cache",
             vec![
@@ -336,6 +343,36 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
             row.retention
         );
     }
+}
+
+/// The one row of the second inventory table -- the stores that hold counters,
+/// settings, keys and feature state -- whose horizon is a constant the service
+/// runs on rather than a singleton or an in-app action: the needs-a-category
+/// reminder rows (migration 0041).
+///
+/// The first table's test above reads only the first table, so this row would
+/// otherwise be a published number no build checks.
+#[test]
+fn the_reminder_record_is_kept_for_the_published_horizon() {
+    let mut lines = PRIVACY_DOCUMENT.lines().map(str::trim).skip_while(|line| {
+        !(line.starts_with('|') && table_cells(line) == ["Table", "What it holds", "Retention"])
+    });
+    assert!(
+        lines.next().is_some(),
+        "PRIVACY.md no longer contains a table headed `| Table | What it holds | Retention |`"
+    );
+    let row = lines
+        .take_while(|line| line.starts_with('|'))
+        .map(table_cells)
+        .find(|cells| backticked(&cells[0]) == ["category_prompt_notification"])
+        .expect("PRIVACY.md's second inventory table lists `category_prompt_notification`");
+    assert_eq!(
+        numbers_in(&row[row.len() - 1]),
+        vec![CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS],
+        "PRIVACY.md's retention for `category_prompt_notification` is not the shipped \
+         horizon. The document reads: {}",
+        row[row.len() - 1]
+    );
 }
 
 /// One row of the storage table in `PRIVACY.md`.
@@ -1537,6 +1574,8 @@ const MIGRATED_TABLES: &[&str] = &[
     "antecedent_finding",
     "batch_event",
     "block_antecedent",
+    "category_prompt_entry",
+    "category_prompt_notification",
     "classification_telemetry",
     "classifier_artifact_telemetry",
     "egress_ledger",

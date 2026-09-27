@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Duration};
 use chrono::Utc;
 
 use crate::persistence::{
-    AbstractionMapRepo, EgressLedgerRepo, HistoryCacheRepo, InsightCacheRepo, RawEventRepo,
-    UploadBatchRepo, WorkBlockRepo,
+    AbstractionMapRepo, CategoryPromptRepo, EgressLedgerRepo, HistoryCacheRepo, InsightCacheRepo,
+    RawEventRepo, UploadBatchRepo, WorkBlockRepo,
 };
 
 use super::{CleanupReport, RetentionError, RetentionTarget};
@@ -368,6 +368,108 @@ impl RetentionTarget for LocalSiteNameRetentionTarget {
         let deleted = self
             .repo
             .delete_expired_site_names(cutoff, self.batch_size)?;
+        Ok(CleanupReport { deleted })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CategoryPromptEntryRetentionTarget / CategoryPromptNotificationRetentionTarget
+// ---------------------------------------------------------------------------
+
+/// Default retention for `category_prompt_entry` (migration 0041), in days,
+/// counted from the last time the entry was on the needs-a-category list.
+///
+/// An entry is on the list only while events in the buffer put it there, so
+/// its memory of having been shown, answered and announced expires on the
+/// raw-event horizon. An entry that returns after that is new again, and may
+/// be asked about. A constant, for the reason
+/// `LOCAL_SITE_NAME_RETENTION_DAYS` is one.
+pub const CATEGORY_PROMPT_ENTRY_RETENTION_DAYS: u64 = 14;
+
+/// Default retention for `category_prompt_notification` (migration 0041), in
+/// days, counted from when the reminder was handed to the app to post.
+///
+/// The reminder's rules read only the last three reminders and one local day,
+/// and the longest pause the backoff imposes is seven days after the latest,
+/// so a month covers every question the policy asks with room to spare.
+pub const CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS: u64 = 30;
+
+/// Expires `category_prompt_entry` rows that have not been on the list within
+/// the retention window. A re-minted salt deletes them all.
+pub struct CategoryPromptEntryRetentionTarget {
+    repo: Arc<dyn CategoryPromptRepo>,
+    retention: Duration,
+    batch_size: usize,
+}
+
+impl CategoryPromptEntryRetentionTarget {
+    pub fn new(repo: Arc<dyn CategoryPromptRepo>, retention: Duration, batch_size: usize) -> Self {
+        Self {
+            repo,
+            retention,
+            batch_size,
+        }
+    }
+
+    /// The registered default: the raw-event horizon.
+    pub fn with_default_retention(repo: Arc<dyn CategoryPromptRepo>, batch_size: usize) -> Self {
+        Self::new(
+            repo,
+            Duration::from_secs(CATEGORY_PROMPT_ENTRY_RETENTION_DAYS * 24 * 60 * 60),
+            batch_size,
+        )
+    }
+}
+
+impl RetentionTarget for CategoryPromptEntryRetentionTarget {
+    fn name(&self) -> &'static str {
+        "category_prompt_entry"
+    }
+
+    fn run_cleanup(&self) -> Result<CleanupReport, RetentionError> {
+        let cutoff = Utc::now() - chrono::Duration::seconds(self.retention.as_secs() as i64);
+        let deleted = self.repo.delete_expired_entries(cutoff, self.batch_size)?;
+        Ok(CleanupReport { deleted })
+    }
+}
+
+/// Expires `category_prompt_notification` rows posted before the retention
+/// window.
+pub struct CategoryPromptNotificationRetentionTarget {
+    repo: Arc<dyn CategoryPromptRepo>,
+    retention: Duration,
+    batch_size: usize,
+}
+
+impl CategoryPromptNotificationRetentionTarget {
+    pub fn new(repo: Arc<dyn CategoryPromptRepo>, retention: Duration, batch_size: usize) -> Self {
+        Self {
+            repo,
+            retention,
+            batch_size,
+        }
+    }
+
+    /// The registered default: thirty days.
+    pub fn with_default_retention(repo: Arc<dyn CategoryPromptRepo>, batch_size: usize) -> Self {
+        Self::new(
+            repo,
+            Duration::from_secs(CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS * 24 * 60 * 60),
+            batch_size,
+        )
+    }
+}
+
+impl RetentionTarget for CategoryPromptNotificationRetentionTarget {
+    fn name(&self) -> &'static str {
+        "category_prompt_notification"
+    }
+
+    fn run_cleanup(&self) -> Result<CleanupReport, RetentionError> {
+        let cutoff = Utc::now() - chrono::Duration::seconds(self.retention.as_secs() as i64);
+        let deleted = self
+            .repo
+            .delete_expired_notifications(cutoff, self.batch_size)?;
         Ok(CleanupReport { deleted })
     }
 }

@@ -1,6 +1,7 @@
 use super::{
     AbstractionMapping, AntecedentFinding, AntecedentFindingState, AntecedentRetractionReason,
-    AppScopeOverride, BatchEvent, BlockAntecedent, CompletedBlockDwellSpan, DeclaredAppMetadata,
+    AppScopeOverride, BatchEvent, BlockAntecedent, CategoryPromptEntry,
+    CategoryPromptNotificationRecord, CompletedBlockDwellSpan, DeclaredAppMetadata,
     DemotionStateRecord, FocusTransition, HistoryCacheEntry, InitiationInvitationOutcome,
     InitiationInvitationRecord, InsightCacheEntry, InterventionDecision, LocalDisplayAggregate,
     LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersistenceError, PersonalOverrideRecord,
@@ -772,6 +773,75 @@ pub trait InitiationRepo: Send + Sync {
     /// Deletes every invitation row. The opt-out setting is an explicit user
     /// choice and survives; the behavioral record does not.
     fn clear_invitations(&self) -> Result<u64, PersistenceError>;
+}
+
+/// Storage seam for the needs-a-category card and reminder (migration 0041):
+/// which entries of the list have been shown, answered and announced, and
+/// which local days a reminder was posted on. Salted keys, dates, times and
+/// counts; no name and no hostname is representable. Everything device-local.
+pub trait CategoryPromptRepo: Send + Sync {
+    /// Records that `entry_keys` are on the list at `at`, and returns their
+    /// rows in the order given.
+    ///
+    /// A key the ledger has not seen is inserted as first listed at `at`;
+    /// every key's `last_listed_at` moves to `at`, which is what the 14-day
+    /// sweep counts from. One transaction.
+    fn record_listed(
+        &self,
+        entry_keys: &[String],
+        at: DateTime<Utc>,
+    ) -> Result<Vec<CategoryPromptEntry>, PersistenceError>;
+    /// Files `entry_keys` under `prompt_id`, the card that shows them, so an
+    /// answer to that card reaches exactly these entries.
+    fn file_under_prompt(
+        &self,
+        entry_keys: &[String],
+        prompt_id: &str,
+    ) -> Result<(), PersistenceError>;
+    /// Records an answer to the card `prompt_id`: stamps `acknowledged_at` on
+    /// every entry filed under it that has none, and returns how many were
+    /// stamped. When `opened`, also stamps `opened_at` on the most recent
+    /// reminder if it has none, whether or not any entry matched: the person
+    /// opened the list from a prompt after that reminder, which is what the
+    /// reminder backoff reads. An older reminder is never stamped, and an
+    /// earlier answer is never overwritten. One transaction.
+    fn acknowledge_prompt(
+        &self,
+        prompt_id: &str,
+        opened: bool,
+        at: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError>;
+    /// Claims the reminder for `local_date`: inserts its row and stamps
+    /// `notified_at` on those of `entry_keys` that have none, in one
+    /// transaction. Returns `false`, having changed nothing, when
+    /// `local_date` already has a reminder; the primary key decides, so two
+    /// racing callers cannot both claim one.
+    fn claim_notification(
+        &self,
+        local_date: &str,
+        entry_keys: &[String],
+        entry_count: u32,
+        policy_version: u32,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError>;
+    /// The most recent reminders first, bounded by `limit`.
+    fn recent_notifications(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<CategoryPromptNotificationRecord>, PersistenceError>;
+    /// Deletes at most `limit` entries last on the list before `cutoff`,
+    /// oldest first.
+    fn delete_expired_entries(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
+    /// Deletes at most `limit` reminders posted before `cutoff`, oldest first.
+    fn delete_expired_notifications(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
 }
 
 /// Storage seam for the weekly receipts digest and the explain-tap probe

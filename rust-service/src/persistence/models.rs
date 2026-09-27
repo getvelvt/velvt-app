@@ -864,6 +864,52 @@ pub struct CompletedBlockDwellSpan {
     pub ended_at: DateTime<Utc>,
 }
 
+/// One entry of the needs-a-category list, as the prompt remembers it
+/// (`category_prompt_entry`, migration 0041). A salted key and times only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CategoryPromptEntry {
+    /// `application:<key>` or `site:<key>`, the key being the salted digest
+    /// the list carries.
+    pub entry_key: String,
+    pub first_listed_at: DateTime<Utc>,
+    pub last_listed_at: DateTime<Utc>,
+    /// The card this entry was last shown on.
+    pub prompt_id: Option<String>,
+    /// When an answer to a card showing this entry arrived, either one.
+    pub acknowledged_at: Option<DateTime<Utc>>,
+    /// When a reminder counted this entry.
+    pub notified_at: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for CategoryPromptEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CategoryPromptEntry")
+            .field("entry_key", &"[local_identifier]")
+            .field("first_listed_at", &self.first_listed_at)
+            .field("last_listed_at", &self.last_listed_at)
+            .field("prompt_id", &self.prompt_id)
+            .field("acknowledged_at", &self.acknowledged_at)
+            .field("notified_at", &self.notified_at)
+            .finish()
+    }
+}
+
+/// One needs-a-category reminder handed to the app to post
+/// (`category_prompt_notification`, migration 0041). A date, times and a
+/// count; no key and no name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CategoryPromptNotificationRecord {
+    /// Local calendar date (`YYYY-MM-DD`) the reminder was posted on. The
+    /// table's primary key, which is what caps reminders at one a day.
+    pub local_date: String,
+    pub posted_at: DateTime<Utc>,
+    pub entry_count: u32,
+    pub policy_version: u32,
+    /// When the person next opened the list from a prompt, if they have.
+    pub opened_at: Option<DateTime<Utc>>,
+}
+
 /// A device-local intervention offer and its observed outcome. `anchor_category`
 /// is a broad taxonomy category and carries no raw context.
 #[derive(Debug, Clone, PartialEq, Eq)]

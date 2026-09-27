@@ -197,10 +197,12 @@ async fn main() {
         use velvt_service::ipc::{MenuStatusProvider, R7Router, ReconnectTracker};
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
-            AbstractionMapRetentionTarget, CacheRetentionTarget, EgressLedgerRetentionTarget,
-            InterventionDecisionOutcomeTarget, LocalSiteNameRetentionTarget,
-            RawEventRetentionTarget, RetentionScheduler, SemanticEmbeddingCacheRetentionTarget,
-            UploadBatchRetentionTarget, WorkBlockIntentionRetentionTarget,
+            AbstractionMapRetentionTarget, CacheRetentionTarget,
+            CategoryPromptEntryRetentionTarget, CategoryPromptNotificationRetentionTarget,
+            EgressLedgerRetentionTarget, InterventionDecisionOutcomeTarget,
+            LocalSiteNameRetentionTarget, RawEventRetentionTarget, RetentionScheduler,
+            SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+            WorkBlockIntentionRetentionTarget,
         };
         use velvt_service::upload::{
             BatchAssembler, EventIngestor, HttpBatchUploader, SharedUploadBatcher, UploadBatcher,
@@ -606,6 +608,22 @@ async fn main() {
             Arc::clone(&raw_event_repo),
             config.retention_batch_size,
         );
+        // The eleventh and twelfth: the needs-a-category prompt's ledger
+        // (migration 0041). Its entries, which are filed under salted
+        // application and site keys, expire on the raw-event horizon from the
+        // last time each was on the list; its reminder rows, a date, times and
+        // a count, after thirty days. Constants, for the reason
+        // `out_of_block_run` uses one.
+        let category_prompt_entry_target =
+            CategoryPromptEntryRetentionTarget::with_default_retention(
+                persistence.category_prompt_repo(),
+                config.retention_batch_size,
+            );
+        let category_prompt_notification_target =
+            CategoryPromptNotificationRetentionTarget::with_default_retention(
+                persistence.category_prompt_repo(),
+                config.retention_batch_size,
+            );
         let retention_scheduler =
             RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
                 .add_target(raw_event_target)
@@ -619,7 +637,9 @@ async fn main() {
                 .add_target(decision_outcome_target)
                 .add_target(abstraction_map_target)
                 .add_target(egress_ledger_target)
-                .add_target(local_site_name_target);
+                .add_target(local_site_name_target)
+                .add_target(category_prompt_entry_target)
+                .add_target(category_prompt_notification_target);
         let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
 
         // R7 + R8 transport — shutdown-aware, reconnect-tracking.

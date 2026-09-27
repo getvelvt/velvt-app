@@ -35,3 +35,4 @@ Open the relevant file, make your changes, and do not modify files unrelated to 
 | Release ledger | `docs/RELEASES.md` | Every notarized release with build, protocol, source commit or tag, DMG sha256 and recipients; how to cut the next one |
 | Secure application updates | `docs/updates.md` | Updater architecture, trust model, activation checklist, publishing order, and N-to-N+1 verification |
 | Local meaningful-work loop | `docs/architecture/work-block-loop.md` | Work-block ownership, state machine, evidence rules, privacy field table, lifecycle, and failure behavior |
+| Personal return ledger (shadow) | `docs/architecture/personal-learning-framework.md` | The per-person return ledger in `behavior/returns.rs`, what it cannot say before randomization, suite E, the design simulator, the v6-to-v7 path, privacy, and the founder's own data |

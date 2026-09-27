@@ -614,6 +614,10 @@ so in its `$comment`:
   `bundle_id` this line once described was removed on 2026-09-25), and
   `set_application_category`'s `app_stable_id` and `activity_name` and
   `set_site_category`'s `site_stable_id` and `activity_name`;
+- `menu_status.correction_acknowledgment`, the one-shot confirmation of a
+  correction or a teach, which can quote a name the person typed or, since
+  protocol 30, an application's local name sent back from the list (never a
+  hostname: a site is confirmed by its typed name or as "this site");
 - the work-block `intention` in `start_work_block` and `work_block_state`.
 
 `category_prompt` is deliberately not in that group: its card and notification

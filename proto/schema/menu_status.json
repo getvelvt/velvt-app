@@ -22,7 +22,7 @@
       ],
       "properties": {
         "correction_acknowledgment": {
-          "$comment": "One-shot confirmation authored by Rust, present only on the status returned by a correction command. A polled status omits it, so the confirmation cannot linger or reappear.",
+          "$comment": "One-shot confirmation authored by Rust, present only on the status returned by a correction command. A polled status omits it, so the confirmation cannot linger or reappear. Local IPC only: it can quote a name the person typed, or an application's local name sent back from the needs-a-category list (since protocol 30), and never a hostname. Never uploaded, logged, or included in crash diagnostics.",
           "type": "string",
           "minLength": 1,
           "maxLength": 200

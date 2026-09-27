@@ -247,14 +247,15 @@ classify. The other two are kept so a later reading of the same evidence does
 not need the event back, and they are named here because they are on your disk
 now — not because something is using them.
 
-The needs-a-category list is the one place an application name or a hostname
-leaves the Rust service on purpose: `unclassified_triage` carries each
-unclassified application's local name, and since protocol 33 each unclassified
+The needs-a-category list is the one place a hostname leaves the Rust service
+on purpose: since protocol 33 `unclassified_triage` carries each unclassified
 site's hostname from `local_site_name`, as `display_name`, over the local
-socket to the Swift app so it can ask you what the application or site is. The
-local dashboard carries application names for the Daily Activity chart. Both
-stay on the socket; neither is uploaded. Teaching a site sends its key, never
-its hostname, and deletes the stored hostname.
+socket to the Swift app so it can ask you what the site is. It carries each
+unclassified application's local name the same way, and the local dashboard
+carries application names for the Daily Activity chart. All of it stays on the
+socket; none of it is uploaded. Teaching a site sends its key, never its
+hostname, and deletes the stored hostname, and its confirmation says "this
+site", or the name you typed, never the hostname.
 
 ### The embedding sketch, and what can be read back out of it
 

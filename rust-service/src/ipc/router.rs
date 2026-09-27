@@ -464,7 +464,7 @@ mod tests {
             removal_acknowledgment(false),
             reset_acknowledgment(),
             application_acknowledgment(Some("Qwybex"), "FOCUS_WORK"),
-            site_acknowledgment(Some("qwybex-forum.example"), "REFERENCE"),
+            site_acknowledgment(Some("Forum"), "REFERENCE"),
             site_acknowledgment(None, "SOCIAL_FEED"),
         ];
 
@@ -477,9 +477,12 @@ mod tests {
             "Got it — This app counts as reference from now on."
         );
         assert_eq!(
-            site_acknowledgment(Some("qwybex-forum.example"), "SOCIAL_FEED"),
-            "Got it — every page of qwybex-forum.example, in every browser, counts as social \
-             feed from now on."
+            site_acknowledgment(Some("Forum"), "SOCIAL_FEED"),
+            "Got it — every page of Forum, in every browser, counts as social feed from now on."
+        );
+        assert_eq!(
+            site_acknowledgment(None, "REFERENCE"),
+            "Got it — every page of this site, in every browser, counts as reference from now on."
         );
         for sentence in sentences {
             for forbidden in [
@@ -1358,8 +1361,8 @@ mod tests {
     }
 
     /// Teaching a site: the rule is written under the site key, the site leaves
-    /// the list, its stored hostname goes, the confirmation names it once, and
-    /// nothing is sent anywhere -- even signed in.
+    /// the list, its stored hostname goes, the confirmation never names it,
+    /// and nothing is sent anywhere -- even signed in.
     #[tokio::test]
     async fn teaching_a_site_from_the_list_takes_it_off_the_list_and_sends_nothing() {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
@@ -1391,8 +1394,8 @@ mod tests {
         assert_eq!(
             status.correction_acknowledgment.as_deref(),
             Some(
-                "Got it — every page of qwybex-forum.example, in every browser, counts as \
-                 reference from now on."
+                "Got it — every page of this site, in every browser, counts as reference \
+                 from now on."
             )
         );
         let rules = persistence.abstraction_map_repo();
@@ -1418,13 +1421,16 @@ mod tests {
         );
 
         // Idempotent: the same answer again is the same rule, counted twice,
-        // and with the name gone the confirmation says "this site".
-        let again = menu_status(&router, teach_site(&entry.stable_id, "REFERENCE", None)).await;
+        // and a name typed with it is what the confirmation calls the site.
+        let again = menu_status(
+            &router,
+            teach_site(&entry.stable_id, "REFERENCE", Some("Forum")),
+        )
+        .await;
         assert_eq!(
             again.correction_acknowledgment.as_deref(),
             Some(
-                "Got it — every page of this site, in every browser, counts as reference \
-                 from now on."
+                "Got it — every page of Forum, in every browser, counts as reference from now on."
             )
         );
         assert_eq!(
@@ -3018,11 +3024,12 @@ fn application_acknowledgment(activity: Option<&str>, category: &str) -> String 
 /// The site-list sibling of `application_acknowledgment`, in the same voice and
 /// with the same absence of a block qualifier, and it says the one thing a
 /// site rule does that an app rule does not: it holds in every browser. The
-/// subject is the site's hostname, read before the rule deleted it, or else
-/// the name the user typed; the sentence is shown once, beside the list, and
-/// is not stored.
-fn site_acknowledgment(site: Option<&str>, category: &str) -> String {
-    let subject = site.unwrap_or("this site");
+/// subject is the name the user typed, or "this site"; never the hostname,
+/// which the list is the one place Rust sends on purpose. That also keeps the
+/// sentence inside `menu_status`'s 200 characters, which a stored hostname
+/// of up to 253 would not be.
+fn site_acknowledgment(activity: Option<&str>, category: &str) -> String {
+    let subject = activity.unwrap_or("this site");
     let category = spoken_category(category);
     format!("Got it — every page of {subject}, in every browser, counts as {category} from now on.")
 }
@@ -3199,10 +3206,12 @@ impl R7Router {
     /// Teaches Velvt one site, on every page and in every browser, with no
     /// source event (protocol 33).
     ///
-    /// Validated exactly as `set_application_category` is, and like it makes
-    /// no network request: the rule is device-local. The site's hostname is
-    /// read first, for the confirmation only, because the save deletes it --
-    /// it was kept so Velvt could ask about the site, and it has been told.
+    /// Validated exactly as `set_application_category` is. The rule is
+    /// device-local, and nothing about the site is sent anywhere; the
+    /// `menu_status` it answers with may refresh cloud readiness, as any
+    /// status poll does. The save deletes the site's stored hostname -- it
+    /// was kept so Velvt could ask about the site, and it has been told --
+    /// and the confirmation names the site only by what the user typed.
     async fn set_site_category(&self, request: SetSiteCategory) -> ServerMessage {
         if crate::abstraction::override_label_for_category(&request.category).is_none() {
             return classification_correction_error("invalid_classification_category");
@@ -3217,17 +3226,6 @@ impl R7Router {
             Ok(value) => value,
             Err(()) => return classification_correction_error("invalid_local_activity_name"),
         };
-        let host = self
-            .raw_event_repo
-            .local_site_name(site_stable_id)
-            .unwrap_or_else(|err| {
-                tracing::warn!(
-                    error_code = "local_site_name_read_failed",
-                    error = %err,
-                    "confirming the site rule without the site's name"
-                );
-                None
-            });
         if abstraction_map
             .save_site_scope_override(site_stable_id, &request.category, activity_name.as_deref())
             .is_err()
@@ -3236,7 +3234,7 @@ impl R7Router {
         }
         ServerMessage::MenuStatus(
             self.menu_status_saying(site_acknowledgment(
-                host.as_deref().or(activity_name.as_deref()),
+                activity_name.as_deref(),
                 &request.category,
             ))
             .await,

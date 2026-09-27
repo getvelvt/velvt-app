@@ -26,8 +26,9 @@
   `classification_correction_unavailable` and
   `classification_correction_persistence_failed` as for applications).
   Answered with `menu_status` carrying a Rust-authored
-  `correction_acknowledgment` ("Got it — every page of <host>, in every
-  browser, counts as <category> from now on."). No network request is made,
+  `correction_acknowledgment` ("Got it — every page of <the typed name, or
+  this site>, in every browser, counts as <category> from now on."), which
+  never quotes the hostname. No network request is made,
   and the site's stored hostname is deleted when it is taught.
 - `correction_history_page.items[].scope` and
   `menu_status.correction_history[].scope` gain `site`. A site rule's

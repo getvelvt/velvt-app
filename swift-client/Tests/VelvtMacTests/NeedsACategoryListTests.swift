@@ -69,7 +69,7 @@ final class NeedsACategoryListTests: XCTestCase {
             .menuStatus(
                 status(
                     acknowledging:
-                        "Got it — every page of wiki.example, in every browser, counts as reference from now on.")))
+                        "Got it — every page of this site, in every browser, counts as reference from now on.")))
         try await waitUntil { sut.correctionAcknowledgment != nil }
         XCTAssertEqual(sut.acknowledgmentOrigin, .application)
     }

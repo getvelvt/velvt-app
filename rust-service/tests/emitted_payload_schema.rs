@@ -541,6 +541,80 @@ async fn the_emitted_needs_a_category_list_and_history_validate_against_their_sc
     assert_valid("correction_history_page.json", &encoded);
 }
 
+/// The confirmation a site teach answers with stays inside `menu_status`'s
+/// 200 characters whatever the site: it names the site by the name typed with
+/// it, at most 48 characters, or as "this site", and never by its hostname,
+/// which can be 253.
+#[tokio::test]
+async fn the_menu_status_a_site_teach_emits_validates_against_its_schema() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let router = router_over(&persistence);
+    let host = format!(
+        "{}.{}.{}.{}.example",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(53)
+    );
+    assert_eq!(host.len(), 253);
+    router
+        .route(ClientMessage::RawEvent(RawEvent {
+            event_id: uuid::Uuid::new_v4(),
+            occurred_at: Utc::now() - ChronoDuration::minutes(3),
+            duration_seconds: 600,
+            app_name: "Safari".into(),
+            window_title: "Zarniwoop".into(),
+            bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
+            focused_document_url: Some(format!("https://{host}/t/1")),
+            in_progress: false,
+        }))
+        .await
+        .unwrap();
+    let response = router
+        .route(ClientMessage::RequestUnclassifiedTriage(
+            RequestUnclassifiedTriage { lookback_days: 7 },
+        ))
+        .await
+        .unwrap();
+    let Some(ServerMessage::UnclassifiedTriage(triage)) = response else {
+        panic!("request_unclassified_triage answers with unclassified_triage, got {response:?}");
+    };
+    assert_eq!(
+        triage.entries[0].display_name.as_deref(),
+        Some(host.as_str()),
+        "the long host is on the list, so the teach below is of it"
+    );
+    let site = triage.entries[0].stable_id.clone();
+
+    for (category, name) in [
+        ("PASSIVE_CONSUMPTION", None),
+        ("PASSIVE_CONSUMPTION", Some("x".repeat(48))),
+        ("TASK_MANAGEMENT", Some("y".repeat(48))),
+    ] {
+        let response = router
+            .route(ClientMessage::SetSiteCategory(SetSiteCategory {
+                site_stable_id: site.clone(),
+                category: category.into(),
+                activity_name: name.clone(),
+            }))
+            .await
+            .unwrap();
+        let Some(message @ ServerMessage::MenuStatus(_)) = response else {
+            panic!("set_site_category answers with menu_status, got {response:?}");
+        };
+        let encoded = serde_json::to_value(message).unwrap();
+        let acknowledgment = encoded["payload"]["correction_acknowledgment"]
+            .as_str()
+            .unwrap();
+        assert!(acknowledgment.chars().count() <= 200, "{acknowledgment:?}");
+        assert!(!acknowledgment.contains("aaaa"), "{acknowledgment:?}");
+        assert!(acknowledgment.contains(name.as_deref().unwrap_or("this site")));
+        assert_valid("menu_status.json", &encoded);
+    }
+}
+
 /// Delivery gates that never suppress, so the emitted prompt carries a
 /// reminder as well as a card.
 struct OpenGates;

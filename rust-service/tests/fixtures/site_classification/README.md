@@ -111,6 +111,31 @@ GitHub are in `dev`; YouTube, Spotify and the `atlassian.net` workspaces are
 in `test`), the two halves differ in make-up. Compare a change with its
 baseline within a split, not `dev` against `test`.
 
+## Hold-out corpus
+
+The classification decisions were made while looking at `corpus.jsonl`, so
+`holdout.jsonl` is the clean hold-out. Four blind authors wrote it on
+2026-09-27, after all that tuning, two personas each: secondary teacher and
+course designer, in-house recruiter, corporate lawyer, financial analyst,
+journalist, video creator, SRE on call and UX researcher. It has 1,372 visits (1,207 browser tabs on 467 hosts, 165 native
+windows in 55 applications), validated and merged like the first corpus, with
+`split` set to `holdout` on every line: it is one split, not divided by
+domain. It holds out the authors rather than the sites: 117 of its 385
+registrable domains, and two thirds of its browser seconds, are in
+`corpus.jsonl` too.
+
+```sh
+VELVT_MEASURE_CORPUS=holdout cargo test --test site_classification_measure -- --ignored --nocapture
+```
+
+reports it as the `holdout` and `all` sections (the same visits). It was
+measured once before the local site classification change and once after,
+and nothing may be tuned on it: do not read its lines or its results while
+changing classification, and do not add a seed or rule because a host
+appears here. Once a decision is made from its numbers it is no longer held
+out, and the next change needs a fresh one. The rules below apply to it as
+well.
+
 ## Never edit it to fit a classifier
 
 The truth was written before, and without sight of, any classifier. Changing a

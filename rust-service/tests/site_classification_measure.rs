@@ -14,7 +14,9 @@
 //! It prints a report and writes the same numbers, plus every visit's
 //! prediction, as JSON to the path in `VELVT_MEASURE_OUT` (default:
 //! `site_classification_measure.json` in Cargo's integration-test temporary
-//! directory).
+//! directory). With `VELVT_MEASURE_CORPUS=holdout` it measures the hold-out
+//! corpus, `holdout.jsonl`, instead: one split, `holdout`, that nothing is
+//! tuned on (see the README).
 //!
 //! A prediction is *confident* exactly when the drift gate would count it as
 //! evidence (`is_confident` in `src/work_block/mod.rs`): classified, High or
@@ -42,7 +44,11 @@ use velvt_service::abstraction::{
 use velvt_shared_types::RawEvent;
 
 const CORPUS_PATH: &str = "tests/fixtures/site_classification/corpus.jsonl";
+const HOLDOUT_PATH: &str = "tests/fixtures/site_classification/holdout.jsonl";
 const OUTPUT_ENV: &str = "VELVT_MEASURE_OUT";
+/// `holdout` measures `HOLDOUT_PATH`; unset or empty measures `CORPUS_PATH`.
+const CORPUS_ENV: &str = "VELVT_MEASURE_CORPUS";
+const HOLDOUT: &str = "holdout";
 
 /// Every truth value the corpus may carry: the taxonomy's categories a person
 /// can mean (UNLOGGED is "not classified", never an answer) plus UNSURE.
@@ -60,6 +66,8 @@ const UNSURE: &str = "UNSURE";
 /// The confusion-matrix column for every visit the gate would not count.
 const NEEDS_A_CATEGORY: &str = "NEEDS_A_CATEGORY";
 const SPLITS: [&str; 3] = ["dev", "test", "all"];
+/// Every hold-out line is in the one split `holdout`.
+const HOLDOUT_SPLITS: [&str; 2] = [HOLDOUT, "all"];
 const KINDS: [Kind; 2] = [Kind::Browser, Kind::Native];
 const TOP_WRONG_CONFIDENT: usize = 25;
 const TOP_NEEDS_A_CATEGORY_LISTED: usize = 25;
@@ -73,8 +81,9 @@ const TIER2_TIMEOUT_METRIC: &str = "tier2_timeout_count";
 #[test]
 #[ignore = "measurement; run with --ignored --nocapture"]
 fn measure_site_classification() {
-    let corpus_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(CORPUS_PATH);
-    let visits = load_corpus(&corpus_path);
+    let corpus = Corpus::from_env();
+    let corpus_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(corpus.path());
+    let visits = load_corpus(&corpus_path, corpus);
     let taxonomy_version = Taxonomy::from_builtin()
         .expect("the shipped taxonomy loads")
         .version()
@@ -82,10 +91,10 @@ fn measure_site_classification() {
 
     let configs = Config::ALL
         .iter()
-        .map(|&config| measure_config(config, &visits))
+        .map(|&config| measure_config(config, &visits, corpus.splits()))
         .collect::<Vec<_>>();
     let report = Report {
-        corpus: CorpusSummary::new(CORPUS_PATH, &visits),
+        corpus: CorpusSummary::new(corpus.path(), &visits, corpus.splits()),
         taxonomy_version,
         confident_rule: "status == classified && confidence in {high, medium} && \
                          category (case-insensitive) not in {SYSTEM, UNCLASSIFIED, UNLOGGED}",
@@ -104,6 +113,45 @@ fn measure_site_classification() {
 
 // ---------------------------------------------------------------------------
 // Corpus
+
+/// Which corpus a run measures, from `VELVT_MEASURE_CORPUS`.
+#[derive(Debug, Clone, Copy)]
+enum Corpus {
+    Main,
+    Holdout,
+}
+
+impl Corpus {
+    fn from_env() -> Self {
+        match std::env::var(CORPUS_ENV).unwrap_or_default().as_str() {
+            "" => Corpus::Main,
+            HOLDOUT => Corpus::Holdout,
+            other => panic!("{CORPUS_ENV}={other:?}: expected unset or {HOLDOUT:?}"),
+        }
+    }
+
+    fn path(self) -> &'static str {
+        match self {
+            Corpus::Main => CORPUS_PATH,
+            Corpus::Holdout => HOLDOUT_PATH,
+        }
+    }
+
+    fn splits(self) -> &'static [&'static str] {
+        match self {
+            Corpus::Main => &SPLITS,
+            Corpus::Holdout => &HOLDOUT_SPLITS,
+        }
+    }
+
+    /// The split a line must carry.
+    fn expected_split(self, visit: &Visit) -> &'static str {
+        match self {
+            Corpus::Main => split_for(&visit.split_key()),
+            Corpus::Holdout => HOLDOUT,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -228,7 +276,7 @@ fn split_for(split_key: &str) -> &'static str {
     }
 }
 
-fn load_corpus(path: &Path) -> Vec<Visit> {
+fn load_corpus(path: &Path, corpus: Corpus) -> Vec<Visit> {
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|err| panic!("cannot read {}: {err}", path.display()));
     let visits = text
@@ -254,7 +302,7 @@ fn load_corpus(path: &Path) -> Vec<Visit> {
             );
             assert_eq!(
                 visit.split,
-                split_for(&visit.split_key()),
+                corpus.expected_split(&visit),
                 "corpus line {number}: split does not follow the split rule"
             );
             visit
@@ -463,7 +511,7 @@ fn classify_all(config: Config, visits: &[Visit]) -> (Vec<Prediction>, u64) {
     (predictions, timeouts.count())
 }
 
-fn measure_config(config: Config, visits: &[Visit]) -> ConfigReport {
+fn measure_config(config: Config, visits: &[Visit], splits: &[&'static str]) -> ConfigReport {
     let mut discarded_passes = 0;
     let predictions = loop {
         let (predictions, timeouts) = classify_all(config, visits);
@@ -477,7 +525,7 @@ fn measure_config(config: Config, visits: &[Visit]) -> ConfigReport {
             config.name()
         );
     };
-    let sections = SPLITS
+    let sections = splits
         .iter()
         .flat_map(|&split| KINDS.iter().map(move |&kind| (split, kind)))
         .map(|(split, kind)| {
@@ -575,9 +623,9 @@ impl Tally {
 }
 
 impl CorpusSummary {
-    fn new(path: &'static str, visits: &[Visit]) -> Self {
+    fn new(path: &'static str, visits: &[Visit], split_names: &[&'static str]) -> Self {
         let mut splits = BTreeMap::new();
-        for split in SPLITS {
+        for &split in split_names {
             let selected = visits
                 .iter()
                 .filter(|visit| split == "all" || visit.split == split)

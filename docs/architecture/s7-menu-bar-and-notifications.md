@@ -258,7 +258,13 @@ In Swift:
   It shares `MenuStatusViewModel.cadence`, the menu status's own 60-second
   timer, rather than running one. A tap on the reminder after its card was
   closed still answers `opened`, with the last card's id: the service records
-  `opened` against the latest reminder.
+  `opened` against the latest reminder. A tap when no card id is known in
+  this process (after a relaunch, or a tap that launched the app) asks for
+  the card and answers `opened` for the one the next reply carries; a reply
+  with no card ends it. A card it has answered, and any reminder a reply
+  carries for that same card, is not shown again until a reply carries no card
+  or another one. An answer whose send fails is kept and sent first when the
+  socket next connects, before the request for the card.
 - The reminder's `userInfo` is `["velvt_category_prompt": true]` and nothing
   else: no prompt id, no text. It is posted under one identifier,
   `velvt.category_prompt`, so a new reminder replaces the last in

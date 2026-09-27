@@ -115,10 +115,111 @@ final class CategoryPromptCoordinatorTests: XCTestCase {
             .acknowledgeCategoryPrompt(.init(promptID: promptID, response: .opened)))
     }
 
-    func testNothingIsAnsweredWithoutACardToAnswer() async throws {
+    /// The id of an answered card means nothing once a reply says the service
+    /// has moved on: the same card can legitimately come back later (its
+    /// entries were forgotten and listed again), and then it shows.
+    func testAnAnsweredIDIsForgottenOnceAReplyMovesOn() async throws {
+        let harness = Harness()
+        harness.messages.send(.categoryPrompt(cardOnly(promptID)))
+        try await waitUntil { harness.sut.prompt != nil }
+        harness.sut.notNow()
+
+        harness.messages.send(.categoryPrompt(cardOnly(promptID)))
+        harness.messages.send(.categoryPrompt(CategoryPrompt()))
+        harness.messages.send(.categoryPrompt(cardOnly(promptID)))
+        try await waitUntil { harness.sut.prompt != nil }
+        XCTAssertEqual(harness.sut.prompt?.promptID, promptID)
+    }
+
+    /// A reply already on its way when the card was answered can carry the
+    /// day's reminder about that same card. The card stays closed, and so
+    /// does the reminder.
+    func testAnAnsweredCardsReminderIsNotPosted() async throws {
+        let harness = Harness()
+        harness.permissions.setStatus(.granted, for: .notifications)
+        harness.messages.send(.categoryPrompt(cardOnly(promptID)))
+        try await waitUntil { harness.sut.prompt != nil }
+        harness.sut.notNow()
+
+        harness.messages.send(.categoryPrompt(withReminder(promptID)))
+        try await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertNil(harness.sut.prompt)
+        XCTAssertNil(harness.sut.inFlightNotification)
+        XCTAssertEqual(harness.scheduler.scheduledCategoryPrompts, [])
+    }
+
+    /// An answer is not asked for again, so one that could not be sent is
+    /// kept, and sent before anything else when the socket is back. The card
+    /// stays closed meanwhile, as the person left it.
+    func testAnAnswerThatCouldNotBeSentIsSentOnReconnect() async throws {
+        let harness = Harness()
+        harness.messages.send(.categoryPrompt(cardOnly(promptID)))
+        try await waitUntil { harness.sut.prompt != nil }
+        harness.client.shouldThrowOnSend = IPCError.notConnected
+
+        harness.sut.open()
+        try await Task.sleep(nanoseconds: 30_000_000)
+        harness.messages.send(.categoryPrompt(cardOnly(promptID)))
+        try await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertNil(harness.sut.prompt)
+        XCTAssertEqual(harness.client.sentMessages, [])
+
+        harness.client.shouldThrowOnSend = nil
+        harness.client.setConnectionStatus(.connected)
+        try await waitUntil { harness.client.sentMessages.count == 2 }
+        XCTAssertEqual(
+            harness.client.sentMessages,
+            [
+                .acknowledgeCategoryPrompt(.init(promptID: promptID, response: .opened)),
+                .requestCategoryPrompt(.init(utcOffsetSeconds: 0)),
+            ])
+
+        // Sent once: a later connection has nothing left to send.
+        harness.client.setConnectionStatus(.disconnected)
+        harness.client.setConnectionStatus(.connected)
+        try await waitUntil { harness.requests == 2 }
+        XCTAssertEqual(harness.client.sentMessages.count, 3)
+    }
+
+    /// A tap on the reminder with no card id known here (the app was
+    /// relaunched, or the tap launched it) asks, and answers `opened` for the
+    /// card the reply carries. The card is not drawn over the list the tap
+    /// opened, and its reminder is not posted.
+    func testATapWithNoCardKnownAnswersTheCardTheNextReplyCarries() async throws {
+        let harness = Harness()
+        harness.permissions.setStatus(.granted, for: .notifications)
+
+        harness.sut.open()
+
+        try await waitUntil { harness.requests == 1 }
+        harness.messages.send(.categoryPrompt(withReminder(promptID)))
+        try await waitUntil { harness.client.sentMessages.count == 2 }
+        XCTAssertEqual(
+            harness.client.sentMessages.last,
+            .acknowledgeCategoryPrompt(.init(promptID: promptID, response: .opened)))
+        XCTAssertNil(harness.sut.prompt)
+        XCTAssertNil(harness.sut.inFlightNotification)
+    }
+
+    /// The tap is about the reply that follows it, not about a card that
+    /// turns up days later: a reply with nothing to answer ends it.
+    func testATapWithNoCardKnownIsSpentByAReplyWithNoCard() async throws {
         let harness = Harness()
 
         harness.sut.open()
+        try await waitUntil { harness.requests == 1 }
+        harness.messages.send(.categoryPrompt(CategoryPrompt()))
+        harness.messages.send(.categoryPrompt(cardOnly(laterPromptID)))
+        try await waitUntil { harness.sut.prompt != nil }
+
+        XCTAssertEqual(harness.sut.prompt?.promptID, laterPromptID)
+        XCTAssertEqual(harness.requests, harness.client.sentMessages.count, "nothing was answered")
+    }
+
+    func testNotNowWithoutACardSendsNothing() async throws {
+        let harness = Harness()
+
         harness.sut.notNow()
         try await Task.sleep(nanoseconds: 30_000_000)
 

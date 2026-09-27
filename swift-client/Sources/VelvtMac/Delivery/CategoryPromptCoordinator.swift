@@ -26,6 +26,11 @@ public struct PresentedCategoryPrompt: Equatable, Sendable {
 /// posted, so it is posted at once or not at all: only if notifications are
 /// already allowed. It is not worth a permission dialog, so it never asks for
 /// one, and it is not an intervention, so it never touches that counter.
+///
+/// An answer is the person's own action and nothing asks for it again, so one
+/// that cannot be sent is kept and sent first when the socket reconnects. A
+/// tap on the reminder when no card id is known here (the app was relaunched,
+/// or the tap launched it) answers the card the next reply carries.
 @MainActor
 public final class CategoryPromptCoordinator: ObservableObject {
     /// The card to show, or `nil` for none. An empty `category_prompt` clears
@@ -48,10 +53,19 @@ public final class CategoryPromptCoordinator: ObservableObject {
     /// was closed, and `opened` is still the truth about what the person did:
     /// the service records it against the latest reminder whatever the card.
     private var lastPromptID: String?
-    /// The card last answered here. A request already on its way when the
-    /// person answered comes back with that same card; showing it again for
-    /// the moment before the answer's own reply lands would undo their tap.
+    /// The card last answered here, until a reply says the service has moved
+    /// on. A request already on its way when the person answered comes back
+    /// with that same card, and with any reminder claimed for it; showing
+    /// either for the moment before the answer's own reply lands would undo
+    /// their tap. Replies arrive in order, so the first one that carries no
+    /// card or another card was written after the answer was recorded.
     private var answeredPromptID: String?
+    /// A reminder tapped when no card id was known here. The next reply's
+    /// card is the one the reminder was about, and is answered `opened`.
+    private var pendingOpened = false
+    /// An answer whose send failed. Sent before the next request once the
+    /// socket reconnects.
+    private var pendingAnswer: AcknowledgeCategoryPrompt?
 
     public init(
         ipcClient: any IPCClientProtocol,
@@ -87,8 +101,14 @@ public final class CategoryPromptCoordinator: ObservableObject {
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] status in
-                guard status == .connected else { return }
-                self?.refresh()
+                guard status == .connected, let self else { return }
+                // The answer first: the request's reply is then the card as
+                // it stands after it.
+                if let pendingAnswer {
+                    self.pendingAnswer = nil
+                    acknowledge(pendingAnswer)
+                }
+                refresh()
             }
             .store(in: &cancellables)
 
@@ -116,32 +136,55 @@ public final class CategoryPromptCoordinator: ObservableObject {
         answer(.opened)
     }
 
-    /// The card's secondary action. The card stays away until something it
-    /// never showed joins the list.
+    /// The card's secondary action. The card stays away until an entry no
+    /// answer has reached is among those it counts.
     public func notNow() {
         answer(.notNow)
     }
 
     func apply(_ prompt: CategoryPrompt) {
-        if let promptID = prompt.promptID, let card = prompt.card, promptID != answeredPromptID {
+        if pendingOpened {
+            // The first reply after a tap that had no card to answer: its
+            // card, if it has one, is what the reminder was about.
+            pendingOpened = false
+            if let promptID = prompt.promptID {
+                lastPromptID = promptID
+                answer(promptID, .opened)
+            }
+        }
+        let answered = prompt.promptID != nil && prompt.promptID == answeredPromptID
+        if !answered {
+            answeredPromptID = nil
+        }
+        if let promptID = prompt.promptID, let card = prompt.card, !answered {
             self.prompt = PresentedCategoryPrompt(promptID: promptID, card: card)
             lastPromptID = promptID
         } else {
             self.prompt = nil
         }
-        if let notification = prompt.notification {
+        if let notification = prompt.notification, !answered {
             post(notification)
         }
     }
 
     private func answer(_ response: CategoryPromptResponse) {
-        let promptID = prompt?.promptID ?? (response == .opened ? lastPromptID : nil)
         // Closed now, not when the service answers: it is the person's own
         // action, and the reply carries the card as it stands afterwards.
+        let shown = prompt?.promptID
         prompt = nil
-        guard let promptID else { return }
+        if let promptID = shown ?? (response == .opened ? lastPromptID : nil) {
+            answer(promptID, response)
+        } else if response == .opened {
+            // A tap on a reminder with no card id known in this process: ask,
+            // and answer the card the reply carries.
+            pendingOpened = true
+            refresh()
+        }
+    }
+
+    private func answer(_ promptID: String, _ response: CategoryPromptResponse) {
         answeredPromptID = promptID
-        send(.acknowledgeCategoryPrompt(.init(promptID: promptID, response: response)))
+        acknowledge(AcknowledgeCategoryPrompt(promptID: promptID, response: response))
     }
 
     /// Posts a reminder only if notifications are already allowed. `unknown`
@@ -164,9 +207,23 @@ public final class CategoryPromptCoordinator: ObservableObject {
         let previous = sendChain
         sendChain = Task { [ipcClient] in
             await previous?.value
-            // A failed send is left for the next pull: the service answers
-            // every request, and nothing here is lost by waiting for it.
+            // A request that fails is left for the next pull: the service
+            // answers every request, and nothing is lost by waiting for it.
             try? await ipcClient.send(message)
+        }
+    }
+
+    /// Sends an answer, in order with the requests, and keeps it when the send
+    /// fails: nothing asks for an answer again.
+    private func acknowledge(_ answer: AcknowledgeCategoryPrompt) {
+        let previous = sendChain
+        sendChain = Task { [weak self, ipcClient] in
+            await previous?.value
+            do {
+                try await ipcClient.send(.acknowledgeCategoryPrompt(answer))
+            } catch {
+                self?.pendingAnswer = answer
+            }
         }
     }
 }

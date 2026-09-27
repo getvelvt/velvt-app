@@ -387,7 +387,8 @@ this is the whole of what it reaches:
   and the `display_name` on that window and on the other windows of the same
   application. Removing a site rule from the list of saved rules deletes its
   `personal_site_override` row and the `display_name` on the windows of that
-  site still in `raw_event_buffer`. None of these rewrites `raw_event_buffer`:
+  site still in `raw_event_buffer`; clearing a site rule's name there removes
+  the name from the rule and from the same windows' `display_name`. None of these rewrites `raw_event_buffer`:
   a name you typed stays in the `local_display_label` of the events it was
   applied to until they expire.
 - **Clear Local Work Blocks** deletes `work_block` and everything that cascades

@@ -1572,6 +1572,8 @@ mod tests {
 
     /// A site rule is in the history as a site rule, can be edited there, and
     /// can be removed there, through the same two messages as every other rule.
+    /// An edit sends the whole name field, so an edit with no name clears the
+    /// name the rule had.
     #[tokio::test]
     async fn a_site_rule_is_listed_edited_and_removed_from_the_history() {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
@@ -1602,15 +1604,48 @@ mod tests {
             "the history never names the host"
         );
 
+        let renamed = menu_status(
+            &router,
+            ClientMessage::UpdateClassificationOverride(
+                velvt_shared_types::UpdateClassificationOverride {
+                    stable_id: key.clone(),
+                    category: "REFERENCE".into(),
+                    local_activity_name: Some("Board".into()),
+                },
+            ),
+        )
+        .await;
+        assert_eq!(
+            renamed.correction_acknowledgment.as_deref(),
+            Some(
+                "Got it — every page of Board, in every browser, counts as reference from now on."
+            )
+        );
+        let rules = persistence.abstraction_map_repo();
+        assert_eq!(
+            rules
+                .site_scope_override(&key)
+                .unwrap()
+                .unwrap()
+                .activity_name
+                .as_deref(),
+            Some("Board")
+        );
+
         let edited = menu_status(&router, update(&key, "FOCUS_WORK")).await;
         assert_eq!(
             edited.correction_acknowledgment.as_deref(),
             Some("Got it — every page of this site, in every browser, counts as focus work from now on.")
         );
-        let rules = persistence.abstraction_map_repo();
         let stored = rules.site_scope_override(&key).unwrap().unwrap();
         assert_eq!(stored.category, "FOCUS_WORK");
-        assert_eq!(stored.activity_name.as_deref(), Some("Forum"));
+        assert_eq!(stored.activity_name, None, "the cleared name is cleared");
+        let listed = history(&router).await;
+        let rule = listed
+            .iter()
+            .find(|rule| rule.stable_id == key)
+            .expect("the edited rule is still listed");
+        assert_eq!(rule.local_label, None);
 
         let remove = || {
             ClientMessage::RemoveClassificationOverride(
@@ -2388,8 +2423,10 @@ impl MessageRouter for R7Router {
                         }
                     };
                 if editing_site_rule {
+                    // The name as sent, not coalesced: the editor sends the
+                    // whole field, so nothing here means the name was cleared.
                     if abstraction_map
-                        .save_site_scope_override(
+                        .edit_site_scope_override(
                             &correction.stable_id,
                             &correction.category,
                             local_activity_name.as_deref(),

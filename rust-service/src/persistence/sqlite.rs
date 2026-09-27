@@ -1587,6 +1587,42 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         Ok(())
     }
 
+    fn edit_site_scope_override(
+        &self,
+        site_key_hash: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<(), PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        // The save's upsert, with the name written as given rather than
+        // coalesced: an empty field in the editor means no name.
+        transaction.execute(
+            "INSERT INTO personal_site_override(site_key_hash, category, activity_name)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(site_key_hash) DO UPDATE SET
+                category = excluded.category,
+                activity_name = excluded.activity_name,
+                correction_count = personal_site_override.correction_count + 1,
+                updated_at = unixepoch()",
+            params![site_key_hash, category, local_activity_name],
+        )?;
+        if local_activity_name.is_none() {
+            // The name the rule mirrored into each window of the site, for the
+            // reason `remove_site_scope_override` nulls it: the mapping's
+            // upsert coalesces, so the next observation would never clear it.
+            transaction.execute(
+                "UPDATE abstraction_map SET display_name = NULL
+                 WHERE stable_id IN (
+                     SELECT stable_id FROM raw_event_buffer WHERE site_stable_id = ?1
+                 )",
+                [site_key_hash],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn site_scope_override(
         &self,
         site_key_hash: &str,
@@ -9621,6 +9657,54 @@ mod site_triage_tests {
                 ("abs_taught".into(), None),
             ]
         );
+    }
+
+    /// An edit replaces the name rather than keeping it: a name cleared in the
+    /// editor is cleared on the rule and off the windows it was mirrored
+    /// into, and a new name replaces the old one.
+    #[test]
+    fn editing_a_site_rule_replaces_its_name_and_a_cleared_one_goes() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        events
+            .insert(&site_visit("taught", &key(14), Utc::now(), 60))
+            .unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO abstraction_map(key_hash, stable_id, label, category,
+                     taxonomy_version, classification_tier, display_name)
+                 VALUES (?1, 'abs_taught', 'reference:inferred', 'REFERENCE', 'mvp-2',
+                         'exact_match', 'Handbook')",
+                [key(0x42)],
+            )
+            .unwrap();
+        maps.save_site_scope_override(&key(14), "REFERENCE", Some("Handbook"))
+            .unwrap();
+        let rule = || {
+            let rule = maps.site_scope_override(&key(14)).unwrap().unwrap();
+            (rule.category, rule.activity_name, rule.correction_count)
+        };
+
+        maps.edit_site_scope_override(&key(14), "REFERENCE", Some("Manual"))
+            .unwrap();
+        assert_eq!(rule(), ("REFERENCE".into(), Some("Manual".into()), 2));
+
+        maps.edit_site_scope_override(&key(14), "FOCUS_WORK", None)
+            .unwrap();
+        assert_eq!(rule(), ("FOCUS_WORK".into(), None, 3));
+        let mirrored: Option<String> = database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT display_name FROM abstraction_map WHERE stable_id = 'abs_taught'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mirrored, None);
     }
 
     /// Reset Corrections reaches the site rung too, and leaves the names of

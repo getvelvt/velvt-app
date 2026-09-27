@@ -135,6 +135,21 @@ pub trait AbstractionMapRepo: Send + Sync {
         local_activity_name: Option<&str>,
     ) -> Result<(), PersistenceError>;
 
+    /// Edits the rule for one site from the list of saved rules: the category
+    /// and the name are both replaced, so a name cleared in the editor is
+    /// cleared, where [`Self::save_site_scope_override`] keeps a name that a
+    /// repeat from the needs-a-category list did not type. The editor always
+    /// sends the whole field.
+    ///
+    /// A cleared name also leaves the windows it was mirrored into, as it does
+    /// when the rule is removed. Counts as a correction, as a save does.
+    fn edit_site_scope_override(
+        &self,
+        site_key_hash: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<(), PersistenceError>;
+
     /// Reads the rule taught about one site, by its site key.
     ///
     /// The correction history lists site rules beside window and app rules,

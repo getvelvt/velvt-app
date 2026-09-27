@@ -37,7 +37,8 @@
   typed, never the hostname. `remove_classification_override` and
   `update_classification_override` take a site rule's key as they take a
   window or app rule's: Rust tries the window rule, then the app rule, then
-  the site rule.
+  the site rule. An edit of a site rule writes `local_activity_name` as sent,
+  so an edit with none clears the name the rule had.
 - `set_application_category` resolves the application's bundle key by looking
   it up for that application key, not by searching a 14-day top-8 list, which
   missed an application the client had been shown on a 7-day list and keyed

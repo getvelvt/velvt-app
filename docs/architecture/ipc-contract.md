@@ -449,7 +449,8 @@ version in brackets is where the message or field arrived.
   a page. Each item's `scope` is `window`, `app` or `site`; for an app rule
   `stable_id` is the application's key hash and for a site rule the site key,
   so a client must read the scope before acting on it. Removal and edits take
-  any of the three.
+  any of the three. An edit of a site rule writes the name as sent, so an
+  edit with no `local_activity_name` clears the name the rule had.
 - `request_unclassified_triage` / `unclassified_triage` [30; sites 33]: see
   "Messages changed and added in protocol 33" below.
 - `set_application_category` [30]: Swift to Rust. The one-tap answer from that

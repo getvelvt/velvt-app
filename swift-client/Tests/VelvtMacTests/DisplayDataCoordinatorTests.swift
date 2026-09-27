@@ -155,14 +155,15 @@ final class DisplayDataCoordinatorTests: XCTestCase {
 
     func testDataLoaderRequestsCurrentLocalInsightDateWhenConnectedAndLoggedIn() async {
         let client = FakeIPCClient()
-        client.setConnectionStatus(.connected)
         let account = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "user-1"))
+        let handedOver = CurrentValueSubject<Bool, Never>(true)
         let sut = MenuBarDataLoader(
             ipcClient: client,
-            currentLocalInsightDate: { "2026-06-26" }
+            currentLocalInsightDate: { "2026-06-26" },
+            utcOffsetSeconds: { -14_400 }
         )
 
-        sut.start(accountState: account.eraseToAnyPublisher())
+        startLoader(sut, account: account, handedOver: handedOver)
 
         let messagesSent = expectation(description: "loader sent startup delivery requests")
         Task {
@@ -180,21 +181,24 @@ final class DisplayDataCoordinatorTests: XCTestCase {
             return XCTFail("Expected first startup delivery request to fetch latest insight")
         }
         XCTAssertEqual(request.date, "2026-06-26")
-        XCTAssertTrue(client.sentMessages.contains(.requestLatestHistory(RequestLatestHistory(days: 14))))
+        XCTAssertTrue(
+            client.sentMessages.contains(
+                .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: -14_400))))
     }
 
     func testDataLoaderRetriesStartupDeliveryRequestsAfterSendFailure() async {
         let client = FakeIPCClient()
         client.shouldThrowOnSend = IPCError.notConnected
-        client.setConnectionStatus(.connected)
         let account = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "user-1"))
+        let handedOver = CurrentValueSubject<Bool, Never>(true)
         let sut = MenuBarDataLoader(
             ipcClient: client,
             currentLocalInsightDate: { "2026-06-26" },
+            utcOffsetSeconds: { 0 },
             retryDelayNanoseconds: 10_000_000
         )
 
-        sut.start(accountState: account.eraseToAnyPublisher())
+        startLoader(sut, account: account, handedOver: handedOver)
 
         try? await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertTrue(client.sentMessages.isEmpty)
@@ -217,7 +221,9 @@ final class DisplayDataCoordinatorTests: XCTestCase {
             return XCTFail("Expected first retried startup delivery request to fetch latest insight")
         }
         XCTAssertEqual(request.date, "2026-06-26")
-        XCTAssertTrue(client.sentMessages.contains(.requestLatestHistory(RequestLatestHistory(days: 14))))
+        XCTAssertTrue(
+            client.sentMessages.contains(
+                .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: 0))))
     }
 
     func testPopulatedStateHoldsNoDataDayCorrectly() {
@@ -647,50 +653,68 @@ final class DisplayDataCoordinatorTests: XCTestCase {
         let client = InitialDataRequestIPCClient()
         client.sendFailuresRemaining = 1
         let accountState = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "u1"))
+        let handedOver = CurrentValueSubject<Bool, Never>(false)
         let sut = MenuBarDataLoader(
             ipcClient: client,
-            currentLocalInsightDate: { "2026-07-03" }
+            currentLocalInsightDate: { "2026-07-03" },
+            utcOffsetSeconds: { 0 }
         )
-        sut.start(accountState: accountState.eraseToAnyPublisher())
+        startLoader(sut, account: accountState, handedOver: handedOver)
 
-        client.setConnectionStatus(.connected)
+        handedOver.send(true)
         try await Task.sleep(nanoseconds: 50_000_000)
 
         XCTAssertEqual(client.sendAttempts, 1)
         XCTAssertTrue(client.sentMessages.isEmpty)
 
-        client.setConnectionStatus(.disconnected)
-        client.setConnectionStatus(.connected)
+        handedOver.send(false)
+        handedOver.send(true)
         try await Task.sleep(nanoseconds: 50_000_000)
 
         XCTAssertEqual(
             client.sentMessages,
             [
                 .requestLatestInsight(RequestLatestInsight(date: "2026-07-03")),
-                .requestLatestHistory(RequestLatestHistory(days: 14)),
+                .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: 0)),
             ])
     }
 
     func testMenuBarDataLoaderDoesNotRepeatInitialRequestsAfterSuccessfulSend() async throws {
         let client = InitialDataRequestIPCClient()
         let accountState = CurrentValueSubject<AccountState, Never>(.loggedIn(userId: "u1"))
+        let handedOver = CurrentValueSubject<Bool, Never>(false)
         let sut = MenuBarDataLoader(
             ipcClient: client,
-            currentLocalInsightDate: { "2026-07-03" }
+            currentLocalInsightDate: { "2026-07-03" },
+            utcOffsetSeconds: { 0 }
         )
-        sut.start(accountState: accountState.eraseToAnyPublisher())
+        startLoader(sut, account: accountState, handedOver: handedOver)
 
-        client.setConnectionStatus(.connected)
+        handedOver.send(true)
         try await Task.sleep(nanoseconds: 50_000_000)
-        client.setConnectionStatus(.connected)
+        handedOver.send(true)
         try await Task.sleep(nanoseconds: 50_000_000)
 
         XCTAssertEqual(
             client.sentMessages,
             [
                 .requestLatestInsight(RequestLatestInsight(date: "2026-07-03")),
-                .requestLatestHistory(RequestLatestHistory(days: 14)),
+                .requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: 0)),
             ])
+    }
+
+    private func startLoader(
+        _ loader: MenuBarDataLoader,
+        account: CurrentValueSubject<AccountState, Never>,
+        handedOver: CurrentValueSubject<Bool, Never>
+    ) {
+        loader.start(
+            accountState: account.eraseToAnyPublisher(),
+            sessionHandedOver: handedOver.eraseToAnyPublisher(),
+            messages: Empty<ServerMessage, Never>(),
+            historyRefreshRequests: Empty<Void, Never>(),
+            cadence: Empty<Void, Never>()
+        )
     }
 
     // MARK: - Helpers

@@ -398,24 +398,75 @@ public final class MenuStatusViewModel: ObservableObject {
     }
 }
 
+/// Asks the service for the insight and the history the popover shows.
+///
+/// Requests go out only once the connection has the session the service
+/// needs (`AccountStateManager.isSessionHandedOver`), so the service reads
+/// them with it; the insight only while signed in, since only the cloud has
+/// one; and the history signed in or not, since a signed-out Mac is answered
+/// with summaries built on it. The history is asked for again when the
+/// account settles into a different state, when a surface showing it appears,
+/// and, while the last one came from this Mac, on the menu status's cadence
+/// at most every `localHistoryRefreshInterval`, which is how a recovered
+/// cloud replaces it.
 @MainActor
 final class MenuBarDataLoader {
+    /// The days of history asked for: the Daily Activity chart's window.
+    nonisolated static let historyDays = 14
+    /// The least time between two history requests made on the cadence while
+    /// the last history came from this Mac.
+    nonisolated static let localHistoryRefreshInterval: TimeInterval = 10 * 60
+    /// How long a history request counts as unanswered. The service answers
+    /// every one, within its 10-second cloud timeout; this only keeps a reply
+    /// lost with its connection from blocking every later request.
+    nonisolated static let historyReplyTimeout: TimeInterval = 60
+
+    /// An account state the service can be asked on behalf of. Signing in or
+    /// out is neither: the answer would describe the state being left.
+    private enum SettledAccount: Equatable {
+        case signedIn
+        case signedOut
+    }
+
+    private enum LastHistory: Equatable {
+        case none
+        case cloud
+        case thisMac
+        case unavailable
+    }
+
     private let ipcClient: any IPCClientProtocol
     private let currentLocalInsightDate: () -> String
+    private let utcOffsetSeconds: () -> Int
+    private let now: () -> Date
     private let retryDelayNanoseconds: UInt64
-    private var cancellable: AnyCancellable?
-    private var requestedForConnection = false
-    private var requestInFlight = false
-    private var canRequest = false
+    private var cancellables = Set<AnyCancellable>()
+    /// The account requests may be sent for now; `nil` before the session is
+    /// handed over on this connection, and while signing in or out.
+    private var readyAccount: SettledAccount?
+    /// The account the opening requests went out for on this connection.
+    private var requestedFor: SettledAccount?
+    private var openingRequestInFlight = false
+    /// Advances whenever the connection goes, so an opening request that
+    /// finishes after its connection has gone is not counted for the next.
+    private var connectionEpoch = 0
+    private var historySentAt: Date?
+    private var historyAwaitingReply = false
+    private var lastHistory = LastHistory.none
 
     init(
         ipcClient: any IPCClientProtocol,
         currentLocalInsightDate: @escaping () -> String = {
             MenuBarDataLoader.currentUTCDateString()
-        }, retryDelayNanoseconds: UInt64 = 2_000_000_000
+        },
+        utcOffsetSeconds: @escaping () -> Int = { TimeZone.current.secondsFromGMT() },
+        now: @escaping () -> Date = Date.init,
+        retryDelayNanoseconds: UInt64 = 2_000_000_000
     ) {
         self.ipcClient = ipcClient
         self.currentLocalInsightDate = currentLocalInsightDate
+        self.utcOffsetSeconds = utcOffsetSeconds
+        self.now = now
         self.retryDelayNanoseconds = retryDelayNanoseconds
     }
 
@@ -438,50 +489,142 @@ final class MenuBarDataLoader {
         currentLocalDateString(now: now, timeZone: TimeZone(secondsFromGMT: 0)!)
     }
 
-    func start(accountState: AnyPublisher<AccountState, Never>) {
-        cancellable = accountState.combineLatest(ipcClient.connectionStatus)
+    /// - Parameters:
+    ///   - sessionHandedOver: `AccountStateManager.$isSessionHandedOver`.
+    ///   - messages: the server-message fan-out, read for which history arrived.
+    ///   - historyRefreshRequests: a surface showing the history appeared
+    ///     (`ConcreteDisplayDataCoordinator.historyRefreshRequests`).
+    ///   - cadence: the menu status's 60-second refresh (`MenuStatusViewModel.cadence`).
+    func start(
+        accountState: AnyPublisher<AccountState, Never>,
+        sessionHandedOver: AnyPublisher<Bool, Never>,
+        messages: some Publisher<ServerMessage, Never>,
+        historyRefreshRequests: some Publisher<Void, Never>,
+        cadence: some Publisher<Void, Never>
+    ) {
+        accountState.combineLatest(sessionHandedOver)
             .receive(on: RunLoop.main)
-            .sink { [weak self] account, connection in
-                guard let self else { return }
-                guard case .loggedIn = account, connection == .connected else {
-                    self.canRequest = false
-                    self.requestedForConnection = false
-                    self.requestInFlight = false
-                    return
-                }
-                self.canRequest = true
-                self.requestDisplayDataIfNeeded()
+            .sink { [weak self] account, handedOver in
+                self?.update(account: account, sessionHandedOver: handedOver)
             }
+            .store(in: &cancellables)
+
+        messages
+            .receive(on: RunLoop.main)
+            .sink { [weak self] message in self?.observe(message) }
+            .store(in: &cancellables)
+
+        historyRefreshRequests
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.refreshHistory() }
+            .store(in: &cancellables)
+
+        cadence
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.refreshLocalHistoryIfDue() }
+            .store(in: &cancellables)
     }
 
-    private func requestDisplayDataIfNeeded() {
-        guard canRequest, !requestedForConnection, !requestInFlight else { return }
-        requestInFlight = true
-        Task { [weak self, ipcClient, currentLocalInsightDate] in
+    /// Asks for the history again, unless it cannot be asked for yet or a
+    /// request is already waiting on its answer.
+    func refreshHistory() {
+        guard readyAccount != nil, !openingRequestInFlight, !isAwaitingHistory else { return }
+        Task { [weak self] in try? await self?.sendHistoryRequest() }
+    }
+
+    private var isAwaitingHistory: Bool {
+        guard historyAwaitingReply, let historySentAt else { return false }
+        return now().timeIntervalSince(historySentAt) < Self.historyReplyTimeout
+    }
+
+    private func update(account: AccountState, sessionHandedOver: Bool) {
+        guard sessionHandedOver else {
+            readyAccount = nil
+            requestedFor = nil
+            historyAwaitingReply = false
+            connectionEpoch &+= 1
+            return
+        }
+        switch account {
+        case .loggedIn: readyAccount = .signedIn
+        case .loggedOut: readyAccount = .signedOut
+        case .loggingIn, .loggingOut, .pendingErasure: readyAccount = nil
+        }
+        requestOpeningDataIfNeeded()
+    }
+
+    private func observe(_ message: ServerMessage) {
+        switch message {
+        case .historyPayload(let payload):
+            historyAwaitingReply = false
+            lastHistory = payload.source == .thisMac ? .thisMac : .cloud
+        case .cacheEmpty(let empty) where empty.payloadType == "history_payload":
+            historyAwaitingReply = false
+            lastHistory = .unavailable
+        default:
+            break
+        }
+    }
+
+    /// Built on this Mac, a history goes stale as the day goes on, and the
+    /// cloud may have come back; neither says so on its own. A failed local
+    /// read is asked for again on the same terms.
+    private func refreshLocalHistoryIfDue() {
+        guard lastHistory == .thisMac || lastHistory == .unavailable,
+            let historySentAt,
+            now().timeIntervalSince(historySentAt) >= Self.localHistoryRefreshInterval
+        else { return }
+        refreshHistory()
+    }
+
+    private func requestOpeningDataIfNeeded() {
+        guard let account = readyAccount, requestedFor != account, !openingRequestInFlight else {
+            return
+        }
+        openingRequestInFlight = true
+        let epoch = connectionEpoch
+        Task { [weak self] in
+            guard let self else { return }
             do {
-                try await ipcClient.send(.requestLatestInsight(.init(date: currentLocalInsightDate())))
-                try await ipcClient.send(.requestLatestHistory(.init(days: 14)))
-                await MainActor.run {
-                    guard let self else { return }
-                    self.requestedForConnection = self.canRequest
-                    self.requestInFlight = false
+                if account == .signedIn {
+                    try await ipcClient.send(
+                        .requestLatestInsight(.init(date: currentLocalInsightDate()))
+                    )
                 }
+                try await sendHistoryRequest()
+                openingRequestInFlight = false
+                if connectionEpoch == epoch {
+                    requestedFor = account
+                }
+                // The account may have settled elsewhere while these were
+                // going out.
+                requestOpeningDataIfNeeded()
             } catch {
-                await MainActor.run {
-                    self?.requestedForConnection = false
-                    self?.requestInFlight = false
-                    self?.scheduleRetry()
-                }
+                openingRequestInFlight = false
+                scheduleRetry()
             }
+        }
+    }
+
+    private func sendHistoryRequest() async throws {
+        historyAwaitingReply = true
+        historySentAt = now()
+        do {
+            try await ipcClient.send(
+                .requestLatestHistory(
+                    .init(days: Self.historyDays, utcOffsetSeconds: utcOffsetSeconds())
+                )
+            )
+        } catch {
+            historyAwaitingReply = false
+            throw error
         }
     }
 
     private func scheduleRetry() {
         Task { [weak self, retryDelayNanoseconds] in
             try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
-            await MainActor.run {
-                self?.requestDisplayDataIfNeeded()
-            }
+            self?.requestOpeningDataIfNeeded()
         }
     }
 }
@@ -554,9 +697,18 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     /// signed out, or with uploads paused looked exactly like one running
     /// perfectly.
     @Published public private(set) var serviceStatus: ServiceStatus?
+    /// Whether the account is signed in, as last reported. The history card
+    /// says why its summaries came from this Mac, and the reason differs.
+    @Published public private(set) var isSignedIn = false
 
     public var displayState: AnyPublisher<DisplayState, Never> {
         $state.eraseToAnyPublisher()
+    }
+
+    /// Fires when a surface that shows the history appears. The coordinator
+    /// makes no IPC call of its own; `MenuBarDataLoader` listens and asks.
+    public var historyRefreshRequests: AnyPublisher<Void, Never> {
+        historyRefreshSubject.eraseToAnyPublisher()
     }
 
     // MARK: View models
@@ -571,6 +723,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     private var cancellables = Set<AnyCancellable>()
     /// Guards against treating the initial `.disconnected` status as an error.
     private var hasConnectedAtLeastOnce = false
+    private let historyRefreshSubject = PassthroughSubject<Void, Never>()
 
     // MARK: Init
 
@@ -640,6 +793,11 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
         transitionToPopulatedIfNeeded()
     }
 
+    /// A surface showing the history appeared: ask for it again.
+    public func requestHistoryRefresh() {
+        historyRefreshSubject.send()
+    }
+
     public func handleCacheEmpty(_ payload: CacheEmpty) {
         switch payload.payloadType {
         case "insight_payload":
@@ -661,21 +819,31 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
         state = .populated(insight: insightViewModel, history: historyViewModel)
     }
 
-    private func resetDisplayData() {
+    private func resetDisplayData(includingHistory: Bool) {
         insightViewModel.reset()
-        historyViewModel.reset()
         insightAvailability = .loading
         insightNotReadyReason = nil
-        historyNotReadyReason = nil
-        historyAvailability = .loading
-        state = .loading
+        if includingHistory {
+            historyViewModel.reset()
+            historyNotReadyReason = nil
+            historyAvailability = .loading
+            state = .loading
+        }
     }
 
+    /// The insight is the account's, so it goes whenever the account is not
+    /// signed in. The history goes only when the account stops being signed
+    /// in: a synced history belongs to the account being left, while one
+    /// built on this Mac while signed out stays until its replacement
+    /// arrives, and a signed-out Mac is asked for its own.
     private func handleAccountState(_ accountState: AccountState) {
-        guard case .loggedIn = accountState else {
-            resetDisplayData()
+        let wasSignedIn = isSignedIn
+        if case .loggedIn = accountState {
+            isSignedIn = true
             return
         }
+        isSignedIn = false
+        resetDisplayData(includingHistory: wasSignedIn)
     }
 
     private func handleConnectionStatus(_ status: ConnectionStatus) {

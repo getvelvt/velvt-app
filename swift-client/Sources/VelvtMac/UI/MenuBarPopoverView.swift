@@ -22,7 +22,10 @@ private struct HistoryWorkspaceView: View {
             weeklyDigest: workBlockCoordinator.weeklyDigest,
             onAcknowledgeDigest: workBlockCoordinator.acknowledgeWeeklyDigest
         )
-        .onAppear { localDashboardCoordinator.refresh() }
+        .onAppear {
+            localDashboardCoordinator.refresh()
+            coordinator.requestHistoryRefresh()
+        }
     }
 }
 

@@ -554,6 +554,10 @@ impl velvt_service::initiation::InvitationGates for OpenGates {
         false
     }
 
+    fn in_quiet_hours_at(&self, _at: chrono::DateTime<Utc>, _utc_offset_seconds: i32) -> bool {
+        false
+    }
+
     fn focus_active(&self, _at: chrono::DateTime<Utc>) -> bool {
         false
     }

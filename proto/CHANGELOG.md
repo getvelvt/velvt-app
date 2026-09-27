@@ -53,7 +53,9 @@
   - The card counts the first eight entries of the last seven days' list,
     shows while any of them is unanswered, and never shows while a work block
     is active or paused. The notification additionally needs: not Velvt's
-    quiet hours, macOS Focus not known to be on, no reminder yet on the
+    quiet hours at the request's `utc_offset_seconds` (not an offset stored
+    with an earlier Focus transition, which Clear Local Work Blocks removes),
+    macOS Focus not known to be on, no reminder yet on the
     client's local date, an entry among those eight that no earlier reminder
     or answer has reached, and no backoff pause (three reminders in a row,
     each posted within the last 30 days and with no `opened` answer before

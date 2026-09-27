@@ -247,9 +247,10 @@ impl CategoryPromptManager {
     ///
     /// Nothing at all while a work block is active or paused. Otherwise the
     /// card shows while any entry it would count is unanswered. The reminder
-    /// additionally needs: not Velvt's quiet hours, macOS Focus not known to
-    /// be on, no reminder yet on this local day, no backoff pause, and an
-    /// entry among the eight that no earlier reminder or answer has reached.
+    /// additionally needs: not Velvt's quiet hours at the client's
+    /// `utc_offset_seconds`, macOS Focus not known to be on, no reminder yet
+    /// on this local day, no backoff pause, and an entry among the eight that
+    /// no earlier reminder or answer has reached.
     pub fn pending_prompt(
         &self,
         now: DateTime<Utc>,
@@ -321,7 +322,7 @@ impl CategoryPromptManager {
                 .iter()
                 .any(|entry| entry.notified_at.is_none() && entry.acknowledged_at.is_none());
             if something_new
-                && !self.gates.in_quiet_hours(now)
+                && !self.gates.in_quiet_hours_at(now, utc_offset_seconds)
                 && !self.gates.focus_active(now)
                 && !reminders_paused(
                     &self.repo.recent_notifications(REMINDER_BACKOFF_UNOPENED)?,
@@ -516,6 +517,8 @@ mod tests {
         live_block: AtomicBool,
         quiet_hours: AtomicBool,
         focus: AtomicBool,
+        /// The offsets the quiet-hours gate was asked at, in order.
+        quiet_hours_offsets: Mutex<Vec<i32>>,
     }
 
     impl InvitationGates for FakeGates {
@@ -524,6 +527,14 @@ mod tests {
         }
 
         fn in_quiet_hours(&self, _at: DateTime<Utc>) -> bool {
+            panic!("the reminder reads quiet hours at the request's offset")
+        }
+
+        fn in_quiet_hours_at(&self, _at: DateTime<Utc>, utc_offset_seconds: i32) -> bool {
+            self.quiet_hours_offsets
+                .lock()
+                .unwrap()
+                .push(utc_offset_seconds);
             self.quiet_hours.load(Ordering::SeqCst)
         }
 
@@ -788,6 +799,67 @@ mod tests {
         }
 
         assert!(prompt(&f, at(120)).notification.is_some());
+    }
+
+    /// Quiet hours are read at the offset the request carries, clamped as the
+    /// local date is, and never at a stored one.
+    #[test]
+    fn quiet_hours_are_asked_at_the_requests_offset() {
+        let f = fixture();
+        f.list.set(vec![site(1)]);
+        f.gates.quiet_hours.store(true, Ordering::SeqCst);
+        f.manager.pending_prompt(at(0), -9 * 3_600).unwrap();
+        f.manager.pending_prompt(at(60), i32::MAX).unwrap();
+        assert_eq!(
+            *f.gates.quiet_hours_offsets.lock().unwrap(),
+            vec![-9 * 3_600, 64_800]
+        );
+    }
+
+    /// Over the production gates: quiet hours accepted, and no offset stored
+    /// because no Focus transition has been reported since Clear Local Work
+    /// Blocks. The reminder still waits for the morning, because the request
+    /// said where the evening is.
+    #[test]
+    fn quiet_hours_hold_the_reminder_with_no_stored_offset() {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        db.focus_repo()
+            .set_quiet_hours(&crate::persistence::VelvtQuietHours {
+                start_local_minutes: 22 * 60,
+                end_local_minutes: 7 * 60,
+                rule_version: 1,
+                configured_at: at(0),
+            })
+            .unwrap();
+        let focus = crate::focus::FocusManager::new(db.focus_repo());
+        assert!(!focus.in_velvt_quiet_hours(at(hours(15) + 30 * 60)));
+        let list = Arc::new(FakeCandidates::default());
+        list.set(vec![site(1)]);
+        let manager = CategoryPromptManager::new(
+            db.category_prompt_repo(),
+            list as Arc<dyn CategoryPromptCandidates>,
+            crate::initiation::RuntimeInvitationGates::new(focus, db.work_block_repo())
+                as Arc<dyn InvitationGates>,
+        );
+
+        // 23:30 local at UTC+0.
+        let late = manager.pending_prompt(at(hours(15) + 30 * 60), 0).unwrap();
+        assert!(late.card.is_some());
+        assert_eq!(late.notification, None);
+        // 08:00Z is 23:00 local at UTC-9: still quiet.
+        assert_eq!(
+            manager
+                .pending_prompt(at(days(1)), -9 * 3_600)
+                .unwrap()
+                .notification,
+            None
+        );
+        // 08:00 local at UTC+0 is not.
+        assert!(manager
+            .pending_prompt(at(days(1)), 0)
+            .unwrap()
+            .notification
+            .is_some());
     }
 
     /// A block that starts while a card is up takes the card away without

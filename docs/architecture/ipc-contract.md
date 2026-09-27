@@ -548,9 +548,10 @@ the full account.
   days' list is unanswered; the notification at most once a local day, only
   for an entry among those eight that no earlier reminder or answer has
   reached (both reach the entries below the eight too, so moving up is not
-  news), not in quiet hours or known Focus, and paused for seven days after
-  three unopened reminders in a row within 30 days. A notification is handed
-  over once and consumed whether or not it is posted. Copy is counts only.
+  news), not in quiet hours (read at the request's offset) or known Focus,
+  and paused for seven days after three unopened reminders in a row within
+  30 days. A notification is handed over once and consumed whether or not it
+  is posted. Copy is counts only.
 - `acknowledge_category_prompt` [33]: Swift to Rust. `prompt_id` and
   `response` (`opened` or `not_now`). Either answers every entry that card
   covered, even after the list has moved on, so the card stays away until an

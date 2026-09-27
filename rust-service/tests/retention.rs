@@ -17,9 +17,10 @@ use velvt_service::persistence::{
 };
 use velvt_service::retention::{
     AbstractionMapRetentionTarget, CleanupReport, InterventionDecisionOutcomeTarget,
-    RawEventRetentionTarget, RetentionError, RetentionScheduler, RetentionTarget,
-    SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+    LocalSiteNameRetentionTarget, RawEventRetentionTarget, RetentionError, RetentionScheduler,
+    RetentionTarget, SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
     ABSTRACTION_MAP_RETENTION_DAYS, DECISION_OUTCOME_HORIZON_SECONDS,
+    LOCAL_SITE_NAME_RETENTION_DAYS,
 };
 use velvt_shared_types::{
     ClassificationConfidence, ClassificationStatus, WorkBlockIntensity, WorkBlockPhase,
@@ -943,6 +944,53 @@ fn a_window_mapping_expires_on_the_raw_event_horizon_unless_it_was_corrected() {
     assert!(
         maps.get("abs_mapping_2").is_ok(),
         "an observed window is live"
+    );
+    assert_eq!(target.run_cleanup().unwrap().deleted, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Test 11 — A stored site name expires on the raw-event horizon
+// ---------------------------------------------------------------------------
+
+/// `local_site_name` is the one table that stores a hostname (migration
+/// 0040). A site that has not needed a category inside the horizon -- no visit
+/// Velvt could not categorize since -- loses its name, counted from the last
+/// such visit; one seen inside it keeps it.
+#[test]
+fn a_site_name_expires_on_the_raw_event_horizon_from_its_last_visit() {
+    assert_eq!(LOCAL_SITE_NAME_RETENTION_DAYS, 14);
+    let db = open_db();
+    let repo = db.raw_event_repo();
+    let now = Utc::now();
+    for (index, days_ago) in [(0u8, 15i64), (1, 13)] {
+        let event = RawEventEntry {
+            event_id: format!("site-visit-{index}"),
+            label: "reference:browser".into(),
+            category: "REFERENCE".into(),
+            classification_tier: "fallback".into(),
+            classification_status: "ambiguous".into(),
+            classification_confidence: "low".into(),
+            classification_source: "fallback".into(),
+            app_scope_eligible: false,
+            site_stable_id: Some(format!("{index:064x}")),
+            ..make_event(u64::from(index) + 9_000)
+        };
+        repo.insert(&event).unwrap();
+        assert!(repo
+            .record_local_site_name(
+                &event.event_id,
+                &format!("site-{index}.example.org"),
+                now - chrono::Duration::days(days_ago),
+            )
+            .unwrap());
+    }
+
+    let target = LocalSiteNameRetentionTarget::with_default_retention(Arc::clone(&repo), 500);
+    assert_eq!(target.name(), "local_site_name");
+    assert_eq!(
+        target.run_cleanup().unwrap().deleted,
+        1,
+        "only the name whose last such visit is outside the horizon expires"
     );
     assert_eq!(target.run_cleanup().unwrap().deleted, 0);
 }

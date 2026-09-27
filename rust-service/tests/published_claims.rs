@@ -84,7 +84,8 @@ use velvt_service::egress::ENDPOINTS;
 use velvt_service::ipc::{MessageRouter, R7Router};
 use velvt_service::persistence::{AbstractionMapping, SqlitePersistence};
 use velvt_service::retention::{
-    ABSTRACTION_MAP_RETENTION_DAYS, SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
+    ABSTRACTION_MAP_RETENTION_DAYS, LOCAL_SITE_NAME_RETENTION_DAYS,
+    SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
 };
 use velvt_service::upload::{
     BatchAssembler, BatchPayload, BatchUploadError, BatchUploader, EventIngestor,
@@ -231,9 +232,9 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
         ("personal_override", vec![]),
         ("personal_app_override", vec![]),
         ("personal_site_override", vec![]),
-        // Migration 0040 puts a site name on the horizon of the raw events it
-        // was seen in, counted from the last of them.
-        ("local_site_name", vec![raw_event_days]),
+        // Migration 0040's site name, on its own constant: the raw-event
+        // horizon, counted from the last visit that needed a category.
+        ("local_site_name", vec![LOCAL_SITE_NAME_RETENTION_DAYS]),
         (
             "semantic_embedding_cache",
             vec![

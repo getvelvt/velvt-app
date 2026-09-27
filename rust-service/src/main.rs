@@ -198,9 +198,9 @@ async fn main() {
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
             AbstractionMapRetentionTarget, CacheRetentionTarget, EgressLedgerRetentionTarget,
-            InterventionDecisionOutcomeTarget, RawEventRetentionTarget, RetentionScheduler,
-            SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
-            WorkBlockIntentionRetentionTarget,
+            InterventionDecisionOutcomeTarget, LocalSiteNameRetentionTarget,
+            RawEventRetentionTarget, RetentionScheduler, SemanticEmbeddingCacheRetentionTarget,
+            UploadBatchRetentionTarget, WorkBlockIntentionRetentionTarget,
         };
         use velvt_service::upload::{
             BatchAssembler, EventIngestor, HttpBatchUploader, SharedUploadBatcher, UploadBatcher,
@@ -598,6 +598,14 @@ async fn main() {
             persistence.egress_ledger_repo(),
             config.retention_batch_size,
         );
+        // The tenth: `local_site_name`, the one table that stores a hostname
+        // (migration 0040), on the raw-event horizon counted from the last
+        // visit to the site that needed a category. A constant, for the reason
+        // `out_of_block_run` uses one.
+        let local_site_name_target = LocalSiteNameRetentionTarget::with_default_retention(
+            Arc::clone(&raw_event_repo),
+            config.retention_batch_size,
+        );
         let retention_scheduler =
             RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
                 .add_target(raw_event_target)
@@ -610,7 +618,8 @@ async fn main() {
                 .add_target(semantic_embedding_cache_target)
                 .add_target(decision_outcome_target)
                 .add_target(abstraction_map_target)
-                .add_target(egress_ledger_target);
+                .add_target(egress_ledger_target)
+                .add_target(local_site_name_target);
         let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
 
         // R7 + R8 transport — shutdown-aware, reconnect-tracking.

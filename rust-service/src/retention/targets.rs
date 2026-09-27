@@ -310,6 +310,69 @@ impl RetentionTarget for AbstractionMapRetentionTarget {
 }
 
 // ---------------------------------------------------------------------------
+// LocalSiteNameRetentionTarget
+// ---------------------------------------------------------------------------
+
+/// Default retention for `local_site_name`, in days, counted from the last
+/// visit that wrote the row.
+///
+/// The row is the one stored hostname, kept so Velvt can ask what a site is
+/// while the events that make it worth asking about are still in the buffer,
+/// so it expires on the raw-event horizon. A constant rather than a config
+/// value, for the reason `SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS` is one:
+/// widening a privacy horizon should cost a code review and a `PRIVACY.md`
+/// edit, not an environment variable.
+pub const LOCAL_SITE_NAME_RETENTION_DAYS: u64 = 14;
+
+/// Expires `local_site_name` rows whose site has not needed a category within
+/// the retention window.
+///
+/// Saving a site rule deletes that site's row at once
+/// (`AbstractionMapRepo::save_site_scope_override`), and a re-minted salt
+/// deletes them all. This is the bound on every other row: a site Velvt could
+/// not categorize, that the user never answered for, and that was not visited
+/// again without a confident answer. `last_seen_at` is rewritten by every such
+/// visit and by no other, so the horizon runs from the last one.
+pub struct LocalSiteNameRetentionTarget {
+    repo: Arc<dyn RawEventRepo>,
+    retention: Duration,
+    batch_size: usize,
+}
+
+impl LocalSiteNameRetentionTarget {
+    pub fn new(repo: Arc<dyn RawEventRepo>, retention: Duration, batch_size: usize) -> Self {
+        Self {
+            repo,
+            retention,
+            batch_size,
+        }
+    }
+
+    /// The registered default: the raw-event horizon.
+    pub fn with_default_retention(repo: Arc<dyn RawEventRepo>, batch_size: usize) -> Self {
+        Self::new(
+            repo,
+            Duration::from_secs(LOCAL_SITE_NAME_RETENTION_DAYS * 24 * 60 * 60),
+            batch_size,
+        )
+    }
+}
+
+impl RetentionTarget for LocalSiteNameRetentionTarget {
+    fn name(&self) -> &'static str {
+        "local_site_name"
+    }
+
+    fn run_cleanup(&self) -> Result<CleanupReport, RetentionError> {
+        let cutoff = Utc::now() - chrono::Duration::seconds(self.retention.as_secs() as i64);
+        let deleted = self
+            .repo
+            .delete_expired_site_names(cutoff, self.batch_size)?;
+        Ok(CleanupReport { deleted })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // EgressLedgerRetentionTarget
 // ---------------------------------------------------------------------------
 

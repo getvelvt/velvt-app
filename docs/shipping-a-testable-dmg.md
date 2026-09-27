@@ -213,8 +213,9 @@ you switch to it, for example); under v3 that switch was never reported. v5
 changes which browser tabs count, in both directions. It counts a switch to a
 tab Velvt can place by its site: a site in its built-in table, or one whose own
 name says what it is (a `mail.` or `wiki.` in front, an `.edu` at the end).
-Under v4 a tab counted only when a keyword rule matched its hostname or title,
-and almost every other tab was left unclear; an unclear tab is never counted.
+Under v4 a tab counted when a keyword rule matched its hostname or title (or,
+rarely, when the built-in Tier 2 classifier placed it), and almost every other
+tab was left unclear; an unclear tab is never counted.
 And v5 no longer counts a tab that only title keywords placed, when its site can
 be read but is neither in the table nor readable from its name: a Jira ticket
 on `*.atlassian.net` counted under v4 and is unclear under v5. The first gate,

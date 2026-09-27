@@ -367,8 +367,9 @@ is now an ordered ladder, most specific evidence first:
       `LSApplicationCategoryType`, through a whitelist of unambiguous values.
    8. `SiteInferencePlugin` — for a browser site no seed names, what its own
       hostname says: a purpose subdomain, an institutional suffix, a token of
-      the registrable label. Signals that disagree give no answer, and so
-      does a sign-in or access label in front (`login.`, `sso.`, `proxy.`).
+      the registrable label. Signals that disagree give no answer. A sign-in
+      label in front (`login.`, `sso.`) files the host as SYSTEM, which the
+      drift gate never counts and the list does not ask about.
    9. `EmbeddingSimilarityPlugin` (Tier 2) — a local embedding of name and
       title compared with versioned category prototypes, plus the bounded
       device-local prototypes your corrections create. Multiple prototypes

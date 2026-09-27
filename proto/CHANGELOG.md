@@ -22,9 +22,10 @@
   as SYSTEM, which the gate never counts). The other way, a tab that title
   keywords made confident under version 4 is, short of a rare Tier 2 match,
   the ambiguous prior under version 5 when its site can be read but is neither
-  seeded nor inferred (a Jira ticket on `*.atlassian.net`, the LinkedIn feed). Browser time moves both ways,
-  mostly from unclear to a category, so the anchor, the switch counts and the
-  decision points differ from version 4, and the two are never pooled.
+  seeded nor inferred (a Jira ticket on `*.atlassian.net`, the LinkedIn
+  feed). Browser time moves both ways, mostly from unclear to a category, so
+  the anchor, the switch counts and the decision points differ from version
+  4, and the two are never pooled.
 - Privacy: nothing new is sent. On disk, the hostname of a site Velvt could not
   categorize is kept in `local_site_name` (migration 0040) so it can be named
   when Velvt asks about it; `PRIVACY.md` describes the table and its 14-day

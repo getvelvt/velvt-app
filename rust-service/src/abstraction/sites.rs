@@ -236,9 +236,12 @@ fn refines_seed_label(seed_label: &str, label: &str) -> bool {
 /// itself ([`REGISTRABLE_TOKEN_VOTES`]). At least one vote, and every vote the
 /// same, classifies at Medium confidence as a heuristic. Any disagreement is no
 /// answer: the window falls through to the embedding tier and the browser
-/// prior, exactly as it did before this tier existed. So is a host with a
-/// sign-in or access label in front ([`ACCESS_LABELS`]), whatever the signals
-/// say: it is the door to a site rather than the site.
+/// prior, exactly as it did before this tier existed. A host with a sign-in
+/// label in front ([`ACCESS_LABELS`]) is SYSTEM, whatever the other signals
+/// say: it is the door to a site rather than the site, and SYSTEM is what a
+/// sign-in page is. The drift gate never counts SYSTEM, and the "needs a
+/// category" list treats it as categorized, so such a host is neither
+/// evidence nor a question, and its name is never kept.
 ///
 /// Registered after the two declared-metadata tiers and before the embedding
 /// tier. It answers only for a browser window, which both declared tiers
@@ -343,12 +346,15 @@ const REFERENCE_TOP_LEVEL_DOMAINS: &[&str] = &["edu", "gov", "mil"];
 /// last label is two letters.
 const REFERENCE_SECOND_LEVEL_DOMAINS: &[&str] = &["ac", "edu", "gov"];
 
-/// A veto on all three: a whole label left of the registrable domain that
-/// names a sign-in page or an access gateway -- `weblogin` in
-/// `weblogin.example.edu`, `proxy` in `proxy.lib.example.edu`. What such a host
-/// is for is getting somewhere else, and S2 alone would file every university's
-/// sign-in and library proxy as REFERENCE. A vetoed site gets no answer, so it
-/// reaches the "needs a category" list.
+/// Overrides all three: a whole label left of the registrable domain that
+/// names a sign-in page -- `weblogin` in `weblogin.example.edu`, `sso` in
+/// `sso.example.ac.uk`. What such a host is for is getting somewhere else, and
+/// S2 alone would file every university's sign-in page as REFERENCE.
+///
+/// `proxy` is deliberately absent. A library proxy rewrites the publisher's
+/// host into its own (`www-nature-com.proxy.lib.example.edu`), so what sits
+/// behind that label is usually the paper being read, which S2 files as
+/// REFERENCE.
 const ACCESS_LABELS: &[&str] = &[
     "login",
     "logon",
@@ -359,7 +365,6 @@ const ACCESS_LABELS: &[&str] = &[
     "shibboleth",
     "cas",
     "weblogin",
-    "proxy",
     "vpn",
     "webauth",
 ];
@@ -422,7 +427,7 @@ fn inferred_site_category(site: &str) -> Option<&'static str> {
         .iter()
         .any(|label| ACCESS_LABELS.contains(label))
     {
-        return None;
+        return Some("SYSTEM");
     }
     let subdomain_votes = parts
         .subdomain_labels
@@ -935,8 +940,9 @@ mod tests {
     }
 
     /// Google serves all three editors from `docs.google.com`, so the table
-    /// can only say `document:docs`; the title names the product, and a rule
-    /// verdict in the seed's own category keeps the specific label.
+    /// can only say `document:docs`; the title names the product, and
+    /// `SEED_LABEL_REFINEMENTS` lets a Sheets or Slides rule verdict keep its
+    /// label there. No other seed's label is ever refined.
     #[test]
     fn the_rules_refine_the_label_within_the_seeds_category() {
         let cases = [
@@ -1065,22 +1071,25 @@ mod tests {
         }
     }
 
-    /// A sign-in or access label in front is no answer whatever else the
-    /// host says: an institution's suffix alone would otherwise file its
-    /// sign-in page and its library proxy as REFERENCE. Without such a label
-    /// the suffix still counts.
+    /// A sign-in label in front is SYSTEM whatever else the host says: an
+    /// institution's suffix alone would otherwise file its sign-in page as
+    /// REFERENCE. Without such a label the suffix still counts, and a library
+    /// proxy's rewritten publisher host is reading.
     #[test]
-    fn a_sign_in_or_access_host_infers_nothing() {
+    fn a_sign_in_host_is_system() {
         for site in [
             "weblogin.qwzx.edu",
-            "proxy.lib.qwzx.edu",
             "sso.qwzx.ac.uk",
             "login.docs.qwzx.io",
             "idp.qwzx.gov",
         ] {
-            assert_eq!(inferred_site_category(site), None, "{site}");
+            assert_eq!(inferred_site_category(site), Some("SYSTEM"), "{site}");
         }
         assert_eq!(inferred_site_category("stat.qwzx.edu"), Some("REFERENCE"));
+        assert_eq!(
+            inferred_site_category("www-nature-com.proxy.lib.qwzx.edu"),
+            Some("REFERENCE")
+        );
         // Only a whole label: a token of one, or the registrable label itself,
         // is not a door.
         assert_eq!(inferred_site_category("casper.qwzx.edu"), Some("REFERENCE"));

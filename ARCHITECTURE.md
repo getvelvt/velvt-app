@@ -130,7 +130,7 @@ now runs:
 | 5 | `LocalPurposeHeuristicPlugin` | curated keyword families over name and title, for every application that is not a browser and a browser window whose site cannot be read; never for a tab whose site can be read | heuristic |
 | 6 | `DocumentTypePlugin` | `LSItemContentTypes` the app declares | heuristic tier / declared document types |
 | 7 | `DeclaredCategoryPlugin` | the app's `LSApplicationCategoryType`, whitelisted values only | heuristic tier / declared app category |
-| 8 | `SiteInferencePlugin` | a browser site no seed names, read from its own hostname: a purpose subdomain (`mail.`, `docs.`), an institutional suffix (`.edu`, `.ac.uk`), a registrable-label token (`wiki`); signals that disagree give no answer, and so does a sign-in or access label in front (`login.`, `sso.`, `proxy.`) | heuristic |
+| 8 | `SiteInferencePlugin` | a browser site no seed names, read from its own hostname: a purpose subdomain (`mail.`, `docs.`), an institutional suffix (`.edu`, `.ac.uk`), a registrable-label token (`wiki`); signals that disagree give no answer; a sign-in label in front (`login.`, `sso.`) files the host as SYSTEM, which the gate never counts and the list does not ask about | heuristic |
 | 9 | `EmbeddingSimilarityPlugin` | Tier 2, below | embedding |
 | 10 | `GenericBrowserPriorPlugin` | a browser whose site said nothing | fallback, explicitly ambiguous `REFERENCE` |
 | 11 | `UnloggedFallbackPlugin` | anything left | fallback, `UNLOGGED` |

@@ -106,6 +106,9 @@ public final class HistoryViewModel: ObservableObject {
 
     @Published public private(set) var days: [DaySummaryViewModel] = []
     @Published public private(set) var isLoading: Bool = true
+    /// Where `days` were built: synced from the cloud, or on this Mac.
+    /// `nil` until a history arrives.
+    @Published public private(set) var source: HistorySource?
     /// The date most recently requested for scroll-into-view, e.g. by a
     /// tapped notification. Views observe this to drive a `ScrollViewReader`.
     @Published public private(set) var scrollTarget: String?
@@ -116,16 +119,23 @@ public final class HistoryViewModel: ObservableObject {
         days.last { !$0.isNoData }
     }
 
+    /// Today's synced summary, for the Today tab's day metrics. A history
+    /// built on this Mac feeds the Patterns card only, so the Today tab keeps
+    /// showing what it showed before one existed.
     public var todayReadyDay: DaySummaryViewModel? {
-        readyDay(for: Self.localDateString())
+        guard source == .cloud else { return nil }
+        return readyDay(for: Self.localDateString())
     }
 
     public func readyDay(for localDate: String) -> DaySummaryViewModel? {
         days.first { $0.id == localDate && !$0.isNoData }
     }
 
+    /// Progress toward the cloud's baseline, counted in synced days only.
+    /// Days built on this Mac are not summaries the cloud holds, and counting
+    /// them would say a baseline is being collected that is not.
     public var baselineProgress: BaselineProgress {
-        let collected = days.filter { !$0.isNoData }
+        let collected = source == .cloud ? days.filter { !$0.isNoData } : []
         return BaselineProgress(
             collectedDays: collected.count,
             maturityStatus: collected.last?.baselineStatus
@@ -139,11 +149,13 @@ public final class HistoryViewModel: ObservableObject {
     public func update(from payload: HistoryPayload) {
         let mapped = payload.summaries.map(DaySummaryViewModel.init)
         days = HistoryViewModel.padded(mapped, toCount: payload.days)
+        source = payload.source
         isLoading = false
     }
 
     public func reset() {
         days = []
+        source = nil
         isLoading = true
         scrollTarget = nil
     }
@@ -159,10 +171,12 @@ public final class HistoryViewModel: ObservableObject {
     }
 
     /// Prepends synthetic no_data stubs for dates before the earliest known day
-    /// when the server sends fewer summaries than the requested window.
+    /// when a payload carries fewer summaries than its `days`.
     ///
-    /// New-user invariant: a user on day 2 with a 7-day window sees 5 no_data
-    /// rows followed by 2 real rows — never a shorter-than-expected list.
+    /// Since protocol 33 `days` is the number of rows sent, so the service
+    /// never asks for padding. Until then it was the number of days requested,
+    /// and a 7-row cloud answer labelled 14 was padded with seven empty days:
+    /// a prior week that could never count toward week over week.
     static func padded(_ existing: [DaySummaryViewModel], toCount target: Int) -> [DaySummaryViewModel] {
         guard target > existing.count, let earliest = existing.first else {
             return existing
@@ -285,7 +299,7 @@ public struct ProgressiveInsight: Equatable, Sendable {
         return ProgressiveInsight(
             tier: .weekOverWeek,
             observation:
-                "Uninterrupted focus represented \(Int((recentFocusShare * 100).rounded()))% of observed active time this week.",
+                "Focus-oriented work represented \(Int((recentFocusShare * 100).rounded()))% of observed active time this week.",
             comparison:
                 "That share was \(focusDirection) than last week; meaningful switching was \(switchDirection).",
             suggestedAction: suggestedAction,

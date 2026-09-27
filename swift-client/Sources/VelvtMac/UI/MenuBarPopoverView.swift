@@ -17,7 +17,7 @@ private struct HistoryWorkspaceView: View {
         YourWeekContentView(
             snapshot: localDashboardCoordinator.snapshot,
             historyAvailability: coordinator.historyAvailability,
-            historyNotReadyReason: coordinator.historyNotReadyReason,
+            isSignedIn: coordinator.isSignedIn,
             historyViewModel: coordinator.historyViewModel,
             weeklyDigest: workBlockCoordinator.weeklyDigest,
             onAcknowledgeDigest: workBlockCoordinator.acknowledgeWeeklyDigest
@@ -48,7 +48,7 @@ struct YourWeekContentView: View {
     /// asked about.
     let snapshot: LocalDashboardSnapshot?
     let historyAvailability: DeliveryAvailability
-    var historyNotReadyReason: String? = nil
+    var isSignedIn = false
     @ObservedObject var historyViewModel: HistoryViewModel
     /// This week's receipts. They were reachable only from inside the
     /// focus-session sheet, so a completed week could sit correct and unread
@@ -67,7 +67,7 @@ struct YourWeekContentView: View {
             LocalWeekActivityView(days: snapshot?.dailyActivity ?? [])
             WeekOverWeekCoachingView(
                 availability: historyAvailability,
-                notReadyReason: historyNotReadyReason,
+                isSignedIn: isSignedIn,
                 viewModel: historyViewModel
             )
         }
@@ -317,13 +317,51 @@ func localCategoryLabel(_ category: String) -> String {
 }
 
 struct WeekOverWeekCoachingView: View {
+    /// Under a card drawn from summaries built on this Mac, signed in: the
+    /// synced ones could not be read. It promises nothing about when they
+    /// will be; the card that said "this will catch up on its own" was
+    /// asked for its history once per connection and never again.
+    static let thisMacSignedInCaption =
+        "From this Mac. Synced daily summaries are unavailable right now."
+    /// The same, signed out, where there is no outage to report.
+    static let thisMacSignedOutCaption =
+        "From this Mac. Synced daily summaries need you to be signed in."
+    /// Asked for and not yet answered. Since protocol 33 a signed-out Mac is
+    /// asked too, so this no longer stands in for "signed out" forever.
+    static let loadingCopy = "Loading daily summaries."
+    /// The service could build no summary at all, not even on this Mac.
+    static let unavailableCopy =
+        "Daily summaries could not be read on this Mac. Velvt asks for them each time Patterns opens."
+    /// Built on this Mac, and none of the last seven days had active time.
+    static let noLocalActivityCopy = "No activity was recorded on this Mac in the last 7 days."
+    /// Synced, and none of the last seven days is ready.
+    static let noSyncedActivityCopy = "No qualifying activity is available yet."
+
+    /// `.notGenerated` since protocol 33 means nothing could be built on this
+    /// Mac either: an unreachable cloud, and a signed-out Mac, are answered
+    /// with summaries built here, so the old "could not be reached" reason
+    /// no longer reaches the card.
     let availability: DeliveryAvailability
-    /// Why history is unavailable, when the service said why. Rust
-    /// distinguishes an unreachable backend from an empty week; without this
-    /// the tab answered both with advice to keep working, which tells someone
-    /// whose network failed that the fault is their work habits.
-    var notReadyReason: String? = nil
+    var isSignedIn = false
     @ObservedObject var viewModel: HistoryViewModel
+
+    /// The text shown in place of an insight, or `nil` when there is one.
+    static func placeholder(
+        availability: DeliveryAvailability,
+        viewModel: HistoryViewModel
+    ) -> String? {
+        if viewModel.progressiveInsight != nil { return nil }
+        if availability == .notGenerated { return unavailableCopy }
+        if availability == .loading || viewModel.isLoading { return loadingCopy }
+        return viewModel.source == .thisMac ? noLocalActivityCopy : noSyncedActivityCopy
+    }
+
+    /// The quiet line under a card built on this Mac, or `nil` under a synced
+    /// one.
+    static func caption(for source: HistorySource?, isSignedIn: Bool) -> String? {
+        guard source == .thisMac else { return nil }
+        return isSignedIn ? thisMacSignedInCaption : thisMacSignedOutCaption
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -352,20 +390,14 @@ struct WeekOverWeekCoachingView: View {
                     .font(VelvtType.caption(10))
                     .foregroundStyle(VelvtInk.tertiaryOnPaper)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if availability == .notGenerated {
-                coachingPlaceholder(
-                    notReadyReason == "backend_unavailable"
-                        ? "Daily summaries could not be reached just now. Local collection is unaffected and this will catch up on its own."
-                        : "No observed day is ready yet. Keep Velvt running during a normal work block."
-                )
-            } else if availability == .loading || viewModel.isLoading {
-                coachingPlaceholder(
-                    "Loading privacy-safe daily coverage."
-                )
-            } else {
-                coachingPlaceholder(
-                    "No qualifying activity is available yet."
-                )
+            } else if let placeholder = Self.placeholder(availability: availability, viewModel: viewModel) {
+                coachingPlaceholder(placeholder)
+            }
+            if let caption = Self.caption(for: viewModel.source, isSignedIn: isSignedIn) {
+                Text(caption)
+                    .font(VelvtType.caption(10))
+                    .foregroundStyle(VelvtInk.tertiaryOnPaper)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(10)

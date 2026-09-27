@@ -40,7 +40,8 @@ use velvt_service::persistence::{RawEventEntry, SqlitePersistence};
 use velvt_service::upload::EventIngestor;
 use velvt_service::work_block::WorkBlockManager;
 use velvt_shared_types::{
-    ClientMessage, RawEvent, RequestCorrectionHistory, RequestLocalDashboard, RequestMenuStatus,
+    AcknowledgeCategoryPrompt, CategoryPromptResponse, ClientMessage, RawEvent,
+    RequestCategoryPrompt, RequestCorrectionHistory, RequestLocalDashboard, RequestMenuStatus,
     RequestUnclassifiedTriage, RequestWorkBlockState, ServerMessage, SetSiteCategory,
     StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose,
 };
@@ -538,4 +539,79 @@ async fn the_emitted_needs_a_category_list_and_history_validate_against_their_sc
         "{encoded}"
     );
     assert_valid("correction_history_page.json", &encoded);
+}
+
+/// Delivery gates that never suppress, so the emitted prompt carries a
+/// reminder as well as a card.
+struct OpenGates;
+
+impl velvt_service::initiation::InvitationGates for OpenGates {
+    fn live_block_exists(&self) -> Result<bool, velvt_service::persistence::PersistenceError> {
+        Ok(false)
+    }
+
+    fn in_quiet_hours(&self, _at: chrono::DateTime<Utc>) -> bool {
+        false
+    }
+
+    fn focus_active(&self, _at: chrono::DateTime<Utc>) -> bool {
+        false
+    }
+}
+
+/// The needs-a-category prompt as the service emits it: empty with nothing on
+/// the list, then a card and a reminder, then the reply to an answer.
+#[tokio::test]
+async fn the_emitted_category_prompt_validates_against_its_schema() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let router = router_over(&persistence).with_category_prompt(
+        velvt_service::category_prompt::CategoryPromptManager::new(
+            persistence.category_prompt_repo(),
+            velvt_service::category_prompt::ListedCandidates::new(persistence.raw_event_repo()),
+            Arc::new(OpenGates),
+        ),
+    );
+    let request = || {
+        ClientMessage::RequestCategoryPrompt(RequestCategoryPrompt {
+            utc_offset_seconds: 3_600,
+        })
+    };
+    let emitted = |response: Option<ServerMessage>| {
+        let Some(message @ ServerMessage::CategoryPrompt(_)) = response else {
+            panic!("the prompt messages answer with category_prompt, got {response:?}");
+        };
+        serde_json::to_value(message).unwrap()
+    };
+
+    let empty = emitted(router.route(request()).await.unwrap());
+    assert_eq!(empty["payload"], serde_json::json!({}));
+    assert_valid("category_prompt.json", &empty);
+
+    persistence
+        .raw_event_repo()
+        .insert(&unlogged_event(
+            "abs_named",
+            1_200,
+            &"1".repeat(64),
+            Some("Qwybex"),
+        ))
+        .unwrap();
+    let full = emitted(router.route(request()).await.unwrap());
+    assert!(full["payload"]["card"].is_object(), "{full}");
+    assert!(full["payload"]["notification"].is_object(), "{full}");
+    assert_valid("category_prompt.json", &full);
+
+    let answered = emitted(
+        router
+            .route(ClientMessage::AcknowledgeCategoryPrompt(
+                AcknowledgeCategoryPrompt {
+                    prompt_id: full["payload"]["prompt_id"].as_str().unwrap().to_owned(),
+                    response: CategoryPromptResponse::Opened,
+                },
+            ))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(answered["payload"], serde_json::json!({}));
+    assert_valid("category_prompt.json", &answered);
 }

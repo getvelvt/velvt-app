@@ -326,6 +326,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::WeeklyDigest(_) => "weekly_digest",
         ServerMessage::InterventionExplanation(_) => "intervention_explanation",
         ServerMessage::UnclassifiedTriage(_) => "unclassified_triage",
+        ServerMessage::CategoryPrompt(_) => "category_prompt",
     }
 }
 

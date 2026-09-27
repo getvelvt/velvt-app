@@ -2314,10 +2314,16 @@ impl RawEventRepo for SqliteRawEventRepo {
                         -- application. `local_name_suggestion` carries the raw
                         -- application name for exactly the events that matched
                         -- no seed and no correction (migration 0001), which is
-                        -- every event in this list.
+                        -- every event in this list -- and only those: read off
+                        -- the UNLOGGED rows, on
+                        -- `idx_raw_event_buffer_category_app`, rather than off
+                        -- every row of the application, which walked the whole
+                        -- buffer once per application and is the reason the
+                        -- list can now be read once a minute.
                         (SELECT COALESCE(named.local_display_label, named.local_name_suggestion)
                            FROM raw_event_buffer named
-                          WHERE named.app_stable_id = observed.app_stable_id
+                          WHERE named.category = 'UNLOGGED'
+                            AND named.app_stable_id = observed.app_stable_id
                             AND COALESCE(named.local_display_label, named.local_name_suggestion)
                                 IS NOT NULL
                           ORDER BY named.occurred_at DESC
@@ -2356,14 +2362,24 @@ impl RawEventRepo for SqliteRawEventRepo {
                    -- evidence, which is the same read
                    -- `save_app_scope_override` refuses on -- this filter keeps the
                    -- list honest, that check keeps the promise.
-                   AND NOT EXISTS (
-                       SELECT 1 FROM raw_event_buffer ineligible
-                       WHERE ineligible.app_scope_eligible = 0
-                         AND (ineligible.app_stable_id = observed.app_stable_id
-                              OR (observed.app_bundle_stable_id IS NOT NULL
-                                  AND ineligible.app_bundle_stable_id
-                                      = observed.app_bundle_stable_id))
+                   --
+                   -- Two uncorrelated sets rather than one NOT EXISTS: SQLite
+                   -- builds each once per query, where the correlated form
+                   -- scanned the whole buffer for every UNLOGGED row, about six
+                   -- seconds on a 30,000-row buffer with the store's one
+                   -- connection held throughout. NULLs are kept out of both
+                   -- sets, so NOT IN means exactly what NOT EXISTS meant.
+                   AND observed.app_stable_id NOT IN (
+                       SELECT ineligible.app_stable_id FROM raw_event_buffer ineligible
+                        WHERE ineligible.app_scope_eligible = 0
+                          AND ineligible.app_stable_id IS NOT NULL
                    )
+                   AND (observed.app_bundle_stable_id IS NULL
+                        OR observed.app_bundle_stable_id NOT IN (
+                            SELECT ineligible.app_bundle_stable_id FROM raw_event_buffer ineligible
+                             WHERE ineligible.app_scope_eligible = 0
+                               AND ineligible.app_bundle_stable_id IS NOT NULL
+                        ))
                    -- An application the user has already taught must leave the
                    -- list the moment they teach it. Past events keep their
                    -- UNLOGGED category -- nothing here rewrites history -- so

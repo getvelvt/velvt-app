@@ -56,6 +56,12 @@ pub enum ClientMessage {
     /// Teaches Velvt what one site is, on every page and in every browser,
     /// with no source event (protocol 33).
     SetSiteCategory(SetSiteCategory),
+    /// Asks the deterministic needs-a-category policy for its card and at
+    /// most one reminder a local day (protocol 33). Every gate is Rust's.
+    RequestCategoryPrompt(RequestCategoryPrompt),
+    /// The answer to a needs-a-category card, or a tap on its reminder
+    /// (protocol 33). Only ever quiets what Velvt asks.
+    AcknowledgeCategoryPrompt(AcknowledgeCategoryPrompt),
     /// Starts one bounded, device-local meaningful-work block.
     StartWorkBlock(StartWorkBlock),
     /// Pauses the current work block.
@@ -187,6 +193,9 @@ pub enum ServerMessage {
     /// The bounded list of applications and sites Velvt could not
     /// categorize in the window.
     UnclassifiedTriage(UnclassifiedTriage),
+    /// The needs-a-category card and, at most once a local day, a reminder
+    /// to post, worded in Rust (protocol 33). Counts only, never names.
+    CategoryPrompt(CategoryPrompt),
 }
 
 /// Server's first message on every connection.
@@ -1005,6 +1014,89 @@ impl std::fmt::Debug for SetSiteCategory {
             )
             .finish()
     }
+}
+
+/// Asks for the needs-a-category card and reminder (protocol 33).
+///
+/// Carries only the client's UTC offset, so Rust can tell which local day it
+/// is. Every gate -- a live work block, Velvt's quiet hours, macOS Focus, the
+/// daily cap, only-something-new, the reminder backoff -- is owned and
+/// enforced in Rust.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestCategoryPrompt {
+    pub utc_offset_seconds: i32,
+}
+
+/// The needs-a-category card and reminder, decided and worded in Rust
+/// (protocol 33).
+///
+/// PRIVACY: counts only. No application name, hostname, key, category or time
+/// observed is representable here, because macOS Notification Center keeps a
+/// reminder's text beyond anything Velvt can delete. An empty payload means
+/// no card: the client hides any card it holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CategoryPrompt {
+    /// The card's identity: the same list of entries is the same id on every
+    /// request. Present exactly when `card` is; sent back in
+    /// [`AcknowledgeCategoryPrompt`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    /// Shown while any entry on the list is unanswered and no work block is
+    /// active or paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<CategoryPromptCard>,
+    /// At most one a local day, only for an entry nothing has announced or
+    /// answered yet. Handed over once: it is consumed whether or not the
+    /// client can post it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification: Option<CategoryPromptNotification>,
+}
+
+/// Rust-authored card copy. Swift renders it verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CategoryPromptCard {
+    pub title: String,
+    pub body: String,
+    /// Opens the needs-a-category list; answered as
+    /// [`CategoryPromptResponse::Opened`].
+    pub primary_action: String,
+    /// Closes the card; answered as [`CategoryPromptResponse::NotNow`].
+    pub secondary_action: String,
+    /// How many entries the list holds, 1 to 8.
+    pub entry_count: u32,
+}
+
+/// Rust-authored reminder copy. Swift posts it verbatim, only if
+/// notifications are already allowed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CategoryPromptNotification {
+    pub title: String,
+    pub body: String,
+}
+
+/// How the person answered a needs-a-category card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CategoryPromptResponse {
+    /// The list was opened, from the card or from the reminder.
+    Opened,
+    /// The card was closed.
+    NotNow,
+}
+
+/// The answer to the card `prompt_id` (protocol 33). Either response quiets
+/// the card until an entry it never showed joins the list; `opened` also ends
+/// a run of unopened reminders. Answered with a [`CategoryPrompt`] that never
+/// carries a reminder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcknowledgeCategoryPrompt {
+    pub prompt_id: String,
+    pub response: CategoryPromptResponse,
 }
 
 /// Version of the persisted and wire-visible work-block state machine.
@@ -3259,5 +3351,102 @@ mod v33_needs_a_category_contract {
             serde_json::from_str::<ClassificationCorrectionSummary>(&encoded).unwrap(),
             summary
         );
+    }
+
+    #[test]
+    fn the_category_prompt_messages_round_trip_in_their_exact_shape() {
+        let request = ClientMessage::RequestCategoryPrompt(RequestCategoryPrompt {
+            utc_offset_seconds: -18_000,
+        });
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"request_category_prompt","payload":{"utc_offset_seconds":-18000}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            request
+        );
+
+        let prompt = ServerMessage::CategoryPrompt(CategoryPrompt {
+            prompt_id: Some("e".repeat(64)),
+            card: Some(CategoryPromptCard {
+                title: "Needs a category".into(),
+                body: "1 site you used this week doesn't have a category yet.".into(),
+                primary_action: "Choose a category".into(),
+                secondary_action: "Not now".into(),
+                entry_count: 1,
+            }),
+            notification: Some(CategoryPromptNotification {
+                title: "A site needs a category".into(),
+                body: "1 site you used this week doesn't have a category yet.".into(),
+            }),
+        });
+        let encoded = serde_json::to_string(&prompt).unwrap();
+        assert_eq!(
+            encoded,
+            format!(
+                r#"{{"type":"category_prompt","payload":{{"prompt_id":"{}","card":{{"title":"Needs a category","body":"1 site you used this week doesn't have a category yet.","primary_action":"Choose a category","secondary_action":"Not now","entry_count":1}},"notification":{{"title":"A site needs a category","body":"1 site you used this week doesn't have a category yet."}}}}}}"#,
+                "e".repeat(64)
+            )
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            prompt
+        );
+
+        // Nothing to show is an empty payload, not a flag.
+        let empty = ServerMessage::CategoryPrompt(CategoryPrompt::default());
+        assert_eq!(
+            serde_json::to_string(&empty).unwrap(),
+            r#"{"type":"category_prompt","payload":{}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(r#"{"type":"category_prompt","payload":{}}"#)
+                .unwrap(),
+            empty
+        );
+
+        for (response, wire) in [
+            (CategoryPromptResponse::Opened, "opened"),
+            (CategoryPromptResponse::NotNow, "not_now"),
+        ] {
+            let answer = ClientMessage::AcknowledgeCategoryPrompt(AcknowledgeCategoryPrompt {
+                prompt_id: "e".repeat(64),
+                response,
+            });
+            let encoded = serde_json::to_string(&answer).unwrap();
+            assert_eq!(
+                encoded,
+                format!(
+                    r#"{{"type":"acknowledge_category_prompt","payload":{{"prompt_id":"{}","response":"{wire}"}}}}"#,
+                    "e".repeat(64)
+                )
+            );
+            assert_eq!(
+                serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+                answer
+            );
+        }
+    }
+
+    /// Closed shapes: a name, a key or a category smuggled into the card or
+    /// the reminder is refused rather than carried.
+    #[test]
+    fn the_category_prompt_refuses_fields_it_does_not_declare() {
+        for extra in [
+            r#"{"card":{"title":"t","body":"b","primary_action":"p","secondary_action":"s","entry_count":1,"display_name":"Qwybex"}}"#,
+            r#"{"notification":{"title":"t","body":"b","stable_id":"x"}}"#,
+            r#"{"entries":[]}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<CategoryPrompt>(extra).is_err(),
+                "{extra} decoded"
+            );
+        }
+        assert!(serde_json::from_str::<AcknowledgeCategoryPrompt>(
+            r#"{"prompt_id":"x","response":"dismissed"}"#
+        )
+        .is_err());
     }
 }

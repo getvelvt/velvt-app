@@ -428,8 +428,13 @@ only complete removal, and the procedure for it is at the end of this document.
   interventions, cleared when you sign out), and up to 256 opaque notification
   IDs, kept so a notification is not scheduled twice. No activity, name, title,
   or notification text.
-- **Notification Center.** Drift offers and daily insights you receive are
-  held by macOS Notification Center, as any app's notifications are.
+- **Notification Center.** Velvt posts three kinds of notification: the drift
+  offer inside a focus session you started, the daily insight, and, at most
+  once a day and never during a focus session, a reminder that something you
+  used needs a category. The ones you receive are held by macOS Notification
+  Center, as any app's notifications are. The category reminder's text is
+  written by the Rust service from counts alone: it says how many sites and
+  apps need a category, and never names one.
 - **The socket.** `~/.velvt/velvt-service.sock` is the local connection between
   the app and the service. It holds no data.
 - **An optional Claude Code log.** Velvt.app never writes

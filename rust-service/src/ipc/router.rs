@@ -10,16 +10,18 @@ use std::{
 use chrono::Utc;
 use uuid::Uuid;
 use velvt_shared_types::{
-    CacheEmpty, ClassificationConfidence, ClassificationCorrectionSummary, ClassificationSource,
-    ClassificationStatus, ClientMessage, CorrectionHistoryPage, InterventionSalience, MenuStatus,
-    QueuedEventSummary, RawEventAck, RawEventMetadataError, RawEventStatus, RequestLocalDashboard,
-    ServerMessage, SetApplicationCategory, SetSiteCategory, UnclassifiedTriage,
+    CacheEmpty, CategoryPrompt, ClassificationConfidence, ClassificationCorrectionSummary,
+    ClassificationSource, ClassificationStatus, ClientMessage, CorrectionHistoryPage,
+    InterventionSalience, MenuStatus, QueuedEventSummary, RawEventAck, RawEventMetadataError,
+    RawEventStatus, RequestLocalDashboard, ServerMessage, SetApplicationCategory, SetSiteCategory,
+    UnclassifiedTriage,
 };
 
 use crate::abstraction::{AbstractedEvent, AbstractionEngine};
 use crate::auth::{
     AccountAuthService, AuthError, AuthState, HttpClient, HttpRequest, SessionValidator, TokenStore,
 };
+use crate::category_prompt::CategoryPromptManager;
 use crate::delivery::{shaper, CacheManager, PushAdapter};
 use crate::focus::FocusManager;
 use crate::initiation::InitiationManager;
@@ -285,6 +287,12 @@ fn normalized_app_stable_id(value: &str) -> Option<&str> {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
     .then_some(value)
+}
+
+/// Accepts a card id only in the shape Velvt issues: a SHA-256 in 64 lowercase
+/// hex characters, the same shape as a key.
+fn normalized_prompt_id(value: &str) -> Option<&str> {
+    normalized_app_stable_id(value)
 }
 
 fn correction_summary(
@@ -1578,6 +1586,248 @@ mod tests {
         );
     }
 
+    /// The correction router with work blocks and the needs-a-category prompt
+    /// attached, over the production gates and the production list.
+    fn prompt_router(persistence: &SqlitePersistence) -> R7Router {
+        let work_blocks = Arc::new(WorkBlockManager::new(persistence.work_block_repo()));
+        let gates = crate::initiation::RuntimeInvitationGates::new(
+            crate::focus::FocusManager::new(persistence.focus_repo()),
+            persistence.work_block_repo(),
+        );
+        let prompt = CategoryPromptManager::new(
+            persistence.category_prompt_repo(),
+            crate::category_prompt::ListedCandidates::new(persistence.raw_event_repo()),
+            gates as Arc<dyn crate::initiation::InvitationGates>,
+        );
+        correction_router(persistence)
+            .with_work_blocks(
+                work_blocks,
+                PushAdapter::new(crate::delivery::PushQueue::new(50)),
+            )
+            .with_category_prompt(prompt)
+    }
+
+    async fn category_prompt(router: &R7Router) -> CategoryPrompt {
+        match router
+            .route(ClientMessage::RequestCategoryPrompt(
+                velvt_shared_types::RequestCategoryPrompt {
+                    utc_offset_seconds: 0,
+                },
+            ))
+            .await
+            .unwrap()
+        {
+            Some(ServerMessage::CategoryPrompt(prompt)) => prompt,
+            other => panic!("expected a category prompt, got {other:?}"),
+        }
+    }
+
+    async fn answer(
+        router: &R7Router,
+        prompt_id: &str,
+        response: velvt_shared_types::CategoryPromptResponse,
+    ) -> Option<ServerMessage> {
+        router
+            .route(ClientMessage::AcknowledgeCategoryPrompt(
+                velvt_shared_types::AcknowledgeCategoryPrompt {
+                    prompt_id: prompt_id.to_owned(),
+                    response,
+                },
+            ))
+            .await
+            .unwrap()
+    }
+
+    /// End to end over the real list: an app and a site Velvt could not
+    /// categorize bring one card and one reminder, counted and name-free; a
+    /// second request is the same card with no reminder; a block hides it;
+    /// "Not now" quiets it.
+    #[tokio::test]
+    async fn the_prompt_counts_the_list_names_nothing_and_answers_quietly() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = prompt_router(&persistence);
+        assert_eq!(category_prompt(&router).await, CategoryPrompt::default());
+
+        for message in [
+            raw_event("Qwybex", "Zarniwoop", Some("com.example.qwybex"), 600),
+            browser_tab("Safari", "https://qwybex-forum.example/t/1", 900),
+        ] {
+            router.route(message).await.unwrap();
+        }
+
+        let first = category_prompt(&router).await;
+        let card = first.card.clone().expect("two unanswered entries");
+        assert_eq!(
+            card.body,
+            "1 site and 1 app you used this week don't have a category yet. \
+             Choose once and it covers every page of a site and every window of an app."
+        );
+        assert_eq!(card.entry_count, 2);
+        let reminder = first.notification.clone().expect("both are new");
+        assert_eq!(reminder.title, "A few things need a category");
+        let wire = serde_json::to_string(&ServerMessage::CategoryPrompt(first.clone())).unwrap();
+        for name in [
+            "Qwybex",
+            "qwybex",
+            "Zarniwoop",
+            "qwybex-forum",
+            "Safari",
+            &app_key(&persistence, "Qwybex"),
+            &site_key(&persistence, "qwybex-forum.example"),
+        ] {
+            assert!(!wire.contains(name), "{name} is in the prompt: {wire}");
+        }
+
+        let again = category_prompt(&router).await;
+        assert_eq!(again.prompt_id, first.prompt_id);
+        assert_eq!(again.card, first.card);
+        assert_eq!(again.notification, None, "one reminder, handed over once");
+
+        // A live block takes the card away, and gives it back when it ends.
+        let started = router
+            .route(ClientMessage::StartWorkBlock(
+                velvt_shared_types::StartWorkBlock {
+                    intention: None,
+                    planned_duration_seconds: 1_500,
+                    purpose: None,
+                    intensity: velvt_shared_types::WorkBlockIntensity::Medium,
+                    invitation_id: None,
+                },
+            ))
+            .await
+            .unwrap();
+        let Some(ServerMessage::WorkBlockState(block)) = started else {
+            panic!("the block started: {started:?}");
+        };
+        assert_eq!(category_prompt(&router).await, CategoryPrompt::default());
+        router
+            .route(ClientMessage::EndWorkBlock(
+                velvt_shared_types::EndWorkBlock {
+                    block_id: block.block_id.unwrap(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert_eq!(category_prompt(&router).await.card, first.card);
+
+        let prompt_id = first.prompt_id.unwrap();
+        let reply = answer(
+            &router,
+            &prompt_id,
+            velvt_shared_types::CategoryPromptResponse::NotNow,
+        )
+        .await;
+        assert_eq!(
+            reply,
+            Some(ServerMessage::CategoryPrompt(CategoryPrompt::default())),
+            "the reply to an answer is the card as it now stands"
+        );
+        assert_eq!(category_prompt(&router).await, CategoryPrompt::default());
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_a_malformed_card_id_is_refused() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = prompt_router(&persistence);
+        for prompt_id in ["", "not-a-card", &"E".repeat(64), &"e".repeat(63)] {
+            let reply = answer(
+                &router,
+                prompt_id,
+                velvt_shared_types::CategoryPromptResponse::Opened,
+            )
+            .await;
+            assert!(
+                matches!(
+                    reply,
+                    Some(ServerMessage::ErrorResponse(ref error))
+                        if error.code == "invalid_category_prompt_id"
+                ),
+                "{prompt_id:?}: {reply:?}"
+            );
+        }
+    }
+
+    /// Opening the list from the card answers it too, and a site taught from
+    /// the list leaves it, so a new entry later is what brings the card back.
+    #[tokio::test]
+    async fn opening_the_list_answers_the_card_and_teaching_shrinks_the_list() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = prompt_router(&persistence);
+        router
+            .route(browser_tab(
+                "Safari",
+                "https://qwybex-forum.example/t/1",
+                900,
+            ))
+            .await
+            .unwrap();
+        let shown = category_prompt(&router).await;
+        assert_eq!(shown.card.as_ref().unwrap().entry_count, 1);
+        assert_eq!(
+            shown.card.as_ref().unwrap().primary_action,
+            "Choose a category"
+        );
+        answer(
+            &router,
+            shown.prompt_id.as_deref().unwrap(),
+            velvt_shared_types::CategoryPromptResponse::Opened,
+        )
+        .await;
+        menu_status(
+            &router,
+            teach_site(
+                &site_key(&persistence, "qwybex-forum.example"),
+                "REFERENCE",
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(category_prompt(&router).await, CategoryPrompt::default());
+
+        router
+            .route(raw_event("Qwybex", "Zarniwoop", None, 600))
+            .await
+            .unwrap();
+        let back = category_prompt(&router).await;
+        assert_eq!(
+            back.card.expect("a new entry").body,
+            "1 app you used this week doesn't have a category yet. \
+             Choose once and it covers every window of that app."
+        );
+        assert_eq!(
+            back.notification, None,
+            "today's reminder was spent on the site"
+        );
+    }
+
+    /// Unattached, the prompt messages are acknowledged and dropped, as the
+    /// invitation's are.
+    #[tokio::test]
+    async fn without_the_prompt_attached_its_messages_are_dropped() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        assert_eq!(
+            router
+                .route(ClientMessage::RequestCategoryPrompt(
+                    velvt_shared_types::RequestCategoryPrompt {
+                        utc_offset_seconds: 0
+                    },
+                ))
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            answer(
+                &router,
+                &"e".repeat(64),
+                velvt_shared_types::CategoryPromptResponse::NotNow
+            )
+            .await,
+            None
+        );
+    }
+
     /// The two tiers that read declared metadata have to survive the round trip
     /// through the audit row, or the menu reports them as `fallback`.
     #[test]
@@ -1629,6 +1879,7 @@ pub struct R7Router {
     focus: Option<Arc<FocusManager>>,
     initiation: Option<Arc<InitiationManager>>,
     receipts: Option<Arc<ReceiptsManager>>,
+    category_prompt: Option<Arc<CategoryPromptManager>>,
     auth_state: Option<tokio::sync::watch::Receiver<AuthState>>,
     in_progress_dwells: Arc<InProgressDwells>,
 }
@@ -1657,6 +1908,7 @@ impl R7Router {
             focus: None,
             initiation: None,
             receipts: None,
+            category_prompt: None,
             auth_state: None,
             in_progress_dwells: Arc::default(),
         }
@@ -1718,6 +1970,14 @@ impl R7Router {
     /// digest messages are acknowledged and dropped and no digest exists.
     pub fn with_receipts(mut self, receipts: Arc<ReceiptsManager>) -> Self {
         self.receipts = Some(receipts);
+        self
+    }
+
+    /// Attaches the needs-a-category card and reminder policy (protocol 33).
+    /// Without it, its messages are acknowledged and dropped and no card or
+    /// reminder exists.
+    pub fn with_category_prompt(mut self, category_prompt: Arc<CategoryPromptManager>) -> Self {
+        self.category_prompt = Some(category_prompt);
         self
     }
 
@@ -2263,6 +2523,60 @@ impl MessageRouter for R7Router {
 
             ClientMessage::SetSiteCategory(request) => {
                 Ok(Some(self.set_site_category(request).await))
+            }
+
+            ClientMessage::RequestCategoryPrompt(request) => {
+                let Some(category_prompt) = &self.category_prompt else {
+                    return Ok(None);
+                };
+                // Always answered, so a client holding a card it should no
+                // longer show hears so. A failure is an empty prompt: never a
+                // card or a reminder on evidence Velvt could not read.
+                let prompt = category_prompt
+                    .pending_prompt(Utc::now(), request.utc_offset_seconds)
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(
+                            error_code = "category_prompt_check_failed",
+                            error = %err,
+                            "the needs-a-category prompt could not be evaluated"
+                        );
+                        CategoryPrompt::default()
+                    });
+                Ok(Some(ServerMessage::CategoryPrompt(prompt)))
+            }
+
+            ClientMessage::AcknowledgeCategoryPrompt(request) => {
+                let Some(category_prompt) = &self.category_prompt else {
+                    return Ok(None);
+                };
+                let Some(prompt_id) = normalized_prompt_id(&request.prompt_id) else {
+                    return Ok(Some(ServerMessage::ErrorResponse(
+                        velvt_shared_types::ErrorResponse {
+                            code: "invalid_category_prompt_id".into(),
+                            message: "Unable to record this answer. Try again later.".into(),
+                            related_event_id: None,
+                        },
+                    )));
+                };
+                let now = Utc::now();
+                if let Err(err) = category_prompt.acknowledge(prompt_id, request.response, now) {
+                    tracing::warn!(
+                        error_code = "category_prompt_acknowledge_failed",
+                        error = %err,
+                        "the answer to the needs-a-category card was not recorded"
+                    );
+                }
+                // The card as it stands after the answer, and never a
+                // reminder: an answer must not be what brings one.
+                let prompt = category_prompt.current_card(now).unwrap_or_else(|err| {
+                    tracing::warn!(
+                        error_code = "category_prompt_check_failed",
+                        error = %err,
+                        "the needs-a-category card could not be evaluated"
+                    );
+                    CategoryPrompt::default()
+                });
+                Ok(Some(ServerMessage::CategoryPrompt(prompt)))
             }
 
             ClientMessage::StartWorkBlock(request) => {

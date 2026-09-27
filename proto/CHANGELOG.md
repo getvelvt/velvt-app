@@ -40,12 +40,40 @@
   it up for that application key, not by searching a 14-day top-8 list, which
   missed an application the client had been shown on a 7-day list and keyed
   its rule on the name alone.
+- Added the needs-a-category card and reminder, decided and worded in Rust
+  (`category_prompt`, `CATEGORY_PROMPT_POLICY_VERSION` 1):
+  - `request_category_prompt {utc_offset_seconds}` (Swift to Rust, -64800 to
+    64800) is always answered with `category_prompt {prompt_id?, card?,
+    notification?}` (Rust to Swift). An empty payload means no card. `card`
+    is `{title, body, primary_action, secondary_action, entry_count}` and
+    `notification` is `{title, body}`; `prompt_id` (64 lowercase hex, a
+    SHA-256 over the listed keys) is present exactly when `card` is.
+  - The card shows while any entry of the last seven days' list is
+    unanswered, and never while a work block is active or paused. The
+    notification additionally needs: not Velvt's quiet hours, macOS Focus not
+    known to be on, no reminder yet on the client's local date, an entry no
+    reminder has counted and no answer has reached, and no backoff pause
+    (three reminders in a row with no `opened` answer before the next pause
+    reminders for seven days after the latest). It is claimed in the same
+    transaction that records it and is never handed over twice, whether or
+    not the client posts it.
+  - `acknowledge_category_prompt {prompt_id, response}` (Swift to Rust),
+    `response` `opened` or `not_now`. Either quiets the card until an entry
+    it never showed joins the list; `opened` also ends a run of unopened
+    reminders. Answered with `category_prompt` as the card now stands, never
+    with a notification; a malformed `prompt_id` is refused with
+    `invalid_category_prompt_id`.
+  - Copy is counts only, never a name, a hostname or a time, because macOS
+    Notification Center keeps a notification's text. This is the third
+    notification kind, beside the drift offer and the daily insight.
 - Compatibility: a v32 triage entry does not decode as a v33 one and a v32
-  service rejects `set_site_category`, so the handshake requires 33 on both
-  sides. `request_unclassified_triage` is unchanged.
+  service rejects `set_site_category` and the two prompt requests, so the
+  handshake requires 33 on both sides. `request_unclassified_triage` is
+  unchanged.
 - Privacy: nothing new leaves the Mac. The hostname of a site that needs a
   category crosses the local socket as display text, like an application's
-  local name; neither is uploaded, logged, or kept by the client.
+  local name; neither is uploaded, logged, or kept by the client. The prompt's
+  record (migration 0041) holds salted keys, dates, times and counts.
 
 ## Schema correction: menu_status sources - 2026-09-27 (no wire change; the protocol stays 32)
 

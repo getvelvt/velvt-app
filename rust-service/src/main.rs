@@ -292,6 +292,15 @@ async fn main() {
         // delivery gates an invitation consults.
         let receipts = velvt_service::receipts::ReceiptsManager::new(
             persistence.receipts_repo(),
+            Arc::clone(&initiation_gates) as Arc<dyn velvt_service::initiation::InvitationGates>,
+        );
+        // The needs-a-category card and daily reminder (protocol 33): the
+        // same delivery gates an invitation consults, over the list the
+        // Settings pane shows, with the names dropped before the policy sees
+        // an entry. Rust decides and words both; Swift renders and posts.
+        let category_prompt = velvt_service::category_prompt::CategoryPromptManager::new(
+            persistence.category_prompt_repo(),
+            velvt_service::category_prompt::ListedCandidates::new(Arc::clone(&raw_event_repo)),
             initiation_gates as Arc<dyn velvt_service::initiation::InvitationGates>,
         );
         match work_blocks.recover_after_restart(chrono::Utc::now()) {
@@ -663,6 +672,7 @@ async fn main() {
             .with_focus(Arc::clone(&focus))
             .with_initiation(Arc::clone(&initiation))
             .with_receipts(Arc::clone(&receipts))
+            .with_category_prompt(Arc::clone(&category_prompt))
             .with_auth_state(auth_state.subscribe())
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,

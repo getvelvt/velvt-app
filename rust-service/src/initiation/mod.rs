@@ -408,13 +408,13 @@ fn trailing_dismissals(recent: &[InitiationInvitationRecord]) -> (u32, Option<Da
     (count, last_dismissed_at)
 }
 
-fn to_local(at: DateTime<Utc>, offset_seconds: i32) -> DateTime<FixedOffset> {
+pub(crate) fn to_local(at: DateTime<Utc>, offset_seconds: i32) -> DateTime<FixedOffset> {
     let offset =
         FixedOffset::east_opt(offset_seconds).unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
     at.with_timezone(&offset)
 }
 
-fn format_local_date(local: &DateTime<FixedOffset>) -> String {
+pub(crate) fn format_local_date(local: &DateTime<FixedOffset>) -> String {
     format!(
         "{:04}-{:02}-{:02}",
         local.year(),

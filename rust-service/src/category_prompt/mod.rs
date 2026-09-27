@@ -1,12 +1,65 @@
-//! The needs-a-category list (protocol 33).
+//! The needs-a-category card and the daily reminder (protocol 33;
+//! [`CATEGORY_PROMPT_POLICY_VERSION`]).
 //!
-//! One list of the applications and browser sites Velvt could not
-//! categorize, ranked together, which the Settings list shows and answers
-//! entry by entry.
+//! The list of applications and sites Velvt could not categorize was pulled
+//! only while its Settings pane was on screen, so the people it exists for
+//! never found it. This module decides when Velvt says so, and in what words:
+//! an in-app card while anything on the list is unanswered, and at most one
+//! notification a local day, only when something new is on the list, never
+//! during a focus session, never in Velvt's quiet hours and never while macOS
+//! Focus is known to be on.
+//!
+//! Everything here is a fixed, versioned rule, and every gate only ever
+//! suppresses. Answering the card, either way, quiets it until an entry the
+//! card never showed joins the list; three reminders in a row that nobody
+//! opened pause reminders for a week. Nothing shortens a wait or raises a cap,
+//! and nothing adapts.
+//!
+//! Privacy: the card and the reminder are counts, never names. A reminder's
+//! text is kept by macOS Notification Center, outside anything Velvt can
+//! delete, so no application name or hostname may ever be in it; the names on
+//! the list are dropped at [`ListedCandidates`], before this module sees an
+//! entry. The ledger (`category_prompt_entry`, `category_prompt_notification`,
+//! migration 0041) holds salted keys, dates, times and counts, and nothing
+//! here reaches the network.
 
-use velvt_shared_types::{TriageEntryKind, UnclassifiedTriageEntry};
+use std::sync::Arc;
 
-use crate::persistence::{PersistenceError, RawEventRepo, TRIAGE_MAX_ENTRIES, TRIAGE_MIN_SECONDS};
+use chrono::{DateTime, Duration, Utc};
+use sha2::{Digest, Sha256};
+use velvt_shared_types::{
+    CategoryPrompt, CategoryPromptCard, CategoryPromptNotification, CategoryPromptResponse,
+    TriageEntryKind, UnclassifiedTriageEntry,
+};
+
+use crate::initiation::{format_local_date, to_local, InvitationGates};
+use crate::persistence::{
+    CategoryPromptNotificationRecord, CategoryPromptRepo, PersistenceError, RawEventRepo,
+    TRIAGE_MAX_ENTRIES, TRIAGE_MIN_SECONDS,
+};
+
+/// Version of the card-and-reminder policy. Bump when any constant below, or
+/// the meaning of an answer, changes. Each reminder row records the version it
+/// was decided under.
+pub const CATEGORY_PROMPT_POLICY_VERSION: u32 = 1;
+/// The list the card and the reminder speak for: the last seven days, which
+/// is what "you used this week" in their copy promises. The Settings list
+/// takes its own window from the request.
+pub const CATEGORY_PROMPT_LOOKBACK_DAYS: u32 = 7;
+/// Backoff, never escalation: this many reminders in a row, each followed by
+/// no `opened` answer before the next one...
+pub const REMINDER_BACKOFF_UNOPENED: usize = 3;
+/// ...pause reminders for this long after the latest of them. The card still
+/// shows. An `opened` answer ends the run.
+pub const REMINDER_BACKOFF_PAUSE_DAYS: i64 = 7;
+/// Domain separator for [`prompt_id_for`].
+const PROMPT_ID_DOMAIN: &[u8] = b"velvt:category-prompt:v1";
+
+#[derive(Debug, thiserror::Error)]
+pub enum CategoryPromptError {
+    #[error("category prompt persistence unavailable")]
+    Persistence(#[from] PersistenceError),
+}
 
 /// The needs-a-category list: the applications and the browser sites Velvt
 /// could not categorize in the last `lookback_days`, ranked together.
@@ -61,11 +114,894 @@ pub fn needs_a_category(
     Ok(entries)
 }
 
+/// One entry of the list as the prompt sees it: which kind it is and its key.
+/// No name, by construction.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub kind: TriageEntryKind,
+    pub stable_id: String,
+}
+
+impl Candidate {
+    /// The ledger's key for this entry: `application:<key>` or `site:<key>`.
+    /// The two key domains cannot collide, and the prefix keeps them apart in
+    /// one column anyway.
+    pub fn entry_key(&self) -> String {
+        format!("{}:{}", self.kind.as_str(), self.stable_id)
+    }
+}
+
+impl std::fmt::Debug for Candidate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Candidate")
+            .field("kind", &self.kind)
+            .field("stable_id", &"[local_identifier]")
+            .finish()
+    }
+}
+
+/// Where the prompt's candidates come from. A seam so the policy can be tested
+/// without seeding a week of events.
+pub trait CategoryPromptCandidates: Send + Sync {
+    /// The list, ranked and capped as [`needs_a_category`] ranks and caps it.
+    fn candidates(&self) -> Result<Vec<Candidate>, PersistenceError>;
+}
+
+/// Production candidates: [`needs_a_category`] over the last
+/// [`CATEGORY_PROMPT_LOOKBACK_DAYS`], with the names dropped here.
+pub struct ListedCandidates {
+    raw_events: Arc<dyn RawEventRepo>,
+}
+
+impl ListedCandidates {
+    pub fn new(raw_events: Arc<dyn RawEventRepo>) -> Arc<Self> {
+        Arc::new(Self { raw_events })
+    }
+}
+
+impl CategoryPromptCandidates for ListedCandidates {
+    fn candidates(&self) -> Result<Vec<Candidate>, PersistenceError> {
+        Ok(
+            needs_a_category(&*self.raw_events, CATEGORY_PROMPT_LOOKBACK_DAYS)?
+                .into_iter()
+                .map(|entry| Candidate {
+                    kind: entry.kind,
+                    stable_id: entry.stable_id,
+                })
+                .collect(),
+        )
+    }
+}
+
+pub struct CategoryPromptManager {
+    repo: Arc<dyn CategoryPromptRepo>,
+    candidates: Arc<dyn CategoryPromptCandidates>,
+    gates: Arc<dyn InvitationGates>,
+}
+
+impl CategoryPromptManager {
+    pub fn new(
+        repo: Arc<dyn CategoryPromptRepo>,
+        candidates: Arc<dyn CategoryPromptCandidates>,
+        gates: Arc<dyn InvitationGates>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            repo,
+            candidates,
+            gates,
+        })
+    }
+
+    /// The card, and at most one reminder a local day, for the list as it is
+    /// at `now`.
+    ///
+    /// Repeat-safe: the card is a function of the list and of the answers
+    /// already given, so a reconnecting client is handed the same card, with
+    /// the same `prompt_id`. A reminder is claimed in the same transaction
+    /// that records it, and a claimed reminder is never handed over again,
+    /// whether or not the client managed to post it.
+    ///
+    /// Nothing at all while a work block is active or paused. Otherwise the
+    /// card shows while any entry on the list is unanswered. The reminder
+    /// additionally needs: not Velvt's quiet hours, macOS Focus not known to
+    /// be on, no reminder yet on this local day, no backoff pause, and an
+    /// entry no reminder has counted and no answer has reached.
+    pub fn pending_prompt(
+        &self,
+        now: DateTime<Utc>,
+        utc_offset_seconds: i32,
+    ) -> Result<CategoryPrompt, CategoryPromptError> {
+        self.evaluate(now, Some(utc_offset_seconds))
+    }
+
+    /// The card alone, for the reply to an answer: never a reminder, so an
+    /// answer can never be what brings one.
+    pub fn current_card(&self, now: DateTime<Utc>) -> Result<CategoryPrompt, CategoryPromptError> {
+        self.evaluate(now, None)
+    }
+
+    /// Records an answer to the card `prompt_id`. Either answer stamps every
+    /// entry that card showed, so the card stays away until an entry it never
+    /// showed joins the list. `Opened` also ends a run of unopened reminders.
+    /// A stale or unknown `prompt_id` answers no entry.
+    pub fn acknowledge(
+        &self,
+        prompt_id: &str,
+        response: CategoryPromptResponse,
+        now: DateTime<Utc>,
+    ) -> Result<(), CategoryPromptError> {
+        self.repo.acknowledge_prompt(
+            prompt_id,
+            matches!(response, CategoryPromptResponse::Opened),
+            now,
+        )?;
+        Ok(())
+    }
+
+    /// `utc_offset_seconds` is `None` when a reminder may not be claimed.
+    fn evaluate(
+        &self,
+        now: DateTime<Utc>,
+        utc_offset_seconds: Option<i32>,
+    ) -> Result<CategoryPrompt, CategoryPromptError> {
+        // A focus session is the one time nothing may interrupt: the card is
+        // withheld as well as the reminder. The client hides it too, from the
+        // block's own state, but the rule is this one.
+        if self.gates.live_block_exists()? {
+            return Ok(CategoryPrompt::default());
+        }
+        let candidates = self.candidates.candidates()?;
+        if candidates.is_empty() {
+            return Ok(CategoryPrompt::default());
+        }
+        let keys: Vec<String> = candidates.iter().map(Candidate::entry_key).collect();
+        let entries = self.repo.record_listed(&keys, now)?;
+        if entries.iter().all(|entry| entry.acknowledged_at.is_some()) {
+            return Ok(CategoryPrompt::default());
+        }
+        let prompt_id = prompt_id_for(&keys);
+        self.repo.file_under_prompt(&keys, &prompt_id)?;
+        let counts = ListCounts::of(&candidates);
+
+        let mut notification = None;
+        if let Some(utc_offset_seconds) = utc_offset_seconds {
+            let something_new = entries
+                .iter()
+                .any(|entry| entry.notified_at.is_none() && entry.acknowledged_at.is_none());
+            if something_new
+                && !self.gates.in_quiet_hours(now)
+                && !self.gates.focus_active(now)
+                && !reminders_paused(
+                    &self.repo.recent_notifications(REMINDER_BACKOFF_UNOPENED)?,
+                    now,
+                )
+            {
+                let local_date =
+                    format_local_date(&to_local(now, utc_offset_seconds.clamp(-64_800, 64_800)));
+                // The primary key on the local date is the daily cap: a second
+                // claim for the same day, racing or not, changes nothing.
+                if self.repo.claim_notification(
+                    &local_date,
+                    &keys,
+                    counts.total(),
+                    CATEGORY_PROMPT_POLICY_VERSION,
+                    now,
+                )? {
+                    notification = Some(notification_copy(counts));
+                }
+            }
+        }
+        Ok(CategoryPrompt {
+            prompt_id: Some(prompt_id),
+            card: Some(card_copy(counts)),
+            notification,
+        })
+    }
+}
+
+/// Whether the reminder is in its backoff pause at `now`: the most recent
+/// [`REMINDER_BACKOFF_UNOPENED`] reminders were each followed by no `opened`
+/// answer before the next one, and the latest was posted less than
+/// [`REMINDER_BACKOFF_PAUSE_DAYS`] ago. `recent` is most recent first.
+fn reminders_paused(recent: &[CategoryPromptNotificationRecord], now: DateTime<Utc>) -> bool {
+    let Some(latest) = recent.first() else {
+        return false;
+    };
+    recent.len() >= REMINDER_BACKOFF_UNOPENED
+        && recent
+            .iter()
+            .take(REMINDER_BACKOFF_UNOPENED)
+            .all(|reminder| reminder.opened_at.is_none())
+        && now < latest.posted_at + Duration::days(REMINDER_BACKOFF_PAUSE_DAYS)
+}
+
+/// The card's identity: SHA-256 over the sorted keys it shows, so the same
+/// list is the same card on every request and a different list is a
+/// different card. Lowercase hex, 64 characters.
+fn prompt_id_for(keys: &[String]) -> String {
+    let mut sorted: Vec<&str> = keys.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut hasher = Sha256::new();
+    hasher.update(PROMPT_ID_DOMAIN);
+    for key in sorted {
+        hasher.update((key.len() as u64).to_be_bytes());
+        hasher.update(key.as_bytes());
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// How many sites and how many applications the list holds: the only facts
+/// about the list the copy is allowed to say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ListCounts {
+    sites: u32,
+    applications: u32,
+}
+
+impl ListCounts {
+    fn of(candidates: &[Candidate]) -> Self {
+        let sites = candidates
+            .iter()
+            .filter(|candidate| candidate.kind == TriageEntryKind::Site)
+            .count() as u32;
+        Self {
+            sites,
+            applications: candidates.len() as u32 - sites,
+        }
+    }
+
+    fn total(self) -> u32 {
+        self.sites + self.applications
+    }
+}
+
+fn counted(count: u32, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
+/// "2 sites and 1 app", "1 site", "3 apps".
+fn counted_entries(counts: ListCounts) -> String {
+    match (counts.sites, counts.applications) {
+        (0, applications) => counted(applications, "app", "apps"),
+        (sites, 0) => counted(sites, "site", "sites"),
+        (sites, applications) => format!(
+            "{} and {}",
+            counted(sites, "site", "sites"),
+            counted(applications, "app", "apps")
+        ),
+    }
+}
+
+/// "… you used this week doesn't have a category yet." — one sentence both
+/// surfaces open with, agreeing in number with what it counts.
+fn needs_sentence(counts: ListCounts) -> String {
+    let verb = if counts.total() == 1 {
+        "doesn't"
+    } else {
+        "don't"
+    };
+    format!(
+        "{} you used this week {verb} have a category yet.",
+        counted_entries(counts)
+    )
+}
+
+/// Registered card copy. Counts only: no name, no hostname, no time observed,
+/// and nothing about an earlier card or reminder.
+fn card_copy(counts: ListCounts) -> CategoryPromptCard {
+    let reach = match (counts.sites, counts.applications) {
+        (1, 0) => "every page of that site",
+        (_, 0) => "every page of each site",
+        (0, 1) => "every window of that app",
+        (0, _) => "every window of each app",
+        _ => "every page of a site and every window of an app",
+    };
+    CategoryPromptCard {
+        title: "Needs a category".to_owned(),
+        body: format!(
+            "{} Choose once and it covers {reach}.",
+            needs_sentence(counts)
+        ),
+        primary_action: if counts.total() == 1 {
+            "Choose a category"
+        } else {
+            "Choose categories"
+        }
+        .to_owned(),
+        secondary_action: "Not now".to_owned(),
+        entry_count: counts.total(),
+    }
+}
+
+/// Registered reminder copy. macOS Notification Center keeps it, so it must
+/// never carry a name: counts only, as on the card.
+fn notification_copy(counts: ListCounts) -> CategoryPromptNotification {
+    let title = match (counts.sites, counts.applications) {
+        (1, 0) => "A site needs a category",
+        (0, 1) => "An app needs a category",
+        (_, 0) => "A few sites need a category",
+        (0, _) => "A few apps need a category",
+        _ => "A few things need a category",
+    };
+    CategoryPromptNotification {
+        title: title.to_owned(),
+        body: format!("{} Choose once in Velvt.", needs_sentence(counts)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::persistence::{RawEventEntry, SqlitePersistence};
-    use chrono::{Duration, Utc};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    /// 2027-01-15T08:00:00Z — a Friday, 08:00 local at offset 0. The anchor
+    /// the initiation tests use.
+    fn at(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_800_000_000 + seconds, 0).unwrap()
+    }
+
+    fn hours(value: i64) -> i64 {
+        value * 3_600
+    }
+
+    fn days(value: i64) -> i64 {
+        value * 86_400
+    }
+
+    fn site(seed: u8) -> Candidate {
+        Candidate {
+            kind: TriageEntryKind::Site,
+            stable_id: format!("{seed:02x}").repeat(32),
+        }
+    }
+
+    fn application(seed: u8) -> Candidate {
+        Candidate {
+            kind: TriageEntryKind::Application,
+            stable_id: format!("{seed:02x}").repeat(32),
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeGates {
+        live_block: AtomicBool,
+        quiet_hours: AtomicBool,
+        focus: AtomicBool,
+    }
+
+    impl InvitationGates for FakeGates {
+        fn live_block_exists(&self) -> Result<bool, PersistenceError> {
+            Ok(self.live_block.load(Ordering::SeqCst))
+        }
+
+        fn in_quiet_hours(&self, _at: DateTime<Utc>) -> bool {
+            self.quiet_hours.load(Ordering::SeqCst)
+        }
+
+        fn focus_active(&self, _at: DateTime<Utc>) -> bool {
+            self.focus.load(Ordering::SeqCst)
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeCandidates(Mutex<Vec<Candidate>>);
+
+    impl FakeCandidates {
+        fn set(&self, candidates: Vec<Candidate>) {
+            *self.0.lock().unwrap() = candidates;
+        }
+    }
+
+    impl CategoryPromptCandidates for FakeCandidates {
+        fn candidates(&self) -> Result<Vec<Candidate>, PersistenceError> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+    }
+
+    struct Fixture {
+        manager: Arc<CategoryPromptManager>,
+        repo: Arc<dyn CategoryPromptRepo>,
+        gates: Arc<FakeGates>,
+        list: Arc<FakeCandidates>,
+        _db: SqlitePersistence,
+    }
+
+    fn fixture() -> Fixture {
+        let db = SqlitePersistence::open_in_memory().unwrap();
+        let repo = db.category_prompt_repo();
+        let gates = Arc::new(FakeGates::default());
+        let list = Arc::new(FakeCandidates::default());
+        let manager = CategoryPromptManager::new(
+            Arc::clone(&repo),
+            Arc::clone(&list) as Arc<dyn CategoryPromptCandidates>,
+            Arc::clone(&gates) as Arc<dyn InvitationGates>,
+        );
+        Fixture {
+            manager,
+            repo,
+            gates,
+            list,
+            _db: db,
+        }
+    }
+
+    fn prompt(fixture: &Fixture, now: DateTime<Utc>) -> CategoryPrompt {
+        fixture.manager.pending_prompt(now, 0).unwrap()
+    }
+
+    #[test]
+    fn an_empty_list_asks_nothing_and_records_nothing() {
+        let f = fixture();
+        assert_eq!(prompt(&f, at(0)), CategoryPrompt::default());
+        assert!(f.repo.recent_notifications(8).unwrap().is_empty());
+    }
+
+    #[test]
+    fn something_new_brings_the_card_and_one_reminder() {
+        let f = fixture();
+        f.list.set(vec![site(1), site(2), application(3)]);
+
+        let first = prompt(&f, at(0));
+
+        let prompt_id = first.prompt_id.clone().expect("a card has an id");
+        assert_eq!(prompt_id.len(), 64);
+        assert!(prompt_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        let card = first.card.expect("the list is unanswered");
+        assert_eq!(card.title, "Needs a category");
+        assert_eq!(
+            card.body,
+            "2 sites and 1 app you used this week don't have a category yet. \
+             Choose once and it covers every page of a site and every window of an app."
+        );
+        assert_eq!(card.primary_action, "Choose categories");
+        assert_eq!(card.secondary_action, "Not now");
+        assert_eq!(card.entry_count, 3);
+        let reminder = first.notification.expect("the list is new");
+        assert_eq!(reminder.title, "A few things need a category");
+        assert_eq!(
+            reminder.body,
+            "2 sites and 1 app you used this week don't have a category yet. Choose once in Velvt."
+        );
+        let recorded = f.repo.recent_notifications(8).unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].local_date, "2027-01-15");
+        assert_eq!(recorded[0].entry_count, 3);
+        assert_eq!(recorded[0].policy_version, CATEGORY_PROMPT_POLICY_VERSION);
+    }
+
+    /// A reconnect asks again, and is handed the same card and no second
+    /// reminder: the reminder was claimed when it was handed over, posted or
+    /// not.
+    #[test]
+    fn the_card_is_repeat_safe_and_a_claimed_reminder_is_never_resent() {
+        let f = fixture();
+        f.list.set(vec![site(1), application(2)]);
+        let first = prompt(&f, at(0));
+        assert!(first.notification.is_some());
+
+        for later in [at(1), at(60), at(hours(6))] {
+            let again = prompt(&f, later);
+            assert_eq!(again.prompt_id, first.prompt_id);
+            assert_eq!(again.card, first.card);
+            assert_eq!(again.notification, None, "a claimed reminder is consumed");
+        }
+        // The next day brings nothing either: nothing on the list is new.
+        assert_eq!(prompt(&f, at(days(1))).notification, None);
+        assert_eq!(f.repo.recent_notifications(8).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_card_id_is_the_set_of_keys_and_nothing_else() {
+        let keys = |candidates: &[Candidate]| {
+            candidates
+                .iter()
+                .map(Candidate::entry_key)
+                .collect::<Vec<_>>()
+        };
+        let forward = prompt_id_for(&keys(&[site(1), application(2)]));
+        let backward = prompt_id_for(&keys(&[application(2), site(1)]));
+        let wider = prompt_id_for(&keys(&[application(2), site(1), site(3)]));
+        // The same digest under the other kind is a different entry.
+        let other_kind = prompt_id_for(&keys(&[application(1), application(2)]));
+        assert_eq!(forward, backward);
+        assert_ne!(forward, wider);
+        assert_ne!(forward, other_kind);
+    }
+
+    /// At most one reminder a local day: a new entry later the same day brings
+    /// the card and no reminder; the next local day may remind about it.
+    #[test]
+    fn one_reminder_a_local_day_and_the_day_rolls_over_locally() {
+        let f = fixture();
+        f.list.set(vec![site(1)]);
+        assert!(prompt(&f, at(0)).notification.is_some());
+
+        f.list.set(vec![site(1), site(2)]);
+        let same_day = prompt(&f, at(hours(10)));
+        assert!(same_day.card.is_some());
+        assert_eq!(same_day.notification, None, "the day's reminder is spent");
+
+        let next_day = prompt(&f, at(days(1)));
+        let reminder = next_day.notification.expect("a new local day");
+        assert_eq!(
+            reminder.body,
+            "2 sites you used this week don't have a category yet. Choose once in Velvt."
+        );
+        let dates: Vec<String> = f
+            .repo
+            .recent_notifications(8)
+            .unwrap()
+            .into_iter()
+            .map(|reminder| reminder.local_date)
+            .collect();
+        assert_eq!(dates, vec!["2027-01-16", "2027-01-15"]);
+    }
+
+    /// The day is the client's local day. 08:00Z is 23:00 the day before at
+    /// UTC-9, so a reminder then and one at 10:00Z (01:00 local) fall on two
+    /// local days, while at UTC+0 they would share one.
+    #[test]
+    fn the_local_date_comes_from_the_clients_offset() {
+        let f = fixture();
+        f.list.set(vec![site(1)]);
+        assert!(f
+            .manager
+            .pending_prompt(at(0), -9 * 3_600)
+            .unwrap()
+            .notification
+            .is_some());
+        f.list.set(vec![site(1), site(2)]);
+        assert!(f
+            .manager
+            .pending_prompt(at(hours(2)), -9 * 3_600)
+            .unwrap()
+            .notification
+            .is_some());
+        let dates: Vec<String> = f
+            .repo
+            .recent_notifications(8)
+            .unwrap()
+            .into_iter()
+            .map(|reminder| reminder.local_date)
+            .collect();
+        assert_eq!(dates, vec!["2027-01-15", "2027-01-14"]);
+
+        // An offset past any real zone is clamped, not trusted.
+        let g = fixture();
+        g.list.set(vec![site(1)]);
+        assert!(g
+            .manager
+            .pending_prompt(at(0), i32::MAX)
+            .unwrap()
+            .notification
+            .is_some());
+        assert_eq!(
+            g.repo.recent_notifications(1).unwrap()[0].local_date,
+            "2027-01-16"
+        );
+    }
+
+    /// A live block withholds everything; quiet hours and Focus withhold the
+    /// reminder only, and claim nothing, so the reminder comes once they end.
+    #[test]
+    fn a_live_block_quiet_hours_and_focus_each_suppress() {
+        let f = fixture();
+        f.list.set(vec![site(1)]);
+        f.gates.live_block.store(true, Ordering::SeqCst);
+        assert_eq!(prompt(&f, at(0)), CategoryPrompt::default());
+        f.gates.live_block.store(false, Ordering::SeqCst);
+
+        for gate in [&f.gates.quiet_hours, &f.gates.focus] {
+            gate.store(true, Ordering::SeqCst);
+            let held = prompt(&f, at(60));
+            assert!(held.card.is_some(), "the card is not a notification");
+            assert_eq!(held.notification, None);
+            assert!(f.repo.recent_notifications(8).unwrap().is_empty());
+            gate.store(false, Ordering::SeqCst);
+        }
+
+        assert!(prompt(&f, at(120)).notification.is_some());
+    }
+
+    /// A block that starts while a card is up takes the card away without
+    /// answering it; the card comes back unchanged when the block ends.
+    #[test]
+    fn a_block_hides_a_card_it_does_not_answer() {
+        let f = fixture();
+        f.list.set(vec![application(1)]);
+        let before = prompt(&f, at(0));
+
+        f.gates.live_block.store(true, Ordering::SeqCst);
+        assert_eq!(prompt(&f, at(60)), CategoryPrompt::default());
+        f.gates.live_block.store(false, Ordering::SeqCst);
+
+        let after = prompt(&f, at(hours(1)));
+        assert_eq!(after.prompt_id, before.prompt_id);
+        assert_eq!(after.card, before.card);
+    }
+
+    /// Only an entry no reminder has counted and no answer has reached is new.
+    #[test]
+    fn only_a_new_entry_brings_a_reminder() {
+        let f = fixture();
+        f.list.set(vec![site(1), application(2)]);
+        assert!(prompt(&f, at(0)).notification.is_some());
+
+        // The same two, unanswered, on later days: the card, no reminder.
+        for day in 1..=3 {
+            let later = prompt(&f, at(days(day)));
+            assert!(later.card.is_some());
+            assert_eq!(later.notification, None, "day {day}");
+        }
+
+        // A third joins: it is new, and the reminder counts the whole list.
+        f.list.set(vec![site(1), application(2), site(4)]);
+        let reminder = prompt(&f, at(days(4))).notification.expect("a new entry");
+        assert_eq!(
+            reminder.body,
+            "2 sites and 1 app you used this week don't have a category yet. Choose once in Velvt."
+        );
+    }
+
+    /// Either answer quiets the card until an entry the card never showed
+    /// joins the list, and an answered entry is not new to the reminder.
+    #[test]
+    fn an_answer_hides_the_card_until_a_new_entry_arrives() {
+        for response in [
+            CategoryPromptResponse::NotNow,
+            CategoryPromptResponse::Opened,
+        ] {
+            let f = fixture();
+            f.list.set(vec![site(1), application(2)]);
+            let shown = f.manager.pending_prompt(at(0), 0).unwrap();
+            f.manager
+                .acknowledge(shown.prompt_id.as_deref().unwrap(), response, at(30))
+                .unwrap();
+
+            assert_eq!(prompt(&f, at(60)), CategoryPrompt::default());
+            assert_eq!(
+                f.manager.current_card(at(60)).unwrap(),
+                CategoryPrompt::default()
+            );
+            assert_eq!(
+                prompt(&f, at(days(1))),
+                CategoryPrompt::default(),
+                "an answered list stays quiet the next day"
+            );
+
+            f.list.set(vec![site(1), application(2), site(3)]);
+            let returned = prompt(&f, at(days(1) + 60));
+            assert_ne!(returned.prompt_id, shown.prompt_id);
+            let card = returned.card.expect("a new entry brings the card back");
+            assert_eq!(card.entry_count, 3);
+            assert!(returned.notification.is_some(), "and it is new");
+        }
+    }
+
+    /// An answer to a card that no longer matches the list answers nothing it
+    /// never showed; an answer with an unknown id answers nothing.
+    #[test]
+    fn a_stale_or_unknown_answer_reaches_no_entry() {
+        let f = fixture();
+        f.list.set(vec![site(1)]);
+        let old = prompt(&f, at(0)).prompt_id.unwrap();
+        f.list.set(vec![site(1), site(2)]);
+        let current = prompt(&f, at(60)).prompt_id.unwrap();
+        assert_ne!(old, current);
+
+        f.manager
+            .acknowledge(&"f".repeat(64), CategoryPromptResponse::NotNow, at(90))
+            .unwrap();
+        f.manager
+            .acknowledge(&old, CategoryPromptResponse::NotNow, at(120))
+            .unwrap();
+        let still_up = prompt(&f, at(180));
+        assert_eq!(still_up.prompt_id.as_deref(), Some(current.as_str()));
+
+        f.manager
+            .acknowledge(&current, CategoryPromptResponse::NotNow, at(240))
+            .unwrap();
+        assert_eq!(prompt(&f, at(300)), CategoryPrompt::default());
+    }
+
+    /// Three reminders in a row that nobody opened pause reminders for seven
+    /// days after the latest; the card is unaffected.
+    #[test]
+    fn three_unopened_reminders_pause_the_reminder_for_a_week() {
+        let f = fixture();
+        for day in 0..3 {
+            f.list.set((1..=day as u8 + 1).map(site).collect());
+            assert!(
+                prompt(&f, at(days(day))).notification.is_some(),
+                "reminder {day}"
+            );
+        }
+
+        f.list.set((1..=4).map(site).collect());
+        let paused = prompt(&f, at(days(3)));
+        assert!(paused.card.is_some(), "the pause is the reminder's only");
+        assert_eq!(paused.notification, None);
+        assert_eq!(prompt(&f, at(days(8) + hours(23))).notification, None);
+
+        // Seven days after the latest (day 2), the pause is over.
+        let resumed = prompt(&f, at(days(9)));
+        assert!(resumed.notification.is_some());
+        // That one was not opened either, so the last three are still
+        // unopened: the next new entry waits another week.
+        f.list.set((1..=5).map(site).collect());
+        assert_eq!(prompt(&f, at(days(10))).notification, None);
+        assert!(prompt(&f, at(days(16))).notification.is_some());
+    }
+
+    /// An `opened` answer ends the run: the next new entry may remind on the
+    /// next local day, however many reminders went unopened before.
+    #[test]
+    fn opening_the_list_resets_the_run() {
+        let f = fixture();
+        for day in 0..2 {
+            f.list.set((1..=day as u8 + 1).map(site).collect());
+            assert!(prompt(&f, at(days(day))).notification.is_some());
+        }
+        f.list.set((1..=3).map(site).collect());
+        let third = prompt(&f, at(days(2)));
+        assert!(third.notification.is_some());
+        f.manager
+            .acknowledge(
+                third.prompt_id.as_deref().unwrap(),
+                CategoryPromptResponse::Opened,
+                at(days(2) + 60),
+            )
+            .unwrap();
+
+        f.list.set((1..=4).map(site).collect());
+        assert!(
+            prompt(&f, at(days(3))).notification.is_some(),
+            "an opened reminder breaks the run of three"
+        );
+
+        // "Not now" is an answer, but not an open: it hides the card and does
+        // not end a run.
+        let g = fixture();
+        for day in 0..3 {
+            g.list.set((1..=day as u8 + 1).map(site).collect());
+            let shown = prompt(&g, at(days(day)));
+            assert!(shown.notification.is_some());
+            g.manager
+                .acknowledge(
+                    shown.prompt_id.as_deref().unwrap(),
+                    CategoryPromptResponse::NotNow,
+                    at(days(day) + 60),
+                )
+                .unwrap();
+        }
+        g.list.set((1..=4).map(site).collect());
+        let after = prompt(&g, at(days(3)));
+        assert!(after.card.is_some());
+        assert_eq!(after.notification, None);
+    }
+
+    #[test]
+    fn the_backoff_reads_only_the_latest_three_and_their_opens() {
+        let reminder = |day: i64, opened: bool| CategoryPromptNotificationRecord {
+            local_date: format!("2027-01-{:02}", 15 + day),
+            posted_at: at(days(day)),
+            entry_count: 1,
+            policy_version: 1,
+            opened_at: opened.then(|| at(days(day) + 60)),
+        };
+        let now = at(days(3));
+        assert!(!reminders_paused(&[], now));
+        assert!(!reminders_paused(
+            &[reminder(2, false), reminder(1, false)],
+            now
+        ));
+        assert!(reminders_paused(
+            &[reminder(2, false), reminder(1, false), reminder(0, false)],
+            now
+        ));
+        assert!(!reminders_paused(
+            &[reminder(2, false), reminder(1, true), reminder(0, false)],
+            now
+        ));
+        assert!(!reminders_paused(
+            &[reminder(2, false), reminder(1, false), reminder(0, false)],
+            at(days(2 + REMINDER_BACKOFF_PAUSE_DAYS))
+        ));
+    }
+
+    /// Singular and plural, for every list the cap allows, and every rendered
+    /// string clean of the registered banned vocabulary and of the capability
+    /// claims `scripts/check_banned_copy.py` bans in source.
+    #[test]
+    fn every_rendered_string_is_counted_correctly_and_clean() {
+        let claims = ["learn", "adapt", "predict", "smarter"];
+        for sites in 0..=TRIAGE_MAX_ENTRIES as u32 {
+            for applications in 0..=(TRIAGE_MAX_ENTRIES as u32 - sites) {
+                let counts = ListCounts {
+                    sites,
+                    applications,
+                };
+                if counts.total() == 0 {
+                    continue;
+                }
+                let card = card_copy(counts);
+                let reminder = notification_copy(counts);
+                assert_eq!(card.entry_count, counts.total());
+                for text in [
+                    &card.title,
+                    &card.body,
+                    &card.primary_action,
+                    &card.secondary_action,
+                    &reminder.title,
+                    &reminder.body,
+                ] {
+                    let lowered = text.to_ascii_lowercase();
+                    for forbidden in crate::work_block::BANNED_COPY_TOKENS {
+                        assert!(!lowered.contains(forbidden), "{forbidden:?} in {text:?}");
+                    }
+                    for claim in claims {
+                        assert!(!lowered.contains(claim), "{claim:?} in {text:?}");
+                    }
+                    for wrong_number in ["1 sites", "1 apps", " 0 ", "0 sites", "0 apps"] {
+                        assert!(!text.contains(wrong_number), "{wrong_number:?} in {text:?}");
+                    }
+                    assert!(
+                        text.len() <= 240,
+                        "{text:?} is longer than the schema allows"
+                    );
+                }
+                let agreement = if counts.total() == 1 {
+                    "doesn't have"
+                } else {
+                    "don't have"
+                };
+                assert!(card.body.contains(agreement), "{}", card.body);
+                assert!(reminder.body.contains(agreement), "{}", reminder.body);
+            }
+        }
+        let one_site = ListCounts {
+            sites: 1,
+            applications: 0,
+        };
+        assert_eq!(
+            card_copy(one_site).body,
+            "1 site you used this week doesn't have a category yet. \
+             Choose once and it covers every page of that site."
+        );
+        assert_eq!(card_copy(one_site).primary_action, "Choose a category");
+        assert_eq!(notification_copy(one_site).title, "A site needs a category");
+        let three_apps = ListCounts {
+            sites: 0,
+            applications: 3,
+        };
+        assert_eq!(
+            card_copy(three_apps).body,
+            "3 apps you used this week don't have a category yet. \
+             Choose once and it covers every window of each app."
+        );
+        assert_eq!(
+            notification_copy(ListCounts {
+                sites: 0,
+                applications: 1
+            })
+            .body,
+            "1 app you used this week doesn't have a category yet. Choose once in Velvt."
+        );
+    }
 
     fn unclassified_event(
         id: &str,

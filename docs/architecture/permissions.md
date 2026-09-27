@@ -62,11 +62,17 @@ To recover:
 ## Notification Denial
 
 Notification status checks use `getNotificationSettings()`. First-run
-onboarding does not request notification authorization; the optional request is
-deferred until the user enables notifications from the live product flow.
-Once a request returns denied, `PermissionManager` guards against calling
-`requestAuthorization` again. The app remains functional and displays insights
-in the menu bar.
+onboarding has a notification stage (`NotificationPermissionExperienceView`)
+that names all three kinds and asks once, and can be skipped. A drift offer or
+a daily insight that arrives while the status is still undetermined asks once
+more, at the moment there is something to show. The needs-a-category reminder
+never asks: it is posted only when notifications are already allowed.
+(Corrected 2026-09-27: this said onboarding never asked, which stopped being
+true when the notification stage was added.) Once a request returns denied,
+`PermissionManager` guards against calling `requestAuthorization` again. The
+app remains functional: the drift offer, the insight and the needs-a-category
+card all still appear in the menu bar window, and a notice there says that
+notifications are off.
 
 ## Adding A Permission
 

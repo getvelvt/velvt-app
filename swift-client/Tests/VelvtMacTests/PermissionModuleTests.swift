@@ -936,13 +936,26 @@ final class PermissionModuleTests: XCTestCase {
     /// The intro's notification step has to name the notification that
     /// matters most. It asked only for "insight notifications" until
     /// 2026-09-26, so a person declining it had no way to know they were also
-    /// declining the drift nudge.
-    func testIntroNotificationStepNamesTheDriftNudgeAsWellAsInsights() {
+    /// declining the drift nudge. Since protocol 33 Velvt posts a third kind,
+    /// and a list that stopped at two would promise fewer notifications than
+    /// it sends.
+    func testIntroNotificationStepNamesEveryKindVelvtPosts() {
         let explanation = OnboardingCopy.notificationsExplanation
         XCTAssertTrue(explanation.contains("nudge when you drift away during a focus session you started"))
         XCTAssertTrue(explanation.contains("daily insight"))
+        XCTAssertTrue(
+            explanation.contains(
+                "at most once a day and never during a focus session, a reminder when a site or app you use needs a category"
+            ))
         XCTAssertFalse(OnboardingCopy.notificationsTitle.localizedCaseInsensitiveContains("insight"))
         XCTAssertTrue(OnboardingCopy.notificationsBlocked.contains("System Settings"))
+        for copy in [
+            OnboardingCopy.notificationsBlocked, NotificationsOffNotice.message, NotificationsOffNotice.settingsDetail,
+        ] {
+            XCTAssertTrue(copy.contains("drift nudges") || copy.contains("Drift nudges"), copy)
+            XCTAssertTrue(copy.contains("daily insights"), copy)
+            XCTAssertTrue(copy.contains("category reminders"), copy)
+        }
     }
 
     @MainActor

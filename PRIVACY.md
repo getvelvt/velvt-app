@@ -39,6 +39,17 @@ again. Audit 8 sent a URL with credentials, a port, a path, a query and a
 fragment through a running service and found none of those parts in the
 database, the logs, or any request.
 
+The hostname itself is used on the Mac, for three things: to classify the tab
+(against a list of known sites, and by what the name itself says, such as a
+`mail.` or `docs.` in front), to key the tab and its site (both keys are salted
+digests, described below), and, for a site Velvt could not categorize, to keep
+a name Velvt can show when it asks you what that site is. For that last one
+only, the hostname is written to the database as text, in one table,
+`local_site_name`, described below. It is never uploaded, and
+`published_claims` drives a tab with a sentinel address through the service to
+check both: the host in that one column and nowhere else, and no part of the
+address in what would be sent.
+
 ## What stays local
 
 Raw application names, bundle identifiers, window titles, URLs, file paths,
@@ -66,9 +77,11 @@ the network: `AbstractedEvent` and the upload DTO
 The SQLite file on disk is a weaker claim, and it is made separately below
 rather than folded into this one. Several of its columns deliberately hold an
 application name, a digest of an application's bundle identifier, the metadata an
-application publishes about itself, or text you typed, and two hold a sketch
-derived from a window title. Every one of them is named in the tables in the
-next section, and every column of every table is listed at the end of it.
+application publishes about itself, or text you typed; one holds the hostname of
+a site Velvt could not categorize; and two hold a sketch derived from a window
+title (and, for a browser tab, from its hostname too). Every one of them is
+named in the tables in the next section, and every column of every table is
+listed at the end of it.
 
 An optional work-block intention also stays on the Mac. It crosses only the
 local Unix socket, is stored in the protected SQLite file for at most 24 hours,
@@ -104,9 +117,9 @@ all described below.
 | `upload_batch` / `batch_event` | the upload queue: each batch's id, status, attempt count and last error code, and per queued event its id, timestamp, duration, category, classification tier and taxonomy version — plus two device-local columns that are never sent, the random stable ID and the on-device `label` (which can name a service, as `communication:slack` does); the serializer turns the label into the category-scoped type that is sent | sent batches: 30 days; rejected batches: 7 days (audit window); pending and failed batches: 30 days, the same horizon as sent |
 | `personal_override` | one correction you made to a single window: the window's stable-key hash, the category you chose, `activity_name` (the name you typed for it), and since migration 0036 `app_key_hash` — the application key the correction also taught, the same salted app-name digest as `raw_event_buffer.app_stable_id`, so Undo can remove that application rule without reading the event buffer | until you undo that correction or use Reset Corrections. No sweep expires it |
 | `personal_site_override` | a rule you taught about one site, applied in every browser: the site's key — the same salted digest of the site's hostname as `raw_event_buffer.site_stable_id`, never the hostname itself — the category you chose, `activity_name` (the name you typed for it), a correction count, and when the rule was made and last changed | until you remove that rule or use Reset Corrections. No sweep expires it |
-| `local_site_name` | **the hostname of a site Velvt could not categorize**, in `host` (such as `docs.example.org`, with a leading `www.` removed), beside the site's key and `last_seen_at`, so Velvt can name the site when it asks you what it is. Written only on a visit that was not confidently classified, to a site you have taught no rule for. It is the only column in the database that holds a hostname, and it holds nothing else from the address: no path, query, port, or credentials | removed when you teach a rule for that site; otherwise 14 days after the site was last seen |
+| `local_site_name` | **the hostname of a site Velvt could not categorize**, in `host` (such as `docs.example.org`, with a leading `www.` removed), beside the site's key and `last_seen_at`, so Velvt can name the site when it asks you what it is. Written, and `last_seen_at` moved, only on a visit Velvt could not confidently classify, to a site you have taught no rule for, and not when one of your own corrections decided the visit. A visit it did classify confidently neither writes the row nor moves `last_seen_at`. It is the only column in the database that holds the hostname of a site you visited, and it holds nothing else from the address: no path, query, port, or credentials | removed when you teach a rule for that site; otherwise 14 days after `last_seen_at`, the last visit to the site Velvt could not categorize |
 | `personal_app_override` | the same correction applied to a whole application rather than one window: app-key hash, category, `activity_name`, a correction count, since migration 0034 `bundle_key_hash` — the same bundle-identifier digest described under `raw_event_buffer` below, NULL on every rule taught before that migration — and since migration 0035 `app_only`, which records whether you taught the rule for the whole application from the triage list (1) or it was written beside a single-window correction (0) | until you undo the correction it came from or use Reset Corrections. No sweep expires it |
-| `semantic_embedding_cache` | one hashed sketch per application-and-title pair the classifier has scored, keyed by the same salted window key as `abstraction_map`. The sketch is derived from the raw application name and the raw window title, computed under this install's `embedding_salt`, and individual words are partially recoverable from it by someone holding the whole file — described below | the 512 most recently observed pairs; a pair is swept once 14 days pass with no further observation of it. The clock restarts on every observation, so a window you keep returning to is never swept |
+| `semantic_embedding_cache` | one hashed sketch per application-and-title pair the classifier has scored (for a browser tab, per browser-and-site pair), keyed by the same salted window key as `abstraction_map`. The sketch is derived from the raw application name and the raw window title, and for a browser tab from the tab's hostname as well, computed under this install's `embedding_salt`, and individual words are partially recoverable from it by someone holding the whole file — described below | the 512 most recently observed pairs; a pair is swept once 14 days pass with no further observation of it. The clock restarts on every observation, so a window you keep returning to is never swept |
 | `personal_semantic_prototype` | a copy of that same sketch, kept for a category you corrected so the classifier can recognise the activity again | the 64 most-corrected pairs, at most 12 per category; removed by undoing that correction or by Reset Corrections. No sweep expires it |
 | `history_cache` / `insight_cache` | ready-to-display summaries fetched from the cloud | minutes to tens of minutes, per `VELVT_HISTORY_TTL_SECONDS`/`VELVT_INSIGHT_TTL_SECONDS` |
 | `work_block` | local state and optional free-form intention | intention: 24 hours; the safe state until Clear Local Work Blocks |
@@ -238,9 +251,12 @@ the Daily Activity chart. Both stay on the socket; neither is uploaded.
 `semantic_embedding_cache` is the one store on this list that is derived from a
 window title. Tier 2 classification builds the string
 `app name [SEP] window title` — for a browser tab, `browser name [SEP] hostname
-window title` — turns it into a 256-number sketch, and keeps the sketch — not
-the string — under the window's salted stable key. Nothing about
-it is uploaded: `BatchEventPayload` has no field it could occupy.
+window title`, so the sketch input carries the hostname as well as the title —
+turns it into a 256-number sketch, and keeps the sketch — not the string —
+under the window's salted stable key, which for a browser tab is keyed on the
+browser and the hostname. Nothing about it is uploaded: `BatchEventPayload` has
+no field it could occupy. `published_claims` recomputes the sketch of a
+sentinel browser tab from that string and compares it with the one stored.
 
 The sketch is lossy and it is not the title. It is also not one-way. Each word
 contributes at one hashed coordinate, and each character trigram of that word at
@@ -251,7 +267,10 @@ on 2026-08-31, it recovered at least one dictionary word from 452 of 512 rows,
 935 distinct words in total. On the synthetic title
 `divorce attorney consultation booking` it returned exactly those four words out
 of a 234,143-word dictionary and nothing else. `PRIVACY_AUDIT.md` Audit 7 is the
-method and the numbers.
+method and the numbers. The labels of a hostname are words in that string like
+any other (`docs.example.org` is read as `docs example org`), and a list of
+sites is a far smaller dictionary than a language, so for a browser tab treat
+the sketch as naming the site.
 
 That measurement was taken against sketches computed with an unsalted hash, and
 the shipped code has changed since. Since migration 0031 and commit `5b6ca1e`
@@ -322,7 +341,7 @@ three empty ones are — you will see them if you open the file.
 | `egress_ledger` | one row per HTTP request the helper made, written before it was sent: when, the method and URL, the body's byte count, the SHA-256 of the body, whether an account token was attached, and a hash chaining the row to the one before. No body is stored. For the sign-up, log-in, and token-refresh bodies the hash is taken with the password or token replaced by `[redacted]`. Described under "How to audit what is sent" below | 30 days or 100,000 rows, whichever is tighter, oldest first. No in-app removal |
 | `egress_ledger_checkpoint` | the sequence number and hash of the last `egress_ledger` row retention removed, so the rows that remain still verify | the newest checkpoint only |
 | `embedding_salt` | a 32-byte random value generated on this device by migration 0031: the per-install key the embedding feature hash is computed under, as described above. No activity data | singleton, and never rewritten: a second salt would invalidate every sketch stored under the first. No sweep |
-| `stable_key_salt` | a second 32-byte random value generated on this device, by migration 0037: the per-install key every stable key, application key, and bundle digest in this file is an HMAC under. It stops a guess being checked offline from this repository alone and stops two Macs' keys matching; it does not stop someone who holds this whole file, because it is in it. No activity data. Not in a Velvt 1.0.11 database, which stops at migration 0036; it starts with the first build after 1.0.11 | singleton, and never rewritten while it exists: a second salt would orphan every correction keyed under the first, so if the row is deleted by hand Velvt mints a new one and removes the corrections and mappings it can no longer match. No sweep |
+| `stable_key_salt` | a second 32-byte random value generated on this device, by migration 0037: the per-install key every stable key, application key, and bundle digest in this file is an HMAC under. It stops a guess being checked offline from this repository alone and stops two Macs' keys matching; it does not stop someone who holds this whole file, because it is in it. No activity data. Not in a Velvt 1.0.11 database, which stops at migration 0036; it starts with the first build after 1.0.11 | singleton, and never rewritten while it exists: a second salt would orphan every correction keyed under the first, so if the row is deleted by hand Velvt mints a new one and removes the corrections, mappings and site names it can no longer match. No sweep |
 | `upload_host_backoff` | one row per upload host — the configured API hostname, its consecutive-failure count, and the earliest time a next attempt is allowed. No event content | removed for a host as soon as a batch upload to it succeeds; otherwise it persists |
 | `work_block_intervention` | the drift offer a block received: broad anchor category, switch count, window length, salience, the fixed action id, when it was offered, when its in-app card was first on screen (`card_seen_at`, migration 0032), and the outcome you gave it and when. The block id is the primary key, so a block holds at most one. No label, app identity, window title, URL, or intention text | removed with its block, and by Clear Local Work Blocks |
 | `work_block_category_correction` | when you answer an offer with "wrong classification", the broad category that counts as focus work for that block. Categories only | removed with its block, and by Clear Local Work Blocks |
@@ -515,6 +534,11 @@ salt "is not in the shipped code today." Both were stale from 2026-09-14, when
 `embedding_salt`; the document understated the protection. Corrected here on
 2026-09-25.
 
+A previous version of the embedding-sketch section gave the sketch's input as
+`app name [SEP] window title` for every window. For a browser tab the hostname
+reduced from the tab's address is in it as well, ahead of the title, and the
+section said nothing about it. Corrected here on 2026-09-27.
+
 A previous version said "all persistence lives in a SQLite database" and did not
 mention the Keychain items, the app preferences, the optional Claude Code log,
 or backups. It also named the personal-override, application-override, and
@@ -602,7 +626,10 @@ category-scoped abstraction type; unapproved values are replaced with
 `system:unknown` before persistence, metrics, or audit metadata.
 
 **Does not preserve:** the literal window title, and no URL or file path that
-appeared in one.
+appeared in one. Of a browser tab's address, nothing but the hostname: no path,
+query, fragment, port, or credentials. The hostname is kept as text only in
+`local_site_name`, only for a site Velvt could not categorize, and not past 14
+days from the last visit to it that Velvt could not categorize.
 
 **Corrected 2026-09-24.** This section previously said the stable ID "is a
 one-way hash into a local-only mapping table". That was wrong about the

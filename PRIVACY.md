@@ -109,8 +109,9 @@ below start with the first build after 1.0.11: the per-install
 described. Migration 0040 starts later, with the first build after 1.0.13:
 `personal_site_override`, `local_site_name`, and `raw_event_buffer.site_stable_id`,
 all described below. Migration 0041 starts with the same build:
-`category_prompt_entry` and `category_prompt_notification`, the record behind the
-needs-a-category card and reminder, also described below.
+`category_prompt_entry`, `category_prompt_card_entry` and
+`category_prompt_notification`, the record behind the needs-a-category card and
+reminder, also described below.
 
 | Table | Contents | Default retention |
 |---|---|---|
@@ -120,7 +121,8 @@ needs-a-category card and reminder, also described below.
 | `personal_override` | one correction you made to a single window: the window's stable-key hash, the category you chose, `activity_name` (the name you typed for it), and since migration 0036 `app_key_hash` — the application key the correction also taught, the same salted app-name digest as `raw_event_buffer.app_stable_id`, so Undo can remove that application rule without reading the event buffer | until you undo that correction or use Reset Corrections. No sweep expires it |
 | `personal_site_override` | a rule you taught about one site, applied in every browser: the site's key — the same salted digest of the site's hostname as `raw_event_buffer.site_stable_id`, never the hostname itself — the category you chose, `activity_name` (the name you typed for it), a correction count, and when the rule was made and last changed | until you remove that rule or use Reset Corrections. No sweep expires it |
 | `local_site_name` | **the hostname of a site Velvt could not categorize**, in `host` (such as `forum.example.org`, with a leading `www.` removed), beside the site's key and `last_seen_at`, so Velvt can name the site when it asks you what it is. Written, and `last_seen_at` moved, only on a visit Velvt could not confidently classify, to a site you have taught no rule for, and not when one of your own corrections decided the visit. A visit it did classify confidently neither writes the row nor moves `last_seen_at`. It is the only column in the database that holds the hostname of a site you visited, and it holds nothing else from the address: no path, query, port, or credentials | removed when you teach a rule for that site; otherwise 14 days after `last_seen_at`, the last visit to the site Velvt could not categorize |
-| `category_prompt_entry` | one row per application or site the needs-a-category card or reminder spoke about (migration 0041): `entry_key`, which is `application:` or `site:` followed by the same salted key as `raw_event_buffer.app_stable_id` or `raw_event_buffer.site_stable_id` — the digest, never the name or the hostname — when the entry was first and last on the list (`first_listed_at`, `last_listed_at`), the card it was last shown on (`prompt_id`, a SHA-256 over the keys that card showed), when you answered that card (`acknowledged_at`), and when a reminder counted it (`notified_at`). No name, hostname, category, or time observed. The key is a guessable digest like the two it copies, so treat `entry_key` as naming the application or site | 14 days after `last_listed_at`, the last time the entry was on the list; all of them when the key salt is minted again |
+| `category_prompt_entry` | one row per application or site that needed a category in the last seven days (migration 0041) — every one above the needs-a-category list's five-minute floor, not only the eight the list and its card show: `entry_key`, which is `application:` or `site:` followed by the same salted key as `raw_event_buffer.app_stable_id` or `raw_event_buffer.site_stable_id` — the digest, never the name or the hostname — when the entry was first and last on the list (`first_listed_at`, `last_listed_at`), when you answered a card that covered it (`acknowledged_at`), and when a reminder was posted while it was listed (`notified_at`). No name, hostname, category, or time observed. The key is a guessable digest like the two it copies, so treat `entry_key` as naming the application or site | 14 days after `last_listed_at`, the last time the entry needed a category; all of them when the key salt is minted again |
+| `category_prompt_card_entry` | which needs-a-category card covered which entry (migration 0041), so an answer to a card reaches exactly the entries it covered: `prompt_id`, the card's id — 32 random bytes, drawn again whenever the entries the card counts change, so it says nothing about any of them — `entry_key`, the same prefixed salted key as `category_prompt_entry.entry_key`, and `counted`, 1 for an entry the card counted and 0 for one listed below those eight while it was the latest card. No name, hostname, category, or time. Treat `entry_key` as naming the application or site | the latest card and the one before it only: a card's rows go when a card two newer is drawn, and each row goes with its entry's row in `category_prompt_entry`, at most 14 days after that entry last needed a category; all of them when the key salt is minted again |
 | `personal_app_override` | the same correction applied to a whole application rather than one window: app-key hash, category, `activity_name`, a correction count, since migration 0034 `bundle_key_hash` — the same bundle-identifier digest described under `raw_event_buffer` below, NULL on every rule taught before that migration — and since migration 0035 `app_only`, which records whether you taught the rule for the whole application from the triage list (1) or it was written beside a single-window correction (0) | until you undo the correction it came from or use Reset Corrections. No sweep expires it |
 | `semantic_embedding_cache` | one hashed sketch per application-and-title pair the classifier has scored (for a browser tab, per browser-and-site pair), keyed by the same salted window key as `abstraction_map`. The sketch is derived from the raw application name and the raw window title, and for a browser tab from the tab's hostname as well, computed under this install's `embedding_salt`, and individual words are partially recoverable from it by someone holding the whole file — described below | the 512 most recently observed pairs; a pair is swept once 14 days pass with no further observation of it. The clock restarts on every observation, so a window you keep returning to is never swept |
 | `personal_semantic_prototype` | a copy of that same sketch, kept for a category you corrected so the classifier can recognise the activity again | the 64 most-corrected pairs, at most 12 per category; removed by undoing that correction or by Reset Corrections. No sweep expires it |
@@ -334,11 +336,12 @@ generates the salt and re-keys every digest already on disk under it.
 
 The first table above is every store that holds something drawn from your Mac. It is
 not every table in the file. A database with every migration in this source
-tree applied holds 41 tables, plus SQLite's own `sqlite_sequence`. A Velvt
+tree applied holds 42 tables, plus SQLite's own `sqlite_sequence`. A Velvt
 1.0.11 database (migrations 0001–0036) holds 34: it has no `stable_key_salt`,
 `egress_ledger`, `egress_ledger_checkpoint`, `personal_site_override`,
-`local_site_name`, `category_prompt_entry`, or `category_prompt_notification`,
-which migrations 0037, 0038, 0040 and 0041 add. Of the 41,
+`local_site_name`, `category_prompt_entry`, `category_prompt_card_entry`, or
+`category_prompt_notification`, which migrations 0037, 0038, 0040 and 0041
+add. Of the 42,
 the 21 that are not in that table hold counters, settings, keys, feature state,
 and the record of what was sent. They are listed here for the same reason the
 three empty ones are — you will see them if you open the file.
@@ -390,7 +393,7 @@ this is the whole of what it reaches:
   `intervention_demotion_state`, `focus_state_evidence`, `focus_observer_state`,
   `quiet_hours_offer_state`, `initiation_invitation`, `weekly_digest`, and
   `explain_probe_week`. It does not reach the classification and correction
-  tables, the needs-a-category prompt's two tables, `out_of_block_run`, or
+  tables, the needs-a-category prompt's three tables, `out_of_block_run`, or
   `antecedent_finding`.
 - **Delete Account** is a request to the cloud. The Rust service marks an open
   invitation expired, relays the deletion to the account-deletion endpoint, and
@@ -472,7 +475,8 @@ fails until this list is updated in the same commit.
 | `antecedent_finding` | `finding_id`, `candidate_id`, `candidate_registry_version`, `discovered_at`, `discovery_window_start`, `discovery_window_end`, `support_episodes`, `effect_size`, `q_value`, `confirmed_at`, `confirm_support_episodes`, `confirm_effect_size`, `state`, `surfaced_at`, `retracted_at`, `retraction_reason`, `user_disputed_at` |
 | `batch_event` | `id`, `batch_id`, `event_id`, `stable_id`, `label`, `category`, `taxonomy_version`, `classification_tier`, `occurred_at`, `duration_seconds`, `created_at` |
 | `block_antecedent` | `block_id`, `window_seconds`, `categories`, `switch_count`, `dominant_category`, `dominant_dwell_seconds`, `day_type`, `hour_bucket`, `is_first_block_of_day`, `antecedent_version` |
-| `category_prompt_entry` | `entry_key`, `first_listed_at`, `last_listed_at`, `prompt_id`, `acknowledged_at`, `notified_at` |
+| `category_prompt_card_entry` | `prompt_id`, `entry_key`, `counted` |
+| `category_prompt_entry` | `entry_key`, `first_listed_at`, `last_listed_at`, `acknowledged_at`, `notified_at` |
 | `category_prompt_notification` | `local_date`, `posted_at`, `entry_count`, `policy_version`, `opened_at` |
 | `classification_telemetry` | `taxonomy_version`, `classification_tier`, `event_count`, `updated_at` |
 | `classifier_artifact_telemetry` | `artifact_version`, `classification_count`, `updated_at` |
@@ -683,7 +687,8 @@ identifiers under the salt stored beside them; salted digests of browser sites,
 in `raw_event_buffer.site_stable_id`, `personal_site_override.site_key_hash`, and
 `local_site_name.site_key_hash`, which can be reversed the same way with a list
 of hostnames; either kind of digest behind a prefix, in
-`category_prompt_entry.entry_key`, reversible the same way; the hostname of a site Velvt could not categorize, in
+`category_prompt_entry.entry_key` and `category_prompt_card_entry.entry_key`,
+reversible the same way; the hostname of a site Velvt could not categorize, in
 `local_site_name.host`; the metadata an application
 publishes about itself, in `raw_event_buffer.declared_app_category` and
 `raw_event_buffer.document_type_ids`; the names you type when you correct a

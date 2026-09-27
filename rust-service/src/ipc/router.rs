@@ -289,8 +289,8 @@ fn normalized_app_stable_id(value: &str) -> Option<&str> {
     .then_some(value)
 }
 
-/// Accepts a card id only in the shape Velvt issues: a SHA-256 in 64 lowercase
-/// hex characters, the same shape as a key.
+/// Accepts a card id only in the shape Velvt issues: 32 random bytes in 64
+/// lowercase hex characters, the same shape as a key.
 fn normalized_prompt_id(value: &str) -> Option<&str> {
     normalized_app_stable_id(value)
 }

@@ -52,8 +52,8 @@
 //!    router at all, and the hostname's absence rested on a manual audit.
 //! 10. `the_category_prompt_holds_keys_and_counts_and_names_nothing` drives the
 //!     sentinel application and tab onto the needs-a-category list, asks for
-//!     the card and the reminder, and reads both, and the two tables migration
-//!     0041 added, for every sentinel by value. A reminder's text is kept by
+//!     the card and the reminder, and reads both, and the three tables
+//!     migration 0041 added, for every sentinel by value. A reminder's text is kept by
 //!     macOS Notification Center, so a name in it could never be deleted.
 //!
 //! `persistence_contract::schema_has_no_forbidden_raw_content_columns` still
@@ -293,6 +293,12 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
         // about: the raw-event horizon, counted from the last listing.
         (
             "category_prompt_entry",
+            vec![CATEGORY_PROMPT_ENTRY_RETENTION_DAYS],
+        ),
+        // Its card rows: the latest two cards only, and never longer than
+        // the entry each is filed under, which the foreign key cascades.
+        (
+            "category_prompt_card_entry",
             vec![CATEGORY_PROMPT_ENTRY_RETENTION_DAYS],
         ),
         (
@@ -1585,8 +1591,8 @@ impl InvitationGates for OpenGates {
 
 /// The sentinel application and the sentinel tab, both on the
 /// needs-a-category list, bring a card and a reminder that name neither, and
-/// the prompt's two tables (migration 0041) hold salted keys, dates, times
-/// and counts: no sentinel by value, in any column of either.
+/// the prompt's three tables (migration 0041) hold salted keys, a random card
+/// id, dates, times and counts: no sentinel by value, in any column of any.
 ///
 /// The positive control is the site key: the tab is one Velvt cannot
 /// categorize (`a_hostname_is_stored_only_in_local_site_name` requires it), so
@@ -1658,13 +1664,21 @@ async fn the_category_prompt_holds_keys_and_counts_and_names_nothing() {
     let connection = Connection::open(&scratch.path).unwrap();
     let mut sightings = BTreeSet::new();
     let mut entry_keys = Vec::new();
+    let mut filed = Vec::new();
     scan_every_value(&connection, |table, column, value| {
         if !table.starts_with("category_prompt_") {
             return;
         }
-        if table == "category_prompt_entry" && column == "entry_key" {
-            if let Value::Text(key) = value {
-                entry_keys.push(key.clone());
+        if let Value::Text(text) = value {
+            match (table, column) {
+                ("category_prompt_entry", "entry_key") => entry_keys.push(text.clone()),
+                ("category_prompt_card_entry", "entry_key") => filed.push(text.clone()),
+                ("category_prompt_card_entry", "prompt_id") => assert_eq!(
+                    Some(text.as_str()),
+                    prompt.prompt_id.as_deref(),
+                    "the one card on record is the one handed over"
+                ),
+                _ => {}
             }
         }
         for token in tokens {
@@ -1685,6 +1699,16 @@ async fn the_category_prompt_holds_keys_and_counts_and_names_nothing() {
                 || key == &format!("application:{app_key}")),
         "category_prompt_entry holds a key the list never carried: {entry_keys:?}"
     );
+    filed.sort();
+    entry_keys.sort();
+    assert_eq!(
+        filed, entry_keys,
+        "the card covers exactly the entries on the list"
+    );
+    let card_id = prompt.prompt_id.as_deref().unwrap();
+    for key in [&site_key, &app_key] {
+        assert_ne!(card_id, key.as_str(), "the card id is a key");
+    }
     assert!(
         sightings.is_empty(),
         "a sentinel reached the needs-a-category ledger, which PRIVACY.md describes \
@@ -1720,6 +1744,7 @@ const MIGRATED_TABLES: &[&str] = &[
     "antecedent_finding",
     "batch_event",
     "block_antecedent",
+    "category_prompt_card_entry",
     "category_prompt_entry",
     "category_prompt_notification",
     "classification_telemetry",

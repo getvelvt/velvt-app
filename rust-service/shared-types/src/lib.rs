@@ -1038,18 +1038,19 @@ pub struct RequestCategoryPrompt {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CategoryPrompt {
-    /// The card's identity: the same list of entries is the same id on every
-    /// request. Present exactly when `card` is; sent back in
-    /// [`AcknowledgeCategoryPrompt`].
+    /// The card's id: 32 random bytes in lowercase hex, the same while the
+    /// entries the card counts stay the same and drawn again when they
+    /// change, so it says nothing about any entry. Present exactly when
+    /// `card` is; sent back in [`AcknowledgeCategoryPrompt`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_id: Option<String>,
-    /// Shown while any entry on the list is unanswered and no work block is
-    /// active or paused.
+    /// Shown while any entry the card counts (the first eight of the list)
+    /// is unanswered and no work block is active or paused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card: Option<CategoryPromptCard>,
-    /// At most one a local day, only for an entry nothing has announced or
-    /// answered yet. Handed over once: it is consumed whether or not the
-    /// client can post it.
+    /// At most one a local day, only for an entry among those eight that no
+    /// earlier reminder or answer has reached. Handed over once: it is
+    /// consumed whether or not the client can post it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification: Option<CategoryPromptNotification>,
 }
@@ -1088,10 +1089,11 @@ pub enum CategoryPromptResponse {
     NotNow,
 }
 
-/// The answer to the card `prompt_id` (protocol 33). Either response quiets
-/// the card until an entry it never showed joins the list; `opened` also ends
-/// a run of unopened reminders. Answered with a [`CategoryPrompt`] that never
-/// carries a reminder.
+/// The answer to the card `prompt_id` (protocol 33). Either response answers
+/// every entry that card covered, even after the list has moved on, so the
+/// card stays away until an entry no answer has reached is among those it
+/// would count; `opened` also ends a run of unopened reminders. Answered with
+/// a [`CategoryPrompt`] that never carries a reminder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcknowledgeCategoryPrompt {

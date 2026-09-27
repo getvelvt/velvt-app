@@ -1767,7 +1767,8 @@ public struct CategoryPromptNotification: Codable, Equatable, Sendable {
 /// `notification` is handed over once and is consumed whether or not the
 /// client posts it.
 public struct CategoryPrompt: Codable, Equatable, Sendable {
-    /// Identifies the set of entries the card shows. Present exactly when
+    /// The card's id: random, the same while the entries the card counts stay
+    /// the same, and drawn again when they change. Present exactly when
     /// `card` is; sent back in `AcknowledgeCategoryPrompt`.
     public let promptID: String?
     public let card: CategoryPromptCard?
@@ -1813,7 +1814,8 @@ public enum CategoryPromptResponse: String, Codable, Equatable, Sendable {
 }
 
 /// The answer to the needs-a-category card `promptID` (proto v33). Either
-/// response quiets the card until an entry it never showed joins the list;
+/// response answers every entry that card covered, so the card stays away
+/// until an entry no answer has reached is among those it would count;
 /// `opened` also ends a run of unopened reminders. Answering only ever reduces
 /// what Velvt asks.
 public struct AcknowledgeCategoryPrompt: Codable, Equatable, Sendable {

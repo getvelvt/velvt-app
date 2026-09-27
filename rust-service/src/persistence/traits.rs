@@ -425,6 +425,20 @@ pub trait RawEventRepo: Send + Sync {
         min_seconds: u64,
         limit: usize,
     ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError>;
+    /// [`Self::unclassified_triage`] at its floor and with no cap: every
+    /// application it would list over `lookback_days` if it listed them all,
+    /// in its order.
+    ///
+    /// For the needs-a-category prompt's ledger (`category_prompt`) only,
+    /// which has to remember every entry that needs a category, not only the
+    /// eight the list shows, so that one moving up into the eight is not
+    /// taken for a new one. Never for a list shown to anyone. The floor bounds
+    /// its length: an application needs [`TRIAGE_MIN_SECONDS`] in the window
+    /// to be here.
+    fn every_unclassified_application(
+        &self,
+        lookback_days: u32,
+    ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError>;
     /// The bundle key recorded on the events that put an application on the
     /// list, if any recorded one, over the whole buffer.
     ///
@@ -484,6 +498,13 @@ pub trait RawEventRepo: Send + Sync {
         lookback_days: u32,
         min_seconds: u64,
         limit: usize,
+    ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError>;
+    /// [`Self::unclassified_site_triage`] at its floor and with no cap, for
+    /// the reason and the one caller [`Self::every_unclassified_application`]
+    /// has.
+    fn every_unclassified_site(
+        &self,
+        lookback_days: u32,
     ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError>;
     /// Deletes at most `limit` rows from `local_site_name` whose `last_seen_at`
     /// is before `cutoff`.
@@ -803,9 +824,10 @@ pub trait InitiationRepo: Send + Sync {
 }
 
 /// Storage seam for the needs-a-category card and reminder (migration 0041):
-/// which entries of the list have been shown, answered and announced, and
-/// which local days a reminder was posted on. Salted keys, dates, times and
-/// counts; no name and no hostname is representable. Everything device-local.
+/// which entries of the list have been shown, answered and announced, which
+/// cards covered them, and which local days a reminder was posted on. Salted
+/// keys, random card ids, dates, times and counts; no name and no hostname is
+/// representable. Everything device-local.
 pub trait CategoryPromptRepo: Send + Sync {
     /// Records that `entry_keys` are on the list at `at`, and returns their
     /// rows in the order given.
@@ -818,20 +840,29 @@ pub trait CategoryPromptRepo: Send + Sync {
         entry_keys: &[String],
         at: DateTime<Utc>,
     ) -> Result<Vec<CategoryPromptEntry>, PersistenceError>;
-    /// Files `entry_keys` under `prompt_id`, the card that shows them, so an
-    /// answer to that card reaches exactly these entries.
-    fn file_under_prompt(
+    /// The id of the card that counts `counted_keys`, with `uncounted_keys`
+    /// (the rest of the list) filed under it as well, so an answer to it
+    /// reaches all of them.
+    ///
+    /// While the latest card counted exactly `counted_keys`, its id is
+    /// returned again and any of `uncounted_keys` not yet filed under it are
+    /// added. Otherwise a new id is minted -- 32 random bytes in lowercase
+    /// hex, which says nothing about any key -- both sets are filed under it,
+    /// and every card but the new one and the one before it is dropped. One
+    /// transaction.
+    fn card_for(
         &self,
-        entry_keys: &[String],
-        prompt_id: &str,
-    ) -> Result<(), PersistenceError>;
+        counted_keys: &[String],
+        uncounted_keys: &[String],
+    ) -> Result<String, PersistenceError>;
     /// Records an answer to the card `prompt_id`: stamps `acknowledged_at` on
     /// every entry filed under it that has none, and returns how many were
-    /// stamped. When `opened`, also stamps `opened_at` on the most recent
-    /// reminder if it has none, whether or not any entry matched: the person
-    /// opened the list from a prompt after that reminder, which is what the
-    /// reminder backoff reads. An older reminder is never stamped, and an
-    /// earlier answer is never overwritten. One transaction.
+    /// stamped. An id no card on record has reaches no entry. When `opened`,
+    /// also stamps `opened_at` on the most recent reminder if it has none,
+    /// whether or not any entry matched: the person opened the list from a
+    /// prompt after that reminder, which is what the reminder backoff reads.
+    /// An older reminder is never stamped, and an earlier answer is never
+    /// overwritten. One transaction.
     fn acknowledge_prompt(
         &self,
         prompt_id: &str,
@@ -857,7 +888,7 @@ pub trait CategoryPromptRepo: Send + Sync {
         limit: usize,
     ) -> Result<Vec<CategoryPromptNotificationRecord>, PersistenceError>;
     /// Deletes at most `limit` entries last on the list before `cutoff`,
-    /// oldest first.
+    /// oldest first, and the card rows filed under them.
     fn delete_expired_entries(
         &self,
         cutoff: DateTime<Utc>,

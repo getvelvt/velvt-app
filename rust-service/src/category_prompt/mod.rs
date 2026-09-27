@@ -10,23 +10,28 @@
 //! Focus is known to be on.
 //!
 //! Everything here is a fixed, versioned rule, and every gate only ever
-//! suppresses. Answering the card, either way, quiets it until an entry the
-//! card never showed joins the list; three reminders in a row that nobody
-//! opened pause reminders for a week. Nothing shortens a wait or raises a cap,
-//! and nothing adapts.
+//! suppresses. Answering the card, either way, quiets it until an entry no
+//! answer has reached is among the eight it counts; three reminders in a row
+//! that nobody opened pause reminders for a week. Nothing shortens a wait or
+//! raises a cap, and nothing adapts.
+//!
+//! "New" is judged against everything that needs a category, not against the
+//! eight the list shows: the ledger records every entry above the list's
+//! floor, so an entry that moves up into the eight after it was answered, or
+//! after a reminder was posted while it was listed below them, is not new.
 //!
 //! Privacy: the card and the reminder are counts, never names. A reminder's
 //! text is kept by macOS Notification Center, outside anything Velvt can
 //! delete, so no application name or hostname may ever be in it; the names on
 //! the list are dropped at [`ListedCandidates`], before this module sees an
-//! entry. The ledger (`category_prompt_entry`, `category_prompt_notification`,
-//! migration 0041) holds salted keys, dates, times and counts, and nothing
-//! here reaches the network.
+//! entry. A card's id is random and says nothing about any entry. The ledger
+//! (`category_prompt_entry`, `category_prompt_card_entry`,
+//! `category_prompt_notification`, migration 0041) holds salted keys, card
+//! ids, dates, times and counts, and nothing here reaches the network.
 
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
-use sha2::{Digest, Sha256};
 use velvt_shared_types::{
     CategoryPrompt, CategoryPromptCard, CategoryPromptNotification, CategoryPromptResponse,
     TriageEntryKind, UnclassifiedTriageEntry,
@@ -35,8 +40,9 @@ use velvt_shared_types::{
 use crate::initiation::{format_local_date, to_local, InvitationGates};
 use crate::persistence::{
     CategoryPromptNotificationRecord, CategoryPromptRepo, PersistenceError, RawEventRepo,
-    TRIAGE_MAX_ENTRIES, TRIAGE_MIN_SECONDS,
+    UnclassifiedAppEntry, UnclassifiedSiteEntry, TRIAGE_MAX_ENTRIES, TRIAGE_MIN_SECONDS,
 };
+use crate::retention::CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS;
 
 /// Version of the card-and-reminder policy. Bump when any constant below, or
 /// the meaning of an answer, changes. Each reminder row records the version it
@@ -52,8 +58,12 @@ pub const REMINDER_BACKOFF_UNOPENED: usize = 3;
 /// ...pause reminders for this long after the latest of them. The card still
 /// shows. An `opened` answer ends the run.
 pub const REMINDER_BACKOFF_PAUSE_DAYS: i64 = 7;
-/// Domain separator for [`prompt_id_for`].
-const PROMPT_ID_DOMAIN: &[u8] = b"velvt:category-prompt:v1";
+/// A run counts only reminders posted within this many days of now: the
+/// horizon the reminder rows are kept for
+/// ([`CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS`]), so whether reminders are
+/// paused never depends on when the sweep last ran. Part of the policy: a
+/// change to that horizon is a change to this rule.
+pub const REMINDER_BACKOFF_WINDOW_DAYS: i64 = CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS as i64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CategoryPromptError {
@@ -79,13 +89,45 @@ pub fn needs_a_category(
     raw_events: &dyn RawEventRepo,
     lookback_days: u32,
 ) -> Result<Vec<UnclassifiedTriageEntry>, PersistenceError> {
-    let applications =
-        raw_events.unclassified_triage(lookback_days, TRIAGE_MIN_SECONDS, TRIAGE_MAX_ENTRIES)?;
-    let sites = raw_events.unclassified_site_triage(
-        lookback_days,
-        TRIAGE_MIN_SECONDS,
-        TRIAGE_MAX_ENTRIES,
-    )?;
+    let mut entries = ranked(
+        raw_events.unclassified_triage(lookback_days, TRIAGE_MIN_SECONDS, TRIAGE_MAX_ENTRIES)?,
+        raw_events.unclassified_site_triage(
+            lookback_days,
+            TRIAGE_MIN_SECONDS,
+            TRIAGE_MAX_ENTRIES,
+        )?,
+    );
+    entries.truncate(TRIAGE_MAX_ENTRIES);
+    Ok(entries)
+}
+
+/// Everything that needs a category: [`needs_a_category`] with no cap, ranked
+/// the same way, so its first [`TRIAGE_MAX_ENTRIES`] entries are that list.
+/// For the prompt's ledger, never for a list shown to anyone.
+///
+/// Bounded by the floor rather than a cap: an entry needs
+/// [`TRIAGE_MIN_SECONDS`] in the window. It is the list's query without its
+/// LIMIT, so reading it costs what reading the list does, and the prompt then
+/// writes one ledger row per entry. Measured on a 30,000-row buffer (a debug
+/// build, 2026-09-27): about 45 ms to read either, and a whole
+/// [`CategoryPromptManager::pending_prompt`] in about 45 ms with 80 entries
+/// and about 100 ms with 4,000, about the most the floor admits in seven days.
+pub fn everything_that_needs_a_category(
+    raw_events: &dyn RawEventRepo,
+    lookback_days: u32,
+) -> Result<Vec<UnclassifiedTriageEntry>, PersistenceError> {
+    Ok(ranked(
+        raw_events.every_unclassified_application(lookback_days)?,
+        raw_events.every_unclassified_site(lookback_days)?,
+    ))
+}
+
+/// The two halves as one list: longest observed first, then applications
+/// ahead of sites, then by key.
+fn ranked(
+    applications: Vec<UnclassifiedAppEntry>,
+    sites: Vec<UnclassifiedSiteEntry>,
+) -> Vec<UnclassifiedTriageEntry> {
     let mut entries: Vec<UnclassifiedTriageEntry> = applications
         .into_iter()
         .map(|application| UnclassifiedTriageEntry {
@@ -110,8 +152,7 @@ pub fn needs_a_category(
             .then(left.kind.cmp(&right.kind))
             .then_with(|| left.stable_id.cmp(&right.stable_id))
     });
-    entries.truncate(TRIAGE_MAX_ENTRIES);
-    Ok(entries)
+    entries
 }
 
 /// One entry of the list as the prompt sees it: which kind it is and its key.
@@ -144,11 +185,13 @@ impl std::fmt::Debug for Candidate {
 /// Where the prompt's candidates come from. A seam so the policy can be tested
 /// without seeding a week of events.
 pub trait CategoryPromptCandidates: Send + Sync {
-    /// The list, ranked and capped as [`needs_a_category`] ranks and caps it.
+    /// Everything that needs a category, ranked as [`needs_a_category`] ranks
+    /// it and not capped: the first [`TRIAGE_MAX_ENTRIES`] are the list the
+    /// card counts, and the rest are what it has below them.
     fn candidates(&self) -> Result<Vec<Candidate>, PersistenceError>;
 }
 
-/// Production candidates: [`needs_a_category`] over the last
+/// Production candidates: [`everything_that_needs_a_category`] over the last
 /// [`CATEGORY_PROMPT_LOOKBACK_DAYS`], with the names dropped here.
 pub struct ListedCandidates {
     raw_events: Arc<dyn RawEventRepo>,
@@ -163,7 +206,7 @@ impl ListedCandidates {
 impl CategoryPromptCandidates for ListedCandidates {
     fn candidates(&self) -> Result<Vec<Candidate>, PersistenceError> {
         Ok(
-            needs_a_category(&*self.raw_events, CATEGORY_PROMPT_LOOKBACK_DAYS)?
+            everything_that_needs_a_category(&*self.raw_events, CATEGORY_PROMPT_LOOKBACK_DAYS)?
                 .into_iter()
                 .map(|entry| Candidate {
                     kind: entry.kind,
@@ -196,17 +239,17 @@ impl CategoryPromptManager {
     /// The card, and at most one reminder a local day, for the list as it is
     /// at `now`.
     ///
-    /// Repeat-safe: the card is a function of the list and of the answers
-    /// already given, so a reconnecting client is handed the same card, with
-    /// the same `prompt_id`. A reminder is claimed in the same transaction
-    /// that records it, and a claimed reminder is never handed over again,
-    /// whether or not the client managed to post it.
+    /// Repeat-safe: while the entries the card counts stay the same, the card
+    /// keeps its `prompt_id`, so a reconnecting client is handed the same
+    /// card. A reminder is claimed in the same transaction that records it,
+    /// and a claimed reminder is never handed over again, whether or not the
+    /// client managed to post it.
     ///
     /// Nothing at all while a work block is active or paused. Otherwise the
-    /// card shows while any entry on the list is unanswered. The reminder
+    /// card shows while any entry it would count is unanswered. The reminder
     /// additionally needs: not Velvt's quiet hours, macOS Focus not known to
     /// be on, no reminder yet on this local day, no backoff pause, and an
-    /// entry no reminder has counted and no answer has reached.
+    /// entry among the eight that no earlier reminder or answer has reached.
     pub fn pending_prompt(
         &self,
         now: DateTime<Utc>,
@@ -222,9 +265,11 @@ impl CategoryPromptManager {
     }
 
     /// Records an answer to the card `prompt_id`. Either answer stamps every
-    /// entry that card showed, so the card stays away until an entry it never
-    /// showed joins the list. `Opened` also ends a run of unopened reminders.
-    /// A stale or unknown `prompt_id` answers no entry.
+    /// entry that card covered -- the ones it counted, and every entry listed
+    /// below them while it was the latest card -- even when the list has moved
+    /// on since, so the card stays away until an entry no answer has reached
+    /// is among the eight it counts. `Opened` also ends a run of unopened
+    /// reminders. An id Velvt has no card for answers no entry.
     pub fn acknowledge(
         &self,
         prompt_id: &str,
@@ -251,22 +296,28 @@ impl CategoryPromptManager {
         if self.gates.live_block_exists()? {
             return Ok(CategoryPrompt::default());
         }
-        let candidates = self.candidates.candidates()?;
-        if candidates.is_empty() {
+        let listed = self.candidates.candidates()?;
+        if listed.is_empty() {
             return Ok(CategoryPrompt::default());
         }
-        let keys: Vec<String> = candidates.iter().map(Candidate::entry_key).collect();
+        // Every entry that needs a category is recorded, so the ledger knows
+        // the ones below the eight as well; the card, its count and "new" are
+        // the eight's.
+        let keys: Vec<String> = listed.iter().map(Candidate::entry_key).collect();
         let entries = self.repo.record_listed(&keys, now)?;
-        if entries.iter().all(|entry| entry.acknowledged_at.is_some()) {
+        let shown = listed.len().min(TRIAGE_MAX_ENTRIES);
+        let (counted_keys, uncounted_keys) = keys.split_at(shown);
+        let counted = &entries[..shown];
+        if counted.iter().all(|entry| entry.acknowledged_at.is_some()) {
             return Ok(CategoryPrompt::default());
         }
-        let prompt_id = prompt_id_for(&keys);
-        self.repo.file_under_prompt(&keys, &prompt_id)?;
-        let counts = ListCounts::of(&candidates);
+        let prompt_id = self.repo.card_for(counted_keys, uncounted_keys)?;
+        let counts = ListCounts::of(&listed[..shown]);
 
         let mut notification = None;
         if let Some(utc_offset_seconds) = utc_offset_seconds {
-            let something_new = entries
+            let utc_offset_seconds = utc_offset_seconds.clamp(-64_800, 64_800);
+            let something_new = counted
                 .iter()
                 .any(|entry| entry.notified_at.is_none() && entry.acknowledged_at.is_none());
             if something_new
@@ -277,10 +328,12 @@ impl CategoryPromptManager {
                     now,
                 )
             {
-                let local_date =
-                    format_local_date(&to_local(now, utc_offset_seconds.clamp(-64_800, 64_800)));
+                let local_date = format_local_date(&to_local(now, utc_offset_seconds));
                 // The primary key on the local date is the daily cap: a second
-                // claim for the same day, racing or not, changes nothing.
+                // claim for the same day, racing or not, changes nothing. The
+                // claim stamps every listed entry, below the eight as well:
+                // each needed a category when this reminder was posted, so
+                // none is new to the next one.
                 if self.repo.claim_notification(
                     &local_date,
                     &keys,
@@ -301,39 +354,23 @@ impl CategoryPromptManager {
 }
 
 /// Whether the reminder is in its backoff pause at `now`: the most recent
-/// [`REMINDER_BACKOFF_UNOPENED`] reminders were each followed by no `opened`
-/// answer before the next one, and the latest was posted less than
+/// [`REMINDER_BACKOFF_UNOPENED`] reminders posted within
+/// [`REMINDER_BACKOFF_WINDOW_DAYS`] were each followed by no `opened` answer
+/// before the next one, and the latest was posted less than
 /// [`REMINDER_BACKOFF_PAUSE_DAYS`] ago. `recent` is most recent first.
 fn reminders_paused(recent: &[CategoryPromptNotificationRecord], now: DateTime<Utc>) -> bool {
-    let Some(latest) = recent.first() else {
+    let horizon = now - Duration::days(REMINDER_BACKOFF_WINDOW_DAYS);
+    let run: Vec<&CategoryPromptNotificationRecord> = recent
+        .iter()
+        .take_while(|reminder| reminder.posted_at >= horizon)
+        .take(REMINDER_BACKOFF_UNOPENED)
+        .collect();
+    let Some(latest) = run.first() else {
         return false;
     };
-    recent.len() >= REMINDER_BACKOFF_UNOPENED
-        && recent
-            .iter()
-            .take(REMINDER_BACKOFF_UNOPENED)
-            .all(|reminder| reminder.opened_at.is_none())
+    run.len() == REMINDER_BACKOFF_UNOPENED
+        && run.iter().all(|reminder| reminder.opened_at.is_none())
         && now < latest.posted_at + Duration::days(REMINDER_BACKOFF_PAUSE_DAYS)
-}
-
-/// The card's identity: SHA-256 over the sorted keys it shows, so the same
-/// list is the same card on every request and a different list is a
-/// different card. Lowercase hex, 64 characters.
-fn prompt_id_for(keys: &[String]) -> String {
-    let mut sorted: Vec<&str> = keys.iter().map(String::as_str).collect();
-    sorted.sort_unstable();
-    sorted.dedup();
-    let mut hasher = Sha256::new();
-    hasher.update(PROMPT_ID_DOMAIN);
-    for key in sorted {
-        hasher.update((key.len() as u64).to_be_bytes());
-        hasher.update(key.as_bytes());
-    }
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 /// How many sites and how many applications the list holds: the only facts
@@ -541,6 +578,21 @@ mod tests {
         fixture.manager.pending_prompt(now, 0).unwrap()
     }
 
+    /// The id of the card for `list` at `now`.
+    fn prompt_after(fixture: &Fixture, now: DateTime<Utc>, list: Vec<Candidate>) -> String {
+        fixture.list.set(list);
+        prompt(fixture, now)
+            .prompt_id
+            .expect("an unanswered list has a card")
+    }
+
+    fn answer(fixture: &Fixture, prompt_id: &str, now: DateTime<Utc>) {
+        fixture
+            .manager
+            .acknowledge(prompt_id, CategoryPromptResponse::NotNow, now)
+            .unwrap();
+    }
+
     #[test]
     fn an_empty_list_asks_nothing_and_records_nothing() {
         let f = fixture();
@@ -604,22 +656,43 @@ mod tests {
         assert_eq!(f.repo.recent_notifications(8).unwrap().len(), 1);
     }
 
+    /// A card's id is random: it stays while the eight the card counts stay
+    /// the same, whatever happens below them, changes when they change, and
+    /// never comes back for the same keys, so it says nothing about them.
     #[test]
-    fn the_card_id_is_the_set_of_keys_and_nothing_else() {
-        let keys = |candidates: &[Candidate]| {
-            candidates
-                .iter()
-                .map(Candidate::entry_key)
-                .collect::<Vec<_>>()
-        };
-        let forward = prompt_id_for(&keys(&[site(1), application(2)]));
-        let backward = prompt_id_for(&keys(&[application(2), site(1)]));
-        let wider = prompt_id_for(&keys(&[application(2), site(1), site(3)]));
-        // The same digest under the other kind is a different entry.
-        let other_kind = prompt_id_for(&keys(&[application(1), application(2)]));
-        assert_eq!(forward, backward);
-        assert_ne!(forward, wider);
-        assert_ne!(forward, other_kind);
+    fn the_card_id_is_random_and_changes_only_with_what_the_card_counts() {
+        let f = fixture();
+        f.list.set(vec![site(1), application(2)]);
+        let first = prompt(&f, at(0)).prompt_id.unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+
+        // The same two in the other order are the same card.
+        f.list.set(vec![application(2), site(1)]);
+        assert_eq!(
+            prompt(&f, at(60)).prompt_id.as_deref(),
+            Some(first.as_str())
+        );
+
+        let wider = prompt_after(&f, at(120), vec![site(1), application(2), site(3)]);
+        assert_ne!(wider, first);
+        let narrower = prompt_after(&f, at(180), vec![site(1), application(2)]);
+        assert_ne!(narrower, first, "an id is never a function of the keys");
+        assert_ne!(narrower, wider);
+
+        // Another install with the same list draws another id.
+        let g = fixture();
+        g.list.set(vec![site(1), application(2)]);
+        assert_ne!(prompt(&g, at(0)).prompt_id.unwrap(), first);
+
+        // Below the eight, entries come and go under the same card.
+        let full: Vec<Candidate> = (1..=9).map(site).collect();
+        let under_eight = prompt_after(&g, at(60), full.clone());
+        let mut churned = full[..8].to_vec();
+        churned.extend([site(10), site(11)]);
+        assert_eq!(prompt_after(&g, at(120), churned), under_eight);
     }
 
     /// At most one reminder a local day: a new entry later the same day brings
@@ -792,30 +865,99 @@ mod tests {
         }
     }
 
-    /// An answer to a card that no longer matches the list answers nothing it
-    /// never showed; an answer with an unknown id answers nothing.
+    /// An answer reaches what its card covered even when it arrives after the
+    /// list has moved on: a card drawn for three, answered one request late
+    /// when the list is two of them, answers all three, so the card does not
+    /// come back for two entries nobody has news about. An entry the answered
+    /// card never covered stays unanswered, and an unknown id answers nothing.
     #[test]
-    fn a_stale_or_unknown_answer_reaches_no_entry() {
+    fn a_late_answer_covers_what_its_card_counted_and_an_unknown_one_nothing() {
         let f = fixture();
-        f.list.set(vec![site(1)]);
-        let old = prompt(&f, at(0)).prompt_id.unwrap();
-        f.list.set(vec![site(1), site(2)]);
-        let current = prompt(&f, at(60)).prompt_id.unwrap();
+        let old = prompt_after(&f, at(0), vec![site(1), site(2), site(3)]);
+        let current = prompt_after(&f, at(60), vec![site(1), site(2)]);
         assert_ne!(old, current);
 
-        f.manager
-            .acknowledge(&"f".repeat(64), CategoryPromptResponse::NotNow, at(90))
-            .unwrap();
-        f.manager
-            .acknowledge(&old, CategoryPromptResponse::NotNow, at(120))
-            .unwrap();
-        let still_up = prompt(&f, at(180));
-        assert_eq!(still_up.prompt_id.as_deref(), Some(current.as_str()));
+        answer(&f, &"f".repeat(64), at(90));
+        assert_eq!(
+            prompt(&f, at(100)).prompt_id.as_deref(),
+            Some(current.as_str()),
+            "an unknown id answers nothing"
+        );
 
-        f.manager
-            .acknowledge(&current, CategoryPromptResponse::NotNow, at(240))
-            .unwrap();
-        assert_eq!(prompt(&f, at(300)), CategoryPrompt::default());
+        answer(&f, &old, at(120));
+        assert_eq!(prompt(&f, at(180)), CategoryPrompt::default());
+        f.list.set(vec![site(1), site(2), site(3)]);
+        assert_eq!(
+            prompt(&f, at(240)),
+            CategoryPrompt::default(),
+            "the late answer reached the entry that has since left the list"
+        );
+
+        // An entry that joined after the answered card was drawn is not
+        // answered by it.
+        let g = fixture();
+        let first = prompt_after(&g, at(0), vec![site(1)]);
+        let second = prompt_after(&g, at(60), vec![site(1), site(2)]);
+        answer(&g, &first, at(90));
+        let still_up = prompt(&g, at(120));
+        assert_eq!(still_up.prompt_id.as_deref(), Some(second.as_str()));
+        answer(&g, &second, at(150));
+        assert_eq!(prompt(&g, at(180)), CategoryPrompt::default());
+    }
+
+    /// "New" is judged against everything that needs a category. Nine sites
+    /// need one and the card counts eight; after "Not now", the ninth moving
+    /// up past the eighth is not news, and brings neither the card nor a
+    /// reminder. One that joins after the answer is news when it moves up.
+    #[test]
+    fn an_entry_that_moves_up_into_the_eight_is_not_new() {
+        let f = fixture();
+        let nine: Vec<Candidate> = (1..=9).map(site).collect();
+        f.list.set(nine.clone());
+        let shown = prompt(&f, at(0));
+        assert_eq!(shown.card.as_ref().unwrap().entry_count, 8);
+        assert!(shown.notification.is_some());
+        answer(&f, shown.prompt_id.as_deref().unwrap(), at(30));
+
+        let mut climbed = nine[..7].to_vec();
+        climbed.extend([site(9), site(8)]);
+        f.list.set(climbed.clone());
+        assert_eq!(prompt(&f, at(120)), CategoryPrompt::default());
+        assert_eq!(prompt(&f, at(days(1))), CategoryPrompt::default());
+
+        // Joined below the eight after the answer, then moves up: news.
+        climbed.push(site(10));
+        f.list.set(climbed.clone());
+        assert_eq!(prompt(&f, at(days(1) + 60)), CategoryPrompt::default());
+        let mut risen = climbed[..7].to_vec();
+        risen.extend([site(10), site(9), site(8)]);
+        f.list.set(risen);
+        let back = prompt(&f, at(days(2)));
+        assert_eq!(
+            back.card
+                .expect("a new entry is among the eight")
+                .entry_count,
+            8
+        );
+        assert!(back.notification.is_some());
+    }
+
+    /// A reminder counts the eight and stamps everything listed, so an entry
+    /// that was below the eight when it was posted is not new to the next
+    /// one when it moves up. The card, unanswered, is still up.
+    #[test]
+    fn a_reminder_covers_the_entries_below_the_eight_too() {
+        let f = fixture();
+        let nine: Vec<Candidate> = (1..=9).map(site).collect();
+        f.list.set(nine.clone());
+        assert!(prompt(&f, at(0)).notification.is_some());
+
+        let mut climbed = nine[..7].to_vec();
+        climbed.extend([site(9), site(8)]);
+        f.list.set(climbed);
+        let next_day = prompt(&f, at(days(1)));
+        assert!(next_day.card.is_some());
+        assert_eq!(next_day.notification, None);
     }
 
     /// Three reminders in a row that nobody opened pause reminders for seven
@@ -921,6 +1063,45 @@ mod tests {
             &[reminder(2, false), reminder(1, false), reminder(0, false)],
             at(days(2 + REMINDER_BACKOFF_PAUSE_DAYS))
         ));
+        // Only reminders inside the window count toward a run: two a month
+        // before a third are not "in a row" with it.
+        assert!(!reminders_paused(
+            &[reminder(31, false), reminder(1, false), reminder(0, false)],
+            at(days(32))
+        ));
+        assert!(reminders_paused(
+            &[
+                reminder(31, false),
+                reminder(30, false),
+                reminder(29, false)
+            ],
+            at(days(32))
+        ));
+    }
+
+    /// Whether reminders pause never depends on when the sweep last ran:
+    /// the same three reminders, swept or not, give the same answer.
+    #[test]
+    fn the_backoff_does_not_depend_on_the_sweep() {
+        let run = |sweep: bool| {
+            let f = fixture();
+            for (index, day) in [0, 1, 31].into_iter().enumerate() {
+                f.list.set((1..=index as u8 + 1).map(site).collect());
+                assert!(
+                    prompt(&f, at(days(day))).notification.is_some(),
+                    "day {day}"
+                );
+            }
+            if sweep {
+                let cutoff = at(days(32))
+                    - Duration::days(CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS as i64);
+                assert_eq!(f.repo.delete_expired_notifications(cutoff, 8).unwrap(), 2);
+            }
+            f.list.set((1..=4).map(site).collect());
+            prompt(&f, at(days(32))).notification.is_some()
+        };
+        assert!(run(false), "the two a month back are outside the window");
+        assert!(run(true));
     }
 
     /// Singular and plural, for every list the cap allows, and every rendered
@@ -1084,5 +1265,25 @@ mod tests {
         );
         assert_eq!(list[1].display_name.as_deref(), Some("site-5.example.org"));
         assert_eq!(list[0].display_name.as_deref(), Some("Qwybex app-5"));
+
+        // Everything that needs a category is all twelve, ranked the same
+        // way, and its first eight are the list.
+        let everything = everything_that_needs_a_category(&*events, 7).unwrap();
+        assert_eq!(everything.len(), 12);
+        assert_eq!(everything[..TRIAGE_MAX_ENTRIES], list[..]);
+        assert!(everything[TRIAGE_MAX_ENTRIES..]
+            .iter()
+            .all(|entry| entry.seconds_observed < 720));
+        let candidates = ListedCandidates::new(events).candidates().unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.stable_id.as_str())
+                .collect::<Vec<_>>(),
+            everything
+                .iter()
+                .map(|entry| entry.stable_id.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 }

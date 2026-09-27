@@ -25,7 +25,7 @@ use crate::abstraction::{EmbeddingSalt, StableKeySalt};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -2027,6 +2027,7 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
                 // The needs-a-category prompt's record of entries (0041) goes
                 // too: each row is filed under an application or site key, and
                 // a key under the lost salt names nothing the list can offer.
+                // The card rows filed under those entries cascade with them.
                 transaction.execute_batch(
                     "DELETE FROM personal_override;
                      DELETE FROM personal_app_override;
@@ -2086,6 +2087,217 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
 
 #[derive(Clone)]
 struct SqliteRawEventRepo(SqlitePersistence);
+
+impl SqliteRawEventRepo {
+    /// The application list's query, with `limit` `None` for no cap: the
+    /// same rows, floor, window and order either way.
+    fn unclassified_applications(
+        &self,
+        lookback_days: u32,
+        min_seconds: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError> {
+        // Clamped here rather than trusted from the caller, the way
+        // `local_display_aggregates` caps its own limit: these bounds are what
+        // keep the list a task instead of an inventory, and a caller that
+        // could widen them could undo that from anywhere.
+        let lookback_days = lookback_days.clamp(1, TRIAGE_MAX_LOOKBACK_DAYS);
+        let min_seconds = min_seconds.max(TRIAGE_MIN_SECONDS);
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT app_stable_id,
+                    -- An application Velvt holds no name for is still time the
+                    -- user spent, so it is kept rather than dropped: omitting
+                    -- the row hid real minutes from a list whose whole claim is
+                    -- \"this is the time Velvt could not read\", and the user can
+                    -- usually still answer -- they know what they had open for
+                    -- an hour, and the row carries that hour. It is kept with
+                    -- NULL, not a placeholder: a placeholder here came back from
+                    -- the client as the name of the rule it taught (protocol 33
+                    -- sends the NULL and the client words the row itself).
+                    display_name,
+                    seconds_observed, event_count,
+                    app_bundle_stable_id
+             FROM (
+                 SELECT observed.app_stable_id AS app_stable_id,
+                        -- The most recent name Velvt already holds for this
+                        -- application. `local_name_suggestion` carries the raw
+                        -- application name for exactly the events that matched
+                        -- no seed and no correction (migration 0001), which is
+                        -- every event in this list -- and only those: read off
+                        -- the UNLOGGED rows, on
+                        -- `idx_raw_event_buffer_category_app`, rather than off
+                        -- every row of the application, which walked the whole
+                        -- buffer once per application and is the reason the
+                        -- list can now be read once a minute.
+                        (SELECT COALESCE(named.local_display_label, named.local_name_suggestion)
+                           FROM raw_event_buffer named
+                          WHERE named.category = 'UNLOGGED'
+                            AND named.app_stable_id = observed.app_stable_id
+                            AND COALESCE(named.local_display_label, named.local_name_suggestion)
+                                IS NOT NULL
+                          ORDER BY named.occurred_at DESC
+                          LIMIT 1) AS display_name,
+                        SUM(observed.duration_seconds) AS seconds_observed,
+                        COUNT(*) AS event_count,
+                        -- One application name resolves to one bundle
+                        -- identifier, so any non-null value in the group is
+                        -- that identifier; MAX is how SQLite says \"any\".
+                        MAX(observed.app_bundle_stable_id) AS app_bundle_stable_id
+                 FROM raw_event_buffer observed
+                 WHERE observed.category = 'UNLOGGED'
+                   AND observed.app_stable_id IS NOT NULL
+                   AND observed.occurred_at >= ?1
+                   -- Offering an application here is a claim that teaching it is
+                   -- safe: the only thing the user can do with a row is write an
+                   -- app-wide rule for it. So the same gate the correction path
+                   -- applies per event (`app_identity_for_event`) applies to the
+                   -- rows that make up a group, and to the application behind
+                   -- them.
+                   --
+                   -- A browser window that carried a site context is not
+                   -- generalizable -- one tab says nothing about the next -- and
+                   -- an UNLOGGED one is exactly a site Velvt could not read, so
+                   -- these rows were most of what the list offered for a browser.
+                   -- Teaching one wrote an app-wide rule that classifies every
+                   -- future tab, mail and video alike, at High confidence and
+                   -- from `user_rule`, which the engine reads before the plugins
+                   -- and which therefore also stops `BrowserContextPlugin` from
+                   -- ever running for that browser again.
+                   AND observed.app_scope_eligible = 1
+                   -- And the application itself, not only these rows: a browser
+                   -- also produces windows it read no site from, which are
+                   -- eligible one row at a time while the application they belong
+                   -- to is not. Any ineligible event under either identity is that
+                   -- evidence, which is the same read
+                   -- `save_app_scope_override` refuses on -- this filter keeps the
+                   -- list honest, that check keeps the promise.
+                   --
+                   -- Two uncorrelated sets rather than one NOT EXISTS: SQLite
+                   -- builds each once per query, where the correlated form
+                   -- scanned the whole buffer for every UNLOGGED row, about six
+                   -- seconds on a 30,000-row buffer with the store's one
+                   -- connection held throughout. NULLs are kept out of both
+                   -- sets, so NOT IN means exactly what NOT EXISTS meant.
+                   AND observed.app_stable_id NOT IN (
+                       SELECT ineligible.app_stable_id FROM raw_event_buffer ineligible
+                        WHERE ineligible.app_scope_eligible = 0
+                          AND ineligible.app_stable_id IS NOT NULL
+                   )
+                   AND (observed.app_bundle_stable_id IS NULL
+                        OR observed.app_bundle_stable_id NOT IN (
+                            SELECT ineligible.app_bundle_stable_id FROM raw_event_buffer ineligible
+                             WHERE ineligible.app_scope_eligible = 0
+                               AND ineligible.app_bundle_stable_id IS NOT NULL
+                        ))
+                   -- An application the user has already taught must leave the
+                   -- list the moment they teach it. Past events keep their
+                   -- UNLOGGED category -- nothing here rewrites history -- so
+                   -- without this the app they just explained would be back at
+                   -- the top of the list tomorrow.
+                   AND NOT EXISTS (
+                       SELECT 1 FROM personal_app_override rule
+                       WHERE rule.app_key_hash = observed.app_stable_id
+                          OR (rule.bundle_key_hash IS NOT NULL
+                              AND rule.bundle_key_hash = observed.app_bundle_stable_id)
+                   )
+                 GROUP BY observed.app_stable_id
+             )
+             WHERE seconds_observed >= ?2
+             ORDER BY seconds_observed DESC, app_stable_id ASC
+             LIMIT ?3",
+        )?;
+        let cutoff = Utc::now() - chrono::Duration::days(i64::from(lookback_days));
+        let entries = statement
+            .query_map(
+                params![
+                    cutoff.timestamp(),
+                    min_seconds as i64,
+                    // A negative LIMIT is no limit to SQLite.
+                    limit.map_or(-1, |limit| limit as i64)
+                ],
+                |row| {
+                    Ok(UnclassifiedAppEntry {
+                        app_stable_id: row.get(0)?,
+                        display_name: row.get(1)?,
+                        seconds_observed: row.get(2)?,
+                        event_count: row.get(3)?,
+                        app_bundle_stable_id: row.get(4)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(PersistenceError::from)?;
+        Ok(entries)
+    }
+
+    /// The site list's query, with `limit` `None` for no cap, as
+    /// `unclassified_applications` is the application list's.
+    fn unclassified_sites(
+        &self,
+        lookback_days: u32,
+        min_seconds: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError> {
+        // The application list's bounds, clamped here for its reason.
+        let lookback_days = lookback_days.clamp(1, TRIAGE_MAX_LOOKBACK_DAYS);
+        let min_seconds = min_seconds.max(TRIAGE_MIN_SECONDS);
+        let connection = self.0.connection()?;
+        // The plan narrows to the window of days on
+        // `idx_raw_event_buffer_occurred_at` and groups by site in a temporary
+        // B-tree; `idx_raw_event_buffer_site_stable_id` (0040) is not used
+        // here. The join is what names a row, and it is also a filter: a site
+        // whose name was never kept or has been swept is time the user cannot
+        // be asked about, so it is left out rather than shown under a
+        // placeholder the way an unnamed application is -- a list of sites
+        // called "a website" is not a task anyone can do.
+        let mut statement = connection.prepare(&format!(
+            "SELECT site_stable_id, display_name, seconds_observed, event_count
+             FROM (
+                 SELECT visit.site_stable_id AS site_stable_id,
+                        name.host AS display_name,
+                        SUM(visit.duration_seconds) AS seconds_observed,
+                        COUNT(*) AS event_count
+                 FROM raw_event_buffer visit
+                 JOIN local_site_name name ON name.site_key_hash = visit.site_stable_id
+                 WHERE visit.occurred_at >= ?1
+                   AND {SITE_VISIT_NEEDS_A_CATEGORY}
+                   -- A site the user has taught leaves the list the moment
+                   -- they teach it. Past events keep the classification they
+                   -- were recorded with -- nothing here rewrites history -- so
+                   -- without this the site would still be listed from them.
+                   AND NOT EXISTS (
+                       SELECT 1 FROM personal_site_override rule
+                        WHERE rule.site_key_hash = visit.site_stable_id
+                   )
+                 GROUP BY visit.site_stable_id, name.host
+             )
+             WHERE seconds_observed >= ?2
+             ORDER BY seconds_observed DESC, site_stable_id ASC
+             LIMIT ?3"
+        ))?;
+        let cutoff = Utc::now() - chrono::Duration::days(i64::from(lookback_days));
+        let entries = statement
+            .query_map(
+                params![
+                    cutoff.timestamp(),
+                    min_seconds as i64,
+                    limit.map_or(-1, |limit| limit as i64)
+                ],
+                |row| {
+                    Ok(UnclassifiedSiteEntry {
+                        site_stable_id: row.get(0)?,
+                        display_name: row.get(1)?,
+                        seconds_observed: row.get(2)?,
+                        event_count: row.get(3)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(PersistenceError::from)?;
+        Ok(entries)
+    }
+}
 
 impl RawEventRepo for SqliteRawEventRepo {
     fn insert(&self, event: &RawEventEntry) -> Result<(), PersistenceError> {
@@ -2283,137 +2495,19 @@ impl RawEventRepo for SqliteRawEventRepo {
         min_seconds: u64,
         limit: usize,
     ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError> {
-        // Clamped here rather than trusted from the caller, the way
-        // `local_display_aggregates` caps its own limit: these three bounds are
-        // what keep the list a task instead of an inventory, and a caller that
-        // could widen them could undo that from anywhere.
-        let lookback_days = lookback_days.clamp(1, TRIAGE_MAX_LOOKBACK_DAYS);
-        let min_seconds = min_seconds.max(TRIAGE_MIN_SECONDS);
+        // Capped here for the reason the helper clamps the other two bounds.
         let limit = limit.min(TRIAGE_MAX_ENTRIES);
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let connection = self.0.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT app_stable_id,
-                    -- An application Velvt holds no name for is still time the
-                    -- user spent, so it is kept rather than dropped: omitting
-                    -- the row hid real minutes from a list whose whole claim is
-                    -- \"this is the time Velvt could not read\", and the user can
-                    -- usually still answer -- they know what they had open for
-                    -- an hour, and the row carries that hour. It is kept with
-                    -- NULL, not a placeholder: a placeholder here came back from
-                    -- the client as the name of the rule it taught (protocol 33
-                    -- sends the NULL and the client words the row itself).
-                    display_name,
-                    seconds_observed, event_count,
-                    app_bundle_stable_id
-             FROM (
-                 SELECT observed.app_stable_id AS app_stable_id,
-                        -- The most recent name Velvt already holds for this
-                        -- application. `local_name_suggestion` carries the raw
-                        -- application name for exactly the events that matched
-                        -- no seed and no correction (migration 0001), which is
-                        -- every event in this list -- and only those: read off
-                        -- the UNLOGGED rows, on
-                        -- `idx_raw_event_buffer_category_app`, rather than off
-                        -- every row of the application, which walked the whole
-                        -- buffer once per application and is the reason the
-                        -- list can now be read once a minute.
-                        (SELECT COALESCE(named.local_display_label, named.local_name_suggestion)
-                           FROM raw_event_buffer named
-                          WHERE named.category = 'UNLOGGED'
-                            AND named.app_stable_id = observed.app_stable_id
-                            AND COALESCE(named.local_display_label, named.local_name_suggestion)
-                                IS NOT NULL
-                          ORDER BY named.occurred_at DESC
-                          LIMIT 1) AS display_name,
-                        SUM(observed.duration_seconds) AS seconds_observed,
-                        COUNT(*) AS event_count,
-                        -- One application name resolves to one bundle
-                        -- identifier, so any non-null value in the group is
-                        -- that identifier; MAX is how SQLite says \"any\".
-                        MAX(observed.app_bundle_stable_id) AS app_bundle_stable_id
-                 FROM raw_event_buffer observed
-                 WHERE observed.category = 'UNLOGGED'
-                   AND observed.app_stable_id IS NOT NULL
-                   AND observed.occurred_at >= ?1
-                   -- Offering an application here is a claim that teaching it is
-                   -- safe: the only thing the user can do with a row is write an
-                   -- app-wide rule for it. So the same gate the correction path
-                   -- applies per event (`app_identity_for_event`) applies to the
-                   -- rows that make up a group, and to the application behind
-                   -- them.
-                   --
-                   -- A browser window that carried a site context is not
-                   -- generalizable -- one tab says nothing about the next -- and
-                   -- an UNLOGGED one is exactly a site Velvt could not read, so
-                   -- these rows were most of what the list offered for a browser.
-                   -- Teaching one wrote an app-wide rule that classifies every
-                   -- future tab, mail and video alike, at High confidence and
-                   -- from `user_rule`, which the engine reads before the plugins
-                   -- and which therefore also stops `BrowserContextPlugin` from
-                   -- ever running for that browser again.
-                   AND observed.app_scope_eligible = 1
-                   -- And the application itself, not only these rows: a browser
-                   -- also produces windows it read no site from, which are
-                   -- eligible one row at a time while the application they belong
-                   -- to is not. Any ineligible event under either identity is that
-                   -- evidence, which is the same read
-                   -- `save_app_scope_override` refuses on -- this filter keeps the
-                   -- list honest, that check keeps the promise.
-                   --
-                   -- Two uncorrelated sets rather than one NOT EXISTS: SQLite
-                   -- builds each once per query, where the correlated form
-                   -- scanned the whole buffer for every UNLOGGED row, about six
-                   -- seconds on a 30,000-row buffer with the store's one
-                   -- connection held throughout. NULLs are kept out of both
-                   -- sets, so NOT IN means exactly what NOT EXISTS meant.
-                   AND observed.app_stable_id NOT IN (
-                       SELECT ineligible.app_stable_id FROM raw_event_buffer ineligible
-                        WHERE ineligible.app_scope_eligible = 0
-                          AND ineligible.app_stable_id IS NOT NULL
-                   )
-                   AND (observed.app_bundle_stable_id IS NULL
-                        OR observed.app_bundle_stable_id NOT IN (
-                            SELECT ineligible.app_bundle_stable_id FROM raw_event_buffer ineligible
-                             WHERE ineligible.app_scope_eligible = 0
-                               AND ineligible.app_bundle_stable_id IS NOT NULL
-                        ))
-                   -- An application the user has already taught must leave the
-                   -- list the moment they teach it. Past events keep their
-                   -- UNLOGGED category -- nothing here rewrites history -- so
-                   -- without this the app they just explained would be back at
-                   -- the top of the list tomorrow.
-                   AND NOT EXISTS (
-                       SELECT 1 FROM personal_app_override rule
-                       WHERE rule.app_key_hash = observed.app_stable_id
-                          OR (rule.bundle_key_hash IS NOT NULL
-                              AND rule.bundle_key_hash = observed.app_bundle_stable_id)
-                   )
-                 GROUP BY observed.app_stable_id
-             )
-             WHERE seconds_observed >= ?2
-             ORDER BY seconds_observed DESC, app_stable_id ASC
-             LIMIT ?3",
-        )?;
-        let cutoff = Utc::now() - chrono::Duration::days(i64::from(lookback_days));
-        let entries = statement
-            .query_map(
-                params![cutoff.timestamp(), min_seconds as i64, limit as i64],
-                |row| {
-                    Ok(UnclassifiedAppEntry {
-                        app_stable_id: row.get(0)?,
-                        display_name: row.get(1)?,
-                        seconds_observed: row.get(2)?,
-                        event_count: row.get(3)?,
-                        app_bundle_stable_id: row.get(4)?,
-                    })
-                },
-            )?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(PersistenceError::from)?;
-        Ok(entries)
+        self.unclassified_applications(lookback_days, min_seconds, Some(limit))
+    }
+
+    fn every_unclassified_application(
+        &self,
+        lookback_days: u32,
+    ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError> {
+        self.unclassified_applications(lookback_days, TRIAGE_MIN_SECONDS, None)
     }
 
     fn unclassified_app_bundle_key(
@@ -2488,63 +2582,18 @@ impl RawEventRepo for SqliteRawEventRepo {
         min_seconds: u64,
         limit: usize,
     ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError> {
-        // The application list's three bounds, clamped here for its reason.
-        let lookback_days = lookback_days.clamp(1, TRIAGE_MAX_LOOKBACK_DAYS);
-        let min_seconds = min_seconds.max(TRIAGE_MIN_SECONDS);
         let limit = limit.min(TRIAGE_MAX_ENTRIES);
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let connection = self.0.connection()?;
-        // The plan narrows to the window of days on
-        // `idx_raw_event_buffer_occurred_at` and groups by site in a temporary
-        // B-tree; `idx_raw_event_buffer_site_stable_id` (0040) is not used
-        // here. The join is what names a row, and it is also a filter: a site
-        // whose name was never kept or has been swept is time the user cannot
-        // be asked about, so it is left out rather than shown under a
-        // placeholder the way an unnamed application is -- a list of sites
-        // called "a website" is not a task anyone can do.
-        let mut statement = connection.prepare(&format!(
-            "SELECT site_stable_id, display_name, seconds_observed, event_count
-             FROM (
-                 SELECT visit.site_stable_id AS site_stable_id,
-                        name.host AS display_name,
-                        SUM(visit.duration_seconds) AS seconds_observed,
-                        COUNT(*) AS event_count
-                 FROM raw_event_buffer visit
-                 JOIN local_site_name name ON name.site_key_hash = visit.site_stable_id
-                 WHERE visit.occurred_at >= ?1
-                   AND {SITE_VISIT_NEEDS_A_CATEGORY}
-                   -- A site the user has taught leaves the list the moment
-                   -- they teach it. Past events keep the classification they
-                   -- were recorded with -- nothing here rewrites history -- so
-                   -- without this the site would still be listed from them.
-                   AND NOT EXISTS (
-                       SELECT 1 FROM personal_site_override rule
-                        WHERE rule.site_key_hash = visit.site_stable_id
-                   )
-                 GROUP BY visit.site_stable_id, name.host
-             )
-             WHERE seconds_observed >= ?2
-             ORDER BY seconds_observed DESC, site_stable_id ASC
-             LIMIT ?3"
-        ))?;
-        let cutoff = Utc::now() - chrono::Duration::days(i64::from(lookback_days));
-        let entries = statement
-            .query_map(
-                params![cutoff.timestamp(), min_seconds as i64, limit as i64],
-                |row| {
-                    Ok(UnclassifiedSiteEntry {
-                        site_stable_id: row.get(0)?,
-                        display_name: row.get(1)?,
-                        seconds_observed: row.get(2)?,
-                        event_count: row.get(3)?,
-                    })
-                },
-            )?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(PersistenceError::from)?;
-        Ok(entries)
+        self.unclassified_sites(lookback_days, min_seconds, Some(limit))
+    }
+
+    fn every_unclassified_site(
+        &self,
+        lookback_days: u32,
+    ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError> {
+        self.unclassified_sites(lookback_days, TRIAGE_MIN_SECONDS, None)
     }
 
     fn delete_expired_site_names(
@@ -4273,9 +4322,8 @@ fn category_prompt_entry_from_row(
         entry_key: row.get(0)?,
         first_listed_at: timestamp_from_row(row, 1)?,
         last_listed_at: timestamp_from_row(row, 2)?,
-        prompt_id: row.get(3)?,
-        acknowledged_at: optional_timestamp_from_row(row, 4)?,
-        notified_at: optional_timestamp_from_row(row, 5)?,
+        acknowledged_at: optional_timestamp_from_row(row, 3)?,
+        notified_at: optional_timestamp_from_row(row, 4)?,
     })
 }
 
@@ -4299,8 +4347,7 @@ impl CategoryPromptRepo for SqliteCategoryPromptRepo {
                  ON CONFLICT(entry_key) DO UPDATE SET last_listed_at = excluded.last_listed_at",
             )?;
             let mut read = transaction.prepare(
-                "SELECT entry_key, first_listed_at, last_listed_at, prompt_id,
-                        acknowledged_at, notified_at
+                "SELECT entry_key, first_listed_at, last_listed_at, acknowledged_at, notified_at
                  FROM category_prompt_entry WHERE entry_key = ?1",
             )?;
             for key in entry_keys {
@@ -4312,24 +4359,73 @@ impl CategoryPromptRepo for SqliteCategoryPromptRepo {
         Ok(entries)
     }
 
-    fn file_under_prompt(
+    fn card_for(
         &self,
-        entry_keys: &[String],
-        prompt_id: &str,
-    ) -> Result<(), PersistenceError> {
+        counted_keys: &[String],
+        uncounted_keys: &[String],
+    ) -> Result<String, PersistenceError> {
         let mut connection = self.0.connection()?;
         let transaction = connection.transaction()?;
+        // The latest card is the one whose rows were written last. Rows are
+        // only ever added to the latest card, so the highest rowid is always
+        // one of its rows; a rowid rather than a time, so a clock that moved
+        // backwards cannot make an older card the latest.
+        let latest: Option<String> = transaction
+            .query_row(
+                "SELECT prompt_id FROM category_prompt_card_entry ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let latest_counted: BTreeSet<String> = match &latest {
+            Some(latest) => transaction
+                .prepare(
+                    "SELECT entry_key FROM category_prompt_card_entry
+                      WHERE prompt_id = ?1 AND counted = 1",
+                )?
+                .query_map([latest], |row| row.get(0))?
+                .collect::<Result<_, _>>()?,
+            None => BTreeSet::new(),
+        };
+        let counted: BTreeSet<String> = counted_keys.iter().cloned().collect();
+        let prompt_id = match latest {
+            Some(latest) if latest_counted == counted => latest,
+            previous => {
+                let minted: String =
+                    transaction
+                        .query_row("SELECT lower(hex(randomblob(32)))", [], |row| row.get(0))?;
+                // The card on screen may still be answered after this one is
+                // drawn, so the latest before this one keeps its rows; any
+                // older card is past answering, and goes.
+                transaction.execute(
+                    "DELETE FROM category_prompt_card_entry WHERE prompt_id IS NOT ?1",
+                    [previous],
+                )?;
+                let mut file = transaction.prepare(
+                    "INSERT INTO category_prompt_card_entry(prompt_id, entry_key, counted)
+                     VALUES (?1, ?2, 1)",
+                )?;
+                for key in counted_keys {
+                    file.execute(params![minted, key])?;
+                }
+                minted
+            }
+        };
         {
+            // An entry below the eight, filed under the card that is up while
+            // it is listed: an answer to that card was given with it on the
+            // list, so it is not new afterwards when it moves up.
             let mut file = transaction.prepare(
-                "UPDATE category_prompt_entry SET prompt_id = ?2
-                 WHERE entry_key = ?1 AND prompt_id IS NOT ?2",
+                "INSERT INTO category_prompt_card_entry(prompt_id, entry_key, counted)
+                 VALUES (?1, ?2, 0)
+                 ON CONFLICT(prompt_id, entry_key) DO NOTHING",
             )?;
-            for key in entry_keys {
-                file.execute(params![key, prompt_id])?;
+            for key in uncounted_keys {
+                file.execute(params![prompt_id, key])?;
             }
         }
         transaction.commit()?;
-        Ok(())
+        Ok(prompt_id)
     }
 
     fn acknowledge_prompt(
@@ -4340,12 +4436,16 @@ impl CategoryPromptRepo for SqliteCategoryPromptRepo {
     ) -> Result<u64, PersistenceError> {
         let mut connection = self.0.connection()?;
         let transaction = connection.transaction()?;
-        // On `idx_category_prompt_entry_prompt_id`. Either answer closes the
-        // card for exactly the entries it showed; a later entry is not
-        // answered by a card it was never on.
+        // Through the card's rows, on their primary key. Either answer closes
+        // the card for exactly the entries it covered, however far the list
+        // has moved since it was drawn; an entry it never covered is not
+        // answered by it.
         let stamped = transaction.execute(
             "UPDATE category_prompt_entry SET acknowledged_at = ?2
-             WHERE prompt_id = ?1 AND acknowledged_at IS NULL",
+             WHERE acknowledged_at IS NULL
+               AND entry_key IN (
+                   SELECT entry_key FROM category_prompt_card_entry WHERE prompt_id = ?1
+               )",
             params![prompt_id, at.timestamp()],
         )? as u64;
         if opened {
@@ -4434,6 +4534,8 @@ impl CategoryPromptRepo for SqliteCategoryPromptRepo {
     ) -> Result<u64, PersistenceError> {
         let connection = self.0.connection()?;
         // Oldest first, on `idx_category_prompt_entry_last_listed_at` (0041).
+        // The card rows filed under a swept entry go with it: the foreign key
+        // cascades, on `idx_category_prompt_card_entry_entry_key`.
         let deleted = connection.execute(
             "DELETE FROM category_prompt_entry WHERE entry_key IN (
                  SELECT entry_key FROM category_prompt_entry
@@ -9669,49 +9771,93 @@ mod category_prompt_ledger_tests {
         assert_eq!(second[0].first_listed_at, at(0));
         assert_eq!(second[0].last_listed_at, at(600));
         assert_eq!(second[2].first_listed_at, at(600));
-        assert!(second.iter().all(|entry| entry.acknowledged_at.is_none()
-            && entry.notified_at.is_none()
-            && entry.prompt_id.is_none()));
+        assert!(second
+            .iter()
+            .all(|entry| entry.acknowledged_at.is_none() && entry.notified_at.is_none()));
     }
 
-    /// An answer reaches the entries its card showed and nothing else, and a
-    /// second answer never moves the first one's time.
+    /// An answer reaches the entries its card covered -- counted, or filed
+    /// below the eight -- and nothing else, and a second answer never moves
+    /// the first one's time.
     #[test]
-    fn an_answer_reaches_exactly_the_entries_its_card_showed() {
+    fn an_answer_reaches_exactly_the_entries_its_card_covered() {
         let (_database, ledger) = ledger();
-        let shown = vec![site(1), application(2)];
-        ledger.record_listed(&shown, at(0)).unwrap();
-        ledger.file_under_prompt(&shown, &prompt(0xa1)).unwrap();
+        ledger
+            .record_listed(&[site(1), application(2), site(4)], at(0))
+            .unwrap();
+        let card = ledger
+            .card_for(&[site(1), application(2)], &[site(4)])
+            .unwrap();
         // Listed after the card was drawn, on no card yet.
         ledger.record_listed(&[site(3)], at(30)).unwrap();
 
+        assert_eq!(ledger.acknowledge_prompt(&card, false, at(60)).unwrap(), 3);
         assert_eq!(
-            ledger
-                .acknowledge_prompt(&prompt(0xa1), false, at(60))
-                .unwrap(),
-            2
-        );
-        assert_eq!(
-            ledger
-                .acknowledge_prompt(&prompt(0xa1), false, at(120))
-                .unwrap(),
+            ledger.acknowledge_prompt(&card, false, at(120)).unwrap(),
             0,
             "a repeated answer stamps nothing"
         );
         assert_eq!(
             ledger
-                .acknowledge_prompt(&prompt(0xb2), true, at(120))
+                .acknowledge_prompt(&"b2".repeat(32), true, at(120))
                 .unwrap(),
             0,
             "an unknown card reaches no entry"
         );
 
         let entries = ledger
-            .record_listed(&[site(1), application(2), site(3)], at(180))
+            .record_listed(&[site(1), application(2), site(4), site(3)], at(180))
             .unwrap();
-        assert_eq!(entries[0].acknowledged_at, Some(at(60)));
-        assert_eq!(entries[1].acknowledged_at, Some(at(60)));
-        assert_eq!(entries[2].acknowledged_at, None);
+        assert!(entries[..3]
+            .iter()
+            .all(|entry| entry.acknowledged_at == Some(at(60))));
+        assert_eq!(entries[3].acknowledged_at, None);
+    }
+
+    /// A card keeps its id while it counts the same keys, however the ones
+    /// below it change, and a new id is minted when they change. The one
+    /// before the latest keeps its rows, so a late answer to it still lands;
+    /// anything older goes.
+    #[test]
+    fn a_card_id_is_reused_until_what_it_counts_changes_and_two_are_kept() {
+        let (database, ledger) = ledger();
+        let every: Vec<String> = (1..=5).map(site).collect();
+        ledger.record_listed(&every, at(0)).unwrap();
+
+        let first = ledger.card_for(&every[..2], &every[2..3]).unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        let reordered = [every[1].clone(), every[0].clone()];
+        assert_eq!(ledger.card_for(&reordered, &every[3..5]).unwrap(), first);
+
+        let second = ledger.card_for(&every[..3], &[]).unwrap();
+        let third = ledger.card_for(&every[..2], &[]).unwrap();
+        assert_ne!(second, first);
+        assert_ne!(third, first, "the same keys again are a new card");
+        assert_ne!(third, second);
+
+        let cards: Vec<(String, i64)> = database
+            .connection()
+            .unwrap()
+            .prepare(
+                "SELECT prompt_id, COUNT(*) FROM category_prompt_card_entry
+                  GROUP BY prompt_id ORDER BY MIN(rowid)",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(cards, vec![(second.clone(), 3), (third.clone(), 2)]);
+
+        // The late answer to the card before the latest still lands.
+        assert_eq!(
+            ledger.acknowledge_prompt(&second, false, at(60)).unwrap(),
+            3
+        );
+        assert_eq!(ledger.acknowledge_prompt(&first, false, at(60)).unwrap(), 0);
     }
 
     /// The primary key on the local date is the daily cap: a second claim for
@@ -9793,9 +9939,10 @@ mod category_prompt_ledger_tests {
         assert_eq!(reminders[1].opened_at, None);
     }
 
-    /// The table admits what the policy writes and nothing else: a key under
+    /// The tables admit what the policy writes and nothing else: a key under
     /// one of the two prefixes and 64 lowercase hex digits, a card id of 64
-    /// hex digits, a `YYYY-MM-DD` date, and a count the list can hold.
+    /// lowercase hex digits filed only under an entry the ledger holds, a
+    /// `YYYY-MM-DD` date, and a count the list can hold.
     #[test]
     fn the_schema_refuses_anything_but_keys_dates_and_counts() {
         let (database, ledger) = ledger();
@@ -9813,9 +9960,26 @@ mod category_prompt_ledger_tests {
             );
         }
         ledger.record_listed(&[site(1)], at(0)).unwrap();
-        assert!(ledger
-            .file_under_prompt(&[site(1)], "not-a-card-id")
-            .is_err());
+        let card = "c3".repeat(32);
+        for (prompt_id, entry_key, counted) in [
+            ("not-a-card-id".to_owned(), site(1), 1),
+            ("C3".repeat(32), site(1), 1),
+            (card.clone(), site(2), 1),
+            (card.clone(), site(1), 2),
+        ] {
+            assert!(
+                database
+                    .connection()
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO category_prompt_card_entry(prompt_id, entry_key, counted)
+                         VALUES (?1, ?2, ?3)",
+                        rusqlite::params![prompt_id, entry_key, counted],
+                    )
+                    .is_err(),
+                "{prompt_id} {entry_key} {counted} was accepted"
+            );
+        }
         for (date, count) in [("15/01/2027", 1), ("2027-01-15", 0), ("2027-01-15", 9)] {
             assert!(
                 ledger
@@ -9837,13 +10001,14 @@ mod category_prompt_ledger_tests {
     }
 
     /// Both sweeps delete oldest first, within their limit, and leave what is
-    /// inside the horizon.
+    /// inside the horizon; a swept entry's card rows go with it.
     #[test]
     fn the_sweeps_delete_only_what_is_past_the_horizon() {
-        let (_database, ledger) = ledger();
+        let (database, ledger) = ledger();
         ledger.record_listed(&[site(1)], at(0)).unwrap();
         ledger.record_listed(&[site(2)], at(100)).unwrap();
         ledger.record_listed(&[site(3)], at(10_000)).unwrap();
+        let card = ledger.card_for(&[site(1), site(3)], &[site(2)]).unwrap();
         ledger
             .claim_notification("2027-01-15", &[], 1, 1, at(0))
             .unwrap();
@@ -9856,6 +10021,20 @@ mod category_prompt_ledger_tests {
         assert_eq!(ledger.delete_expired_entries(at(5_000), 8).unwrap(), 0);
         let survivors = ledger.record_listed(&[site(3)], at(20_000)).unwrap();
         assert_eq!(survivors[0].first_listed_at, at(10_000));
+        let filed: Vec<String> = database
+            .connection()
+            .unwrap()
+            .prepare("SELECT entry_key FROM category_prompt_card_entry WHERE prompt_id = ?1")
+            .unwrap()
+            .query_map([&card], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            filed,
+            vec![site(3)],
+            "the swept entries' card rows went too"
+        );
 
         assert_eq!(
             ledger.delete_expired_notifications(at(86_400), 8).unwrap(),
@@ -9867,13 +10046,15 @@ mod category_prompt_ledger_tests {
     }
 
     /// A re-minted salt orphans every application and site key, so the
-    /// prompt's entries go with them. The reminder rows hold no key and stay.
+    /// prompt's entries go with them, and their card rows with the entries.
+    /// The reminder rows hold no key and stay.
     #[test]
     fn a_minted_stable_key_salt_removes_the_prompt_entries() {
         let (database, ledger) = ledger();
         ledger
             .record_listed(&[site(1), application(2)], at(0))
             .unwrap();
+        ledger.card_for(&[site(1)], &[application(2)]).unwrap();
         ledger
             .claim_notification("2027-01-15", &[site(1)], 2, 1, at(0))
             .unwrap();
@@ -9888,14 +10069,16 @@ mod category_prompt_ledger_tests {
         // The count is read, and the guard released, before the ledger is
         // asked anything: an in-memory store has one connection behind a
         // mutex, and holding it across a repo call would deadlock.
-        let entries: i64 = database
-            .connection()
-            .unwrap()
-            .query_row("SELECT COUNT(*) FROM category_prompt_entry", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(entries, 0);
+        for table in ["category_prompt_entry", "category_prompt_card_entry"] {
+            let rows: i64 = database
+                .connection()
+                .unwrap()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(rows, 0, "{table}");
+        }
         assert_eq!(ledger.recent_notifications(8).unwrap().len(), 1);
     }
 }

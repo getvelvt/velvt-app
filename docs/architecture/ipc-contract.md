@@ -540,19 +540,24 @@ the full account.
   answers. The payload holds an optional `card` (`title`, `body`,
   `primary_action`, `secondary_action`, `entry_count`), an optional
   `notification` (`title`, `body`) and `prompt_id` exactly when there is a
-  card; an empty payload means no card. Rust owns every gate
-  (`category_prompt`, `CATEGORY_PROMPT_POLICY_VERSION` 1): nothing during an
-  active or paused block; the card while anything on the last seven days' list
-  is unanswered; the notification at most once a local day, only for an entry
-  nothing has counted or answered, not in quiet hours or known Focus, and
-  paused for seven days after three unopened reminders in a row. A
-  notification is handed over once and consumed whether or not it is posted.
-  Copy is counts only.
+  card; an empty payload means no card. `prompt_id` is 32 random bytes in
+  hex, kept while the entries the card counts stay the same, so it says
+  nothing about any entry. Rust owns every gate (`category_prompt`,
+  `CATEGORY_PROMPT_POLICY_VERSION` 1): nothing during an active or paused
+  block; the card while any of the first eight entries of the last seven
+  days' list is unanswered; the notification at most once a local day, only
+  for an entry among those eight that no earlier reminder or answer has
+  reached (both reach the entries below the eight too, so moving up is not
+  news), not in quiet hours or known Focus, and paused for seven days after
+  three unopened reminders in a row within 30 days. A notification is handed
+  over once and consumed whether or not it is posted. Copy is counts only.
 - `acknowledge_category_prompt` [33]: Swift to Rust. `prompt_id` and
-  `response` (`opened` or `not_now`). Either quiets the card until a new entry
-  joins the list; `opened` ends a run of unopened reminders. Answered with
-  `category_prompt` as it now stands, never with a notification; a malformed
-  id is refused with `invalid_category_prompt_id`.
+  `response` (`opened` or `not_now`). Either answers every entry that card
+  covered, even after the list has moved on, so the card stays away until an
+  entry no answer has reached is among the eight; `opened` ends a run of
+  unopened reminders. Answered with `category_prompt` as it now stands, never
+  with a notification; a malformed id is refused with
+  `invalid_category_prompt_id`.
 
 ## 4. Version Negotiation
 

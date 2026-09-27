@@ -230,11 +230,13 @@ UTC offset on the `.connected` edge, on wake, and on the 60-second menu-status
 cadence; Rust always answers with `category_prompt`. Rust owns every rule
 (`rust-service/src/category_prompt/mod.rs`, `CATEGORY_PROMPT_POLICY_VERSION`
 1): nothing at all while a work block is active or paused; the in-app `card`
-while anything on the last seven days' needs-a-category list is unanswered;
-and a `notification` at most once per local day, only for an entry no reminder
-has counted and no answer has reached, never in Velvt's quiet hours or a known
-Focus, and paused for seven days after three reminders in a row that were not
-followed by an `opened` answer.
+while any of the first eight entries of the last seven days' needs-a-category
+list is unanswered; and a `notification` at most once per local day, only for
+an entry among those eight that no earlier reminder or answer has reached,
+never in Velvt's quiet hours or a known Focus, and paused for seven days after
+three reminders in a row, within 30 days, that were not followed by an
+`opened` answer. A reminder and an answer reach the entries listed below the
+eight as well, so an entry moving up into the eight is not news.
 
 A `notification` is claimed in Rust when it is handed over and is never handed
 over again, so Swift posts it at once or not at all: only if notifications are

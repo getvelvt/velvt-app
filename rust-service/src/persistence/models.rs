@@ -906,9 +906,7 @@ pub struct CategoryPromptEntry {
     pub entry_key: String,
     pub first_listed_at: DateTime<Utc>,
     pub last_listed_at: DateTime<Utc>,
-    /// The card this entry was last shown on.
-    pub prompt_id: Option<String>,
-    /// When an answer to a card showing this entry arrived, either one.
+    /// When an answer to a card that covered this entry arrived, either one.
     pub acknowledged_at: Option<DateTime<Utc>>,
     /// When a reminder counted this entry.
     pub notified_at: Option<DateTime<Utc>>,
@@ -921,7 +919,6 @@ impl std::fmt::Debug for CategoryPromptEntry {
             .field("entry_key", &"[local_identifier]")
             .field("first_listed_at", &self.first_listed_at)
             .field("last_listed_at", &self.last_listed_at)
-            .field("prompt_id", &self.prompt_id)
             .field("acknowledged_at", &self.acknowledged_at)
             .field("notified_at", &self.notified_at)
             .finish()

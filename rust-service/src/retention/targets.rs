@@ -377,25 +377,31 @@ impl RetentionTarget for LocalSiteNameRetentionTarget {
 // ---------------------------------------------------------------------------
 
 /// Default retention for `category_prompt_entry` (migration 0041), in days,
-/// counted from the last time the entry was on the needs-a-category list.
+/// counted from the last time the entry needed a category.
 ///
-/// An entry is on the list only while events in the buffer put it there, so
-/// its memory of having been shown, answered and announced expires on the
-/// raw-event horizon. An entry that returns after that is new again, and may
-/// be asked about. A constant, for the reason
+/// The prompt records every entry above the list's floor, not only the eight
+/// the list shows, so `last_listed_at` moves for as long as events in the
+/// seven-day window put the entry there at all, whatever its rank. Its memory
+/// of having been answered and announced therefore outlives its need for a
+/// category by this horizon, the raw-event one. An entry that returns after
+/// that is new again, and may be asked about. A constant, for the reason
 /// `LOCAL_SITE_NAME_RETENTION_DAYS` is one.
 pub const CATEGORY_PROMPT_ENTRY_RETENTION_DAYS: u64 = 14;
 
 /// Default retention for `category_prompt_notification` (migration 0041), in
 /// days, counted from when the reminder was handed to the app to post.
 ///
-/// The reminder's rules read only the last three reminders and one local day,
-/// and the longest pause the backoff imposes is seven days after the latest,
-/// so a month covers every question the policy asks with room to spare.
+/// The daily cap reads only the current local day. The backoff reads the last
+/// three reminders, and counts only those posted within this horizon
+/// (`category_prompt::REMINDER_BACKOFF_WINDOW_DAYS` is this constant), so the
+/// sweep deletes no row the policy would still read, and when the sweep runs
+/// never changes whether reminders are paused.
 pub const CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS: u64 = 30;
 
 /// Expires `category_prompt_entry` rows that have not been on the list within
-/// the retention window. A re-minted salt deletes them all.
+/// the retention window, and with them the card rows filed under them
+/// (`category_prompt_card_entry`, by the foreign key). A re-minted salt
+/// deletes them all.
 pub struct CategoryPromptEntryRetentionTarget {
     repo: Arc<dyn CategoryPromptRepo>,
     retention: Duration,

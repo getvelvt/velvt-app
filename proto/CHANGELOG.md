@@ -46,23 +46,31 @@
     64800) is always answered with `category_prompt {prompt_id?, card?,
     notification?}` (Rust to Swift). An empty payload means no card. `card`
     is `{title, body, primary_action, secondary_action, entry_count}` and
-    `notification` is `{title, body}`; `prompt_id` (64 lowercase hex, a
-    SHA-256 over the listed keys) is present exactly when `card` is.
-  - The card shows while any entry of the last seven days' list is
-    unanswered, and never while a work block is active or paused. The
-    notification additionally needs: not Velvt's quiet hours, macOS Focus not
-    known to be on, no reminder yet on the client's local date, an entry no
-    reminder has counted and no answer has reached, and no backoff pause
-    (three reminders in a row with no `opened` answer before the next pause
-    reminders for seven days after the latest). It is claimed in the same
-    transaction that records it and is never handed over twice, whether or
-    not the client posts it.
+    `notification` is `{title, body}`; `prompt_id` (64 lowercase hex: 32
+    random bytes, kept while the entries the card counts stay the same and
+    drawn again when they change, so it says nothing about any entry) is
+    present exactly when `card` is.
+  - The card counts the first eight entries of the last seven days' list,
+    shows while any of them is unanswered, and never shows while a work block
+    is active or paused. The notification additionally needs: not Velvt's
+    quiet hours, macOS Focus not known to be on, no reminder yet on the
+    client's local date, an entry among those eight that no earlier reminder
+    or answer has reached, and no backoff pause (three reminders in a row,
+    each posted within the last 30 days and with no `opened` answer before
+    the next, pause reminders for seven days after the latest). "New" is
+    judged against every entry above the list's floor, not only the eight: a
+    reminder and an answer reach the entries listed below the eight too, so
+    one that moves up into the eight is not new. A notification is claimed
+    in the same transaction that records it and is never handed over twice,
+    whether or not the client posts it.
   - `acknowledge_category_prompt {prompt_id, response}` (Swift to Rust),
-    `response` `opened` or `not_now`. Either quiets the card until an entry
-    it never showed joins the list; `opened` also ends a run of unopened
-    reminders. Answered with `category_prompt` as the card now stands, never
-    with a notification; a malformed `prompt_id` is refused with
-    `invalid_category_prompt_id`.
+    `response` `opened` or `not_now`. Either answers every entry that card
+    covered, even when it arrives after the list has moved on, so the card
+    stays away until an entry no answer has reached is among the eight;
+    `opened` also ends a run of unopened reminders. An id Rust holds no card
+    for answers no entry. Answered with `category_prompt` as the card now
+    stands, never with a notification; a malformed `prompt_id` is refused
+    with `invalid_category_prompt_id`.
   - Copy is counts only, never a name, a hostname or a time, because macOS
     Notification Center keeps a notification's text. This is the third
     notification kind, beside the drift offer and the daily insight.
@@ -73,7 +81,8 @@
 - Privacy: nothing new leaves the Mac. The hostname of a site that needs a
   category crosses the local socket as display text, like an application's
   local name; neither is uploaded, logged, or kept by the client. The prompt's
-  record (migration 0041) holds salted keys, dates, times and counts.
+  record (migration 0041) holds salted keys, random card ids, dates, times
+  and counts.
 
 ## Schema correction: menu_status sources - 2026-09-27 (no wire change; the protocol stays 32)
 

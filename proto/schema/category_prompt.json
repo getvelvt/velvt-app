@@ -14,7 +14,7 @@
         "prompt_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "Identifies the set of entries the card shows; the same list is the same id on every request. Present exactly when card is. Sent back in acknowledge_category_prompt."
+          "description": "The card's id: 32 random bytes in lowercase hex. It stays the same while the entries the card counts stay the same, and a new one is drawn when they change, so it says nothing about any entry. Present exactly when card is. Sent back in acknowledge_category_prompt."
         },
         "card": {
           "type": "object",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Local IPC only. Direction: Swift to Rust. The answer to a needs-a-category card, or a tap on its reminder. Either response quiets the card until an entry it never showed joins the list; opened also ends a run of unopened reminders. Answering only ever reduces what Velvt asks. Answered with category_prompt, which never carries a notification in reply to this message.",
+  "$comment": "Local IPC only. Direction: Swift to Rust. The answer to a needs-a-category card, or a tap on its reminder. Either response answers every entry that card covered (the ones it counted, and those listed below them while it was the latest card), even after the list has moved on, so the card stays away until an entry no answer has reached is among those it would count; opened also ends a run of unopened reminders. An id Rust holds no card for answers no entry. Answering only ever reduces what Velvt asks. Answered with category_prompt, which never carries a notification in reply to this message.",
   "title": "AcknowledgeCategoryPrompt",
   "type": "object",
   "additionalProperties": false,

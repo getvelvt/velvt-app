@@ -36,9 +36,12 @@
   `stable_id` is its site key and its `local_label` is only a name the user
   typed, never the hostname. `remove_classification_override` and
   `update_classification_override` take a site rule's key as they take a
-  window or app rule's: Rust tries the window rule, then the app rule, then
-  the site rule. An edit of a site rule writes `local_activity_name` as sent,
-  so an edit with none clears the name the rule had.
+  window or app rule's. `remove_classification_override` tries the window
+  rule, then the app rule, then the site rule. `update_classification_override`
+  edits the app rule if one exists for the key, else the site rule, else
+  treats the key as a window rule; an app or site rule that cannot be read
+  counts as absent. An edit of a site rule writes `local_activity_name` as
+  sent, so an edit with none clears the name the rule had.
 - `set_application_category` resolves the application's bundle key by looking
   it up for that application key, not by searching a 14-day top-8 list, which
   missed an application the client had been shown on a 7-day list and keyed

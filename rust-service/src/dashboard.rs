@@ -498,7 +498,8 @@ struct LocalDay {
     date: NaiveDate,
     /// Local midnight, in UTC.
     start: DateTime<Utc>,
-    /// The next local midnight, or `now` for today.
+    /// The next local midnight, or `now` for today; the last event read when
+    /// the read was `truncated`.
     end: DateTime<Utc>,
     is_today: bool,
     /// Every event that can reach into the day, including those that began
@@ -531,6 +532,17 @@ fn fold_local_days<T>(
             MAX_DAY_EVENTS,
         )?;
         let truncated = events.len() >= MAX_DAY_EVENTS;
+        // A read cut off at the cap holds the day only up to its last event.
+        // What came after is unknown, and that last event, with no successor
+        // in the read, would otherwise run to midnight (or now) in
+        // `measured_span`: a sub-second dwell read as the rest of the day.
+        // Ending the day where the read ends keeps the chart and the
+        // summaries to the time the evidence covers.
+        let end = if truncated {
+            events.last().map_or(end, |last| last.occurred_at.min(end))
+        } else {
+            end
+        };
         days.push(fold(LocalDay {
             date,
             start,
@@ -751,6 +763,20 @@ const MAX_CLIENT_UTC_OFFSET_SECONDS: i32 = 64_800;
 /// a session boundary is not a switch.
 const SESSION_GAP_SECONDS: i64 = 30 * 60;
 
+/// The least active time that makes a day built on this Mac `ready`: the
+/// minute the chart asks of a today that is still building
+/// ([`EARLY_SIGNAL_REQUIRED_SECONDS`]). Under it the card read "100% of 0m
+/// observed active time", and a few seconds of the previous day's last dwell
+/// running past midnight made a day with no evidence of its own count toward
+/// the week-over-week gate.
+const LOCAL_READY_MIN_ACTIVE_SECONDS: u64 = EARLY_SIGNAL_REQUIRED_SECONDS;
+
+/// The seam two back-to-back dwells can leave between them. `occurred_at`
+/// crosses IPC in whole seconds and Swift floors each dwell's length, so a
+/// dwell that ended as the next began is stored ending up to a second before
+/// it: at about half of all boundaries.
+const DWELL_SEAM_SECONDS: i64 = 1;
+
 /// Per-local-day summaries for the last `requested_days` days (at most
 /// [`DAILY_ACTIVITY_DAYS`], the raw-event retention), built from this Mac's
 /// own retained events: what `request_latest_history` answers with when the
@@ -779,10 +805,15 @@ const SESSION_GAP_SECONDS: i64 = 30 * 60;
 ///   with no successor 60 seconds; this Mac has the reported dwells those
 ///   caps approximate.
 /// - **`active_seconds`** is the day's measured time outside SYSTEM, the
-///   chart's number for the same day. Core also counts SYSTEM time.
-/// - **`status`** is `ready` when there is active time, else `no_data`. A day
-///   with only SYSTEM time is `ready` in core and `no_data` here, as the
-///   chart draws it.
+///   chart's number for the same day (zero on a `no_data` day, as every
+///   count is). Core also counts SYSTEM time.
+/// - **`status`** is `ready` from [`LOCAL_READY_MIN_ACTIVE_SECONDS`] (a
+///   minute) of active time, else `no_data`. Core's is `ready` from any
+///   modelled time, so a day with only SYSTEM time, or with under a minute
+///   of activity, is `ready` in core and `no_data` here.
+/// - **A day read up to its cap** (`MAX_DAY_EVENTS`) ends at the last event
+///   the read holds ([`fold_local_days`]), as the chart's day does: its
+///   numbers cover the part of the day the read reached, and no more.
 /// - **`event_count`** counts the events with measured time in the day, as
 ///   core counts the events it modelled into it.
 /// - **`focused_seconds`** is confident time ([`segment_is_confident`], the
@@ -799,8 +830,10 @@ const SESSION_GAP_SECONDS: i64 = 30 * 60;
 ///   `switch_count`), and there SYSTEM and unclassified time are lanes of
 ///   their own, so a detour through either is two switches; here it is none,
 ///   and a change around it is one.
-/// - **`longest_uninterrupted_seconds`** is the longest contiguous confident
-///   stretch in one category, the dashboard's longest stretch. Core's is the
+/// - **`longest_uninterrupted_seconds`** is the longest run of confident
+///   stretches in one category with nothing between them but the
+///   [`DWELL_SEAM_SECONDS`] seam whole-second timestamps leave between
+///   back-to-back dwells ([`longest_confident_run_seconds`]). Core's is the
 ///   longest work session with no lane change at all (`focus_seconds`): zero
 ///   when every session had a switch, and otherwise summed across gaps of up
 ///   to 30 minutes, SYSTEM sessions included. Either can be the longer.
@@ -852,7 +885,7 @@ fn local_daily_summary(
         .filter(|segment| !segment.category.eq_ignore_ascii_case("SYSTEM"))
         .map(segment_seconds)
         .sum::<u64>();
-    if active_seconds == 0 {
+    if active_seconds < LOCAL_READY_MIN_ACTIVE_SECONDS {
         return no_data_summary(date);
     }
     let confident = segments
@@ -876,11 +909,7 @@ fn local_daily_summary(
                 && (pair[1].started_at - pair[0].ended_at).num_seconds() <= SESSION_GAP_SECONDS
         })
         .count() as u64;
-    let longest_uninterrupted_seconds = confident
-        .iter()
-        .map(|segment| segment_seconds(segment))
-        .max()
-        .unwrap_or(0);
+    let longest_uninterrupted_seconds = longest_confident_run_seconds(&segments);
     DailySummary {
         date,
         status: HistoryStatus::Ready,
@@ -898,12 +927,42 @@ fn local_daily_summary(
     }
 }
 
+/// The longest run of confident time in one category, in seconds.
+///
+/// `build_segments` merges two stretches of one category only when the
+/// first ends at or after the second begins, and back-to-back dwells miss
+/// that by the [`DWELL_SEAM_SECONDS`] seam at about half of all boundaries:
+/// read segment by segment, a run of k dwells survives whole about once in
+/// 2^(k-1), and ninety minutes in one lane read as a dwell or two. A run here
+/// continues across a seam that short, and ends at a change of category,
+/// at anything not confident (SYSTEM and unclassified time included), and at
+/// any longer gap. The seam itself is not counted.
+fn longest_confident_run_seconds(segments: &[LocalTimelineSegment]) -> u64 {
+    let mut longest = 0;
+    let mut run = 0;
+    let mut previous: Option<&LocalTimelineSegment> = None;
+    for segment in segments {
+        if !segment_is_confident(segment) {
+            previous = None;
+            continue;
+        }
+        let continues = previous.is_some_and(|previous| {
+            previous.category == segment.category
+                && (segment.started_at - previous.ended_at).num_seconds() <= DWELL_SEAM_SECONDS
+        });
+        run = if continues { run } else { 0 } + segment_seconds(segment);
+        longest = longest.max(run);
+        previous = Some(segment);
+    }
+    longest
+}
+
 /// What a cloud-only field says in a summary built on this Mac.
 const UNAVAILABLE: &str = "unavailable";
 
-/// A day with no active time, shaped as core shapes a day it has no summary
-/// for (`history_service.py` `serialize_summary(None, …)`): every count zero,
-/// confidence `none`.
+/// A day with under a minute of active time, shaped as core shapes a day it
+/// has no summary for (`history_service.py` `serialize_summary(None, …)`):
+/// every count zero, confidence `none`.
 fn no_data_summary(date: NaiveDate) -> DailySummary {
     DailySummary {
         date,
@@ -2211,5 +2270,117 @@ mod tests {
         let clamped = history_at(&[], now, 64_800, 1);
         assert_eq!(beyond.summaries[0].date, clamped.summaries[0].date);
         assert_eq!(beyond.summaries[0].date.to_string(), "2026-09-28");
+    }
+
+    /// A day is ready from a minute of active time. Under that the card read
+    /// "100% of 0m observed active time", and a few seconds of the previous
+    /// day's last dwell running past midnight made a day with nothing of its
+    /// own count as an observed one.
+    #[test]
+    fn local_history_needs_a_minute_of_activity_for_a_ready_day() {
+        let now = at_local("2026-09-27 11:00:00", EDT);
+        let events = [
+            // Five minutes on the 24th, then twenty seconds past midnight.
+            confident(
+                at_local("2026-09-24 23:55:00", EDT),
+                320,
+                "FOCUS_WORK",
+                "high",
+            ),
+            // Exactly a minute on the 26th.
+            confident(
+                at_local("2026-09-26 10:00:00", EDT),
+                60,
+                "FOCUS_WORK",
+                "high",
+            ),
+            // Forty-five seconds today.
+            confident(now - 600, 45, "FOCUS_WORK", "high"),
+        ];
+
+        let history = history_at(&events, now, EDT, 14);
+
+        assert_eq!(day(&history, "2026-09-24").active_seconds, 300);
+        let spill = day(&history, "2026-09-25");
+        assert_eq!(spill.status, HistoryStatus::NoData);
+        assert_eq!(spill.active_seconds, 0);
+        assert_eq!(spill.confidence_level, ConfidenceLevel::None);
+        let minute = day(&history, "2026-09-26");
+        assert_eq!(minute.status, HistoryStatus::Ready);
+        assert_eq!(minute.active_seconds, 60);
+        let today = day(&history, "2026-09-27");
+        assert_eq!(today.status, HistoryStatus::NoData);
+        assert_eq!(today.focused_seconds, 0);
+    }
+
+    /// Back-to-back dwells can be stored a second apart (whole-second
+    /// timestamps, floored lengths). The longest stretch runs across that
+    /// seam, and not across a longer gap or a change of category.
+    #[test]
+    fn local_history_longest_stretch_runs_across_a_one_second_seam() {
+        let start = at_local("2026-09-26 09:00:00", EDT);
+        let events = [
+            confident(start, 599, "FOCUS_WORK", "high"),
+            // A one-second seam: the stretch goes on, 599 + 600 + 599.
+            confident(start + 600, 600, "FOCUS_WORK", "high"),
+            confident(start + 1_200, 599, "FOCUS_WORK", "medium"),
+            // Two seconds: a new stretch.
+            confident(start + 1_801, 900, "FOCUS_WORK", "high"),
+            // A seam, but another category: new stretches, both ways.
+            confident(start + 2_702, 1_000, "COMMUNICATION", "high"),
+            confident(start + 3_703, 1_000, "FOCUS_WORK", "high"),
+        ];
+
+        let history = history_at(&events, at_local("2026-09-27 11:00:00", EDT), EDT, 14);
+        let summary = day(&history, "2026-09-26");
+
+        assert_eq!(summary.longest_uninterrupted_seconds, 599 + 600 + 599);
+        // The seams are not active time.
+        assert_eq!(
+            summary.active_seconds,
+            599 + 600 + 599 + 900 + 1_000 + 1_000
+        );
+    }
+
+    /// A day read up to its cap ends at the last event read, in the summary
+    /// and the chart alike. That event has no successor in the read, and
+    /// measured to the day's end it turned one sub-second dwell into the rest
+    /// of the day.
+    #[test]
+    fn local_history_ends_a_day_read_up_to_its_cap_at_its_last_event() {
+        let start = at_local("2026-09-26 09:00:00", EDT);
+        let cap = i64::try_from(MAX_DAY_EVENTS).unwrap();
+        // The cap's worth of rows two seconds apart, each running to the
+        // next, then one the read never reaches.
+        let mut events = (0..cap)
+            .map(|index| confident(start + index * 2, 0, "FOCUS_WORK", "high"))
+            .collect::<Vec<_>>();
+        events.push(confident(
+            at_local("2026-09-26 20:00:00", EDT),
+            600,
+            "COMMUNICATION",
+            "high",
+        ));
+        let now = at_local("2026-09-27 11:00:00", EDT);
+        // Every row but the last runs its two seconds; the last, whose end
+        // the read cannot see, adds nothing.
+        let read = u64::try_from(cap - 1).unwrap() * 2;
+
+        let history = history_at(&events, now, EDT, 2);
+        let summary = day(&history, "2026-09-26");
+        assert_eq!(summary.active_seconds, read);
+        assert_eq!(summary.focused_seconds, read);
+        assert_eq!(summary.longest_uninterrupted_seconds, read);
+
+        let persistence = store(&events);
+        let chart = daily_activity(
+            &*persistence.raw_event_repo(),
+            DateTime::from_timestamp(now, 0).unwrap(),
+            FixedOffset::east_opt(EDT).unwrap(),
+        )
+        .unwrap();
+        let chart_day = chart.iter().find(|row| row.date == summary.date).unwrap();
+        assert_eq!(chart_day.active_seconds, read);
+        assert_eq!(chart_day.coverage, LocalDashboardCoverage::Partial);
     }
 }

@@ -82,6 +82,19 @@ SUSTAINED_RUN_SECONDS = 300
 CENSORED_REPORT_SHARE = 0.10
 CENSORED_INSUFFICIENT_SHARE = 0.25
 
+# The 2026-08-21 rule: until randomization is enabled, every comparison this
+# outcome supports is associational and must be labelled as such. Policy v5
+# offers every eligible point (propensity 1.0), so there is no silence arm and
+# no rate here is an effect of the nudge. The tag goes on every rendered
+# primary-outcome result, so a line copied on its own keeps it.
+ASSOCIATIONAL_TAG = "associational, not an effect of the nudge"
+ASSOCIATIONAL_STATEMENT = (
+    "Associational, not an effect of the nudge: every eligible point was offered "
+    "at propensity 1.0, so there is no silence arm and nothing to compare these "
+    "rates with. 2026-08-21: until randomization is enabled, every result from "
+    "this outcome is associational and labelled as such."
+)
+
 # The per-decision outcomes file (`-outcomes.csv`, export format 4). The
 # exporter computes it on the tester's Mac from `work_block_observation`, which
 # never leaves; `label_decision` below restates the exporter's SQL, and both are
@@ -1225,6 +1238,7 @@ def _primary(cohort: Cohort) -> dict:
         "not_measurable": dict(sorted(not_measurable.items())),
         "with_outcome_row": len(measured),
         "censored": {reason: censored[reason] for reason in OUTCOME_CENSOR_REASONS},
+        "associational": ASSOCIATIONAL_STATEMENT,
         "censored_total": censored_total,
         "censored_share": _share(censored_total, len(measured)),
         "censoring_verdict": verdict,
@@ -1752,6 +1766,8 @@ def render(result: dict) -> str:
         beside = ""
         if primary["censored_total"] and primary["censoring_verdict"].startswith("above"):
             beside = f"; censored {primary['censored_share']}"
+        # Beside every result, after the censored count: 2026-08-21.
+        beside += f"; {ASSOCIATIONAL_TAG}"
         secondary = primary["secondary"]
         free = secondary["departure_free_600s"]
         ret = secondary["time_to_sustained_return"]
@@ -1762,18 +1778,20 @@ def render(result: dict) -> str:
         else:
             add("  INSUFFICIENT, not an estimate:")
             add(f"    sustained at {primary['numerator']} of {primary['denominator']} "
-                "uncensored point(s)")
-            add(f"    departure-free 600 s at {free['numerator']} of {free['denominator']}")
+                f"uncensored point(s){beside}")
+            add(f"    departure-free 600 s at {free['numerator']} of {free['denominator']}"
+                f"{beside}")
         para(free["definition"], "    ")
         if "withheld" in ret:
             add(f"    returned to a sustained run within the horizon at "
-                f"{ret['reached_within_horizon']} of {ret['points']}")
+                f"{ret['reached_within_horizon']} of {ret['points']}{beside}")
         else:
             median = (f"{ret['median_seconds']} s" if ret["median_seconds"] is not None
                       else (ret["median_note"] or "none"))
             add(f"  secondary, time to sustained return: returned within the horizon at "
                 f"{ret['reached_within_horizon']} of {ret['points']}; median {median}; "
                 f"restricted mean {ret['restricted_mean_seconds']} s{beside}")
+        para(primary["associational"])
         add(f"  departure category at each point (marginal counts only): "
             f"{primary['departure_category_counts'] or '{}'}")
     visible = primary["censored_visible_in_export"]

@@ -34,7 +34,9 @@
 #      exporter works out on the Mac: numerator and denominator on policy v5
 #      eligible points, censoring by reason, the 10% and 25% censoring rules,
 #      the two secondary outcomes, and every way a label can be missing or
-#      wrong, which is reported and never imputed.
+#      wrong, which is reported and never imputed. Every result carries the
+#      2026-08-21 label: associational, since every eligible point was offered
+#      and there is no silence arm.
 #
 # Fixtures are CSVs written the way export_cohort_evidence.sh writes them.
 # export_cohort_evidence_test.sh covers the databases behind them, across
@@ -819,6 +821,9 @@ assert p["eligible_decision_points"] == 10, p
 assert p["not_measurable"] == {}, p
 assert p["with_outcome_row"] == 10, p
 assert p["censored"] == {"block_ended": 0, "export_ended": 0, "observer_gap": 1}, p
+# 2026-08-21: associational until randomization is on, in the JSON too.
+for needle in ("Associational, not an effect of the nudge", "propensity 1.0", "no silence arm"):
+    assert needle in p["associational"], p["associational"]
 assert (p["censored_total"], p["censored_share"]) == (1, "1/10"), p
 assert p["censoring_verdict"].startswith("at or below 10%"), p["censoring_verdict"]
 assert p["reportable"] is True, p
@@ -838,13 +843,31 @@ report_a="$("$analyze" "$work/outcomes/p-labelled")"
 check_power_markers "$report_a"
 for needle in "PRIMARY OUTCOME: sustained anchor engagement (2026-08-21)" \
               "censored: 1/10 (block_ended 0, observer_gap 1, export_ended 0); never counted as 0, never imputed" \
-              "sustained: 5/9 = 55.6% — underpowered, see POWER above" \
-              "secondary, departure-free 600 s: 5/9 = 55.6% — underpowered, see POWER above" \
-              "returned within the horizon at 6 of 9; median 200 s; restricted mean 296.7 s" \
+              "sustained: 5/9 = 55.6% — underpowered, see POWER above; associational, not an effect of the nudge" \
+              "secondary, departure-free 600 s: 5/9 = 55.6% — underpowered, see POWER above; associational, not an effect of the nudge" \
+              "returned within the horizon at 6 of 9; median 200 s; restricted mean 296.7 s; associational, not an effect of the nudge" \
+              "Associational, not an effect of the nudge: every eligible point was" \
               "9 with an uncensored outcome"; do
   grep -qF -- "$needle" <<<"$report_a" || fail "outcomes report (A) omits: $needle"
 done
 grep -qF "censored 1/10" <<<"$report_a" && fail "censoring at 10% was printed beside the results"
+# Every rendered primary-outcome result says it is associational, on its own
+# line, so a line quoted alone cannot drop it.
+check_associational() {
+  local line count=0
+  while IFS= read -r line; do
+    case "$line" in
+      "  sustained: "*|"  secondary, "*|"    sustained at "*|"    departure-free 600 s at "*|"    returned to a sustained run "*)
+        count=$((count + 1))
+        grep -qF -- "; associational, not an effect of the nudge" <<<"$line" \
+          || fail "a primary-outcome result without the associational label: $line" ;;
+    esac
+  done <<<"$1"
+  (( count >= 3 )) || fail "expected at least three primary-outcome results, found $count"
+  grep -qF "at propensity 1.0, so there is no silence arm" <<<"$(tr -s ' \n' ' ' <<<"$1")" \
+    || fail "the associational statement is missing"
+}
+check_associational "$report_a"
 
 # B. Two more points, both censored where the decisions file agrees: a block
 #    that ended 100 s after its offer, and an open block whose offer came 400 s
@@ -879,8 +902,9 @@ assert p["censored_visible_in_export"] == {
 PY
 report_b="$("$analyze" "$work/outcomes/p-labelled" "$work/outcomes/p-short")"
 check_power_markers "$report_b"
-grep -qF "sustained: 5/9 = 55.6% — underpowered, see POWER above; censored 3/12" <<<"$report_b" \
+grep -qF "sustained: 5/9 = 55.6% — underpowered, see POWER above; censored 3/12; associational, not an effect of the nudge" <<<"$report_b" \
   || fail "above 10% censored, the censored count is not beside the result"
+check_associational "$report_b"
 
 # C. One more gap: 4 of 13 is above 25%. Counts, and no estimate.
 make_export "$work/outcomes/p-gappy" <<'JSON'
@@ -905,6 +929,7 @@ report_c="$("$analyze" "$work/outcomes"/*/)"
 check_power_markers "$report_c"
 grep -qF "INSUFFICIENT, not an estimate:" <<<"$report_c" || fail "above 25% censored was not called insufficient"
 grep -qF "sustained at 5 of 9 uncensored point(s)" <<<"$report_c" || fail "the insufficient result lost its counts"
+check_associational "$report_c"
 grep -qE "sustained: .*%|median [0-9]" <<<"$report_c" && fail "an estimate was printed above 25% censored"
 grep -qF "returned to a sustained run within the horizon at 6 of 9" <<<"$report_c" \
   || fail "the insufficient time to return lost its counts"

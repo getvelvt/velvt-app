@@ -18,6 +18,7 @@ struct HistoryWorkspaceView: View {
             snapshot: localDashboardCoordinator.snapshot,
             historyAvailability: coordinator.historyAvailability,
             isSignedIn: coordinator.isSignedIn,
+            isAwaitingSyncedHistory: coordinator.isAwaitingSyncedHistory,
             historyViewModel: coordinator.historyViewModel,
             weeklyDigest: workBlockCoordinator.weeklyDigest,
             onAcknowledgeDigest: workBlockCoordinator.acknowledgeWeeklyDigest
@@ -49,6 +50,7 @@ struct YourWeekContentView: View {
     let snapshot: LocalDashboardSnapshot?
     let historyAvailability: DeliveryAvailability
     var isSignedIn = false
+    var isAwaitingSyncedHistory = false
     @ObservedObject var historyViewModel: HistoryViewModel
     /// This week's receipts. They were reachable only from inside the
     /// focus-session sheet, so a completed week could sit correct and unread
@@ -68,6 +70,7 @@ struct YourWeekContentView: View {
             WeekOverWeekCoachingView(
                 availability: historyAvailability,
                 isSignedIn: isSignedIn,
+                isAwaitingSyncedHistory: isAwaitingSyncedHistory,
                 viewModel: historyViewModel
             )
         }
@@ -326,14 +329,23 @@ struct WeekOverWeekCoachingView: View {
     /// The same, signed out, where there is no outage to report.
     static let thisMacSignedOutCaption =
         "From this Mac. Synced daily summaries need you to be signed in."
+    /// The same, just signed in: the history shown was built while signed
+    /// out, and the synced summaries have been asked for but not answered.
+    /// Saying they were unavailable before anything had asked was false for
+    /// as long as the cloud took to answer.
+    static let thisMacAwaitingSyncCaption =
+        "From this Mac. Loading synced daily summaries."
     /// Asked for and not yet answered. Since protocol 33 a signed-out Mac is
     /// asked too, so this no longer stands in for "signed out" forever.
     static let loadingCopy = "Loading daily summaries."
     /// The service could build no summary at all, not even on this Mac.
     static let unavailableCopy =
         "Daily summaries could not be read on this Mac. Velvt asks for them each time Patterns opens."
-    /// Built on this Mac, and none of the last seven days had active time.
-    static let noLocalActivityCopy = "No activity was recorded on this Mac in the last 7 days."
+    /// Built on this Mac, and none of the last seven days had the minute of
+    /// active time that makes a day ready (`dashboard.rs`
+    /// `LOCAL_READY_MIN_ACTIVE_SECONDS`).
+    static let noLocalActivityCopy =
+        "None of the last 7 days has a minute of activity recorded on this Mac."
     /// Synced, and none of the last seven days is ready.
     static let noSyncedActivityCopy = "No qualifying activity is available yet."
 
@@ -343,6 +355,8 @@ struct WeekOverWeekCoachingView: View {
     /// no longer reaches the card.
     let availability: DeliveryAvailability
     var isSignedIn = false
+    /// `ConcreteDisplayDataCoordinator.isAwaitingSyncedHistory`.
+    var isAwaitingSyncedHistory = false
     @ObservedObject var viewModel: HistoryViewModel
 
     /// The text shown in place of an insight, or `nil` when there is one.
@@ -358,9 +372,14 @@ struct WeekOverWeekCoachingView: View {
 
     /// The quiet line under a card built on this Mac, or `nil` under a synced
     /// one.
-    static func caption(for source: HistorySource?, isSignedIn: Bool) -> String? {
+    static func caption(
+        for source: HistorySource?,
+        isSignedIn: Bool,
+        isAwaitingSyncedHistory: Bool = false
+    ) -> String? {
         guard source == .thisMac else { return nil }
-        return isSignedIn ? thisMacSignedInCaption : thisMacSignedOutCaption
+        guard isSignedIn else { return thisMacSignedOutCaption }
+        return isAwaitingSyncedHistory ? thisMacAwaitingSyncCaption : thisMacSignedInCaption
     }
 
     var body: some View {
@@ -393,7 +412,11 @@ struct WeekOverWeekCoachingView: View {
             } else if let placeholder = Self.placeholder(availability: availability, viewModel: viewModel) {
                 coachingPlaceholder(placeholder)
             }
-            if let caption = Self.caption(for: viewModel.source, isSignedIn: isSignedIn) {
+            if let caption = Self.caption(
+                for: viewModel.source,
+                isSignedIn: isSignedIn,
+                isAwaitingSyncedHistory: isAwaitingSyncedHistory
+            ) {
                 Text(caption)
                     .font(VelvtType.caption(10))
                     .foregroundStyle(VelvtInk.tertiaryOnPaper)

@@ -123,6 +123,53 @@ final class HistoryRequestTests: XCTestCase {
             ])
     }
 
+    /// Just signed in, the card still shows the history built while signed
+    /// out, and the cloud has not answered for this account yet: the caption
+    /// says the synced summaries are loading, not that they are unavailable,
+    /// until the next answer arrives.
+    func testJustSignedInTheCaptionSaysTheSyncedSummariesAreLoading() async throws {
+        let account = CurrentValueSubject<AccountState, Never>(.loggedOut)
+        let sut = ConcreteDisplayDataCoordinator()
+        sut.start(
+            serverMessages: Empty<ServerMessage, Never>(),
+            connectionStatus: Empty<ConnectionStatus, Never>(),
+            accountState: account.eraseToAnyPublisher()
+        )
+        try await waitUntil { !sut.isSignedIn }
+        sut.updateHistory(localHistoryWeeks(readyRecent: 5, readyPrior: 0))
+        XCTAssertFalse(sut.isAwaitingSyncedHistory)
+
+        account.send(.loggingIn)
+        account.send(.loggedIn(userId: "u1"))
+        try await waitUntil { sut.isSignedIn }
+        XCTAssertTrue(sut.isAwaitingSyncedHistory)
+        XCTAssertEqual(
+            WeekOverWeekCoachingView.caption(
+                for: sut.historyViewModel.source,
+                isSignedIn: sut.isSignedIn,
+                isAwaitingSyncedHistory: sut.isAwaitingSyncedHistory),
+            "From this Mac. Loading synced daily summaries.")
+
+        // The cloud could not be read: now it is unavailable.
+        sut.updateHistory(localHistoryWeeks(readyRecent: 5, readyPrior: 0))
+        XCTAssertFalse(sut.isAwaitingSyncedHistory)
+        XCTAssertEqual(
+            WeekOverWeekCoachingView.caption(
+                for: sut.historyViewModel.source,
+                isSignedIn: sut.isSignedIn,
+                isAwaitingSyncedHistory: sut.isAwaitingSyncedHistory),
+            "From this Mac. Synced daily summaries are unavailable right now.")
+
+        // A failed read ends the wait as well.
+        account.send(.loggedOut)
+        try await waitUntil { !sut.isSignedIn }
+        account.send(.loggedIn(userId: "u1"))
+        try await waitUntil { sut.isAwaitingSyncedHistory }
+        sut.handleCacheEmpty(
+            CacheEmpty(payloadType: "history_payload", reason: "local_history_unavailable"))
+        XCTAssertFalse(sut.isAwaitingSyncedHistory)
+    }
+
     /// A history built on this Mac while signed out is not thrown away when
     /// a sign-in starts or fails; only leaving a signed-in account clears it.
     func testASignedOutHistorySurvivesASignInThatDoesNotHappen() async throws {

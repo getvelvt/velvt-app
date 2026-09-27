@@ -232,6 +232,11 @@ public enum ProgressiveInsightTier: Equatable, Sendable {
 }
 
 public struct ProgressiveInsight: Equatable, Sendable {
+    /// The least active time a single day is described from. `formatActiveTime`
+    /// writes whole minutes, so a ready day under one (velvt-core calls a day
+    /// ready from any modelled time) read "100% of 0m observed active time".
+    static let minimumDescribedDaySeconds = 60
+
     public let tier: ProgressiveInsightTier
     public let observation: String
     public let comparison: String
@@ -319,7 +324,7 @@ public struct ProgressiveInsight: Equatable, Sendable {
         let observation: String
         let comparison: String
         let suggestedAction: String
-        if day.activeSeconds == 0 {
+        if day.activeSeconds < minimumDescribedDaySeconds {
             observation = "No qualifying activity has been recorded in this observed day yet."
             comparison = "There is not enough active time for a within-day comparison."
             suggestedAction = "Keep Velvt running during your next work block and check again afterward."

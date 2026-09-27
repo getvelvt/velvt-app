@@ -63,8 +63,39 @@ final class ProgressiveInsightsLocalTests: XCTestCase {
         XCTAssertEqual(
             WeekOverWeekCoachingView.caption(for: .thisMac, isSignedIn: false),
             "From this Mac. Synced daily summaries need you to be signed in.")
+        XCTAssertEqual(
+            WeekOverWeekCoachingView.caption(for: .thisMac, isSignedIn: true, isAwaitingSyncedHistory: true),
+            "From this Mac. Loading synced daily summaries.")
+        XCTAssertEqual(
+            WeekOverWeekCoachingView.caption(for: .thisMac, isSignedIn: false, isAwaitingSyncedHistory: true),
+            "From this Mac. Synced daily summaries need you to be signed in.")
         XCTAssertNil(WeekOverWeekCoachingView.caption(for: .cloud, isSignedIn: true))
         XCTAssertNil(WeekOverWeekCoachingView.caption(for: nil, isSignedIn: false))
+    }
+
+    /// A single ready day under a minute is not described: `formatActiveTime`
+    /// writes whole minutes, and the card read "100% of 0m observed active
+    /// time". velvt-core calls a day ready from any modelled time, so a
+    /// synced day can still arrive this short.
+    func testADayUnderAMinuteIsNotDescribedAsZeroMinutes() throws {
+        let history = HistoryViewModel()
+        history.update(
+            from: HistoryPayload(
+                days: 1,
+                summaries: [
+                    DailySummary(
+                        date: "2026-09-27", status: .ready, eventCount: 3, focusScore: nil,
+                        fragmentationScore: nil, confidenceLevel: .low, activeSeconds: 45,
+                        focusedSeconds: 45, meaningfulSwitchCount: 0,
+                        longestUninterruptedSeconds: 45, baselineStatus: "unavailable")
+                ],
+                source: .cloud))
+
+        let insight = try XCTUnwrap(history.progressiveInsight)
+        XCTAssertEqual(insight.tier, .todaySoFar)
+        XCTAssertFalse(insight.observation.contains("0m"), insight.observation)
+        XCTAssertEqual(
+            insight.observation, "No qualifying activity has been recorded in this observed day yet.")
     }
 
     func testEveryPlaceholderIsOneTheCardCanKeep() {
@@ -80,7 +111,7 @@ final class ProgressiveInsightsLocalTests: XCTestCase {
         quietMac.update(from: localHistoryWeeks(readyRecent: 0, readyPrior: 0))
         XCTAssertEqual(
             WeekOverWeekCoachingView.placeholder(availability: .available, viewModel: quietMac),
-            "No activity was recorded on this Mac in the last 7 days.")
+            "None of the last 7 days has a minute of activity recorded on this Mac.")
 
         let quietCloud = HistoryViewModel()
         quietCloud.update(
@@ -99,6 +130,7 @@ final class ProgressiveInsightsLocalTests: XCTestCase {
             WeekOverWeekCoachingView.noSyncedActivityCopy,
             WeekOverWeekCoachingView.thisMacSignedInCaption,
             WeekOverWeekCoachingView.thisMacSignedOutCaption,
+            WeekOverWeekCoachingView.thisMacAwaitingSyncCaption,
         ]
         for copy in every {
             let lowered = copy.lowercased()

@@ -745,6 +745,11 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     /// Whether the account is signed in, as last reported. The history card
     /// says why its summaries came from this Mac, and the reason differs.
     @Published public private(set) var isSignedIn = false
+    /// Signed in, and no history has arrived since: the one shown, if any,
+    /// was built on this Mac while signed out, and the cloud has not yet been
+    /// asked for this account's. The card must not say the synced summaries
+    /// are unavailable before anything has asked for them.
+    @Published public private(set) var isAwaitingSyncedHistory = false
 
     public var displayState: AnyPublisher<DisplayState, Never> {
         $state.eraseToAnyPublisher()
@@ -835,6 +840,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
     public func updateHistory(_ payload: HistoryPayload) {
         historyViewModel.update(from: payload)
         historyAvailability = .available
+        isAwaitingSyncedHistory = false
         transitionToPopulatedIfNeeded()
     }
 
@@ -851,6 +857,7 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
         case "history_payload":
             historyAvailability = .notGenerated
             historyNotReadyReason = payload.reason
+            isAwaitingSyncedHistory = false
         default:
             return
         }
@@ -885,9 +892,11 @@ public final class ConcreteDisplayDataCoordinator: ObservableObject, DisplayData
         let wasSignedIn = isSignedIn
         if case .loggedIn = accountState {
             isSignedIn = true
+            if !wasSignedIn { isAwaitingSyncedHistory = true }
             return
         }
         isSignedIn = false
+        isAwaitingSyncedHistory = false
         resetDisplayData(includingHistory: wasSignedIn)
     }
 

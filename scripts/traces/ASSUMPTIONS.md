@@ -117,6 +117,52 @@ Additional assumptions, none of them measured:
   BEHAVIOURAL PROXY. Nothing in this file, and nothing derived from it, may be
   read as a claim that the time was unproductive.
 
+## Suite E — the return-ledger families
+
+Suite E goes back through the ingestion path, like A and B: the decision log,
+the offers, the block cap and the backoff that `behavior/returns.rs` reads are
+the ones the shipped gate wrote. The person is synthetic. **A suite E number is
+a claim about whether the ledger recovers a rate that was planted.** It is not
+a claim about any person's rate, and it says nothing about what a nudge does.
+
+Additional assumptions, none of them measured:
+
+- The anchor is always FOCUS_WORK. Departures go to COMMUNICATION 40%, to
+  SOCIAL_FEED or PASSIVE_CONSUMPTION 30%, and to REFERENCE or TASK_MANAGEMENT
+  30%.
+- A return is 60-240 s away and a non-return 420-700 s away, so every label is
+  exact: at least 660 or at most 480 of the next 900 s in the anchor.
+  Departures are spaced at least 960 s apart, so the gate never sees three in
+  ten minutes and never offers on them.
+- Each block's rates move together by `N(0, 0.08)` on the probability scale.
+  This is what makes rows in one block correlated.
+- 90-minute blocks starting at 09:00, 14:00 or 19:00 UTC plus up to 40
+  minutes, read at a UTC offset of zero. 40-minute blocks in half of SPARSE.
+- Per block, 20% end with a burst of three departures in 80 seconds, which the
+  shipped gate answers with an offer; 25% end with a departure the block ends
+  200-260 s into; 25% of horizons are followed by an ambiguous blip, which is
+  never evidence. The first departure comes after 720-900 s of the anchor,
+  longer than the longest non-return, so the anchor never moves.
+- PLANTED: communication 0.25, everything else 0.70, at 3, 5 and 8 blocks a
+  week for the 4 weeks of the ledger's lookback. NULL: 0.55 everywhere, 6 a
+  week. REGIME: communication 0.20 and the rest 0.75 for 4 weeks, then 0.60
+  everywhere. CORRECTED: before the correction half of what is filed as
+  COMMUNICATION is a work tool with a 0.85 rate (chat is 0.20, the rest 0.70)
+  and 60% of pre-correction blocks answer an offer "Wrong category"; after it
+  the tool is filed as REFERENCE.
+- INFORMATIVE: 0.55 after every kind of departure, 6 blocks a week for 4
+  weeks. A non-return turns into a run of three departures, which the shipped
+  gate offers on, 90% of the time after a communication departure and 10%
+  after anything else; the block's departures stop there. Every departure in
+  a run is a non-return over its whole horizon. The first time away is 60-100
+  s in half of the runs, so the label is still open at the offer, and 320-400
+  s in the other half, so the time before the offer decides it. Nothing is
+  known about how often real offers follow real non-returns; this family
+  exists so the ledger's disclosed bias can be seen, not sized.
+- GAPS: 0.55 everywhere, 6 blocks in one week. Half the blocks pause for
+  120-300 s inside the first departure's horizon; half end with the dwell they
+  ended in still open, which no row measures once the block closes.
+
 ## What these fixtures cannot tell you
 
 - Whether real people behave like this. They do not, in ways nobody can predict.

@@ -238,10 +238,14 @@ v1, was ≥ 4 switches after 5 minutes; it no longer ships.
    **3 minutes** — this establishes the anchor and clears the warm-up.
 3. Switch to a different category and back **three or more times within 10
    minutes**, spending long enough in each for a confident classification.
-   COMMUNICATION, SOCIAL_FEED and PASSIVE_CONSUMPTION all count; a one-second
-   flick does not. For a departure to a browser, use a site in Velvt's
-   built-in table, such as youtube.com or reddit.com: a site it cannot place
-   is usually left unclear, and an unclear tab never counts.
+   A switch is any confident move away from the anchor, the category you have
+   spent most of the block in, so every category other than the anchor counts:
+   REFERENCE and TASK_MANAGEMENT as much as COMMUNICATION, SOCIAL_FEED and
+   PASSIVE_CONSUMPTION. SYSTEM, UNLOGGED and unclassified or low-confidence
+   activity never count, and a one-second flick does not. For a departure to a
+   browser, use a site in Velvt's built-in table, such as youtube.com or
+   reddit.com: a site it cannot place is usually left unclear, and an unclear
+   tab never counts.
 4. On the third switch away, stay in the other app. A notification and an
    in-app card should appear while you are still there, within a second or
    two of arriving. Coming back to the anchor withdraws the offer. The body is

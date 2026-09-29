@@ -43,6 +43,18 @@
 //! 8. `deleted_text_does_not_survive_in_the_database_file` reads the raw file
 //!    after Clear Local Work Blocks. Without `secure_delete`, a cleared
 //!    intention stayed readable in free space (Audit 8).
+//! 9. `a_hostname_is_stored_only_in_local_site_name` and
+//!    `no_part_of_a_web_address_reaches_an_upload_payload` drive a browser tab
+//!    carrying a sentinel URL through the real router. Migration 0040 made
+//!    `local_site_name.host` the one column that holds a hostname; these read
+//!    every column and the would-be upload for the host, the path and the
+//!    query, by value. Until they existed no test sent a URL through the
+//!    router at all, and the hostname's absence rested on a manual audit.
+//! 10. `the_category_prompt_holds_keys_and_counts_and_names_nothing` drives the
+//!     sentinel application and tab onto the needs-a-category list, asks for
+//!     the card and the reminder, and reads both, and the three tables
+//!     migration 0041 added, for every sentinel by value. A reminder's text is kept by
+//!     macOS Notification Center, so a name in it could never be deleted.
 //!
 //! `persistence_contract::schema_has_no_forbidden_raw_content_columns` still
 //! exists and still checks column names. It is kept: a forbidden name is worth
@@ -71,20 +83,24 @@ use chrono::{DateTime, Utc};
 use rusqlite::{types::Value, Connection};
 use uuid::Uuid;
 use velvt_service::abstraction::{
-    app_bundle_key_for, app_stable_key_for, stable_key_for, AbstractionEngine, EmbeddingModel,
-    EmbeddingSalt, EmbeddingSimilarityPlugin, HashedEmbeddingModel, Taxonomy,
+    app_bundle_key_for, app_stable_key_for, site_stable_key_for, stable_key_for, AbstractionEngine,
+    EmbeddingModel, EmbeddingSalt, EmbeddingSimilarityPlugin, HashedEmbeddingModel, Taxonomy,
 };
 use velvt_service::auth::{
     AccountAuthService, AuthError, AuthState, AuthStateMachine, FakeTokenStore, HttpClient,
     HttpRequest, HttpResponse,
 };
+use velvt_service::category_prompt::{CategoryPromptManager, ListedCandidates};
 use velvt_service::config::ServiceConfig;
 use velvt_service::delivery::FakeCacheManager;
 use velvt_service::egress::ENDPOINTS;
+use velvt_service::initiation::InvitationGates;
 use velvt_service::ipc::{MessageRouter, R7Router};
-use velvt_service::persistence::{AbstractionMapping, SqlitePersistence};
+use velvt_service::persistence::{AbstractionMapping, PersistenceError, SqlitePersistence};
 use velvt_service::retention::{
-    ABSTRACTION_MAP_RETENTION_DAYS, SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
+    ABSTRACTION_MAP_RETENTION_DAYS, CATEGORY_PROMPT_ENTRY_RETENTION_DAYS,
+    CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS, LOCAL_SITE_NAME_RETENTION_DAYS,
+    SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
 };
 use velvt_service::upload::{
     BatchAssembler, BatchPayload, BatchUploadError, BatchUploader, EventIngestor,
@@ -93,8 +109,8 @@ use velvt_service::upload::{
 };
 use velvt_service::work_block::WorkBlockManager;
 use velvt_shared_types::{
-    ClientMessage, RawEvent, RawEventAck, RawEventStatus, ServerMessage, StartWorkBlock,
-    WorkBlockIntensity,
+    ClientMessage, RawEvent, RawEventAck, RawEventStatus, RequestCategoryPrompt, ServerMessage,
+    StartWorkBlock, WorkBlockIntensity,
 };
 
 use behavior_retention::OUT_OF_BLOCK_RUN_RETENTION_DAYS;
@@ -166,6 +182,45 @@ fn sentinel_document_type_ids() -> Vec<String> {
         .collect()
 }
 
+/// A sentinel web address for a browser tab, and its three parts.
+///
+/// The host is on no seed list and none of its labels is a signal the site
+/// inference reads, so with the sentinel title below the tab falls through to
+/// the explicitly ambiguous browser prior -- a visit Velvt could not
+/// categorize, which is exactly the one whose hostname it keeps. That is what
+/// makes a positive control possible: the host must be found, in one column.
+/// The path and the query carry tokens of their own, and those are permitted
+/// nowhere.
+const SENTINEL_URL: &str = "https://sentinel-host-7f3a.example/private/path?q=secret";
+const SENTINEL_HOST: &str = "sentinel-host-7f3a.example";
+/// The distinctive label of the sentinel host, lowercased, so a column holding
+/// a truncated or re-joined derivation of the host is still caught.
+const SENTINEL_HOST_TOKEN: &str = "sentinel-host-7f3a";
+const SENTINEL_PATH_TOKEN: &str = "private/path";
+const SENTINEL_QUERY_TOKEN: &str = "secret";
+
+/// The browser the sentinel tab is open in. A real browser name, because only
+/// a browser's tab has a site identity (`is_browser_app`).
+const SENTINEL_BROWSER: &str = "Safari";
+
+/// The one browser tab the two hostname tests drive: the sentinel address, and
+/// the sentinel window title, so the title's absence is asserted for a browser
+/// tab too.
+fn sentinel_browser_event(event_id: Uuid) -> RawEvent {
+    RawEvent {
+        event_id,
+        occurred_at: Utc::now(),
+        app_name: SENTINEL_BROWSER.into(),
+        window_title: SENTINEL_WINDOW_TITLE.into(),
+        bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
+        focused_document_url: Some(SENTINEL_URL.into()),
+        in_progress: false,
+        duration_seconds: 300,
+    }
+}
+
 /// The raw event the two value-level tests below drive, carrying every fact
 /// Classification v2 added.
 ///
@@ -230,6 +285,22 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
         ),
         ("personal_override", vec![]),
         ("personal_app_override", vec![]),
+        ("personal_site_override", vec![]),
+        // Migration 0040's site name, on its own constant: the raw-event
+        // horizon, counted from the last visit that needed a category.
+        ("local_site_name", vec![LOCAL_SITE_NAME_RETENTION_DAYS]),
+        // Migration 0041's record of what the needs-a-category prompt asked
+        // about: the raw-event horizon, counted from the last listing.
+        (
+            "category_prompt_entry",
+            vec![CATEGORY_PROMPT_ENTRY_RETENTION_DAYS],
+        ),
+        // Its card rows: the latest two cards only, and never longer than
+        // the entry each is filed under, which the foreign key cascades.
+        (
+            "category_prompt_card_entry",
+            vec![CATEGORY_PROMPT_ENTRY_RETENTION_DAYS],
+        ),
         (
             "semantic_embedding_cache",
             vec![
@@ -285,6 +356,36 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
             row.retention
         );
     }
+}
+
+/// The one row of the second inventory table -- the stores that hold counters,
+/// settings, keys and feature state -- whose horizon is a constant the service
+/// runs on rather than a singleton or an in-app action: the needs-a-category
+/// reminder rows (migration 0041).
+///
+/// The first table's test above reads only the first table, so this row would
+/// otherwise be a published number no build checks.
+#[test]
+fn the_reminder_record_is_kept_for_the_published_horizon() {
+    let mut lines = PRIVACY_DOCUMENT.lines().map(str::trim).skip_while(|line| {
+        !(line.starts_with('|') && table_cells(line) == ["Table", "What it holds", "Retention"])
+    });
+    assert!(
+        lines.next().is_some(),
+        "PRIVACY.md no longer contains a table headed `| Table | What it holds | Retention |`"
+    );
+    let row = lines
+        .take_while(|line| line.starts_with('|'))
+        .map(table_cells)
+        .find(|cells| backticked(&cells[0]) == ["category_prompt_notification"])
+        .expect("PRIVACY.md's second inventory table lists `category_prompt_notification`");
+    assert_eq!(
+        numbers_in(&row[row.len() - 1]),
+        vec![CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS],
+        "PRIVACY.md's retention for `category_prompt_notification` is not the shipped \
+         horizon. The document reads: {}",
+        row[row.len() - 1]
+    );
 }
 
 /// One row of the storage table in `PRIVACY.md`.
@@ -545,8 +646,8 @@ fn measured_intention_retention_hours() -> u64 {
 /// Being disclosed by name in `PRIVACY.md` is the bar for being on this list.
 /// `local_name_suggestion` is additionally named in the headers of
 /// `0001_initial_persistence.sql` and `0011_local_activity_suggestions.sql`;
-/// `display_name` and the two `activity_name` columns are named in the storage
-/// table as the places the name a user typed is kept.
+/// `display_name` and the three `activity_name` columns are named in the
+/// storage table as the places the name a user typed is kept.
 ///
 /// Adding a column here is the deliberate act the audit found missing. Do not
 /// add one without adding it to `PRIVACY.md` in the same commit.
@@ -554,8 +655,26 @@ const DEVICE_LOCAL_EXCEPTION_COLUMNS: &[&str] = &[
     "abstraction_map.display_name",
     "personal_app_override.activity_name",
     "personal_override.activity_name",
+    "personal_site_override.activity_name",
     "raw_event_buffer.local_display_label",
     "raw_event_buffer.local_name_suggestion",
+];
+
+/// The one column disclosed to hold a hostname, as migration 0040 names it:
+/// the normalized host of a site Velvt could not categorize.
+///
+/// On its own list for the reason `DECLARED_CATEGORY_COLUMNS` is: this column
+/// may hold a hostname and nothing else a test here plants, and no other
+/// column may hold a hostname at all. Both halves are asserted by value.
+const HOSTNAME_COLUMNS: &[&str] = &["local_site_name.host"];
+
+/// The two columns disclosed to hold the site key, as migration 0040 names
+/// them: the key on the buffered event, and the key a stored hostname is filed
+/// under. The site key's positive control, as `BUNDLE_DIGEST_COLUMNS` is the
+/// bundle digest's.
+const SITE_KEY_COLUMNS: &[&str] = &[
+    "local_site_name.site_key_hash",
+    "raw_event_buffer.site_stable_id",
 ];
 
 /// The one column disclosed to hold the raw `LSApplicationCategoryType` the
@@ -782,6 +901,8 @@ async fn no_column_holds_the_sentinels_outside_the_documented_exceptions() {
         .chain(BUNDLE_DIGEST_COLUMNS)
         .chain(DECLARED_CATEGORY_COLUMNS)
         .chain(DOCUMENT_TYPE_COLUMNS)
+        .chain(HOSTNAME_COLUMNS)
+        .chain(SITE_KEY_COLUMNS)
     {
         let qualified: &str = column;
         let bare = qualified
@@ -1202,6 +1323,412 @@ async fn no_declared_fact_reaches_an_upload_payload() {
 }
 
 // ---------------------------------------------------------------------------
+// 3b — The hostname, on disk and on the wire
+// ---------------------------------------------------------------------------
+
+/// A browser tab's web address, driven through the real router, is kept on disk
+/// only as far as `PRIVACY.md` says: the host in `local_site_name.host` and
+/// nowhere else, the site key in the two columns migration 0040 declares for
+/// it, and no path, query, or title anywhere.
+///
+/// The host is required as well as permitted. The sentinel tab is one Velvt
+/// cannot categorize, so its name must be kept -- the positive control that
+/// makes the absence of the path and query mean something, and the proof that
+/// this test reached the one writer of the column rather than a router that
+/// never looked at the URL. The cached sketch is pinned too, because the
+/// document says what its input is for a browser tab: the browser's name, then
+/// the host before the title.
+#[tokio::test]
+async fn a_hostname_is_stored_only_in_local_site_name() {
+    let scratch = ScratchDatabase::new();
+    pin_sentinel_embedding_salt(&scratch.path);
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let router = sentinel_router(&persistence);
+
+    let acknowledgement = router
+        .route(ClientMessage::RawEvent(sentinel_browser_event(
+            Uuid::new_v4(),
+        )))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            acknowledgement,
+            Some(ServerMessage::RawEventAck(RawEventAck {
+                status: RawEventStatus::Accepted,
+                ..
+            }))
+        ),
+        "the sentinel tab was not accepted, so nothing was written to look at: {acknowledgement:?}"
+    );
+    let salt = persistence
+        .abstraction_map_repo()
+        .stable_key_salt()
+        .unwrap();
+    let embedding_salt = persistence.abstraction_map_repo().embedding_salt().unwrap();
+    drop(persistence);
+    let connection = Connection::open(&scratch.path).unwrap();
+
+    let site_key = site_stable_key_for(&salt, SENTINEL_HOST);
+    // The digest the site key would be with no salt: computable from this
+    // repository alone, so it may be on disk nowhere.
+    let unsalted_site_digest = unsalted_digest(b"velvt:abstraction-site-key:v1", &[SENTINEL_HOST]);
+
+    let mut host_sightings = BTreeSet::new();
+    let mut path_sightings = BTreeSet::new();
+    let mut query_sightings = BTreeSet::new();
+    let mut title_sightings = BTreeSet::new();
+    let mut site_key_sightings = BTreeSet::new();
+    let mut unsalted_sightings = BTreeSet::new();
+    scan_every_value(&connection, |table, column, value| {
+        let qualified = format!("{table}.{column}");
+        for (token, sightings) in [
+            (SENTINEL_HOST_TOKEN, &mut host_sightings),
+            (SENTINEL_PATH_TOKEN, &mut path_sightings),
+            (SENTINEL_QUERY_TOKEN, &mut query_sightings),
+            (SENTINEL_TITLE_TOKEN, &mut title_sightings),
+            (site_key.as_str(), &mut site_key_sightings),
+            (unsalted_site_digest.as_str(), &mut unsalted_sightings),
+        ] {
+            if holds_token(value, token) {
+                sightings.insert(qualified.clone());
+            }
+        }
+    });
+
+    assert_eq!(
+        host_sightings,
+        column_set(HOSTNAME_COLUMNS),
+        "the sentinel host belongs in exactly {HOSTNAME_COLUMNS:?}. An empty left side \
+         means the tab's site name was never kept, so this test proves nothing about \
+         where a hostname can go; an extra column is a second store of the sites you \
+         visit that PRIVACY.md does not disclose"
+    );
+    let stored_host: String = connection
+        .query_row(
+            "SELECT host FROM local_site_name WHERE site_key_hash = ?1",
+            [&site_key],
+            |row| row.get(0),
+        )
+        .expect("the host is filed under the site key computed from it");
+    assert_eq!(
+        stored_host, SENTINEL_HOST,
+        "the stored host is the normalized host and nothing more of the address"
+    );
+    assert!(
+        path_sightings.is_empty() && query_sightings.is_empty(),
+        "part of the address beyond the host reached {path_sightings:?} (path) and \
+         {query_sightings:?} (query). PRIVACY.md states the path and query are \
+         discarded the moment the URL reaches the service"
+    );
+    assert!(
+        title_sightings.is_empty(),
+        "the window title of a browser tab reached {title_sightings:?}"
+    );
+    assert_eq!(
+        site_key_sightings,
+        column_set(SITE_KEY_COLUMNS),
+        "the site key belongs in exactly {SITE_KEY_COLUMNS:?}"
+    );
+    assert!(
+        unsalted_sightings.is_empty(),
+        "an unsalted site digest reached {unsalted_sightings:?}; every stored key is an \
+         HMAC under the per-install salt"
+    );
+
+    // PRIVACY.md's account of the sketch for a browser tab, by value: the
+    // browser's name, then the host ahead of the title, under this install's
+    // salt, cached under the tab's window key -- which for a tab is keyed on
+    // the browser and the host.
+    let window_key = stable_key_for(&salt, SENTINEL_BROWSER, SENTINEL_HOST);
+    let stored_sketch: Vec<u8> = connection
+        .query_row(
+            "SELECT embedding FROM semantic_embedding_cache WHERE key_hash = ?1",
+            [&window_key],
+            |row| row.get(0),
+        )
+        .expect("the sentinel tab's sketch is cached under its salted window key");
+    let sketch_input = format!("{SENTINEL_BROWSER} [SEP] {SENTINEL_HOST} {SENTINEL_WINDOW_TITLE}");
+    let expected_sketch: Vec<u8> = HashedEmbeddingModel::new(embedding_salt)
+        .embed(&sketch_input)
+        .unwrap()
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    assert_eq!(
+        stored_sketch, expected_sketch,
+        "the cached sketch of a browser tab is not the one PRIVACY.md describes: \
+         `browser name [SEP] hostname window title`"
+    );
+}
+
+/// The embedding salt the hostname test runs under.
+///
+/// Its positive control needs the sentinel tab to be one Velvt cannot
+/// categorize, and Tier 2 is the one tier whose answer for it depends on the
+/// salt: about one random salt in several thousand gives the tab a Medium
+/// answer, its name is then rightly not kept, and the test would fail for a
+/// reason that has nothing to do with where a hostname can go. This value
+/// leaves the tab uncategorized. The router still reads the salt out of the
+/// database, as `main.rs` does, so the sketch is still checked against the
+/// per-install salt path.
+const SENTINEL_EMBEDDING_SALT: [u8; 32] = [0x5a; 32];
+
+/// Migrates the scratch database, then writes [`SENTINEL_EMBEDDING_SALT`]
+/// over the salt migration 0031 minted.
+fn pin_sentinel_embedding_salt(database: &std::path::Path) {
+    drop(SqlitePersistence::open(database).expect("the scratch database migrates"));
+    let changed = Connection::open(database)
+        .unwrap()
+        .execute(
+            "UPDATE embedding_salt SET salt = ?1 WHERE id = 1",
+            [SENTINEL_EMBEDDING_SALT.as_slice()],
+        )
+        .expect("the embedding salt is writable before the router starts");
+    assert_eq!(changed, 1, "migration 0031 wrote the salt row");
+}
+
+/// No part of a browser tab's web address, and neither key made from it, may
+/// appear in the batch this device would have uploaded.
+///
+/// The same seam `no_declared_fact_reaches_an_upload_payload` reads, driven by
+/// the sentinel tab. The host is the part the service keeps, so it is the part
+/// that most needs showing absent here; the path and query are gone before
+/// anything is stored, and are checked anyway because a payload is the last
+/// place a mistake could still be caught.
+#[tokio::test]
+async fn no_part_of_a_web_address_reaches_an_upload_payload() {
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let salt = persistence
+        .abstraction_map_repo()
+        .stable_key_salt()
+        .unwrap();
+    let uploader = RecordingUploader::default();
+    let router = sentinel_router_with_uploader(&persistence, uploader.clone());
+
+    let event_id = Uuid::new_v4();
+    let acknowledgement = router
+        .route(ClientMessage::RawEvent(sentinel_browser_event(event_id)))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            acknowledgement,
+            Some(ServerMessage::RawEventAck(RawEventAck {
+                status: RawEventStatus::Accepted,
+                ..
+            }))
+        ),
+        "the sentinel tab was not accepted, so no batch was assembled to inspect: \
+         {acknowledgement:?}"
+    );
+
+    let batches = uploader.captured();
+    assert_eq!(
+        batches.len(),
+        1,
+        "the sentinel tab did not reach the uploader, so this test asserts nothing \
+         about an upload payload"
+    );
+    let wire = serde_json::to_string(&batches[0]).unwrap();
+    let wire_lowercase = wire.to_lowercase();
+    assert!(
+        wire.contains(&event_id.to_string()),
+        "the captured batch does not carry the tab that was driven through it: {wire}"
+    );
+
+    for (fact, value) in [
+        ("the web address", SENTINEL_URL.to_owned()),
+        ("the hostname", SENTINEL_HOST.to_owned()),
+        ("a fragment of the hostname", SENTINEL_HOST_TOKEN.to_owned()),
+        ("the path", SENTINEL_PATH_TOKEN.to_owned()),
+        ("the query", SENTINEL_QUERY_TOKEN.to_owned()),
+        ("the site key", site_stable_key_for(&salt, SENTINEL_HOST)),
+        (
+            "the unsalted site digest",
+            unsalted_digest(b"velvt:abstraction-site-key:v1", &[SENTINEL_HOST]),
+        ),
+        (
+            "the window key",
+            stable_key_for(&salt, SENTINEL_BROWSER, SENTINEL_HOST),
+        ),
+        (
+            "a fragment of the window title",
+            SENTINEL_TITLE_TOKEN.to_owned(),
+        ),
+    ] {
+        assert!(
+            !wire_lowercase.contains(&value.to_lowercase()),
+            "{fact} ({value}) appears in the batch this device would have POSTed. \
+             PRIVACY.md lists what an event upload carries, and no part of a web \
+             address is on it.\nThe payload was: {wire}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 3c — The needs-a-category card, reminder and ledger name nothing
+// ---------------------------------------------------------------------------
+
+/// Delivery gates that never suppress, so the reminder is claimed and its
+/// record written: the strongest case for what the ledger could hold.
+struct OpenGates;
+
+impl InvitationGates for OpenGates {
+    fn live_block_exists(&self) -> Result<bool, PersistenceError> {
+        Ok(false)
+    }
+
+    fn in_quiet_hours(&self, _at: DateTime<Utc>) -> bool {
+        false
+    }
+
+    fn in_quiet_hours_at(&self, _at: DateTime<Utc>, _utc_offset_seconds: i32) -> bool {
+        false
+    }
+
+    fn focus_active(&self, _at: DateTime<Utc>) -> bool {
+        false
+    }
+}
+
+/// The sentinel application and the sentinel tab, both on the
+/// needs-a-category list, bring a card and a reminder that name neither, and
+/// the prompt's three tables (migration 0041) hold salted keys, a random card
+/// id, dates, times and counts: no sentinel by value, in any column of any.
+///
+/// The positive control is the site key: the tab is one Velvt cannot
+/// categorize (`a_hostname_is_stored_only_in_local_site_name` requires it), so
+/// its key must be filed in `category_prompt_entry.entry_key`. Without it this
+/// walk could be reading an empty table.
+#[tokio::test]
+async fn the_category_prompt_holds_keys_and_counts_and_names_nothing() {
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let router = sentinel_router(&persistence).with_category_prompt(CategoryPromptManager::new(
+        persistence.category_prompt_repo(),
+        ListedCandidates::new(persistence.raw_event_repo()),
+        Arc::new(OpenGates),
+    ));
+    for event in [
+        sentinel_raw_event(Uuid::new_v4()),
+        sentinel_browser_event(Uuid::new_v4()),
+    ] {
+        router.route(ClientMessage::RawEvent(event)).await.unwrap();
+    }
+
+    let reply = router
+        .route(ClientMessage::RequestCategoryPrompt(
+            RequestCategoryPrompt {
+                utc_offset_seconds: 0,
+            },
+        ))
+        .await
+        .unwrap();
+    let Some(ServerMessage::CategoryPrompt(prompt)) = reply else {
+        panic!("request_category_prompt answers with category_prompt, got {reply:?}");
+    };
+    assert!(
+        prompt.card.is_some() && prompt.notification.is_some(),
+        "the sentinels did not reach the list, so nothing here is tested: {prompt:?}"
+    );
+    let salt = persistence
+        .abstraction_map_repo()
+        .stable_key_salt()
+        .unwrap();
+    let site_key = site_stable_key_for(&salt, SENTINEL_HOST);
+    let app_key = app_stable_key_for(&salt, SENTINEL_APP_NAME);
+    drop(router);
+    drop(persistence);
+
+    let tokens = [
+        SENTINEL_APP_TOKEN,
+        SENTINEL_TITLE_TOKEN,
+        SENTINEL_BUNDLE_TOKEN,
+        SENTINEL_DECLARED_CATEGORY_TOKEN,
+        SENTINEL_DOCUMENT_TYPE_TOKEN,
+        SENTINEL_HOST_TOKEN,
+        SENTINEL_PATH_TOKEN,
+        SENTINEL_QUERY_TOKEN,
+    ];
+    let wire = serde_json::to_string(&prompt).unwrap().to_lowercase();
+    for token in
+        tokens
+            .iter()
+            .copied()
+            .chain([SENTINEL_BROWSER, site_key.as_str(), app_key.as_str()])
+    {
+        assert!(
+            !wire.contains(&token.to_lowercase()),
+            "{token} is in the card or the reminder: {wire}"
+        );
+    }
+
+    let connection = Connection::open(&scratch.path).unwrap();
+    let mut sightings = BTreeSet::new();
+    let mut entry_keys = Vec::new();
+    let mut filed = Vec::new();
+    scan_every_value(&connection, |table, column, value| {
+        if !table.starts_with("category_prompt_") {
+            return;
+        }
+        if let Value::Text(text) = value {
+            match (table, column) {
+                ("category_prompt_entry", "entry_key") => entry_keys.push(text.clone()),
+                ("category_prompt_card_entry", "entry_key") => filed.push(text.clone()),
+                ("category_prompt_card_entry", "prompt_id") => assert_eq!(
+                    Some(text.as_str()),
+                    prompt.prompt_id.as_deref(),
+                    "the one card on record is the one handed over"
+                ),
+                _ => {}
+            }
+        }
+        for token in tokens {
+            if holds_token(value, token) {
+                sightings.insert(format!("{table}.{column}: {token}"));
+            }
+        }
+    });
+    assert!(
+        entry_keys.contains(&format!("site:{site_key}")),
+        "the sentinel site's key is not in category_prompt_entry, so this walk \
+         proves nothing: {entry_keys:?}"
+    );
+    assert!(
+        entry_keys
+            .iter()
+            .all(|key| key == &format!("site:{site_key}")
+                || key == &format!("application:{app_key}")),
+        "category_prompt_entry holds a key the list never carried: {entry_keys:?}"
+    );
+    filed.sort();
+    entry_keys.sort();
+    assert_eq!(
+        filed, entry_keys,
+        "the card covers exactly the entries on the list"
+    );
+    let card_id = prompt.prompt_id.as_deref().unwrap();
+    for key in [&site_key, &app_key] {
+        assert_ne!(card_id, key.as_str(), "the card id is a key");
+    }
+    assert!(
+        sightings.is_empty(),
+        "a sentinel reached the needs-a-category ledger, which PRIVACY.md describes \
+         as keys, dates, times and counts: {sightings:?}"
+    );
+    let reminders: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM category_prompt_notification",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reminders, 1, "the reminder was claimed and recorded once");
+}
+
+// ---------------------------------------------------------------------------
 // 4 — The table inventory is closed
 // ---------------------------------------------------------------------------
 
@@ -1221,6 +1748,9 @@ const MIGRATED_TABLES: &[&str] = &[
     "antecedent_finding",
     "batch_event",
     "block_antecedent",
+    "category_prompt_card_entry",
+    "category_prompt_entry",
+    "category_prompt_notification",
     "classification_telemetry",
     "classifier_artifact_telemetry",
     "egress_ledger",
@@ -1235,11 +1765,13 @@ const MIGRATED_TABLES: &[&str] = &[
     "insight_cache",
     "intervention_decision_log",
     "intervention_demotion_state",
+    "local_site_name",
     "out_of_block_run",
     "persistence_migration_probe",
     "personal_app_override",
     "personal_override",
     "personal_semantic_prototype",
+    "personal_site_override",
     "quiet_hours_offer_state",
     "raw_event_buffer",
     "schema_migration",

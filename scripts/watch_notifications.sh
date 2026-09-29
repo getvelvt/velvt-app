@@ -54,6 +54,12 @@ What you are looking for, verbatim as the app emits it:
   error_code=notification_add_rejected       the same refusal from the scheduler,
                                              carrying domain= and code=
 
+Each line names one of the three kinds Velvt posts: surface=drift_offer,
+surface=daily_insight, or surface=category_prompt (the needs-a-category
+reminder, at most one a day). The reminder never asks for permission, so
+notification_permission_blocked on it with status=unknown only means
+notifications were never allowed; the card in the window says the same thing.
+
 Every one of these is persisted, so a replay (with a window argument) shows
 them after the fact as well as live. Since protocol 32 an offer is made while you
 are away, not when you come back: expect notification_delivered within a

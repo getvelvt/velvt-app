@@ -22,7 +22,7 @@
       ],
       "properties": {
         "correction_acknowledgment": {
-          "$comment": "One-shot confirmation authored by Rust, present only on the status returned by a correction command. A polled status omits it, so the confirmation cannot linger or reappear.",
+          "$comment": "One-shot confirmation authored by Rust, present only on the status returned by a correction command. A polled status omits it, so the confirmation cannot linger or reappear. Local IPC only: it can quote a name the person typed, or an application's local name sent back from the needs-a-category list (since protocol 30), and never a hostname. Never uploaded, logged, or included in crash diagnostics.",
           "type": "string",
           "minLength": 1,
           "maxLength": 200
@@ -78,7 +78,8 @@
                 "enum": ["high", "medium", "low", "none"]
               },
               "classification_source": {
-                "enum": ["seed", "heuristic", "embedding", "user_rule", "fallback"]
+                "enum": ["seed", "heuristic", "embedding", "user_rule", "declared_document_types", "declared_app_category", "fallback"],
+                "description": "declared_document_types and declared_app_category are the two tiers that read what an application declares about itself (protocol 30). Rust has emitted both since then; this schema declared them on 2026-09-27."
               },
               "occurred_at": { "type": "string", "format": "date-time" }
             },
@@ -100,9 +101,9 @@
                 "description": "Device-local display label; must never be forwarded outside the device."
               },
               "scope": {
-                "enum": ["window", "app"],
+                "enum": ["window", "app", "site"],
                 "default": "window",
-                "description": "Whether the rule covers one window or every window of an application, as in correction_history_page. Rust has sent it since protocol 30; this schema declared it on 2026-09-25."
+                "description": "Whether the rule covers one window, every window of an application, or every page of a site, as in correction_history_page. Rust has sent it since protocol 30, and site since protocol 33; this schema declared it on 2026-09-25."
               },
               "category": { "type": "string" },
               "updated_at": { "type": "string", "format": "date-time" }

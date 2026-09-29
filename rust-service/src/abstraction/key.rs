@@ -20,14 +20,27 @@ const APP_KEY_DOMAIN: &[u8] = b"velvt:abstraction-app-key:v1";
 /// already quoted in `persistence/sqlite.rs`'s own collision argument.
 const APP_BUNDLE_KEY_DOMAIN: &[u8] = b"velvt:abstraction-app-bundle-key:v1";
 
-/// Fourth domain, and the only one that is not about an application: the prefix
-/// under which every digest above is keyed to this install (migration 0037).
+/// Fourth domain, and the only one that names nothing observed: the prefix
+/// under which every digest in this file is keyed to this install (migration
+/// 0037).
 ///
 /// Named to the house pattern for the reason the bundle domain's comment gives:
 /// a domain string is a persisted format. Every key on disk since 0037 is an HMAC
 /// over this prefix, so editing it orphans every mapping and every correction
 /// without a single error.
 const SALTED_KEY_DOMAIN: &[u8] = b"velvt:abstraction-salted-key:v1";
+
+/// Fifth domain: a site, in whichever browser it is open.
+///
+/// A browser tab's window key is (browser, host), so a correction made in
+/// Safari never reached the same site in Chrome. This digest has no
+/// application in it at all. It gets a domain of its own for the reason the
+/// bundle domain gives: a host and an application name are different facts, and
+/// must never hash alike even where the two strings are equal. Like every
+/// domain string it is a persisted format: `personal_site_override`,
+/// `local_site_name` and `raw_event_buffer.site_stable_id` (migration 0040) hold
+/// keys made with it.
+const SITE_KEY_DOMAIN: &[u8] = b"velvt:abstraction-site-key:v1";
 
 /// The per-install key every persisted identity digest is computed under.
 ///
@@ -173,6 +186,21 @@ pub fn app_bundle_key_for(salt: &StableKeySalt, bundle_id: &str) -> String {
     salt.key(&bundle_digest(bundle_id))
 }
 
+/// The site-scoped correction key: one site, in every browser.
+///
+/// `site` is a normalized host, as `sites::site_identity` returns one: one
+/// leading `www.` already stripped, and never an address or a machine name. So
+/// `www.example.com` in Safari and `example.com` in Chrome share this key, and
+/// nothing about either browser is in it.
+///
+/// Salted like every key here. A hostname is a guessable input -- a list of
+/// popular sites hashed under the salt reads off which ones a stored key is --
+/// so, like the application key, this key names the site to anyone holding the
+/// whole file, salt included.
+pub fn site_stable_key_for(salt: &StableKeySalt, site: &str) -> String {
+    salt.key(&site_digest(site))
+}
+
 // The three unsalted digests, one per domain. Each is still computed exactly as
 // it was before migration 0037 -- the raw bytes, length-prefixed, no classifier
 // normalization -- because 0037 re-keys stored rows from these digests: changing
@@ -200,6 +228,16 @@ fn bundle_digest(bundle_id: &str) -> [u8; 32] {
     // cannot be appended without the prefix and reopen the ambiguity the other
     // two keys were careful to close.
     update_length_prefixed(&mut hasher, bundle_id.as_bytes());
+    hasher.finalize().into()
+}
+
+// Arrived after migration 0037, so no row was ever stored under this digest
+// unsalted and nothing re-keys from it. Built the way the three above are, so
+// the argument that no two domains collide covers it unchanged.
+fn site_digest(site: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(SITE_KEY_DOMAIN);
+    update_length_prefixed(&mut hasher, site.as_bytes());
     hasher.finalize().into()
 }
 
@@ -263,7 +301,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         app_bundle_key_for, app_stable_key_for, decode_digest, encode_hex, hmac_sha256,
-        stable_key_for, Digest, RawKey, Sha256, StableKeySalt,
+        site_stable_key_for, stable_key_for, Digest, RawKey, Sha256, StableKeySalt,
     };
 
     const SALT: StableKeySalt = StableKeySalt::from_bytes([0x5a; StableKeySalt::LENGTH]);
@@ -477,6 +515,53 @@ mod tests {
             decode_digest(&well_formed).map(|digest| encode_hex(&digest)),
             Some(well_formed)
         );
+    }
+
+    /// Pins the site domain string itself, as the bundle test pins its own:
+    /// every site key on disk is made with it, so an edit orphans every site
+    /// rule without a single error.
+    #[test]
+    fn the_site_key_domain_is_the_house_pattern_string() {
+        let unsalted = legacy_digest(b"velvt:abstraction-site-key:v1", &["github.com"]);
+
+        assert_eq!(
+            site_stable_key_for(&SALT, "github.com"),
+            SALT.rekey_stored_digest(&unsalted).unwrap()
+        );
+        assert_ne!(site_stable_key_for(&SALT, "github.com"), unsalted);
+    }
+
+    /// A site is a different fact from an application, a bundle and a window,
+    /// so the site key collides with none of them -- including where the site,
+    /// the application name and the bundle identifier are one string, and the
+    /// window is a browser tab on that very site.
+    #[test]
+    fn the_site_key_never_collides_with_the_other_keys() {
+        let shared = "github.com";
+
+        let site = site_stable_key_for(&SALT, shared);
+
+        assert_ne!(site, app_stable_key_for(&SALT, shared));
+        assert_ne!(site, app_bundle_key_for(&SALT, shared));
+        assert_ne!(site, stable_key_for(&SALT, shared, ""));
+        assert_ne!(site, stable_key_for(&SALT, "Safari", shared));
+        assert_ne!(site, stable_key_for(&SALT, "", shared));
+    }
+
+    /// One key per site on this install: stable across calls, different for a
+    /// different site, different on another install, and the 64-hex shape every
+    /// key column CHECKs for.
+    #[test]
+    fn the_site_key_is_a_stable_salted_sixty_four_character_digest() {
+        let key = site_stable_key_for(&SALT, "docs.rs");
+
+        assert_eq!(key, site_stable_key_for(&SALT, "docs.rs"));
+        assert_ne!(key, site_stable_key_for(&SALT, "crates.io"));
+        assert_ne!(key, site_stable_key_for(&OTHER_SALT, "docs.rs"));
+        assert_eq!(key.len(), 64);
+        assert!(key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
     }
 
     #[test]

@@ -8,10 +8,12 @@ use super::{
     app_bundle_key_for,
     browser::focused_site_context,
     plugin::{
-        BrowserContextPlugin, BundleSeedPlugin, DeclaredCategoryPlugin, DeclaredMetadata,
-        DocumentTypePlugin, GenericBrowserPriorPlugin, LocalPurposeHeuristicPlugin,
-        SeedDictionaryPlugin, UnloggedFallbackPlugin,
+        is_browser_app, BrowserContextPlugin, BundleSeedPlugin, DeclaredCategoryPlugin,
+        DeclaredMetadata, DocumentTypePlugin, GenericBrowserPriorPlugin,
+        LocalPurposeHeuristicPlugin, SeedDictionaryPlugin, UnloggedFallbackPlugin,
     },
+    site_stable_key_for,
+    sites::{site_identity, SiteInferencePlugin, SiteSeedPlugin},
     taxonomy::is_valid_label,
     AbstractionMappingStore, ClassificationConfidence, ClassificationPlugin, ClassificationResult,
     ClassificationSource, ClassificationStatus, ClassificationTier, MappingResolution, RawKey,
@@ -45,6 +47,16 @@ pub struct AbstractedEvent {
     /// says nothing about the next.
     #[serde(skip)]
     app_scope_eligible: bool,
+    /// Identity of the browser site this event was classified under
+    /// (`site_stable_key_for`), the same in every browser. `None` unless the
+    /// window was a browser's and its site has an identity.
+    #[serde(skip)]
+    site_stable_id: Option<String>,
+    /// The normalized host that identity was computed from, for the one
+    /// device-local table that names a site Velvt could not categorize
+    /// (`local_site_name`). `None` exactly when `site_stable_id` is.
+    #[serde(skip)]
+    local_site_name: Option<String>,
 }
 
 impl std::fmt::Debug for AbstractedEvent {
@@ -67,6 +79,10 @@ impl std::fmt::Debug for AbstractedEvent {
             .field(
                 "local_name_suggestion",
                 &self.local_name_suggestion.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "local_site_name",
+                &self.local_site_name.as_ref().map(|_| "[redacted]"),
             )
             .finish()
     }
@@ -111,6 +127,12 @@ impl AbstractedEvent {
     }
     pub fn app_scope_eligible(&self) -> bool {
         self.app_scope_eligible
+    }
+    pub fn site_stable_id(&self) -> Option<&str> {
+        self.site_stable_id.as_deref()
+    }
+    pub fn local_site_name(&self) -> Option<&str> {
+        self.local_site_name.as_deref()
     }
 }
 
@@ -182,11 +204,28 @@ impl AbstractionEngine {
         if let Some(observer) = &self.semantic_observer {
             observer.observe(&stable_key, raw_key.app_name(), &classifier_context);
         }
+        // The site, for a browser window only: the one identity of a tab that
+        // holds in every browser. Every other window keeps exactly the rungs
+        // and tiers it had, whatever URL it reports.
+        let browser_site = focused_site
+            .as_deref()
+            .filter(|_| is_browser_app(raw_key.app_name()));
+        let site = browser_site.and_then(site_identity);
+        let site_stable_key = site
+            .as_deref()
+            .map(|site| site_stable_key_for(&self.stable_key_salt, site));
         // Correction precedence, most specific first:
         //   1. this exact window              (`personal_override`)
-        //   2. this application, by bundle id (`personal_app_override`)
-        //   3. this application, by name      (`personal_app_override`)
-        //   4. classifier plugins
+        //   2. this site, in any browser      (`personal_site_override`)
+        //   3. this application, by bundle id (`personal_app_override`)
+        //   4. this application, by name      (`personal_app_override`)
+        //   5. classifier plugins
+        //
+        // The site rung sits under the window rung because a browser tab's
+        // window key is (browser, host): one site in one browser is the more
+        // specific statement. It sits over the app rungs because for a browser
+        // window the site says what the window is and the application only
+        // says which browser is showing it.
         //
         // The app rung is what makes a correction stick. Without it a
         // correction binds to one (app, title) hash, so the next file opened
@@ -206,6 +245,11 @@ impl AbstractionEngine {
             .as_deref()
             .map(|bundle_id| self.app_bundle_key(bundle_id));
         let mut personal_override = self.store.personal_override(&stable_key)?;
+        if personal_override.is_none() {
+            if let Some(site_stable_key) = &site_stable_key {
+                personal_override = self.store.personal_site_override(site_stable_key)?;
+            }
+        }
         if personal_override.is_none() {
             if let Some(app_bundle_key) = &app_bundle_key {
                 personal_override = self.store.personal_app_override(app_bundle_key)?;
@@ -235,6 +279,7 @@ impl AbstractionEngine {
                     bundle_id: bundle_id.as_deref(),
                     declared_app_category: declared_app_category.as_deref(),
                     document_type_ids: &document_type_ids,
+                    site: browser_site,
                 };
                 self.plugins
                     .iter()
@@ -294,6 +339,8 @@ impl AbstractionEngine {
             // A site context means the window's identity came from the page,
             // not the app, so the app tells us nothing about the next window.
             app_scope_eligible: focused_site.is_none(),
+            site_stable_id: site_stable_key,
+            local_site_name: site,
         })
     }
 }
@@ -453,24 +500,34 @@ impl AbstractionEngineBuilder {
         // Registration order IS the arbitration order: the engine takes the
         // first plugin that answers. It runs from the most specific identifier
         // to the least:
-        //   browser site context  — the tab, for a browser window
+        //   site seed             — a curated site, for a browser window
+        //   browser site context  — a browser window's title, only when its
+        //                           site cannot be read
         //   bundle seed           — the identifier the developer chose
         //   name seed            — the localized name macOS reports
-        //   name/title heuristic  — curated keyword families
+        //   name/title heuristic  — curated keyword families, never for a
+        //                           browser tab whose site can be read
         //   declared document types — what the application says it opens
         //   declared App Store category — a whitelist of unambiguous values
+        //   site inference        — a site no seed names, read from its labels
         //   embedding             — Tier 2, when enabled
         //   generic browser prior — an explicitly ambiguous REFERENCE
         //   unlogged fallback     — captured, not classified
         // The two declared-metadata tiers sit exactly where
         // `ClassificationResult::precedence` ranks their sources, so plugin
-        // order and explicit arbitration cannot disagree.
-        let builder = self.register_plugin(BrowserContextPlugin::new(version.clone()));
+        // order and explicit arbitration cannot disagree. Site inference
+        // reports a heuristic's source from below them without contradicting
+        // that: it answers only for a browser window and both declared tiers
+        // refuse every browser window, so no event reaches two of the three
+        // with an answer.
+        let builder = self.register_plugin(SiteSeedPlugin::new(version.clone()));
+        let builder = builder.register_plugin(BrowserContextPlugin::new(version.clone()));
         let builder = builder.register_plugin(BundleSeedPlugin::new(bundles, version.clone()));
         let builder = builder.register_plugin(SeedDictionaryPlugin::new(entries, version.clone()));
         let builder = builder.register_plugin(LocalPurposeHeuristicPlugin::new(version.clone()));
         let builder = builder.register_plugin(DocumentTypePlugin::new(version.clone()));
         let builder = builder.register_plugin(DeclaredCategoryPlugin::new(version.clone()));
+        let builder = builder.register_plugin(SiteInferencePlugin::new(version.clone()));
         let builder = match embedding {
             Some(plugin) => {
                 let plugin = Arc::new(plugin);

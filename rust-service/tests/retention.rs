@@ -16,10 +16,13 @@ use velvt_service::persistence::{
     WorkBlockRecord,
 };
 use velvt_service::retention::{
-    AbstractionMapRetentionTarget, CleanupReport, InterventionDecisionOutcomeTarget,
-    RawEventRetentionTarget, RetentionError, RetentionScheduler, RetentionTarget,
-    SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
-    ABSTRACTION_MAP_RETENTION_DAYS, DECISION_OUTCOME_HORIZON_SECONDS,
+    AbstractionMapRetentionTarget, CategoryPromptEntryRetentionTarget,
+    CategoryPromptNotificationRetentionTarget, CleanupReport, InterventionDecisionOutcomeTarget,
+    LocalSiteNameRetentionTarget, RawEventRetentionTarget, RetentionError, RetentionScheduler,
+    RetentionTarget, SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
+    ABSTRACTION_MAP_RETENTION_DAYS, CATEGORY_PROMPT_ENTRY_RETENTION_DAYS,
+    CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS, DECISION_OUTCOME_HORIZON_SECONDS,
+    LOCAL_SITE_NAME_RETENTION_DAYS,
 };
 use velvt_shared_types::{
     ClassificationConfidence, ClassificationStatus, WorkBlockIntensity, WorkBlockPhase,
@@ -47,6 +50,7 @@ fn make_event(n: u64) -> RawEventEntry {
         upload_eligible: true,
         app_stable_id: None,
         app_scope_eligible: true,
+        site_stable_id: None,
     }
 }
 
@@ -944,4 +948,95 @@ fn a_window_mapping_expires_on_the_raw_event_horizon_unless_it_was_corrected() {
         "an observed window is live"
     );
     assert_eq!(target.run_cleanup().unwrap().deleted, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Test 11 — A stored site name expires on the raw-event horizon
+// ---------------------------------------------------------------------------
+
+/// `local_site_name` is the one table that stores a hostname (migration
+/// 0040). A site that has not needed a category inside the horizon -- no visit
+/// Velvt could not categorize since -- loses its name, counted from the last
+/// such visit; one seen inside it keeps it.
+#[test]
+fn a_site_name_expires_on_the_raw_event_horizon_from_its_last_visit() {
+    assert_eq!(LOCAL_SITE_NAME_RETENTION_DAYS, 14);
+    let db = open_db();
+    let repo = db.raw_event_repo();
+    let now = Utc::now();
+    for (index, days_ago) in [(0u8, 15i64), (1, 13)] {
+        let event = RawEventEntry {
+            event_id: format!("site-visit-{index}"),
+            label: "reference:browser".into(),
+            category: "REFERENCE".into(),
+            classification_tier: "fallback".into(),
+            classification_status: "ambiguous".into(),
+            classification_confidence: "low".into(),
+            classification_source: "fallback".into(),
+            app_scope_eligible: false,
+            site_stable_id: Some(format!("{index:064x}")),
+            ..make_event(u64::from(index) + 9_000)
+        };
+        repo.insert(&event).unwrap();
+        assert!(repo
+            .record_local_site_name(
+                &event.event_id,
+                &format!("site-{index}.example.org"),
+                now - chrono::Duration::days(days_ago),
+            )
+            .unwrap());
+    }
+
+    let target = LocalSiteNameRetentionTarget::with_default_retention(Arc::clone(&repo), 500);
+    assert_eq!(target.name(), "local_site_name");
+    assert_eq!(
+        target.run_cleanup().unwrap().deleted,
+        1,
+        "only the name whose last such visit is outside the horizon expires"
+    );
+    assert_eq!(target.run_cleanup().unwrap().deleted, 0);
+}
+
+/// The needs-a-category prompt's ledger (migration 0041). An entry expires on
+/// the raw-event horizon counted from the last time it was on the list, and a
+/// reminder row thirty days after it was posted; anything inside its horizon
+/// survives.
+#[test]
+fn the_category_prompt_ledger_expires_on_its_two_horizons() {
+    assert_eq!(CATEGORY_PROMPT_ENTRY_RETENTION_DAYS, 14);
+    assert_eq!(CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS, 30);
+    let db = open_db();
+    let repo = db.category_prompt_repo();
+    let now = Utc::now();
+    let entry = |seed: u8| format!("site:{}", format!("{seed:02x}").repeat(32));
+    repo.record_listed(&[entry(1)], now - chrono::Duration::days(15))
+        .unwrap();
+    repo.record_listed(&[entry(2)], now - chrono::Duration::days(13))
+        .unwrap();
+    for (date, days_ago) in [("2026-01-01", 31_i64), ("2026-01-03", 29)] {
+        assert!(repo
+            .claim_notification(date, &[], 1, 1, now - chrono::Duration::days(days_ago))
+            .unwrap());
+    }
+
+    let entries =
+        CategoryPromptEntryRetentionTarget::with_default_retention(Arc::clone(&repo), 500);
+    let reminders =
+        CategoryPromptNotificationRetentionTarget::with_default_retention(Arc::clone(&repo), 500);
+    assert_eq!(entries.name(), "category_prompt_entry");
+    assert_eq!(reminders.name(), "category_prompt_notification");
+    assert_eq!(entries.run_cleanup().unwrap().deleted, 1);
+    assert_eq!(entries.run_cleanup().unwrap().deleted, 0);
+    assert_eq!(reminders.run_cleanup().unwrap().deleted, 1);
+    assert_eq!(reminders.run_cleanup().unwrap().deleted, 0);
+
+    let survivors = repo.record_listed(&[entry(2)], now).unwrap();
+    assert_eq!(
+        survivors[0].first_listed_at.timestamp(),
+        (now - chrono::Duration::days(13)).timestamp(),
+        "the entry inside the horizon kept its row"
+    );
+    let remaining = repo.recent_notifications(8).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].local_date, "2026-01-03");
 }

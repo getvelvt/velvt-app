@@ -12,7 +12,8 @@ import Foundation
 public enum CorrectionAcknowledgmentOrigin: Equatable, Sendable {
     /// A rule surface: correct, edit, remove, reset.
     case rule
-    /// Teaching Velvt what a whole application is, from the triage list.
+    /// Teaching Velvt what a whole application or site is, from the
+    /// needs-a-category list.
     case application
 }
 
@@ -31,6 +32,7 @@ public final class MenuStatusViewModel: ObservableObject {
     private static let classificationRejectionCodes: Set<String> = [
         "invalid_classification_category",
         "invalid_app_stable_id",
+        "invalid_site_stable_id",
         "invalid_local_activity_name",
         "invalid_correction_history_query",
     ]
@@ -48,7 +50,7 @@ public final class MenuStatusViewModel: ObservableObject {
     /// Where to draw `correctionAcknowledgment`. Latched with it and cleared
     /// with it, so the two can never disagree.
     @Published public private(set) var acknowledgmentOrigin: CorrectionAcknowledgmentOrigin?
-    /// The applications Velvt observed but could not read.
+    /// The applications and sites Velvt observed but could not categorize.
     ///
     /// `nil` until the service answers: an empty list is the good state and
     /// must not be shown before the question has been asked.
@@ -62,6 +64,7 @@ public final class MenuStatusViewModel: ObservableObject {
     private let ipcClient: any IPCClientProtocol
     private var cancellables = Set<AnyCancellable>()
     private var timer: AnyCancellable?
+    private let ticks = PassthroughSubject<Void, Never>()
     private var classificationCommand: Task<Void, Never>?
     private var correctionHistoryRequest: Task<Void, Never>?
     private var triageRequest: Task<Void, Never>?
@@ -99,8 +102,8 @@ public final class MenuStatusViewModel: ObservableObject {
             case .errorResponse(let error) where error.code == "unclassified_triage_failed":
                 self?.triageError = error.message
             // The rejection codes are listed rather than prefix-matched.
-            // `SetApplicationCategory` refuses a malformed id, category or
-            // name under `invalid_*` codes, and a teach that was refused had
+            // `SetApplicationCategory` and `SetSiteCategory` refuse a
+            // malformed id, category or name under `invalid_*` codes, and a teach that was refused had
             // already taken its row off the list — so those must be caught
             // here or the row vanishes and nothing is said. A prefix would
             // also catch `invalid_credentials` and `invalid_work_block_*`,
@@ -118,8 +121,15 @@ public final class MenuStatusViewModel: ObservableObject {
 
     public func start() {
         refresh()
-        timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect().sink { [weak self] _ in self?.refresh() }
+        timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect().sink { [weak self] _ in
+            self?.refresh()
+            self?.ticks.send()
+        }
     }
+
+    /// Fires on each tick of the 60-second status refresh, so another pull
+    /// can share this cadence rather than run a timer of its own.
+    public var cadence: AnyPublisher<Void, Never> { ticks.eraseToAnyPublisher() }
 
     public func refresh() { Task { try? await ipcClient.send(.requestMenuStatus) } }
 
@@ -131,40 +141,71 @@ public final class MenuStatusViewModel: ObservableObject {
         requestCorrectionHistory(offset: targetOffset)
     }
 
-    /// Asks which applications Velvt could not read, and keeps the answer
-    /// current from then on.
+    /// Asks which applications and sites Velvt could not categorize, and
+    /// keeps the answer current from then on.
     public func refreshUnclassifiedTriage(lookbackDays: Int = MenuStatusViewModel.triageLookbackDays) {
         wantsTriageUpdates = true
         requestUnclassifiedTriage(lookbackDays: lookbackDays)
     }
 
-    /// Teaches Velvt what one application is.
+    /// Teaches Velvt what one application or site on the list is.
     ///
-    /// `activityName` is the name the service itself reported for the
-    /// application, handed straight back: it is the device-local name Velvt
-    /// already holds, so returning it names the saved rule and lets the
-    /// service's acknowledgement say the application's name instead of "This
-    /// app". Nothing is decided here — the category is the user's answer and
-    /// the sentence is the service's.
-    public func teachApplication(_ entry: UnclassifiedTriageEntry, category: String) {
+    /// Nothing is decided here: the category is the user's answer and the
+    /// acknowledgement is the service's sentence. What this does decide is what
+    /// goes back with the key, and the answer is as little as possible.
+    ///
+    /// - An application's local name, when the service reported one, is handed
+    ///   straight back: it is the device-local name Velvt already holds, so
+    ///   returning it names the saved rule and lets the acknowledgement say the
+    ///   application's name. With no name, the row reads "Unnamed application",
+    ///   and that placeholder is never sent back: as a rule name it would label
+    ///   every later window of the application.
+    /// - A site sends its key alone. Its display name is its hostname, which
+    ///   the service keeps only until the site is taught; sent back as a rule
+    ///   name it would be a second stored copy of the hostname.
+    public func teach(_ entry: UnclassifiedTriageEntry, category: String) {
         // The row goes now, not when the service answers. This is the user's
         // own action on their own list, and a row that sits there looking
         // unpressed for a round trip reads as a control that does not work.
         // The refresh inside `enqueueClassificationCommand` is authoritative
-        // either way: the service excludes an application the moment a rule
-        // exists for it, and a refused teach brings the row straight back.
-        removeTriageEntry(entry.appStableID)
-        enqueueClassificationCommand(
-            .setApplicationCategory(
-                .init(
-                    appStableID: entry.appStableID,
-                    category: category,
-                    activityName: entry.displayName
-                )
-            ),
-            failureMessage: "Unable to save this app. Try again later.",
-            origin: .application
-        )
+        // either way: the service excludes an entry the moment a rule exists
+        // for it, and a refused teach brings the row straight back.
+        removeTriageEntry(entry)
+        switch entry.kind {
+        case .application:
+            enqueueClassificationCommand(
+                .setApplicationCategory(
+                    .init(
+                        appStableID: entry.stableID,
+                        category: category,
+                        activityName: Self.ruleName(forApplicationNamed: entry.displayName)
+                    )
+                ),
+                failureMessage: "Unable to save this app. Try again later.",
+                origin: .application
+            )
+        case .site:
+            enqueueClassificationCommand(
+                .setSiteCategory(.init(siteStableID: entry.stableID, category: category)),
+                failureMessage: "Unable to save this site. Try again later.",
+                origin: .application
+            )
+        }
+    }
+
+    /// The application's own name as a rule name, or `nil` when there is none
+    /// the service would accept as one: 1 to 48 characters with no control
+    /// characters, the same rule the service applies. A name it would refuse
+    /// would take the whole answer down with it, and the rule is worth more
+    /// than its label.
+    nonisolated static func ruleName(forApplicationNamed name: String?) -> String? {
+        guard let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !trimmed.isEmpty,
+            // Counted in scalars, as the service counts `char`s.
+            trimmed.unicodeScalars.count <= 48,
+            !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else { return nil }
+        return trimmed
     }
 
     public func nextCorrectionHistoryPage() {
@@ -323,17 +364,17 @@ public final class MenuStatusViewModel: ObservableObject {
                     .requestUnclassifiedTriage(.init(lookbackDays: lookbackDays))
                 )
             } catch {
-                triageError = "Unable to list the apps Velvt could not read. Try again later."
+                triageError = "Unable to list the apps and sites Velvt couldn't categorize. Try again later."
             }
         }
     }
 
-    /// Takes one application off the list in hand, preserving the window the
+    /// Takes one entry off the list in hand, preserving the window the
     /// service computed it over.
-    private func removeTriageEntry(_ appStableID: String) {
+    private func removeTriageEntry(_ entry: UnclassifiedTriageEntry) {
         guard let triage = unclassifiedTriage else { return }
         unclassifiedTriage = UnclassifiedTriage(
-            entries: triage.entries.filter { $0.appStableID != appStableID },
+            entries: triage.entries.filter { $0.id != entry.id },
             windowDays: triage.windowDays
         )
     }

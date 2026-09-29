@@ -1,6 +1,6 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 32 on 2026-09-26.** This page
+> **Reconciled with `proto/` at protocol 33 on 2026-09-27.** This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
 > reconciliation the page had last been reconciled on 2026-07-17 (protocol 15–17
@@ -74,7 +74,10 @@ Swift Client                                      Rust Service
      |<-- menu_status / correction_history_page --------|
      |--- request_unclassified_triage ----------------->|
      |<-- unclassified_triage --------------------------|
-     |--- set_application_category -------------------->|
+     |--- set_application_category / set_site_category >|
+     |--- request_category_prompt --------------------->|
+     |<-- category_prompt ------------------------------|
+     |--- acknowledge_category_prompt ----------------->|
      |                                                  |
      |--- focus_state_changed ------------------------->|
      |<-- quiet_hours_offer ----------------------------|
@@ -110,7 +113,10 @@ Direction is enforced by the workspace message envelopes:
   - corrections: `correct_event_classification`,
     `update_classification_override`, `request_correction_history`,
     `remove_classification_override`, `reset_classification_overrides`,
-    `request_unclassified_triage`, `set_application_category`;
+    `request_unclassified_triage`, `set_application_category`,
+    `set_site_category`;
+  - the needs-a-category card and reminder: `request_category_prompt`,
+    `acknowledge_category_prompt`;
   - work blocks: `start_work_block`, `pause_work_block`, `resume_work_block`,
     `end_work_block`, `request_work_block_state`,
     `accept_work_block_recovery`, `report_intervention_outcome`,
@@ -135,6 +141,7 @@ Direction is enforced by the workspace message envelopes:
   - account: `auth_success`, `auth_session_updated`, `auth_failure`,
     `account_deletion_accepted`, `needs_reauth`, `device_revoked`;
   - corrections: `correction_history_page`, `unclassified_triage`;
+  - the needs-a-category card and reminder: `category_prompt`;
   - work blocks and local surfaces: `work_block_state`, `local_dashboard`,
     `quiet_hours_offer`, `initiation_invitation`, `initiation_settings`,
     `demotion_state`, `weekly_digest`, `intervention_explanation`.
@@ -217,7 +224,11 @@ for abstraction.
   stores only a domain-separated hash of it (`app_bundle_stable_id`)
 - `focused_document_url`: optional nullable raw browser document URL
   (protocol 23). Rust reduces it to a validated hostname and discards it
-  before persistence, upload, logging, or any other DTO
+  before persistence, upload, logging, or any other DTO. For a browser, the
+  hostname classifies the tab (the site table and the site's own labels) and
+  keys its site; it is stored as text only in `local_site_name`, for a site
+  Velvt could not categorize, and never uploaded (`PRIVACY.md`). Classifying
+  a tab by its site is drift policy version 5
 - `declared_app_category`: optional nullable `LSApplicationCategoryType`
   from the application's own `Info.plist` (protocol 30)
 - `document_type_ids`: optional array of the `LSItemContentTypes` the
@@ -236,7 +247,9 @@ for abstraction.
   only when the person came back, and the offer it made was withdrawn before a
   notification could be posted. Absent on a closed dwell. The gate deciding
   on each dwell as it begins is drift policy version 3; version 4 adds the
-  application-level dwells described under `window_title`.
+  application-level dwells described under `window_title`, and version 5 the
+  browser tabs classified by their site, described under
+  `focused_document_url`.
 
 ### `raw_event_ack`
 
@@ -402,7 +415,8 @@ Direction: Rust to Swift. Purpose: report service status for the menu popover.
   `label`, `category`, optional local-only `local_label`, classification
   status/confidence/source, the compatibility tier, and `occurred_at`
 - `correction_history`: a bounded page of device-local correction rules
-  (protocol 21)
+  (protocol 21), each with a `scope` of `window`, `app` or (protocol 33)
+  `site`
 - `correction_acknowledgment`: optional; set only on the status returned by a
   correction command, never on a polled one (protocol 25)
 
@@ -431,17 +445,17 @@ version in brackets is where the message or field arrived.
 - `update_classification_override` [22]: Swift to Rust. Edit a saved rule's
   alias or category after its upload event is gone.
 - `request_correction_history` [22] / `correction_history_page` [22; `scope`
-  30]: searchable, offset-paginated device-local rules, at most 20 a page.
-  Each item's `scope` is `window` or `app`; for an app rule `stable_id` is the
-  application's key hash, so a client must read the scope before acting on it.
-- `request_unclassified_triage` / `unclassified_triage` [30]: up to 8
-  applications Velvt observed but could not classify, ranked by observed time
-  and floored at five minutes, each with the local name Velvt already holds,
-  seconds observed, and event count. `app_stable_id` is the only identifier:
-  no bundle key crosses the socket. No category and no guess. An empty list is
-  the good state.
+  30; `site` 33]: searchable, offset-paginated device-local rules, at most 20
+  a page. Each item's `scope` is `window`, `app` or `site`; for an app rule
+  `stable_id` is the application's key hash and for a site rule the site key,
+  so a client must read the scope before acting on it. Removal and edits take
+  any of the three. An edit of a site rule writes the name as sent, so an
+  edit with no `local_activity_name` clears the name the rule had.
+- `request_unclassified_triage` / `unclassified_triage` [30; sites 33]: see
+  "Messages changed and added in protocol 33" below.
 - `set_application_category` [30]: Swift to Rust. The one-tap answer from that
-  list: an app-scoped rule keyed by `app_stable_id`, with no event id.
+  list for an application: an app-scoped rule keyed by `app_stable_id`, with
+  no event id.
 
 **Local dashboard.**
 
@@ -502,6 +516,53 @@ version in brackets is where the message or field arrived.
   [28]: the weekly receipts digest for the last completed local week, held
   during quiet hours and Focus/DND.
 
+### Messages changed and added in protocol 33
+
+All local IPC only; none is uploaded. `proto/CHANGELOG.md` "Version 33" has
+the full account.
+
+- `unclassified_triage` [30; reshaped 33]: up to 8 applications and browser
+  sites Velvt observed but could not categorize, ranked together by observed
+  time (then applications ahead of sites, then key) and floored at five
+  minutes over the requested 1 to 14 days. Each entry is `kind`
+  (`application` or `site`), `stable_id` (the salted key, 64 lowercase hex;
+  the only identifier, and no bundle key crosses the socket), `display_name`,
+  `seconds_observed` and `event_count`. `display_name` is required and
+  nullable: an application's local name or `null` when Velvt holds none (the
+  client shows its own placeholder and never sends it back), a site's
+  hostname. No category and no guess. An empty list is the good state.
+- `set_site_category` [33]: Swift to Rust. The answer for a site: a rule for
+  every page of the site in every browser, keyed by `site_stable_id`, with no
+  event id and no hostname. Validated as `set_application_category` is
+  (`invalid_site_stable_id` for a malformed key). Answered with `menu_status`
+  carrying `correction_acknowledgment`. Nothing about the site is sent
+  anywhere; the `menu_status` reply may refresh cloud readiness, as any
+  status poll does.
+- `request_category_prompt` / `category_prompt` [33]: Swift asks with its UTC
+  offset, on connect, on wake and on the menu-status cadence; Rust always
+  answers. The payload holds an optional `card` (`title`, `body`,
+  `primary_action`, `secondary_action`, `entry_count`), an optional
+  `notification` (`title`, `body`) and `prompt_id` exactly when there is a
+  card; an empty payload means no card. `prompt_id` is 32 random bytes in
+  hex, kept while the entries the card counts stay the same, so it says
+  nothing about any entry. Rust owns every gate (`category_prompt`,
+  `CATEGORY_PROMPT_POLICY_VERSION` 1): nothing during an active or paused
+  block; the card while any of the first eight entries of the last seven
+  days' list is unanswered; the notification at most once a local day, only
+  for an entry among those eight that no earlier reminder or answer has
+  reached (both reach the entries below the eight too, so moving up is not
+  news), not in quiet hours (read at the request's offset) or known Focus,
+  and paused for seven days after three unopened reminders in a row within
+  30 days. A notification is handed over once and consumed whether or not it
+  is posted. Copy is counts only.
+- `acknowledge_category_prompt` [33]: Swift to Rust. `prompt_id` and
+  `response` (`opened` or `not_now`). Either answers every entry that card
+  covered, even after the list has moved on, so the card stays away until an
+  entry no answer has reached is among the eight; `opened` ends a run of
+  unopened reminders. Answered with `category_prompt` as it now stands, never
+  with a notification; a malformed id is refused with
+  `invalid_category_prompt_id`.
+
 ## 4. Version Negotiation
 
 The current version is the integer stored in `proto/version`.
@@ -549,11 +610,22 @@ so in its `$comment`:
 - the activity names and stable identifiers in
   `correct_event_classification`, `update_classification_override`,
   `request_correction_history` (search text) and `correction_history_page`;
-- `unclassified_triage.entries[].display_name`, which can be the raw
-  application name Velvt holds for an app it could not classify, with the
-  bundle **key hash** (never the identifier) in `bundle_id`, and
-  `set_application_category`'s `app_stable_id` and `activity_name`;
+- `unclassified_triage.entries[]`, whose `display_name` can be the raw
+  application name Velvt holds for an app it could not classify or the
+  hostname of a site it could not categorize, beside the salted key in
+  `stable_id` (no bundle identifier or bundle key crosses the socket; the
+  `bundle_id` this line once described was removed on 2026-09-25), and
+  `set_application_category`'s `app_stable_id` and `activity_name` and
+  `set_site_category`'s `site_stable_id` and `activity_name`;
+- `menu_status.correction_acknowledgment`, the one-shot confirmation of a
+  correction or a teach, which can quote a name the person typed or, since
+  protocol 30, an application's local name sent back from the list (never a
+  hostname: a site is confirmed by its typed name or as "this site");
 - the work-block `intention` in `start_work_block` and `work_block_state`.
+
+`category_prompt` is deliberately not in that group: its card and notification
+copy are counts only and name no application or site, because macOS
+Notification Center keeps a notification's text.
 
 All other messages are privacy-safe control messages, derived summaries, or
 ready-to-display payloads. Their closed object definitions prevent undeclared

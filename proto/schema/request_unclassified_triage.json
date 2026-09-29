@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Local IPC only. The reply names applications the user ran and must never enter cloud requests, telemetry, logs, or crash diagnostics.",
+  "$comment": "Local IPC only. The reply names applications the user ran and sites they visited, and must never enter cloud requests, telemetry, logs, or crash diagnostics.",
   "title": "RequestUnclassifiedTriage",
   "type": "object",
   "additionalProperties": false,

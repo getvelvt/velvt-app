@@ -6,23 +6,25 @@ import XCTest
 final class PermissionModuleTests: XCTestCase {
     private var cancellables: Set<AnyCancellable> = []
 
-    /// Waits for a status refresh that runs on a detached Task.
+    /// Fulfilled when `manager` publishes `expected` for `permission`.
     ///
-    /// A fixed `Task.yield()` budget is a race rather than a wait: yielding
-    /// does not guarantee the detached work progresses, so a loaded machine
-    /// can exhaust the budget before the status lands. CI observed exactly
-    /// that. Bound the wait by wall clock instead, and sleep rather than spin
-    /// so the awaited task actually gets scheduled.
-    private func waitForStatus(
+    /// `PermissionManager` delivers every status on the main thread, and an
+    /// `async` test here runs on the cooperative pool. Recording deliveries
+    /// into an array from a sink and polling it from the test was a data race:
+    /// the append on main could reallocate the buffer the test was reading,
+    /// which crashed the suite under load. An expectation is thread-safe and is
+    /// fulfilled by the delivery itself, so there is nothing to poll.
+    private func expectStatus(
         _ expected: PermissionStatus,
         of permission: PermissionType,
-        in latest: () -> [PermissionType: PermissionStatus]?,
-        timeout: TimeInterval = 5
-    ) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while latest()?[permission] != expected, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 1_000_000)
-        }
+        from manager: PermissionManager
+    ) -> XCTestExpectation {
+        let published = expectation(description: "\(permission) is published as \(expected)")
+        manager.statusPublisher
+            .first { $0[permission] == expected }
+            .sink { _ in published.fulfill() }
+            .store(in: &cancellables)
+        return published
     }
 
     func testPermissionTypeContainsExactlyTheApprovedPermissions() {
@@ -228,16 +230,14 @@ final class PermissionModuleTests: XCTestCase {
             monitorScheduler: scheduler,
             activityNotifications: activityNotifications
         )
-        var statuses: [[PermissionType: PermissionStatus]] = []
-        manager.statusPublisher.sink { statuses.append($0) }.store(in: &cancellables)
+        let rechecked = expectStatus(.granted, of: .accessibility, from: manager)
 
         manager.startMonitoring()
 
-        // The immediate re-check runs on a detached Task; wait for it without
-        // relying on the (never-fired) periodic timer.
-        await waitForStatus(.granted, of: .accessibility, in: { statuses.last })
+        // The periodic timer never fires here, so only the immediate re-check
+        // can publish the grant.
+        await fulfillment(of: [rechecked], timeout: 5)
 
-        XCTAssertEqual(statuses.last?[.accessibility], .granted)
         XCTAssertEqual(scheduler.startCallCount, 1, "periodic monitoring should still be scheduled")
     }
 
@@ -252,8 +252,7 @@ final class PermissionModuleTests: XCTestCase {
             monitorScheduler: FakePermissionMonitorScheduler(),
             activityNotifications: activityNotifications
         )
-        var statuses: [[PermissionType: PermissionStatus]] = []
-        manager.statusPublisher.sink { statuses.append($0) }.store(in: &cancellables)
+        let refreshed = expectStatus(.granted, of: .notifications, from: manager)
 
         manager.startMonitoring()
         await MainActor.run {
@@ -263,9 +262,7 @@ final class PermissionModuleTests: XCTestCase {
             )
         }
 
-        await waitForStatus(.granted, of: .notifications, in: { statuses.last })
-
-        XCTAssertEqual(statuses.last?[.notifications], .granted)
+        await fulfillment(of: [refreshed], timeout: 5)
     }
 
     func testAccessibilityMonitorPausesWhenAppMovesToBackground() {
@@ -288,6 +285,14 @@ final class PermissionModuleTests: XCTestCase {
         XCTAssertEqual(scheduler.stopCallCount, 1)
     }
 
+    /// Each fact asserted here is waited for on its own. The coordinator and
+    /// the presentation are separate subscribers to one delivery, which Combine
+    /// calls in no fixed order, so the presentation's expectation can be
+    /// fulfilled before the coordinator has stopped collection. And
+    /// `$statuses` fires in `willSet`, so the test runs on the main actor,
+    /// where `PermissionManager` delivers: it resumes only after that delivery
+    /// has finished, once `statuses` holds the new value.
+    @MainActor
     func testAccessibilityRevocationDuringMonitorCycleStopsCollectionAndShowsRecovery() async {
         let accessibility = FakeAccessibilityPermissionClient(isTrusted: true)
         let scheduler = FakePermissionMonitorScheduler()
@@ -315,13 +320,18 @@ final class PermissionModuleTests: XCTestCase {
                 }
             }
             .store(in: &cancellables)
+        let collectionStopped = expectation(description: "Collection stops after monitor cycle")
+        coordinator.statusPublisher
+            .first { $0 == .permissionRequired }
+            .sink { _ in collectionStopped.fulfill() }
+            .store(in: &cancellables)
 
         coordinator.start()
         permissions.startMonitoring()
         _ = await permissions.checkStatus(for: .accessibility)
         accessibility.isTrusted = false
         scheduler.fire()
-        await fulfillment(of: [recoveryShown], timeout: 1)
+        await fulfillment(of: [recoveryShown, collectionStopped], timeout: 1)
 
         XCTAssertEqual(collection.startCallCount, 1)
         XCTAssertEqual(collection.stopCallCount, 1)
@@ -936,13 +946,26 @@ final class PermissionModuleTests: XCTestCase {
     /// The intro's notification step has to name the notification that
     /// matters most. It asked only for "insight notifications" until
     /// 2026-09-26, so a person declining it had no way to know they were also
-    /// declining the drift nudge.
-    func testIntroNotificationStepNamesTheDriftNudgeAsWellAsInsights() {
+    /// declining the drift nudge. Since protocol 33 Velvt posts a third kind,
+    /// and a list that stopped at two would promise fewer notifications than
+    /// it sends.
+    func testIntroNotificationStepNamesEveryKindVelvtPosts() {
         let explanation = OnboardingCopy.notificationsExplanation
         XCTAssertTrue(explanation.contains("nudge when you drift away during a focus session you started"))
         XCTAssertTrue(explanation.contains("daily insight"))
+        XCTAssertTrue(
+            explanation.contains(
+                "at most once a day and never during a focus session, a reminder when a site or app you use needs a category"
+            ))
         XCTAssertFalse(OnboardingCopy.notificationsTitle.localizedCaseInsensitiveContains("insight"))
         XCTAssertTrue(OnboardingCopy.notificationsBlocked.contains("System Settings"))
+        for copy in [
+            OnboardingCopy.notificationsBlocked, NotificationsOffNotice.message, NotificationsOffNotice.settingsDetail,
+        ] {
+            XCTAssertTrue(copy.contains("drift nudges") || copy.contains("Drift nudges"), copy)
+            XCTAssertTrue(copy.contains("daily insights"), copy)
+            XCTAssertTrue(copy.contains("category reminders"), copy)
+        }
     }
 
     @MainActor

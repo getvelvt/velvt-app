@@ -36,6 +36,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingWindowController: OnboardingWindowController?
     private var notificationDeliveryCoordinator: NotificationDeliveryCoordinator?
     private var interventionNotifier: InterventionNotifier?
+    private var categoryPromptCoordinator: CategoryPromptCoordinator?
     private var notificationResponseRouter: NotificationResponseRouter?
     private var menuBarDataLoader: MenuBarDataLoader?
     private var menuStatusViewModel: MenuStatusViewModel?
@@ -101,13 +102,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         displayCoordinator = displayCoord
 
-        let dataLoader = MenuBarDataLoader(ipcClient: client)
-        dataLoader.start(accountState: accountStateManager.$accountState.eraseToAnyPublisher())
-        menuBarDataLoader = dataLoader
-
         let statusViewModel = MenuStatusViewModel(ipcClient: client, messages: accountStateManager.serverMessages)
         statusViewModel.start()
         menuStatusViewModel = statusViewModel
+
+        // After the status model, whose 60-second cadence it shares: while the
+        // history came from this Mac, it is asked for again at most every ten
+        // minutes on that tick rather than on a timer of its own.
+        let dataLoader = MenuBarDataLoader(ipcClient: client)
+        dataLoader.start(
+            accountStateManager: accountStateManager,
+            displayCoordinator: displayCoord,
+            statusViewModel: statusViewModel
+        )
+        menuBarDataLoader = dataLoader
+
         let serviceAlertModel = ServiceAlertModel(messages: accountStateManager.serverMessages)
         let workBlocks = WorkBlockCoordinator(ipcClient: client)
         workBlocks.start(
@@ -168,6 +177,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         interventionNotifier.start(snapshots: workBlocks.$snapshot)
         self.interventionNotifier = interventionNotifier
 
+        // The needs-a-category card and its at-most-daily reminder. Rust
+        // decides both and words both; this asks on connect, on wake and on
+        // the menu status's own 60-second cadence, and posts a reminder only
+        // if notifications are already allowed.
+        let categoryPrompt = CategoryPromptCoordinator(
+            ipcClient: client,
+            scheduler: scheduler,
+            permissionManager: permissionManager,
+            reporter: deliveryReporter
+        )
+        categoryPrompt.start(
+            messages: accountStateManager.serverMessages,
+            connectionStatus: client.connectionStatus,
+            cadence: statusViewModel.cadence
+        )
+        categoryPromptCoordinator = categoryPrompt
+
         let menuBar = MenuBarController(
             presentation: permissionPresentation,
             permissionManager: permissionManager,
@@ -181,6 +207,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             collectionSettings: collectionSettings,
             workBlockCoordinator: workBlocks,
             localDashboardCoordinator: localDashboard,
+            categoryPromptCoordinator: categoryPrompt,
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
             simulateNotification: {
@@ -238,6 +265,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             openPopover: { [weak menuBar] in menuBar?.showPopover() },
             scrollToDate: displayCoord.historyViewModel.scrollToDateAction,
             isDriftCardInFront: { [weak menuBar] in menuBar?.isPopoverInFront ?? false },
+            openNeedsACategory: { [weak menuBar, weak categoryPrompt] in
+                categoryPrompt?.open()
+                menuBar?.showNeedsACategory()
+            },
             reporter: deliveryReporter
         )
         UNUserNotificationCenter.current().delegate = responseRouter

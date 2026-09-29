@@ -39,6 +39,13 @@ pub trait CacheManager: Send + Sync {
         days: u8,
     ) -> Pin<Box<dyn Future<Output = Result<HistoryPayload, CacheError>> + Send + 'a>>;
 
+    /// What `daily_history(days)` would answer from the cache alone, or `None`
+    /// when it would have to ask the cloud. Never makes a network request.
+    fn cached_daily_history<'a>(
+        &'a self,
+        days: u8,
+    ) -> Pin<Box<dyn Future<Output = Option<HistoryPayload>> + Send + 'a>>;
+
     /// Returns the insight for `date`, or `None` when none exists on the server.
     fn daily_insight<'a>(
         &'a self,
@@ -75,6 +82,13 @@ impl<H: HttpClient + 'static> CacheManager for FetchService<H> {
         days: u8,
     ) -> Pin<Box<dyn Future<Output = Result<HistoryPayload, CacheError>> + Send + 'a>> {
         Box::pin(async move { self.daily_history(days).await.map_err(CacheError::Fetch) })
+    }
+
+    fn cached_daily_history<'a>(
+        &'a self,
+        days: u8,
+    ) -> Pin<Box<dyn Future<Output = Option<HistoryPayload>> + Send + 'a>> {
+        Box::pin(async move { self.cached_daily_history(days).await })
     }
 
     fn daily_insight<'a>(
@@ -189,10 +203,21 @@ impl CacheManager for FakeCacheManager {
             .get(&days)
             .cloned()
             .unwrap_or_else(|| HistoryPayload {
-                days: days as u32,
+                days: 0,
+                source: velvt_shared_types::HistorySource::Cloud,
                 summaries: vec![],
             });
         Box::pin(async move { Ok(result) })
+    }
+
+    /// The preloaded history for `days`, as the cache holds whatever it was
+    /// given. Not counted: it is not a fetch.
+    fn cached_daily_history<'a>(
+        &'a self,
+        days: u8,
+    ) -> Pin<Box<dyn Future<Output = Option<HistoryPayload>> + Send + 'a>> {
+        let result = self.history.lock().unwrap().get(&days).cloned();
+        Box::pin(async move { result })
     }
 
     fn daily_insight<'a>(
@@ -236,10 +261,11 @@ mod tests {
     use std::sync::Arc;
     use velvt_shared_types::{ConfidenceLevel, DailySummary, HistoryStatus};
 
-    fn make_history(days: u8) -> HistoryPayload {
+    fn make_history() -> HistoryPayload {
         let today = chrono::Utc::now().date_naive();
         HistoryPayload {
-            days: days as u32,
+            days: 1,
+            source: velvt_shared_types::HistorySource::Cloud,
             summaries: vec![DailySummary {
                 date: today,
                 status: HistoryStatus::Ready,
@@ -260,9 +286,9 @@ mod tests {
 
     #[tokio::test]
     async fn fake_cache_manager_returns_preconfigured_history() {
-        let cache = Arc::new(FakeCacheManager::new().with_history(7, make_history(7)));
+        let cache = Arc::new(FakeCacheManager::new().with_history(7, make_history()));
         let result = cache.daily_history(7).await.unwrap();
-        assert_eq!(result.days, 7);
+        assert_eq!(result.days, 1);
         assert_eq!(result.summaries.len(), 1);
         assert_eq!(cache.call_count(), 1);
     }

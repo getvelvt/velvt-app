@@ -5,12 +5,14 @@ public enum OnboardingCopy {
     /// Names the drift nudge first. This step used to ask only for "insight
     /// notifications", so declining it read as declining a daily summary, and
     /// nothing said it also silenced the one notification Velvt exists to
-    /// send.
+    /// send. It names all three kinds Velvt posts: a list of two, once the
+    /// needs-a-category reminder existed, promised fewer notifications than
+    /// Velvt sends.
     public static let notificationsTitle = "Allow notifications."
     public static let notificationsExplanation =
-        "Velvt sends a nudge when you drift away during a focus session you started, at most one per session, and a daily insight when one is ready. Notifications contain only broad observations—never app names, window titles, URLs, filenames, or paths."
+        "Velvt sends a nudge when you drift away during a focus session you started, at most one per session; a daily insight when one is ready; and, at most once a day and never during a focus session, a reminder when a site or app you use needs a category. Notifications contain only broad observations—never app names, window titles, URLs, filenames, or paths."
     public static let notificationsBlocked =
-        "Notifications are off for Velvt, so drift nudges and daily insights can't reach you. Turn them on in System Settings > Notifications > Velvt."
+        "Notifications are off for Velvt, so drift nudges, daily insights and category reminders can't reach you. Turn them on in System Settings > Notifications > Velvt."
 
     public static let privacySummary =
         "Raw app names, window titles, URLs, filenames, paths, contacts, and work-block intentions stay on this Mac. Approved broad categories, coarse durations, timestamps, and safe summaries may synchronize for beta insights. Depending on the service configuration, privacy-safe derived prompts may be processed by an approved external model provider."

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Local IPC only. Direction: Rust to Swift. The needs-a-category card and reminder, decided and worded in Rust. Counts only: no application name, hostname, key, category, or time observed is representable, because macOS Notification Center keeps a reminder's text. An empty payload means no card: the client hides any card it holds. A notification is handed over once and is consumed whether or not the client posts it; the client posts it only if notifications are already allowed, and never asks for permission for it.",
+  "title": "CategoryPrompt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "category_prompt" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prompt_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "The card's id: 32 random bytes in lowercase hex. It stays the same while the entries the card counts stay the same, and a new one is drawn when they change, so it says nothing about any entry. Present exactly when card is. Sent back in acknowledge_category_prompt."
+        },
+        "card": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["title", "body", "primary_action", "secondary_action", "entry_count"],
+          "properties": {
+            "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "body": { "type": "string", "minLength": 1, "maxLength": 240 },
+            "primary_action": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "description": "Opens the needs-a-category list; acknowledged as opened."
+            },
+            "secondary_action": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "description": "Closes the card; acknowledged as not_now."
+            },
+            "entry_count": { "type": "integer", "minimum": 1, "maximum": 8 }
+          }
+        },
+        "notification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["title", "body"],
+          "properties": {
+            "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "body": { "type": "string", "minLength": 1, "maxLength": 240 }
+          }
+        }
+      }
+    }
+  }
+}

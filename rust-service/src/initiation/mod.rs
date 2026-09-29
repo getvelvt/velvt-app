@@ -91,6 +91,12 @@ pub enum GoodHoursAssessment {
 pub trait InvitationGates: Send + Sync {
     fn live_block_exists(&self) -> Result<bool, PersistenceError>;
     fn in_quiet_hours(&self, at: DateTime<Utc>) -> bool;
+    /// Whether `at` is in Velvt's quiet hours at `utc_offset_seconds`, the
+    /// offset the client sent with this request, rather than at the offset
+    /// last stored with a Focus transition, which Clear Local Work Blocks
+    /// removes and a time-zone or daylight-saving change leaves stale until
+    /// the next transition. The needs-a-category reminder's gate.
+    fn in_quiet_hours_at(&self, at: DateTime<Utc>, utc_offset_seconds: i32) -> bool;
     fn focus_active(&self, at: DateTime<Utc>) -> bool;
 }
 
@@ -119,6 +125,10 @@ impl InvitationGates for RuntimeInvitationGates {
 
     fn in_quiet_hours(&self, at: DateTime<Utc>) -> bool {
         self.focus.in_velvt_quiet_hours(at)
+    }
+
+    fn in_quiet_hours_at(&self, at: DateTime<Utc>, utc_offset_seconds: i32) -> bool {
+        self.focus.in_velvt_quiet_hours_at(at, utc_offset_seconds)
     }
 
     fn focus_active(&self, at: DateTime<Utc>) -> bool {
@@ -408,13 +418,13 @@ fn trailing_dismissals(recent: &[InitiationInvitationRecord]) -> (u32, Option<Da
     (count, last_dismissed_at)
 }
 
-fn to_local(at: DateTime<Utc>, offset_seconds: i32) -> DateTime<FixedOffset> {
+pub(crate) fn to_local(at: DateTime<Utc>, offset_seconds: i32) -> DateTime<FixedOffset> {
     let offset =
         FixedOffset::east_opt(offset_seconds).unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
     at.with_timezone(&offset)
 }
 
-fn format_local_date(local: &DateTime<FixedOffset>) -> String {
+pub(crate) fn format_local_date(local: &DateTime<FixedOffset>) -> String {
     format!(
         "{:04}-{:02}-{:02}",
         local.year(),
@@ -461,6 +471,10 @@ mod tests {
         }
 
         fn in_quiet_hours(&self, _at: DateTime<Utc>) -> bool {
+            self.quiet_hours.load(Ordering::SeqCst)
+        }
+
+        fn in_quiet_hours_at(&self, _at: DateTime<Utc>, _utc_offset_seconds: i32) -> bool {
             self.quiet_hours.load(Ordering::SeqCst)
         }
 

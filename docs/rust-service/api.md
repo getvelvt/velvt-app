@@ -89,7 +89,7 @@ Rust accepts these `ClientMessage` cases:
 | `client_hello` | Protocol negotiation response |
 | `raw_event` | Raw local activity event from Swift |
 | `request_latest_insight` | Request cached daily insight for a date |
-| `request_latest_history` | Request cached history for recent days |
+| `request_latest_history` | Request history for recent days: the cloud's when signed in and reachable, else built on this Mac |
 | `sign_up` | Relay account creation credentials |
 | `log_in` | Relay login credentials |
 | `auth_session` | Apply Swift-persisted session after reconnect/relaunch |

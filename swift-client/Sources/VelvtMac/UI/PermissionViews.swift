@@ -357,9 +357,9 @@ public struct PermissionRecoveryView: View {
 public enum NotificationsOffNotice {
     public static let title = "Notifications are off for Velvt"
     public static let message =
-        "Drift nudges and daily insights can't reach you. You'll only see them when this window is open."
+        "Drift nudges, daily insights and category reminders can't reach you. You'll only see them when this window is open."
     public static let settingsDetail =
-        "Drift nudges and daily insights can't reach you while notifications are off for Velvt."
+        "Drift nudges, daily insights and category reminders can't reach you while notifications are off for Velvt."
 
     /// Denied and restricted both mean nothing Velvt posts is shown. Unknown
     /// is either not yet asked or not yet checked, and says nothing is wrong.

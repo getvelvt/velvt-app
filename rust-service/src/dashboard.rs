@@ -1,4 +1,6 @@
-//! Bounded, local-only Focus Fragmentation and Daily Activity aggregation.
+//! Bounded, local-only Focus Fragmentation and Daily Activity aggregation,
+//! and the daily summaries built on this Mac when the cloud's are unavailable
+//! ([`local_daily_history`]).
 //!
 //! Rust owns every analytical derivation. Swift receives ready-to-render DTOs
 //! and never scans event history. Local display labels appear only in the
@@ -8,7 +10,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, TimeZone, Timelike, Utc};
 use velvt_shared_types::{
-    ClassificationConfidence, LocalComparisonKind, LocalDailyActivityDay,
+    ClassificationConfidence, ClassificationStatus, ConfidenceLevel, DailySummary, HistoryPayload,
+    HistorySource, HistoryStatus, LocalComparisonKind, LocalDailyActivityDay,
     LocalDailyActivitySegment, LocalDailyActivityState, LocalDashboardCoverage,
     LocalDashboardSnapshot, LocalEarlySignal, LocalEarlySignalStatus, LocalFocusComparison,
     LocalFocusFragmentation, LocalSwitchingCluster, LocalTimelineSegment, LocalTransitionMarker,
@@ -201,21 +204,10 @@ fn build_segments(
     events.sort_by_key(|event| event.occurred_at);
     let mut segments: Vec<LocalTimelineSegment> = Vec::new();
     for (index, event) in events.iter().enumerate() {
-        let started_at = event.occurred_at.max(window_start);
-        let next_at = events
-            .get(index + 1)
-            .map(|next| next.occurred_at)
-            .unwrap_or(window_end);
-        let measured_end = if event.duration_seconds > 0 {
-            event.occurred_at
-                + Duration::seconds(i64::try_from(event.duration_seconds).unwrap_or(1800))
-        } else {
-            next_at
-        };
-        let ended_at = measured_end.min(next_at).min(window_end);
-        if ended_at <= started_at {
+        let Some((started_at, ended_at)) = measured_span(&events, index, window_start, window_end)
+        else {
             continue;
-        }
+        };
         let category = safe_category(event);
         let confidence = parse_confidence(&event.classification_confidence);
         if let Some(previous) = segments.last_mut() {
@@ -234,6 +226,35 @@ fn build_segments(
         });
     }
     segments
+}
+
+/// The part of `[window_start, window_end)` the event at `index` of
+/// `events` (sorted by `occurred_at`) was on screen, or `None` when it
+/// covers none of it.
+///
+/// A dwell lasts its reported `duration_seconds`, or until the next event
+/// when none was reported, and never past the next event or the window's
+/// end: the one measure every local surface uses, so the Daily Activity
+/// chart and the summaries built on this Mac count the same seconds.
+fn measured_span(
+    events: &[RawEventEntry],
+    index: usize,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let event = events.get(index)?;
+    let started_at = event.occurred_at.max(window_start);
+    let next_at = events
+        .get(index + 1)
+        .map(|next| next.occurred_at)
+        .unwrap_or(window_end);
+    let measured_end = if event.duration_seconds > 0 {
+        event.occurred_at + Duration::seconds(i64::try_from(event.duration_seconds).unwrap_or(1800))
+    } else {
+        next_at
+    };
+    let ended_at = measured_end.min(next_at).min(window_end);
+    (ended_at > started_at).then_some((started_at, ended_at))
 }
 
 fn build_transitions(segments: &[LocalTimelineSegment]) -> Vec<LocalTransitionMarker> {
@@ -459,27 +480,77 @@ fn daily_activity(
     now: DateTime<Utc>,
     offset: FixedOffset,
 ) -> Result<Vec<LocalDailyActivityDay>, PersistenceError> {
+    fold_local_days(repo, now, offset, DAILY_ACTIVITY_DAYS, |day| {
+        aggregate_day(
+            day.date,
+            day.events,
+            day.start,
+            day.end,
+            day.is_today,
+            day.truncated,
+        )
+    })
+}
+
+/// One local calendar day's evidence, as read for the chart and for the
+/// summaries built on this Mac.
+struct LocalDay {
+    date: NaiveDate,
+    /// Local midnight, in UTC.
+    start: DateTime<Utc>,
+    /// The next local midnight, or `now` for today; the last event read when
+    /// the read was `truncated`.
+    end: DateTime<Utc>,
+    is_today: bool,
+    /// Every event that can reach into the day, including those that began
+    /// up to `MAX_EVENT_DURATION_SECONDS` before it.
+    events: Vec<RawEventEntry>,
+    /// Whether the read stopped at `MAX_DAY_EVENTS`. The cap binding is
+    /// indistinguishable, from inside the day, from a day that simply ended
+    /// there.
+    truncated: bool,
+}
+
+/// The last `count` local days, oldest first, each read and folded before
+/// the next is loaded, so the cost is one day's rows in memory.
+fn fold_local_days<T>(
+    repo: &dyn RawEventRepo,
+    now: DateTime<Utc>,
+    offset: FixedOffset,
+    count: i64,
+    mut fold: impl FnMut(LocalDay) -> T,
+) -> Result<Vec<T>, PersistenceError> {
     let today = now.with_timezone(&offset).date_naive();
-    let mut days = Vec::with_capacity(DAILY_ACTIVITY_DAYS as usize);
-    for days_ago in (0..DAILY_ACTIVITY_DAYS).rev() {
+    let mut days = Vec::with_capacity(usize::try_from(count).unwrap_or_default());
+    for days_ago in (0..count).rev() {
         let date = today - Duration::days(days_ago);
         let (start, end) = local_day_bounds(date, offset);
+        let end = end.min(now);
         let events = repo.events_between(
             start - Duration::seconds(MAX_EVENT_DURATION_SECONDS),
-            end.min(now),
+            end,
             MAX_DAY_EVENTS,
         )?;
-        // The cap binding is indistinguishable, from inside `aggregate_day`,
-        // from a day that simply ended there.
         let truncated = events.len() >= MAX_DAY_EVENTS;
-        days.push(aggregate_day(
+        // A read cut off at the cap holds the day only up to its last event.
+        // What came after is unknown, and that last event, with no successor
+        // in the read, would otherwise run to midnight (or now) in
+        // `measured_span`: a sub-second dwell read as the rest of the day.
+        // Ending the day where the read ends keeps the chart and the
+        // summaries to the time the evidence covers.
+        let end = if truncated {
+            events.last().map_or(end, |last| last.occurred_at.min(end))
+        } else {
+            end
+        };
+        days.push(fold(LocalDay {
             date,
-            events,
             start,
-            end.min(now),
-            date == today,
+            end,
+            is_today: date == today,
+            events,
             truncated,
-        ));
+        }));
     }
     Ok(days)
 }
@@ -534,19 +605,9 @@ fn aggregate_day(
 
     let mut by_label = BTreeMap::<(String, String), DisplayBucket>::new();
     for (index, event) in events.iter().enumerate() {
-        let measured_start = event.occurred_at.max(start);
-        let next_at = events
-            .get(index + 1)
-            .map(|next| next.occurred_at)
-            .unwrap_or(end);
-        let measured_end = if event.duration_seconds > 0 {
-            event.occurred_at
-                + Duration::seconds(i64::try_from(event.duration_seconds).unwrap_or(1800))
-        } else {
-            next_at
-        }
-        .min(next_at)
-        .min(end);
+        let Some((measured_start, measured_end)) = measured_span(&events, index, start, end) else {
+            continue;
+        };
         let seconds = (measured_end - measured_start).num_seconds().max(0) as u64;
         if seconds == 0 || event.category.eq_ignore_ascii_case("SYSTEM") {
             continue;
@@ -684,6 +745,271 @@ fn aggregate_day(
         active_seconds,
         coverage,
         segments: rendered_segments,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Daily summaries built on this Mac (`history_payload`, source `this_mac`)
+// ---------------------------------------------------------------------------
+
+/// The furthest from UTC a client's offset is read at: 18 hours, as
+/// `request_category_prompt`, the weekly digest and Focus clamp theirs. The
+/// dashboard's own request allows up to 86399; no zone is that far out, so
+/// the chart and these summaries read every real offset alike.
+const MAX_CLIENT_UTC_OFFSET_SECONDS: i32 = 64_800;
+
+/// velvt-core's `modeling_session_gap_seconds`: more than this between two
+/// pieces of evidence starts a new work session, and a change of lane across
+/// a session boundary is not a switch.
+const SESSION_GAP_SECONDS: i64 = 30 * 60;
+
+/// The least active time that makes a day built on this Mac `ready`: the
+/// minute the chart asks of a today that is still building
+/// ([`EARLY_SIGNAL_REQUIRED_SECONDS`]). Under it the card read "100% of 0m
+/// observed active time", and a few seconds of the previous day's last dwell
+/// running past midnight made a day with no evidence of its own count toward
+/// the week-over-week gate.
+const LOCAL_READY_MIN_ACTIVE_SECONDS: u64 = EARLY_SIGNAL_REQUIRED_SECONDS;
+
+/// The seam two back-to-back dwells can leave between them. `occurred_at`
+/// crosses IPC in whole seconds and Swift floors each dwell's length, so a
+/// dwell that ended as the next began is stored ending up to a second before
+/// it: at about half of all boundaries.
+const DWELL_SEAM_SECONDS: i64 = 1;
+
+/// Per-local-day summaries for the last `requested_days` days (at most
+/// [`DAILY_ACTIVITY_DAYS`], the raw-event retention), built from this Mac's
+/// own retained events: what `request_latest_history` answers with when the
+/// account is signed out or the cloud cannot answer. Nothing is stored and
+/// nothing is sent anywhere.
+///
+/// Each field mirrors velvt-core's daily summary
+/// (`app/services/daily_summary_service.py` `recompute_daily_summary`) as
+/// closely as the local evidence allows, and every difference is stated
+/// below. Where the two readings differ, focused time and switches count only
+/// confident evidence, so neither claims more focus or more switching than
+/// the evidence carries; dwell time is the chart's, so the card and the chart
+/// above it never disagree about a day.
+///
+/// - **Evidence** is every event this Mac retained. Core sees only the events
+///   that were uploaded, and none collected while signed out.
+/// - **Days** are local calendar days at the client's current offset, the
+///   same days the Daily Activity chart draws. Core's are UTC days
+///   (`clip_events_to_utc_day`). One fixed offset bounds every day, as it does
+///   for the chart, so a day before a daylight-saving change is an hour off
+///   its wall-clock midnight rather than 23 or 25 hours long.
+/// - **Dwell time** is the chart's measure ([`measured_span`]): a reported
+///   dwell, or the time to the next event when none was reported, clipped at
+///   the next event, the day's end and now. Core caps every dwell at 30
+///   minutes (`modeling_max_inferred_duration_seconds`) and gives an event
+///   with no successor 60 seconds; this Mac has the reported dwells those
+///   caps approximate.
+/// - **`active_seconds`** is the day's measured time outside SYSTEM, the
+///   chart's number for the same day (zero on a `no_data` day, as every
+///   count is). Core also counts SYSTEM time.
+/// - **`status`** is `ready` from [`LOCAL_READY_MIN_ACTIVE_SECONDS`] (a
+///   minute) of active time, else `no_data`. Core's is `ready` from any
+///   modelled time, so a day with only SYSTEM time, or with under a minute
+///   of activity, is `ready` in core and `no_data` here.
+/// - **A day read up to its cap** (`MAX_DAY_EVENTS`) ends at the last event
+///   the read holds ([`fold_local_days`]), as the chart's day does: its
+///   numbers cover the part of the day the read reached, and no more.
+/// - **`event_count`** counts the events with measured time in the day, as
+///   core counts the events it modelled into it.
+/// - **`focused_seconds`** is confident time ([`segment_is_confident`], the
+///   drift gate's bar) in FOCUS_WORK, TASK_MANAGEMENT and REFERENCE: the
+///   categories that upload as `document:`, `task:` and `reference:` types
+///   and so land in core's `focus_work` and `development_work` lanes
+///   (`app/analytics/types.py` `work_lane_for_event`). Core reads the lane
+///   off the abstraction type whatever the classification confidence, so it
+///   also counts low-confidence time there.
+/// - **`meaningful_switch_count`** counts changes of core's work lane
+///   ([`work_lane`]) between consecutive confident stretches no more than
+///   [`SESSION_GAP_SECONDS`] apart. Core counts lane changes between
+///   consecutive events within a session (`sessionization.py`
+///   `switch_count`), and there SYSTEM and unclassified time are lanes of
+///   their own, so a detour through either is two switches; here it is none,
+///   and a change around it is one.
+/// - **`longest_uninterrupted_seconds`** is the longest run of confident
+///   stretches in one category with nothing between them but the
+///   [`DWELL_SEAM_SECONDS`] seam whole-second timestamps leave between
+///   back-to-back dwells ([`longest_confident_run_seconds`]). Core's is the
+///   longest work session with no lane change at all (`focus_seconds`): zero
+///   when every session had a switch, and otherwise summed across gaps of up
+///   to 30 minutes, SYSTEM sessions included. Either can be the longer.
+/// - **`confidence_level`** is `low` for every ready day. Core's is `medium`
+///   only after 14 earlier summarised days (`confidence_for_prior_days` with
+///   `modeling_baseline_mature_summary_count`), and this Mac keeps 14 days in
+///   all, so no local day has 14 before it. A `no_data` day is `none`, as in
+///   core.
+/// - **Cloud-only fields** are never invented: `focus_score` and
+///   `fragmentation_score` are null, `baseline_status` is `unavailable`,
+///   `baseline_comparison` is `{"status": "unavailable"}`, and
+///   `type_proportions` is empty (the chart above the card already draws the
+///   day's categories, and nothing reads them from here).
+pub fn local_daily_history(
+    repo: &dyn RawEventRepo,
+    now: DateTime<Utc>,
+    utc_offset_seconds: i32,
+    requested_days: u8,
+) -> Result<HistoryPayload, PersistenceError> {
+    let offset = FixedOffset::east_opt(utc_offset_seconds.clamp(
+        -MAX_CLIENT_UTC_OFFSET_SECONDS,
+        MAX_CLIENT_UTC_OFFSET_SECONDS,
+    ))
+    .expect("an offset within 18 hours is valid");
+    let count = i64::from(requested_days).clamp(1, DAILY_ACTIVITY_DAYS);
+    let summaries = fold_local_days(repo, now, offset, count, |day| {
+        local_daily_summary(day.date, day.events, day.start, day.end)
+    })?;
+    Ok(HistoryPayload {
+        days: u32::try_from(summaries.len()).unwrap_or(u32::MAX),
+        source: HistorySource::ThisMac,
+        summaries,
+    })
+}
+
+fn local_daily_summary(
+    date: NaiveDate,
+    mut events: Vec<RawEventEntry>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> DailySummary {
+    events.sort_by_key(|event| event.occurred_at);
+    let event_count = (0..events.len())
+        .filter(|&index| measured_span(&events, index, start, end).is_some())
+        .count() as u64;
+    let segments = build_segments(events, start, end);
+    let active_seconds = segments
+        .iter()
+        .filter(|segment| !segment.category.eq_ignore_ascii_case("SYSTEM"))
+        .map(segment_seconds)
+        .sum::<u64>();
+    if active_seconds < LOCAL_READY_MIN_ACTIVE_SECONDS {
+        return no_data_summary(date);
+    }
+    let confident = segments
+        .iter()
+        .filter(|segment| segment_is_confident(segment))
+        .collect::<Vec<_>>();
+    let focused_seconds = confident
+        .iter()
+        .filter(|segment| {
+            matches!(
+                work_lane(&segment.category),
+                "focus_work" | "development_work"
+            )
+        })
+        .map(|segment| segment_seconds(segment))
+        .sum();
+    let meaningful_switch_count = confident
+        .windows(2)
+        .filter(|pair| {
+            work_lane(&pair[0].category) != work_lane(&pair[1].category)
+                && (pair[1].started_at - pair[0].ended_at).num_seconds() <= SESSION_GAP_SECONDS
+        })
+        .count() as u64;
+    let longest_uninterrupted_seconds = longest_confident_run_seconds(&segments);
+    DailySummary {
+        date,
+        status: HistoryStatus::Ready,
+        event_count,
+        focus_score: None,
+        fragmentation_score: None,
+        confidence_level: ConfidenceLevel::Low,
+        active_seconds,
+        focused_seconds,
+        meaningful_switch_count,
+        longest_uninterrupted_seconds,
+        baseline_status: UNAVAILABLE.to_owned(),
+        baseline_comparison: serde_json::json!({ "status": UNAVAILABLE }),
+        type_proportions: Vec::new(),
+    }
+}
+
+/// The longest run of confident time in one category, in seconds.
+///
+/// `build_segments` merges two stretches of one category only when the
+/// first ends at or after the second begins, and back-to-back dwells miss
+/// that by the [`DWELL_SEAM_SECONDS`] seam at about half of all boundaries:
+/// read segment by segment, a run of k dwells survives whole about once in
+/// 2^(k-1), and ninety minutes in one lane read as a dwell or two. A run here
+/// continues across a seam that short, and ends at a change of category,
+/// at anything not confident (SYSTEM and unclassified time included), and at
+/// any longer gap. The seam itself is not counted.
+fn longest_confident_run_seconds(segments: &[LocalTimelineSegment]) -> u64 {
+    let mut longest = 0;
+    let mut run = 0;
+    let mut previous: Option<&LocalTimelineSegment> = None;
+    for segment in segments {
+        if !segment_is_confident(segment) {
+            previous = None;
+            continue;
+        }
+        let continues = previous.is_some_and(|previous| {
+            previous.category == segment.category
+                && (segment.started_at - previous.ended_at).num_seconds() <= DWELL_SEAM_SECONDS
+        });
+        run = if continues { run } else { 0 } + segment_seconds(segment);
+        longest = longest.max(run);
+        previous = Some(segment);
+    }
+    longest
+}
+
+/// What a cloud-only field says in a summary built on this Mac.
+const UNAVAILABLE: &str = "unavailable";
+
+/// A day with under a minute of active time, shaped as core shapes a day it
+/// has no summary for (`history_service.py` `serialize_summary(None, …)`):
+/// every count zero, confidence `none`.
+fn no_data_summary(date: NaiveDate) -> DailySummary {
+    DailySummary {
+        date,
+        status: HistoryStatus::NoData,
+        event_count: 0,
+        focus_score: None,
+        fragmentation_score: None,
+        confidence_level: ConfidenceLevel::None,
+        active_seconds: 0,
+        focused_seconds: 0,
+        meaningful_switch_count: 0,
+        longest_uninterrupted_seconds: 0,
+        baseline_status: UNAVAILABLE.to_owned(),
+        baseline_comparison: serde_json::json!({ "status": UNAVAILABLE }),
+        type_proportions: Vec::new(),
+    }
+}
+
+/// Whether a stretch is evidence by the drift gate's bar
+/// (`work_block::is_confident`).
+///
+/// A segment carries a real category only when every event merged into it
+/// was classified with high or medium confidence (`safe_category`), and its
+/// confidence is the weakest of theirs, so asking the gate about it as
+/// `Classified` asks exactly what the gate asks of each event.
+fn segment_is_confident(segment: &LocalTimelineSegment) -> bool {
+    crate::work_block::is_confident(
+        &segment.category,
+        ClassificationStatus::Classified,
+        segment.confidence,
+    )
+}
+
+/// velvt-core's work lane for a local category: the lane
+/// `work_lane_for_event` (`app/analytics/types.py`) gives the one abstraction
+/// type the category uploads as (`upload::dto::cloud_abstraction_type`).
+/// FOCUS_WORK uploads as `document:inferred` and TASK_MANAGEMENT as
+/// `task:inferred`, both `focus_work`; REFERENCE as `reference:inferred`,
+/// `development_work`; PASSIVE_CONSUMPTION and SOCIAL_FEED as `video:` and
+/// `social:`, both `consumption`. Any other category is a lane of its own.
+fn work_lane(category: &str) -> &str {
+    match category {
+        "FOCUS_WORK" | "TASK_MANAGEMENT" => "focus_work",
+        "REFERENCE" => "development_work",
+        "COMMUNICATION" => "communication",
+        "PASSIVE_CONSUMPTION" | "SOCIAL_FEED" => "consumption",
+        other => other,
     }
 }
 
@@ -1075,6 +1401,7 @@ mod tests {
             upload_eligible: true,
             app_stable_id: None,
             app_scope_eligible: true,
+            site_stable_id: None,
         }
     }
 
@@ -1582,5 +1909,478 @@ mod tests {
             window_label(9_999, MAX_WINDOW_SECONDS + 1),
             "Most recent 60 work-block minutes"
         );
+    }
+
+    // --- Daily summaries built on this Mac ---------------------------------
+
+    use crate::persistence::SqlitePersistence;
+    use chrono::NaiveDateTime;
+
+    /// UTC-04:00, the offset every local-history test reads at unless it
+    /// says otherwise.
+    const EDT: i32 = -4 * 3_600;
+
+    /// The instant `local` (`YYYY-MM-DD HH:MM:SS`) names at `offset`.
+    fn at_local(local: &str, offset: i32) -> i64 {
+        FixedOffset::east_opt(offset)
+            .unwrap()
+            .from_local_datetime(
+                &NaiveDateTime::parse_from_str(local, "%Y-%m-%d %H:%M:%S").unwrap(),
+            )
+            .single()
+            .unwrap()
+            .timestamp()
+    }
+
+    fn confident(at: i64, duration: u64, category: &str, confidence: &str) -> RawEventEntry {
+        let mut value = event(at, category, "classified", confidence);
+        value.duration_seconds = duration;
+        value
+    }
+
+    fn unconfident(at: i64, duration: u64, category: &str) -> RawEventEntry {
+        let mut value = event(at, category, "ambiguous", "low");
+        value.duration_seconds = duration;
+        value
+    }
+
+    fn store(events: &[RawEventEntry]) -> SqlitePersistence {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let repo = persistence.raw_event_repo();
+        for value in events {
+            repo.insert(value).unwrap();
+        }
+        persistence
+    }
+
+    fn history_at(events: &[RawEventEntry], now: i64, offset: i32, days: u8) -> HistoryPayload {
+        let persistence = store(events);
+        local_daily_history(
+            &*persistence.raw_event_repo(),
+            DateTime::from_timestamp(now, 0).unwrap(),
+            offset,
+            days,
+        )
+        .unwrap()
+    }
+
+    fn day<'a>(history: &'a HistoryPayload, date: &str) -> &'a DailySummary {
+        let date = NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap();
+        history
+            .summaries
+            .iter()
+            .find(|summary| summary.date == date)
+            .unwrap_or_else(|| panic!("no summary for {date}"))
+    }
+
+    /// Days are local calendar days at the offset the client sent: a dwell
+    /// across local midnight is split between the two days, evidence half an
+    /// hour either side of it lands on its own side, and the UTC date of an
+    /// event does not decide its day.
+    #[test]
+    fn local_history_days_end_at_local_midnight_at_the_clients_offset() {
+        let events = [
+            // 23:30 local on the 25th is 03:30Z on the 26th.
+            confident(
+                at_local("2026-09-25 23:30:00", EDT),
+                600,
+                "FOCUS_WORK",
+                "high",
+            ),
+            // 23:55 to 00:05 local: five minutes on each side.
+            confident(
+                at_local("2026-09-25 23:55:00", EDT),
+                600,
+                "FOCUS_WORK",
+                "high",
+            ),
+            confident(
+                at_local("2026-09-26 00:30:00", EDT),
+                600,
+                "FOCUS_WORK",
+                "high",
+            ),
+        ];
+        let now = at_local("2026-09-27 11:00:00", EDT);
+
+        let history = history_at(&events, now, EDT, 14);
+
+        assert_eq!(day(&history, "2026-09-25").active_seconds, 600 + 300);
+        assert_eq!(day(&history, "2026-09-26").active_seconds, 300 + 600);
+        assert_eq!(
+            history.summaries.last().unwrap().date.to_string(),
+            "2026-09-27"
+        );
+
+        // The same instants at UTC+09:00 fall on other days entirely.
+        let tokyo = history_at(&events, now, 9 * 3_600, 14);
+        assert_eq!(day(&tokyo, "2026-09-26").active_seconds, 1_800);
+        assert_eq!(day(&tokyo, "2026-09-25").status, HistoryStatus::NoData);
+    }
+
+    /// One fixed offset bounds every day, as it bounds the chart's, so each
+    /// of the fourteen days is exactly 24 hours whatever the host's zone or
+    /// a daylight-saving change inside the window would make of it. The
+    /// window below spans the end of US daylight saving (2026-11-01).
+    #[test]
+    fn local_history_reads_every_day_at_one_fixed_offset() {
+        let now = at_local("2026-11-08 12:00:00", EDT);
+        // Two minutes centred on each local midnight, from the one that
+        // opens today back fourteen days.
+        let events = (0..14)
+            .map(|days_ago| {
+                let midnight = at_local("2026-11-08 00:00:00", EDT) - days_ago * 86_400;
+                confident(midnight - 60, 120, "FOCUS_WORK", "high")
+            })
+            .collect::<Vec<_>>();
+
+        let history = history_at(&events, now, EDT, 14);
+
+        assert_eq!(history.summaries.len(), 14);
+        for (index, summary) in history.summaries.iter().enumerate() {
+            // A minute at each end of the day; today has no end yet. A
+            // boundary an hour off would put both minutes on one side.
+            let expected = if index == 13 { 60 } else { 120 };
+            assert_eq!(
+                summary.active_seconds, expected,
+                "{} is not bounded at local midnight",
+                summary.date
+            );
+        }
+    }
+
+    /// Confident time is the drift gate's bar. Focused time is confident time
+    /// in the categories core's focus lanes hold; low-confidence time is
+    /// active but never focused; SYSTEM time is neither, as in the chart.
+    #[test]
+    fn local_history_counts_only_confident_time_as_focused() {
+        let start = at_local("2026-09-26 09:00:00", EDT);
+        let events = [
+            confident(start, 600, "FOCUS_WORK", "high"),
+            confident(start + 600, 300, "REFERENCE", "medium"),
+            confident(start + 900, 120, "TASK_MANAGEMENT", "high"),
+            unconfident(start + 1_020, 400, "FOCUS_WORK"),
+            confident(start + 1_420, 200, "COMMUNICATION", "high"),
+            confident(start + 1_620, 180, "PASSIVE_CONSUMPTION", "high"),
+            confident(start + 1_800, 500, "SYSTEM", "high"),
+            // Classified, but at low confidence: not evidence.
+            confident(start + 2_300, 100, "REFERENCE", "low"),
+        ];
+
+        let history = history_at(&events, at_local("2026-09-27 11:00:00", EDT), EDT, 14);
+        let summary = day(&history, "2026-09-26");
+
+        assert_eq!(summary.status, HistoryStatus::Ready);
+        assert_eq!(
+            summary.active_seconds,
+            600 + 300 + 120 + 400 + 200 + 180 + 100
+        );
+        assert_eq!(summary.focused_seconds, 600 + 300 + 120);
+        assert_eq!(summary.event_count, 8);
+    }
+
+    /// A switch is a change of core's work lane between confident stretches
+    /// of one session. FOCUS_WORK and TASK_MANAGEMENT share a lane; a detour
+    /// through time Velvt could not categorize is not a switch; nor is a
+    /// change after more than half an hour without confident evidence.
+    #[test]
+    fn local_history_counts_lane_changes_within_a_session() {
+        let start = at_local("2026-09-26 09:00:00", EDT);
+        let events = [
+            confident(start, 300, "FOCUS_WORK", "high"),
+            // Same lane: no switch.
+            confident(start + 300, 300, "TASK_MANAGEMENT", "high"),
+            // focus_work -> communication: one.
+            confident(start + 600, 300, "COMMUNICATION", "high"),
+            // A detour through unclassified time back to the same lane: none.
+            unconfident(start + 900, 60, "UNLOGGED"),
+            confident(start + 960, 300, "COMMUNICATION", "high"),
+            // communication -> development_work: two.
+            confident(start + 1_260, 300, "REFERENCE", "high"),
+            // Forty-five minutes of SYSTEM time, then another lane: no switch
+            // across the session gap.
+            confident(start + 1_560, 2_700, "SYSTEM", "high"),
+            confident(start + 4_260, 300, "COMMUNICATION", "high"),
+            // Consumption lanes are one lane.
+            confident(start + 4_560, 300, "PASSIVE_CONSUMPTION", "high"),
+            confident(start + 4_860, 300, "SOCIAL_FEED", "high"),
+        ];
+
+        let history = history_at(&events, at_local("2026-09-27 11:00:00", EDT), EDT, 14);
+        let summary = day(&history, "2026-09-26");
+
+        // Two before the gap, and communication -> consumption after it.
+        assert_eq!(summary.meaningful_switch_count, 3);
+    }
+
+    /// The longest uninterrupted stretch is the longest contiguous confident
+    /// stretch in one category, as the dashboard reads it: unclassified time
+    /// ends it.
+    #[test]
+    fn local_history_longest_stretch_is_contiguous_confident_time() {
+        let start = at_local("2026-09-26 09:00:00", EDT);
+        let events = [
+            confident(start, 1_200, "FOCUS_WORK", "high"),
+            confident(start + 1_200, 600, "FOCUS_WORK", "medium"),
+            unconfident(start + 1_800, 60, "FOCUS_WORK"),
+            confident(start + 1_860, 2_400, "FOCUS_WORK", "high"),
+        ];
+
+        let history = history_at(&events, at_local("2026-09-27 11:00:00", EDT), EDT, 14);
+
+        assert_eq!(
+            day(&history, "2026-09-26").longest_uninterrupted_seconds,
+            2_400
+        );
+    }
+
+    /// Dwells are measured as the chart measures them: a reported dwell ends
+    /// at the next event, one with no reported length runs to the next
+    /// event, and the last one of a finished day runs to midnight at most.
+    /// The summary's active time is the chart's for the same day.
+    #[test]
+    fn local_history_measures_dwells_as_the_chart_does() {
+        let start = at_local("2026-09-26 22:00:00", EDT);
+        let events = [
+            // Reported as an hour, but the next event began five minutes in.
+            confident(start, 3_600, "FOCUS_WORK", "high"),
+            // No reported length: runs to the next event, ten minutes later.
+            confident(start + 300, 0, "COMMUNICATION", "high"),
+            // No reported length and nothing after it: to midnight, 105 min.
+            confident(start + 900, 0, "REFERENCE", "high"),
+        ];
+        let now = at_local("2026-09-27 11:00:00", EDT);
+
+        let history = history_at(&events, now, EDT, 14);
+        let summary = day(&history, "2026-09-26");
+        assert_eq!(summary.active_seconds, 300 + 600 + 6_300);
+
+        let persistence = store(&events);
+        let chart = daily_activity(
+            &*persistence.raw_event_repo(),
+            DateTime::from_timestamp(now, 0).unwrap(),
+            FixedOffset::east_opt(EDT).unwrap(),
+        )
+        .unwrap();
+        let chart_day = chart.iter().find(|row| row.date == summary.date).unwrap();
+        assert_eq!(summary.active_seconds, chart_day.active_seconds);
+    }
+
+    /// Today ends now: an open-ended dwell does not claim time that has not
+    /// happened yet.
+    #[test]
+    fn local_history_today_ends_now() {
+        let now = at_local("2026-09-27 11:00:00", EDT);
+        let events = [confident(now - 1_200, 0, "FOCUS_WORK", "high")];
+
+        let history = history_at(&events, now, EDT, 14);
+
+        assert_eq!(day(&history, "2026-09-27").active_seconds, 1_200);
+    }
+
+    /// A day with no active time is `no_data` and says nothing else: every
+    /// count zero, confidence none. A day with only SYSTEM time is one of
+    /// them, as the chart draws it. A ready day carries no cloud-only value:
+    /// the scores are null and the baseline is `unavailable`.
+    #[test]
+    fn local_history_invents_nothing() {
+        let events = [
+            confident(at_local("2026-09-25 10:00:00", EDT), 900, "SYSTEM", "high"),
+            confident(
+                at_local("2026-09-26 10:00:00", EDT),
+                900,
+                "FOCUS_WORK",
+                "high",
+            ),
+        ];
+
+        let history = history_at(&events, at_local("2026-09-27 11:00:00", EDT), EDT, 14);
+
+        let system_only = day(&history, "2026-09-25");
+        assert_eq!(system_only.status, HistoryStatus::NoData);
+        assert_eq!(system_only.event_count, 0);
+        assert_eq!(system_only.active_seconds, 0);
+        assert_eq!(system_only.confidence_level, ConfidenceLevel::None);
+
+        let empty = day(&history, "2026-09-27");
+        assert_eq!(empty.status, HistoryStatus::NoData);
+
+        let ready = day(&history, "2026-09-26");
+        assert_eq!(ready.status, HistoryStatus::Ready);
+        assert_eq!(ready.confidence_level, ConfidenceLevel::Low);
+        assert_eq!(ready.focus_score, None);
+        assert_eq!(ready.fragmentation_score, None);
+        assert_eq!(ready.baseline_status, "unavailable");
+        assert_eq!(
+            ready.baseline_comparison,
+            serde_json::json!({ "status": "unavailable" })
+        );
+        assert!(ready.type_proportions.is_empty());
+    }
+
+    /// At most the fourteen retained days, oldest first, ending on the local
+    /// today, and labelled with the rows it carries; evidence older than the
+    /// window is not read.
+    #[test]
+    fn local_history_covers_at_most_fourteen_days_ending_today() {
+        let now = at_local("2026-09-27 11:00:00", EDT);
+        let events = [
+            confident(
+                at_local("2026-09-13 10:00:00", EDT),
+                900,
+                "FOCUS_WORK",
+                "high",
+            ),
+            confident(
+                at_local("2026-09-14 10:00:00", EDT),
+                900,
+                "FOCUS_WORK",
+                "high",
+            ),
+        ];
+
+        let asked_for_thirty = history_at(&events, now, EDT, 30);
+        assert_eq!(asked_for_thirty.source, HistorySource::ThisMac);
+        assert_eq!(asked_for_thirty.days, 14);
+        assert_eq!(asked_for_thirty.summaries.len(), 14);
+        assert_eq!(asked_for_thirty.summaries[0].date.to_string(), "2026-09-14");
+        assert_eq!(
+            asked_for_thirty.summaries[13].date.to_string(),
+            "2026-09-27"
+        );
+        assert!(asked_for_thirty
+            .summaries
+            .windows(2)
+            .all(|pair| pair[1].date - pair[0].date == Duration::days(1)));
+        assert_eq!(asked_for_thirty.summaries[0].active_seconds, 900);
+
+        let asked_for_seven = history_at(&events, now, EDT, 7);
+        assert_eq!(asked_for_seven.days, 7);
+        assert_eq!(asked_for_seven.summaries[0].date.to_string(), "2026-09-21");
+
+        assert_eq!(history_at(&events, now, EDT, 0).days, 1);
+    }
+
+    /// An offset past 18 hours is read at 18 hours, as every other
+    /// offset-bearing request reads it, rather than refused.
+    #[test]
+    fn local_history_clamps_the_offset() {
+        let now = at_local("2026-09-27 11:00:00", 0);
+        let beyond = history_at(&[], now, 90_000, 1);
+        let clamped = history_at(&[], now, 64_800, 1);
+        assert_eq!(beyond.summaries[0].date, clamped.summaries[0].date);
+        assert_eq!(beyond.summaries[0].date.to_string(), "2026-09-28");
+    }
+
+    /// A day is ready from a minute of active time. Under that the card read
+    /// "100% of 0m observed active time", and a few seconds of the previous
+    /// day's last dwell running past midnight made a day with nothing of its
+    /// own count as an observed one.
+    #[test]
+    fn local_history_needs_a_minute_of_activity_for_a_ready_day() {
+        let now = at_local("2026-09-27 11:00:00", EDT);
+        let events = [
+            // Five minutes on the 24th, then twenty seconds past midnight.
+            confident(
+                at_local("2026-09-24 23:55:00", EDT),
+                320,
+                "FOCUS_WORK",
+                "high",
+            ),
+            // Exactly a minute on the 26th.
+            confident(
+                at_local("2026-09-26 10:00:00", EDT),
+                60,
+                "FOCUS_WORK",
+                "high",
+            ),
+            // Forty-five seconds today.
+            confident(now - 600, 45, "FOCUS_WORK", "high"),
+        ];
+
+        let history = history_at(&events, now, EDT, 14);
+
+        assert_eq!(day(&history, "2026-09-24").active_seconds, 300);
+        let spill = day(&history, "2026-09-25");
+        assert_eq!(spill.status, HistoryStatus::NoData);
+        assert_eq!(spill.active_seconds, 0);
+        assert_eq!(spill.confidence_level, ConfidenceLevel::None);
+        let minute = day(&history, "2026-09-26");
+        assert_eq!(minute.status, HistoryStatus::Ready);
+        assert_eq!(minute.active_seconds, 60);
+        let today = day(&history, "2026-09-27");
+        assert_eq!(today.status, HistoryStatus::NoData);
+        assert_eq!(today.focused_seconds, 0);
+    }
+
+    /// Back-to-back dwells can be stored a second apart (whole-second
+    /// timestamps, floored lengths). The longest stretch runs across that
+    /// seam, and not across a longer gap or a change of category.
+    #[test]
+    fn local_history_longest_stretch_runs_across_a_one_second_seam() {
+        let start = at_local("2026-09-26 09:00:00", EDT);
+        let events = [
+            confident(start, 599, "FOCUS_WORK", "high"),
+            // A one-second seam: the stretch goes on, 599 + 600 + 599.
+            confident(start + 600, 600, "FOCUS_WORK", "high"),
+            confident(start + 1_200, 599, "FOCUS_WORK", "medium"),
+            // Two seconds: a new stretch.
+            confident(start + 1_801, 900, "FOCUS_WORK", "high"),
+            // A seam, but another category: new stretches, both ways.
+            confident(start + 2_702, 1_000, "COMMUNICATION", "high"),
+            confident(start + 3_703, 1_000, "FOCUS_WORK", "high"),
+        ];
+
+        let history = history_at(&events, at_local("2026-09-27 11:00:00", EDT), EDT, 14);
+        let summary = day(&history, "2026-09-26");
+
+        assert_eq!(summary.longest_uninterrupted_seconds, 599 + 600 + 599);
+        // The seams are not active time.
+        assert_eq!(
+            summary.active_seconds,
+            599 + 600 + 599 + 900 + 1_000 + 1_000
+        );
+    }
+
+    /// A day read up to its cap ends at the last event read, in the summary
+    /// and the chart alike. That event has no successor in the read, and
+    /// measured to the day's end it turned one sub-second dwell into the rest
+    /// of the day.
+    #[test]
+    fn local_history_ends_a_day_read_up_to_its_cap_at_its_last_event() {
+        let start = at_local("2026-09-26 09:00:00", EDT);
+        let cap = i64::try_from(MAX_DAY_EVENTS).unwrap();
+        // The cap's worth of rows two seconds apart, each running to the
+        // next, then one the read never reaches.
+        let mut events = (0..cap)
+            .map(|index| confident(start + index * 2, 0, "FOCUS_WORK", "high"))
+            .collect::<Vec<_>>();
+        events.push(confident(
+            at_local("2026-09-26 20:00:00", EDT),
+            600,
+            "COMMUNICATION",
+            "high",
+        ));
+        let now = at_local("2026-09-27 11:00:00", EDT);
+        // Every row but the last runs its two seconds; the last, whose end
+        // the read cannot see, adds nothing.
+        let read = u64::try_from(cap - 1).unwrap() * 2;
+
+        let history = history_at(&events, now, EDT, 2);
+        let summary = day(&history, "2026-09-26");
+        assert_eq!(summary.active_seconds, read);
+        assert_eq!(summary.focused_seconds, read);
+        assert_eq!(summary.longest_uninterrupted_seconds, read);
+
+        let persistence = store(&events);
+        let chart = daily_activity(
+            &*persistence.raw_event_repo(),
+            DateTime::from_timestamp(now, 0).unwrap(),
+            FixedOffset::east_opt(EDT).unwrap(),
+        )
+        .unwrap();
+        let chart_day = chart.iter().find(|row| row.date == summary.date).unwrap();
+        assert_eq!(chart_day.active_seconds, read);
+        assert_eq!(chart_day.coverage, LocalDashboardCoverage::Partial);
     }
 }

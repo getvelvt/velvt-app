@@ -1088,7 +1088,10 @@ async fn path5_history_and_insight_fetch_are_cached_and_pushed() {
     .with_push_adapter(Arc::clone(&push_adapter));
 
     let history = fetch_service.daily_history(7).await.unwrap();
-    assert_eq!(history.days, 7);
+    // Labelled with the one row the cloud sent, not the seven asked for
+    // (protocol 33).
+    assert_eq!(history.days, 1);
+    assert_eq!(history.source, velvt_shared_types::HistorySource::Cloud);
     assert!(
         history_repo
             .get(&date.format("%Y-%m-%d").to_string())

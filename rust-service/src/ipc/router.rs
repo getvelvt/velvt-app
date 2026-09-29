@@ -3,30 +3,34 @@ use std::{
     future::Future,
     hash::{BuildHasher, Hash, Hasher, RandomState},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
 use chrono::Utc;
 use uuid::Uuid;
 use velvt_shared_types::{
-    CacheEmpty, ClassificationConfidence, ClassificationCorrectionSummary, ClassificationSource,
-    ClassificationStatus, ClientMessage, CorrectionHistoryPage, InterventionSalience, MenuStatus,
-    QueuedEventSummary, RawEventAck, RawEventMetadataError, RawEventStatus, RequestLocalDashboard,
-    ServerMessage, SetApplicationCategory, UnclassifiedTriage, UnclassifiedTriageEntry,
+    CacheEmpty, CategoryPrompt, ClassificationConfidence, ClassificationCorrectionSummary,
+    ClassificationSource, ClassificationStatus, ClientMessage, CorrectionHistoryPage,
+    InterventionSalience, MenuStatus, QueuedEventSummary, RawEventAck, RawEventMetadataError,
+    RawEventStatus, RequestLatestHistory, RequestLocalDashboard, ServerMessage,
+    SetApplicationCategory, SetSiteCategory, UnclassifiedTriage,
 };
 
 use crate::abstraction::{AbstractedEvent, AbstractionEngine};
 use crate::auth::{
     AccountAuthService, AuthError, AuthState, HttpClient, HttpRequest, SessionValidator, TokenStore,
 };
+use crate::category_prompt::CategoryPromptManager;
 use crate::delivery::{shaper, CacheManager, PushAdapter};
 use crate::focus::FocusManager;
 use crate::initiation::InitiationManager;
 use crate::persistence::{
     AbstractionMapRepo, DeclaredAppMetadata, PersistenceError, RawEventEntry, RawEventRepo,
-    UnclassifiedAppEntry, UploadBatchRepo, UploadQueueDiagnostics, MAX_REPORTED_DWELL_SECONDS,
-    TRIAGE_MAX_ENTRIES, TRIAGE_MAX_LOOKBACK_DAYS, TRIAGE_MIN_SECONDS,
+    UploadBatchRepo, UploadQueueDiagnostics, MAX_REPORTED_DWELL_SECONDS, TRIAGE_MAX_LOOKBACK_DAYS,
 };
 use crate::receipts::ReceiptsManager;
 use crate::upload::EventIngestor;
@@ -272,19 +276,26 @@ fn normalized_correction_query(value: Option<&str>) -> Result<Option<String>, ()
     Ok((!trimmed.is_empty()).then(|| trimmed.to_owned()))
 }
 
-/// Accepts an application key only in the shape Velvt itself issues.
+/// Accepts an application or site key only in the shape Velvt itself issues.
 ///
-/// Every app key Velvt hands out is an HMAC-SHA-256 digest rendered as 64
-/// lowercase hex characters (`key.rs`), and the client's only source for one is
-/// the triage list it is answering. Anything else is a defect or a forgery, and accepting
-/// it would write a rule under a key no event can ever match — invisible in the
-/// history's app rules, unreachable by removal, and impossible to explain.
+/// Every app key and site key Velvt hands out is an HMAC-SHA-256 digest
+/// rendered as 64 lowercase hex characters (`key.rs`), and the client's only
+/// source for one is the list it is answering. Anything else is a defect or a
+/// forgery, and accepting it would write a rule under a key no event can ever
+/// match — invisible in the history's rules, unreachable by removal, and
+/// impossible to explain.
 fn normalized_app_stable_id(value: &str) -> Option<&str> {
     (value.len() == 64
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
     .then_some(value)
+}
+
+/// Accepts a card id only in the shape Velvt issues: 32 random bytes in 64
+/// lowercase hex characters, the same shape as a key.
+fn normalized_prompt_id(value: &str) -> Option<&str> {
+    normalized_app_stable_id(value)
 }
 
 fn correction_summary(
@@ -308,6 +319,7 @@ mod tests {
     use super::*;
     use crate::abstraction::{app_bundle_key_for, app_stable_key_for, StableKeySalt};
     use crate::auth::{FakeTokenStore, HttpResponse, TokenStore};
+    use crate::delivery::CacheError;
     use crate::persistence::SqlitePersistence;
     use std::future::Future;
 
@@ -456,6 +468,8 @@ mod tests {
             removal_acknowledgment(false),
             reset_acknowledgment(),
             application_acknowledgment(Some("Qwybex"), "FOCUS_WORK"),
+            site_acknowledgment(Some("Forum"), "REFERENCE"),
+            site_acknowledgment(None, "SOCIAL_FEED"),
         ];
 
         assert_eq!(
@@ -465,6 +479,14 @@ mod tests {
         assert_eq!(
             application_acknowledgment(None, "REFERENCE"),
             "Got it — This app counts as reference from now on."
+        );
+        assert_eq!(
+            site_acknowledgment(Some("Forum"), "SOCIAL_FEED"),
+            "Got it — every page of Forum, in every browser, counts as social feed from now on."
+        );
+        assert_eq!(
+            site_acknowledgment(None, "REFERENCE"),
+            "Got it — every page of this site, in every browser, counts as reference from now on."
         );
         for sentence in sentences {
             for forbidden in [
@@ -813,7 +835,7 @@ mod tests {
         let status = menu_status(
             &router,
             ClientMessage::SetApplicationCategory(velvt_shared_types::SetApplicationCategory {
-                app_stable_id: entry.app_stable_id.clone(),
+                app_stable_id: entry.stable_id.clone(),
                 category: "FOCUS_WORK".into(),
                 activity_name: Some("Qwybex".into()),
             }),
@@ -824,8 +846,9 @@ mod tests {
         // A request past the retention window reports the window actually used.
         assert_eq!(listed.window_days, 14);
         assert_eq!(listed.entries.len(), 1);
-        assert_eq!(entry.app_stable_id, app_key(&persistence, "Qwybex"));
-        assert_eq!(entry.display_name, "Qwybex");
+        assert_eq!(entry.kind, velvt_shared_types::TriageEntryKind::Application);
+        assert_eq!(entry.stable_id, app_key(&persistence, "Qwybex"));
+        assert_eq!(entry.display_name.as_deref(), Some("Qwybex"));
         assert_eq!(entry.seconds_observed, 600);
         assert_eq!(entry.event_count, 1);
         // No bundle identity on the wire in either form: the raw identifier is
@@ -941,6 +964,96 @@ mod tests {
         assert!(triage(&router, 14).await.entries.is_empty());
     }
 
+    fn browser_tab(browser: &str, url: &str, duration_seconds: u64) -> ClientMessage {
+        ClientMessage::RawEvent(velvt_shared_types::RawEvent {
+            event_id: Uuid::new_v4(),
+            occurred_at: Utc::now(),
+            duration_seconds,
+            app_name: browser.to_owned(),
+            window_title: "Zarniwoop".to_owned(),
+            bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
+            focused_document_url: Some(url.to_owned()),
+            in_progress: false,
+        })
+    }
+
+    /// Ingestion fills the site columns from the classification. A tab on a
+    /// site Velvt cannot categorize records the site's key, the same one in
+    /// every browser and with or without `www.`, and keeps the site's name;
+    /// both visits then count toward one row of the site list. A tab on a
+    /// seeded site is categorized, so it adds nothing to the list.
+    #[tokio::test]
+    async fn a_browser_tab_records_its_site_and_the_name_of_a_site_that_needs_a_category() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        let salt = persistence
+            .abstraction_map_repo()
+            .stable_key_salt()
+            .unwrap();
+        for message in [
+            browser_tab("Safari", "https://www.qwybex-forum.example/t/1?q=x", 600),
+            browser_tab("Google Chrome", "https://qwybex-forum.example/t/2", 300),
+            browser_tab("Safari", "https://github.com/velvt/app", 3_600),
+        ] {
+            router.route(message).await.unwrap();
+        }
+
+        let entries = persistence
+            .raw_event_repo()
+            .unclassified_site_triage(14, 300, 8)
+            .unwrap();
+
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(
+            entries[0].site_stable_id,
+            crate::abstraction::site_stable_key_for(&salt, "qwybex-forum.example")
+        );
+        assert_eq!(entries[0].display_name, "qwybex-forum.example");
+        assert_eq!(entries[0].seconds_observed, 900);
+        assert_eq!(entries[0].event_count, 2);
+        // The list the client reads holds the site, and no application: a
+        // tab is never an application Velvt can be taught about as a whole.
+        let listed = triage(&router, 14).await.entries;
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].kind, velvt_shared_types::TriageEntryKind::Site);
+        assert_eq!(listed[0].stable_id, entries[0].site_stable_id);
+        assert_eq!(
+            listed[0].display_name.as_deref(),
+            Some("qwybex-forum.example")
+        );
+        assert_eq!(listed[0].seconds_observed, 900);
+    }
+
+    /// A sign-in page Velvt files as SYSTEM is categorized, even though the
+    /// drift gate never counts SYSTEM time: its hostname -- an SSO tenant's
+    /// name among them -- is not kept, and the site is not on the list. The
+    /// unseeded tab beside them is the control that shows names are kept.
+    #[tokio::test]
+    async fn a_sign_in_site_filed_as_system_keeps_no_name() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        for message in [
+            browser_tab("Safari", "https://accounts.google.com/v3/signin", 600),
+            browser_tab("Google Chrome", "https://x.okta.com/app/UserHome", 600),
+            browser_tab("Safari", "https://qwybex-forum.example/t/1", 600),
+        ] {
+            router.route(message).await.unwrap();
+        }
+
+        let events = persistence.raw_event_repo();
+        let entries = events.unclassified_site_triage(14, 300, 8).unwrap();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].display_name, "qwybex-forum.example");
+        // Every stored name is older than tomorrow, so this removes, and
+        // counts, all of them: the control's, and nothing else.
+        let stored_names = events
+            .delete_expired_site_names(Utc::now() + chrono::Duration::days(1), 100)
+            .unwrap();
+        assert_eq!(stored_names, 1);
+    }
+
     /// Absent declared metadata must behave exactly as it did before the
     /// columns existed: the event is stored, and the triage row reads the same.
     #[tokio::test]
@@ -959,7 +1072,7 @@ mod tests {
             ServerMessage::RawEventAck(ref ack) if ack.status == RawEventStatus::Accepted
         ));
         let entry = triage(&router, 14).await.entries.remove(0);
-        assert_eq!(entry.display_name, "Qwybex");
+        assert_eq!(entry.display_name.as_deref(), Some("Qwybex"));
         assert_eq!(entry.seconds_observed, 600);
     }
 
@@ -1041,9 +1154,1158 @@ mod tests {
 
         // And the observed time reaches the surface that exists to collect it.
         let triaged = triage(&router, 14).await.entries.remove(0);
-        assert_eq!(triaged.display_name, "Qwybex");
+        assert_eq!(triaged.display_name.as_deref(), Some("Qwybex"));
         assert_eq!(triaged.seconds_observed, 1200);
         assert_eq!(triaged.event_count, 2);
+    }
+
+    /// Records every request made through it, its path and its body, so a
+    /// device-local command can be shown to send nothing about what it
+    /// changed.
+    #[derive(Default)]
+    struct RecordingHttp(std::sync::Mutex<Vec<String>>);
+
+    impl RecordingHttp {
+        fn requests(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl HttpClient for RecordingHttp {
+        fn send<'a>(
+            &'a self,
+            request: HttpRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, AuthError>> + Send + 'a>> {
+            self.0.lock().unwrap().push(format!(
+                "{} {} {}",
+                request.method.as_str(),
+                request.path,
+                request
+                    .json_body
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default()
+            ));
+            Box::pin(async {
+                Ok(HttpResponse {
+                    status: 200,
+                    error_code: None,
+                    tokens: None,
+                    retry_after: None,
+                    message: None,
+                    raw_body: None,
+                    user_id: None,
+                    device_id: None,
+                })
+            })
+        }
+    }
+
+    fn site_key(persistence: &SqlitePersistence, host: &str) -> String {
+        let salt = persistence
+            .abstraction_map_repo()
+            .stable_key_salt()
+            .unwrap();
+        crate::abstraction::site_stable_key_for(&salt, host)
+    }
+
+    fn teach_site(site_stable_id: &str, category: &str, name: Option<&str>) -> ClientMessage {
+        ClientMessage::SetSiteCategory(SetSiteCategory {
+            site_stable_id: site_stable_id.to_owned(),
+            category: category.to_owned(),
+            activity_name: name.map(str::to_owned),
+        })
+    }
+
+    async fn history(router: &R7Router) -> Vec<ClassificationCorrectionSummary> {
+        match router
+            .route(ClientMessage::RequestCorrectionHistory(
+                velvt_shared_types::RequestCorrectionHistory {
+                    query: None,
+                    offset: 0,
+                    page_size: 20,
+                },
+            ))
+            .await
+            .unwrap()
+        {
+            Some(ServerMessage::CorrectionHistoryPage(page)) => page.items,
+            other => panic!("expected a correction history page, got {other:?}"),
+        }
+    }
+
+    /// Applications and sites are one list, ranked by time together, over the
+    /// window the client asked for.
+    #[tokio::test]
+    async fn the_list_holds_applications_and_sites_ranked_together() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        for message in [
+            raw_event("Qwybex", "Zarniwoop", Some("com.example.qwybex"), 600),
+            browser_tab("Safari", "https://qwybex-forum.example/a", 900),
+        ] {
+            router.route(message).await.unwrap();
+        }
+
+        let listed = triage(&router, 7).await;
+
+        assert_eq!(listed.window_days, 7);
+        let kinds: Vec<_> = listed
+            .entries
+            .iter()
+            .map(|entry| (entry.kind, entry.seconds_observed))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (velvt_shared_types::TriageEntryKind::Site, 900),
+                (velvt_shared_types::TriageEntryKind::Application, 600),
+            ]
+        );
+        assert_eq!(
+            listed.entries[0].stable_id,
+            site_key(&persistence, "qwybex-forum.example")
+        );
+    }
+
+    /// An application Velvt holds no name for is listed with no name, and a
+    /// rule taught for it carries no name either, so "Unnamed application" is
+    /// never written as the name of every later window of it.
+    #[tokio::test]
+    async fn an_unnamed_application_is_listed_without_a_name_and_taught_without_one() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        let key = "7".repeat(64);
+        persistence
+            .raw_event_repo()
+            .insert(&RawEventEntry {
+                event_id: Uuid::new_v4().to_string(),
+                stable_id: "abs_unnamed".into(),
+                label: "unlogged".into(),
+                local_display_label: None,
+                local_name_suggestion: None,
+                category: "UNLOGGED".into(),
+                taxonomy_version: "mvp-2".into(),
+                classification_tier: "fallback".into(),
+                classification_status: "unclassified".into(),
+                classification_confidence: "none".into(),
+                classification_source: "fallback".into(),
+                occurred_at: Utc::now(),
+                duration_seconds: 1_200,
+                upload_eligible: false,
+                app_stable_id: Some(key.clone()),
+                app_scope_eligible: true,
+                site_stable_id: None,
+            })
+            .unwrap();
+
+        let entry = triage(&router, 7).await.entries.remove(0);
+        assert_eq!(entry.stable_id, key);
+        assert_eq!(entry.display_name, None);
+        let encoded = serde_json::to_string(&entry).unwrap();
+        assert!(encoded.contains(r#""display_name":null"#), "{encoded}");
+
+        let status = menu_status(
+            &router,
+            ClientMessage::SetApplicationCategory(SetApplicationCategory {
+                app_stable_id: key.clone(),
+                category: "FOCUS_WORK".into(),
+                activity_name: None,
+            }),
+        )
+        .await;
+        assert_eq!(
+            status.correction_acknowledgment.as_deref(),
+            Some("Got it — This app counts as focus work from now on.")
+        );
+        let rule = persistence
+            .abstraction_map_repo()
+            .app_scope_override(&key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rule.activity_name, None);
+    }
+
+    /// The bundle key is looked up for the application being taught, not read
+    /// off a list recomputed over fourteen days: an application eighth-or-lower
+    /// there, but on the seven-day list the client showed, was taught under its
+    /// name key alone.
+    #[tokio::test]
+    async fn teaching_an_app_records_its_bundle_key_wherever_it_ranks() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        for index in 0..9 {
+            router
+                .route(raw_event(
+                    &format!("Qwybex {index}"),
+                    "Zarniwoop",
+                    Some(&format!("com.example.qwybex{index}")),
+                    3_600,
+                ))
+                .await
+                .unwrap();
+        }
+        router
+            .route(raw_event(
+                "Vorlath",
+                "Zarniwoop",
+                Some("com.example.vorlath"),
+                600,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            triage(&router, 14)
+                .await
+                .entries
+                .iter()
+                .all(|entry| entry.stable_id != app_key(&persistence, "Vorlath")),
+            "the fixture puts the application below the cap"
+        );
+
+        menu_status(
+            &router,
+            ClientMessage::SetApplicationCategory(SetApplicationCategory {
+                app_stable_id: app_key(&persistence, "Vorlath"),
+                category: "REFERENCE".into(),
+                activity_name: Some("Vorlath".into()),
+            }),
+        )
+        .await;
+
+        assert!(persistence
+            .abstraction_map_repo()
+            .bundle_app_override(&bundle_key(&persistence, "com.example.vorlath"))
+            .unwrap()
+            .is_some());
+    }
+
+    /// Teaching a site: the rule is written under the site key, the site leaves
+    /// the list, its stored hostname goes, the confirmation never names it,
+    /// and nothing about the site is sent anywhere -- even signed in. Both
+    /// clients a teach can reach are watched: the corrections client, which
+    /// sends nothing at all, and the menu status's, which may check cloud
+    /// readiness for the status the teach answers with, as any status poll
+    /// does, and carries nothing about the site when it does.
+    #[tokio::test]
+    async fn teaching_a_site_from_the_list_takes_it_off_the_list_and_sends_nothing() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let corrections_http = Arc::new(RecordingHttp::default());
+        let status_http = Arc::new(RecordingHttp::default());
+        let (_sender, auth_state) = tokio::sync::watch::channel(AuthState::Authenticated {
+            device_id: "device-router-tests".into(),
+        });
+        let router = correction_router(&persistence)
+            .with_classification_corrections(
+                persistence.abstraction_map_repo(),
+                persistence.upload_batch_repo(),
+                Arc::clone(&corrections_http) as Arc<dyn HttpClient>,
+            )
+            .with_menu_status(Arc::new(MenuStatusProvider::new(
+                Arc::clone(&status_http) as Arc<dyn HttpClient>,
+                Arc::new(FakeTokenStore::default()) as Arc<dyn TokenStore>,
+                persistence.upload_batch_repo(),
+                persistence.raw_event_repo(),
+                persistence.abstraction_map_repo(),
+            )))
+            .with_auth_state(auth_state);
+        router
+            .route(browser_tab(
+                "Safari",
+                "https://qwybex-forum.example/t/1",
+                900,
+            ))
+            .await
+            .unwrap();
+        let entry = triage(&router, 7).await.entries.remove(0);
+        assert_eq!(entry.kind, velvt_shared_types::TriageEntryKind::Site);
+
+        let status = menu_status(&router, teach_site(&entry.stable_id, "REFERENCE", None)).await;
+
+        assert_eq!(
+            status.correction_acknowledgment.as_deref(),
+            Some(
+                "Got it — every page of this site, in every browser, counts as reference \
+                 from now on."
+            )
+        );
+        let rules = persistence.abstraction_map_repo();
+        let rule = rules
+            .site_scope_override(&entry.stable_id)
+            .unwrap()
+            .expect("the site rule was written");
+        assert_eq!(rule.category, "REFERENCE");
+        assert_eq!(rule.activity_name, None);
+        assert_eq!(
+            persistence
+                .raw_event_repo()
+                .local_site_name(&entry.stable_id)
+                .unwrap(),
+            None,
+            "the hostname goes when the site is taught"
+        );
+        assert!(triage(&router, 7).await.entries.is_empty());
+        assert_eq!(
+            corrections_http.requests(),
+            Vec::<String>::new(),
+            "teaching a site made a correction request"
+        );
+        let status_requests = status_http.requests();
+        assert!(
+            !status_requests.is_empty(),
+            "the status the teach answered with checked readiness through this client"
+        );
+        assert!(
+            status_requests
+                .iter()
+                .all(|request| request == "GET /v1/ready "),
+            "the status a teach answers with sent something besides a readiness check: \
+             {status_requests:?}"
+        );
+        for request in &status_requests {
+            for site_data in ["qwybex", &entry.stable_id, "REFERENCE"] {
+                assert!(!request.contains(site_data), "{site_data} in {request}");
+            }
+        }
+
+        // Idempotent: the same answer again is the same rule, counted twice,
+        // and a name typed with it is what the confirmation calls the site.
+        let again = menu_status(
+            &router,
+            teach_site(&entry.stable_id, "REFERENCE", Some("Forum")),
+        )
+        .await;
+        assert_eq!(
+            again.correction_acknowledgment.as_deref(),
+            Some(
+                "Got it — every page of Forum, in every browser, counts as reference from now on."
+            )
+        );
+        assert_eq!(
+            rules
+                .site_scope_override(&entry.stable_id)
+                .unwrap()
+                .unwrap()
+                .correction_count,
+            2
+        );
+        // And a later visit to the site, in another browser, is the rule's.
+        router
+            .route(browser_tab(
+                "Google Chrome",
+                "https://www.qwybex-forum.example/t/2",
+                600,
+            ))
+            .await
+            .unwrap();
+        assert!(triage(&router, 7).await.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn teaching_a_site_refuses_a_key_category_or_name_velvt_does_not_recognise() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        let key = site_key(&persistence, "qwybex-forum.example");
+
+        for (message, code) in [
+            (
+                teach_site("qwybex-forum.example", "REFERENCE", None),
+                "invalid_site_stable_id",
+            ),
+            (
+                teach_site(&key.to_ascii_uppercase(), "REFERENCE", None),
+                "invalid_site_stable_id",
+            ),
+            (
+                teach_site(&key, "PROCRASTINATION", None),
+                "invalid_classification_category",
+            ),
+            (
+                teach_site(&key, "REFERENCE", Some(&"x".repeat(49))),
+                "invalid_local_activity_name",
+            ),
+            (
+                teach_site(&key, "REFERENCE", Some("line\nbreak")),
+                "invalid_local_activity_name",
+            ),
+        ] {
+            let reply = router.route(message).await.unwrap().unwrap();
+            assert!(
+                matches!(reply, ServerMessage::ErrorResponse(ref error) if error.code == code),
+                "expected {code}, got {reply:?}"
+            );
+        }
+        assert!(persistence
+            .abstraction_map_repo()
+            .site_scope_override(&key)
+            .unwrap()
+            .is_none());
+
+        // Without the correction store attached the command is unavailable,
+        // exactly as the application command is.
+        let bare = R7Router::new(
+            Arc::new(crate::delivery::FakeCacheManager::new()),
+            Arc::new(
+                crate::abstraction::AbstractionEngine::from_builtin_taxonomy(
+                    persistence.abstraction_mapping_store(),
+                )
+                .unwrap(),
+            ),
+            persistence.raw_event_repo(),
+            Arc::new(NoopIngestor),
+            Arc::new(AccountAuthService::new(
+                Arc::new(ReadyHttp) as Arc<dyn HttpClient>,
+                Arc::new(ReadyHttp) as Arc<dyn HttpClient>,
+                Arc::new(FakeTokenStore::default()) as Arc<dyn TokenStore>,
+                Arc::new(crate::auth::AuthStateMachine::new(
+                    crate::auth::AuthState::Unauthenticated,
+                )),
+            )),
+        );
+        let reply = bare
+            .route(teach_site(&key, "REFERENCE", None))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            reply,
+            ServerMessage::ErrorResponse(ref error)
+                if error.code == "classification_correction_unavailable"
+        ));
+    }
+
+    /// A site rule is in the history as a site rule, can be edited there, and
+    /// can be removed there, through the same two messages as every other rule.
+    /// An edit sends the whole name field, so an edit with no name clears the
+    /// name the rule had.
+    #[tokio::test]
+    async fn a_site_rule_is_listed_edited_and_removed_from_the_history() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        router
+            .route(browser_tab(
+                "Safari",
+                "https://qwybex-forum.example/t/1",
+                900,
+            ))
+            .await
+            .unwrap();
+        let key = site_key(&persistence, "qwybex-forum.example");
+        menu_status(&router, teach_site(&key, "REFERENCE", Some("Forum"))).await;
+
+        let listed = history(&router).await;
+        let rule = listed
+            .iter()
+            .find(|rule| rule.stable_id == key)
+            .expect("the site rule is listed");
+        assert_eq!(rule.scope, velvt_shared_types::CorrectionScope::Site);
+        assert_eq!(rule.category, "REFERENCE");
+        assert_eq!(rule.local_label.as_deref(), Some("Forum"));
+        assert!(
+            listed
+                .iter()
+                .all(|rule| rule.local_label.as_deref() != Some("qwybex-forum.example")),
+            "the history never names the host"
+        );
+
+        let renamed = menu_status(
+            &router,
+            ClientMessage::UpdateClassificationOverride(
+                velvt_shared_types::UpdateClassificationOverride {
+                    stable_id: key.clone(),
+                    category: "REFERENCE".into(),
+                    local_activity_name: Some("Board".into()),
+                },
+            ),
+        )
+        .await;
+        assert_eq!(
+            renamed.correction_acknowledgment.as_deref(),
+            Some(
+                "Got it — every page of Board, in every browser, counts as reference from now on."
+            )
+        );
+        let rules = persistence.abstraction_map_repo();
+        assert_eq!(
+            rules
+                .site_scope_override(&key)
+                .unwrap()
+                .unwrap()
+                .activity_name
+                .as_deref(),
+            Some("Board")
+        );
+
+        let edited = menu_status(&router, update(&key, "FOCUS_WORK")).await;
+        assert_eq!(
+            edited.correction_acknowledgment.as_deref(),
+            Some("Got it — every page of this site, in every browser, counts as focus work from now on.")
+        );
+        let stored = rules.site_scope_override(&key).unwrap().unwrap();
+        assert_eq!(stored.category, "FOCUS_WORK");
+        assert_eq!(stored.activity_name, None, "the cleared name is cleared");
+        let listed = history(&router).await;
+        let rule = listed
+            .iter()
+            .find(|rule| rule.stable_id == key)
+            .expect("the edited rule is still listed");
+        assert_eq!(rule.local_label, None);
+
+        let remove = || {
+            ClientMessage::RemoveClassificationOverride(
+                velvt_shared_types::RemoveClassificationOverride {
+                    stable_id: key.clone(),
+                },
+            )
+        };
+        let removed = menu_status(&router, remove()).await;
+        assert_eq!(
+            removed.correction_acknowledgment.as_deref(),
+            Some("Removed — Velvt classifies this on its own again.")
+        );
+        assert!(rules.site_scope_override(&key).unwrap().is_none());
+        assert!(history(&router)
+            .await
+            .iter()
+            .all(|rule| rule.stable_id != key));
+        let again = menu_status(&router, remove()).await;
+        assert_eq!(
+            again.correction_acknowledgment.as_deref(),
+            Some("Nothing to remove — Velvt is already classifying this on its own.")
+        );
+    }
+
+    /// The correction router with work blocks and the needs-a-category prompt
+    /// attached, over the production gates and the production list.
+    fn prompt_router(persistence: &SqlitePersistence) -> R7Router {
+        let work_blocks = Arc::new(WorkBlockManager::new(persistence.work_block_repo()));
+        let gates = crate::initiation::RuntimeInvitationGates::new(
+            crate::focus::FocusManager::new(persistence.focus_repo()),
+            persistence.work_block_repo(),
+        );
+        let prompt = CategoryPromptManager::new(
+            persistence.category_prompt_repo(),
+            crate::category_prompt::ListedCandidates::new(persistence.raw_event_repo()),
+            gates as Arc<dyn crate::initiation::InvitationGates>,
+        );
+        correction_router(persistence)
+            .with_work_blocks(
+                work_blocks,
+                PushAdapter::new(crate::delivery::PushQueue::new(50)),
+            )
+            .with_category_prompt(prompt)
+    }
+
+    async fn category_prompt(router: &R7Router) -> CategoryPrompt {
+        match router
+            .route(ClientMessage::RequestCategoryPrompt(
+                velvt_shared_types::RequestCategoryPrompt {
+                    utc_offset_seconds: 0,
+                },
+            ))
+            .await
+            .unwrap()
+        {
+            Some(ServerMessage::CategoryPrompt(prompt)) => prompt,
+            other => panic!("expected a category prompt, got {other:?}"),
+        }
+    }
+
+    async fn answer(
+        router: &R7Router,
+        prompt_id: &str,
+        response: velvt_shared_types::CategoryPromptResponse,
+    ) -> Option<ServerMessage> {
+        router
+            .route(ClientMessage::AcknowledgeCategoryPrompt(
+                velvt_shared_types::AcknowledgeCategoryPrompt {
+                    prompt_id: prompt_id.to_owned(),
+                    response,
+                },
+            ))
+            .await
+            .unwrap()
+    }
+
+    /// End to end over the real list: an app and a site Velvt could not
+    /// categorize bring one card and one reminder, counted and name-free; a
+    /// second request is the same card with no reminder; a block hides it;
+    /// "Not now" quiets it.
+    #[tokio::test]
+    async fn the_prompt_counts_the_list_names_nothing_and_answers_quietly() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = prompt_router(&persistence);
+        assert_eq!(category_prompt(&router).await, CategoryPrompt::default());
+
+        for message in [
+            raw_event("Qwybex", "Zarniwoop", Some("com.example.qwybex"), 600),
+            browser_tab("Safari", "https://qwybex-forum.example/t/1", 900),
+        ] {
+            router.route(message).await.unwrap();
+        }
+
+        let first = category_prompt(&router).await;
+        let card = first.card.clone().expect("two unanswered entries");
+        assert_eq!(
+            card.body,
+            "1 site and 1 app you used this week don't have a category yet. \
+             Choose once and it covers every page of a site and every window of an app."
+        );
+        assert_eq!(card.entry_count, 2);
+        let reminder = first.notification.clone().expect("both are new");
+        assert_eq!(reminder.title, "A few things need a category");
+        let wire = serde_json::to_string(&ServerMessage::CategoryPrompt(first.clone())).unwrap();
+        for name in [
+            "Qwybex",
+            "qwybex",
+            "Zarniwoop",
+            "qwybex-forum",
+            "Safari",
+            &app_key(&persistence, "Qwybex"),
+            &site_key(&persistence, "qwybex-forum.example"),
+        ] {
+            assert!(!wire.contains(name), "{name} is in the prompt: {wire}");
+        }
+
+        let again = category_prompt(&router).await;
+        assert_eq!(again.prompt_id, first.prompt_id);
+        assert_eq!(again.card, first.card);
+        assert_eq!(again.notification, None, "one reminder, handed over once");
+
+        // A live block takes the card away, and gives it back when it ends.
+        let started = router
+            .route(ClientMessage::StartWorkBlock(
+                velvt_shared_types::StartWorkBlock {
+                    intention: None,
+                    planned_duration_seconds: 1_500,
+                    purpose: None,
+                    intensity: velvt_shared_types::WorkBlockIntensity::Medium,
+                    invitation_id: None,
+                },
+            ))
+            .await
+            .unwrap();
+        let Some(ServerMessage::WorkBlockState(block)) = started else {
+            panic!("the block started: {started:?}");
+        };
+        assert_eq!(category_prompt(&router).await, CategoryPrompt::default());
+        router
+            .route(ClientMessage::EndWorkBlock(
+                velvt_shared_types::EndWorkBlock {
+                    block_id: block.block_id.unwrap(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert_eq!(category_prompt(&router).await.card, first.card);
+
+        let prompt_id = first.prompt_id.unwrap();
+        let reply = answer(
+            &router,
+            &prompt_id,
+            velvt_shared_types::CategoryPromptResponse::NotNow,
+        )
+        .await;
+        assert_eq!(
+            reply,
+            Some(ServerMessage::CategoryPrompt(CategoryPrompt::default())),
+            "the reply to an answer is the card as it now stands"
+        );
+        assert_eq!(category_prompt(&router).await, CategoryPrompt::default());
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_a_malformed_card_id_is_refused() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = prompt_router(&persistence);
+        for prompt_id in ["", "not-a-card", &"E".repeat(64), &"e".repeat(63)] {
+            let reply = answer(
+                &router,
+                prompt_id,
+                velvt_shared_types::CategoryPromptResponse::Opened,
+            )
+            .await;
+            assert!(
+                matches!(
+                    reply,
+                    Some(ServerMessage::ErrorResponse(ref error))
+                        if error.code == "invalid_category_prompt_id"
+                ),
+                "{prompt_id:?}: {reply:?}"
+            );
+        }
+    }
+
+    /// Opening the list from the card answers it too, and a site taught from
+    /// the list leaves it, so a new entry later is what brings the card back.
+    #[tokio::test]
+    async fn opening_the_list_answers_the_card_and_teaching_shrinks_the_list() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = prompt_router(&persistence);
+        router
+            .route(browser_tab(
+                "Safari",
+                "https://qwybex-forum.example/t/1",
+                900,
+            ))
+            .await
+            .unwrap();
+        let shown = category_prompt(&router).await;
+        assert_eq!(shown.card.as_ref().unwrap().entry_count, 1);
+        assert_eq!(
+            shown.card.as_ref().unwrap().primary_action,
+            "Choose a category"
+        );
+        answer(
+            &router,
+            shown.prompt_id.as_deref().unwrap(),
+            velvt_shared_types::CategoryPromptResponse::Opened,
+        )
+        .await;
+        menu_status(
+            &router,
+            teach_site(
+                &site_key(&persistence, "qwybex-forum.example"),
+                "REFERENCE",
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(category_prompt(&router).await, CategoryPrompt::default());
+
+        router
+            .route(raw_event("Qwybex", "Zarniwoop", None, 600))
+            .await
+            .unwrap();
+        let back = category_prompt(&router).await;
+        assert_eq!(
+            back.card.expect("a new entry").body,
+            "1 app you used this week doesn't have a category yet. \
+             Choose once and it covers every window of that app."
+        );
+        assert_eq!(
+            back.notification, None,
+            "today's reminder was spent on the site"
+        );
+    }
+
+    /// Unattached, the prompt messages are acknowledged and dropped, as the
+    /// invitation's are.
+    #[tokio::test]
+    async fn without_the_prompt_attached_its_messages_are_dropped() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        assert_eq!(
+            router
+                .route(ClientMessage::RequestCategoryPrompt(
+                    velvt_shared_types::RequestCategoryPrompt {
+                        utc_offset_seconds: 0
+                    },
+                ))
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            answer(
+                &router,
+                &"e".repeat(64),
+                velvt_shared_types::CategoryPromptResponse::NotNow
+            )
+            .await,
+            None
+        );
+    }
+
+    // --- request_latest_history: cloud-first, built on this Mac otherwise ---
+
+    /// A cloud read that fails the way an unreachable backend fails, over a
+    /// cache that holds `cached` once a test puts a history in it, as the
+    /// fetch scheduler does when the cloud answers it.
+    #[derive(Default)]
+    struct UnreachableCloud {
+        calls: std::sync::atomic::AtomicUsize,
+        cached: std::sync::Mutex<Option<velvt_shared_types::HistoryPayload>>,
+    }
+
+    impl crate::delivery::CacheManager for UnreachableCloud {
+        fn daily_history<'a>(
+            &'a self,
+            _days: u8,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<velvt_shared_types::HistoryPayload, CacheError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Err(CacheError::Fetch(crate::delivery::FetchError::ApiError {
+                    status: 522,
+                }))
+            })
+        }
+
+        fn cached_daily_history<'a>(
+            &'a self,
+            _days: u8,
+        ) -> Pin<Box<dyn Future<Output = Option<velvt_shared_types::HistoryPayload>> + Send + 'a>>
+        {
+            let cached = self.cached.lock().unwrap().clone();
+            Box::pin(async move { cached })
+        }
+
+        fn daily_insight<'a>(
+            &'a self,
+            _date: chrono::NaiveDate,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<velvt_shared_types::InsightPayload>, CacheError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn invalidate_history<'a>(
+            &'a self,
+            _date: Option<chrono::NaiveDate>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn invalidate_insights<'a>(
+            &'a self,
+            _date: Option<chrono::NaiveDate>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn invalidate_all<'a>(
+            &'a self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn history_router(
+        persistence: &SqlitePersistence,
+        cache: Arc<dyn crate::delivery::CacheManager>,
+        auth: AuthState,
+    ) -> R7Router {
+        let (_sender, auth_state) = tokio::sync::watch::channel(auth);
+        let mut router = correction_router(persistence).with_auth_state(auth_state);
+        router.cache = cache;
+        router
+    }
+
+    fn signed_in() -> AuthState {
+        AuthState::Authenticated {
+            device_id: "device-router-tests".into(),
+        }
+    }
+
+    /// Half an hour of confident focus work that ended an hour ago.
+    fn an_observed_half_hour(persistence: &SqlitePersistence) {
+        let now = Utc::now();
+        persistence
+            .raw_event_repo()
+            .insert(&crate::persistence::RawEventEntry {
+                event_id: Uuid::new_v4().to_string(),
+                stable_id: "stable-history".into(),
+                label: "document:code".into(),
+                local_display_label: None,
+                local_name_suggestion: None,
+                category: "FOCUS_WORK".into(),
+                taxonomy_version: "mvp-2".into(),
+                classification_tier: "exact_match".into(),
+                classification_status: "classified".into(),
+                classification_confidence: "high".into(),
+                classification_source: "seed".into(),
+                occurred_at: now - chrono::Duration::minutes(90),
+                duration_seconds: 1_800,
+                upload_eligible: true,
+                app_stable_id: None,
+                app_scope_eligible: true,
+                site_stable_id: None,
+            })
+            .unwrap();
+    }
+
+    async fn daily_history(router: &R7Router) -> ServerMessage {
+        router
+            .route(ClientMessage::RequestLatestHistory(RequestLatestHistory {
+                days: 14,
+                utc_offset_seconds: 0,
+            }))
+            .await
+            .unwrap()
+            .expect("request_latest_history is always answered")
+    }
+
+    /// Seven synced days ending today, as the cloud sends them.
+    fn synced_week() -> velvt_shared_types::HistoryPayload {
+        let today = Utc::now().date_naive();
+        velvt_shared_types::HistoryPayload {
+            days: 7,
+            source: velvt_shared_types::HistorySource::Cloud,
+            summaries: (0..7)
+                .rev()
+                .map(|days_ago| velvt_shared_types::DailySummary {
+                    date: today - chrono::Duration::days(days_ago),
+                    status: velvt_shared_types::HistoryStatus::Ready,
+                    event_count: 12,
+                    focus_score: Some(61.0),
+                    fragmentation_score: Some(20.0),
+                    confidence_level: velvt_shared_types::ConfidenceLevel::Low,
+                    active_seconds: 3_600,
+                    focused_seconds: 1_800,
+                    meaningful_switch_count: 4,
+                    longest_uninterrupted_seconds: 900,
+                    baseline_status: "provisional".into(),
+                    baseline_comparison: serde_json::json!({ "status": "provisional" }),
+                    type_proportions: vec![],
+                })
+                .collect(),
+        }
+    }
+
+    fn this_mac_history(message: ServerMessage) -> velvt_shared_types::HistoryPayload {
+        match message {
+            ServerMessage::HistoryPayload(history) => {
+                assert_eq!(history.source, velvt_shared_types::HistorySource::ThisMac);
+                history
+            }
+            other => panic!("expected a history built on this Mac, got {other:?}"),
+        }
+    }
+
+    /// Signed out, the card is built on this Mac and the cloud is never
+    /// asked: there is no session to ask it with.
+    #[tokio::test]
+    async fn a_signed_out_mac_gets_history_built_on_this_mac() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        an_observed_half_hour(&persistence);
+        let cloud = Arc::new(UnreachableCloud::default());
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            AuthState::Unauthenticated,
+        );
+
+        let history = this_mac_history(daily_history(&router).await);
+
+        assert_eq!(history.days, 14);
+        assert_eq!(history.summaries.len(), 14);
+        let observed = history
+            .summaries
+            .iter()
+            .map(|day| day.active_seconds)
+            .sum::<u64>();
+        assert_eq!(observed, 1_800);
+        assert_eq!(
+            cloud.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a signed-out Mac asked the cloud"
+        );
+    }
+
+    /// Signed in with the cloud unreachable, the answer is the history built
+    /// on this Mac, not `cache_empty(backend_unavailable)`.
+    #[tokio::test]
+    async fn an_unreachable_cloud_is_answered_with_history_built_on_this_mac() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        an_observed_half_hour(&persistence);
+        let cloud = Arc::new(UnreachableCloud::default());
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            signed_in(),
+        );
+
+        let history = this_mac_history(daily_history(&router).await);
+
+        assert_eq!(cloud.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(history.days, 14);
+        assert!(history
+            .summaries
+            .iter()
+            .any(|day| day.status == velvt_shared_types::HistoryStatus::Ready));
+    }
+
+    /// The connection reads one message at a time, so every request that
+    /// waited on an unreachable cloud held the connection for its timeout.
+    /// Once the cloud has failed, later requests are answered on this Mac
+    /// without asking it: Swift asks each time Patterns opens and every ten
+    /// minutes while its history is this Mac's.
+    #[tokio::test]
+    async fn an_unreachable_cloud_is_waited_on_once_per_outage() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        an_observed_half_hour(&persistence);
+        let cloud = Arc::new(UnreachableCloud::default());
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            signed_in(),
+        );
+
+        this_mac_history(daily_history(&router).await);
+        for _ in 0..3 {
+            this_mac_history(daily_history(&router.clone()).await);
+        }
+
+        assert_eq!(
+            cloud.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the cloud was waited on again during the outage"
+        );
+    }
+
+    /// The fetch scheduler keeps asking the cloud in its own task. When it
+    /// answers, its history is in the cache, and the next request is served
+    /// from there and ends the outage: the one after asks the cloud again.
+    #[tokio::test]
+    async fn a_synced_history_back_in_the_cache_ends_the_outage() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let cloud = Arc::new(UnreachableCloud::default());
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            signed_in(),
+        );
+        this_mac_history(daily_history(&router).await);
+
+        *cloud.cached.lock().unwrap() = Some(synced_week());
+        let ServerMessage::HistoryPayload(history) = daily_history(&router).await else {
+            panic!("a cached synced history is sent");
+        };
+        assert_eq!(history, synced_week());
+        assert_eq!(cloud.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        *cloud.cached.lock().unwrap() = None;
+        this_mac_history(daily_history(&router).await);
+        assert_eq!(cloud.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// A new session is a new question: after a log out, or a request made
+    /// signed out, the next signed-in request asks the cloud.
+    #[tokio::test]
+    async fn a_session_change_ends_the_outage() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let cloud = Arc::new(UnreachableCloud::default());
+        let (auth, auth_state) = tokio::sync::watch::channel(signed_in());
+        let mut router = correction_router(&persistence).with_auth_state(auth_state);
+        router.cache = Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>;
+        let calls = || cloud.calls.load(std::sync::atomic::Ordering::SeqCst);
+
+        daily_history(&router).await;
+        router
+            .route(ClientMessage::LogOut(velvt_shared_types::LogOut {}))
+            .await
+            .unwrap();
+        daily_history(&router).await;
+        assert_eq!(calls(), 2, "a log out did not end the outage");
+
+        auth.send(AuthState::Unauthenticated).unwrap();
+        daily_history(&router).await;
+        auth.send(signed_in()).unwrap();
+        daily_history(&router).await;
+        assert_eq!(calls(), 3, "a signed-out request did not end the outage");
+    }
+
+    /// A cloud answer with no rows is no answer: the card is built on this
+    /// Mac rather than refused.
+    #[tokio::test]
+    async fn an_empty_cloud_history_is_answered_with_history_built_on_this_mac() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = history_router(
+            &persistence,
+            Arc::new(crate::delivery::FakeCacheManager::new()),
+            signed_in(),
+        );
+
+        let history = this_mac_history(daily_history(&router).await);
+
+        assert_eq!(history.days, 14);
+    }
+
+    /// Seven synced days with nothing in them, as the cloud answers while no
+    /// upload has reached it.
+    fn empty_synced_week() -> velvt_shared_types::HistoryPayload {
+        let mut week = synced_week();
+        for day in &mut week.summaries {
+            day.status = velvt_shared_types::HistoryStatus::NoData;
+            day.event_count = 0;
+            day.active_seconds = 0;
+            day.focused_seconds = 0;
+            day.meaningful_switch_count = 0;
+            day.longest_uninterrupted_seconds = 0;
+            day.focus_score = None;
+            day.fragmentation_score = None;
+        }
+        week
+    }
+
+    /// While uploads are stalled the cloud answers with seven empty days. When
+    /// this Mac has activity of its own, the card is built here instead of
+    /// saying nothing was recorded; when it has none either, the synced answer
+    /// stands.
+    #[tokio::test]
+    async fn an_empty_synced_week_gives_way_to_this_macs_activity() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        an_observed_half_hour(&persistence);
+        let router = history_router(
+            &persistence,
+            Arc::new(
+                crate::delivery::FakeCacheManager::new().with_history(14, empty_synced_week()),
+            ),
+            signed_in(),
+        );
+
+        let history = this_mac_history(daily_history(&router).await);
+
+        assert!(history
+            .summaries
+            .iter()
+            .any(|day| day.status == velvt_shared_types::HistoryStatus::Ready));
+
+        let empty = SqlitePersistence::open_in_memory().unwrap();
+        let router = history_router(
+            &empty,
+            Arc::new(
+                crate::delivery::FakeCacheManager::new().with_history(14, empty_synced_week()),
+            ),
+            signed_in(),
+        );
+        let ServerMessage::HistoryPayload(history) = daily_history(&router).await else {
+            panic!("the synced answer stands when this Mac has nothing either");
+        };
+        assert_eq!(history, empty_synced_week());
+    }
+
+    /// When the cloud answers, its history is sent as it came: cloud-first,
+    /// labelled `cloud`, and labelled with the seven days it carries even
+    /// though fourteen were asked for.
+    #[tokio::test]
+    async fn a_cloud_that_answers_is_sent_first_with_the_days_it_carries() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        an_observed_half_hour(&persistence);
+        let week = synced_week();
+        let router = history_router(
+            &persistence,
+            Arc::new(crate::delivery::FakeCacheManager::new().with_history(14, week.clone())),
+            signed_in(),
+        );
+
+        let ServerMessage::HistoryPayload(history) = daily_history(&router).await else {
+            panic!("a cloud that answers is sent");
+        };
+
+        assert_eq!(history, week);
+        assert_eq!(history.days, 7);
+        assert_eq!(history.source, velvt_shared_types::HistorySource::Cloud);
     }
 
     /// The two tiers that read declared metadata have to survive the round trip
@@ -1079,7 +2341,9 @@ impl MessageRouter for DefaultRouter {
 ///
 /// On a cache miss or validation failure the router returns `CacheEmpty` so
 /// Swift can display a loading state rather than crashing.  Cache errors are
-/// logged but never surfaced to the transport layer.
+/// logged but never surfaced to the transport layer. History is the exception
+/// since protocol 33: a failed cloud read is answered with summaries built on
+/// this Mac (`history_response`).
 #[derive(Clone)]
 pub struct R7Router {
     cache: Arc<dyn CacheManager>,
@@ -1097,8 +2361,14 @@ pub struct R7Router {
     focus: Option<Arc<FocusManager>>,
     initiation: Option<Arc<InitiationManager>>,
     receipts: Option<Arc<ReceiptsManager>>,
+    category_prompt: Option<Arc<CategoryPromptManager>>,
     auth_state: Option<tokio::sync::watch::Receiver<AuthState>>,
     in_progress_dwells: Arc<InProgressDwells>,
+    /// Set when the cloud failed to give `request_latest_history` a usable
+    /// history, and shared by every connection's clone of the router. While
+    /// it is set a history request never waits on the cloud (see
+    /// `history_response`).
+    cloud_history_outage: Arc<AtomicBool>,
 }
 
 impl R7Router {
@@ -1125,8 +2395,10 @@ impl R7Router {
             focus: None,
             initiation: None,
             receipts: None,
+            category_prompt: None,
             auth_state: None,
             in_progress_dwells: Arc::default(),
+            cloud_history_outage: Arc::default(),
         }
     }
 
@@ -1189,6 +2461,14 @@ impl R7Router {
         self
     }
 
+    /// Attaches the needs-a-category card and reminder policy (protocol 33).
+    /// Without it, its messages are acknowledged and dropped and no card or
+    /// reminder exists.
+    pub fn with_category_prompt(mut self, category_prompt: Arc<CategoryPromptManager>) -> Self {
+        self.category_prompt = Some(category_prompt);
+        self
+    }
+
     /// Whether an event ingested right now may ever be uploaded.
     ///
     /// `RefreshInFlight` is a logged-in state: the device holds a valid refresh
@@ -1232,6 +2512,14 @@ impl R7Router {
     }
 
     fn upload_eligible(&self) -> bool {
+        self.signed_in()
+    }
+
+    /// Whether the device holds a session the cloud can be asked with.
+    /// `RefreshInFlight` counts: the device holds a valid refresh token and is
+    /// mid-roundtrip. A router with no auth state attached knows of no
+    /// session.
+    fn signed_in(&self) -> bool {
         self.auth_state.as_ref().is_some_and(|state| {
             matches!(
                 *state.borrow(),
@@ -1264,11 +2552,13 @@ impl MessageRouter for R7Router {
                 // An account switch expires any invitation left over from
                 // the previous session.
                 self.expire_open_invitation();
+                self.forget_cloud_history_outage();
                 Ok(Some(self.account.log_in(req.email, req.password).await))
             }
 
             ClientMessage::AuthSession(session) => {
                 self.account.apply_session(session);
+                self.forget_cloud_history_outage();
                 if let Some(session_validator) = &self.session_validator {
                     match session_validator.validate_restored_session().await {
                         Ok(()) => {
@@ -1300,6 +2590,7 @@ impl MessageRouter for R7Router {
                 // not outlive it (requirement: logout/account switch
                 // expires invitation state).
                 self.expire_open_invitation();
+                self.forget_cloud_history_outage();
                 self.account.log_out().await;
                 Ok(None)
             }
@@ -1530,6 +2821,44 @@ impl MessageRouter for R7Router {
                         false
                     }
                 };
+                // A site rule's key is the third kind of id the history hands
+                // out (protocol 33). The site key domain collides with neither
+                // of the other two, so the stored rule decides here as well.
+                let editing_site_rule = !editing_app_rule
+                    && match abstraction_map.site_scope_override(&correction.stable_id) {
+                        Ok(found) => found.is_some(),
+                        Err(err) => {
+                            tracing::warn!(
+                                error_code = "site_scope_rule_read_failed",
+                                error = %err,
+                                "could not tell whether this rule is site-scoped; editing it as a window rule"
+                            );
+                            false
+                        }
+                    };
+                if editing_site_rule {
+                    // The name as sent, not coalesced: the editor sends the
+                    // whole field, so nothing here means the name was cleared.
+                    if abstraction_map
+                        .edit_site_scope_override(
+                            &correction.stable_id,
+                            &correction.category,
+                            local_activity_name.as_deref(),
+                        )
+                        .is_err()
+                    {
+                        return Ok(Some(classification_correction_error(
+                            "classification_correction_persistence_failed",
+                        )));
+                    }
+                    return Ok(Some(ServerMessage::MenuStatus(
+                        self.menu_status_saying(site_acknowledgment(
+                            local_activity_name.as_deref(),
+                            &correction.category,
+                        ))
+                        .await,
+                    )));
+                }
                 if editing_app_rule {
                     // `None` for the bundle key on purpose: the write
                     // coalesces, so an edit keeps the bundle identity the rule
@@ -1609,31 +2938,33 @@ impl MessageRouter for R7Router {
                         "classification_correction_unavailable",
                     )));
                 };
-                // Window rung first, then the app rung, with no scope from the
-                // client: the two key domains cannot collide, so an id belongs
-                // to exactly one of them and trying both in order is
-                // unambiguous. `remove_personal_override` already removes the
-                // app rule a window correction generalized to, so `Ok(false)`
-                // here means this id was never a window rule — which is
-                // precisely the app rule the history can now show, and which
-                // until protocol 30 nothing could delete.
-                let removed = match abstraction_map.remove_personal_override(&request.stable_id) {
-                    Ok(true) => true,
-                    Ok(false) => {
-                        match abstraction_map.remove_app_scope_override(&request.stable_id) {
-                            Ok(removed) => removed,
-                            Err(_) => {
-                                return Ok(Some(classification_correction_error(
-                                    "classification_correction_persistence_failed",
-                                )))
-                            }
+                // Window rung first, then the app rung, then the site rung,
+                // with no scope from the client: the three key domains cannot
+                // collide, so an id belongs to exactly one of them and trying
+                // each in order is unambiguous. `remove_personal_override`
+                // already removes the app rule a window correction generalized
+                // to, so `Ok(false)` here means this id was never a window rule
+                // — which is precisely the app rule the history can show, and
+                // which until protocol 30 nothing could delete, or since
+                // protocol 33 the site rule it shows beside them.
+                let removed = abstraction_map
+                    .remove_personal_override(&request.stable_id)
+                    .and_then(|removed| {
+                        if removed {
+                            return Ok(true);
                         }
-                    }
-                    Err(_) => {
-                        return Ok(Some(classification_correction_error(
-                            "classification_correction_persistence_failed",
-                        )))
-                    }
+                        abstraction_map.remove_app_scope_override(&request.stable_id)
+                    })
+                    .and_then(|removed| {
+                        if removed {
+                            return Ok(true);
+                        }
+                        abstraction_map.remove_site_scope_override(&request.stable_id)
+                    });
+                let Ok(removed) = removed else {
+                    return Ok(Some(classification_correction_error(
+                        "classification_correction_persistence_failed",
+                    )));
                 };
                 Ok(Some(ServerMessage::MenuStatus(
                     self.menu_status_saying(removal_acknowledgment(removed))
@@ -1658,21 +2989,21 @@ impl MessageRouter for R7Router {
             }
 
             ClientMessage::RequestUnclassifiedTriage(request) => {
-                // Facts only, and bounded: the applications Velvt could not
-                // read, longest observed first. All three bounds are re-clamped
-                // inside the query, so this reports the window that was
+                // Facts only, and bounded: the applications and sites Velvt
+                // could not categorize, longest observed first, over the
+                // window the client asked for. All three bounds are re-clamped
+                // inside the queries, so this reports the window that was
                 // actually used rather than the one that was asked for.
-                let entries = match self.raw_event_repo.unclassified_triage(
+                let entries = match crate::category_prompt::needs_a_category(
+                    &*self.raw_event_repo,
                     request.lookback_days,
-                    TRIAGE_MIN_SECONDS,
-                    TRIAGE_MAX_ENTRIES,
                 ) {
                     Ok(entries) => entries,
                     Err(err) => {
                         tracing::warn!(
                             error_code = "unclassified_triage_failed",
                             error = %err,
-                            "could not read the list of applications Velvt cannot read"
+                            "could not read the list of applications and sites Velvt cannot categorize"
                         );
                         // An empty list is the good state and the UI says so,
                         // so a failure must not borrow that sentence.
@@ -1681,7 +3012,7 @@ impl MessageRouter for R7Router {
                 };
                 Ok(Some(ServerMessage::UnclassifiedTriage(
                     UnclassifiedTriage {
-                        entries: entries.into_iter().map(triage_entry).collect(),
+                        entries,
                         window_days: request.lookback_days.clamp(1, TRIAGE_MAX_LOOKBACK_DAYS),
                     },
                 )))
@@ -1689,6 +3020,64 @@ impl MessageRouter for R7Router {
 
             ClientMessage::SetApplicationCategory(request) => {
                 Ok(Some(self.set_application_category(request).await))
+            }
+
+            ClientMessage::SetSiteCategory(request) => {
+                Ok(Some(self.set_site_category(request).await))
+            }
+
+            ClientMessage::RequestCategoryPrompt(request) => {
+                let Some(category_prompt) = &self.category_prompt else {
+                    return Ok(None);
+                };
+                // Always answered, so a client holding a card it should no
+                // longer show hears so. A failure is an empty prompt: never a
+                // card or a reminder on evidence Velvt could not read.
+                let prompt = category_prompt
+                    .pending_prompt(Utc::now(), request.utc_offset_seconds)
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(
+                            error_code = "category_prompt_check_failed",
+                            error = %err,
+                            "the needs-a-category prompt could not be evaluated"
+                        );
+                        CategoryPrompt::default()
+                    });
+                Ok(Some(ServerMessage::CategoryPrompt(prompt)))
+            }
+
+            ClientMessage::AcknowledgeCategoryPrompt(request) => {
+                let Some(category_prompt) = &self.category_prompt else {
+                    return Ok(None);
+                };
+                let Some(prompt_id) = normalized_prompt_id(&request.prompt_id) else {
+                    return Ok(Some(ServerMessage::ErrorResponse(
+                        velvt_shared_types::ErrorResponse {
+                            code: "invalid_category_prompt_id".into(),
+                            message: "Unable to record this answer. Try again later.".into(),
+                            related_event_id: None,
+                        },
+                    )));
+                };
+                let now = Utc::now();
+                if let Err(err) = category_prompt.acknowledge(prompt_id, request.response, now) {
+                    tracing::warn!(
+                        error_code = "category_prompt_acknowledge_failed",
+                        error = %err,
+                        "the answer to the needs-a-category card was not recorded"
+                    );
+                }
+                // The card as it stands after the answer, and never a
+                // reminder: an answer must not be what brings one.
+                let prompt = category_prompt.current_card(now).unwrap_or_else(|err| {
+                    tracing::warn!(
+                        error_code = "category_prompt_check_failed",
+                        error = %err,
+                        "the needs-a-category card could not be evaluated"
+                    );
+                    CategoryPrompt::default()
+                });
+                Ok(Some(ServerMessage::CategoryPrompt(prompt)))
             }
 
             ClientMessage::StartWorkBlock(request) => {
@@ -2044,33 +3433,7 @@ impl MessageRouter for R7Router {
                 Ok(Some(response))
             }
 
-            ClientMessage::RequestLatestHistory(req) => {
-                let result = self.cache.daily_history(req.days).await;
-                let response = match result {
-                    Ok(history) => match shaper::shape_history(history) {
-                        Ok(validated) => ServerMessage::HistoryPayload(validated.into_inner()),
-                        Err(err) => {
-                            tracing::warn!(
-                                message_type = "history_payload",
-                                error_code = "outbound_validation_failed",
-                                error = %err,
-                                "shaped history failed validation; sending cache_empty"
-                            );
-                            cache_empty("history_payload", "invalid_cached_payload")
-                        }
-                    },
-                    Err(err) => {
-                        tracing::warn!(
-                            days = req.days,
-                            error_code = "cache_read_failed",
-                            error = %err,
-                            "failed to read history from cache"
-                        );
-                        cache_empty("history_payload", "backend_unavailable")
-                    }
-                };
-                Ok(Some(response))
-            }
+            ClientMessage::RequestLatestHistory(req) => Ok(Some(self.history_response(req).await)),
 
             _ => Ok(None),
         }
@@ -2088,25 +3451,10 @@ fn classification_correction_error(code: &str) -> ServerMessage {
 fn triage_error() -> ServerMessage {
     ServerMessage::ErrorResponse(velvt_shared_types::ErrorResponse {
         code: "unclassified_triage_failed".to_owned(),
-        message: "Unable to list the apps Velvt could not read. Try again later.".into(),
+        message: "Unable to list the apps and sites Velvt could not categorize. Try again later."
+            .into(),
         related_event_id: None,
     })
-}
-
-/// One stored triage row as the client sees it.
-///
-/// Facts only, and only the ones the client needs: a key to send back, a name
-/// to show, and the time observed. The bundle identity Velvt holds for the
-/// application stays here — the rule the user saves is keyed on it in Rust,
-/// which already reads it out of the stored row, so sending it to Swift would
-/// hand the client an identifier it has no use for and cannot display.
-fn triage_entry(entry: UnclassifiedAppEntry) -> UnclassifiedTriageEntry {
-    UnclassifiedTriageEntry {
-        app_stable_id: entry.app_stable_id,
-        display_name: entry.display_name,
-        seconds_observed: entry.seconds_observed,
-        event_count: entry.event_count,
-    }
 }
 
 /// Confirms a correction in the user's own terms.
@@ -2138,6 +3486,21 @@ fn application_acknowledgment(activity: Option<&str>, category: &str) -> String 
     let subject = activity.unwrap_or("This app");
     let category = spoken_category(category);
     format!("Got it — {subject} counts as {category} from now on.")
+}
+
+/// Confirms what a whole site was taught (protocol 33).
+///
+/// The site-list sibling of `application_acknowledgment`, in the same voice and
+/// with the same absence of a block qualifier, and it says the one thing a
+/// site rule does that an app rule does not: it holds in every browser. The
+/// subject is the name the user typed, or "this site"; never the hostname,
+/// which the list is the one place Rust sends on purpose. That also keeps the
+/// sentence inside `menu_status`'s 200 characters, which a stored hostname
+/// of up to 253 would not be.
+fn site_acknowledgment(activity: Option<&str>, category: &str) -> String {
+    let subject = activity.unwrap_or("this site");
+    let category = spoken_category(category);
+    format!("Got it — every page of {subject}, in every browser, counts as {category} from now on.")
 }
 
 /// Confirms an undo, including the case where there was nothing left to undo.
@@ -2198,6 +3561,130 @@ fn parse_classification_source(value: Option<&str>) -> ClassificationSource {
 }
 
 impl R7Router {
+    /// Synced daily summaries when the cloud answers, and summaries built on
+    /// this Mac otherwise (protocol 33).
+    ///
+    /// Cloud-first: signed in, the cloud's history is sent whenever it can be
+    /// read and passes the shaper. Signed out, or when the read fails for any
+    /// reason (unreachable, a timeout, a non-200, an unparseable body, no rows
+    /// at all), the reply is built on this Mac (`source: this_mac`) instead of
+    /// `cache_empty`: until protocol 33 the Patterns card had no source but
+    /// the cloud, so an outage, and every signed-out Mac, left it with
+    /// nothing to say about days this Mac had watched. Only when the local
+    /// read fails too is the answer `cache_empty(local_history_unavailable)`.
+    ///
+    /// The cloud is waited on once per outage, not once per request. The
+    /// connection reads one message at a time, so a cloud read that runs to
+    /// the 10-second HTTP timeout holds back every raw event, command and
+    /// push behind it, and Swift asks for history each time Patterns opens
+    /// and every ten minutes while its history is this Mac's. After a failed
+    /// read, requests are answered from the cache when the cloud's history is
+    /// back in it, and otherwise on this Mac at once, without a request. The
+    /// fetch scheduler keeps asking the cloud in its own task every
+    /// `VELVT_FETCH_INTERVAL_SECONDS` and pushes the history when it answers
+    /// (`FetchService::daily_history`), which is how a recovered cloud reaches
+    /// the card, and fills the cache that ends the outage here. A session
+    /// change (log in, log out, a restored session) ends it too.
+    async fn history_response(&self, request: RequestLatestHistory) -> ServerMessage {
+        if !self.signed_in() {
+            self.forget_cloud_history_outage();
+            return self.local_history_response(&request);
+        }
+        if self.cloud_history_outage.load(Ordering::Relaxed) {
+            if let Some(history) = self.cache.cached_daily_history(request.days).await {
+                if let Ok(validated) = shaper::shape_history(history) {
+                    self.forget_cloud_history_outage();
+                    return self.synced_or_local_history(&request, validated.into_inner());
+                }
+            }
+            return self.local_history_response(&request);
+        }
+        match self.cache.daily_history(request.days).await {
+            Ok(history) => match shaper::shape_history(history) {
+                Ok(validated) => {
+                    return self.synced_or_local_history(&request, validated.into_inner());
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        message_type = "history_payload",
+                        error_code = "outbound_validation_failed",
+                        error = %err,
+                        "cloud history failed validation; building it on this Mac"
+                    );
+                }
+            },
+            Err(err) => {
+                tracing::warn!(
+                    days = request.days,
+                    error_code = "cache_read_failed",
+                    error = %err,
+                    "cloud history unavailable; building it on this Mac"
+                );
+            }
+        }
+        self.cloud_history_outage.store(true, Ordering::Relaxed);
+        self.local_history_response(&request)
+    }
+
+    /// The synced history, unless it has no ready day and this Mac has one.
+    ///
+    /// A synced week with no ready day is empty for want of uploaded evidence,
+    /// not of activity: uploads can stall for days while collection goes on,
+    /// and the cloud then answers with seven empty days. When this Mac has
+    /// summaries of its own, they are the truer answer, and the card says they
+    /// were built here.
+    fn synced_or_local_history(
+        &self,
+        request: &RequestLatestHistory,
+        synced: velvt_shared_types::HistoryPayload,
+    ) -> ServerMessage {
+        if crate::delivery::has_a_ready_day(&synced) {
+            return ServerMessage::HistoryPayload(synced);
+        }
+        match self.local_history_response(request) {
+            ServerMessage::HistoryPayload(local) if crate::delivery::has_a_ready_day(&local) => {
+                ServerMessage::HistoryPayload(local)
+            }
+            _ => ServerMessage::HistoryPayload(synced),
+        }
+    }
+
+    /// The next signed-in history request asks the cloud again.
+    fn forget_cloud_history_outage(&self) {
+        self.cloud_history_outage.store(false, Ordering::Relaxed);
+    }
+
+    fn local_history_response(&self, request: &RequestLatestHistory) -> ServerMessage {
+        let history = match crate::dashboard::local_daily_history(
+            &*self.raw_event_repo,
+            Utc::now(),
+            request.utc_offset_seconds,
+            request.days,
+        ) {
+            Ok(history) => history,
+            Err(err) => {
+                tracing::warn!(
+                    error_code = "local_history_failed",
+                    error = %err,
+                    "daily summaries could not be built on this Mac"
+                );
+                return cache_empty("history_payload", "local_history_unavailable");
+            }
+        };
+        match shaper::shape_history(history) {
+            Ok(validated) => ServerMessage::HistoryPayload(validated.into_inner()),
+            Err(err) => {
+                tracing::warn!(
+                    message_type = "history_payload",
+                    error_code = "outbound_validation_failed",
+                    error = %err,
+                    "local history failed validation"
+                );
+                cache_empty("history_payload", "local_history_unavailable")
+            }
+        }
+    }
+
     fn local_dashboard_response(
         &self,
         request: RequestLocalDashboard,
@@ -2267,7 +3754,28 @@ impl R7Router {
             Ok(value) => value,
             Err(()) => return classification_correction_error("invalid_local_activity_name"),
         };
-        let bundle_key_hash = self.bundle_key_for_app(app_stable_id);
+        // Read off the stored rows rather than taken from the message, for
+        // two reasons. Swift reports facts and this is a conclusion about
+        // which stored rows are one application; and the raw bundle
+        // identifier never survives the abstraction boundary, so the only
+        // bundle key that exists anywhere is the hash the event rows already
+        // hold. Best-effort by design: with no key the rule is keyed on the
+        // name alone, which is how every rule worked before protocol 30, and a
+        // repeat never loses a stored key, because the write coalesces.
+        let bundle_key_hash = match self
+            .raw_event_repo
+            .unclassified_app_bundle_key(app_stable_id)
+        {
+            Ok(found) => found,
+            Err(err) => {
+                tracing::warn!(
+                    error_code = "app_bundle_key_read_failed",
+                    error = %err,
+                    "teaching the application under its name key only"
+                );
+                None
+            }
+        };
         if abstraction_map
             .save_app_scope_override(
                 app_stable_id,
@@ -2288,31 +3796,42 @@ impl R7Router {
         )
     }
 
-    /// The bundle identity Velvt recorded for an application, if it has one.
+    /// Teaches Velvt one site, on every page and in every browser, with no
+    /// source event (protocol 33).
     ///
-    /// Read back out of the same list the client is answering rather than taken
-    /// from the message, for two reasons. Swift reports facts and this is a
-    /// conclusion about which stored rows are one application; and the raw
-    /// bundle identifier never survives the abstraction boundary, so the only
-    /// bundle key that exists anywhere is the hash the event rows already hold.
-    ///
-    /// Best-effort by design. When the application is no longer on the list —
-    /// it fell below the cap, or a rule for it already exists, which is exactly
-    /// the repeat case — the rule is keyed on the name alone, which is how
-    /// every rule worked before protocol 30. A repeat never loses the stored
-    /// bundle key either: `save_app_scope_override` coalesces, so `None` here
-    /// leaves whatever was written the first time.
-    fn bundle_key_for_app(&self, app_stable_id: &str) -> Option<String> {
-        self.raw_event_repo
-            .unclassified_triage(
-                TRIAGE_MAX_LOOKBACK_DAYS,
-                TRIAGE_MIN_SECONDS,
-                TRIAGE_MAX_ENTRIES,
-            )
-            .ok()?
-            .into_iter()
-            .find(|entry| entry.app_stable_id == app_stable_id)?
-            .app_bundle_stable_id
+    /// Validated exactly as `set_application_category` is. The rule is
+    /// device-local, and nothing about the site is sent anywhere; the
+    /// `menu_status` it answers with may refresh cloud readiness, as any
+    /// status poll does. The save deletes the site's stored hostname -- it
+    /// was kept so Velvt could ask about the site, and it has been told --
+    /// and the confirmation names the site only by what the user typed.
+    async fn set_site_category(&self, request: SetSiteCategory) -> ServerMessage {
+        if crate::abstraction::override_label_for_category(&request.category).is_none() {
+            return classification_correction_error("invalid_classification_category");
+        }
+        let Some(abstraction_map) = &self.abstraction_map else {
+            return classification_correction_error("classification_correction_unavailable");
+        };
+        let Some(site_stable_id) = normalized_app_stable_id(&request.site_stable_id) else {
+            return classification_correction_error("invalid_site_stable_id");
+        };
+        let activity_name = match normalized_local_activity_name(request.activity_name.as_deref()) {
+            Ok(value) => value,
+            Err(()) => return classification_correction_error("invalid_local_activity_name"),
+        };
+        if abstraction_map
+            .save_site_scope_override(site_stable_id, &request.category, activity_name.as_deref())
+            .is_err()
+        {
+            return classification_correction_error("classification_correction_persistence_failed");
+        }
+        ServerMessage::MenuStatus(
+            self.menu_status_saying(site_acknowledgment(
+                activity_name.as_deref(),
+                &request.category,
+            ))
+            .await,
+        )
     }
 
     /// Deletes every upload batch that can still be sent, and the events
@@ -2460,7 +3979,10 @@ impl R7Router {
     /// Runs the privacy-enforcement boundary: classify, persist a privacy-safe
     /// audit row, feed the upload batcher, and acknowledge. Raw `app_name`/
     /// `window_title` are consumed only by `abstraction_engine.process` and
-    /// never appear in `RawEventEntry`, `BatchEventPayload`, or this ack.
+    /// never appear in `RawEventEntry`, `BatchEventPayload`, or this ack. The
+    /// hostname a browser tab's URL was reduced to appears in none of them
+    /// either: it reaches `local_site_name` alone, and only for a site that
+    /// needs a category.
     ///
     /// A dwell reported in progress (protocol 32) takes none of those steps:
     /// see [`Self::observe_dwell_in_progress`].
@@ -2527,6 +4049,7 @@ impl R7Router {
                     upload_eligible,
                     app_stable_id: Some(abstracted.app_stable_id().to_owned()),
                     app_scope_eligible: abstracted.app_scope_eligible(),
+                    site_stable_id: abstracted.site_stable_id().map(str::to_owned),
                 };
                 if let Err(err) = self
                     .raw_event_repo
@@ -2542,6 +4065,26 @@ impl R7Router {
                         status: RawEventStatus::Dropped,
                         drop_reason: Some("persistence_failed".into()),
                     });
+                }
+                // The one place a hostname is written, and it goes no further
+                // than this call. Persistence keeps it only when the row just
+                // written is time the site list counts and the site has no rule
+                // (`record_local_site_name`), so a confident visit, a visit a
+                // rule decided, or a site already taught stores nothing. A
+                // failure costs the list a name, never the event, and is logged
+                // by its code alone, so the log has nothing to say about the
+                // site.
+                if let Some(host) = abstracted.local_site_name() {
+                    if self
+                        .raw_event_repo
+                        .record_local_site_name(&entry.event_id, host, Utc::now())
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            error_code = "local_site_name_persist_failed",
+                            "failed to keep the name of a site that needs a category"
+                        );
+                    }
                 }
                 if upload_eligible {
                     if let Err(err) = self

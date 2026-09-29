@@ -59,8 +59,15 @@ async fn main() {
     else {
         return;
     };
+    // Plain text, never terminal colour: stdout and stderr are a pipe the Mac
+    // app reads, and it lifts `error_code=` out of each chunk to decide
+    // whether the chunk is kept in the system log. tracing-subscriber colours
+    // its output by default, which wraps the field name and the `=` in escape
+    // codes, so no chunk ever matched and every helper failure was logged at
+    // debug level, where it is not kept.
     if tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_ansi(false)
         .try_init()
         .is_err()
     {
@@ -197,8 +204,10 @@ async fn main() {
         use velvt_service::ipc::{MenuStatusProvider, R7Router, ReconnectTracker};
         use velvt_service::lifecycle::CancellationToken;
         use velvt_service::retention::{
-            AbstractionMapRetentionTarget, CacheRetentionTarget, EgressLedgerRetentionTarget,
-            InterventionDecisionOutcomeTarget, RawEventRetentionTarget, RetentionScheduler,
+            AbstractionMapRetentionTarget, CacheRetentionTarget,
+            CategoryPromptEntryRetentionTarget, CategoryPromptNotificationRetentionTarget,
+            EgressLedgerRetentionTarget, InterventionDecisionOutcomeTarget,
+            LocalSiteNameRetentionTarget, RawEventRetentionTarget, RetentionScheduler,
             SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
             WorkBlockIntentionRetentionTarget,
         };
@@ -290,6 +299,15 @@ async fn main() {
         // delivery gates an invitation consults.
         let receipts = velvt_service::receipts::ReceiptsManager::new(
             persistence.receipts_repo(),
+            Arc::clone(&initiation_gates) as Arc<dyn velvt_service::initiation::InvitationGates>,
+        );
+        // The needs-a-category card and daily reminder (protocol 33): the
+        // same delivery gates an invitation consults, over the list the
+        // Settings pane shows, with the names dropped before the policy sees
+        // an entry. Rust decides and words both; Swift renders and posts.
+        let category_prompt = velvt_service::category_prompt::CategoryPromptManager::new(
+            persistence.category_prompt_repo(),
+            velvt_service::category_prompt::ListedCandidates::new(Arc::clone(&raw_event_repo)),
             initiation_gates as Arc<dyn velvt_service::initiation::InvitationGates>,
         );
         match work_blocks.recover_after_restart(chrono::Utc::now()) {
@@ -598,6 +616,30 @@ async fn main() {
             persistence.egress_ledger_repo(),
             config.retention_batch_size,
         );
+        // The tenth: `local_site_name`, the one table that stores a hostname
+        // (migration 0040), on the raw-event horizon counted from the last
+        // visit to the site that needed a category. A constant, for the reason
+        // `out_of_block_run` uses one.
+        let local_site_name_target = LocalSiteNameRetentionTarget::with_default_retention(
+            Arc::clone(&raw_event_repo),
+            config.retention_batch_size,
+        );
+        // The eleventh and twelfth: the needs-a-category prompt's ledger
+        // (migration 0041). Its entries, which are filed under salted
+        // application and site keys, expire on the raw-event horizon from the
+        // last time each was on the list; its reminder rows, a date, times and
+        // a count, after thirty days. Constants, for the reason
+        // `out_of_block_run` uses one.
+        let category_prompt_entry_target =
+            CategoryPromptEntryRetentionTarget::with_default_retention(
+                persistence.category_prompt_repo(),
+                config.retention_batch_size,
+            );
+        let category_prompt_notification_target =
+            CategoryPromptNotificationRetentionTarget::with_default_retention(
+                persistence.category_prompt_repo(),
+                config.retention_batch_size,
+            );
         let retention_scheduler =
             RetentionScheduler::new(config.raw_event_expiry_interval, token.subscribe())
                 .add_target(raw_event_target)
@@ -610,7 +652,10 @@ async fn main() {
                 .add_target(semantic_embedding_cache_target)
                 .add_target(decision_outcome_target)
                 .add_target(abstraction_map_target)
-                .add_target(egress_ledger_target);
+                .add_target(egress_ledger_target)
+                .add_target(local_site_name_target)
+                .add_target(category_prompt_entry_target)
+                .add_target(category_prompt_notification_target);
         let retention_task = tokio::spawn(async move { retention_scheduler.run().await });
 
         // R7 + R8 transport — shutdown-aware, reconnect-tracking.
@@ -634,6 +679,7 @@ async fn main() {
             .with_focus(Arc::clone(&focus))
             .with_initiation(Arc::clone(&initiation))
             .with_receipts(Arc::clone(&receipts))
+            .with_category_prompt(Arc::clone(&category_prompt))
             .with_auth_state(auth_state.subscribe())
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,

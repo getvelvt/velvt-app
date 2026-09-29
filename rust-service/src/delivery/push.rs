@@ -75,6 +75,7 @@ fn server_message_type_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::WeeklyDigest(_) => "weekly_digest",
         ServerMessage::InterventionExplanation(_) => "intervention_explanation",
         ServerMessage::UnclassifiedTriage(_) => "unclassified_triage",
+        ServerMessage::CategoryPrompt(_) => "category_prompt",
     }
 }
 
@@ -514,10 +515,31 @@ mod tests {
         }
     }
 
+    /// `days` empty days, ending today: a payload the shaper accepts, because
+    /// its `days` is the number of rows it carries.
     fn make_history(days: u32) -> HistoryPayload {
+        let today = Utc::now().date_naive();
         HistoryPayload {
             days,
-            summaries: vec![],
+            source: velvt_shared_types::HistorySource::Cloud,
+            summaries: (0..days)
+                .rev()
+                .map(|days_ago| velvt_shared_types::DailySummary {
+                    date: today - chrono::Duration::days(i64::from(days_ago)),
+                    status: velvt_shared_types::HistoryStatus::NoData,
+                    event_count: 0,
+                    focus_score: None,
+                    fragmentation_score: None,
+                    confidence_level: ConfidenceLevel::None,
+                    active_seconds: 0,
+                    focused_seconds: 0,
+                    meaningful_switch_count: 0,
+                    longest_uninterrupted_seconds: 0,
+                    baseline_status: "no_data".into(),
+                    baseline_comparison: serde_json::json!({}),
+                    type_proportions: vec![],
+                })
+                .collect(),
         }
     }
 
@@ -557,6 +579,7 @@ mod tests {
         for i in 0u32..4 {
             q.enqueue(ServerMessage::HistoryPayload(HistoryPayload {
                 days: i + 1,
+                source: velvt_shared_types::HistorySource::Cloud,
                 summaries: vec![],
             }))
             .await;

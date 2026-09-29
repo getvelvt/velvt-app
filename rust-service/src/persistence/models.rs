@@ -66,6 +66,12 @@ pub struct RawEventEntry {
     /// Whether generalizing a correction to the whole app is meaningful.
     /// False for a browser window carrying a site context.
     pub app_scope_eligible: bool,
+    /// Site identity this event was classified under (`site_stable_key_for`,
+    /// migration 0040), the same in every browser. `None` for every window
+    /// that is not a browser tab on a named site, and for rows written before
+    /// the column existed. The hostname it was computed from is not here: it
+    /// is written, if at all, only to `local_site_name`.
+    pub site_stable_id: Option<String>,
 }
 
 impl std::fmt::Debug for RawEventEntry {
@@ -92,6 +98,10 @@ impl std::fmt::Debug for RawEventEntry {
             .field("occurred_at", &self.occurred_at)
             .field("duration_seconds", &self.duration_seconds)
             .field("upload_eligible", &self.upload_eligible)
+            .field(
+                "site_stable_id",
+                &self.site_stable_id.as_ref().map(|_| "[local_identifier]"),
+            )
             .finish()
     }
 }
@@ -224,6 +234,35 @@ pub struct DeclaredAppMetadata {
     pub document_type_ids: Vec<String>,
 }
 
+/// A rule taught about one site, in every browser (`personal_site_override`,
+/// migration 0040).
+#[derive(Clone, PartialEq, Eq)]
+pub struct SiteScopeOverride {
+    /// The site key. The row's primary key; never the hostname.
+    pub site_key_hash: String,
+    pub category: String,
+    /// Device-local name the user typed. Never uploaded, never logged.
+    pub activity_name: Option<String>,
+    pub correction_count: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for SiteScopeOverride {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SiteScopeOverride")
+            .field("site_key_hash", &"[local_identifier]")
+            .field("category", &self.category)
+            .field(
+                "activity_name",
+                &self.activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .field("correction_count", &self.correction_count)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
 impl DeclaredAppMetadata {
     /// The all-absent value: exactly what a client that reports no declared
     /// metadata produces, and what every event written before protocol 30 has.
@@ -268,8 +307,9 @@ impl std::fmt::Debug for DeclaredAppMetadata {
 pub struct UnclassifiedAppEntry {
     /// The app-scoped key an app rule is written under.
     pub app_stable_id: String,
-    /// The device-local name Velvt already holds for this application.
-    pub display_name: String,
+    /// The device-local name Velvt already holds for this application, or
+    /// `None` when it holds none.
+    pub display_name: Option<String>,
     pub seconds_observed: u64,
     pub event_count: u64,
     /// The bundle key hash, when the application reported a bundle identifier,
@@ -282,7 +322,10 @@ impl std::fmt::Debug for UnclassifiedAppEntry {
         formatter
             .debug_struct("UnclassifiedAppEntry")
             .field("app_stable_id", &"[local_identifier]")
-            .field("display_name", &"[redacted]")
+            .field(
+                "display_name",
+                &self.display_name.as_ref().map(|_| "[redacted]"),
+            )
             .field("seconds_observed", &self.seconds_observed)
             .field("event_count", &self.event_count)
             .field(
@@ -292,6 +335,31 @@ impl std::fmt::Debug for UnclassifiedAppEntry {
                     .as_ref()
                     .map(|_| "[local_identifier]"),
             )
+            .finish()
+    }
+}
+
+/// One browser site Velvt observed but could not categorize, ranked for the
+/// list that asks about it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UnclassifiedSiteEntry {
+    /// The site key a site rule is written under (`site_stable_key_for`).
+    pub site_stable_id: String,
+    /// The site's normalized hostname, read from `local_site_name`: the one
+    /// place a hostname is stored, and only while the site needs a category.
+    pub display_name: String,
+    pub seconds_observed: u64,
+    pub event_count: u64,
+}
+
+impl std::fmt::Debug for UnclassifiedSiteEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UnclassifiedSiteEntry")
+            .field("site_stable_id", &"[local_identifier]")
+            .field("display_name", &"[redacted]")
+            .field("seconds_observed", &self.seconds_observed)
+            .field("event_count", &self.event_count)
             .finish()
     }
 }
@@ -827,6 +895,50 @@ pub struct CompletedBlockDwellSpan {
     pub block_id: String,
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
+}
+
+/// One entry of the needs-a-category list, as the prompt remembers it
+/// (`category_prompt_entry`, migration 0041). A salted key and times only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CategoryPromptEntry {
+    /// `application:<key>` or `site:<key>`, the key being the salted digest
+    /// the list carries.
+    pub entry_key: String,
+    pub first_listed_at: DateTime<Utc>,
+    pub last_listed_at: DateTime<Utc>,
+    /// When an answer to a card that covered this entry arrived, either one.
+    pub acknowledged_at: Option<DateTime<Utc>>,
+    /// When the first reminder posted while this entry was listed was
+    /// posted, whether or not the entry was among the eight it counted.
+    pub notified_at: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for CategoryPromptEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CategoryPromptEntry")
+            .field("entry_key", &"[local_identifier]")
+            .field("first_listed_at", &self.first_listed_at)
+            .field("last_listed_at", &self.last_listed_at)
+            .field("acknowledged_at", &self.acknowledged_at)
+            .field("notified_at", &self.notified_at)
+            .finish()
+    }
+}
+
+/// One needs-a-category reminder handed to the app to post
+/// (`category_prompt_notification`, migration 0041). A date, times and a
+/// count; no key and no name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CategoryPromptNotificationRecord {
+    /// Local calendar date (`YYYY-MM-DD`) the reminder was posted on. The
+    /// table's primary key, which is what caps reminders at one a day.
+    pub local_date: String,
+    pub posted_at: DateTime<Utc>,
+    pub entry_count: u32,
+    pub policy_version: u32,
+    /// When the person next opened the list from a prompt, if they have.
+    pub opened_at: Option<DateTime<Utc>>,
 }
 
 /// A device-local intervention offer and its observed outcome. `anchor_category`

@@ -13,13 +13,42 @@ use velvt_service::{
     ipc::{serve_connection_with_push_queue, DefaultRouter},
 };
 use velvt_shared_types::{
-    Acknowledged, ClientHello, ClientMessage, ConfidenceLevel, HistoryPayload, InsightPayload,
-    PrivacyViolationAlert, ServerMessage, PROTOCOL_VERSION,
+    Acknowledged, ClientHello, ClientMessage, ConfidenceLevel, DailySummary, HistoryPayload,
+    HistorySource, HistoryStatus, InsightPayload, PrivacyViolationAlert, ServerMessage,
+    PROTOCOL_VERSION,
 };
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Seven empty days ending today: `days` counts the rows a history carries
+/// (protocol 33), so the shaper accepts it.
+fn week_of_history() -> HistoryPayload {
+    let today = chrono::Utc::now().date_naive();
+    HistoryPayload {
+        days: 7,
+        source: HistorySource::Cloud,
+        summaries: (0..7)
+            .rev()
+            .map(|days_ago| DailySummary {
+                date: today - chrono::Duration::days(days_ago),
+                status: HistoryStatus::NoData,
+                event_count: 0,
+                focus_score: None,
+                fragmentation_score: None,
+                confidence_level: ConfidenceLevel::None,
+                active_seconds: 0,
+                focused_seconds: 0,
+                meaningful_switch_count: 0,
+                longest_uninterrupted_seconds: 0,
+                baseline_status: "no_data".into(),
+                baseline_comparison: serde_json::json!({}),
+                type_proportions: vec![],
+            })
+            .collect(),
+    }
+}
 
 async fn write_message(writer: &mut (impl AsyncWriteExt + Unpin), message: &ClientMessage) {
     let mut bytes = serde_json::to_vec(message).unwrap();
@@ -69,12 +98,7 @@ async fn complete_handshake(
 async fn queued_history_payload_is_delivered_to_connected_client() {
     let queue = PushQueue::new(10);
     let adapter = PushAdapter::new(Arc::clone(&queue));
-    adapter
-        .push_history(HistoryPayload {
-            days: 7,
-            summaries: vec![],
-        })
-        .await;
+    adapter.push_history(week_of_history()).await;
 
     let (client, server) = duplex(4096);
     let task = tokio::spawn(serve_connection_with_push_queue(
@@ -503,12 +527,7 @@ async fn privacy_alert_queued_while_disconnected_is_delivered_on_reconnect() {
     let adapter = PushAdapter::new(Arc::clone(&queue));
 
     // Enqueue a history payload first so the alert's priority ordering is visible.
-    adapter
-        .push_history(HistoryPayload {
-            days: 7,
-            summaries: vec![],
-        })
-        .await;
+    adapter.push_history(week_of_history()).await;
 
     // Alert arrives while no client is connected.
     adapter
@@ -584,12 +603,7 @@ async fn validation_failure_for_one_type_does_not_block_another_type() {
     );
 
     // A valid HistoryPayload must still be enqueued and delivered.
-    adapter
-        .push_history(HistoryPayload {
-            days: 7,
-            summaries: vec![],
-        })
-        .await;
+    adapter.push_history(week_of_history()).await;
     assert_eq!(
         queue.len().await,
         1,

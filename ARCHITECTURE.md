@@ -4,8 +4,8 @@ This is the canonical architecture reference for this repository: the Velvt
 macOS app (`swift-client/`, product `Velvt.app`) and its bundled Rust helper
 (`rust-service/`). For deep dives into individual subsystems, see
 [`docs/architecture/`](docs/architecture/); this document ties them together
-and reflects `develop` as of 2026-09-26 (IPC protocol 32 and migrations
-0001–0039; the shipped 1.0.11 build is protocol 30 and migration 0036), not any
+and reflects `develop` as of 2026-09-27 (IPC protocol 33 and migrations
+0001–0041; the shipped 1.0.11 build is protocol 30 and migration 0036), not any
 individual issue branch.
 
 ## System diagram
@@ -63,6 +63,17 @@ on demand via `request_latest_insight`/`request_latest_history`) → SQLite
 `AccountStateManager` → `DisplayDataCoordinator` → `InsightViewModel` /
 `HistoryViewModel` (`@Published` properties) → `MenuBarPopoverView`.
 
+History has a second source that never touches the cloud (protocol 33). When
+the account is signed out, or `request_latest_history` cannot read the cloud's
+history, the router answers with daily summaries Rust builds from
+`raw_event_buffer` (`dashboard.rs` `local_daily_history`), marked
+`source: this_mac`. Nothing is stored or sent. After a failed cloud read the
+router stops waiting on the cloud for history, which would hold the whole
+connection for the HTTP timeout, until the fetch scheduler's cache holds the
+cloud's history again or the session changes. The Patterns card renders
+either source; the Today tab's baseline label and day metrics read only the
+cloud's.
+
 Daily insights additionally produce a `notification_payload` IPC push (see
 "IPC framing and versioning" below), consumed by
 `NotificationDeliveryCoordinator` → `UNNotificationScheduler`.
@@ -76,6 +87,14 @@ work block, at most once per block. The gate runs on each dwell's in-progress
 away app and withdrawn when they come back; the closed report of the same dwell
 changes nothing.
 
+The needs-a-category reminder (protocol 33) is the third notification kind and
+also never touches the cloud: Swift asks with `request_category_prompt` on
+connect, on wake and on the menu-status cadence; the `category_prompt` module
+decides the in-app card and at most one reminder a local day over the list of
+applications and sites Velvt could not categorize, and Swift posts the
+Rust-authored, counts-only copy immediately when notifications are already
+allowed. Neither is shown during an active or paused block.
+
 ## Module responsibility table
 
 | Module | Language | Responsibility | Key protocols/traits | Privacy role |
@@ -88,10 +107,11 @@ changes nothing.
 | R6 — Delivery (fetch) | Rust | History/insight fetch, caching, proactive push | `CacheManager`, `Fetchable` | Read-only from cloud; never re-derives raw content |
 | R7 — Delivery (push) | Rust | IPC push queue, reconnect-aware delivery, account-auth relay, raw-event ingestion | `PushAdapter`, `AccountAuthService` | Routes `sign_up`/`log_in` credentials to the cloud without ever persisting them |
 | R8 — Lifecycle | Rust | Retention scheduling, graceful shutdown | `RetentionTarget`, `CancellationToken` | Enforces TTLs so abstracted data does not accumulate indefinitely |
-| Work blocks (`work_block`) | Rust | Declared-block state machine, deterministic drift gate (`DRIFT_POLICY_VERSION = 4`), the one offer per block, outcomes, `intervention_decision_log` | `WorkBlockSnapshot`, `FocusStateSource` | Intention text is local-only and expires after 24 hours; results are safe aggregates. See `docs/architecture/work-block-loop.md` |
+| Work blocks (`work_block`) | Rust | Declared-block state machine, deterministic drift gate (`DRIFT_POLICY_VERSION = 5`), the one offer per block, outcomes, `intervention_decision_log` | `WorkBlockSnapshot`, `FocusStateSource` | Intention text is local-only and expires after 24 hours; results are safe aggregates. See `docs/architecture/work-block-loop.md` |
 | Focus/DND (`focus`) | Rust | Focus/DND evidence, Velvt's own quiet hours, the quiet-hours offer | `FocusManager` | Never delivers around Focus; the Focus mode's name and schedule are unrepresentable |
 | Initiation (`initiation`) | Rust | Good-hours windows and the soft-start invitation (at most one a day, in-app only, off switch) | versioned policy constants | The invitation payload carries no schedule or timing evidence |
 | Receipts (`receipts`) | Rust | Weekly receipts digest, explain-tap weekly bucket | `WeeklyDigest` | Exact bounded counts from stored aggregates; local IPC only |
+| Needs-a-category (`category_prompt`) | Rust | The merged list of applications and sites Velvt could not categorize, and the card and daily reminder about it (`CATEGORY_PROMPT_POLICY_VERSION = 1`; at most one reminder a local day, never during a live block, backoff after three unopened) | `CategoryPromptRepo`, `InvitationGates` | Card and reminder copy are counts only, never names, because Notification Center keeps a reminder's text; the ledger (migration 0041) holds salted keys, random card ids, dates and counts |
 | Dashboard (`dashboard.rs`) | Rust | Focus Fragmentation and 14-day Daily Activity aggregates | `LocalDashboardSnapshot` | Local display labels appear only in the `daily_activity` branch of this local payload |
 | Behavior (`behavior/`, declared in `main.rs`) | Rust | Shadow models: BOCPD, HMM, antecedent miner, and the `out_of_block_run` retention target | frozen feature contract | No caller in the shipped path; cannot reach the drift gate, delivery, or copy. Scope for new work here is gated (`AGENTS.md`, Scope Boundary) |
 | S1 — IPC scaffold | Swift | Unix socket client, version handshake | `IPCClientProtocol` | Sends raw events to Rust (the one designed crossing point); never calls the cloud |
@@ -99,8 +119,8 @@ changes nothing.
 | S3 — Permissions | Swift | Accessibility/Notifications permission state | `PermissionManaging` | Gates collection start on granted permission |
 | S4 — Event relay | Swift | In-memory ring buffer while IPC is offline | `EventRelayProtocol` | Drops oldest on overflow; never spills to disk |
 | S5 — Auth/onboarding | Swift | Sign up/log in/log out/delete account UI, Keychain session storage | `AccountStateManaging`, `KeychainProtocol` | Session tokens in Keychain only, never SQLite |
-| S6 — Display | Swift | History/insight view models and views | `DisplayDataCoordinating` | Renders only abstracted, server-derived summaries |
-| S7 — Menu bar & notifications | Swift | Menu bar state, work-block surface, notification scheduling (daily insight and drift offer) | `NotificationScheduling`, `InterventionNotificationScheduling` | Schedules exactly the Rust-authored copy; never generates notification text itself |
+| S6 — Display | Swift | History/insight view models and views | `DisplayDataCoordinating` | Renders only abstracted summaries: server-derived, or built on this Mac by Rust (`history_payload` `source: this_mac`) |
+| S7 — Menu bar & notifications | Swift | Menu bar state, work-block surface, notification scheduling (daily insight, drift offer and needs-a-category reminder) | `NotificationScheduling`, `InterventionNotificationScheduling` | Schedules exactly the Rust-authored copy; never generates notification text itself |
 | App lifecycle | Swift | Launches the bundled helper, reclaims the socket from an orphaned helper of an earlier run (at most twice, then an alert) | `ServiceProcessLauncher`, `OrphanedHelperReaper` | Only terminates a process running this bundle's own helper executable, as this user, that this app did not start |
 
 ## The classification pipeline (Classification v2)
@@ -112,7 +132,8 @@ application's own declared metadata as evidence. `AbstractionEngine::process`
 now runs:
 
 1. **Correction rungs**, most specific first: this exact window
-   (`personal_override`), this application by bundle identifier, this
+   (`personal_override`), this site in any browser
+   (`personal_site_override`), this application by bundle identifier, this
    application by name (both `personal_app_override`). A hit is a
    `UserRule` result and no plugin runs.
 2. **Classifier plugins**, in registration order
@@ -122,18 +143,20 @@ now runs:
 
 | Order | Plugin | Evidence | Tier / source |
 |---|---|---|---|
-| 1 | `BrowserContextPlugin` | a browser's focused site (a hostname reduced locally from the tab URL) plus the title, against curated site rules | heuristic |
-| 2 | `BundleSeedPlugin` | the taxonomy's bundle-identifier seeds (`seed_bundles`, `bundle_identifier`) | exact match / seed |
-| 3 | `SeedDictionaryPlugin` | the taxonomy's application-name seeds | exact match / seed |
-| 4 | `LocalPurposeHeuristicPlugin` | curated keyword families over name and title | heuristic |
-| 5 | `DocumentTypePlugin` | `LSItemContentTypes` the app declares | heuristic tier / declared document types |
-| 6 | `DeclaredCategoryPlugin` | the app's `LSApplicationCategoryType`, whitelisted values only | heuristic tier / declared app category |
-| 7 | `EmbeddingSimilarityPlugin` | Tier 2, below | embedding |
-| 8 | `GenericBrowserPriorPlugin` | a browser whose site said nothing | fallback, explicitly ambiguous `REFERENCE` |
-| 9 | `UnloggedFallbackPlugin` | anything left | fallback, `UNLOGGED` |
+| 1 | `SiteSeedPlugin` | a browser tab's site (a hostname reduced locally from the tab URL, with `www.` removed) against the compiled-in site table (`site_seeds.rs`); the host decides the category and the label, and the title can only tell a Google Sheets or Slides tab on `docs.google.com` from a Docs one | exact match / seed |
+| 2 | `BrowserContextPlugin` | a browser window whose site cannot be read (no URL, `localhost`, an address): the title against curated site rules. It stands aside for a tab whose site can be read, which the site tiers decide | heuristic |
+| 3 | `BundleSeedPlugin` | the taxonomy's bundle-identifier seeds (`seed_bundles`, `bundle_identifier`) | exact match / seed |
+| 4 | `SeedDictionaryPlugin` | the taxonomy's application-name seeds | exact match / seed |
+| 5 | `LocalPurposeHeuristicPlugin` | curated keyword families over name and title, for every application that is not a browser and a browser window whose site cannot be read; never for a tab whose site can be read | heuristic |
+| 6 | `DocumentTypePlugin` | `LSItemContentTypes` the app declares | heuristic tier / declared document types |
+| 7 | `DeclaredCategoryPlugin` | the app's `LSApplicationCategoryType`, whitelisted values only | heuristic tier / declared app category |
+| 8 | `SiteInferencePlugin` | a browser site no seed names, read from its own hostname: a purpose subdomain (`mail.`, `docs.`), an institutional suffix (`.edu`, `.ac.uk`), a registrable-label token (`wiki`); signals that disagree give no answer; a sign-in label in front (`login.`, `sso.`) files the host as SYSTEM, which the gate never counts and the list does not ask about | heuristic |
+| 9 | `EmbeddingSimilarityPlugin` | Tier 2, below | embedding |
+| 10 | `GenericBrowserPriorPlugin` | a browser whose site said nothing | fallback, explicitly ambiguous `REFERENCE` |
+| 11 | `UnloggedFallbackPlugin` | anything left | fallback, `UNLOGGED` |
 
 Absent declared metadata (a missing key, an unreadable plist, a client older
-than protocol 30) makes rungs 5 and 6 abstain, so such an event classifies
+than protocol 30) makes rungs 6 and 7 abstain, so such an event classifies
 exactly as it did before v2.
 
 Name seeds match the normalized application name either as a whole string or
@@ -201,7 +224,7 @@ and had to be retroactively closed during this MVP integration pass).
 Unknown future server discriminators decode as `ServerMessage.unknown(type:)`
 on the Swift side so older clients degrade gracefully rather than crashing.
 [`docs/architecture/ipc-contract.md`](docs/architecture/ipc-contract.md) is the
-message catalog, reconciled through protocol 32.
+message catalog, reconciled through protocol 33.
 
 ## The auth state machine
 

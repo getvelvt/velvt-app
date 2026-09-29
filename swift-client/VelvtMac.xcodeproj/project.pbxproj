@@ -15,6 +15,7 @@
 		143DA099CAAA4B08A6ACDDCF /* PermissionCollectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D53AB07660458283D4CCFE /* PermissionCollectionCoordinator.swift */; };
 		1597C5865C34465AA105915D /* AppMetricsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E6FE1D6377F4F7ABF7EFD43 /* AppMetricsStore.swift */; };
 		16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */; };
+		79E306355B7ECCC8E2B461B3 /* CloudSyncStatusLine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00555DE0FE811C19EDB73EF2 /* CloudSyncStatusLine.swift */; };
 		18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30FB3399A5C45808376ACF1 /* EventRelay.swift */; };
 		1BDD83E7458B4D48AB2DA642 /* NotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 945E765C974B4023B7362068 /* NotificationScheduler.swift */; };
 		548C73B5233642F6A54DE429 /* LocalDataExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8153E37465DF4E479FBD7E64 /* LocalDataExport.swift */; };
@@ -22,6 +23,8 @@
 		F1A2B3C40D5E46789ABC1234 /* DigestFraming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E8D7C6B5A4F43210FED8765 /* DigestFraming.swift */; };
 		E5B71D3A9C4F42188A03D7E6 /* NudgePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D9F4C8B60A34E17B5CA3F82 /* NudgePreviewView.swift */; };
 		A1C4E7F2B93D4E118C6A5D30 /* InterventionNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */; };
+		C47E0B1A5D2F4E3B9A61C001 /* CategoryPromptCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C47E0B1A5D2F4E3B9A61C002 /* CategoryPromptCoordinator.swift */; };
+		C47E0B1A5D2F4E3B9A61C003 /* CategoryPromptCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C47E0B1A5D2F4E3B9A61C004 /* CategoryPromptCard.swift */; };
 		38ABFEC236C54BCDBB9D836F /* PermissionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93C055AD72C0443A8CD98C13 /* PermissionManager.swift */; };
 		4346E234F70547A289E2D2EE /* AuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81032E99C0684420AFA1791A /* AuthViewModel.swift */; };
 		443F93164E6A45C582B1BB38 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9ADCDFF34741EE93EC7B6A /* MenuBarController.swift */; };
@@ -92,6 +95,8 @@
 		9E8D7C6B5A4F43210FED8765 /* DigestFraming.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DigestFraming.swift; path = UI/DigestFraming.swift; sourceTree = "<group>"; };
 		2D9F4C8B60A34E17B5CA3F82 /* NudgePreviewView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NudgePreviewView.swift; path = UI/NudgePreviewView.swift; sourceTree = "<group>"; };
 		3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InterventionNotifier.swift; path = Delivery/InterventionNotifier.swift; sourceTree = "<group>"; };
+		C47E0B1A5D2F4E3B9A61C002 /* CategoryPromptCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CategoryPromptCoordinator.swift; path = Delivery/CategoryPromptCoordinator.swift; sourceTree = "<group>"; };
+		C47E0B1A5D2F4E3B9A61C004 /* CategoryPromptCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CategoryPromptCard.swift; path = UI/CategoryPromptCard.swift; sourceTree = "<group>"; };
 		9C77572FBDDF8D193EC7E44C /* DeviceModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceModule.swift; path = Device/DeviceModule.swift; sourceTree = "<group>"; };
 		9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightCardView.swift; path = UI/InsightCardView.swift; sourceTree = "<group>"; };
 		9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = "../../Configs/Debug.xcconfig"; sourceTree = "<group>"; };
@@ -109,6 +114,7 @@
 		D4A0C4A9A65047B88055A102 /* UpdateController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpdateController.swift; path = App/UpdateController.swift; sourceTree = "<group>"; };
 		E2F95C23A6804E568E326FE0 /* DisplayDataCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DisplayDataCoordinator.swift; path = Delivery/DisplayDataCoordinator.swift; sourceTree = "<group>"; };
 		ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MenuBarPopoverView.swift; path = UI/MenuBarPopoverView.swift; sourceTree = "<group>"; };
+		00555DE0FE811C19EDB73EF2 /* CloudSyncStatusLine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudSyncStatusLine.swift; path = UI/CloudSyncStatusLine.swift; sourceTree = "<group>"; };
 		EF36F72E108BC558D18F9523 /* FakeIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FakeIPCClient.swift; path = IPC/FakeIPCClient.swift; sourceTree = "<group>"; };
 		F30FB3399A5C45808376ACF1 /* EventRelay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EventRelay.swift; path = Relay/EventRelay.swift; sourceTree = "<group>"; };
 		FEEDFACE0FFFFF0000000001 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fonts; path = Resources/Fonts; sourceTree = "<group>"; };
@@ -191,6 +197,7 @@
 				9E8D7C6B5A4F43210FED8765 /* DigestFraming.swift */,
 				2D9F4C8B60A34E17B5CA3F82 /* NudgePreviewView.swift */,
 				3F8B2D6A47E14C9EB05719D2 /* InterventionNotifier.swift */,
+				C47E0B1A5D2F4E3B9A61C002 /* CategoryPromptCoordinator.swift */,
 				F30FB3399A5C45808376ACF1 /* EventRelay.swift */,
 				523890083299444A9CF45601 /* EventRelayProtocol.swift */,
 				8E269EDC9F6E4366A86A35F1 /* HistoryListView.swift */,
@@ -198,8 +205,10 @@
 				9D9324F3356F46669B6FC8E7 /* InsightCardView.swift */,
 				04D5396399374660825D54B5 /* InsightViewModel.swift */,
 				ECA2AA4323D3419CB3D9FF69 /* MenuBarPopoverView.swift */,
+				00555DE0FE811C19EDB73EF2 /* CloudSyncStatusLine.swift */,
 				B20C7D204B9345F3A6E1C102 /* WorkBlockCoordinator.swift */,
 				B20C7D204B9345F3A6E1C104 /* WorkBlockView.swift */,
+				C47E0B1A5D2F4E3B9A61C004 /* CategoryPromptCard.swift */,
 				7D6BCAC4A9634F0D97B2C99E /* VelvtPopoverContentView.swift */,
 				A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */,
 				9DB1CFA42FE2CD6F00632E03 /* Debug.xcconfig */,
@@ -393,6 +402,7 @@
 				F1A2B3C40D5E46789ABC1234 /* DigestFraming.swift in Sources */,
 				E5B71D3A9C4F42188A03D7E6 /* NudgePreviewView.swift in Sources */,
 				A1C4E7F2B93D4E118C6A5D30 /* InterventionNotifier.swift in Sources */,
+				C47E0B1A5D2F4E3B9A61C001 /* CategoryPromptCoordinator.swift in Sources */,
 				18519B3488054C42A9F32A08 /* EventRelay.swift in Sources */,
 				043E5190EF3742C6AC307569 /* EventRelayProtocol.swift in Sources */,
 				8AC53105D9E0437AB5B5E703 /* HistoryListView.swift in Sources */,
@@ -400,8 +410,10 @@
 				69E8878A13154473938407D3 /* InsightCardView.swift in Sources */,
 				119E08E3913F45F0933336D7 /* InsightViewModel.swift in Sources */,
 				16FDC5FA141B43E6A90BAF03 /* MenuBarPopoverView.swift in Sources */,
+				79E306355B7ECCC8E2B461B3 /* CloudSyncStatusLine.swift in Sources */,
 				B20C7D204B9345F3A6E1C101 /* WorkBlockCoordinator.swift in Sources */,
 				B20C7D204B9345F3A6E1C103 /* WorkBlockView.swift in Sources */,
+				C47E0B1A5D2F4E3B9A61C003 /* CategoryPromptCard.swift in Sources */,
 				E7695F6AD86A41B6B9D74D9F /* VelvtPopoverContentView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

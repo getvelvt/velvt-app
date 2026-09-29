@@ -106,9 +106,16 @@ public final class HistoryViewModel: ObservableObject {
 
     @Published public private(set) var days: [DaySummaryViewModel] = []
     @Published public private(set) var isLoading: Bool = true
+    /// Where `days` were built: synced from the cloud, or on this Mac.
+    /// `nil` until a history arrives.
+    @Published public private(set) var source: HistorySource?
     /// The date most recently requested for scroll-into-view, e.g. by a
     /// tapped notification. Views observe this to drive a `ScrollViewReader`.
     @Published public private(set) var scrollTarget: String?
+
+    /// Today's local date, as `yyyy-MM-dd`. A seam for tests; the app reads
+    /// the clock.
+    var today: () -> String = { HistoryViewModel.localDateString() }
 
     public init() {}
 
@@ -116,16 +123,23 @@ public final class HistoryViewModel: ObservableObject {
         days.last { !$0.isNoData }
     }
 
+    /// Today's synced summary, for the Today tab's day metrics. A history
+    /// built on this Mac feeds the Patterns card only, so the Today tab keeps
+    /// showing what it showed before one existed.
     public var todayReadyDay: DaySummaryViewModel? {
-        readyDay(for: Self.localDateString())
+        guard source == .cloud else { return nil }
+        return readyDay(for: Self.localDateString())
     }
 
     public func readyDay(for localDate: String) -> DaySummaryViewModel? {
         days.first { $0.id == localDate && !$0.isNoData }
     }
 
+    /// Progress toward the cloud's baseline, counted in synced days only.
+    /// Days built on this Mac are not summaries the cloud holds, and counting
+    /// them would say a baseline is being collected that is not.
     public var baselineProgress: BaselineProgress {
-        let collected = days.filter { !$0.isNoData }
+        let collected = source == .cloud ? days.filter { !$0.isNoData } : []
         return BaselineProgress(
             collectedDays: collected.count,
             maturityStatus: collected.last?.baselineStatus
@@ -133,17 +147,19 @@ public final class HistoryViewModel: ObservableObject {
     }
 
     public var progressiveInsight: ProgressiveInsight? {
-        ProgressiveInsight.make(from: days)
+        ProgressiveInsight.make(from: days, today: today())
     }
 
     public func update(from payload: HistoryPayload) {
         let mapped = payload.summaries.map(DaySummaryViewModel.init)
         days = HistoryViewModel.padded(mapped, toCount: payload.days)
+        source = payload.source
         isLoading = false
     }
 
     public func reset() {
         days = []
+        source = nil
         isLoading = true
         scrollTarget = nil
     }
@@ -159,10 +175,12 @@ public final class HistoryViewModel: ObservableObject {
     }
 
     /// Prepends synthetic no_data stubs for dates before the earliest known day
-    /// when the server sends fewer summaries than the requested window.
+    /// when a payload carries fewer summaries than its `days`.
     ///
-    /// New-user invariant: a user on day 2 with a 7-day window sees 5 no_data
-    /// rows followed by 2 real rows — never a shorter-than-expected list.
+    /// Since protocol 33 `days` is the number of rows sent, so the service
+    /// never asks for padding. Until then it was the number of days requested,
+    /// and a 7-row cloud answer labelled 14 was padded with seven empty days:
+    /// a prior week that could never count toward week over week.
     static func padded(_ existing: [DaySummaryViewModel], toCount target: Int) -> [DaySummaryViewModel] {
         guard target > existing.count, let earliest = existing.first else {
             return existing
@@ -218,6 +236,11 @@ public enum ProgressiveInsightTier: Equatable, Sendable {
 }
 
 public struct ProgressiveInsight: Equatable, Sendable {
+    /// The least active time a single day is described from. `formatActiveTime`
+    /// writes whole minutes, so a ready day under one (velvt-core calls a day
+    /// ready from any modelled time) read "100% of 0m observed active time".
+    static let minimumDescribedDaySeconds = 60
+
     public let tier: ProgressiveInsightTier
     public let observation: String
     public let comparison: String
@@ -227,7 +250,13 @@ public struct ProgressiveInsight: Equatable, Sendable {
     public let recentObservedDays: Int
     public let priorObservedDays: Int
 
-    static func make(from days: [DaySummaryViewModel]) -> ProgressiveInsight? {
+    /// `today` is the local date the "Today so far" tier may describe. A single
+    /// ready day that is not today, such as yesterday on a morning with
+    /// nothing observed yet, is described as a partial week instead.
+    static func make(
+        from days: [DaySummaryViewModel],
+        today: String = HistoryViewModel.localDateString()
+    ) -> ProgressiveInsight? {
         let recentWindow = Array(days.suffix(7))
         let recent = recentWindow.filter { !$0.isNoData }
         guard !recent.isEmpty else { return nil }
@@ -242,7 +271,7 @@ public struct ProgressiveInsight: Equatable, Sendable {
         {
             return weekOverWeek(recent: recent, prior: prior)
         }
-        if recent.count == 1 {
+        if recent.count == 1, recent[0].id == today {
             return todaySoFar(day: recent[0], priorObservedDays: prior.count)
         }
         return thisWeekSoFar(days: recent, priorObservedDays: prior.count)
@@ -285,7 +314,7 @@ public struct ProgressiveInsight: Equatable, Sendable {
         return ProgressiveInsight(
             tier: .weekOverWeek,
             observation:
-                "Uninterrupted focus represented \(Int((recentFocusShare * 100).rounded()))% of observed active time this week.",
+                "Focus-oriented work represented \(Int((recentFocusShare * 100).rounded()))% of observed active time this week.",
             comparison:
                 "That share was \(focusDirection) than last week; meaningful switching was \(switchDirection).",
             suggestedAction: suggestedAction,
@@ -305,7 +334,7 @@ public struct ProgressiveInsight: Equatable, Sendable {
         let observation: String
         let comparison: String
         let suggestedAction: String
-        if day.activeSeconds == 0 {
+        if day.activeSeconds < minimumDescribedDaySeconds {
             observation = "No qualifying activity has been recorded in this observed day yet."
             comparison = "There is not enough active time for a within-day comparison."
             suggestedAction = "Keep Velvt running during your next work block and check again afterward."
@@ -351,7 +380,7 @@ public struct ProgressiveInsight: Equatable, Sendable {
             let averageShare = share(focused: focused, active: active)
             let range = ((shares.max() ?? 0) - (shares.min() ?? 0)) * 100
             observation =
-                "Focus-oriented work represented \(Int((averageShare * 100).rounded()))% of observed active time across \(days.count) days."
+                "Focus-oriented work represented \(Int((averageShare * 100).rounded()))% of observed active time across \(days.count) \(days.count == 1 ? "day" : "days")."
             comparison =
                 shares.count > 1
                 ? "Available days varied by \(Int(range.rounded())) focus-share points; this is a partial-window comparison, not week over week."

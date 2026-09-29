@@ -99,6 +99,10 @@ impl InvitationGates for SwitchableGates {
         self.quiet_hours.load(Ordering::SeqCst)
     }
 
+    fn in_quiet_hours_at(&self, _at: DateTime<Utc>, _utc_offset_seconds: i32) -> bool {
+        self.quiet_hours.load(Ordering::SeqCst)
+    }
+
     fn focus_active(&self, _at: DateTime<Utc>) -> bool {
         self.focus.load(Ordering::SeqCst)
     }

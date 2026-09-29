@@ -341,6 +341,7 @@ fn server_message_variants_round_trip() {
         }),
         ServerMessage::HistoryPayload(HistoryPayload {
             days: 0,
+            source: HistorySource::ThisMac,
             summaries: Vec::new(),
         }),
         ServerMessage::ServiceStatus(ServiceStatus {

@@ -3,7 +3,7 @@ import SwiftUI
 /// Shows the one thing Velvt does, before the user has to earn it.
 ///
 /// The drift offer is the product, and it is gated behind evidence (drift
-/// policy version 4): a block running past a three-minute warm-up, three
+/// policy version 5): a block running past a three-minute warm-up, three
 /// confident switches inside ten minutes, and two minutes still remaining.
 /// Plenty of people will use Velvt for a week without ever meeting those
 /// conditions, and conclude it does nothing — the app is inert until it is
@@ -56,9 +56,18 @@ public struct NudgePreviewView: View {
                         .padding(VelvtMetrics.spaceSM)
                 }
 
+            // Only what a reply actually does (work_block backoff and demotion):
+            // any reply but Back to work starts the cooldown and quiets the next
+            // offer; not replying and simply going back (no_response, returned)
+            // start none. Only "I was focused" counts toward going quiet, and only
+            // past a floor of 10 delivered in 14 days, which one nudge per block
+            // rarely reaches, so this must not read as what happens to everyone.
+            // No reply relabels anything, so it must not promise fewer mistakes.
             Text(
                 "At most one per block, and never outside one. Whichever reply is honest "
-                    + "is the right one — telling Velvt it was wrong is how it stops being wrong."
+                    + "is the right one — any reply other than Back to work makes Velvt wait "
+                    + "longer before the next one and send it without a notification, and if "
+                    + "enough of its nudges get “I was focused”, it goes quiet."
             )
             .velvtBody(12)
             .fixedSize(horizontal: false, vertical: true)

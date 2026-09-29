@@ -583,6 +583,8 @@ public final class MenuBarController: NSObject {
     private let collectionSettings: CollectionSettingsModel
     private let metricsStore: AppMetricsStore
     private let guidedTour = GuidedTourModel()
+    /// Where the next opening, or the open panel, is asked to go.
+    let destinationRequests = MenuBarDestinationRequests()
     private let statusItemManager: any StatusItemManaging
     private let windowSizeStore: MenuBarWindowSizeStore
     private let now: () -> Date
@@ -627,6 +629,7 @@ public final class MenuBarController: NSObject {
         collectionSettings: CollectionSettingsModel = CollectionSettingsModel(),
         workBlockCoordinator: WorkBlockCoordinator? = nil,
         localDashboardCoordinator: LocalDashboardCoordinator? = nil,
+        categoryPromptCoordinator: CategoryPromptCoordinator? = nil,
         collectionStatus: AnyPublisher<CollectionStatus, Never> = Just(.idle).eraseToAnyPublisher(),
         connectionStatus: AnyPublisher<ConnectionStatus, Never> = Just(.disconnected).eraseToAnyPublisher(),
         simulateNotification: (() async -> DebugInsightSimulationResult)? = nil,
@@ -683,6 +686,8 @@ public final class MenuBarController: NSObject {
                 collectionSettings: collectionSettings,
                 workBlockCoordinator: workBlockCoordinator,
                 localDashboardCoordinator: localDashboardCoordinator,
+                categoryPromptCoordinator: categoryPromptCoordinator,
+                destinationRequests: destinationRequests,
                 accountStateManager: accountStateManager,
                 ipcClient: ipcClient,
                 menuStatusViewModel: menuStatusViewModel,
@@ -870,6 +875,14 @@ public final class MenuBarController: NSObject {
 
     public func showToday() {
         guidedTour.dismiss()
+        showPopover()
+    }
+
+    /// Opens the panel on Settings → Apps & Sites, the needs-a-category list:
+    /// where a tap on the reminder goes. Asked for before the panel opens, so
+    /// the opening's own reset to the Now tab cannot undo it.
+    public func showNeedsACategory() {
+        destinationRequests.request(.teachApps, panelIsOpen: popover.isShown)
         showPopover()
     }
 

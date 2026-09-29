@@ -214,20 +214,25 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
     private let openPopover: () -> Void
     private let scrollToDate: ScrollToDateAction
     private let isDriftCardInFront: () -> Bool
+    private let openNeedsACategory: () -> Void
     private let reporter: any NotificationDeliveryReporting
 
     /// - Parameter isDriftCardInFront: whether the menu-bar window, which
     ///   draws the live drift card above every tab, is the surface in front of
     ///   the person right now.
+    /// - Parameter openNeedsACategory: opens the popover on the
+    ///   needs-a-category list and answers the card as opened.
     public init(
         openPopover: @escaping () -> Void,
         scrollToDate: ScrollToDateAction,
         isDriftCardInFront: @escaping () -> Bool = { false },
+        openNeedsACategory: @escaping () -> Void = {},
         reporter: any NotificationDeliveryReporting = OSLogNotificationDeliveryReporter()
     ) {
         self.openPopover = openPopover
         self.scrollToDate = scrollToDate
         self.isDriftCardInFront = isDriftCardInFront
+        self.openNeedsACategory = openNeedsACategory
         self.reporter = reporter
     }
 
@@ -252,11 +257,22 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        let isDriftOffer =
-            notification.request.content.userInfo[interventionNotificationUserInfoKey] as? Bool == true
+        let surface = Self.surface(of: notification.request.content.userInfo)
         Task { @MainActor in
-            completionHandler(self.presentationWhileActive(isDriftOffer: isDriftOffer))
+            completionHandler(self.presentationWhileActive(for: surface))
         }
+    }
+
+    /// Which of the three kinds a notification is, from its `userInfo`
+    /// marker. Anything without one is a daily insight, as it always was.
+    nonisolated static func surface(of userInfo: [AnyHashable: Any]) -> NotificationDeliverySurface {
+        if userInfo[interventionNotificationUserInfoKey] as? Bool == true {
+            return .driftOffer
+        }
+        if userInfo[categoryPromptNotificationUserInfoKey] as? Bool == true {
+            return .categoryPrompt
+        }
+        return .dailyInsight
     }
 
     /// How a notification is shown while Velvt is the active app.
@@ -269,9 +285,8 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
     /// window is in front: that window draws the offer's card above every
     /// tab, so a banner and a sound would announce what the person is already
     /// looking at. It is still listed in Notification Center.
-    func presentationWhileActive(isDriftOffer: Bool) -> UNNotificationPresentationOptions {
-        let surface: NotificationDeliverySurface = isDriftOffer ? .driftOffer : .dailyInsight
-        if isDriftOffer, isDriftCardInFront() {
+    func presentationWhileActive(for surface: NotificationDeliverySurface) -> UNNotificationPresentationOptions {
+        if surface == .driftOffer, isDriftCardInFront() {
             reporter.report(.listedBehindVisibleCard, surface: surface)
             return [.list]
         }
@@ -285,6 +300,13 @@ public final class NotificationResponseRouter: NSObject, UNUserNotificationCente
         // outcome the wrong-intervention rate can be computed from.
         if userInfo[interventionNotificationUserInfoKey] as? Bool == true {
             openPopover()
+            return
+        }
+        // The reminder is about the list, so it opens the list: the popover on
+        // Settings → Apps & Sites, not the Now tab every other opening resets
+        // to.
+        if userInfo[categoryPromptNotificationUserInfoKey] as? Bool == true {
+            openNeedsACategory()
             return
         }
         guard let date = userInfo["insight_date"] as? String else { return }

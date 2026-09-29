@@ -16,7 +16,7 @@
 #   5. The warm-up exclusion compared planned_duration_seconds with 300, which
 #      the schema makes impossible to trigger. Since 2026-09-25 it is 180 s of
 #      ELAPSED time: ended_at - started_at - total_paused_seconds.
-#   6. Policy v1 to v4 are never pooled (2026-09-25, 2026-09-26), and only v4
+#   6. Policy v1 to v5 are never pooled (2026-09-25 to 2026-09-27), and only v5
 #      is analysed. An intervention takes the policy of its block's
 #      offered/withheld_demotion/suppressed_dnd decision; without one it is
 #      counted and excluded. Exports without a decision log are excluded whole.
@@ -29,6 +29,14 @@
 #  11. The 2026-08-17 measure 3, corrections made per participant, was
 #      pre-registered and unmeasurable: no export carried it. It is counted from
 #      the corrections CSV, as a count, and a missing file is never a zero.
+#  12. The primary outcome was reported as NOT COMPUTED because no export
+#      carried the ledger it needs. It is computed from the outcomes CSV the
+#      exporter works out on the Mac: numerator and denominator on policy v5
+#      eligible points, censoring by reason, the 10% and 25% censoring rules,
+#      the two secondary outcomes, and every way a label can be missing or
+#      wrong, which is reported and never imputed. Every result carries the
+#      2026-08-21 label: associational, since every eligible point was offered
+#      and there is no silence arm. observer_gap is broken down by cause.
 #
 # Fixtures are CSVs written the way export_cohort_evidence.sh writes them.
 # export_cohort_evidence_test.sh covers the databases behind them, across
@@ -71,6 +79,7 @@ HEADERS = {
     "invitations": "invitation_id,offered_at,action_id,policy_version,backoff_policy_version,outcome,outcome_at",
     "explain": "week_start_local_date,taps,delivered_interventions,blocks_declared",
     "corrections": "scope,category,rules,corrections",
+    "outcomes": "decision_id,censor_reason,observer_gap_cause,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category",
 }
 T0 = 1800000000
 spec = json.load(sys.stdin)
@@ -127,8 +136,9 @@ if spec.get("decisions") is not None:
             decision_id=d.get("decision_id", f"{name}-d{i}"),
             occurred_at=d.get("occurred_at", b.get("started_at", T0) + 600),
             # Unless a row says otherwise, it is under the analysed policy.
-            block_id=d.get("block_id"), policy_version=d.get("policy_version", 4),
-            anchor_category="FOCUS_WORK", switch_count=3, elapsed_seconds=600,
+            block_id=d.get("block_id"), policy_version=d.get("policy_version", 5),
+            anchor_category=d.get("anchor_category", "FOCUS_WORK"), switch_count=3,
+            elapsed_seconds=600,
             remaining_seconds=600, gate_verdict=d["gate_verdict"],
             propensity=d.get("propensity", "1.0"),
             anchor_seen_within_600s=d.get("anchor_seen_within_600s"), outcome_at=None,
@@ -147,12 +157,17 @@ if spec.get("explain") is not None:
     write("explain", spec["explain"])
 if spec.get("corrections") is not None:
     write("corrections", spec["corrections"])
-meta = {"export_format": "3", "exported_at": str(T0 + 7 * 86400), "schema_version": "36",
+if spec.get("outcomes") is not None:
+    write("outcomes", spec["outcomes"])
+meta = {"export_format": "4" if spec.get("outcomes") is not None else "3",
+        "exported_at": str(T0 + 7 * 86400), "schema_version": "36",
         "decision_log": "present" if spec.get("decisions") is not None else "absent",
         "invitations": "present" if spec.get("invitations") is not None else "absent",
         "explain_probe": "present" if spec.get("explain") is not None else "absent",
         "corrections": "present" if spec.get("corrections") is not None else "absent",
         "card_seen_recorded_since": str(T0 - 86400), "invitations_enabled": "1"}
+if spec.get("outcomes") is not None:
+    meta.update({"outcomes": "present", "outcomes_definition_version": "1"})
 meta.update(spec.get("meta", {}))
 if spec.get("write_meta", True):
     with open(out / f"{name}-meta.csv", "w", newline="") as f:
@@ -192,9 +207,14 @@ eq("trust.denominator", r["trust"]["denominator"], 2)
 # The retired figure carries its retirement in the machine-readable output too.
 if not retired["status"].startswith("DESCRIPTIVE") or "2026-08-21" not in retired["status"]:
     problems.append(f"retired.status: {retired['status']!r}")
+# This export predates the outcomes file: the primary outcome is not
+# measurable from it, and nothing is approximated in its place.
 if "primary_outcome" in r and r["primary_outcome"].get("numerator") is not None:
     problems.append("the primary outcome's numerator was approximated")
 eq("primary.eligible_decision_points", r["primary_outcome"]["eligible_decision_points"], 2)
+eq("primary.not_measurable", r["primary_outcome"]["not_measurable"],
+   {"no outcomes file (an export from before export format 4)": 2})
+eq("primary.with_outcome_row", r["primary_outcome"]["with_outcome_row"], 0)
 
 # The power statement is data, not decoration.
 power = r["power"]
@@ -223,7 +243,8 @@ for needle in "WITHHELD (recorded, never delivered)" \
               "delivery_suppressed_dnd" \
               "withheld_demotion" \
               "OUTCOME DISTRIBUTION (delivered only)" \
-              "PRIMARY OUTCOME: sustained anchor engagement (2026-08-21) — NOT COMPUTED HERE" \
+              "PRIMARY OUTCOME: sustained anchor engagement (2026-08-21)" \
+              "NOT MEASURABLE. NOT MEASURABLE from these exports" \
               "DESCRIPTIVE — RETIRED 2026-08-21, NOT THE PRIMARY OUTCOME" \
               "390 eligible decision" \
               "NO_RESPONSE BY CARD_SEEN_AT" \
@@ -242,6 +263,7 @@ done
 if grep -qF "PRIMARY OUTCOME (pre-registered 2026-08-09)" <<<"$report"; then
   fail "the retired 2026-08-09 outcome is headlined as the primary one again"
 fi
+grep -qF "NOT COMPUTED HERE" <<<"$report" && fail "the primary outcome still says it is not computed"
 grep -qF "returned within 600s: 1/2 = 50.0% — underpowered, see POWER above" <<<"$report" \
   || fail "delivered denominator drifted off 2, or the power marker went missing"
 
@@ -376,6 +398,7 @@ assert reasons.get("block elapsed under the 180s warm-up") == 4, reasons   # 2 o
 censored = r["primary_outcome"]["censored_visible_in_export"]
 assert censored == {"block ended before the horizon elapsed": 1}, censored
 assert r["primary_outcome"]["not_censored_by_block_or_export_end"] == 2, r["primary_outcome"]
+assert r["primary_outcome"]["with_outcome_row"] == 0, r["primary_outcome"]
 PY
 
 # ===========================================================================
@@ -384,30 +407,30 @@ PY
 make_export "$work/policy/p-policy" <<'JSON'
 {"blocks": [
    {"block_id": "v1-offer",      "started_at": 1800000000},
-   {"block_id": "v4-offer",      "started_at": 1800100000},
+   {"block_id": "v5-offer",      "started_at": 1800100000},
    {"block_id": "no-decision",   "started_at": 1800200000},
    {"block_id": "abstained-only","started_at": 1800300000},
    {"block_id": "conflicting",   "started_at": 1800400000},
-   {"block_id": "v4-dnd",        "started_at": 1800500000},
+   {"block_id": "v5-dnd",        "started_at": 1800500000},
    {"block_id": "v1-era-block",  "started_at": 1800050000, "ended_at": 1800050600, "phase": "abandoned"}
  ],
  "offers": [
    {"block_id": "v1-offer",       "outcome": "returned", "outcome_at": 1800000700},
-   {"block_id": "v4-offer",       "outcome": "no_response", "card_seen": "seen", "card_seen_at": 1800100601},
+   {"block_id": "v5-offer",       "outcome": "no_response", "card_seen": "seen", "card_seen_at": 1800100601},
    {"block_id": "no-decision",    "outcome": "no_response"},
    {"block_id": "abstained-only", "outcome": "no_response"},
    {"block_id": "conflicting",    "outcome": "dismissed"},
-   {"block_id": "v4-dnd",         "outcome": "delivery_suppressed_dnd"}
+   {"block_id": "v5-dnd",         "outcome": "delivery_suppressed_dnd"}
  ],
  "decisions": [
    {"block_id": "v1-offer", "gate_verdict": "abstained_warmup", "policy_version": 1, "occurred_at": 1800000100},
    {"block_id": "v1-offer", "gate_verdict": "offered", "policy_version": 1, "occurred_at": 1800060000},
-   {"block_id": "v4-offer", "gate_verdict": "abstained_min_switches"},
-   {"block_id": "v4-offer", "gate_verdict": "offered", "anchor_seen_within_600s": 1},
+   {"block_id": "v5-offer", "gate_verdict": "abstained_min_switches"},
+   {"block_id": "v5-offer", "gate_verdict": "offered", "anchor_seen_within_600s": 1},
    {"block_id": "abstained-only", "gate_verdict": "abstained_min_switches"},
    {"block_id": "conflicting", "gate_verdict": "offered", "policy_version": 1, "occurred_at": 1800000200},
-   {"block_id": "conflicting", "gate_verdict": "offered", "policy_version": 4},
-   {"block_id": "v4-dnd", "gate_verdict": "suppressed_dnd", "anchor_seen_within_600s": 0}
+   {"block_id": "conflicting", "gate_verdict": "offered", "policy_version": 5},
+   {"block_id": "v5-dnd", "gate_verdict": "suppressed_dnd", "anchor_seen_within_600s": 0}
  ],
  "invitations": [
    {"offered_at": 1800040000, "outcome": "accepted"},
@@ -421,21 +444,21 @@ JSON
 "$analyze" --json "$work/policy/p-policy" > "$work/policy.json"
 check "$work/policy.json" "policy attribution and the never-pooled rule" <<'PY'
 p = r["policy"]
-assert p["analysed_policy_version"] == 4, p
-assert p["decisions_by_policy_version"] == {"1": 3, "4": 5}, p
-# v1-offer -> 1; v4-offer, v4-dnd -> 4; no-decision and abstained-only have no
+assert p["analysed_policy_version"] == 5, p
+assert p["decisions_by_policy_version"] == {"1": 3, "5": 5}, p
+# v1-offer -> 1; v5-offer, v5-dnd -> 5; no-decision and abstained-only have no
 # attributing verdict; conflicting has both.
-assert p["interventions_by_attribution"] == {"1": 1, "4": 2, "conflicting": 1, "unattributed": 2}, p
+assert p["interventions_by_attribution"] == {"1": 1, "5": 2, "conflicting": 1, "unattributed": 2}, p
 d = r["decisions_recorded"]
 assert (d["delivered"], d["withheld"]) == (1, 1), d
 assert r["retired_return_within_10min"]["numerator"] == 0, r["retired_return_within_10min"]
 assert r["card_seen"]["no_response"] == {"seen": 1, "unseen": 0, "unknown": 0}, r["card_seen"]
-# Eligible: v4 'offered' rows only (v4-offer, conflicting's v4 row).
+# Eligible: v5 'offered' rows only (v5-offer, conflicting's v5 row).
 assert r["power"]["observed_eligible_decision_points"] == 2, r["power"]
 integrity = r["decision_log_integrity"]
 assert integrity["rows"] == 5, integrity
 assert integrity["by_gate_verdict"] == {"abstained_min_switches": 2, "offered": 2, "suppressed_dnd": 1}, integrity
-# Rows with no policy column are v4 only after this Mac's last decision under
+# Rows with no policy column are v5 only after this Mac's last decision under
 # another policy (1800060000): the v1-era block and the first invitation are
 # excluded, and the explain week holding that decision is too.
 assert p["rows_before_last_other_policy_decision_excluded"] == {"blocks": 2, "explain_weeks": 1, "invitations": 1}, p
@@ -448,44 +471,46 @@ assert p["non_monotonic_policy_history"] == [], p
 PY
 
 # ===========================================================================
-# 7b. A Mac upgraded from a policy-v3 build (1.0.12) to a policy-v4 build. v3
-#     never saw a departure to an application the client could not observe at
-#     window level, so its decision points and switch counts mean something
-#     else: its rows are counted and excluded, never pooled with v4.
+# 7b. A Mac upgraded from a policy-v4 build (1.0.13) to a policy-v5 build. v4
+#     filed a browser tab by keyword rules over its hostname and title, else
+#     the ambiguous prior; v5 files it by its site and drops the keyword tiers
+#     for a readable site, so decision points differ in both directions and
+#     v4's switch counts mean something else: its rows are counted and
+#     excluded, never pooled with v5.
 # ===========================================================================
-make_export "$work/upgraded/p-v3-to-v4" <<'JSON'
+make_export "$work/upgraded/p-v4-to-v5" <<'JSON'
 {"blocks": [
-   {"block_id": "v3-block", "started_at": 1800000000},
-   {"block_id": "v4-block", "started_at": 1800200000}
+   {"block_id": "v4-block", "started_at": 1800000000},
+   {"block_id": "v5-block", "started_at": 1800200000}
  ],
  "offers": [
-   {"block_id": "v3-block", "outcome": "returned", "outcome_at": 1800000650},
-   {"block_id": "v4-block", "outcome": "returned", "outcome_at": 1800200650}
+   {"block_id": "v4-block", "outcome": "returned", "outcome_at": 1800000650},
+   {"block_id": "v5-block", "outcome": "returned", "outcome_at": 1800200650}
  ],
  "decisions": [
-   {"block_id": "v3-block", "gate_verdict": "abstained_min_switches", "policy_version": 3, "occurred_at": 1800000300},
-   {"block_id": "v3-block", "gate_verdict": "offered", "policy_version": 3, "occurred_at": 1800000600},
-   {"block_id": "v4-block", "gate_verdict": "abstained_min_switches"},
-   {"block_id": "v4-block", "gate_verdict": "offered"}
+   {"block_id": "v4-block", "gate_verdict": "abstained_min_switches", "policy_version": 4, "occurred_at": 1800000300},
+   {"block_id": "v4-block", "gate_verdict": "offered", "policy_version": 4, "occurred_at": 1800000600},
+   {"block_id": "v5-block", "gate_verdict": "abstained_min_switches"},
+   {"block_id": "v5-block", "gate_verdict": "offered"}
  ]}
 JSON
-"$analyze" --json "$work/upgraded/p-v3-to-v4" > "$work/upgraded.json"
-check "$work/upgraded.json" "policy v3 rows pooled with v4" <<'PY'
+"$analyze" --json "$work/upgraded/p-v4-to-v5" > "$work/upgraded.json"
+check "$work/upgraded.json" "policy v4 rows pooled with v5" <<'PY'
 p = r["policy"]
-assert p["decisions_by_policy_version"] == {"3": 2, "4": 2}, p
-assert p["interventions_by_attribution"] == {"3": 1, "4": 1}, p
+assert p["decisions_by_policy_version"] == {"4": 2, "5": 2}, p
+assert p["interventions_by_attribution"] == {"4": 1, "5": 1}, p
 assert r["power"]["observed_eligible_decision_points"] == 1, r["power"]
 assert r["decision_log_integrity"]["rows"] == 2, r["decision_log_integrity"]
 assert r["decisions_recorded"]["total"] == 1, r["decisions_recorded"]
 assert p["rows_before_last_other_policy_decision_excluded"] == {"blocks": 1}, p
 reasons = r["exclusions"]["by_reason"]
-assert reasons["intervention under policy_version 3"] == 1, reasons
-assert reasons["decision rows not under policy_version 4"] == 2, reasons
+assert reasons["intervention under policy_version 4"] == 1, reasons
+assert reasons["decision rows not under policy_version 5"] == 2, reasons
 PY
-upgraded_report="$("$analyze" "$work/upgraded/p-v3-to-v4")"
-for needle in "COHORT ANALYSIS (drift policy v4 only)" \
-              "every result uses policy_version 4 only" \
-              "DECISION-LOG INTEGRITY (policy_version 4 rows)"; do
+upgraded_report="$("$analyze" "$work/upgraded/p-v4-to-v5")"
+for needle in "COHORT ANALYSIS (drift policy v5 only)" \
+              "every result uses policy_version 5 only" \
+              "DECISION-LOG INTEGRITY (policy_version 5 rows)"; do
   grep -qF -- "$needle" <<<"$upgraded_report" || fail "upgraded report omits: $needle"
 done
 
@@ -734,9 +759,268 @@ corr_report="$("$analyze" "$work/corr"/*/)"
 check_power_markers "$corr_report"
 for needle in "p-teacher                   6 app-scoped correction(s) on 3 app(s); 3 window rule(s)" \
               "no corrections file: ['p-lost', 'p-older']" \
-              "counts include time before policy v4, not separable: ['p-upgraded']" \
+              "counts include time before policy v5, not separable: ['p-upgraded']" \
               "Each count is a lower bound."; do
   grep -qF -- "$needle" <<<"$corr_report" || fail "corrections report omits: $needle"
 done
+
+# ===========================================================================
+# 12. The primary outcome, from the outcomes file (instrument addendum,
+#     2026-09-27). Scenario A is reportable: 1 of 10 eligible points censored,
+#     not above 10%. B adds a block that ended inside the horizon and a
+#     horizon still running at export: 3 of 12, above 10% but not above 25%,
+#     so the censored count sits beside every result. C adds one more gap:
+#     4 of 13, above 25%, so it is reported as insufficient and as counts.
+# ===========================================================================
+make_export "$work/outcomes/p-labelled" <<'JSON'
+{"blocks": [
+   {"block_id": "b1", "started_at": 1800000000}, {"block_id": "b2", "started_at": 1800010000},
+   {"block_id": "b3", "started_at": 1800020000}, {"block_id": "b4", "started_at": 1800030000},
+   {"block_id": "b5", "started_at": 1800040000}, {"block_id": "b6", "started_at": 1800050000},
+   {"block_id": "b7", "started_at": 1800060000}, {"block_id": "b8", "started_at": 1800070000},
+   {"block_id": "b9", "started_at": 1800080000}, {"block_id": "b10", "started_at": 1800090000},
+   {"block_id": "v4", "started_at": 1799000000}
+ ],
+ "offers": [],
+ "decisions": [
+   {"decision_id": "v4-offer", "block_id": "v4", "gate_verdict": "offered", "policy_version": 4},
+   {"decision_id": "d1", "block_id": "b1", "gate_verdict": "offered"},
+   {"decision_id": "d2", "block_id": "b2", "gate_verdict": "offered"},
+   {"decision_id": "d3", "block_id": "b3", "gate_verdict": "offered"},
+   {"decision_id": "d4", "block_id": "b4", "gate_verdict": "offered"},
+   {"decision_id": "d5", "block_id": "b5", "gate_verdict": "offered"},
+   {"decision_id": "d6", "block_id": "b6", "gate_verdict": "offered"},
+   {"decision_id": "d7", "block_id": "b7", "gate_verdict": "offered"},
+   {"decision_id": "d8", "block_id": "b8", "gate_verdict": "offered"},
+   {"decision_id": "d9", "block_id": "b9", "gate_verdict": "offered"},
+   {"decision_id": "d10", "block_id": "b10", "gate_verdict": "offered"},
+   {"decision_id": "a1", "block_id": "b1", "gate_verdict": "abstained_min_switches", "occurred_at": 1800000300}
+ ],
+ "outcomes": [
+   {"decision_id": "v4-offer", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 5, "departure_category": "SOCIAL_FEED"},
+   {"decision_id": "a1", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 0},
+   {"decision_id": "d1", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 30, "departure_category": "SOCIAL_FEED"},
+   {"decision_id": "d2", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": 120, "departure_category": "COMMUNICATION"},
+   {"decision_id": "d3", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 60, "departure_category": "SOCIAL_FEED"},
+   {"decision_id": "d4", "censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "departure_category": "SOCIAL_FEED"},
+   {"decision_id": "d5", "censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 0, "seconds_to_sustained_return": 450, "departure_category": "REFERENCE"},
+   {"decision_id": "d6", "censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 0, "departure_category": "COMMUNICATION"},
+   {"decision_id": "d7", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "seconds_to_sustained_return": 10, "departure_category": "PASSIVE_CONSUMPTION"},
+   {"decision_id": "d8", "censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "departure_category": "SOCIAL_FEED"},
+   {"decision_id": "d9", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 0, "seconds_to_sustained_return": 200, "departure_category": "COMMUNICATION"},
+   {"decision_id": "d10", "censor_reason": "observer_gap", "observer_gap_cause": "final_dwell", "departure_category": "SOCIAL_FEED"}
+ ]}
+JSON
+"$analyze" --json "$work/outcomes/p-labelled" > "$work/outcomes-a.json"
+check "$work/outcomes-a.json" "the primary outcome from the outcomes file (scenario A)" <<'PY'
+p = r["primary_outcome"]
+assert r["data_quality"]["malformed"] == [], r["data_quality"]
+assert p["status"].startswith("COMPUTED"), p["status"]
+# The v4 offer and the abstention have outcome rows and are not eligible.
+assert p["eligible_decision_points"] == 10, p
+assert p["not_measurable"] == {}, p
+assert p["with_outcome_row"] == 10, p
+assert p["censored"] == {"block_ended": 0, "export_ended": 0, "observer_gap": 1}, p
+assert p["observer_gap_by_cause"] == {"pause": 0, "final_dwell": 1, "other": 0}, p
+assert "not censoring reasons of their own" in p["observer_gap_by_cause_note"], p
+assert "how often that happens is unknown" in p["observer_gap_by_cause_note"], p
+# 2026-08-21: associational until randomization is on, in the JSON too.
+for needle in ("Associational, not an effect of the nudge", "propensity 1.0", "no silence arm"):
+    assert needle in p["associational"], p["associational"]
+assert (p["censored_total"], p["censored_share"]) == (1, "1/10"), p
+assert p["censoring_verdict"].startswith("at or below 10%"), p["censoring_verdict"]
+assert p["reportable"] is True, p
+assert (p["numerator"], p["denominator"]) == (5, 9), p
+free = p["secondary"]["departure_free_600s"]
+assert (free["numerator"], free["denominator"]) == (5, 9), free
+ret = p["secondary"]["time_to_sustained_return"]
+# Returned: 10, 30, 60, 120, 200, 450; three never did inside the horizon.
+assert (ret["points"], ret["reached_within_horizon"], ret["not_reached_within_horizon"]) == (9, 6, 3), ret
+assert ret["median_seconds"] == 200, ret           # the 5th of 9 to return
+assert ret["restricted_mean_seconds"] == 296.7, ret  # (870 + 3 * 600) / 9
+assert p["departure_category_counts"] == {
+    "COMMUNICATION": 3, "PASSIVE_CONSUMPTION": 1, "REFERENCE": 1, "SOCIAL_FEED": 5}, p
+assert r["power"]["observed_uncensored_decision_points"] == 9, r["power"]
+PY
+report_a="$("$analyze" "$work/outcomes/p-labelled")"
+check_power_markers "$report_a"
+for needle in "PRIMARY OUTCOME: sustained anchor engagement (2026-08-21)" \
+              "censored: 1/10 (block_ended 0, observer_gap 1, export_ended 0); never counted as 0, never imputed" \
+              "observer_gap by cause: final dwell never measured 1, pause (yours, or sleep) 0, other (a restart, or not attributable) 0" \
+              "sustained: 5/9 = 55.6% — underpowered, see POWER above; associational, not an effect of the nudge" \
+              "secondary, departure-free 600 s: 5/9 = 55.6% — underpowered, see POWER above; associational, not an effect of the nudge" \
+              "returned within the horizon at 6 of 9; median 200 s; restricted mean 296.7 s; associational, not an effect of the nudge" \
+              "Associational, not an effect of the nudge: every eligible point was" \
+              "9 with an uncensored outcome"; do
+  grep -qF -- "$needle" <<<"$report_a" || fail "outcomes report (A) omits: $needle"
+done
+grep -qF "censored 1/10" <<<"$report_a" && fail "censoring at 10% was printed beside the results"
+# Every rendered primary-outcome result says it is associational, on its own
+# line, so a line quoted alone cannot drop it.
+check_associational() {
+  local line count=0
+  while IFS= read -r line; do
+    case "$line" in
+      "  sustained: "*|"  secondary, "*|"    sustained at "*|"    departure-free 600 s at "*|"    returned to a sustained run "*)
+        count=$((count + 1))
+        grep -qF -- "; associational, not an effect of the nudge" <<<"$line" \
+          || fail "a primary-outcome result without the associational label: $line" ;;
+    esac
+  done <<<"$1"
+  (( count >= 3 )) || fail "expected at least three primary-outcome results, found $count"
+  grep -qF "at propensity 1.0, so there is no silence arm" <<<"$(tr -s ' \n' ' ' <<<"$1")" \
+    || fail "the associational statement is missing"
+}
+check_associational "$report_a"
+
+# B. Two more points, both censored where the decisions file agrees: a block
+#    that ended 100 s after its offer, and an open block whose offer came 400 s
+#    before the export (exported_at is T0 + 7 days in make_export).
+make_export "$work/outcomes/p-short" <<'JSON'
+{"blocks": [
+   {"block_id": "ended", "started_at": 1800100000, "ended_at": 1800100700},
+   {"block_id": "open", "started_at": 1800603800, "ended_at": null, "phase": "active"}
+ ],
+ "offers": [],
+ "decisions": [
+   {"decision_id": "e1", "block_id": "ended", "gate_verdict": "offered"},
+   {"decision_id": "o1", "block_id": "open", "gate_verdict": "offered", "occurred_at": 1800604400}
+ ],
+ "outcomes": [
+   {"decision_id": "e1", "censor_reason": "block_ended", "departure_category": "SOCIAL_FEED"},
+   {"decision_id": "o1", "censor_reason": "export_ended", "departure_category": "COMMUNICATION"}
+ ]}
+JSON
+"$analyze" --json "$work/outcomes/p-labelled" "$work/outcomes/p-short" > "$work/outcomes-b.json"
+check "$work/outcomes-b.json" "censoring above 10% (scenario B)" <<'PY'
+p = r["primary_outcome"]
+assert r["data_quality"]["malformed"] == [], r["data_quality"]
+assert p["censored"] == {"block_ended": 1, "export_ended": 1, "observer_gap": 1}, p
+assert p["censored_share"] == "3/12", p
+assert p["censoring_verdict"].startswith("above 10%"), p["censoring_verdict"]
+assert p["reportable"] is True, p
+assert (p["numerator"], p["denominator"]) == (5, 9), p
+# The decisions file on its own sees the two block/export ends, not the gap.
+assert p["censored_visible_in_export"] == {
+    "block ended before the horizon elapsed": 1, "the export ends inside the horizon": 1}, p
+PY
+report_b="$("$analyze" "$work/outcomes/p-labelled" "$work/outcomes/p-short")"
+check_power_markers "$report_b"
+grep -qF "sustained: 5/9 = 55.6% — underpowered, see POWER above; censored 3/12; associational, not an effect of the nudge" <<<"$report_b" \
+  || fail "above 10% censored, the censored count is not beside the result"
+check_associational "$report_b"
+
+# C. One more gap: 4 of 13 is above 25%. Counts, and no estimate.
+make_export "$work/outcomes/p-gappy" <<'JSON'
+{"blocks": [{"block_id": "g", "started_at": 1800200000}],
+ "offers": [],
+ "decisions": [{"decision_id": "g1", "block_id": "g", "gate_verdict": "offered"}],
+ "outcomes": [{"decision_id": "g1", "censor_reason": "observer_gap", "observer_gap_cause": "pause"}]}
+JSON
+"$analyze" --json "$work/outcomes"/*/ > "$work/outcomes-c.json"
+check "$work/outcomes-c.json" "censoring above 25% (scenario C)" <<'PY'
+p = r["primary_outcome"]
+assert p["censored_share"] == "4/13", p
+assert p["observer_gap_by_cause"] == {"pause": 1, "final_dwell": 1, "other": 0}, p
+assert p["censoring_verdict"].startswith("above 25%"), p["censoring_verdict"]
+assert p["reportable"] is False, p
+assert (p["numerator"], p["denominator"]) == (5, 9), p
+assert p["departure_category_counts"]["none (at the anchor, or no evidence yet)"] == 1, p
+ret = p["secondary"]["time_to_sustained_return"]
+assert (ret["reached_within_horizon"], ret["points"]) == (6, 9), ret
+assert (ret["median_seconds"], ret["restricted_mean_seconds"]) == (None, None), ret
+PY
+report_c="$("$analyze" "$work/outcomes"/*/)"
+check_power_markers "$report_c"
+grep -qF "INSUFFICIENT, not an estimate:" <<<"$report_c" || fail "above 25% censored was not called insufficient"
+grep -qF "sustained at 5 of 9 uncensored point(s)" <<<"$report_c" || fail "the insufficient result lost its counts"
+check_associational "$report_c"
+grep -qE "sustained: .*%|median [0-9]" <<<"$report_c" && fail "an estimate was printed above 25% censored"
+grep -qF "returned to a sustained run within the horizon at 6 of 9" <<<"$report_c" \
+  || fail "the insufficient time to return lost its counts"
+
+# D. Every way an outcome can be missing or wrong is reported, and the point
+#    is not measurable rather than imputed: a malformed row, a second row for
+#    one decision, an eligible decision with no row, a row the decisions file
+#    contradicts, a category outside the eight, a file under another
+#    definition version, and a file the export wrote that never arrived.
+make_export "$work/outcomes-bad/p-bad" <<'JSON'
+{"blocks": [
+   {"block_id": "m1", "started_at": 1800000000}, {"block_id": "m2", "started_at": 1800010000},
+   {"block_id": "m3", "started_at": 1800020000}, {"block_id": "m4", "started_at": 1800030000},
+   {"block_id": "m5", "started_at": 1800040000, "ended_at": 1800040700},
+   {"block_id": "m6", "started_at": 1800050000},
+   {"block_id": "m7", "started_at": 1800060000}, {"block_id": "m8", "started_at": 1800070000},
+   {"block_id": "m9", "started_at": 1800080000, "ended_at": null, "phase": "active"}
+ ],
+ "offers": [],
+ "decisions": [
+   {"decision_id": "labelled-censored", "block_id": "m1", "gate_verdict": "offered"},
+   {"decision_id": "twice", "block_id": "m2", "gate_verdict": "offered"},
+   {"decision_id": "missing", "block_id": "m3", "gate_verdict": "offered"},
+   {"decision_id": "odd-category", "block_id": "m4", "gate_verdict": "offered"},
+   {"decision_id": "contradicted", "block_id": "m5", "gate_verdict": "offered"},
+   {"decision_id": "fine", "block_id": "m6", "gate_verdict": "offered"},
+   {"decision_id": "odd-cause", "block_id": "m7", "gate_verdict": "offered"},
+   {"decision_id": "cause-uncensored", "block_id": "m8", "gate_verdict": "offered"},
+   {"decision_id": "final-in-open-block", "block_id": "m9", "gate_verdict": "offered"}
+ ],
+ "outcomes": [
+   {"decision_id": "labelled-censored", "censor_reason": "observer_gap", "observer_gap_cause": "other", "sustained_anchor_900s": 0},
+   {"decision_id": "twice", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1},
+   {"decision_id": "twice", "censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1},
+   {"decision_id": "odd-category", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1, "departure_category": "Slack"},
+   {"decision_id": "contradicted", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1},
+   {"decision_id": "fine", "censor_reason": "none", "sustained_anchor_900s": 0, "departure_free_600s": 1, "seconds_to_sustained_return": 601},
+   {"decision_id": "odd-cause", "censor_reason": "observer_gap", "observer_gap_cause": "lost_observer"},
+   {"decision_id": "cause-uncensored", "censor_reason": "none", "observer_gap_cause": "pause", "sustained_anchor_900s": 1, "departure_free_600s": 1},
+   {"decision_id": "final-in-open-block", "censor_reason": "observer_gap", "observer_gap_cause": "final_dwell"}
+ ]}
+JSON
+make_export "$work/outcomes-bad/p-v2" <<'JSON'
+{"blocks": [{"block_id": "b", "started_at": 1800000000}],
+ "offers": [], "decisions": [{"decision_id": "x", "block_id": "b", "gate_verdict": "offered"}],
+ "outcomes": [{"decision_id": "x", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1}],
+ "meta": {"outcomes_definition_version": "2"}}
+JSON
+make_export "$work/outcomes-bad/p-lost" <<'JSON'
+{"blocks": [{"block_id": "b", "started_at": 1800000000}],
+ "offers": [], "decisions": [{"decision_id": "x", "block_id": "b", "gate_verdict": "offered"}],
+ "outcomes": [{"decision_id": "x", "censor_reason": "none", "sustained_anchor_900s": 1, "departure_free_600s": 1}]}
+JSON
+rm "$work/outcomes-bad/p-lost/p-lost-outcomes.csv"
+make_export "$work/outcomes-bad/p-old" <<'JSON'
+{"blocks": [{"block_id": "b", "started_at": 1800000000}],
+ "offers": [], "decisions": [{"decision_id": "x", "block_id": "b", "gate_verdict": "offered"}]}
+JSON
+"$analyze" --json "$work/outcomes-bad"/*/ > "$work/outcomes-d.json"
+check "$work/outcomes-d.json" "missing and malformed outcome rows" <<'PY'
+p = r["primary_outcome"]
+malformed = r["data_quality"]["malformed"]
+def has(text):
+    return any(text in m for m in malformed)
+assert has("p-bad: outcome for decision labelled-censored: censored (observer_gap) but labelled"), malformed
+assert has("p-bad: outcome for decision twice: a second row for this decision"), malformed
+assert has("p-bad: eligible decision missing has no outcome row"), malformed
+assert has("p-bad: outcome for decision odd-category: departure_category 'Slack'"), malformed
+assert has("p-bad: outcome for decision contradicted: censor_reason 'none', but the block ended at 1800040700"), malformed
+assert has("p-bad: outcome for decision fine: seconds_to_sustained_return '601' is not 0 to 600"), malformed
+assert has("p-bad: outcome for decision odd-cause: observer_gap_cause 'lost_observer' is not one of pause, final_dwell, other"), malformed
+assert has("p-bad: outcome for decision cause-uncensored: observer_gap_cause 'pause' on a point censored as 'none'"), malformed
+assert has("p-bad: outcome for decision final-in-open-block: an unmeasured final dwell in a block that had not ended"), malformed
+assert has("p-v2: outcomes computed under definition version 2"), malformed
+assert has("p-lost: the export wrote a outcomes file and it was not received"), malformed
+assert not any(m.startswith("p-old:") for m in malformed), malformed
+assert p["not_measurable"] == {
+    "no outcomes file (an export from before export format 4)": 1,
+    "no row for this decision in the outcomes file": 1,
+    "outcome row contradicts the decisions file": 2,
+    "outcome row malformed": 6,
+    "outcomes computed under definition version 2; this script reads version 1": 1,
+    "outcomes file written and not received": 1,
+}, p["not_measurable"]
+assert p["with_outcome_row"] == 0, p
+assert p["numerator"] is None, p
+PY
 
 echo "analyze_cohort_test.sh: OK"

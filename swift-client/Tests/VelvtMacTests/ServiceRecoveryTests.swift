@@ -115,6 +115,25 @@ final class ServiceProcessLauncherRearmTests: XCTestCase {
         XCTAssertFalse(diagnostic.contains("already listening"))
     }
 
+    /// What a helper that colours its output writes (tracing-subscriber's
+    /// default): the field name and `=` wrapped in escape codes. The code is
+    /// still found, so the chunk is kept at error level.
+    func testHelperDiagnosticFindsTheErrorCodeInColouredOutput() {
+        let escape = "\u{1B}"
+        let line =
+            "\(escape)[2m2026-09-27T14:44:52.000000Z\(escape)[0m \(escape)[33m WARN\(escape)[0m "
+            + "\(escape)[2mvelvt_service::delivery::fetch\(escape)[0m\(escape)[2m:\(escape)[0m history refresh failed "
+            + "\(escape)[3merror_code\(escape)[0m\(escape)[2m=\(escape)[0m\"history_refresh_failed\""
+
+        let codes = ServiceProcessLauncher.errorCodes(inPipeChunk: line)
+
+        XCTAssertEqual(codes, ["history_refresh_failed"])
+        XCTAssertEqual(
+            ServiceProcessLauncher.pipeDiagnosticLevel(label: "stdout", errorCodes: codes),
+            .error
+        )
+    }
+
     func testHelperDiagnosticRefusesAnythingThatIsNotABareToken() {
         XCTAssertTrue(
             ServiceProcessLauncher.errorCodes(

@@ -5,13 +5,15 @@ import os
 
 /// Which offer was being carried to the notification centre.
 ///
-/// Only two surfaces ever reach `UNUserNotificationCenter`: the live drift
-/// offer and the daily insight. The soft-restart next action and the
-/// initiation invitation are in-app cards only — they are answered inside the
-/// popover and never post a notification.
+/// Three surfaces reach `UNUserNotificationCenter`: the live drift offer, the
+/// daily insight, and, since protocol 33, the needs-a-category reminder (at
+/// most one a day, never during a work block). The soft-restart next action,
+/// the initiation invitation and the needs-a-category card are in-app cards
+/// only — they are answered inside the popover and never post a notification.
 public enum NotificationDeliverySurface: String, Equatable, Sendable {
     case driftOffer = "drift_offer"
     case dailyInsight = "daily_insight"
+    case categoryPrompt = "category_prompt"
 }
 
 // MARK: - NotificationDeliveryOutcome

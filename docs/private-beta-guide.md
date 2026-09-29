@@ -7,10 +7,12 @@
 > (`plan/04-alpha-cohort-kit.md`), against notarized 1.0.11 (or 1.0.9 as the
 > fallback), and the kit differs from this guide where it matters: testers do
 > not sign up or sign in, they are asked to allow notifications because the
-> drift offer is the thing being tested, and the drift gate is policy v4
-> (≥ 3 switches after a 3-minute warm-up, decided as each switch happens,
-> including a switch to an application Velvt can see only at application
-> level).
+> drift offer is the thing being tested, and 1.0.11 and 1.0.9 run drift policy
+> v2 (≥ 3 switches after a 3-minute warm-up). Later builds keep those
+> thresholds and carry v3 to v5: v3 (1.0.12) decides as each switch happens,
+> v4 (1.0.13) also counts a switch to an application Velvt can see only at
+> application level, and v5, from the first build after 1.0.13, counts a
+> browser tab by its site.
 > Where the two disagree, the kit is
 > right. The one correction made here is the app's name: it installs as
 > **Velvt.app**, not `velvt-mac.app`.
@@ -42,7 +44,7 @@ Velvt does not add product analytics or telemetry. Diagnostics copied from **Set
 
 ## Everyday recovery and account controls
 
-- **Working offline:** continue normally. Privacy-safe batches can queue locally; the header and App Info show synchronization state. After connectivity returns, choose **Retry Backend Synchronization** if automatic retry has not recovered.
+- **Offline:** continue normally; everything local still works. The header says "Offline · everything local still works", and clicking that line shows how many events are waiting to upload. Uploads resume on their own when Velvt can reach its server; events that still can't upload after about three days of retrying, or within 30 days, are dropped, and your history on this Mac is not affected. **Settings → App Info** shows the exact counts and next retry. After connectivity returns, choose **Retry Cloud Synchronization** there if automatic retry has not recovered.
 - **Local service unavailable:** wait through the short startup/reconnect grace period. If the state remains unavailable, use **Restart Local Service** in App Info, then quit and reopen Velvt if needed. Relaunching replays the short intro and guided tour without resetting account, permission, or Today state.
 - **Accessibility denied or revoked:** collection pauses. Choose **Open Accessibility Settings**, enable Velvt, and return to the app. No permission is marked granted merely by skipping onboarding.
 - **Sign out:** choose **Log Out** at the bottom of the main popover. This clears the local authenticated session; it does not pretend local data was deleted.

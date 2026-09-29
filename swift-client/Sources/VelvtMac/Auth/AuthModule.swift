@@ -239,6 +239,19 @@ public final class AccountStateManager: ObservableObject {
     /// `clearDeviceRevokedFlag()` after the recovery UI has been shown.
     @Published public private(set) var isDeviceRevoked: Bool
     @Published public private(set) var requiresReauthentication: Bool
+    /// Whether requests that depend on the account may go out on the current
+    /// connection: true once the stored session, if there is one, has been
+    /// handed to the service on it, and false while disconnected.
+    ///
+    /// The service holds the session in memory only, and handles one message
+    /// at a time in the order it arrives. A request sent before `AuthSession`
+    /// on a fresh connection reached a service with no session and was
+    /// answered as if the cloud were down: the insight request lost that race
+    /// at every launch. Sending after this turns true puts the session first.
+    /// With no stored session there is nothing to hand over, so it turns true
+    /// at connect; a sign-in on the connection gives the service its session
+    /// directly.
+    @Published public private(set) var isSessionHandedOver = false
 
     /// Fan-out relay for all incoming server messages. Consumers subscribe here
     /// rather than iterating `incomingMessages` directly so only one task owns
@@ -252,6 +265,9 @@ public final class AccountStateManager: ObservableObject {
     private var accountEmailCache: String??
     private var cachedSnapshot: StoredAuthSnapshot?
     private var cachedSession: AuthSession?
+    /// Counts connection-status changes, so a handover that finishes after
+    /// its connection has gone cannot mark the next connection handed over.
+    private var connectionGeneration = 0
 
     public init(keychain: any KeychainProtocol) {
         self.keychain = keychain
@@ -377,10 +393,13 @@ public final class AccountStateManager: ObservableObject {
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] status in
+                guard let self else { return }
+                connectionGeneration &+= 1
                 guard status == .connected else {
+                    isSessionHandedOver = false
                     return
                 }
-                self?.sendStoredSession(to: client)
+                sendStoredSession(to: client, generation: connectionGeneration)
             }
         listenerTask = Task { [weak self] in
             for await message in client.incomingMessages {
@@ -532,14 +551,23 @@ public final class AccountStateManager: ObservableObject {
         }
     }
 
-    private func sendStoredSession(to client: any IPCClientProtocol) {
+    private func sendStoredSession(to client: any IPCClientProtocol, generation: Int) {
         // Reached from the Combine connection-status sink, whose upstream publishes
         // from the IPC thread. `cachedSession` is main-actor state; if a future edit
         // drops the `receive(on:)` hop this fires in debug instead of racing.
         assert(Thread.isMainThread, "sendStoredSession reads main-actor state off the main thread")
-        guard let session = cachedSession else { return }
-        Task {
+        guard let session = cachedSession else {
+            isSessionHandedOver = true
+            return
+        }
+        isSessionHandedOver = false
+        Task { [weak self] in
+            // Handed over whether or not the send succeeded: a send that
+            // failed means the connection is going, and holding requests back
+            // would leave them waiting on a handover that cannot come.
             try? await client.send(.authSession(session))
+            guard let self, connectionGeneration == generation else { return }
+            isSessionHandedOver = true
         }
     }
 

@@ -12,12 +12,15 @@
 //! It also replays one block twice, as the client reported it before and after
 //! it gave an application it cannot observe at window level a dwell of its own
 //! (drift policy 4), and reads what the helper stored and decided each time.
+//! And it replays one block three times with a browser tab as the third
+//! departure -- on a site nothing names, on a site the site table seeds, and
+//! on a site whose own hostname the local inference reads (drift policy 5).
 
 use std::{
     fs,
     io::{self, BufRead, BufReader, Write},
     os::unix::net::{UnixListener, UnixStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -163,7 +166,7 @@ impl Connection {
             panic!("the first frame is server_hello");
         };
         assert_eq!(hello.protocol_version, PROTOCOL_VERSION);
-        assert_eq!(PROTOCOL_VERSION, 32);
+        assert_eq!(PROTOCOL_VERSION, 33);
         self.send(&ClientMessage::ClientHello(ClientHello {
             expected_protocol_version: PROTOCOL_VERSION,
             client_version: "live-helper-test".into(),
@@ -322,6 +325,9 @@ struct Visit {
     /// level: since drift policy 4 it reports the visit with the
     /// application's identity and an empty title. It never makes one up.
     title: Option<&'static str>,
+    /// The address the client read off a browser tab, for `tab`. `None` for
+    /// every other window, as the client reports it.
+    url: Option<&'static str>,
     from: i64,
     until: i64,
 }
@@ -337,6 +343,26 @@ const fn visit(
         app,
         bundle_id,
         title,
+        url: None,
+        from,
+        until,
+    }
+}
+
+/// A browser tab: a window whose address the client read.
+const fn tab(
+    app: &'static str,
+    bundle_id: &'static str,
+    title: &'static str,
+    url: &'static str,
+    from: i64,
+    until: i64,
+) -> Visit {
+    Visit {
+        app,
+        bundle_id,
+        title: Some(title),
+        url: Some(url),
         from,
         until,
     }
@@ -356,9 +382,37 @@ fn report(started_at: DateTime<Utc>, visit: &Visit, in_progress: bool) -> RawEve
         bundle_id: Some(visit.bundle_id.into()),
         declared_app_category: None,
         document_type_ids: Vec::new(),
-        focused_document_url: None,
+        focused_document_url: visit.url.map(Into::into),
         in_progress,
     }
+}
+
+/// The embedding salt every replayed helper runs under.
+///
+/// A helper mints a random one on first start, and Tier 2 is the one tier
+/// whose answer depends on it. For a window nothing earlier names -- a
+/// browser tab on a site no table, rule, keyword or inference names, or a
+/// browser with no page to read -- about one random salt in a few thousand
+/// gives a Medium answer where every other gives the ambiguous browser prior.
+/// The replays assert what the gate did with exactly those windows, so the
+/// salt is written before the helper starts and every run is the same run.
+/// Nothing else about the shipped path changes: the helper reads the salt out
+/// of its own database, as it always does.
+const REPLAY_EMBEDDING_SALT: [u8; 32] = [0x5a; 32];
+
+fn fix_embedding_salt(database: &Path) {
+    drop(
+        velvt_service::persistence::SqlitePersistence::open(database)
+            .expect("the replay's database migrates"),
+    );
+    let changed = rusqlite::Connection::open(database)
+        .expect("the replay's database")
+        .execute(
+            "UPDATE embedding_salt SET salt = ?1 WHERE id = 1",
+            [REPLAY_EMBEDDING_SALT.as_slice()],
+        )
+        .expect("the embedding salt is writable before the helper starts");
+    assert_eq!(changed, 1, "migration 0031 wrote the salt row");
 }
 
 /// What one helper made of a replayed timeline.
@@ -398,6 +452,7 @@ fn replay(visits: &[Visit]) -> Option<Replay> {
     if !filesystem_sockets_available(&scratch) {
         return None;
     }
+    fix_embedding_salt(&scratch.0.join("velvt.sqlite3"));
     let (mut helper, socket) = spawn_helper(&scratch);
     let mut connection = Connection::open(&mut helper, &socket);
     connection.handshake();
@@ -557,7 +612,7 @@ fn a_departure_to_an_application_seen_only_at_application_level_reaches_the_gate
             3
         ))
     );
-    assert_eq!(velvt_service::work_block::DRIFT_POLICY_VERSION, 4);
+    assert_eq!(velvt_service::work_block::DRIFT_POLICY_VERSION, 5);
     let returned = &after
         .pushed
         .iter()
@@ -602,4 +657,170 @@ fn a_departure_to_an_application_seen_only_at_application_level_reaches_the_gate
     assert!((after.coverage_ratio - 1_390.0 / 1_500.0).abs() < 1e-9);
     assert_eq!(before.switch_away_count, 3);
     assert_eq!(after.switch_away_count, 4);
+}
+
+/// The same 25 minutes three times, with the third departure from the anchor
+/// on a browser tab, on three kinds of site.
+///
+/// Two departures to Slack, then a tab from +320 s to +368 s, then back. The
+/// tab is the third switch only if the gate can use it as evidence:
+///
+/// - on a site nothing names (`qwybex.example`), it is the explicitly
+///   ambiguous browser prior, under version 4 and version 5 alike. The gate
+///   never counts it, and the block has no offer;
+/// - on a seeded social feed (`reddit.com`) whose title also names GitHub,
+///   version 4's browser-context rules read the tab as both sites at once and
+///   abstained -- UNLOGGED at low confidence, which the gate never counts
+///   (`conflicting_browser_cues_abstain_instead_of_using_rule_order` pins the
+///   abstention). Version 5 decides the tab by its host: SOCIAL_FEED at high
+///   confidence, the third switch, and the offer pushed as the person
+///   arrives;
+/// - on a site the table does not name whose first label says what it is
+///   (`wiki.qwybex.example`), version 4 had nothing to go on and gave the
+///   ambiguous browser prior, as it did the first site. Version 5's local
+///   inference reads it as REFERENCE at medium confidence: a confident
+///   departure from FOCUS_WORK, decided on the same way.
+#[test]
+fn a_browser_tab_on_a_site_velvt_can_place_is_a_departure_the_gate_decides_on() {
+    const XCODE: &str = "com.apple.dt.Xcode";
+    const SLACK: &str = "com.tinyspeck.slackmacgap";
+    const SAFARI: &str = "com.apple.Safari";
+    let block_with = |departure: Visit| {
+        vec![
+            visit("Xcode", XCODE, Some("main.swift"), 10, 200),
+            visit("Slack", SLACK, Some("general"), 200, 215),
+            visit("Xcode", XCODE, Some("main.swift"), 215, 260),
+            visit("Slack", SLACK, Some("general"), 260, 275),
+            visit("Xcode", XCODE, Some("main.swift"), 275, 320),
+            departure,
+            visit("Xcode", XCODE, Some("main.swift"), 368, 1_400),
+            visit("Slack", SLACK, Some("general"), 1_400, 1_520),
+            visit("Xcode", XCODE, Some("main.swift"), 1_520, 1_530),
+        ]
+    };
+    let Some(unnamed) = replay(&block_with(tab(
+        "Safari",
+        SAFARI,
+        "Zarniwoop",
+        "https://www.qwybex.example/",
+        320,
+        368,
+    ))) else {
+        return;
+    };
+    let Some(seeded) = replay(&block_with(tab(
+        "Safari",
+        SAFARI,
+        "GitHub Copilot tips : r/programming",
+        "https://www.reddit.com/r/programming/",
+        320,
+        368,
+    ))) else {
+        return;
+    };
+    let Some(inferred) = replay(&block_with(tab(
+        "Safari",
+        SAFARI,
+        "Zarniwoop",
+        "https://wiki.qwybex.example/",
+        320,
+        368,
+    ))) else {
+        return;
+    };
+    let row_at = |replay: &Replay, from: i64| {
+        replay
+            .stored
+            .iter()
+            .find(|row| row.0 == from)
+            .map(|row| (row.1, row.2.clone(), row.3.clone(), row.4.clone()))
+    };
+
+    // The site nothing names: the ambiguous prior, never a switch, no offer.
+    assert_eq!(
+        row_at(&unnamed, 320),
+        Some((
+            48,
+            "reference:browser".into(),
+            "REFERENCE".into(),
+            "low".into()
+        ))
+    );
+    assert!(unnamed
+        .decisions
+        .iter()
+        .all(|decision| decision.2 != "offered"));
+    assert!(unnamed
+        .pushed
+        .iter()
+        .flat_map(|(_, snapshots)| snapshots)
+        .all(|snapshot| snapshot.active_intervention.is_none()));
+
+    // The seeded site and the inferred one: confident, the third switch,
+    // decided on as the person arrives, and withdrawn on the return.
+    for (replay, expected_row) in [
+        (
+            &seeded,
+            (
+                48,
+                "social:reddit".to_owned(),
+                "SOCIAL_FEED".to_owned(),
+                "high".to_owned(),
+            ),
+        ),
+        (
+            &inferred,
+            (
+                48,
+                "reference:inferred".to_owned(),
+                "REFERENCE".to_owned(),
+                "medium".to_owned(),
+            ),
+        ),
+    ] {
+        assert_eq!(row_at(replay, 320), Some(expected_row.clone()));
+        let offer = replay
+            .pushed
+            .iter()
+            .find(|(from, _)| *from == 320)
+            .and_then(|(_, snapshots)| {
+                snapshots
+                    .iter()
+                    .find_map(|snapshot| snapshot.active_intervention.clone())
+            })
+            .unwrap_or_else(|| panic!("the offer is pushed as the tab opens: {expected_row:?}"));
+        assert_eq!(offer.switch_count, 3);
+        assert_eq!(offer.anchor_category, "FOCUS_WORK");
+        assert_eq!(
+            replay
+                .decisions
+                .iter()
+                .find(|decision| decision.0 == 320)
+                .map(|decision| (decision.1, decision.2.as_str(), decision.3)),
+            Some((5, "offered", 3))
+        );
+        let returned = &replay
+            .pushed
+            .iter()
+            .find(|(from, _)| *from == 368)
+            .expect("the return was reported")
+            .1;
+        assert!(
+            returned
+                .last()
+                .is_some_and(|snapshot| snapshot.active_intervention.is_none()),
+            "the return withdraws the offer"
+        );
+    }
+
+    // Coverage counts confident seconds: the unnamed site's 48 s are not
+    // evidence, the other two sites' are. And the departure the gate could
+    // use is one more switch away.
+    let unnamed = unnamed.result();
+    assert!((unnamed.coverage_ratio - 1_442.0 / 1_500.0).abs() < 1e-9);
+    assert_eq!(unnamed.switch_away_count, 3);
+    for placed in [seeded.result(), inferred.result()] {
+        assert!((placed.coverage_ratio - 1_490.0 / 1_500.0).abs() < 1e-9);
+        assert_eq!(placed.switch_away_count, 4);
+    }
 }

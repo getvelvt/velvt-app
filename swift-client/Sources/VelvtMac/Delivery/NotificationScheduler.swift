@@ -35,6 +35,33 @@ public protocol InterventionNotificationScheduling: AnyObject {
 /// to scroll to an insight date that does not exist.
 public let interventionNotificationUserInfoKey = "velvt_intervention"
 
+// MARK: - CategoryPromptNotificationScheduling
+
+/// Delivers the needs-a-category reminder (protocol 33).
+///
+/// A third seam beside the insight's and the drift offer's, for the reasons
+/// the drift offer has its own: the reminder has no insight date and no
+/// do-not-disturb window, since Rust applies every hold before handing it
+/// over, and it is not an intervention, so it must never be counted as one.
+///
+/// The copy is authored in Rust from counts alone and passed through
+/// verbatim. Implementations must not retain or log `title`/`body` beyond
+/// building the request, and must not put either in `userInfo`.
+public protocol CategoryPromptNotificationScheduling: AnyObject {
+    @discardableResult
+    func scheduleCategoryPrompt(title: String, body: String) async -> Bool
+}
+
+/// `userInfo` marker identifying a notification as the needs-a-category
+/// reminder, so a tap opens the list it is about. It is the whole of the
+/// reminder's `userInfo`: no prompt id and no text.
+public let categoryPromptNotificationUserInfoKey = "velvt_category_prompt"
+
+/// One identifier for every reminder, so a new one replaces the last in
+/// Notification Center instead of stacking beside it. At most one is posted a
+/// day, and yesterday's count is out of date the moment today's arrives.
+public let categoryPromptNotificationIdentifier = "velvt.category_prompt"
+
 // MARK: - UNUserNotificationCenterProtocol
 
 /// Narrow seam over `UNUserNotificationCenter` so scheduling can be tested
@@ -155,6 +182,33 @@ extension UNNotificationScheduler: InterventionNotificationScheduling {
     }
 }
 
+extension UNNotificationScheduler: CategoryPromptNotificationScheduling {
+    /// Delivers immediately, and leaves the interventions counter alone: the
+    /// reminder is not a nudge, and counting it as one would inflate the one
+    /// number that says how often Velvt interrupted inside a block.
+    @discardableResult
+    public func scheduleCategoryPrompt(title: String, body: String) async -> Bool {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.userInfo = [categoryPromptNotificationUserInfoKey: true]
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: categoryPromptNotificationIdentifier,
+            content: content,
+            trigger: nil
+        )
+        do {
+            try await center.add(request)
+            return true
+        } catch {
+            UNNotificationScheduler.logRejection(error, surface: .categoryPrompt)
+            return false
+        }
+    }
+}
+
 // MARK: - FakeNotificationScheduler
 
 /// Test double recording scheduled payloads without touching
@@ -163,6 +217,7 @@ public final class FakeNotificationScheduler: NotificationSchedulerProtocol, @un
     public private(set) var scheduledPayloads: [NotificationPayload] = []
     public private(set) var cancelAllCallCount = 0
     fileprivate var scheduledInterventionsStorage: [ScheduledIntervention] = []
+    fileprivate var scheduledCategoryPromptsStorage: [ScheduledCategoryPrompt] = []
     fileprivate let lock = NSLock()
 
     public init() {}
@@ -196,6 +251,25 @@ extension FakeNotificationScheduler: InterventionNotificationScheduling {
 
     public var scheduledInterventions: [ScheduledIntervention] {
         lock.withLock { scheduledInterventionsStorage }
+    }
+}
+
+extension FakeNotificationScheduler: CategoryPromptNotificationScheduling {
+    public struct ScheduledCategoryPrompt: Equatable, Sendable {
+        public let title: String
+        public let body: String
+    }
+
+    @discardableResult
+    public func scheduleCategoryPrompt(title: String, body: String) async -> Bool {
+        lock.withLock {
+            scheduledCategoryPromptsStorage.append(ScheduledCategoryPrompt(title: title, body: body))
+        }
+        return true
+    }
+
+    public var scheduledCategoryPrompts: [ScheduledCategoryPrompt] {
+        lock.withLock { scheduledCategoryPromptsStorage }
     }
 }
 

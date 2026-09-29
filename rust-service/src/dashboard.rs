@@ -1075,6 +1075,7 @@ mod tests {
             upload_eligible: true,
             app_stable_id: None,
             app_scope_eligible: true,
+            site_stable_id: None,
         }
     }
 

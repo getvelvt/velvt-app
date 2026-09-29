@@ -1,17 +1,18 @@
 use super::{
     AbstractionMapRepo, AbstractionMapping, AntecedentFinding, AntecedentFindingRepo,
     AntecedentFindingState, AntecedentRetractionReason, AppScopeOverride, BatchEvent, BehaviorRepo,
-    BlockAntecedent, CompletedBlockDwellSpan, DayType, DeclaredAppMetadata, DemotionStateRecord,
-    FocusRepo, FocusTransition, GateVerdict, HistoryCacheEntry, HistoryCacheRepo,
-    InitiationInvitationOutcome, InitiationInvitationRecord, InitiationRepo, InsightCacheEntry,
-    InsightCacheRepo, InterventionDecision, InterventionDemotionState, LocalDisplayAggregate,
-    LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord,
-    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, RawEventRepo, ReceiptsRepo,
-    ReportedDwell, UnclassifiedAppEntry, UploadBatch, UploadBatchRepo, UploadBatchStatus,
-    UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection,
-    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
-    WorkBlockOrigin, WorkBlockRecord, WorkBlockRepo, WrongInterventionCounts,
-    MAX_REPORTED_DWELL_SECONDS,
+    BlockAntecedent, CategoryPromptEntry, CategoryPromptNotificationRecord, CategoryPromptRepo,
+    CompletedBlockDwellSpan, DayType, DeclaredAppMetadata, DemotionStateRecord, FocusRepo,
+    FocusTransition, GateVerdict, HistoryCacheEntry, HistoryCacheRepo, InitiationInvitationOutcome,
+    InitiationInvitationRecord, InitiationRepo, InsightCacheEntry, InsightCacheRepo,
+    InterventionDecision, InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata,
+    NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord, QuietHoursOfferResponse,
+    QuietHoursOfferState, RawEventEntry, RawEventRepo, ReceiptsRepo, ReportedDwell,
+    SiteScopeOverride, UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch, UploadBatchRepo,
+    UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
+    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
+    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
+    WorkBlockRepo, WrongInterventionCounts, MAX_REPORTED_DWELL_SECONDS,
 };
 // Named through the defining module because `persistence::mod` re-exports types
 // rather than constants; the retry ceiling is policy that belongs beside the
@@ -24,7 +25,7 @@ use crate::abstraction::{EmbeddingSalt, StableKeySalt};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::Path,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -562,6 +563,12 @@ impl SqlitePersistence {
         Arc::new(SqliteInitiationRepo(self.clone()))
     }
 
+    /// The needs-a-category prompt's ledger (`category_prompt_entry`,
+    /// `category_prompt_card_entry` and `category_prompt_notification`, 0041).
+    pub fn category_prompt_repo(&self) -> Arc<dyn CategoryPromptRepo> {
+        Arc::new(SqliteCategoryPromptRepo(self.clone()))
+    }
+
     pub fn behavior_repo(&self) -> Arc<dyn BehaviorRepo> {
         Arc::new(SqliteBehaviorRepo(self.clone()))
     }
@@ -725,7 +732,8 @@ impl SqlitePersistence {
     }
 }
 
-/// Every persisted personal rule, window-scoped and app-scoped, in one shape.
+/// Every persisted personal rule -- window-scoped, app-scoped and, since
+/// protocol 33, site-scoped -- in one shape.
 ///
 /// The history listed window rules only until protocol 30, which made an
 /// app-scoped rule invisible and unremovable: the user could neither see what
@@ -785,6 +793,25 @@ const RULE_SOURCE: &str = "
      -- takes both rungs with it, so what the user sees is what they can undo. A
      -- rule taught through triage has no window rung at all and appears.
      WHERE rule.app_only = 1
+    UNION ALL
+    -- A site rule (0040) is always a rule in its own right: only the site list
+    -- writes one. Its label comes from the most recent event on the site, on
+    -- `idx_raw_event_buffer_site_stable_id`, for the reason the app rung's
+    -- does. Its only name is one the user typed: the hostname was deleted from
+    -- `local_site_name` when the site was taught, and the history does not
+    -- bring it back.
+    SELECT 'site' AS scope,
+           rule.site_key_hash AS stable_id,
+           COALESCE(
+               (SELECT recent.label FROM raw_event_buffer recent
+                 WHERE recent.site_stable_id = rule.site_key_hash
+                 ORDER BY recent.occurred_at DESC LIMIT 1),
+               'site'
+           ) AS label,
+           rule.activity_name AS local_label,
+           rule.category AS category,
+           rule.updated_at AS updated_at
+      FROM personal_site_override rule
 ";
 
 /// The one search predicate both the count and the page apply. `?1` is the
@@ -794,6 +821,47 @@ const RULE_FILTER: &str = "
        OR instr(lower(COALESCE(local_label, '')), lower(?1)) > 0
        OR instr(lower(label), lower(?1)) > 0
        OR instr(lower(category), lower(?1)) > 0
+";
+
+/// Whether a buffered event is time the site list counts, as an SQL predicate
+/// over a `raw_event_buffer` row aliased `visit`.
+///
+/// One predicate for both readers, so the hostname is kept for exactly the
+/// visits the list can then show it for: `record_local_site_name` writes
+/// `local_site_name` only for an event that passes, and
+/// `unclassified_site_triage` sums only the events that pass.
+///
+/// The middle clause is "categorized", negated: `classified` at `high` or
+/// `medium` confidence in a category other than UNCLASSIFIED and UNLOGGED.
+/// Stored status and confidence are the lowercase tokens `as_str` writes and
+/// the category is compared case-insensitively, as the drift gate compares it.
+///
+/// It is the gate's `work_block::is_confident` with one difference, on purpose:
+/// a confident SYSTEM visit counts as categorized here. The gate never counts
+/// SYSTEM time as evidence, but the list asks what a site is, not whether the
+/// gate can use it, and a sign-in, account or password-manager page Velvt filed
+/// as SYSTEM has an answer already. Asking about one would keep its hostname
+/// -- an SSO tenant's names an employer -- for as long as the person keeps
+/// signing in, and list a site Velvt did categorize as one it could not. A
+/// test pins this clause to the gate's function over every status, confidence
+/// and category, SYSTEM aside.
+///
+/// The last clause leaves out a visit one of the user's own rules decided -- a
+/// window, site or application rule, which the engine returns as `user_rule` at
+/// `exact_match` -- even when it is not confident. A browser tab corrected to
+/// UNLOGGED is one the user asked Velvt to stop counting; storing its hostname
+/// and asking what the site is would answer that with the opposite.
+const SITE_VISIT_NEEDS_A_CATEGORY: &str = "
+    visit.site_stable_id IS NOT NULL
+    AND NOT (
+        visit.classification_status = 'classified'
+        AND visit.classification_confidence IN ('high', 'medium')
+        AND lower(visit.category) NOT IN ('unclassified', 'unlogged')
+    )
+    AND NOT (
+        visit.classification_source = 'user_rule'
+        AND visit.classification_tier = 'exact_match'
+    )
 ";
 
 fn app_scope_override_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppScopeOverride> {
@@ -1017,6 +1085,28 @@ impl crate::abstraction::AbstractionMappingStore for SqliteAbstractionMapRepo {
                 "SELECT category, activity_name FROM personal_app_override
                  WHERE app_key_hash = ?1 OR bundle_key_hash = ?1",
                 [app_stable_key],
+                |row| {
+                    Ok(crate::abstraction::PersonalOverride {
+                        category: row.get(0)?,
+                        local_activity_name: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(PersistenceError::from)
+            .map_err(Into::into)
+    }
+
+    fn personal_site_override(
+        &self,
+        site_key: &str,
+    ) -> Result<Option<crate::abstraction::PersonalOverride>, crate::abstraction::StoreError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT category, activity_name FROM personal_site_override
+                 WHERE site_key_hash = ?1",
+                [site_key],
                 |row| {
                     Ok(crate::abstraction::PersonalOverride {
                         category: row.get(0)?,
@@ -1460,6 +1550,126 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         Ok(changed > 0)
     }
 
+    fn save_site_scope_override(
+        &self,
+        site_key_hash: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<(), PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        // Shaped like the app rule's upsert: the latest answer wins, a typed
+        // name survives a repeat that typed none, and `correction_count`
+        // advances on every save because how often someone had to say the same
+        // thing is the signal that something upstream is wrong. Nothing to
+        // refuse: a site key names one site in every browser, and a rule about
+        // it cannot spread to anything else the way a browser-wide app rule
+        // would.
+        transaction.execute(
+            "INSERT INTO personal_site_override(site_key_hash, category, activity_name)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(site_key_hash) DO UPDATE SET
+                category = excluded.category,
+                activity_name =
+                    COALESCE(excluded.activity_name, personal_site_override.activity_name),
+                correction_count = personal_site_override.correction_count + 1,
+                updated_at = unixepoch()",
+            params![site_key_hash, category, local_activity_name],
+        )?;
+        // The hostname was kept so Velvt could ask what this site is. It has
+        // been told, and `record_local_site_name` writes nothing for a site
+        // with a rule, so the name goes now rather than 14 days from now.
+        transaction.execute(
+            "DELETE FROM local_site_name WHERE site_key_hash = ?1",
+            [site_key_hash],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn edit_site_scope_override(
+        &self,
+        site_key_hash: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<(), PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        // The save's upsert, with the name written as given rather than
+        // coalesced: an empty field in the editor means no name.
+        transaction.execute(
+            "INSERT INTO personal_site_override(site_key_hash, category, activity_name)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(site_key_hash) DO UPDATE SET
+                category = excluded.category,
+                activity_name = excluded.activity_name,
+                correction_count = personal_site_override.correction_count + 1,
+                updated_at = unixepoch()",
+            params![site_key_hash, category, local_activity_name],
+        )?;
+        if local_activity_name.is_none() {
+            // The name the rule mirrored into each window of the site, for the
+            // reason `remove_site_scope_override` nulls it: the mapping's
+            // upsert coalesces, so the next observation would never clear it.
+            transaction.execute(
+                "UPDATE abstraction_map SET display_name = NULL
+                 WHERE stable_id IN (
+                     SELECT stable_id FROM raw_event_buffer WHERE site_stable_id = ?1
+                 )",
+                [site_key_hash],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn site_scope_override(
+        &self,
+        site_key_hash: &str,
+    ) -> Result<Option<SiteScopeOverride>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT site_key_hash, category, activity_name, correction_count, updated_at
+                 FROM personal_site_override WHERE site_key_hash = ?1",
+                [site_key_hash],
+                |row| {
+                    Ok(SiteScopeOverride {
+                        site_key_hash: row.get(0)?,
+                        category: row.get(1)?,
+                        activity_name: row.get(2)?,
+                        correction_count: row.get(3)?,
+                        updated_at: timestamp_from_row(row, 4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn remove_site_scope_override(&self, site_key_hash: &str) -> Result<bool, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute(
+            "DELETE FROM personal_site_override WHERE site_key_hash = ?1",
+            [site_key_hash],
+        )?;
+        // The typed name the rule mirrored into each window of the site, for
+        // the reason `remove_app_scope_override` nulls it: `display_name`
+        // records no provenance and the upsert coalesces, so a name the user
+        // typed would otherwise survive its own undo. The site's windows are
+        // found through the buffered events that carry its key.
+        transaction.execute(
+            "UPDATE abstraction_map SET display_name = NULL
+             WHERE stable_id IN (
+                 SELECT stable_id FROM raw_event_buffer WHERE site_stable_id = ?1
+             )",
+            [site_key_hash],
+        )?;
+        transaction.commit()?;
+        Ok(changed > 0)
+    }
+
     fn save_personal_override(
         &self,
         stable_id: &str,
@@ -1582,6 +1792,7 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
                 Ok(PersonalOverrideRecord {
                     scope: match row.get::<_, String>(0)?.as_str() {
                         "app" => CorrectionScope::App,
+                        "site" => CorrectionScope::Site,
                         _ => CorrectionScope::Window,
                     },
                     stable_id: row.get(1)?,
@@ -1692,6 +1903,9 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
         // almost all of them — because the engine falls through the emptied
         // window rung into the app rung on the very next event.
         transaction.execute("DELETE FROM personal_app_override", [])?;
+        // The site rung holds the same kind of answer under a site key, and
+        // the engine falls through to it the same way.
+        transaction.execute("DELETE FROM personal_site_override", [])?;
         // Every `display_name`, not only the rows a correction wrote. The column
         // records no provenance, so no query can separate a name the user typed
         // from one `curated_display_label` produced, and duplicating that
@@ -1839,15 +2053,31 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
                 // buffered event would write a new rule under the dead key --
                 // both silent. Removed, the state is one the user can see: no
                 // rules, and the next observation of each window keys afresh.
+                //
+                // The site tables (0040) go the same way. A site rule is keyed
+                // by a site key and a stored hostname is filed under one, so
+                // neither can be reached under the new salt: the rule would
+                // never apply, and the hostname would sit on disk until the
+                // sweep for a list that can no longer show it.
+                //
+                // The needs-a-category prompt's record of entries (0041) goes
+                // too: each row is filed under an application or site key, and
+                // a key under the lost salt names nothing the list can offer.
+                // The card rows filed under those entries cascade with them.
                 transaction.execute_batch(
                     "DELETE FROM personal_override;
                      DELETE FROM personal_app_override;
+                     DELETE FROM personal_site_override;
+                     DELETE FROM local_site_name;
+                     DELETE FROM category_prompt_entry;
                      DELETE FROM personal_semantic_prototype;
                      DELETE FROM semantic_embedding_cache;
                      DELETE FROM abstraction_map;
                      UPDATE raw_event_buffer
-                        SET app_stable_id = NULL, app_bundle_stable_id = NULL
-                      WHERE app_stable_id IS NOT NULL OR app_bundle_stable_id IS NOT NULL;",
+                        SET app_stable_id = NULL, app_bundle_stable_id = NULL,
+                            site_stable_id = NULL
+                      WHERE app_stable_id IS NOT NULL OR app_bundle_stable_id IS NOT NULL
+                         OR site_stable_id IS NOT NULL;",
                 )?;
                 tracing::warn!(
                     error_code = "stable_key_salt_reminted",
@@ -1894,6 +2124,217 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
 #[derive(Clone)]
 struct SqliteRawEventRepo(SqlitePersistence);
 
+impl SqliteRawEventRepo {
+    /// The application list's query, with `limit` `None` for no cap: the
+    /// same rows, floor, window and order either way.
+    fn unclassified_applications(
+        &self,
+        lookback_days: u32,
+        min_seconds: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError> {
+        // Clamped here rather than trusted from the caller, the way
+        // `local_display_aggregates` caps its own limit: these bounds are what
+        // keep the list a task instead of an inventory, and a caller that
+        // could widen them could undo that from anywhere.
+        let lookback_days = lookback_days.clamp(1, TRIAGE_MAX_LOOKBACK_DAYS);
+        let min_seconds = min_seconds.max(TRIAGE_MIN_SECONDS);
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT app_stable_id,
+                    -- An application Velvt holds no name for is still time the
+                    -- user spent, so it is kept rather than dropped: omitting
+                    -- the row hid real minutes from a list whose whole claim is
+                    -- \"this is the time Velvt could not read\", and the user can
+                    -- usually still answer -- they know what they had open for
+                    -- an hour, and the row carries that hour. It is kept with
+                    -- NULL, not a placeholder: a placeholder here came back from
+                    -- the client as the name of the rule it taught (protocol 33
+                    -- sends the NULL and the client words the row itself).
+                    display_name,
+                    seconds_observed, event_count,
+                    app_bundle_stable_id
+             FROM (
+                 SELECT observed.app_stable_id AS app_stable_id,
+                        -- The most recent name Velvt already holds for this
+                        -- application. `local_name_suggestion` carries the raw
+                        -- application name for exactly the events that matched
+                        -- no seed and no correction (migration 0001), which is
+                        -- every event in this list -- and only those: read off
+                        -- the UNLOGGED rows, on
+                        -- `idx_raw_event_buffer_category_app`, rather than off
+                        -- every row of the application, which walked the whole
+                        -- buffer once per application and is the reason the
+                        -- list can now be read once a minute.
+                        (SELECT COALESCE(named.local_display_label, named.local_name_suggestion)
+                           FROM raw_event_buffer named
+                          WHERE named.category = 'UNLOGGED'
+                            AND named.app_stable_id = observed.app_stable_id
+                            AND COALESCE(named.local_display_label, named.local_name_suggestion)
+                                IS NOT NULL
+                          ORDER BY named.occurred_at DESC
+                          LIMIT 1) AS display_name,
+                        SUM(observed.duration_seconds) AS seconds_observed,
+                        COUNT(*) AS event_count,
+                        -- One application name resolves to one bundle
+                        -- identifier, so any non-null value in the group is
+                        -- that identifier; MAX is how SQLite says \"any\".
+                        MAX(observed.app_bundle_stable_id) AS app_bundle_stable_id
+                 FROM raw_event_buffer observed
+                 WHERE observed.category = 'UNLOGGED'
+                   AND observed.app_stable_id IS NOT NULL
+                   AND observed.occurred_at >= ?1
+                   -- Offering an application here is a claim that teaching it is
+                   -- safe: the only thing the user can do with a row is write an
+                   -- app-wide rule for it. So the same gate the correction path
+                   -- applies per event (`app_identity_for_event`) applies to the
+                   -- rows that make up a group, and to the application behind
+                   -- them.
+                   --
+                   -- A browser window that carried a site context is not
+                   -- generalizable -- one tab says nothing about the next -- and
+                   -- an UNLOGGED one is exactly a site Velvt could not read, so
+                   -- these rows were most of what the list offered for a browser.
+                   -- Teaching one wrote an app-wide rule that classifies every
+                   -- future tab, mail and video alike, at High confidence and
+                   -- from `user_rule`, which the engine reads before the plugins
+                   -- and which therefore also stops `BrowserContextPlugin` from
+                   -- ever running for that browser again.
+                   AND observed.app_scope_eligible = 1
+                   -- And the application itself, not only these rows: a browser
+                   -- also produces windows it read no site from, which are
+                   -- eligible one row at a time while the application they belong
+                   -- to is not. Any ineligible event under either identity is that
+                   -- evidence, which is the same read
+                   -- `save_app_scope_override` refuses on -- this filter keeps the
+                   -- list honest, that check keeps the promise.
+                   --
+                   -- Two uncorrelated sets rather than one NOT EXISTS: SQLite
+                   -- builds each once per query, where the correlated form
+                   -- scanned the whole buffer for every UNLOGGED row, about six
+                   -- seconds on a 30,000-row buffer with the store's one
+                   -- connection held throughout. NULLs are kept out of both
+                   -- sets, so NOT IN means exactly what NOT EXISTS meant.
+                   AND observed.app_stable_id NOT IN (
+                       SELECT ineligible.app_stable_id FROM raw_event_buffer ineligible
+                        WHERE ineligible.app_scope_eligible = 0
+                          AND ineligible.app_stable_id IS NOT NULL
+                   )
+                   AND (observed.app_bundle_stable_id IS NULL
+                        OR observed.app_bundle_stable_id NOT IN (
+                            SELECT ineligible.app_bundle_stable_id FROM raw_event_buffer ineligible
+                             WHERE ineligible.app_scope_eligible = 0
+                               AND ineligible.app_bundle_stable_id IS NOT NULL
+                        ))
+                   -- An application the user has already taught must leave the
+                   -- list the moment they teach it. Past events keep their
+                   -- UNLOGGED category -- nothing here rewrites history -- so
+                   -- without this the app they just explained would be back at
+                   -- the top of the list tomorrow.
+                   AND NOT EXISTS (
+                       SELECT 1 FROM personal_app_override rule
+                       WHERE rule.app_key_hash = observed.app_stable_id
+                          OR (rule.bundle_key_hash IS NOT NULL
+                              AND rule.bundle_key_hash = observed.app_bundle_stable_id)
+                   )
+                 GROUP BY observed.app_stable_id
+             )
+             WHERE seconds_observed >= ?2
+             ORDER BY seconds_observed DESC, app_stable_id ASC
+             LIMIT ?3",
+        )?;
+        let cutoff = Utc::now() - chrono::Duration::days(i64::from(lookback_days));
+        let entries = statement
+            .query_map(
+                params![
+                    cutoff.timestamp(),
+                    min_seconds as i64,
+                    // A negative LIMIT is no limit to SQLite.
+                    limit.map_or(-1, |limit| limit as i64)
+                ],
+                |row| {
+                    Ok(UnclassifiedAppEntry {
+                        app_stable_id: row.get(0)?,
+                        display_name: row.get(1)?,
+                        seconds_observed: row.get(2)?,
+                        event_count: row.get(3)?,
+                        app_bundle_stable_id: row.get(4)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(PersistenceError::from)?;
+        Ok(entries)
+    }
+
+    /// The site list's query, with `limit` `None` for no cap, as
+    /// `unclassified_applications` is the application list's.
+    fn unclassified_sites(
+        &self,
+        lookback_days: u32,
+        min_seconds: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError> {
+        // The application list's bounds, clamped here for its reason.
+        let lookback_days = lookback_days.clamp(1, TRIAGE_MAX_LOOKBACK_DAYS);
+        let min_seconds = min_seconds.max(TRIAGE_MIN_SECONDS);
+        let connection = self.0.connection()?;
+        // The plan narrows to the window of days on
+        // `idx_raw_event_buffer_occurred_at` and groups by site in a temporary
+        // B-tree; `idx_raw_event_buffer_site_stable_id` (0040) is not used
+        // here. The join is what names a row, and it is also a filter: a site
+        // whose name was never kept or has been swept is time the user cannot
+        // be asked about, so it is left out rather than shown under a
+        // placeholder the way an unnamed application is -- a list of sites
+        // called "a website" is not a task anyone can do.
+        let mut statement = connection.prepare(&format!(
+            "SELECT site_stable_id, display_name, seconds_observed, event_count
+             FROM (
+                 SELECT visit.site_stable_id AS site_stable_id,
+                        name.host AS display_name,
+                        SUM(visit.duration_seconds) AS seconds_observed,
+                        COUNT(*) AS event_count
+                 FROM raw_event_buffer visit
+                 JOIN local_site_name name ON name.site_key_hash = visit.site_stable_id
+                 WHERE visit.occurred_at >= ?1
+                   AND {SITE_VISIT_NEEDS_A_CATEGORY}
+                   -- A site the user has taught leaves the list the moment
+                   -- they teach it. Past events keep the classification they
+                   -- were recorded with -- nothing here rewrites history -- so
+                   -- without this the site would still be listed from them.
+                   AND NOT EXISTS (
+                       SELECT 1 FROM personal_site_override rule
+                        WHERE rule.site_key_hash = visit.site_stable_id
+                   )
+                 GROUP BY visit.site_stable_id, name.host
+             )
+             WHERE seconds_observed >= ?2
+             ORDER BY seconds_observed DESC, site_stable_id ASC
+             LIMIT ?3"
+        ))?;
+        let cutoff = Utc::now() - chrono::Duration::days(i64::from(lookback_days));
+        let entries = statement
+            .query_map(
+                params![
+                    cutoff.timestamp(),
+                    min_seconds as i64,
+                    limit.map_or(-1, |limit| limit as i64)
+                ],
+                |row| {
+                    Ok(UnclassifiedSiteEntry {
+                        site_stable_id: row.get(0)?,
+                        display_name: row.get(1)?,
+                        seconds_observed: row.get(2)?,
+                        event_count: row.get(3)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(PersistenceError::from)?;
+        Ok(entries)
+    }
+}
+
 impl RawEventRepo for SqliteRawEventRepo {
     fn insert(&self, event: &RawEventEntry) -> Result<(), PersistenceError> {
         // An event with no declared metadata is written exactly as it was
@@ -1909,8 +2350,8 @@ impl RawEventRepo for SqliteRawEventRepo {
         let connection = self.0.connection()?;
         connection.execute(
             "INSERT INTO raw_event_buffer(
-                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible, app_stable_id, app_scope_eligible, app_bundle_stable_id, declared_app_category, document_type_ids
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                event_id, stable_id, label, local_display_label, local_name_suggestion, category, taxonomy_version, classification_tier, classification_status, classification_confidence, classification_source, occurred_at, duration_seconds, upload_eligible, app_stable_id, app_scope_eligible, app_bundle_stable_id, declared_app_category, document_type_ids, site_stable_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 event.event_id,
                 event.stable_id,
@@ -1931,6 +2372,7 @@ impl RawEventRepo for SqliteRawEventRepo {
                 metadata.app_bundle_stable_id,
                 metadata.declared_app_category,
                 encode_document_type_ids(&metadata.document_type_ids),
+                event.site_stable_id,
             ],
         )?;
         Ok(())
@@ -2089,122 +2531,124 @@ impl RawEventRepo for SqliteRawEventRepo {
         min_seconds: u64,
         limit: usize,
     ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError> {
-        // Clamped here rather than trusted from the caller, the way
-        // `local_display_aggregates` caps its own limit: these three bounds are
-        // what keep the list a task instead of an inventory, and a caller that
-        // could widen them could undo that from anywhere.
-        let lookback_days = lookback_days.clamp(1, TRIAGE_MAX_LOOKBACK_DAYS);
-        let min_seconds = min_seconds.max(TRIAGE_MIN_SECONDS);
+        // Capped here for the reason the helper clamps the other two bounds.
         let limit = limit.min(TRIAGE_MAX_ENTRIES);
         if limit == 0 {
             return Ok(Vec::new());
         }
+        self.unclassified_applications(lookback_days, min_seconds, Some(limit))
+    }
+
+    fn every_unclassified_application(
+        &self,
+        lookback_days: u32,
+    ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError> {
+        self.unclassified_applications(lookback_days, TRIAGE_MIN_SECONDS, None)
+    }
+
+    fn unclassified_app_bundle_key(
+        &self,
+        app_stable_id: &str,
+    ) -> Result<Option<String>, PersistenceError> {
         let connection = self.0.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT app_stable_id,
-                    -- An application Velvt holds no name for is still time the
-                    -- user spent, so it is named plainly rather than dropped:
-                    -- omitting the row hid real minutes from a list whose whole
-                    -- claim is \"this is the time Velvt could not read\", and the
-                    -- user can usually still answer -- they know what they had
-                    -- open for an hour, and the row carries that hour. The
-                    -- literal lives here for the reason `RULE_SOURCE`'s
-                    -- 'application' does: it is a last-resort word, not a
-                    -- category-derived label, so no mapping is duplicated into
-                    -- SQL where it could drift.
-                    COALESCE(display_name, 'Unnamed application') AS display_name,
-                    seconds_observed, event_count,
-                    app_bundle_stable_id
-             FROM (
-                 SELECT observed.app_stable_id AS app_stable_id,
-                        -- The most recent name Velvt already holds for this
-                        -- application. `local_name_suggestion` carries the raw
-                        -- application name for exactly the events that matched
-                        -- no seed and no correction (migration 0001), which is
-                        -- every event in this list.
-                        (SELECT COALESCE(named.local_display_label, named.local_name_suggestion)
-                           FROM raw_event_buffer named
-                          WHERE named.app_stable_id = observed.app_stable_id
-                            AND COALESCE(named.local_display_label, named.local_name_suggestion)
-                                IS NOT NULL
-                          ORDER BY named.occurred_at DESC
-                          LIMIT 1) AS display_name,
-                        SUM(observed.duration_seconds) AS seconds_observed,
-                        COUNT(*) AS event_count,
-                        -- One application name resolves to one bundle
-                        -- identifier, so any non-null value in the group is
-                        -- that identifier; MAX is how SQLite says \"any\".
-                        MAX(observed.app_bundle_stable_id) AS app_bundle_stable_id
-                 FROM raw_event_buffer observed
-                 WHERE observed.category = 'UNLOGGED'
-                   AND observed.app_stable_id IS NOT NULL
-                   AND observed.occurred_at >= ?1
-                   -- Offering an application here is a claim that teaching it is
-                   -- safe: the only thing the user can do with a row is write an
-                   -- app-wide rule for it. So the same gate the correction path
-                   -- applies per event (`app_identity_for_event`) applies to the
-                   -- rows that make up a group, and to the application behind
-                   -- them.
-                   --
-                   -- A browser window that carried a site context is not
-                   -- generalizable -- one tab says nothing about the next -- and
-                   -- an UNLOGGED one is exactly a site Velvt could not read, so
-                   -- these rows were most of what the list offered for a browser.
-                   -- Teaching one wrote an app-wide rule that classifies every
-                   -- future tab, mail and video alike, at High confidence and
-                   -- from `user_rule`, which the engine reads before the plugins
-                   -- and which therefore also stops `BrowserContextPlugin` from
-                   -- ever running for that browser again.
-                   AND observed.app_scope_eligible = 1
-                   -- And the application itself, not only these rows: a browser
-                   -- also produces windows it read no site from, which are
-                   -- eligible one row at a time while the application they belong
-                   -- to is not. Any ineligible event under either identity is that
-                   -- evidence, which is the same read
-                   -- `save_app_scope_override` refuses on -- this filter keeps the
-                   -- list honest, that check keeps the promise.
-                   AND NOT EXISTS (
-                       SELECT 1 FROM raw_event_buffer ineligible
-                       WHERE ineligible.app_scope_eligible = 0
-                         AND (ineligible.app_stable_id = observed.app_stable_id
-                              OR (observed.app_bundle_stable_id IS NOT NULL
-                                  AND ineligible.app_bundle_stable_id
-                                      = observed.app_bundle_stable_id))
-                   )
-                   -- An application the user has already taught must leave the
-                   -- list the moment they teach it. Past events keep their
-                   -- UNLOGGED category -- nothing here rewrites history -- so
-                   -- without this the app they just explained would be back at
-                   -- the top of the list tomorrow.
-                   AND NOT EXISTS (
-                       SELECT 1 FROM personal_app_override rule
-                       WHERE rule.app_key_hash = observed.app_stable_id
-                          OR (rule.bundle_key_hash IS NOT NULL
-                              AND rule.bundle_key_hash = observed.app_bundle_stable_id)
-                   )
-                 GROUP BY observed.app_stable_id
-             )
-             WHERE seconds_observed >= ?2
-             ORDER BY seconds_observed DESC, app_stable_id ASC
-             LIMIT ?3",
+        // The rows the list sums for this application, on
+        // `idx_raw_event_buffer_category_app` (0033). One application name
+        // resolves to one bundle identifier, so any non-null value is that
+        // identifier; MAX is how SQLite says "any", as in the list's query.
+        connection
+            .query_row(
+                "SELECT MAX(app_bundle_stable_id) FROM raw_event_buffer
+                  WHERE category = 'UNLOGGED' AND app_stable_id = ?1",
+                [app_stable_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    fn record_local_site_name(
+        &self,
+        event_id: &str,
+        host: &str,
+        seen_at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Read off the stored event rather than from the caller's judgement,
+        // so the rule that decides whether a hostname is kept is the same text
+        // the list reads with. The event row carries the site key, which is
+        // what the name is filed under.
+        //
+        // `last_seen_at` is overwritten, not maximised: a clock that once ran
+        // ahead would otherwise pin the row past its sweep for as long as it
+        // had run ahead.
+        let written = connection.execute(
+            &format!(
+                "INSERT INTO local_site_name(site_key_hash, host, last_seen_at)
+                 SELECT visit.site_stable_id, ?2, ?3
+                   FROM raw_event_buffer visit
+                  WHERE visit.event_id = ?1
+                    AND {SITE_VISIT_NEEDS_A_CATEGORY}
+                    AND NOT EXISTS (
+                        SELECT 1 FROM personal_site_override rule
+                         WHERE rule.site_key_hash = visit.site_stable_id
+                    )
+                 ON CONFLICT(site_key_hash) DO UPDATE SET
+                    host = excluded.host,
+                    last_seen_at = excluded.last_seen_at"
+            ),
+            params![event_id, host, seen_at.timestamp()],
         )?;
-        let cutoff = Utc::now() - chrono::Duration::days(i64::from(lookback_days));
-        let entries = statement
-            .query_map(
-                params![cutoff.timestamp(), min_seconds as i64, limit as i64],
-                |row| {
-                    Ok(UnclassifiedAppEntry {
-                        app_stable_id: row.get(0)?,
-                        display_name: row.get(1)?,
-                        seconds_observed: row.get(2)?,
-                        event_count: row.get(3)?,
-                        app_bundle_stable_id: row.get(4)?,
-                    })
-                },
-            )?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(PersistenceError::from)?;
-        Ok(entries)
+        Ok(written > 0)
+    }
+
+    fn local_site_name(&self, site_key_hash: &str) -> Result<Option<String>, PersistenceError> {
+        let connection = self.0.connection()?;
+        connection
+            .query_row(
+                "SELECT host FROM local_site_name WHERE site_key_hash = ?1",
+                [site_key_hash],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn unclassified_site_triage(
+        &self,
+        lookback_days: u32,
+        min_seconds: u64,
+        limit: usize,
+    ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError> {
+        let limit = limit.min(TRIAGE_MAX_ENTRIES);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.unclassified_sites(lookback_days, min_seconds, Some(limit))
+    }
+
+    fn every_unclassified_site(
+        &self,
+        lookback_days: u32,
+    ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError> {
+        self.unclassified_sites(lookback_days, TRIAGE_MIN_SECONDS, None)
+    }
+
+    fn delete_expired_site_names(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Oldest first, on `idx_local_site_name_last_seen_at` (0040).
+        let deleted = connection.execute(
+            "DELETE FROM local_site_name WHERE site_key_hash IN (
+                 SELECT site_key_hash FROM local_site_name
+                  WHERE last_seen_at < ?1
+                  ORDER BY last_seen_at
+                  LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
     }
 
     fn delete_before(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError> {
@@ -3905,6 +4349,261 @@ impl InitiationRepo for SqliteInitiationRepo {
     }
 }
 
+struct SqliteCategoryPromptRepo(SqlitePersistence);
+
+fn category_prompt_entry_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CategoryPromptEntry> {
+    Ok(CategoryPromptEntry {
+        entry_key: row.get(0)?,
+        first_listed_at: timestamp_from_row(row, 1)?,
+        last_listed_at: timestamp_from_row(row, 2)?,
+        acknowledged_at: optional_timestamp_from_row(row, 3)?,
+        notified_at: optional_timestamp_from_row(row, 4)?,
+    })
+}
+
+impl CategoryPromptRepo for SqliteCategoryPromptRepo {
+    fn record_listed(
+        &self,
+        entry_keys: &[String],
+        at: DateTime<Utc>,
+    ) -> Result<Vec<CategoryPromptEntry>, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let mut entries = Vec::with_capacity(entry_keys.len());
+        {
+            // `last_listed_at` is overwritten rather than maximised, for the
+            // reason `record_local_site_name` overwrites `last_seen_at`: a
+            // clock that once ran ahead would otherwise hold the row past its
+            // sweep for as long as it had run ahead.
+            let mut upsert = transaction.prepare(
+                "INSERT INTO category_prompt_entry(entry_key, first_listed_at, last_listed_at)
+                 VALUES (?1, ?2, ?2)
+                 ON CONFLICT(entry_key) DO UPDATE SET last_listed_at = excluded.last_listed_at",
+            )?;
+            let mut read = transaction.prepare(
+                "SELECT entry_key, first_listed_at, last_listed_at, acknowledged_at, notified_at
+                 FROM category_prompt_entry WHERE entry_key = ?1",
+            )?;
+            for key in entry_keys {
+                upsert.execute(params![key, at.timestamp()])?;
+                entries.push(read.query_row([key], category_prompt_entry_from_row)?);
+            }
+        }
+        transaction.commit()?;
+        Ok(entries)
+    }
+
+    fn card_for(
+        &self,
+        counted_keys: &[String],
+        uncounted_keys: &[String],
+    ) -> Result<String, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        // The latest card is the one whose rows were written last. Rows are
+        // only ever added to the latest card, so the highest rowid is always
+        // one of its rows; a rowid rather than a time, so a clock that moved
+        // backwards cannot make an older card the latest.
+        let latest: Option<String> = transaction
+            .query_row(
+                "SELECT prompt_id FROM category_prompt_card_entry ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let latest_counted: BTreeSet<String> = match &latest {
+            Some(latest) => transaction
+                .prepare(
+                    "SELECT entry_key FROM category_prompt_card_entry
+                      WHERE prompt_id = ?1 AND counted = 1",
+                )?
+                .query_map([latest], |row| row.get(0))?
+                .collect::<Result<_, _>>()?,
+            None => BTreeSet::new(),
+        };
+        let counted: BTreeSet<String> = counted_keys.iter().cloned().collect();
+        let prompt_id = match latest {
+            Some(latest) if latest_counted == counted => latest,
+            previous => {
+                let minted: String =
+                    transaction
+                        .query_row("SELECT lower(hex(randomblob(32)))", [], |row| row.get(0))?;
+                // The card on screen may still be answered after this one is
+                // drawn, so the latest before this one keeps its rows; any
+                // older card is past answering, and goes.
+                transaction.execute(
+                    "DELETE FROM category_prompt_card_entry WHERE prompt_id IS NOT ?1",
+                    [previous],
+                )?;
+                let mut file = transaction.prepare(
+                    "INSERT INTO category_prompt_card_entry(prompt_id, entry_key, counted)
+                     VALUES (?1, ?2, 1)",
+                )?;
+                for key in counted_keys {
+                    file.execute(params![minted, key])?;
+                }
+                minted
+            }
+        };
+        {
+            // An entry below the eight, filed under the card that is up while
+            // it is listed: an answer to that card was given with it on the
+            // list, so it is not new afterwards when it moves up.
+            let mut file = transaction.prepare(
+                "INSERT INTO category_prompt_card_entry(prompt_id, entry_key, counted)
+                 VALUES (?1, ?2, 0)
+                 ON CONFLICT(prompt_id, entry_key) DO NOTHING",
+            )?;
+            for key in uncounted_keys {
+                file.execute(params![prompt_id, key])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(prompt_id)
+    }
+
+    fn acknowledge_prompt(
+        &self,
+        prompt_id: &str,
+        opened: bool,
+        at: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        // Through the card's rows, on their primary key. Either answer closes
+        // the card for exactly the entries it covered, however far the list
+        // has moved since it was drawn; an entry it never covered is not
+        // answered by it.
+        let stamped = transaction.execute(
+            "UPDATE category_prompt_entry SET acknowledged_at = ?2
+             WHERE acknowledged_at IS NULL
+               AND entry_key IN (
+                   SELECT entry_key FROM category_prompt_card_entry WHERE prompt_id = ?1
+               )",
+            params![prompt_id, at.timestamp()],
+        )? as u64;
+        if opened {
+            // The latest reminder only. The backoff asks whether each reminder
+            // was followed by an open before the next one, and an open now can
+            // only have followed the latest.
+            transaction.execute(
+                "UPDATE category_prompt_notification SET opened_at = ?1
+                 WHERE local_date = (
+                     SELECT local_date FROM category_prompt_notification
+                      ORDER BY posted_at DESC, local_date DESC LIMIT 1
+                 )
+                   AND opened_at IS NULL
+                   AND posted_at <= ?1",
+                [at.timestamp()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(stamped)
+    }
+
+    fn claim_notification(
+        &self,
+        local_date: &str,
+        entry_keys: &[String],
+        entry_count: u32,
+        policy_version: u32,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let mut connection = self.0.connection()?;
+        let transaction = connection.transaction()?;
+        let claimed = transaction.execute(
+            "INSERT INTO category_prompt_notification(
+                local_date, posted_at, entry_count, policy_version
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(local_date) DO NOTHING",
+            params![local_date, at.timestamp(), entry_count, policy_version],
+        )?;
+        if claimed == 0 {
+            // Today's reminder exists. Nothing is stamped: these entries were
+            // not announced by it, and a later day's reminder may still count
+            // them.
+            return Ok(false);
+        }
+        {
+            let mut stamp = transaction.prepare(
+                "UPDATE category_prompt_entry SET notified_at = ?2
+                 WHERE entry_key = ?1 AND notified_at IS NULL",
+            )?;
+            for key in entry_keys {
+                stamp.execute(params![key, at.timestamp()])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    fn recent_notifications(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<CategoryPromptNotificationRecord>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT local_date, posted_at, entry_count, policy_version, opened_at
+             FROM category_prompt_notification
+             ORDER BY posted_at DESC, local_date DESC LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([limit as i64], |row| {
+                Ok(CategoryPromptNotificationRecord {
+                    local_date: row.get(0)?,
+                    posted_at: timestamp_from_row(row, 1)?,
+                    entry_count: row.get(2)?,
+                    policy_version: row.get(3)?,
+                    opened_at: optional_timestamp_from_row(row, 4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    fn delete_expired_entries(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Oldest first, on `idx_category_prompt_entry_last_listed_at` (0041).
+        // The card rows filed under a swept entry go with it: the foreign key
+        // cascades, on `idx_category_prompt_card_entry_entry_key`.
+        let deleted = connection.execute(
+            "DELETE FROM category_prompt_entry WHERE entry_key IN (
+                 SELECT entry_key FROM category_prompt_entry
+                  WHERE last_listed_at < ?1
+                  ORDER BY last_listed_at
+                  LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+
+    fn delete_expired_notifications(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        // Oldest first, on `idx_category_prompt_notification_posted_at` (0041).
+        let deleted = connection.execute(
+            "DELETE FROM category_prompt_notification WHERE local_date IN (
+                 SELECT local_date FROM category_prompt_notification
+                  WHERE posted_at < ?1
+                  ORDER BY posted_at
+                  LIMIT ?2
+             )",
+            params![cutoff.timestamp(), limit as i64],
+        )?;
+        Ok(deleted as u64)
+    }
+}
+
 struct SqliteReceiptsRepo(SqlitePersistence);
 
 impl ReceiptsRepo for SqliteReceiptsRepo {
@@ -4251,9 +4950,11 @@ fn raw_event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEventEntry
         duration_seconds: row.get(12)?,
         upload_eligible: row.get(13)?,
         // Not selected by the upload-queue reads this mapper serves: the app
-        // identity is used only to generalize a correction, never uploaded.
+        // and site identities are used only by corrections and the lists that
+        // offer them, never uploaded.
         app_stable_id: None,
         app_scope_eligible: true,
+        site_stable_id: None,
     })
 }
 
@@ -5980,6 +6681,7 @@ mod tests {
             upload_eligible: false,
             app_stable_id: Some(app_key.to_owned()),
             app_scope_eligible: true,
+            site_stable_id: None,
         }
     }
 
@@ -6025,7 +6727,7 @@ mod tests {
 
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].app_stable_id, key(1));
-        assert_eq!(entries[0].display_name, "Figma");
+        assert_eq!(entries[0].display_name.as_deref(), Some("Figma"));
         assert_eq!(entries[0].seconds_observed, 300);
         assert_eq!(entries[0].event_count, 2);
     }
@@ -6078,7 +6780,7 @@ mod tests {
 
         let fortnight = events.unclassified_triage(14, 300, 8).unwrap();
         assert_eq!(fortnight.len(), 1, "{fortnight:?}");
-        assert_eq!(fortnight[0].display_name, "Obsidian");
+        assert_eq!(fortnight[0].display_name.as_deref(), Some("Obsidian"));
 
         // Clamped, not honoured: a 90-day request returns the same fortnight.
         let asked_for_more = events.unclassified_triage(90, 300, 8).unwrap();
@@ -6110,7 +6812,7 @@ mod tests {
         let entries = events.unclassified_triage(14, 300, 8).unwrap();
 
         assert_eq!(entries.len(), 8);
-        assert_eq!(entries[0].display_name, "App 9");
+        assert_eq!(entries[0].display_name.as_deref(), Some("App 9"));
         assert!(entries
             .windows(2)
             .all(|pair| pair[0].seconds_observed >= pair[1].seconds_observed));
@@ -6141,12 +6843,17 @@ mod tests {
     }
 
     /// An hour Velvt holds no name for is still an hour the user spent, so the
-    /// row is named plainly instead of dropped. Omitting it hid real time from
-    /// the one list whose entire claim is that it shows the time Velvt could not
-    /// read -- and the user can usually still answer, because the row carries the
+    /// row is kept instead of dropped. Omitting it hid real time from the one
+    /// list whose entire claim is that it shows the time Velvt could not read
+    /// -- and the user can usually still answer, because the row carries the
     /// time observed and they know what they had open for an hour.
+    ///
+    /// It is kept with no name rather than a placeholder. Until protocol 33 the
+    /// query answered 'Unnamed application', the client sent that back as the
+    /// rule's name, and every later window of the application was labelled
+    /// "Unnamed application" by the rule the user had just taught.
     #[test]
-    fn an_application_velvt_holds_no_name_for_is_named_plainly() {
+    fn an_application_velvt_holds_no_name_for_is_listed_without_one() {
         let database = SqlitePersistence::open_in_memory().unwrap();
         let events = database.raw_event_repo();
         let now = Utc::now();
@@ -6158,7 +6865,7 @@ mod tests {
 
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].app_stable_id, key(8));
-        assert_eq!(entries[0].display_name, "Unnamed application");
+        assert_eq!(entries[0].display_name, None);
         assert_eq!(entries[0].seconds_observed, 3_600);
         // The floor still applies to it: unnamed does not mean exempt.
         assert!(events.unclassified_triage(14, 7_200, 8).unwrap().is_empty());
@@ -7052,9 +7759,24 @@ mod tests {
             connection: Arc::new(Mutex::new(connection)),
         };
         let app = key(0x30);
-        let mut event = unlogged_event("legacy", &app, Some("Code"), Utc::now(), 600);
-        event.stable_id = "abs_legacy".into();
-        database.raw_event_repo().insert(&event).unwrap();
+        // The event is written directly too, for the reason the two rungs below
+        // are: the writer now fills a column (`site_stable_id`, 0040) the schema
+        // at this point does not have. These are the values `unlogged_event`
+        // gives, in the columns 0001 to 0035 define.
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO raw_event_buffer(
+                     event_id, stable_id, label, local_name_suggestion, category,
+                     taxonomy_version, classification_tier, classification_status,
+                     classification_confidence, classification_source, occurred_at,
+                     duration_seconds, upload_eligible, app_stable_id, app_scope_eligible
+                 ) VALUES ('legacy', 'abs_legacy', 'unlogged', 'Code', 'UNLOGGED', 'mvp-1',
+                           'fallback', 'unclassified', 'none', 'fallback', ?1, 600, 0, ?2, 1)",
+                rusqlite::params![Utc::now().timestamp(), app],
+            )
+            .unwrap();
         database
             .abstraction_map_repo()
             .upsert(&window_mapping("abs_legacy", &key(0x31)))
@@ -8389,5 +9111,1058 @@ ALTER TABLE raw_event_buffer ADD COLUMN local_name_suggestion TEXT
         for unterminated in ["SELECT 'open", "SELECT 1 /* open", "SELECT [open", "--"] {
             let _ = migration_checksum(unterminated);
         }
+    }
+}
+
+#[cfg(test)]
+mod site_rule_tests {
+    use super::SqlitePersistence;
+    use crate::abstraction::{
+        site_stable_key_for, AbstractionEngine, ClassificationConfidence, ClassificationSource,
+    };
+    use chrono::{TimeZone, Utc};
+    use rusqlite::params;
+    use uuid::Uuid;
+    use velvt_shared_types::RawEvent;
+
+    fn browser_tab(browser: &str, url: &str) -> RawEvent {
+        RawEvent {
+            event_id: Uuid::new_v4(),
+            occurred_at: Utc.with_ymd_and_hms(2026, 9, 27, 9, 0, 0).unwrap(),
+            duration_seconds: 60,
+            app_name: browser.to_owned(),
+            window_title: "Issues".to_owned(),
+            bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
+            focused_document_url: Some(url.to_owned()),
+            in_progress: false,
+        }
+    }
+
+    /// The site rung reads migration 0040's table, under the database's own
+    /// salt: a row keyed for `github.com` answers for that site in any browser,
+    /// with or without `www.`, and an empty table leaves every other site to
+    /// the classifier.
+    #[test]
+    fn a_site_rule_in_the_database_applies_in_every_browser() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let salt = database.abstraction_map_repo().stable_key_salt().unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO personal_site_override(site_key_hash, category, activity_name)
+                 VALUES (?1, 'FOCUS_WORK', 'Code review')",
+                params![site_stable_key_for(&salt, "github.com")],
+            )
+            .unwrap();
+        let engine =
+            AbstractionEngine::from_builtin_taxonomy(database.abstraction_mapping_store()).unwrap();
+
+        for (browser, url) in [
+            ("Safari", "https://github.com/velvt/private"),
+            ("Google Chrome", "https://www.github.com/velvt"),
+        ] {
+            let tab = engine.process(browser_tab(browser, url)).unwrap();
+            assert_eq!(tab.category(), "FOCUS_WORK", "{browser}");
+            assert_eq!(
+                tab.classification_source(),
+                ClassificationSource::UserRule,
+                "{browser}"
+            );
+            assert_eq!(tab.local_display_label(), Some("Code review"), "{browser}");
+        }
+
+        let untaught = engine
+            .process(browser_tab(
+                "Safari",
+                "https://www.youtube.com/watch?v=private",
+            ))
+            .unwrap();
+        assert_eq!(untaught.category(), "PASSIVE_CONSUMPTION");
+        assert_eq!(untaught.classification_source(), ClassificationSource::Seed);
+        assert_eq!(
+            untaught.classification_confidence(),
+            ClassificationConfidence::High
+        );
+    }
+}
+
+#[cfg(test)]
+mod site_triage_tests {
+    use super::SqlitePersistence;
+    use crate::persistence::{RawEventEntry, RawEventRepo};
+    use chrono::{DateTime, Duration, Utc};
+    use rusqlite::params;
+    use velvt_shared_types::{ClassificationConfidence, ClassificationStatus};
+
+    /// A distinct 64-character hex key, the shape every key column CHECKs for.
+    fn key(seed: u8) -> String {
+        format!("{seed:02x}").repeat(32)
+    }
+
+    /// A browser tab on a site no seed or inference names: the explicitly
+    /// ambiguous browser prior, which is what the list exists to ask about.
+    fn site_visit(
+        event_id: &str,
+        site_key: &str,
+        occurred_at: DateTime<Utc>,
+        duration_seconds: u64,
+    ) -> RawEventEntry {
+        RawEventEntry {
+            event_id: event_id.into(),
+            stable_id: format!("abs_{event_id}"),
+            label: "reference:browser".into(),
+            local_display_label: None,
+            local_name_suggestion: Some("Safari".into()),
+            category: "REFERENCE".into(),
+            taxonomy_version: "mvp-2".into(),
+            classification_tier: "fallback".into(),
+            classification_status: "ambiguous".into(),
+            classification_confidence: "low".into(),
+            classification_source: "fallback".into(),
+            occurred_at,
+            duration_seconds,
+            upload_eligible: false,
+            app_stable_id: Some(key(0xee)),
+            app_scope_eligible: false,
+            site_stable_id: Some(site_key.to_owned()),
+        }
+    }
+
+    /// The same tab, classified with confidence: a seeded site.
+    fn confident_visit(
+        event_id: &str,
+        site_key: &str,
+        occurred_at: DateTime<Utc>,
+        duration_seconds: u64,
+    ) -> RawEventEntry {
+        RawEventEntry {
+            label: "reference:github".into(),
+            classification_tier: "exact_match".into(),
+            classification_status: "classified".into(),
+            classification_confidence: "high".into(),
+            classification_source: "seed".into(),
+            ..site_visit(event_id, site_key, occurred_at, duration_seconds)
+        }
+    }
+
+    /// Stores a visit the way the router does: the event, then its site's name.
+    fn record(events: &dyn RawEventRepo, visit: &RawEventEntry, host: &str) -> bool {
+        events.insert(visit).unwrap();
+        events
+            .record_local_site_name(&visit.event_id, host, Utc::now())
+            .unwrap()
+    }
+
+    fn stored_names(database: &SqlitePersistence) -> Vec<(String, String)> {
+        database
+            .connection()
+            .unwrap()
+            .prepare("SELECT site_key_hash, host FROM local_site_name ORDER BY host")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    /// Five minutes is the floor, inclusive, summed across visits, and a caller
+    /// cannot lower it: the application list's floor, for its reason.
+    #[test]
+    fn the_site_list_floor_is_five_minutes_and_includes_the_boundary() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        record(
+            events.as_ref(),
+            &site_visit("floor-a", &key(1), now, 200),
+            "forum.example.org",
+        );
+        record(
+            events.as_ref(),
+            &site_visit("floor-b", &key(1), now, 100),
+            "forum.example.org",
+        );
+        record(
+            events.as_ref(),
+            &site_visit("under", &key(2), now, 299),
+            "brief.example.net",
+        );
+
+        let entries = events.unclassified_site_triage(14, 300, 8).unwrap();
+
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].site_stable_id, key(1));
+        assert_eq!(entries[0].display_name, "forum.example.org");
+        assert_eq!(entries[0].seconds_observed, 300);
+        assert_eq!(entries[0].event_count, 2);
+        assert_eq!(
+            events.unclassified_site_triage(14, 0, 8).unwrap(),
+            entries,
+            "a caller cannot ask for a lower floor than the published one"
+        );
+    }
+
+    /// The window is the raw-event horizon: just inside counts, just outside
+    /// does not, a longer request is clamped and a shorter one honoured.
+    #[test]
+    fn the_site_list_window_is_bounded_by_the_retention_window() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        record(
+            events.as_ref(),
+            &site_visit("inside", &key(4), now - Duration::days(13), 600),
+            "inside.example.org",
+        );
+        record(
+            events.as_ref(),
+            &site_visit("outside", &key(5), now - Duration::days(15), 600),
+            "outside.example.org",
+        );
+
+        let fortnight = events.unclassified_site_triage(14, 300, 8).unwrap();
+        assert_eq!(fortnight.len(), 1, "{fortnight:?}");
+        assert_eq!(fortnight[0].display_name, "inside.example.org");
+        assert_eq!(
+            events.unclassified_site_triage(90, 300, 8).unwrap(),
+            fortnight
+        );
+        assert!(events
+            .unclassified_site_triage(7, 300, 8)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Longest first, ties by key, and at most eight however many qualify.
+    #[test]
+    fn the_site_list_is_ranked_by_time_and_capped_at_eight() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        for index in 0..10_u8 {
+            record(
+                events.as_ref(),
+                &site_visit(
+                    &format!("ranked-{index}"),
+                    &key(index + 10),
+                    now,
+                    300 + u64::from(index) * 60,
+                ),
+                &format!("site-{index}.example.org"),
+            );
+        }
+
+        let entries = events.unclassified_site_triage(14, 300, 8).unwrap();
+
+        assert_eq!(entries.len(), 8);
+        assert_eq!(entries[0].display_name, "site-9.example.org");
+        assert!(entries
+            .windows(2)
+            .all(|pair| pair[0].seconds_observed >= pair[1].seconds_observed));
+        assert_eq!(
+            events.unclassified_site_triage(14, 300, 50).unwrap().len(),
+            8
+        );
+    }
+
+    /// Only time Velvt could not categorize counts. On one site: an ambiguous
+    /// visit does; a confident visit adds nothing, and neither does one
+    /// confidently filed as SYSTEM, which the drift gate never counts but which
+    /// is categorized; and a visit one of the user's own rules decided adds
+    /// nothing even though it is not confident either.
+    #[test]
+    fn only_time_velvt_could_not_categorize_reaches_the_site_list() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        let site = key(6);
+        record(
+            events.as_ref(),
+            &site_visit("ambiguous", &site, now, 300),
+            "mixed.example.org",
+        );
+        record(
+            events.as_ref(),
+            &confident_visit("confident", &site, now, 3_600),
+            "mixed.example.org",
+        );
+        let mut system = confident_visit("system", &site, now, 600);
+        system.category = "SYSTEM".into();
+        assert!(
+            !record(events.as_ref(), &system, "mixed.example.org"),
+            "a visit filed as SYSTEM is categorized and keeps no name"
+        );
+        let mut ruled = confident_visit("ruled", &site, now, 7_200);
+        ruled.category = "UNLOGGED".into();
+        ruled.classification_source = "user_rule".into();
+        assert!(
+            !record(events.as_ref(), &ruled, "mixed.example.org"),
+            "a visit a rule decided keeps no name"
+        );
+        // A window that is not a browser tab on a named site has no site key,
+        // so there is no site to count it under.
+        let mut siteless = site_visit("siteless", &site, now, 3_600);
+        siteless.site_stable_id = None;
+        assert!(!record(events.as_ref(), &siteless, "mixed.example.org"));
+
+        let entries = events.unclassified_site_triage(14, 300, 8).unwrap();
+
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].seconds_observed, 300);
+        assert_eq!(entries[0].event_count, 1);
+    }
+
+    /// The list and the name writer read confidence with one predicate: every
+    /// status, confidence and category (in either case) keeps a name exactly
+    /// when the visit is not `classified` at `high` or `medium` in a category
+    /// other than UNCLASSIFIED and UNLOGGED. That is the drift gate's own rule
+    /// in every category but SYSTEM, which the gate never counts and the list
+    /// takes as an answer.
+    #[test]
+    fn the_site_list_reads_confidence_as_the_drift_gate_does_except_for_system() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        let mut seed = 0_u8;
+        for status in [
+            ClassificationStatus::Classified,
+            ClassificationStatus::Ambiguous,
+            ClassificationStatus::Unclassified,
+        ] {
+            for confidence in [
+                ClassificationConfidence::High,
+                ClassificationConfidence::Medium,
+                ClassificationConfidence::Low,
+                ClassificationConfidence::None,
+            ] {
+                for category in [
+                    "FOCUS_WORK",
+                    "REFERENCE",
+                    "SYSTEM",
+                    "System",
+                    "UNLOGGED",
+                    "unlogged",
+                    "UNCLASSIFIED",
+                ] {
+                    seed += 1;
+                    let mut visit =
+                        site_visit(&format!("combination-{seed}"), &key(seed), now, 300);
+                    visit.category = category.into();
+                    visit.classification_status = status.as_str().into();
+                    visit.classification_confidence = confidence.as_str().into();
+
+                    let kept = record(events.as_ref(), &visit, "combination.example.org");
+
+                    let categorized = status == ClassificationStatus::Classified
+                        && matches!(
+                            confidence,
+                            ClassificationConfidence::High | ClassificationConfidence::Medium
+                        )
+                        && !category.eq_ignore_ascii_case("unclassified")
+                        && !category.eq_ignore_ascii_case("unlogged");
+                    assert_eq!(kept, !categorized, "{category} {status:?} {confidence:?}");
+                    if !category.eq_ignore_ascii_case("system") {
+                        assert_eq!(
+                            kept,
+                            !crate::work_block::is_confident(category, status, confidence),
+                            "{category} {status:?} {confidence:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The name is the list's only source of a name: time on a site Velvt
+    /// holds no name for is not offered under a placeholder.
+    #[test]
+    fn a_site_velvt_holds_no_name_for_is_not_listed() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        events
+            .insert(&site_visit("nameless", &key(7), Utc::now(), 3_600))
+            .unwrap();
+
+        assert!(events
+            .unclassified_site_triage(14, 300, 8)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A confident visit never writes a name, and leaves a name an earlier
+    /// visit wrote exactly as it was: the sweep keeps counting from the last
+    /// visit that needed a category.
+    #[test]
+    fn a_confident_visit_never_writes_a_name_or_refreshes_one() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        assert!(!record(
+            events.as_ref(),
+            &confident_visit("seeded", &key(8), now, 600),
+            "github.com",
+        ));
+        assert!(stored_names(&database).is_empty());
+
+        let earlier = now - Duration::days(3);
+        events
+            .insert(&site_visit("unsure", &key(9), earlier, 600))
+            .unwrap();
+        assert!(events
+            .record_local_site_name("unsure", "mixed.example.org", earlier)
+            .unwrap());
+        events
+            .insert(&confident_visit("sure", &key(9), now, 600))
+            .unwrap();
+        assert!(!events
+            .record_local_site_name("sure", "mixed.example.org", now)
+            .unwrap());
+
+        let last_seen: i64 = database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT last_seen_at FROM local_site_name WHERE site_key_hash = ?1",
+                [key(9)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_seen, earlier.timestamp());
+    }
+
+    /// Teaching a site takes it off the list and deletes its name in the same
+    /// step; while the rule stands no visit writes the name back, and removing
+    /// the rule lets the next visit Velvt cannot categorize write it again.
+    #[test]
+    fn a_site_rule_takes_the_site_off_the_list_and_deletes_its_name() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        let now = Utc::now();
+        record(
+            events.as_ref(),
+            &site_visit("before", &key(10), now, 3_600),
+            "tickets.example.org",
+        );
+        assert_eq!(
+            events.unclassified_site_triage(14, 300, 8).unwrap().len(),
+            1
+        );
+
+        maps.save_site_scope_override(&key(10), "TASK_MANAGEMENT", Some("Tickets"))
+            .unwrap();
+
+        assert!(events
+            .unclassified_site_triage(14, 300, 8)
+            .unwrap()
+            .is_empty());
+        assert!(stored_names(&database).is_empty());
+        assert!(
+            !record(
+                events.as_ref(),
+                &site_visit("while-taught", &key(10), now, 600),
+                "tickets.example.org",
+            ),
+            "a taught site keeps no name"
+        );
+        assert!(stored_names(&database).is_empty());
+
+        assert!(maps.remove_site_scope_override(&key(10)).unwrap());
+        assert!(!maps.remove_site_scope_override(&key(10)).unwrap());
+        assert!(record(
+            events.as_ref(),
+            &site_visit("after", &key(10), now, 600),
+            "tickets.example.org",
+        ));
+        assert_eq!(
+            events.unclassified_site_triage(14, 300, 8).unwrap()[0].display_name,
+            "tickets.example.org"
+        );
+    }
+
+    /// Saving the same site twice is one rule that counts both saves, keeps
+    /// the name typed the first time when the second typed none, and takes the
+    /// latest category.
+    #[test]
+    fn saving_a_site_rule_again_updates_it_in_place() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let maps = database.abstraction_map_repo();
+
+        maps.save_site_scope_override(&key(11), "REFERENCE", Some("Handbook"))
+            .unwrap();
+        maps.save_site_scope_override(&key(11), "FOCUS_WORK", None)
+            .unwrap();
+
+        let rule: (String, Option<String>, i64) = database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT category, activity_name, correction_count
+                   FROM personal_site_override WHERE site_key_hash = ?1",
+                [key(11)],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(rule, ("FOCUS_WORK".into(), Some("Handbook".into()), 2));
+    }
+
+    /// Removing a site rule takes the name it mirrored off the windows of that
+    /// site, and off no other window.
+    #[test]
+    fn removing_a_site_rule_clears_the_name_it_mirrored() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        let now = Utc::now();
+        events
+            .insert(&site_visit("taught", &key(12), now, 60))
+            .unwrap();
+        events
+            .insert(&site_visit("other", &key(13), now, 60))
+            .unwrap();
+        let connection = database.connection().unwrap();
+        for (key_hash, stable_id) in [(key(0x40), "abs_taught"), (key(0x41), "abs_other")] {
+            connection
+                .execute(
+                    "INSERT INTO abstraction_map(key_hash, stable_id, label, category,
+                         taxonomy_version, classification_tier, display_name)
+                     VALUES (?1, ?2, 'reference:inferred', 'REFERENCE', 'mvp-2',
+                             'exact_match', 'Handbook')",
+                    params![key_hash, stable_id],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        maps.save_site_scope_override(&key(12), "REFERENCE", Some("Handbook"))
+            .unwrap();
+
+        assert!(maps.remove_site_scope_override(&key(12)).unwrap());
+
+        let names: Vec<(String, Option<String>)> = database
+            .connection()
+            .unwrap()
+            .prepare("SELECT stable_id, display_name FROM abstraction_map ORDER BY stable_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            names,
+            vec![
+                ("abs_other".into(), Some("Handbook".into())),
+                ("abs_taught".into(), None),
+            ]
+        );
+    }
+
+    /// An edit replaces the name rather than keeping it: a name cleared in the
+    /// editor is cleared on the rule and off the windows it was mirrored
+    /// into, and a new name replaces the old one.
+    #[test]
+    fn editing_a_site_rule_replaces_its_name_and_a_cleared_one_goes() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        events
+            .insert(&site_visit("taught", &key(14), Utc::now(), 60))
+            .unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO abstraction_map(key_hash, stable_id, label, category,
+                     taxonomy_version, classification_tier, display_name)
+                 VALUES (?1, 'abs_taught', 'reference:inferred', 'REFERENCE', 'mvp-2',
+                         'exact_match', 'Handbook')",
+                [key(0x42)],
+            )
+            .unwrap();
+        maps.save_site_scope_override(&key(14), "REFERENCE", Some("Handbook"))
+            .unwrap();
+        let rule = || {
+            let rule = maps.site_scope_override(&key(14)).unwrap().unwrap();
+            (rule.category, rule.activity_name, rule.correction_count)
+        };
+
+        maps.edit_site_scope_override(&key(14), "REFERENCE", Some("Manual"))
+            .unwrap();
+        assert_eq!(rule(), ("REFERENCE".into(), Some("Manual".into()), 2));
+
+        maps.edit_site_scope_override(&key(14), "FOCUS_WORK", None)
+            .unwrap();
+        assert_eq!(rule(), ("FOCUS_WORK".into(), None, 3));
+        let mirrored: Option<String> = database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT display_name FROM abstraction_map WHERE stable_id = 'abs_taught'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mirrored, None);
+    }
+
+    /// Reset Corrections reaches the site rung too, and leaves the names of
+    /// sites still waiting for an answer.
+    #[test]
+    fn reset_removes_every_site_rule() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        record(
+            events.as_ref(),
+            &site_visit("waiting", &key(14), Utc::now(), 600),
+            "waiting.example.org",
+        );
+        maps.save_site_scope_override(&key(15), "REFERENCE", None)
+            .unwrap();
+
+        maps.reset_personal_overrides().unwrap();
+
+        let rules: i64 = database
+            .connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM personal_site_override", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rules, 0);
+        assert_eq!(stored_names(&database).len(), 1);
+    }
+
+    /// The sweep runs from `last_seen_at`, oldest first, and stops at its limit.
+    #[test]
+    fn the_site_name_sweep_counts_from_the_last_visit_that_needed_a_category() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let now = Utc::now();
+        for (index, days_ago) in [(20_u8, 20_i64), (21, 16), (22, 13)] {
+            let visit = site_visit(&format!("aged-{index}"), &key(index), now, 600);
+            events.insert(&visit).unwrap();
+            events
+                .record_local_site_name(
+                    &visit.event_id,
+                    &format!("aged-{days_ago}.example.org"),
+                    now - Duration::days(days_ago),
+                )
+                .unwrap();
+        }
+        let cutoff = now - Duration::days(14);
+
+        assert_eq!(events.delete_expired_site_names(cutoff, 1).unwrap(), 1);
+        assert_eq!(
+            stored_names(&database)
+                .into_iter()
+                .map(|(_, host)| host)
+                .collect::<Vec<_>>(),
+            vec!["aged-13.example.org", "aged-16.example.org"],
+            "the oldest goes first"
+        );
+        assert_eq!(events.delete_expired_site_names(cutoff, 10).unwrap(), 1);
+        assert_eq!(stored_names(&database).len(), 1);
+    }
+
+    /// A re-minted salt orphans every site key, so it takes the site rules,
+    /// the stored names and the keys on buffered events with it.
+    #[test]
+    fn a_minted_stable_key_salt_removes_the_site_rows_it_orphans() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let events = database.raw_event_repo();
+        let maps = database.abstraction_map_repo();
+        record(
+            events.as_ref(),
+            &site_visit("keyed", &key(30), Utc::now(), 600),
+            "keyed.example.org",
+        );
+        maps.save_site_scope_override(&key(31), "REFERENCE", None)
+            .unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute("DELETE FROM stable_key_salt", [])
+            .unwrap();
+
+        maps.stable_key_salt().unwrap();
+
+        let connection = database.connection().unwrap();
+        for query in [
+            "SELECT COUNT(*) FROM personal_site_override",
+            "SELECT COUNT(*) FROM local_site_name",
+            "SELECT COUNT(*) FROM raw_event_buffer WHERE site_stable_id IS NOT NULL",
+        ] {
+            let rows: i64 = connection.query_row(query, [], |row| row.get(0)).unwrap();
+            assert_eq!(rows, 0, "{query}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod category_prompt_ledger_tests {
+    use super::SqlitePersistence;
+    use crate::persistence::CategoryPromptRepo;
+    use chrono::{DateTime, Utc};
+    use std::sync::Arc;
+
+    /// 2027-01-15T08:00:00Z, the anchor the initiation tests use.
+    fn at(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_800_000_000 + seconds, 0).unwrap()
+    }
+
+    fn application(seed: u8) -> String {
+        format!("application:{}", format!("{seed:02x}").repeat(32))
+    }
+
+    fn site(seed: u8) -> String {
+        format!("site:{}", format!("{seed:02x}").repeat(32))
+    }
+
+    fn prompt(seed: u8) -> String {
+        format!("{seed:02x}").repeat(32)
+    }
+
+    fn ledger() -> (SqlitePersistence, Arc<dyn CategoryPromptRepo>) {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.category_prompt_repo();
+        (database, repo)
+    }
+
+    /// A key is first listed once and last listed every time, and the rows
+    /// come back in the order asked for, so the caller can zip them with the
+    /// list it holds.
+    #[test]
+    fn listing_keeps_the_first_time_and_moves_the_last() {
+        let (_database, ledger) = ledger();
+        let first = ledger
+            .record_listed(&[site(1), application(2)], at(0))
+            .unwrap();
+        let second = ledger
+            .record_listed(&[application(2), site(1), site(3)], at(600))
+            .unwrap();
+
+        assert_eq!(first.len(), 2);
+        assert_eq!(
+            second
+                .iter()
+                .map(|entry| entry.entry_key.clone())
+                .collect::<Vec<_>>(),
+            vec![application(2), site(1), site(3)]
+        );
+        assert_eq!(second[0].first_listed_at, at(0));
+        assert_eq!(second[0].last_listed_at, at(600));
+        assert_eq!(second[2].first_listed_at, at(600));
+        assert!(second
+            .iter()
+            .all(|entry| entry.acknowledged_at.is_none() && entry.notified_at.is_none()));
+    }
+
+    /// An answer reaches the entries its card covered -- counted, or filed
+    /// below the eight -- and nothing else, and a second answer never moves
+    /// the first one's time.
+    #[test]
+    fn an_answer_reaches_exactly_the_entries_its_card_covered() {
+        let (_database, ledger) = ledger();
+        ledger
+            .record_listed(&[site(1), application(2), site(4)], at(0))
+            .unwrap();
+        let card = ledger
+            .card_for(&[site(1), application(2)], &[site(4)])
+            .unwrap();
+        // Listed after the card was drawn, on no card yet.
+        ledger.record_listed(&[site(3)], at(30)).unwrap();
+
+        assert_eq!(ledger.acknowledge_prompt(&card, false, at(60)).unwrap(), 3);
+        assert_eq!(
+            ledger.acknowledge_prompt(&card, false, at(120)).unwrap(),
+            0,
+            "a repeated answer stamps nothing"
+        );
+        assert_eq!(
+            ledger
+                .acknowledge_prompt(&"b2".repeat(32), true, at(120))
+                .unwrap(),
+            0,
+            "an unknown card reaches no entry"
+        );
+
+        let entries = ledger
+            .record_listed(&[site(1), application(2), site(4), site(3)], at(180))
+            .unwrap();
+        assert!(entries[..3]
+            .iter()
+            .all(|entry| entry.acknowledged_at == Some(at(60))));
+        assert_eq!(entries[3].acknowledged_at, None);
+    }
+
+    /// A card keeps its id while it counts the same keys, however the ones
+    /// below it change, and a new id is minted when they change. The one
+    /// before the latest keeps its rows, so a late answer to it still lands;
+    /// anything older goes.
+    #[test]
+    fn a_card_id_is_reused_until_what_it_counts_changes_and_two_are_kept() {
+        let (database, ledger) = ledger();
+        let every: Vec<String> = (1..=5).map(site).collect();
+        ledger.record_listed(&every, at(0)).unwrap();
+
+        let first = ledger.card_for(&every[..2], &every[2..3]).unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        let reordered = [every[1].clone(), every[0].clone()];
+        assert_eq!(ledger.card_for(&reordered, &every[3..5]).unwrap(), first);
+
+        let second = ledger.card_for(&every[..3], &[]).unwrap();
+        let third = ledger.card_for(&every[..2], &[]).unwrap();
+        assert_ne!(second, first);
+        assert_ne!(third, first, "the same keys again are a new card");
+        assert_ne!(third, second);
+
+        let cards: Vec<(String, i64)> = database
+            .connection()
+            .unwrap()
+            .prepare(
+                "SELECT prompt_id, COUNT(*) FROM category_prompt_card_entry
+                  GROUP BY prompt_id ORDER BY MIN(rowid)",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(cards, vec![(second.clone(), 3), (third.clone(), 2)]);
+
+        // The late answer to the card before the latest still lands.
+        assert_eq!(
+            ledger.acknowledge_prompt(&second, false, at(60)).unwrap(),
+            3
+        );
+        assert_eq!(ledger.acknowledge_prompt(&first, false, at(60)).unwrap(), 0);
+    }
+
+    /// The primary key on the local date is the daily cap: a second claim for
+    /// the same day changes nothing, and a new day may claim again.
+    #[test]
+    fn one_reminder_a_local_day_and_a_refused_claim_stamps_nothing() {
+        let (_database, ledger) = ledger();
+        ledger
+            .record_listed(&[site(1), application(2)], at(0))
+            .unwrap();
+
+        assert!(ledger
+            .claim_notification("2027-01-15", &[site(1)], 2, 1, at(0))
+            .unwrap());
+        assert!(!ledger
+            .claim_notification("2027-01-15", &[application(2)], 2, 1, at(60))
+            .unwrap());
+        let entries = ledger
+            .record_listed(&[site(1), application(2)], at(120))
+            .unwrap();
+        assert_eq!(entries[0].notified_at, Some(at(0)));
+        assert_eq!(entries[1].notified_at, None, "the refused claim stamped it");
+
+        assert!(ledger
+            .claim_notification("2027-01-16", &[site(1), application(2)], 2, 1, at(86_400))
+            .unwrap());
+        let entries = ledger
+            .record_listed(&[site(1), application(2)], at(86_460))
+            .unwrap();
+        assert_eq!(
+            entries[0].notified_at,
+            Some(at(0)),
+            "an announced entry keeps the time it was first announced"
+        );
+        assert_eq!(entries[1].notified_at, Some(at(86_400)));
+
+        let reminders = ledger.recent_notifications(8).unwrap();
+        assert_eq!(
+            reminders
+                .iter()
+                .map(|reminder| reminder.local_date.as_str())
+                .collect::<Vec<_>>(),
+            vec!["2027-01-16", "2027-01-15"],
+            "most recent first"
+        );
+        assert_eq!(reminders[0].entry_count, 2);
+        assert_eq!(reminders[0].policy_version, 1);
+    }
+
+    /// An open is evidence about the latest reminder only: it can have
+    /// followed no earlier one.
+    #[test]
+    fn an_open_stamps_the_latest_reminder_once() {
+        let (_database, ledger) = ledger();
+        ledger
+            .claim_notification("2027-01-15", &[], 1, 1, at(0))
+            .unwrap();
+        ledger
+            .claim_notification("2027-01-16", &[], 1, 1, at(86_400))
+            .unwrap();
+
+        ledger
+            .acknowledge_prompt(&prompt(1), false, at(86_500))
+            .unwrap();
+        assert!(ledger
+            .recent_notifications(2)
+            .unwrap()
+            .iter()
+            .all(|reminder| reminder.opened_at.is_none()));
+
+        ledger
+            .acknowledge_prompt(&prompt(1), true, at(86_600))
+            .unwrap();
+        ledger
+            .acknowledge_prompt(&prompt(1), true, at(86_700))
+            .unwrap();
+        let reminders = ledger.recent_notifications(2).unwrap();
+        assert_eq!(reminders[0].opened_at, Some(at(86_600)));
+        assert_eq!(reminders[1].opened_at, None);
+    }
+
+    /// The tables admit what the policy writes and nothing else: a key under
+    /// one of the two prefixes and 64 lowercase hex digits, a card id of 64
+    /// lowercase hex digits filed only under an entry the ledger holds, a
+    /// `YYYY-MM-DD` date, and a count the list can hold.
+    #[test]
+    fn the_schema_refuses_anything_but_keys_dates_and_counts() {
+        let (database, ledger) = ledger();
+        for key in [
+            "application:Qwybex".to_owned(),
+            format!("window:{}", "a".repeat(64)),
+            format!("site:{}", "A".repeat(64)),
+            "a".repeat(64),
+        ] {
+            assert!(
+                ledger
+                    .record_listed(std::slice::from_ref(&key), at(0))
+                    .is_err(),
+                "{key} was accepted"
+            );
+        }
+        ledger.record_listed(&[site(1)], at(0)).unwrap();
+        let card = "c3".repeat(32);
+        for (prompt_id, entry_key, counted) in [
+            ("not-a-card-id".to_owned(), site(1), 1),
+            ("C3".repeat(32), site(1), 1),
+            (card.clone(), site(2), 1),
+            (card.clone(), site(1), 2),
+        ] {
+            assert!(
+                database
+                    .connection()
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO category_prompt_card_entry(prompt_id, entry_key, counted)
+                         VALUES (?1, ?2, ?3)",
+                        rusqlite::params![prompt_id, entry_key, counted],
+                    )
+                    .is_err(),
+                "{prompt_id} {entry_key} {counted} was accepted"
+            );
+        }
+        for (date, count) in [("15/01/2027", 1), ("2027-01-15", 0), ("2027-01-15", 9)] {
+            assert!(
+                ledger
+                    .claim_notification(date, &[], count, 1, at(0))
+                    .is_err(),
+                "{date} {count} was accepted"
+            );
+        }
+        let rows: i64 = database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM category_prompt_notification",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    /// Both sweeps delete oldest first, within their limit, and leave what is
+    /// inside the horizon; a swept entry's card rows go with it.
+    #[test]
+    fn the_sweeps_delete_only_what_is_past_the_horizon() {
+        let (database, ledger) = ledger();
+        ledger.record_listed(&[site(1)], at(0)).unwrap();
+        ledger.record_listed(&[site(2)], at(100)).unwrap();
+        ledger.record_listed(&[site(3)], at(10_000)).unwrap();
+        let card = ledger.card_for(&[site(1), site(3)], &[site(2)]).unwrap();
+        ledger
+            .claim_notification("2027-01-15", &[], 1, 1, at(0))
+            .unwrap();
+        ledger
+            .claim_notification("2027-01-16", &[], 1, 1, at(86_400))
+            .unwrap();
+
+        assert_eq!(ledger.delete_expired_entries(at(5_000), 1).unwrap(), 1);
+        assert_eq!(ledger.delete_expired_entries(at(5_000), 8).unwrap(), 1);
+        assert_eq!(ledger.delete_expired_entries(at(5_000), 8).unwrap(), 0);
+        let survivors = ledger.record_listed(&[site(3)], at(20_000)).unwrap();
+        assert_eq!(survivors[0].first_listed_at, at(10_000));
+        let filed: Vec<String> = database
+            .connection()
+            .unwrap()
+            .prepare("SELECT entry_key FROM category_prompt_card_entry WHERE prompt_id = ?1")
+            .unwrap()
+            .query_map([&card], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            filed,
+            vec![site(3)],
+            "the swept entries' card rows went too"
+        );
+
+        assert_eq!(
+            ledger.delete_expired_notifications(at(86_400), 8).unwrap(),
+            1
+        );
+        let reminders = ledger.recent_notifications(8).unwrap();
+        assert_eq!(reminders.len(), 1);
+        assert_eq!(reminders[0].local_date, "2027-01-16");
+    }
+
+    /// A re-minted salt orphans every application and site key, so the
+    /// prompt's entries go with them, and their card rows with the entries.
+    /// The reminder rows hold no key and stay.
+    #[test]
+    fn a_minted_stable_key_salt_removes_the_prompt_entries() {
+        let (database, ledger) = ledger();
+        ledger
+            .record_listed(&[site(1), application(2)], at(0))
+            .unwrap();
+        ledger.card_for(&[site(1)], &[application(2)]).unwrap();
+        ledger
+            .claim_notification("2027-01-15", &[site(1)], 2, 1, at(0))
+            .unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute("DELETE FROM stable_key_salt", [])
+            .unwrap();
+
+        database.abstraction_map_repo().stable_key_salt().unwrap();
+
+        // The count is read, and the guard released, before the ledger is
+        // asked anything: an in-memory store has one connection behind a
+        // mutex, and holding it across a repo call would deadlock.
+        for table in ["category_prompt_entry", "category_prompt_card_entry"] {
+            let rows: i64 = database
+                .connection()
+                .unwrap()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(rows, 0, "{table}");
+        }
+        assert_eq!(ledger.recent_notifications(8).unwrap().len(), 1);
     }
 }

@@ -24,6 +24,15 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     case requestUnclassifiedTriage(RequestUnclassifiedTriage)
     /// Teaches Velvt what one application is, with no event id (proto v30).
     case setApplicationCategory(SetApplicationCategory)
+    /// Teaches Velvt what one site is, on every page and in every browser
+    /// (proto v33).
+    case setSiteCategory(SetSiteCategory)
+    /// Asks whether the needs-a-category card, or its daily reminder, is due
+    /// (proto v33). Always answered with `category_prompt`.
+    case requestCategoryPrompt(RequestCategoryPrompt)
+    /// The answer to the needs-a-category card or a tap on its reminder
+    /// (proto v33).
+    case acknowledgeCategoryPrompt(AcknowledgeCategoryPrompt)
     case startWorkBlock(StartWorkBlock)
     case pauseWorkBlock(WorkBlockIdentifier)
     case resumeWorkBlock(WorkBlockIdentifier)
@@ -93,6 +102,12 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .requestUnclassifiedTriage(try RequestUnclassifiedTriage(from: payload))
         case "set_application_category":
             self = .setApplicationCategory(try SetApplicationCategory(from: payload))
+        case "set_site_category":
+            self = .setSiteCategory(try SetSiteCategory(from: payload))
+        case "request_category_prompt":
+            self = .requestCategoryPrompt(try RequestCategoryPrompt(from: payload))
+        case "acknowledge_category_prompt":
+            self = .acknowledgeCategoryPrompt(try AcknowledgeCategoryPrompt(from: payload))
         case "start_work_block":
             self = .startWorkBlock(try StartWorkBlock(from: payload))
         case "pause_work_block":
@@ -203,6 +218,15 @@ public enum ClientMessage: Codable, Equatable, Sendable {
         case .setApplicationCategory(let value):
             try envelope.encode("set_application_category", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .setSiteCategory(let value):
+            try envelope.encode("set_site_category", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .requestCategoryPrompt(let value):
+            try envelope.encode("request_category_prompt", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .acknowledgeCategoryPrompt(let value):
+            try envelope.encode("acknowledge_category_prompt", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .startWorkBlock(let value):
             try envelope.encode("start_work_block", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
@@ -298,8 +322,12 @@ public enum ServerMessage: Codable, Equatable, Sendable {
     case notificationPayload(NotificationPayload)
     case menuStatus(MenuStatus)
     case correctionHistoryPage(CorrectionHistoryPage)
-    /// The bounded list of applications Velvt could not read (proto v30).
+    /// The bounded list of applications and sites Velvt could not
+    /// categorize (proto v30; sites since v33).
     case unclassifiedTriage(UnclassifiedTriage)
+    /// The needs-a-category card and, at most once a local day, its reminder
+    /// (proto v33). Decided and worded in Rust; an empty payload means no card.
+    case categoryPrompt(CategoryPrompt)
     case workBlockState(WorkBlockSnapshot)
     case localDashboard(LocalDashboardSnapshot)
     /// A deterministic next-morning quiet-hours offer (rule-versioned).
@@ -367,6 +395,8 @@ public enum ServerMessage: Codable, Equatable, Sendable {
             self = .correctionHistoryPage(try CorrectionHistoryPage(from: payload))
         case "unclassified_triage":
             self = .unclassifiedTriage(try UnclassifiedTriage(from: payload))
+        case "category_prompt":
+            self = .categoryPrompt(try CategoryPrompt(from: payload))
         case "work_block_state":
             self = .workBlockState(try WorkBlockSnapshot(from: payload))
         case "local_dashboard":
@@ -457,6 +487,9 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case .unclassifiedTriage(let value):
             try envelope.encode("unclassified_triage", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .categoryPrompt(let value):
+            try envelope.encode("category_prompt", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .workBlockState(let value):
             try envelope.encode("work_block_state", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
@@ -513,6 +546,7 @@ public enum ServerMessage: Codable, Equatable, Sendable {
         case .menuStatus: "menu_status"
         case .correctionHistoryPage: "correction_history_page"
         case .unclassifiedTriage: "unclassified_triage"
+        case .categoryPrompt: "category_prompt"
         case .workBlockState: "work_block_state"
         case .localDashboard: "local_dashboard"
         case .quietHoursOffer: "quiet_hours_offer"
@@ -1364,14 +1398,17 @@ public struct RemoveClassificationOverride: Codable, Equatable, Sendable {
 
 /// Which identity a saved rule is keyed on.
 ///
-/// The two behave differently, so a list that shows them identically cannot be
+/// Each behaves differently, so a list that shows them identically cannot be
 /// trusted or edited: a window rule covers one application-and-window pair, an
-/// app rule covers every window of one application. `stableID` is an
-/// abstraction stable id for a window rule and the application's own key hash
-/// for an app rule, so a client cannot act on the id without reading this.
+/// app rule covers every window of one application, and a site rule (proto
+/// v33) covers every page of one site in every browser. `stableID` is an
+/// abstraction stable id for a window rule, the application's own key hash for
+/// an app rule and the site's key hash for a site rule, so a client cannot act
+/// on the id without reading this.
 public enum CorrectionScope: String, Codable, Equatable, Sendable {
     case window
     case app
+    case site
 }
 
 public struct ClassificationCorrectionSummary: Codable, Equatable, Sendable, Identifiable {
@@ -1459,7 +1496,7 @@ public struct CorrectionHistoryPage: Codable, Equatable, Sendable {
     }
 }
 
-/// Asks which applications Velvt observed but could not read.
+/// Asks which applications and sites Velvt observed but could not categorize.
 ///
 /// The window is clamped again in Rust against the published retention window;
 /// clamping here only keeps the client from asking for evidence that cannot
@@ -1479,50 +1516,88 @@ public struct RequestUnclassifiedTriage: Codable, Equatable, Sendable {
     }
 }
 
-/// One application Velvt observed but could not classify.
+/// Which answer a needs-a-category entry takes (proto v33).
+public enum UnclassifiedTriageEntryKind: String, Codable, Equatable, Sendable {
+    /// Answered with `SetApplicationCategory`: every window of the app.
+    case application
+    /// Answered with `SetSiteCategory`: every page of the site, in every
+    /// browser.
+    case site
+}
+
+/// One application or site Velvt observed but could not categorize.
 ///
 /// Facts only: how long it was on screen and how many times it was seen. No
 /// category, no guess, and no total presented as a score.
 public struct UnclassifiedTriageEntry: Codable, Equatable, Sendable, Identifiable {
-    /// The app-scoped correction key, returned verbatim in
-    /// `SetApplicationCategory`.
-    public let appStableID: String
-    /// The device-local name Velvt already holds. Display text only; never
-    /// forwarded off the device.
-    public let displayName: String
+    public let kind: UnclassifiedTriageEntryKind
+    /// The salted application or site key, returned verbatim as
+    /// `SetApplicationCategory.appStableID` or `SetSiteCategory.siteStableID`.
+    public let stableID: String
+    /// Display text only, never forwarded off the device. For an application,
+    /// the device-local name Velvt holds, or `nil` when it holds none. For a
+    /// site, its hostname.
+    public let displayName: String?
     public let secondsObserved: Int
     public let eventCount: Int
 
-    public var id: String { appStableID }
+    /// The two key domains cannot collide, and the kind keeps them apart
+    /// anyway, as the service's own ledger does.
+    public var id: String { "\(kind.rawValue):\(stableID)" }
 
     public init(
-        appStableID: String,
-        displayName: String,
+        kind: UnclassifiedTriageEntryKind,
+        stableID: String,
+        displayName: String?,
         secondsObserved: Int,
         eventCount: Int
     ) {
-        self.appStableID = appStableID
+        self.kind = kind
+        self.stableID = stableID
         self.displayName = displayName
         self.secondsObserved = secondsObserved
         self.eventCount = eventCount
     }
 
-    /// `app_stable_id` is the entry's only identifier, as in the Rust type and
-    /// `proto/schema/unclassified_triage.json`: Rust looks the bundle identity up
-    /// itself when `SetApplicationCategory` comes back, so none crosses the socket.
+    /// `stable_id` is the entry's only identifier, as in the Rust type and
+    /// `proto/schema/unclassified_triage.json`: Rust looks an application's
+    /// bundle identity up itself when `SetApplicationCategory` comes back, so
+    /// none crosses the socket.
     private enum CodingKeys: String, CodingKey {
-        case appStableID = "app_stable_id"
+        case kind
+        case stableID = "stable_id"
         case displayName = "display_name"
         case secondsObserved = "seconds_observed"
         case eventCount = "event_count"
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(UnclassifiedTriageEntryKind.self, forKey: .kind)
+        stableID = try container.decode(String.self, forKey: .stableID)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        secondsObserved = try container.decode(Int.self, forKey: .secondsObserved)
+        eventCount = try container.decode(Int.self, forKey: .eventCount)
+    }
+
+    /// `display_name` is required and nullable in the schema, so a missing
+    /// name is written as `null` rather than left out.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(stableID, forKey: .stableID)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encode(secondsObserved, forKey: .secondsObserved)
+        try container.encode(eventCount, forKey: .eventCount)
+    }
 }
 
-/// The bounded list of applications Velvt could not read in the window.
-/// An empty list is the good state.
+/// The bounded list of applications and sites Velvt could not categorize in
+/// the window. An empty list is the good state.
 public struct UnclassifiedTriage: Codable, Equatable, Sendable {
-    /// Ranked by observed time, longest first. The service caps and floors the
-    /// list; the client renders what it is given.
+    /// Ranked by observed time, longest first, then applications ahead of
+    /// sites. The service caps and floors the list; the client renders what it
+    /// is given.
     public let entries: [UnclassifiedTriageEntry]
     /// The window the entries were actually computed over, after clamping.
     public let windowDays: Int
@@ -1575,6 +1650,186 @@ public struct SetApplicationCategory: Codable, Equatable, Sendable {
         try container.encode(appStableID, forKey: .appStableID)
         try container.encode(category, forKey: .category)
         try container.encodeIfPresent(activityName, forKey: .activityName)
+    }
+}
+
+/// Teaches Velvt what one site is, on every page and in every browser
+/// (proto v33).
+///
+/// Carries the site's key and never its hostname: Velvt keeps a hostname only
+/// in the service's `local_site_name`, and deletes it once the site is taught.
+/// A hostname sent back as `activityName` would be a second stored copy.
+public struct SetSiteCategory: Codable, Equatable, Sendable {
+    /// The site key, exactly as `UnclassifiedTriageEntry` reported it.
+    public let siteStableID: String
+    public let category: String
+    /// A device-local name the user typed for the site. Never the hostname,
+    /// never uploaded, never logged.
+    public let activityName: String?
+
+    public init(siteStableID: String, category: String, activityName: String? = nil) {
+        self.siteStableID = siteStableID
+        self.category = category
+        self.activityName = activityName
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case category
+        case siteStableID = "site_stable_id"
+        case activityName = "activity_name"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        siteStableID = try container.decode(String.self, forKey: .siteStableID)
+        category = try container.decode(String.self, forKey: .category)
+        activityName = try container.decodeIfPresent(String.self, forKey: .activityName)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(siteStableID, forKey: .siteStableID)
+        try container.encode(category, forKey: .category)
+        try container.encodeIfPresent(activityName, forKey: .activityName)
+    }
+}
+
+/// Asks the deterministic needs-a-category policy for its card and, at most
+/// once a local day, its reminder (proto v33). Every gate is Rust's; Swift
+/// supplies only its UTC offset so Rust can tell which local day it is.
+public struct RequestCategoryPrompt: Codable, Equatable, Sendable {
+    /// The offsets the schema accepts, in seconds: UTC-18:00 to UTC+18:00.
+    public static let utcOffsetRange = -64_800...64_800
+
+    public let utcOffsetSeconds: Int
+
+    public init(utcOffsetSeconds: Int) {
+        self.utcOffsetSeconds = min(
+            max(utcOffsetSeconds, Self.utcOffsetRange.lowerBound),
+            Self.utcOffsetRange.upperBound
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case utcOffsetSeconds = "utc_offset_seconds"
+    }
+}
+
+/// The needs-a-category card, written in Rust. Counts only: no application
+/// name, hostname or time is representable. Swift renders it verbatim.
+public struct CategoryPromptCard: Codable, Equatable, Sendable {
+    public let title: String
+    public let body: String
+    /// Opens the needs-a-category list; answered as `opened`.
+    public let primaryAction: String
+    /// Closes the card; answered as `not_now`.
+    public let secondaryAction: String
+    public let entryCount: Int
+
+    public init(
+        title: String,
+        body: String,
+        primaryAction: String,
+        secondaryAction: String,
+        entryCount: Int
+    ) {
+        self.title = title
+        self.body = body
+        self.primaryAction = primaryAction
+        self.secondaryAction = secondaryAction
+        self.entryCount = entryCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title, body
+        case primaryAction = "primary_action"
+        case secondaryAction = "secondary_action"
+        case entryCount = "entry_count"
+    }
+}
+
+/// The needs-a-category reminder, written in Rust from counts alone, because
+/// macOS Notification Center keeps a notification's text. Posted verbatim.
+public struct CategoryPromptNotification: Codable, Equatable, Sendable {
+    public let title: String
+    public let body: String
+
+    public init(title: String, body: String) {
+        self.title = title
+        self.body = body
+    }
+}
+
+/// The service's answer to `RequestCategoryPrompt` and to
+/// `AcknowledgeCategoryPrompt` (proto v33).
+///
+/// An empty payload means no card: the client hides any card it holds. A
+/// `notification` is handed over once and is consumed whether or not the
+/// client posts it.
+public struct CategoryPrompt: Codable, Equatable, Sendable {
+    /// The card's id: random, the same while the entries the card counts stay
+    /// the same, and drawn again when they change. Present exactly when
+    /// `card` is; sent back in `AcknowledgeCategoryPrompt`.
+    public let promptID: String?
+    public let card: CategoryPromptCard?
+    public let notification: CategoryPromptNotification?
+
+    public init(
+        promptID: String? = nil,
+        card: CategoryPromptCard? = nil,
+        notification: CategoryPromptNotification? = nil
+    ) {
+        self.promptID = promptID
+        self.card = card
+        self.notification = notification
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case card, notification
+        case promptID = "prompt_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        promptID = try container.decodeIfPresent(String.self, forKey: .promptID)
+        card = try container.decodeIfPresent(CategoryPromptCard.self, forKey: .card)
+        notification = try container.decodeIfPresent(
+            CategoryPromptNotification.self, forKey: .notification)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(promptID, forKey: .promptID)
+        try container.encodeIfPresent(card, forKey: .card)
+        try container.encodeIfPresent(notification, forKey: .notification)
+    }
+}
+
+/// How the needs-a-category card was answered.
+public enum CategoryPromptResponse: String, Codable, Equatable, Sendable {
+    /// The list was opened, from the card or from the reminder.
+    case opened
+    /// The card was closed.
+    case notNow = "not_now"
+}
+
+/// The answer to the needs-a-category card `promptID` (proto v33). Either
+/// response answers every entry that card covered, so the card stays away
+/// until an entry no answer has reached is among those it would count;
+/// `opened` also ends a run of unopened reminders. Answering only ever reduces
+/// what Velvt asks.
+public struct AcknowledgeCategoryPrompt: Codable, Equatable, Sendable {
+    public let promptID: String
+    public let response: CategoryPromptResponse
+
+    public init(promptID: String, response: CategoryPromptResponse) {
+        self.promptID = promptID
+        self.response = response
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case response
+        case promptID = "prompt_id"
     }
 }
 

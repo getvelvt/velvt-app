@@ -180,9 +180,16 @@ fn has_type(value: &Value, kind: &str) -> bool {
     }
 }
 
-/// The three patterns `proto/schema/` uses, checked without a regex crate.
+/// The patterns `proto/schema/` uses, checked without a regex crate.
 fn matches_known_pattern(pattern: &str, text: &str) -> bool {
     match pattern {
+        // A salted key or a card id: 64 lowercase hex digits (protocol 33).
+        r"^[0-9a-f]{64}$" => {
+            text.len() == 64
+                && text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }
         r"^\d{4}-\d{2}-\d{2}$" => {
             let bytes = text.as_bytes();
             bytes.len() == 10

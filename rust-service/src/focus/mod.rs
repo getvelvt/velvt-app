@@ -212,13 +212,23 @@ impl FocusManager {
     /// instant. An unset window or an unknown UTC offset is not quiet hours:
     /// absence of configuration never suppresses anything.
     fn quiet_hours_remaining_minutes(&self, now: DateTime<Utc>) -> Option<u32> {
-        let Ok(Some(quiet_hours)) = self.repo.quiet_hours() else {
-            return None;
-        };
         let Ok(Some(offset_seconds)) = self.repo.utc_offset_seconds() else {
             return None;
         };
-        let local = to_local(now, offset_seconds);
+        self.quiet_hours_remaining_minutes_at(now, offset_seconds)
+    }
+
+    /// [`Self::quiet_hours_remaining_minutes`] at a UTC offset the caller
+    /// supplies, clamped as a reported offset is.
+    fn quiet_hours_remaining_minutes_at(
+        &self,
+        now: DateTime<Utc>,
+        utc_offset_seconds: i32,
+    ) -> Option<u32> {
+        let Ok(Some(quiet_hours)) = self.repo.quiet_hours() else {
+            return None;
+        };
+        let local = to_local(now, utc_offset_seconds.clamp(-64_800, 64_800));
         let minutes = local.hour() * 60 + local.minute();
         let start = quiet_hours.start_local_minutes;
         let end = quiet_hours.end_local_minutes;
@@ -243,6 +253,16 @@ impl FocusManager {
     /// anything.
     pub fn in_velvt_quiet_hours(&self, now: DateTime<Utc>) -> bool {
         self.quiet_hours_remaining_minutes(now).is_some()
+    }
+
+    /// [`Self::in_velvt_quiet_hours`] at the UTC offset a request carries
+    /// rather than the stored one. The stored offset is written only with a
+    /// Focus transition, so it is missing after Clear Local Work Blocks and
+    /// stale after a time-zone or daylight-saving change until the next one;
+    /// a caller that holds a fresh offset should not be answered with it.
+    pub fn in_velvt_quiet_hours_at(&self, now: DateTime<Utc>, utc_offset_seconds: i32) -> bool {
+        self.quiet_hours_remaining_minutes_at(now, utc_offset_seconds)
+            .is_some()
     }
 
     /// The instant the quiet window containing `now` closes, or `None` when
@@ -488,12 +508,37 @@ mod tests {
         }
     }
 
+    /// The offset a request carries answers where the stored one cannot:
+    /// after Clear Local Work Blocks there is no stored offset, and after a
+    /// time-zone change with no Focus transition since, the stored one is
+    /// wrong. An offset past any real zone is clamped.
+    #[test]
+    fn quiet_hours_at_a_supplied_offset_do_not_need_the_stored_one() {
+        let (manager, _repo) = manager_with_repo();
+        for back in [3, 2, 1] {
+            late_night_dnd(&manager, back);
+        }
+        manager.respond_to_offer(true, at(60)).unwrap();
+        let late = at(hours(15) + 30 * 60);
+        assert!(manager.in_velvt_quiet_hours(late));
+
+        manager.clear_evidence().unwrap();
+        assert!(!manager.in_velvt_quiet_hours(late), "no stored offset");
+        assert!(manager.in_velvt_quiet_hours_at(late, 0));
+        assert!(!manager.in_velvt_quiet_hours_at(at(0), 0));
+        // 08:00Z is 23:00 at UTC-9.
+        assert!(manager.in_velvt_quiet_hours_at(at(0), -9 * 3_600));
+        // Clamped to UTC+18: 08:00Z is 02:00 the next day.
+        assert!(manager.in_velvt_quiet_hours_at(at(0), i32::MAX));
+    }
+
     /// A user who never configured quiet hours is never deferred.
     #[test]
     fn quiet_hours_end_is_none_when_unconfigured() {
         let (manager, _repo) = manager_with_repo();
         assert_eq!(manager.quiet_hours_end(at(hours(15) + 30 * 60)), None);
         assert!(!manager.in_velvt_quiet_hours(at(hours(15) + 30 * 60)));
+        assert!(!manager.in_velvt_quiet_hours_at(at(hours(15) + 30 * 60), 0));
     }
 
     #[test]

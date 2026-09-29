@@ -7,9 +7,13 @@ Velvt requests exactly two macOS permissions:
 1. **Accessibility** allows the client to detect which application and window
    are focused. It does not grant Velvt screen recording, microphone, camera,
    contacts, location, or filesystem access.
-2. **Notifications** allow the client to deliver daily insights supplied by the
-   Rust service. Denying notifications does not disable collection or prevent
-   insights from appearing in the menu bar popover.
+2. **Notifications** allow the client to post the three kinds of notification
+   the Rust service decides and words: the drift offer inside a work block, the
+   daily insight, and the needs-a-category reminder (at most one a day, never
+   during a work block, counts only). Denying notifications does not disable
+   collection or prevent any of them from appearing in the menu bar popover.
+   The needs-a-category reminder is posted only when notifications are already
+   allowed; it never triggers a permission request.
 
 `PermissionType` is the exhaustive compile-time permission allowlist. Adding a
 case requires explicit PR review. Swift extensions cannot add enum cases, so a
@@ -58,11 +62,17 @@ To recover:
 ## Notification Denial
 
 Notification status checks use `getNotificationSettings()`. First-run
-onboarding does not request notification authorization; the optional request is
-deferred until the user enables notifications from the live product flow.
-Once a request returns denied, `PermissionManager` guards against calling
-`requestAuthorization` again. The app remains functional and displays insights
-in the menu bar.
+onboarding has a notification stage (`NotificationPermissionExperienceView`)
+that names all three kinds and asks once, and can be skipped. A drift offer or
+a daily insight that arrives while the status is still undetermined asks once
+more, at the moment there is something to show. The needs-a-category reminder
+never asks: it is posted only when notifications are already allowed.
+(Corrected 2026-09-27: this said onboarding never asked, which stopped being
+true when the notification stage was added.) Once a request returns denied,
+`PermissionManager` guards against calling `requestAuthorization` again. The
+app remains functional: the drift offer, the insight and the needs-a-category
+card all still appear in the menu bar window, and a notice there says that
+notifications are off.
 
 ## Adding A Permission
 

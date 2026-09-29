@@ -752,6 +752,13 @@ enum QueuedEventPresentation {
         if let localLabel = correction.localLabel?.nilIfBlank {
             return localLabel
         }
+        // A site rule's only name is one the person typed. The hostname was
+        // deleted when the site was taught, and its event label names a
+        // category rather than the site, so it would read as the rule's
+        // answer instead of its subject.
+        if correction.scope == .site {
+            return unnamedSite
+        }
         let component =
             correction.label.split(separator: ":", maxSplits: 1).last.map(String.init)
             ?? correction.label
@@ -764,6 +771,26 @@ enum QueuedEventPresentation {
 
     static func category(_ correction: ClassificationCorrectionSummary) -> String {
         category(correction.category)
+    }
+
+    /// What a needs-a-category row calls an application Velvt holds no name
+    /// for. Display text only: it is never sent back as a rule name.
+    static let unnamedApplication = "Unnamed application"
+
+    /// What a site rule is called when nobody typed a name for it.
+    static let unnamedSite = "Unnamed site"
+
+    /// The name a needs-a-category row shows: an application's local name, or
+    /// a site's hostname.
+    static func name(of entry: UnclassifiedTriageEntry) -> String {
+        if let name = entry.displayName?.nilIfBlank {
+            return name
+        }
+        switch entry.kind {
+        case .application: return unnamedApplication
+        // The service always names a site; this is only the floor.
+        case .site: return unnamedSite
+        }
     }
 
     static func category(_ value: String) -> String {
@@ -908,7 +935,7 @@ private struct ClassificationCorrectionHistoryRow: View {
         self.correction = correction
         self.onSave = onSave
         self.onUndo = onUndo
-        _activityName = State(initialValue: QueuedEventPresentation.activity(correction))
+        _activityName = State(initialValue: CorrectionScopePresentation.editableName(for: correction))
         _category = State(initialValue: correction.category)
     }
 
@@ -928,13 +955,13 @@ private struct ClassificationCorrectionHistoryRow: View {
                     )
                     .font(VelvtType.caption(10))
                     .foregroundStyle(VelvtInk.tertiaryOnInk)
-                    // Spelled out for app rules only. Window scope is what
-                    // every rule was before protocol 30 and the chip says it
-                    // plainly; an app rule reaching windows the user never
-                    // touched is the part that reads as a malfunction unless
-                    // the row admits it.
-                    if correction.scope == .app {
-                        Text(Self.reach(of: correction.scope))
+                    // Spelled out for app and site rules only. Window scope
+                    // is what every rule was before protocol 30 and the chip
+                    // says it plainly; a rule reaching windows or pages the
+                    // user never touched is the part that reads as a
+                    // malfunction unless the row admits it.
+                    if correction.scope != .window {
+                        Text(CorrectionScopePresentation.reach(of: correction.scope))
                             .font(VelvtType.caption(10))
                             .foregroundStyle(VelvtInk.tertiaryOnInk)
                             .fixedSize(horizontal: false, vertical: true)
@@ -950,12 +977,12 @@ private struct ClassificationCorrectionHistoryRow: View {
                 // the client does not need to, and an app rule taught from the
                 // triage list is removable from exactly the same place as a
                 // window rule. Until protocol 30 nothing could delete one.
-                Button(Self.removalLabel(for: correction.scope), action: onUndo)
+                Button(CorrectionScopePresentation.removalLabel(for: correction.scope), action: onUndo)
                     .buttonStyle(.plain)
                     .font(VelvtType.body(10.5))
                     .foregroundStyle(VelvtInk.labelOnInk)
                     .accessibilityLabel(
-                        "\(Self.removalLabel(for: correction.scope)) the rule for "
+                        "\(CorrectionScopePresentation.removalLabel(for: correction.scope)) the rule for "
                             + QueuedEventPresentation.activity(correction)
                     )
             }
@@ -982,7 +1009,9 @@ private struct ClassificationCorrectionHistoryRow: View {
                     .buttonStyle(VelvtPrimaryButtonStyle())
                     .controlSize(.small)
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(normalizedName == nil)
+                    // A site rule needs no name: most have none, and the
+                    // hostname is never one.
+                    .disabled(normalizedName == nil && correction.scope != .site)
                 }
             }
         }
@@ -1002,7 +1031,7 @@ private struct ClassificationCorrectionHistoryRow: View {
     /// an app changed had no way to tell that the rule they were reading was
     /// the app rule.
     private var scopeChip: some View {
-        Text(Self.scopeLabel(for: correction.scope))
+        Text(CorrectionScopePresentation.scopeLabel(for: correction.scope))
             .font(VelvtType.label(9))
             .tracking(VelvtType.labelTracking)
             .foregroundStyle(VelvtInk.labelOnInk)
@@ -1012,31 +1041,47 @@ private struct ClassificationCorrectionHistoryRow: View {
                 RoundedRectangle(cornerRadius: VelvtMetrics.chipRadius, style: .continuous)
                     .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
             )
-            .accessibilityLabel(Self.reach(of: correction.scope))
+            .accessibilityLabel(CorrectionScopePresentation.reach(of: correction.scope))
     }
+}
 
-    fileprivate static func scopeLabel(for scope: CorrectionScope) -> String {
+/// How a saved rule's scope is said: the chip, the sentence, and the word for
+/// taking it away. Internal so the words can be asserted.
+enum CorrectionScopePresentation {
+    static func scopeLabel(for scope: CorrectionScope) -> String {
         switch scope {
         case .window: return "THIS WINDOW"
         case .app: return "THIS APP"
+        case .site: return "THIS SITE"
         }
     }
 
     /// What the rule actually covers, in a sentence.
-    fileprivate static func reach(of scope: CorrectionScope) -> String {
+    static func reach(of scope: CorrectionScope) -> String {
         switch scope {
         case .window: return "Applies to this window only."
         case .app: return "Applies to every window of this app."
+        case .site: return "Applies to every page of this site, in every browser."
         }
     }
 
     /// "Undo" is the right word for a correction the user made to a moment.
-    /// An app rule was never a correction of anything — it is something they
-    /// taught Velvt — so undoing it is removing it.
-    fileprivate static func removalLabel(for scope: CorrectionScope) -> String {
+    /// An app or site rule was never a correction of anything — it is
+    /// something they taught Velvt — so undoing it is removing it.
+    static func removalLabel(for scope: CorrectionScope) -> String {
         switch scope {
         case .window: return "Undo"
-        case .app: return "Remove"
+        case .app, .site: return "Remove"
+        }
+    }
+
+    /// What a rule's name field starts with when it is edited. A site rule
+    /// starts with the name the person typed, or empty: the placeholder its
+    /// row shows is not a name, and saved back it would become one.
+    static func editableName(for correction: ClassificationCorrectionSummary) -> String {
+        switch correction.scope {
+        case .site: return correction.localLabel?.nilIfBlank ?? ""
+        case .window, .app: return QueuedEventPresentation.activity(correction)
         }
     }
 }
@@ -1416,7 +1461,9 @@ public enum MenuBarMotionPolicy {
 enum SettingsSubmenu: CaseIterable, Hashable, Identifiable {
     case appInfo
     /// The correction workbench. Named for what a person does here, not for
-    /// the upload queue it also happens to list.
+    /// the upload queue it also happens to list. It leads with the
+    /// needs-a-category list, which is where the card and the reminder send
+    /// people.
     case teachApps
     case collectionSettings
     case onboarding
@@ -1427,7 +1474,7 @@ enum SettingsSubmenu: CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .appInfo: return "App Info"
-        case .teachApps: return "Teach Velvt Your Apps"
+        case .teachApps: return "Apps & Sites"
         case .collectionSettings: return "Collection Settings"
         case .onboarding: return "Onboarding & Tour"
         #if DEBUG
@@ -1456,8 +1503,10 @@ enum SettingsPaneMode: Equatable {
 /// The Settings pane's layout rule, pulled out of the view so the widths can
 /// be asserted rather than eyeballed.
 enum SettingsPaneLayout {
-    /// Fits "Teach Velvt Your Apps" — the longest destination title — on one
-    /// line at `.caption`, with the room a sidebar row insets away.
+    /// Fits "Collection Settings" — the longest destination title since
+    /// "Teach Velvt Your Apps" became "Apps & Sites" — on one line at
+    /// `.caption`, with the room a sidebar row insets away. Kept at the width
+    /// the longer title needed, so no destination's detail moved.
     static let listWidth: CGFloat = 164
 
     /// The width every destination was already laid out for: the width of the
@@ -1546,6 +1595,49 @@ public struct MenuBarPopoverNavigator {
 
     public mutating func resetForPopoverOpening() {
         selectedWorkspaceTab = .workBlock
+    }
+
+    /// An opening lands on Now, unless a Settings destination was asked for
+    /// before the panel opened, which the reset must not wipe. Returns the
+    /// destination to select, if any.
+    ///
+    /// This is the one place the reset and the request meet, in that order.
+    /// Applied any earlier, a request is undone by the reset of the opening
+    /// it asked for.
+    mutating func resetForPopoverOpening(requested destination: SettingsSubmenu?) -> SettingsSubmenu? {
+        resetForPopoverOpening()
+        guard let destination else { return nil }
+        showSettings()
+        return destination
+    }
+}
+
+/// A Settings destination the panel has been asked to open on, from outside
+/// it: the needs-a-category reminder's tap (protocol 33).
+///
+/// Opening the panel resets it to the Now tab and clears Settings
+/// (`popoverWillOpen`), which is right for every other opening and would
+/// swallow this one. So a request for a closed panel is held until that
+/// opening's reset has run, and taken after it; a request for a panel that is
+/// already open, which no opening will reset, is delivered at once.
+public final class MenuBarDestinationRequests {
+    private(set) var pending: SettingsSubmenu?
+    /// Fires for a request the open panel should take now.
+    let deliverNow = PassthroughSubject<Void, Never>()
+
+    public init() {}
+
+    func request(_ destination: SettingsSubmenu, panelIsOpen: Bool) {
+        pending = destination
+        if panelIsOpen {
+            deliverNow.send()
+        }
+    }
+
+    /// The pending destination, once.
+    func take() -> SettingsSubmenu? {
+        defer { pending = nil }
+        return pending
     }
 }
 
@@ -1678,6 +1770,8 @@ public struct MenuBarPopoverView: View {
     @ObservedObject private var collectionSettings: CollectionSettingsModel
     @ObservedObject private var workBlockCoordinator: WorkBlockCoordinator
     @ObservedObject private var localDashboardCoordinator: LocalDashboardCoordinator
+    private let categoryPromptCoordinator: CategoryPromptCoordinator?
+    private let destinationRequests: MenuBarDestinationRequests
     private let accountStateManager: AccountStateManager?
     private let ipcClient: (any IPCClientProtocol)?
     private let menuStatusViewModel: MenuStatusViewModel?
@@ -1715,6 +1809,8 @@ public struct MenuBarPopoverView: View {
         collectionSettings: CollectionSettingsModel = CollectionSettingsModel(),
         workBlockCoordinator: WorkBlockCoordinator? = nil,
         localDashboardCoordinator: LocalDashboardCoordinator? = nil,
+        categoryPromptCoordinator: CategoryPromptCoordinator? = nil,
+        destinationRequests: MenuBarDestinationRequests = MenuBarDestinationRequests(),
         accountStateManager: AccountStateManager? = nil,
         ipcClient: (any IPCClientProtocol)? = nil,
         menuStatusViewModel: MenuStatusViewModel? = nil,
@@ -1743,6 +1839,8 @@ public struct MenuBarPopoverView: View {
         self.localDashboardCoordinator =
             localDashboardCoordinator
             ?? LocalDashboardCoordinator(ipcClient: UnavailableLocalDashboardIPCClient())
+        self.categoryPromptCoordinator = categoryPromptCoordinator
+        self.destinationRequests = destinationRequests
         self.accountStateManager = accountStateManager
         self.ipcClient = ipcClient
         self.menuStatusViewModel = menuStatusViewModel
@@ -1838,7 +1936,12 @@ public struct MenuBarPopoverView: View {
         }
         .onReceive(popoverWillOpen) {
             clearSettingsSelection()
-            navigator.resetForPopoverOpening()
+            selectedSettingsDestination = navigator.resetForPopoverOpening(
+                requested: destinationRequests.take())
+        }
+        .onReceive(destinationRequests.deliverNow) {
+            guard let destination = destinationRequests.take() else { return }
+            showSettingsDestination(destination)
         }
         // The app re-checks notifications when it becomes active, but clicking
         // this panel does not activate the app, and coming back from System
@@ -2066,6 +2169,16 @@ public struct MenuBarPopoverView: View {
                 coordinator: workBlockCoordinator,
                 surfaceIsOnScreen: panelIsOnScreen
             )
+            // Beside the invitation and for the same reason: a card that asks
+            // for something is useless on a tab nobody opens. It hides itself
+            // while a block is active or paused.
+            if let categoryPromptCoordinator {
+                CategoryPromptCardView(
+                    coordinator: categoryPromptCoordinator,
+                    workBlockCoordinator: workBlockCoordinator,
+                    onOpen: { showSettingsDestination(.teachApps) }
+                )
+            }
             switch navigator.selectedWorkspaceTab {
             case .workBlock:
                 MinimalDashboardWorkspaceView(
@@ -2852,6 +2965,11 @@ public struct MenuBarPopoverView: View {
         selectedSettingsDestination = nil
     }
 
+    private func showSettingsDestination(_ destination: SettingsSubmenu) {
+        navigator.showSettings()
+        selectedSettingsDestination = destination
+    }
+
     private func runDebugInsightSimulation() {
         guard let simulateNotification else { return }
         debugInsightStatus = "Preparing simulated insight…"
@@ -2957,18 +3075,18 @@ public struct MenuBarPopoverView: View {
 /// whether the user ever saw the acknowledgement for the correction they just
 /// made came down to whether an event happened to be captured inside that
 /// window. Taking the model non-optionally here restores the subscription.
-/// The applications Velvt could not read, each one a single answer away from
-/// being understood from now on.
+/// The applications and sites Velvt could not categorize, each one a single
+/// answer away from being understood from now on.
 ///
 /// The rest of this destination corrects a *moment* Velvt got wrong. This
-/// corrects the reason it got it wrong, once, for the whole application —
-/// which is the difference between teaching that scales and teaching that
-/// never ends.
+/// corrects the reason it got it wrong, once, for the whole application or the
+/// whole site — which is the difference between teaching that scales and
+/// teaching that never ends.
 ///
 /// Nothing here is a total and nothing here is a score. The list is the work
 /// Velvt has not done yet, so an empty list is the finished state and the copy
 /// says so in those terms rather than reporting a nothing.
-struct UnclassifiedAppTriageSection: View {
+struct UnclassifiedTriageSection: View {
     @ObservedObject var menuStatus: MenuStatusViewModel
 
     /// The most rows this section will draw.
@@ -2979,21 +3097,35 @@ struct UnclassifiedAppTriageSection: View {
     /// turn a task back into an inventory.
     static let maximumRows = 8
 
-    /// Contract § 5, verbatim, except that one application is "app".
-    ///
-    /// The template is `{n} apps`; rendering "1 apps" would read as a bug in
-    /// the very sentence that asks the user for help, so the singular is
-    /// spelled and nothing else about the line changes.
-    static func headline(appCount: Int) -> String {
-        "Velvt could not read \(appCount) \(appCount == 1 ? "app" : "apps") you used this week."
+    /// Contract § 5, verbatim: "{counts} you used this week don't have a
+    /// category yet.", where a list of one "doesn't".
+    static func headline(for entries: [UnclassifiedTriageEntry]) -> String {
+        let sites = entries.filter { $0.kind == .site }.count
+        let apps = entries.count - sites
+        let verb = entries.count == 1 ? "doesn't" : "don't"
+        return "\(counts(sites: sites, apps: apps)) you used this week \(verb) have a category yet."
+    }
+
+    /// "2 sites and 1 app", "1 site", "3 apps": sites first, as the service's
+    /// card and reminder say it.
+    static func counts(sites: Int, apps: Int) -> String {
+        let siteCount = "\(sites) \(sites == 1 ? "site" : "sites")"
+        let appCount = "\(apps) \(apps == 1 ? "app" : "apps")"
+        switch (sites, apps) {
+        case (0, _): return appCount
+        case (_, 0): return siteCount
+        default: return "\(siteCount) and \(appCount)"
+        }
     }
 
     /// Contract § 5, verbatim.
-    static let invitationCopy = "Tell it what they are and it will know from now on."
+    static let invitationCopy =
+        "Choose once and it covers every page of a site, in every browser, and every window of an app."
 
-    /// The good state, said as one: what Velvt *can* do, not a count of zero.
-    static let emptyCopy =
-        "Velvt could read every app you used this week. There is nothing here to teach it."
+    /// The good state, said as one: what is done, not a count of zero. Only
+    /// as much as the list checks: it lists what was used for five minutes or
+    /// more (the service's floor), so a shorter visit is not vouched for.
+    static let emptyCopy = "Nothing you used for five minutes or more this week needs a category."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -3021,8 +3153,8 @@ struct UnclassifiedAppTriageSection: View {
     @ViewBuilder
     private var content: some View {
         if let triageError = menuStatus.triageError {
-            // A failure must not borrow the empty state's sentence: "Velvt
-            // could read every app" would be a claim the service just said it
+            // A failure must not borrow the empty state's sentence: "nothing
+            // needs a category" would be a claim the service just said it
             // could not make.
             Text(triageError)
                 .font(VelvtType.body(11))
@@ -3045,7 +3177,7 @@ struct UnclassifiedAppTriageSection: View {
         } else {
             // Not an empty list and not an error: the question has been asked
             // and not yet answered.
-            Text("Checking which apps Velvt could not read…")
+            Text("Checking which apps and sites need a category…")
                 .font(VelvtType.caption(10))
                 .foregroundStyle(VelvtInk.tertiaryOnInk)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3055,7 +3187,7 @@ struct UnclassifiedAppTriageSection: View {
     private func rows(_ entries: [UnclassifiedTriageEntry]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(Self.headline(appCount: entries.count))
+                Text(Self.headline(for: entries))
                     .font(VelvtType.bodyEmphasis(12))
                     .foregroundStyle(VelvtInk.primaryOnInk)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3069,22 +3201,22 @@ struct UnclassifiedAppTriageSection: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(entries) { entry in
-                    UnclassifiedAppTriageRow(
+                    UnclassifiedTriageRow(
                         entry: entry,
                         onTeach: { category in
-                            menuStatus.teachApplication(entry, category: category)
+                            menuStatus.teach(entry, category: category)
                         }
                     )
                 }
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Apps Velvt could not read")
+            .accessibilityLabel("Apps and sites that need a category")
         }
     }
 }
 
-/// One application, the time it was on screen, and the question.
-private struct UnclassifiedAppTriageRow: View {
+/// One application or site, the time it was on screen, and the question.
+private struct UnclassifiedTriageRow: View {
     let entry: UnclassifiedTriageEntry
     let onTeach: (String) -> Void
 
@@ -3092,20 +3224,23 @@ private struct UnclassifiedAppTriageRow: View {
     ///
     /// A `Picker` bound to a real category would arrive pre-answered, and
     /// choosing the value it was already showing fires no change — so the one
-    /// app whose category matched the default would be untappable. An empty
+    /// entry whose category matched the default would be untappable. An empty
     /// tag means "not answered yet", which is also the truth.
     private static let unanswered = ""
 
-    @State private var category = UnclassifiedAppTriageRow.unanswered
+    @State private var category = UnclassifiedTriageRow.unanswered
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(entry.displayName)
-                    .font(VelvtType.bodyEmphasis(11))
-                    .foregroundStyle(VelvtInk.primaryOnInk)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                HStack(spacing: 6) {
+                    Text(name)
+                        .font(VelvtType.bodyEmphasis(11))
+                        .foregroundStyle(VelvtInk.primaryOnInk)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    kindMarker
+                }
                 // Not `VelvtInk.measurementOnInk`: that is signal, which the
                 // palette's own table measures at 4.17:1 on ink and reserves
                 // for large bold type. This duration is 10.5pt.
@@ -3126,7 +3261,7 @@ private struct UnclassifiedAppTriageRow: View {
             .controlSize(.small)
             .font(VelvtType.body(11))
             .frame(maxWidth: 150)
-            .accessibilityLabel("What \(entry.displayName) is")
+            .accessibilityLabel("What \(name) is")
             .onChange(of: category) { value in
                 guard value != Self.unanswered else { return }
                 onTeach(value)
@@ -3135,7 +3270,36 @@ private struct UnclassifiedAppTriageRow: View {
         .padding(.vertical, 3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(entry.displayName), \(observedDescription)")
+        .accessibilityLabel("\(Self.kindLabel(entry.kind)), \(name), \(observedDescription)")
+    }
+
+    /// A site's hostname, or an application's local name. Middle truncation
+    /// keeps both ends of a long hostname, which is where sites differ.
+    private var name: String { QueuedEventPresentation.name(of: entry) }
+
+    /// Which kind of answer this is, since one list now holds both and they
+    /// reach differently: every page of a site, or every window of an app.
+    private var kindMarker: some View {
+        Text(Self.kindLabel(entry.kind))
+            .font(VelvtType.label(9))
+            .tracking(VelvtType.labelTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(VelvtInk.labelOnInk)
+            .padding(.horizontal, VelvtMetrics.spaceSM)
+            .padding(.vertical, 1)
+            .overlay(
+                RoundedRectangle(cornerRadius: VelvtMetrics.chipRadius, style: .continuous)
+                    .strokeBorder(VelvtSurface.strokeOnInk, lineWidth: VelvtMetrics.hairline)
+            )
+            .fixedSize()
+            .accessibilityHidden(true)
+    }
+
+    static func kindLabel(_ kind: UnclassifiedTriageEntryKind) -> String {
+        switch kind {
+        case .application: return "App"
+        case .site: return "Site"
+        }
     }
 
     /// Facts, in the order they matter: how long, then how often. No share of
@@ -3161,10 +3325,11 @@ struct CorrectionWorkbenchView: View {
                 .padding(.vertical, 12)
             explanation
             // First, because it is the cheapest teaching on the surface: one
-            // answer per application instead of one per event, and it removes
-            // the reason the rows below it need correcting at all.
-            sectionLabel("Apps Velvt could not read")
-            UnclassifiedAppTriageSection(menuStatus: menuStatus)
+            // answer per application or site instead of one per event, and it
+            // removes the reason the rows below it need correcting at all. It
+            // is also where the needs-a-category card and reminder land.
+            sectionLabel("Apps and sites Velvt couldn't categorize")
+            UnclassifiedTriageSection(menuStatus: menuStatus)
 
             Divider().padding(.vertical, 6)
             sectionLabel("Activities on this Mac")
@@ -3276,10 +3441,11 @@ struct CorrectionWorkbenchView: View {
             localDashboard.refresh()
         }
         .confirmationDialog(
-            // Names the apps too: since protocol 30 this also removes every
-            // rule taught from the triage list, and a dialog that only warned
-            // about "corrections" would be understating what the button does.
-            "Reset every correction and every app you have taught Velvt on this Mac?",
+            // Names the apps and sites too: since protocol 30 this also removes
+            // every rule taught from the triage list, and since protocol 33
+            // every site rule, and a dialog that only warned about
+            // "corrections" would be understating what the button does.
+            "Reset every correction and every app and site you have taught Velvt on this Mac?",
             isPresented: $confirmsReset,
             titleVisibility: .visible
         ) {

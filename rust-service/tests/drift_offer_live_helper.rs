@@ -166,7 +166,7 @@ impl Connection {
             panic!("the first frame is server_hello");
         };
         assert_eq!(hello.protocol_version, PROTOCOL_VERSION);
-        assert_eq!(PROTOCOL_VERSION, 32);
+        assert_eq!(PROTOCOL_VERSION, 33);
         self.send(&ClientMessage::ClientHello(ClientHello {
             expected_protocol_version: PROTOCOL_VERSION,
             client_version: "live-helper-test".into(),

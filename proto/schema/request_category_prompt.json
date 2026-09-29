@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Local IPC only. Direction: Swift to Rust. Asks the deterministic, versioned needs-a-category policy for the card and at most one reminder a local day. Carries only the client's UTC offset, so Rust can tell which local day it is and read Velvt's quiet hours at it rather than at an offset it stored earlier; every gate (active or paused work block, Velvt quiet hours, macOS Focus, the daily cap, only-something-new, the reminder backoff) is owned and enforced in Rust. Always answered with category_prompt.",
+  "title": "RequestCategoryPrompt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "payload"],
+  "properties": {
+    "type": { "const": "request_category_prompt" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["utc_offset_seconds"],
+      "properties": {
+        "utc_offset_seconds": {
+          "type": "integer",
+          "minimum": -64800,
+          "maximum": 64800
+        }
+      }
+    }
+  }
+}

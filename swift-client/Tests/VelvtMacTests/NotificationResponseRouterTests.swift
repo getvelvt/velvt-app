@@ -20,6 +20,43 @@ final class NotificationResponseRouterTests: XCTestCase {
         XCTAssertEqual(scrolledDate, "2026-06-10")
     }
 
+    /// The needs-a-category reminder opens the list it is about, which is not
+    /// where a plain opening lands, and has no insight date to scroll to.
+    func testHandleOpensTheNeedsACategoryListForTheReminder() {
+        var openedPopover = false
+        var openedList = 0
+        let sut = NotificationResponseRouter(
+            openPopover: { openedPopover = true },
+            scrollToDate: ScrollToDateAction { _ in XCTFail("should not scroll") },
+            openNeedsACategory: { openedList += 1 }
+        )
+
+        sut.handle(userInfo: [categoryPromptNotificationUserInfoKey: true])
+
+        XCTAssertEqual(openedList, 1)
+        XCTAssertFalse(openedPopover)
+    }
+
+    func testTheOtherTwoKindsNeverOpenTheNeedsACategoryList() {
+        let sut = NotificationResponseRouter(
+            openPopover: {},
+            scrollToDate: ScrollToDateAction { _ in },
+            openNeedsACategory: { XCTFail("only the reminder opens the list") }
+        )
+
+        sut.handle(userInfo: [interventionNotificationUserInfoKey: true])
+        sut.handle(userInfo: ["insight_date": "2026-06-10"])
+        sut.handle(userInfo: [:])
+    }
+
+    func testEachKindIsToldApartByItsMarker() {
+        XCTAssertEqual(
+            NotificationResponseRouter.surface(of: [interventionNotificationUserInfoKey: true]), .driftOffer)
+        XCTAssertEqual(
+            NotificationResponseRouter.surface(of: [categoryPromptNotificationUserInfoKey: true]), .categoryPrompt)
+        XCTAssertEqual(NotificationResponseRouter.surface(of: ["insight_date": "2026-06-10"]), .dailyInsight)
+    }
+
     func testHandleIgnoresUserInfoMissingInsightDate() {
         var openedPopover = false
         let sut = NotificationResponseRouter(
@@ -58,7 +95,7 @@ final class NotificationResponseRouterTests: XCTestCase {
             reporter: reporter
         )
 
-        XCTAssertEqual(sut.presentationWhileActive(isDriftOffer: true), [.banner, .list, .sound])
+        XCTAssertEqual(sut.presentationWhileActive(for: .driftOffer), [.banner, .list, .sound])
         XCTAssertEqual(reporter.entries, [.init(outcome: .bannerWhileActive, surface: .driftOffer)])
     }
 
@@ -74,7 +111,7 @@ final class NotificationResponseRouterTests: XCTestCase {
             reporter: reporter
         )
 
-        XCTAssertEqual(sut.presentationWhileActive(isDriftOffer: true), [.list])
+        XCTAssertEqual(sut.presentationWhileActive(for: .driftOffer), [.list])
         XCTAssertEqual(
             reporter.entries, [.init(outcome: .listedBehindVisibleCard, surface: .driftOffer)])
     }
@@ -90,7 +127,21 @@ final class NotificationResponseRouterTests: XCTestCase {
             reporter: reporter
         )
 
-        XCTAssertEqual(sut.presentationWhileActive(isDriftOffer: false), [.banner, .list, .sound])
+        XCTAssertEqual(sut.presentationWhileActive(for: .dailyInsight), [.banner, .list, .sound])
         XCTAssertEqual(reporter.entries, [.init(outcome: .bannerWhileActive, surface: .dailyInsight)])
+    }
+
+    /// The reminder is presented and reported as itself, not as an insight.
+    func testWhileActiveTheReminderIsABannerReportedAsItsOwnSurface() {
+        let reporter = RecordingNotificationDeliveryReporter()
+        let sut = NotificationResponseRouter(
+            openPopover: {},
+            scrollToDate: ScrollToDateAction { _ in },
+            isDriftCardInFront: { true },
+            reporter: reporter
+        )
+
+        XCTAssertEqual(sut.presentationWhileActive(for: .categoryPrompt), [.banner, .list, .sound])
+        XCTAssertEqual(reporter.entries, [.init(outcome: .bannerWhileActive, surface: .categoryPrompt)])
     }
 }

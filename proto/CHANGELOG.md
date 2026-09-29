@@ -1,5 +1,111 @@
 # IPC Protocol Changelog
 
+## Version 33 - 2026-09-27
+
+- `unclassified_triage` now lists browser sites beside applications, as one
+  list. Each entry is `{kind, stable_id, display_name, seconds_observed,
+  event_count}`: `kind` is `application` or `site`, and `stable_id` (64
+  lowercase hex, the salted application or site key) replaces
+  `app_stable_id`. The list is ranked by `seconds_observed`, longest first,
+  then applications ahead of sites, then by `stable_id`, and still holds at
+  most 8 entries of at least 300 seconds over the requested 1 to 14 days. A
+  site is one a browser tab was on that Velvt could not confidently
+  categorize and holds no rule for; its `display_name` is its hostname, read
+  from `local_site_name` (migration 0040).
+- `unclassified_triage.entries[].display_name` is required and nullable. For
+  an application Velvt holds no local name for it is `null`; until now Rust
+  sent the literal `Unnamed application`, the client sent it back as the
+  rule's `activity_name`, and every later window of the application was
+  labelled with it. The client words the row itself and sends no name.
+- Added `set_site_category {site_stable_id, category, activity_name?}` (Swift
+  to Rust), the site-list sibling of `set_application_category`: the rule
+  covers every page of the site in every browser. Validated the same way (64
+  lowercase hex, else `invalid_site_stable_id`; a taxonomy category, else
+  `invalid_classification_category`; a name of 1 to 48 characters with no
+  control characters, else `invalid_local_activity_name`;
+  `classification_correction_unavailable` and
+  `classification_correction_persistence_failed` as for applications).
+  Answered with `menu_status` carrying a Rust-authored
+  `correction_acknowledgment` ("Got it — every page of <the typed name, or
+  this site>, in every browser, counts as <category> from now on."), which
+  never quotes the hostname. Nothing about the site is sent anywhere (the
+  `menu_status` reply may refresh cloud readiness, as any status poll does),
+  and the site's stored hostname is deleted when it is taught.
+- `correction_history_page.items[].scope` and
+  `menu_status.correction_history[].scope` gain `site`. A site rule's
+  `stable_id` is its site key and its `local_label` is only a name the user
+  typed, never the hostname. `remove_classification_override` and
+  `update_classification_override` take a site rule's key as they take a
+  window or app rule's. `remove_classification_override` tries the window
+  rule, then the app rule, then the site rule. `update_classification_override`
+  edits the app rule if one exists for the key, else the site rule, else
+  treats the key as a window rule; an app or site rule that cannot be read
+  counts as absent. An edit of a site rule writes `local_activity_name` as
+  sent, so an edit with none clears the name the rule had.
+- `set_application_category` resolves the application's bundle key by looking
+  it up for that application key, not by searching a 14-day top-8 list, which
+  missed an application the client had been shown on a 7-day list and keyed
+  its rule on the name alone.
+- Added the needs-a-category card and reminder, decided and worded in Rust
+  (`category_prompt`, `CATEGORY_PROMPT_POLICY_VERSION` 1):
+  - `request_category_prompt {utc_offset_seconds}` (Swift to Rust, -64800 to
+    64800) is always answered with `category_prompt {prompt_id?, card?,
+    notification?}` (Rust to Swift). An empty payload means no card. `card`
+    is `{title, body, primary_action, secondary_action, entry_count}` and
+    `notification` is `{title, body}`; `prompt_id` (64 lowercase hex: 32
+    random bytes, kept while the entries the card counts stay the same and
+    drawn again when they change, so it says nothing about any entry) is
+    present exactly when `card` is.
+  - The card counts the first eight entries of the last seven days' list,
+    shows while any of them is unanswered, and never shows while a work block
+    is active or paused. The notification additionally needs: not Velvt's
+    quiet hours at the request's `utc_offset_seconds` (not an offset stored
+    with an earlier Focus transition, which Clear Local Work Blocks removes),
+    macOS Focus not known to be on, no reminder yet on the
+    client's local date, an entry among those eight that no earlier reminder
+    or answer has reached, and no backoff pause (three reminders in a row,
+    each posted within the last 30 days and with no `opened` answer before
+    the next, pause reminders for seven days after the latest). "New" is
+    judged against every entry above the list's floor, not only the eight: a
+    reminder and an answer reach the entries listed below the eight too, so
+    one that moves up into the eight is not new. A notification is claimed
+    in the same transaction that records it and is never handed over twice,
+    whether or not the client posts it.
+  - `acknowledge_category_prompt {prompt_id, response}` (Swift to Rust),
+    `response` `opened` or `not_now`. Either answers every entry that card
+    covered, even when it arrives after the list has moved on, so the card
+    stays away until an entry no answer has reached is among the eight;
+    `opened` also ends a run of unopened reminders. An id Rust holds no card
+    for answers no entry. Answered with `category_prompt` as the card now
+    stands, never with a notification; a malformed `prompt_id` is refused
+    with `invalid_category_prompt_id`.
+  - Copy is counts only, never a name, a hostname or a time, because macOS
+    Notification Center keeps a notification's text. This is the third
+    notification kind, beside the drift offer and the daily insight.
+- Compatibility: a v32 triage entry does not decode as a v33 one and a v32
+  service rejects `set_site_category` and the two prompt requests, so the
+  handshake requires 33 on both sides. `request_unclassified_triage` is
+  unchanged.
+- Privacy: nothing new leaves the Mac. The hostname of a site that needs a
+  category crosses the local socket as display text, like an application's
+  local name; neither is uploaded, logged, or kept by the client. The prompt's
+  record (migration 0041) holds salted keys, random card ids, dates, times
+  and counts.
+
+## Schema correction: menu_status sources - 2026-09-27 (no wire change; the protocol stays 32)
+
+- `menu_status.queued_events[].classification_source` listed `seed`,
+  `heuristic`, `embedding`, `user_rule` and `fallback`. Rust has emitted
+  `declared_document_types` and `declared_app_category` there since protocol
+  30, when the two tiers that read an application's own declarations
+  arrived, and the Swift decoder has accepted both since then. The schema now
+  lists them. No Rust or Swift type changed and the bytes on the socket are
+  the same.
+- `rust-service/tests/emitted_payload_schema.rs` now validates a real
+  `menu_status`, with one queued event per stored source and an app rule in
+  `correction_history`, against the schema, so the enum cannot drift again
+  unnoticed.
+
 ## Browser tabs classified by their site - 2026-09-27 (no wire change; the protocol stays 32)
 
 - Rust now classifies a browser tab by the site its `focused_document_url`

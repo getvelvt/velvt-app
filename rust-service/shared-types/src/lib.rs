@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 32;
+pub const PROTOCOL_VERSION: u32 = 33;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,12 +46,22 @@ pub enum ClientMessage {
     RemoveClassificationOverride(RemoveClassificationOverride),
     /// Removes every device-local personal rule.
     ResetClassificationOverrides(ResetClassificationOverrides),
-    /// Asks which applications Velvt could not read in the recent window, so
-    /// the user can teach it per app instead of per event.
+    /// Asks which applications and sites Velvt could not categorize in the
+    /// recent window, so the user can teach it once per app or site instead
+    /// of per event.
     RequestUnclassifiedTriage(RequestUnclassifiedTriage),
     /// Teaches Velvt what one application is, with no source event: the user
     /// is naming an app, not correcting a single moment.
     SetApplicationCategory(SetApplicationCategory),
+    /// Teaches Velvt what one site is, on every page and in every browser,
+    /// with no source event (protocol 33).
+    SetSiteCategory(SetSiteCategory),
+    /// Asks the deterministic needs-a-category policy for its card and at
+    /// most one reminder a local day (protocol 33). Every gate is Rust's.
+    RequestCategoryPrompt(RequestCategoryPrompt),
+    /// The answer to a needs-a-category card, or a tap on its reminder
+    /// (protocol 33). Only ever quiets what Velvt asks.
+    AcknowledgeCategoryPrompt(AcknowledgeCategoryPrompt),
     /// Starts one bounded, device-local meaningful-work block.
     StartWorkBlock(StartWorkBlock),
     /// Pauses the current work block.
@@ -180,8 +190,12 @@ pub enum ServerMessage {
     WeeklyDigest(WeeklyDigest),
     /// Exactly one grounded sentence explaining a shown intervention.
     InterventionExplanation(InterventionExplanation),
-    /// The bounded list of applications Velvt could not read in the window.
+    /// The bounded list of applications and sites Velvt could not
+    /// categorize in the window.
     UnclassifiedTriage(UnclassifiedTriage),
+    /// The needs-a-category card and, at most once a local day, a reminder
+    /// to post, worded in Rust (protocol 33). Counts only, never names.
+    CategoryPrompt(CategoryPrompt),
 }
 
 /// Server's first message on every connection.
@@ -807,10 +821,11 @@ pub struct ResetClassificationOverrides {}
 
 /// Which identity a persisted rule is keyed on.
 ///
-/// The UI has to be able to say "this window" or "this app" in the user's own
-/// terms, because the two rules behave differently and a list that shows them
-/// identically cannot be trusted or edited. Defaults to [`Self::Window`]: every
-/// rule a client saw before this field existed was a window rule.
+/// The UI has to be able to say "this window", "this app" or "this site" in
+/// the user's own terms, because the rules behave differently and a list that
+/// shows them identically cannot be trusted or edited. Defaults to
+/// [`Self::Window`]: every rule a client saw before this field existed was a
+/// window rule.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CorrectionScope {
@@ -819,6 +834,10 @@ pub enum CorrectionScope {
     Window,
     /// Every window of one application.
     App,
+    /// Every page of one site, in every browser (protocol 33). The rule's
+    /// `stable_id` is the site key; the hostname is not kept once the site
+    /// is taught.
+    Site,
 }
 
 impl CorrectionScope {
@@ -826,11 +845,13 @@ impl CorrectionScope {
         match self {
             Self::Window => "window",
             Self::App => "app",
+            Self::Site => "site",
         }
     }
 }
 
-/// Asks which applications Velvt could not read in the recent window.
+/// Asks which applications and sites Velvt could not categorize in the recent
+/// window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestUnclassifiedTriage {
@@ -839,15 +860,38 @@ pub struct RequestUnclassifiedTriage {
     pub lookback_days: u32,
 }
 
-/// One application Velvt observed but could not classify.
+/// What one entry of the needs-a-category list is, and so which message
+/// answers it (protocol 33).
+///
+/// Ordered as the list breaks ties: an application ahead of a site with the
+/// same observed time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageEntryKind {
+    /// An application; answered with [`SetApplicationCategory`].
+    Application,
+    /// A browser site, in every browser; answered with [`SetSiteCategory`].
+    Site,
+}
+
+impl TriageEntryKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Application => "application",
+            Self::Site => "site",
+        }
+    }
+}
+
+/// One application or site Velvt observed but could not categorize.
 ///
 /// Facts only: how long it was on screen and how many times it was seen. No
 /// category, no guess, and no total presented as a score.
 ///
-/// `app_stable_id` is the only identifier here, and deliberately. The bundle
-/// identity of the application matters — it is what makes the saved rule
+/// `stable_id` is the only identifier here, and deliberately. The bundle
+/// identity of an application matters — it is what makes the saved rule
 /// survive a rename — but it is Rust's to look up from the rows it already
-/// holds, keyed by this same `app_stable_id`, and Rust does exactly that when
+/// holds, keyed by this same key, and Rust does exactly that when
 /// [`SetApplicationCategory`] comes back. Sending a second
 /// application-identifying value to a client with no use for it would put an
 /// identifier on the wire to earn nothing, and an unused identifier is pure
@@ -855,11 +899,17 @@ pub struct RequestUnclassifiedTriage {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnclassifiedTriageEntry {
-    /// The app-scoped correction key, as
-    /// [`SetApplicationCategory::app_stable_id`] expects it back.
-    pub app_stable_id: String,
-    /// The device-local name Velvt already holds for this application.
-    pub display_name: String,
+    pub kind: TriageEntryKind,
+    /// The salted key: an application key, as
+    /// [`SetApplicationCategory::app_stable_id`] expects it back, or a site
+    /// key, as [`SetSiteCategory::site_stable_id`] does.
+    pub stable_id: String,
+    /// Display text only. For an application, the device-local name Velvt
+    /// holds, or `None` when it holds none: the client shows its own
+    /// placeholder, which must never come back as the name of a rule. For a
+    /// site, its hostname, never `None`. Always on the wire, as `null` when
+    /// absent.
+    pub display_name: Option<String>,
     pub seconds_observed: u64,
     pub event_count: u64,
 }
@@ -868,15 +918,20 @@ impl std::fmt::Debug for UnclassifiedTriageEntry {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("UnclassifiedTriageEntry")
-            .field("app_stable_id", &"[local_identifier]")
-            .field("display_name", &"[redacted]")
+            .field("kind", &self.kind)
+            .field("stable_id", &"[local_identifier]")
+            .field(
+                "display_name",
+                &self.display_name.as_ref().map(|_| "[redacted]"),
+            )
             .field("seconds_observed", &self.seconds_observed)
             .field("event_count", &self.event_count)
             .finish()
     }
 }
 
-/// The bounded list of applications Velvt could not read in the window.
+/// The bounded list of applications and sites Velvt could not categorize in
+/// the window.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnclassifiedTriage {
@@ -926,6 +981,124 @@ impl std::fmt::Debug for SetApplicationCategory {
             )
             .finish()
     }
+}
+
+/// Teaches Velvt what one site is, on every page and in every browser
+/// (protocol 33).
+///
+/// The site-list sibling of [`SetApplicationCategory`], validated the same
+/// way. It carries the site key and never the hostname: Velvt keeps a
+/// hostname only in `local_site_name`, and deletes it when the site is
+/// taught. No network request is made for it.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSiteCategory {
+    /// The site key, exactly as [`UnclassifiedTriageEntry`] reported it.
+    pub site_stable_id: String,
+    pub category: String,
+    /// Optional device-local name the user typed for the site. Never the
+    /// hostname, never uploaded, never logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_name: Option<String>,
+}
+
+impl std::fmt::Debug for SetSiteCategory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SetSiteCategory")
+            .field("site_stable_id", &"[local_identifier]")
+            .field("category", &self.category)
+            .field(
+                "activity_name",
+                &self.activity_name.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
+}
+
+/// Asks for the needs-a-category card and reminder (protocol 33).
+///
+/// Carries only the client's UTC offset, so Rust can tell which local day it
+/// is. Every gate -- a live work block, Velvt's quiet hours, macOS Focus, the
+/// daily cap, only-something-new, the reminder backoff -- is owned and
+/// enforced in Rust.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestCategoryPrompt {
+    pub utc_offset_seconds: i32,
+}
+
+/// The needs-a-category card and reminder, decided and worded in Rust
+/// (protocol 33).
+///
+/// PRIVACY: counts only. No application name, hostname, key, category or time
+/// observed is representable here, because macOS Notification Center keeps a
+/// reminder's text beyond anything Velvt can delete. An empty payload means
+/// no card: the client hides any card it holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CategoryPrompt {
+    /// The card's id: 32 random bytes in lowercase hex, the same while the
+    /// entries the card counts stay the same and drawn again when they
+    /// change, so it says nothing about any entry. Present exactly when
+    /// `card` is; sent back in [`AcknowledgeCategoryPrompt`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    /// Shown while any entry the card counts (the first eight of the list)
+    /// is unanswered and no work block is active or paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<CategoryPromptCard>,
+    /// At most one a local day, only for an entry among those eight that no
+    /// earlier reminder or answer has reached. Handed over once: it is
+    /// consumed whether or not the client can post it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification: Option<CategoryPromptNotification>,
+}
+
+/// Rust-authored card copy. Swift renders it verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CategoryPromptCard {
+    pub title: String,
+    pub body: String,
+    /// Opens the needs-a-category list; answered as
+    /// [`CategoryPromptResponse::Opened`].
+    pub primary_action: String,
+    /// Closes the card; answered as [`CategoryPromptResponse::NotNow`].
+    pub secondary_action: String,
+    /// How many entries the list holds, 1 to 8.
+    pub entry_count: u32,
+}
+
+/// Rust-authored reminder copy. Swift posts it verbatim, only if
+/// notifications are already allowed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CategoryPromptNotification {
+    pub title: String,
+    pub body: String,
+}
+
+/// How the person answered a needs-a-category card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CategoryPromptResponse {
+    /// The list was opened, from the card or from the reminder.
+    Opened,
+    /// The card was closed.
+    NotNow,
+}
+
+/// The answer to the card `prompt_id` (protocol 33). Either response answers
+/// every entry that card covered, even after the list has moved on, so the
+/// card stays away until an entry no answer has reached is among those it
+/// would count; `opened` also ends a run of unopened reminders. Answered with
+/// a [`CategoryPrompt`] that never carries a reminder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcknowledgeCategoryPrompt {
+    pub prompt_id: String,
+    pub response: CategoryPromptResponse,
 }
 
 /// Version of the persisted and wire-visible work-block state machine.
@@ -2112,7 +2285,7 @@ mod v28_demotion_receipts_probe_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 32);
+        assert_eq!(PROTOCOL_VERSION, 33);
     }
 
     #[test]
@@ -2702,7 +2875,7 @@ mod v30_classification_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 32);
+        assert_eq!(PROTOCOL_VERSION, 33);
     }
 
     /// A v29 raw event — no declared metadata at all — must decode, and must
@@ -2859,8 +3032,9 @@ mod v30_classification_contract {
 
         let triage = ServerMessage::UnclassifiedTriage(UnclassifiedTriage {
             entries: vec![UnclassifiedTriageEntry {
-                app_stable_id: "a".repeat(64),
-                display_name: "PRIVATE_APP_NAME".into(),
+                kind: TriageEntryKind::Application,
+                stable_id: "a".repeat(64),
+                display_name: Some("PRIVATE_APP_NAME".into()),
                 seconds_observed: 4_200,
                 event_count: 31,
             }],
@@ -3024,7 +3198,7 @@ mod v32_in_progress_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 32);
+        assert_eq!(PROTOCOL_VERSION, 33);
     }
 
     /// A closed dwell is the only thing a pre-32 client ever sent, and it has
@@ -3061,5 +3235,220 @@ mod v32_in_progress_contract {
         for forbidden in ["PRIVATE_APP", "PRIVATE_TITLE"] {
             assert!(!debug.contains(forbidden), "{debug}");
         }
+    }
+}
+
+#[cfg(test)]
+mod v33_needs_a_category_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_current() {
+        assert_eq!(PROTOCOL_VERSION, 33);
+    }
+
+    /// Both kinds on one list, in the exact wire shape: `kind` and
+    /// `stable_id` in place of v32's `app_stable_id`, and `display_name`
+    /// always present, `null` for an application Velvt holds no name for.
+    #[test]
+    fn a_triage_entry_names_its_kind_and_may_have_no_name() {
+        let triage = ServerMessage::UnclassifiedTriage(UnclassifiedTriage {
+            entries: vec![
+                UnclassifiedTriageEntry {
+                    kind: TriageEntryKind::Site,
+                    stable_id: "b".repeat(64),
+                    display_name: Some("PRIVATE_HOST.example".into()),
+                    seconds_observed: 900,
+                    event_count: 4,
+                },
+                UnclassifiedTriageEntry {
+                    kind: TriageEntryKind::Application,
+                    stable_id: "a".repeat(64),
+                    display_name: None,
+                    seconds_observed: 600,
+                    event_count: 2,
+                },
+            ],
+            window_days: 7,
+        });
+        let encoded = serde_json::to_string(&triage).unwrap();
+        assert_eq!(
+            encoded,
+            format!(
+                r#"{{"type":"unclassified_triage","payload":{{"entries":[{{"kind":"site","stable_id":"{}","display_name":"PRIVATE_HOST.example","seconds_observed":900,"event_count":4}},{{"kind":"application","stable_id":"{}","display_name":null,"seconds_observed":600,"event_count":2}}],"window_days":7}}}}"#,
+                "b".repeat(64),
+                "a".repeat(64)
+            )
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            triage
+        );
+        let debug = format!("{triage:?}");
+        assert!(!debug.contains("PRIVATE_HOST"), "{debug}");
+        let entry_debug = format!("{:?}", {
+            let ServerMessage::UnclassifiedTriage(list) = &triage else {
+                unreachable!()
+            };
+            list.entries[0].clone()
+        });
+        assert!(!entry_debug.contains("PRIVATE_HOST"), "{entry_debug}");
+        assert!(!entry_debug.contains(&"b".repeat(64)), "{entry_debug}");
+
+        // A v32 entry is not a v33 entry: the old key is refused, not read.
+        let v32 = format!(
+            r#"{{"app_stable_id":"{}","display_name":"App","seconds_observed":600,"event_count":1}}"#,
+            "a".repeat(64)
+        );
+        assert!(serde_json::from_str::<UnclassifiedTriageEntry>(&v32).is_err());
+    }
+
+    #[test]
+    fn set_site_category_round_trips_and_stays_out_of_debug_output() {
+        let set = ClientMessage::SetSiteCategory(SetSiteCategory {
+            site_stable_id: "c".repeat(64),
+            category: "REFERENCE".into(),
+            activity_name: Some("PRIVATE_ALIAS".into()),
+        });
+        let encoded = serde_json::to_string(&set).unwrap();
+        assert_eq!(
+            encoded,
+            format!(
+                r#"{{"type":"set_site_category","payload":{{"site_stable_id":"{}","category":"REFERENCE","activity_name":"PRIVATE_ALIAS"}}}}"#,
+                "c".repeat(64)
+            )
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            set
+        );
+        let debug = format!("{set:?}");
+        assert!(!debug.contains("PRIVATE_ALIAS"), "{debug}");
+        assert!(!debug.contains(&"c".repeat(64)), "{debug}");
+
+        let bare = ClientMessage::SetSiteCategory(SetSiteCategory {
+            site_stable_id: "c".repeat(64),
+            category: "REFERENCE".into(),
+            activity_name: None,
+        });
+        assert!(!serde_json::to_string(&bare)
+            .unwrap()
+            .contains("activity_name"));
+    }
+
+    #[test]
+    fn a_site_rule_says_so_in_the_history() {
+        assert_eq!(CorrectionScope::Site.as_str(), "site");
+        let summary = ClassificationCorrectionSummary {
+            stable_id: "d".repeat(64),
+            label: "reference:inferred".into(),
+            local_label: None,
+            category: "REFERENCE".into(),
+            updated_at: "2026-09-27T10:00:00Z".parse().unwrap(),
+            scope: CorrectionScope::Site,
+        };
+        let encoded = serde_json::to_string(&summary).unwrap();
+        assert!(encoded.contains(r#""scope":"site""#), "{encoded}");
+        assert_eq!(
+            serde_json::from_str::<ClassificationCorrectionSummary>(&encoded).unwrap(),
+            summary
+        );
+    }
+
+    #[test]
+    fn the_category_prompt_messages_round_trip_in_their_exact_shape() {
+        let request = ClientMessage::RequestCategoryPrompt(RequestCategoryPrompt {
+            utc_offset_seconds: -18_000,
+        });
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"request_category_prompt","payload":{"utc_offset_seconds":-18000}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+            request
+        );
+
+        let prompt = ServerMessage::CategoryPrompt(CategoryPrompt {
+            prompt_id: Some("e".repeat(64)),
+            card: Some(CategoryPromptCard {
+                title: "Needs a category".into(),
+                body: "1 site you used this week doesn't have a category yet.".into(),
+                primary_action: "Choose a category".into(),
+                secondary_action: "Not now".into(),
+                entry_count: 1,
+            }),
+            notification: Some(CategoryPromptNotification {
+                title: "A site needs a category".into(),
+                body: "1 site you used this week doesn't have a category yet.".into(),
+            }),
+        });
+        let encoded = serde_json::to_string(&prompt).unwrap();
+        assert_eq!(
+            encoded,
+            format!(
+                r#"{{"type":"category_prompt","payload":{{"prompt_id":"{}","card":{{"title":"Needs a category","body":"1 site you used this week doesn't have a category yet.","primary_action":"Choose a category","secondary_action":"Not now","entry_count":1}},"notification":{{"title":"A site needs a category","body":"1 site you used this week doesn't have a category yet."}}}}}}"#,
+                "e".repeat(64)
+            )
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            prompt
+        );
+
+        // Nothing to show is an empty payload, not a flag.
+        let empty = ServerMessage::CategoryPrompt(CategoryPrompt::default());
+        assert_eq!(
+            serde_json::to_string(&empty).unwrap(),
+            r#"{"type":"category_prompt","payload":{}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(r#"{"type":"category_prompt","payload":{}}"#)
+                .unwrap(),
+            empty
+        );
+
+        for (response, wire) in [
+            (CategoryPromptResponse::Opened, "opened"),
+            (CategoryPromptResponse::NotNow, "not_now"),
+        ] {
+            let answer = ClientMessage::AcknowledgeCategoryPrompt(AcknowledgeCategoryPrompt {
+                prompt_id: "e".repeat(64),
+                response,
+            });
+            let encoded = serde_json::to_string(&answer).unwrap();
+            assert_eq!(
+                encoded,
+                format!(
+                    r#"{{"type":"acknowledge_category_prompt","payload":{{"prompt_id":"{}","response":"{wire}"}}}}"#,
+                    "e".repeat(64)
+                )
+            );
+            assert_eq!(
+                serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+                answer
+            );
+        }
+    }
+
+    /// Closed shapes: a name, a key or a category smuggled into the card or
+    /// the reminder is refused rather than carried.
+    #[test]
+    fn the_category_prompt_refuses_fields_it_does_not_declare() {
+        for extra in [
+            r#"{"card":{"title":"t","body":"b","primary_action":"p","secondary_action":"s","entry_count":1,"display_name":"Qwybex"}}"#,
+            r#"{"notification":{"title":"t","body":"b","stable_id":"x"}}"#,
+            r#"{"entries":[]}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<CategoryPrompt>(extra).is_err(),
+                "{extra} decoded"
+            );
+        }
+        assert!(serde_json::from_str::<AcknowledgeCategoryPrompt>(
+            r#"{"prompt_id":"x","response":"dismissed"}"#
+        )
+        .is_err());
     }
 }

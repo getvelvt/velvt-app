@@ -4,8 +4,8 @@ This is the canonical architecture reference for this repository: the Velvt
 macOS app (`swift-client/`, product `Velvt.app`) and its bundled Rust helper
 (`rust-service/`). For deep dives into individual subsystems, see
 [`docs/architecture/`](docs/architecture/); this document ties them together
-and reflects `develop` as of 2026-09-26 (IPC protocol 32 and migrations
-0001–0039; the shipped 1.0.11 build is protocol 30 and migration 0036), not any
+and reflects `develop` as of 2026-09-27 (IPC protocol 33 and migrations
+0001–0041; the shipped 1.0.11 build is protocol 30 and migration 0036), not any
 individual issue branch.
 
 ## System diagram
@@ -76,6 +76,14 @@ work block, at most once per block. The gate runs on each dwell's in-progress
 away app and withdrawn when they come back; the closed report of the same dwell
 changes nothing.
 
+The needs-a-category reminder (protocol 33) is the third notification kind and
+also never touches the cloud: Swift asks with `request_category_prompt` on
+connect, on wake and on the menu-status cadence; the `category_prompt` module
+decides the in-app card and at most one reminder a local day over the list of
+applications and sites Velvt could not categorize, and Swift posts the
+Rust-authored, counts-only copy immediately when notifications are already
+allowed. Neither is shown during an active or paused block.
+
 ## Module responsibility table
 
 | Module | Language | Responsibility | Key protocols/traits | Privacy role |
@@ -92,6 +100,7 @@ changes nothing.
 | Focus/DND (`focus`) | Rust | Focus/DND evidence, Velvt's own quiet hours, the quiet-hours offer | `FocusManager` | Never delivers around Focus; the Focus mode's name and schedule are unrepresentable |
 | Initiation (`initiation`) | Rust | Good-hours windows and the soft-start invitation (at most one a day, in-app only, off switch) | versioned policy constants | The invitation payload carries no schedule or timing evidence |
 | Receipts (`receipts`) | Rust | Weekly receipts digest, explain-tap weekly bucket | `WeeklyDigest` | Exact bounded counts from stored aggregates; local IPC only |
+| Needs-a-category (`category_prompt`) | Rust | The merged list of applications and sites Velvt could not categorize, and the card and daily reminder about it (`CATEGORY_PROMPT_POLICY_VERSION = 1`; at most one reminder a local day, never during a live block, backoff after three unopened) | `CategoryPromptRepo`, `InvitationGates` | Card and reminder copy are counts only, never names, because Notification Center keeps a reminder's text; the ledger (migration 0041) holds salted keys, random card ids, dates and counts |
 | Dashboard (`dashboard.rs`) | Rust | Focus Fragmentation and 14-day Daily Activity aggregates | `LocalDashboardSnapshot` | Local display labels appear only in the `daily_activity` branch of this local payload |
 | Behavior (`behavior/`, declared in `main.rs`) | Rust | Shadow models: BOCPD, HMM, antecedent miner, and the `out_of_block_run` retention target | frozen feature contract | No caller in the shipped path; cannot reach the drift gate, delivery, or copy. Scope for new work here is gated (`AGENTS.md`, Scope Boundary) |
 | S1 — IPC scaffold | Swift | Unix socket client, version handshake | `IPCClientProtocol` | Sends raw events to Rust (the one designed crossing point); never calls the cloud |
@@ -100,7 +109,7 @@ changes nothing.
 | S4 — Event relay | Swift | In-memory ring buffer while IPC is offline | `EventRelayProtocol` | Drops oldest on overflow; never spills to disk |
 | S5 — Auth/onboarding | Swift | Sign up/log in/log out/delete account UI, Keychain session storage | `AccountStateManaging`, `KeychainProtocol` | Session tokens in Keychain only, never SQLite |
 | S6 — Display | Swift | History/insight view models and views | `DisplayDataCoordinating` | Renders only abstracted, server-derived summaries |
-| S7 — Menu bar & notifications | Swift | Menu bar state, work-block surface, notification scheduling (daily insight and drift offer) | `NotificationScheduling`, `InterventionNotificationScheduling` | Schedules exactly the Rust-authored copy; never generates notification text itself |
+| S7 — Menu bar & notifications | Swift | Menu bar state, work-block surface, notification scheduling (daily insight, drift offer and needs-a-category reminder) | `NotificationScheduling`, `InterventionNotificationScheduling` | Schedules exactly the Rust-authored copy; never generates notification text itself |
 | App lifecycle | Swift | Launches the bundled helper, reclaims the socket from an orphaned helper of an earlier run (at most twice, then an alert) | `ServiceProcessLauncher`, `OrphanedHelperReaper` | Only terminates a process running this bundle's own helper executable, as this user, that this app did not start |
 
 ## The classification pipeline (Classification v2)
@@ -204,7 +213,7 @@ and had to be retroactively closed during this MVP integration pass).
 Unknown future server discriminators decode as `ServerMessage.unknown(type:)`
 on the Swift side so older clients degrade gracefully rather than crashing.
 [`docs/architecture/ipc-contract.md`](docs/architecture/ipc-contract.md) is the
-message catalog, reconciled through protocol 32.
+message catalog, reconciled through protocol 33.
 
 ## The auth state machine
 

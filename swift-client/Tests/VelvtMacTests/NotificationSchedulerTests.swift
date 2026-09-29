@@ -105,6 +105,42 @@ final class UNNotificationSchedulerTests: XCTestCase {
         XCTAssertNotNil(content?.sound)
     }
 
+    /// The reminder carries its marker and nothing else: no prompt id, no
+    /// text, no insight date. It is posted at once, under one identifier so a
+    /// new one replaces the last, and it is not an intervention.
+    func testTheCategoryReminderIsImmediateMarkedAndNotCountedAsAnIntervention() async {
+        let center = FakeUNUserNotificationCenter()
+        let metrics = CountingMetrics()
+        let sut = UNNotificationScheduler(center: center, now: Date.init, metrics: metrics)
+
+        let posted = await sut.scheduleCategoryPrompt(
+            title: "A site needs a category",
+            body: "1 site you used this week doesn't have a category yet. Choose once in Velvt.")
+
+        XCTAssertTrue(posted)
+        let request = center.addedRequests.first
+        XCTAssertEqual(request?.identifier, categoryPromptNotificationIdentifier)
+        XCTAssertNil(request?.trigger)
+        XCTAssertEqual(request?.content.title, "A site needs a category")
+        XCTAssertEqual(
+            request?.content.body,
+            "1 site you used this week doesn't have a category yet. Choose once in Velvt.")
+        XCTAssertEqual(request?.content.userInfo.count, 1)
+        XCTAssertEqual(request?.content.userInfo[categoryPromptNotificationUserInfoKey] as? Bool, true)
+        XCTAssertEqual(metrics.interventionIncrements, 0)
+    }
+
+    func testARejectedCategoryReminderReportsFailure() async {
+        let center = FakeUNUserNotificationCenter()
+        center.rejectAdds(with: NSError(domain: UNErrorDomain, code: 1))
+        let sut = UNNotificationScheduler(center: center, now: Date.init)
+
+        let posted = await sut.scheduleCategoryPrompt(title: "t", body: "b")
+
+        XCTAssertFalse(posted)
+        XCTAssertTrue(center.addedRequests.isEmpty)
+    }
+
     func testCancelAllDelegatesToCenter() {
         let center = FakeUNUserNotificationCenter()
         let sut = UNNotificationScheduler(center: center, now: Date.init)
@@ -112,5 +148,20 @@ final class UNNotificationSchedulerTests: XCTestCase {
         sut.cancelAll()
 
         XCTAssertEqual(center.removeAllCallCount, 1)
+    }
+}
+
+private final class CountingMetrics: AppMetricsCounting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var interventionCount = 0
+
+    var actionsLogged: Int { 0 }
+    var interventions: Int { lock.withLock { interventionCount } }
+    var interventionIncrements: Int { interventions }
+
+    func incrementActionsLogged() {}
+
+    func incrementInterventions() {
+        lock.withLock { interventionCount += 1 }
     }
 }

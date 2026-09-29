@@ -1,10 +1,11 @@
 use super::{
     AbstractionMapping, AntecedentFinding, AntecedentFindingState, AntecedentRetractionReason,
-    AppScopeOverride, BatchEvent, BlockAntecedent, CompletedBlockDwellSpan, DeclaredAppMetadata,
+    AppScopeOverride, BatchEvent, BlockAntecedent, CategoryPromptEntry,
+    CategoryPromptNotificationRecord, CompletedBlockDwellSpan, DeclaredAppMetadata,
     DemotionStateRecord, FocusTransition, HistoryCacheEntry, InitiationInvitationOutcome,
     InitiationInvitationRecord, InsightCacheEntry, InterventionDecision, LocalDisplayAggregate,
     LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersistenceError, PersonalOverrideRecord,
-    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, ReportedDwell,
+    QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, ReportedDwell, SiteScopeOverride,
     UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch, UploadQueueDiagnostics,
     VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection, WorkBlockCompletion,
     WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
@@ -133,6 +134,31 @@ pub trait AbstractionMapRepo: Send + Sync {
         category: &str,
         local_activity_name: Option<&str>,
     ) -> Result<(), PersistenceError>;
+
+    /// Edits the rule for one site from the list of saved rules: the category
+    /// and the name are both replaced, so a name cleared in the editor is
+    /// cleared, where [`Self::save_site_scope_override`] keeps a name that a
+    /// repeat from the needs-a-category list did not type. The editor always
+    /// sends the whole field.
+    ///
+    /// A cleared name also leaves the windows it was mirrored into, as it does
+    /// when the rule is removed. Counts as a correction, as a save does.
+    fn edit_site_scope_override(
+        &self,
+        site_key_hash: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<(), PersistenceError>;
+
+    /// Reads the rule taught about one site, by its site key.
+    ///
+    /// The correction history lists site rules beside window and app rules,
+    /// and an edit or a removal arrives with the key alone; this is how the
+    /// router tells a site rule's key from the other two.
+    fn site_scope_override(
+        &self,
+        site_key_hash: &str,
+    ) -> Result<Option<SiteScopeOverride>, PersistenceError>;
 
     /// Removes one site rule, and the typed name it mirrored into the windows
     /// buffered under that site. Returns whether a rule was removed.
@@ -405,14 +431,41 @@ pub trait RawEventRepo: Send + Sync {
     /// `lookback_days` is clamped to [`TRIAGE_MAX_LOOKBACK_DAYS`],
     /// `min_seconds` is raised to at least [`TRIAGE_MIN_SECONDS`], and `limit`
     /// is capped at [`TRIAGE_MAX_ENTRIES`]. Applications the user has already
-    /// taught are excluded, and so are ones Velvt holds no local name for,
-    /// because neither is a task anybody can act on.
+    /// taught are excluded. One Velvt holds no local name for is kept, with
+    /// `display_name` `None`: the time is real, and the user can usually
+    /// still say what they had open.
     fn unclassified_triage(
         &self,
         lookback_days: u32,
         min_seconds: u64,
         limit: usize,
     ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError>;
+    /// [`Self::unclassified_triage`] at its floor and with no cap: every
+    /// application it would list over `lookback_days` if it listed them all,
+    /// in its order.
+    ///
+    /// For the needs-a-category prompt's ledger (`category_prompt`) only,
+    /// which has to remember every entry that needs a category, not only the
+    /// eight the list shows, so that one moving up into the eight is not
+    /// taken for a new one. Never for a list shown to anyone. The floor bounds
+    /// its length: an application needs [`TRIAGE_MIN_SECONDS`] in the window
+    /// to be here.
+    fn every_unclassified_application(
+        &self,
+        lookback_days: u32,
+    ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError>;
+    /// The bundle key recorded on the events that put an application on the
+    /// list, if any recorded one, over the whole buffer.
+    ///
+    /// Read when the user answers the list, so the rule answers under the
+    /// identity that survives a rename. A key lookup rather than a re-run of
+    /// the list: the list is capped and windowed, so an application the
+    /// client was shown over seven days could be outside a list computed over
+    /// fourteen, and its rule was then keyed on the name alone.
+    fn unclassified_app_bundle_key(
+        &self,
+        app_stable_id: &str,
+    ) -> Result<Option<String>, PersistenceError>;
     /// Keeps the hostname of the site the stored event `event_id` was on, so
     /// Velvt can name the site when it asks what it is. Returns whether a row
     /// was written.
@@ -435,6 +488,10 @@ pub trait RawEventRepo: Send + Sync {
         host: &str,
         seen_at: DateTime<Utc>,
     ) -> Result<bool, PersistenceError>;
+    /// The hostname kept for the site `site_key_hash`, while it needs a
+    /// category (`local_site_name`). `None` once the site is taught, or its
+    /// name was swept or never kept.
+    fn local_site_name(&self, site_key_hash: &str) -> Result<Option<String>, PersistenceError>;
     /// The browser sites Velvt observed but could not categorize, ranked by
     /// observed time, longest first.
     ///
@@ -456,6 +513,13 @@ pub trait RawEventRepo: Send + Sync {
         lookback_days: u32,
         min_seconds: u64,
         limit: usize,
+    ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError>;
+    /// [`Self::unclassified_site_triage`] at its floor and with no cap, for
+    /// the reason and the one caller [`Self::every_unclassified_application`]
+    /// has.
+    fn every_unclassified_site(
+        &self,
+        lookback_days: u32,
     ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError>;
     /// Deletes at most `limit` rows from `local_site_name` whose `last_seen_at`
     /// is before `cutoff`.
@@ -772,6 +836,85 @@ pub trait InitiationRepo: Send + Sync {
     /// Deletes every invitation row. The opt-out setting is an explicit user
     /// choice and survives; the behavioral record does not.
     fn clear_invitations(&self) -> Result<u64, PersistenceError>;
+}
+
+/// Storage seam for the needs-a-category card and reminder (migration 0041):
+/// which entries of the list have been shown, answered and announced, which
+/// cards covered them, and which local days a reminder was posted on. Salted
+/// keys, random card ids, dates, times and counts; no name and no hostname is
+/// representable. Everything device-local.
+pub trait CategoryPromptRepo: Send + Sync {
+    /// Records that `entry_keys` are on the list at `at`, and returns their
+    /// rows in the order given.
+    ///
+    /// A key the ledger has not seen is inserted as first listed at `at`;
+    /// every key's `last_listed_at` moves to `at`, which is what the 14-day
+    /// sweep counts from. One transaction.
+    fn record_listed(
+        &self,
+        entry_keys: &[String],
+        at: DateTime<Utc>,
+    ) -> Result<Vec<CategoryPromptEntry>, PersistenceError>;
+    /// The id of the card that counts `counted_keys`, with `uncounted_keys`
+    /// (the rest of the list) filed under it as well, so an answer to it
+    /// reaches all of them.
+    ///
+    /// While the latest card counted exactly `counted_keys`, its id is
+    /// returned again and any of `uncounted_keys` not yet filed under it are
+    /// added. Otherwise a new id is minted -- 32 random bytes in lowercase
+    /// hex, which says nothing about any key -- both sets are filed under it,
+    /// and every card but the new one and the one before it is dropped. One
+    /// transaction.
+    fn card_for(
+        &self,
+        counted_keys: &[String],
+        uncounted_keys: &[String],
+    ) -> Result<String, PersistenceError>;
+    /// Records an answer to the card `prompt_id`: stamps `acknowledged_at` on
+    /// every entry filed under it that has none, and returns how many were
+    /// stamped. An id no card on record has reaches no entry. When `opened`,
+    /// also stamps `opened_at` on the most recent reminder if it has none,
+    /// whether or not any entry matched: the person opened the list from a
+    /// prompt after that reminder, which is what the reminder backoff reads.
+    /// An older reminder is never stamped, and an earlier answer is never
+    /// overwritten. One transaction.
+    fn acknowledge_prompt(
+        &self,
+        prompt_id: &str,
+        opened: bool,
+        at: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError>;
+    /// Claims the reminder for `local_date`: inserts its row and stamps
+    /// `notified_at` on those of `entry_keys` that have none, in one
+    /// transaction. Returns `false`, having changed nothing, when
+    /// `local_date` already has a reminder; the primary key decides, so two
+    /// racing callers cannot both claim one.
+    fn claim_notification(
+        &self,
+        local_date: &str,
+        entry_keys: &[String],
+        entry_count: u32,
+        policy_version: u32,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError>;
+    /// The most recent reminders first, bounded by `limit`.
+    fn recent_notifications(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<CategoryPromptNotificationRecord>, PersistenceError>;
+    /// Deletes at most `limit` entries last on the list before `cutoff`,
+    /// oldest first, and the card rows filed under them.
+    fn delete_expired_entries(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
+    /// Deletes at most `limit` reminders posted before `cutoff`, oldest first.
+    fn delete_expired_notifications(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
 }
 
 /// Storage seam for the weekly receipts digest and the explain-tap probe

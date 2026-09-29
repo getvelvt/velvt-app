@@ -50,6 +50,11 @@
 //!    every column and the would-be upload for the host, the path and the
 //!    query, by value. Until they existed no test sent a URL through the
 //!    router at all, and the hostname's absence rested on a manual audit.
+//! 10. `the_category_prompt_holds_keys_and_counts_and_names_nothing` drives the
+//!     sentinel application and tab onto the needs-a-category list, asks for
+//!     the card and the reminder, and reads both, and the three tables
+//!     migration 0041 added, for every sentinel by value. A reminder's text is kept by
+//!     macOS Notification Center, so a name in it could never be deleted.
 //!
 //! `persistence_contract::schema_has_no_forbidden_raw_content_columns` still
 //! exists and still checks column names. It is kept: a forbidden name is worth
@@ -85,13 +90,16 @@ use velvt_service::auth::{
     AccountAuthService, AuthError, AuthState, AuthStateMachine, FakeTokenStore, HttpClient,
     HttpRequest, HttpResponse,
 };
+use velvt_service::category_prompt::{CategoryPromptManager, ListedCandidates};
 use velvt_service::config::ServiceConfig;
 use velvt_service::delivery::FakeCacheManager;
 use velvt_service::egress::ENDPOINTS;
+use velvt_service::initiation::InvitationGates;
 use velvt_service::ipc::{MessageRouter, R7Router};
-use velvt_service::persistence::{AbstractionMapping, SqlitePersistence};
+use velvt_service::persistence::{AbstractionMapping, PersistenceError, SqlitePersistence};
 use velvt_service::retention::{
-    ABSTRACTION_MAP_RETENTION_DAYS, LOCAL_SITE_NAME_RETENTION_DAYS,
+    ABSTRACTION_MAP_RETENTION_DAYS, CATEGORY_PROMPT_ENTRY_RETENTION_DAYS,
+    CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS, LOCAL_SITE_NAME_RETENTION_DAYS,
     SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
 };
 use velvt_service::upload::{
@@ -101,8 +109,8 @@ use velvt_service::upload::{
 };
 use velvt_service::work_block::WorkBlockManager;
 use velvt_shared_types::{
-    ClientMessage, RawEvent, RawEventAck, RawEventStatus, ServerMessage, StartWorkBlock,
-    WorkBlockIntensity,
+    ClientMessage, RawEvent, RawEventAck, RawEventStatus, RequestCategoryPrompt, ServerMessage,
+    StartWorkBlock, WorkBlockIntensity,
 };
 
 use behavior_retention::OUT_OF_BLOCK_RUN_RETENTION_DAYS;
@@ -281,6 +289,18 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
         // Migration 0040's site name, on its own constant: the raw-event
         // horizon, counted from the last visit that needed a category.
         ("local_site_name", vec![LOCAL_SITE_NAME_RETENTION_DAYS]),
+        // Migration 0041's record of what the needs-a-category prompt asked
+        // about: the raw-event horizon, counted from the last listing.
+        (
+            "category_prompt_entry",
+            vec![CATEGORY_PROMPT_ENTRY_RETENTION_DAYS],
+        ),
+        // Its card rows: the latest two cards only, and never longer than
+        // the entry each is filed under, which the foreign key cascades.
+        (
+            "category_prompt_card_entry",
+            vec![CATEGORY_PROMPT_ENTRY_RETENTION_DAYS],
+        ),
         (
             "semantic_embedding_cache",
             vec![
@@ -336,6 +356,36 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
             row.retention
         );
     }
+}
+
+/// The one row of the second inventory table -- the stores that hold counters,
+/// settings, keys and feature state -- whose horizon is a constant the service
+/// runs on rather than a singleton or an in-app action: the needs-a-category
+/// reminder rows (migration 0041).
+///
+/// The first table's test above reads only the first table, so this row would
+/// otherwise be a published number no build checks.
+#[test]
+fn the_reminder_record_is_kept_for_the_published_horizon() {
+    let mut lines = PRIVACY_DOCUMENT.lines().map(str::trim).skip_while(|line| {
+        !(line.starts_with('|') && table_cells(line) == ["Table", "What it holds", "Retention"])
+    });
+    assert!(
+        lines.next().is_some(),
+        "PRIVACY.md no longer contains a table headed `| Table | What it holds | Retention |`"
+    );
+    let row = lines
+        .take_while(|line| line.starts_with('|'))
+        .map(table_cells)
+        .find(|cells| backticked(&cells[0]) == ["category_prompt_notification"])
+        .expect("PRIVACY.md's second inventory table lists `category_prompt_notification`");
+    assert_eq!(
+        numbers_in(&row[row.len() - 1]),
+        vec![CATEGORY_PROMPT_NOTIFICATION_RETENTION_DAYS],
+        "PRIVACY.md's retention for `category_prompt_notification` is not the shipped \
+         horizon. The document reads: {}",
+        row[row.len() - 1]
+    );
 }
 
 /// One row of the storage table in `PRIVACY.md`.
@@ -1518,6 +1568,167 @@ async fn no_part_of_a_web_address_reaches_an_upload_payload() {
 }
 
 // ---------------------------------------------------------------------------
+// 3c — The needs-a-category card, reminder and ledger name nothing
+// ---------------------------------------------------------------------------
+
+/// Delivery gates that never suppress, so the reminder is claimed and its
+/// record written: the strongest case for what the ledger could hold.
+struct OpenGates;
+
+impl InvitationGates for OpenGates {
+    fn live_block_exists(&self) -> Result<bool, PersistenceError> {
+        Ok(false)
+    }
+
+    fn in_quiet_hours(&self, _at: DateTime<Utc>) -> bool {
+        false
+    }
+
+    fn in_quiet_hours_at(&self, _at: DateTime<Utc>, _utc_offset_seconds: i32) -> bool {
+        false
+    }
+
+    fn focus_active(&self, _at: DateTime<Utc>) -> bool {
+        false
+    }
+}
+
+/// The sentinel application and the sentinel tab, both on the
+/// needs-a-category list, bring a card and a reminder that name neither, and
+/// the prompt's three tables (migration 0041) hold salted keys, a random card
+/// id, dates, times and counts: no sentinel by value, in any column of any.
+///
+/// The positive control is the site key: the tab is one Velvt cannot
+/// categorize (`a_hostname_is_stored_only_in_local_site_name` requires it), so
+/// its key must be filed in `category_prompt_entry.entry_key`. Without it this
+/// walk could be reading an empty table.
+#[tokio::test]
+async fn the_category_prompt_holds_keys_and_counts_and_names_nothing() {
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let router = sentinel_router(&persistence).with_category_prompt(CategoryPromptManager::new(
+        persistence.category_prompt_repo(),
+        ListedCandidates::new(persistence.raw_event_repo()),
+        Arc::new(OpenGates),
+    ));
+    for event in [
+        sentinel_raw_event(Uuid::new_v4()),
+        sentinel_browser_event(Uuid::new_v4()),
+    ] {
+        router.route(ClientMessage::RawEvent(event)).await.unwrap();
+    }
+
+    let reply = router
+        .route(ClientMessage::RequestCategoryPrompt(
+            RequestCategoryPrompt {
+                utc_offset_seconds: 0,
+            },
+        ))
+        .await
+        .unwrap();
+    let Some(ServerMessage::CategoryPrompt(prompt)) = reply else {
+        panic!("request_category_prompt answers with category_prompt, got {reply:?}");
+    };
+    assert!(
+        prompt.card.is_some() && prompt.notification.is_some(),
+        "the sentinels did not reach the list, so nothing here is tested: {prompt:?}"
+    );
+    let salt = persistence
+        .abstraction_map_repo()
+        .stable_key_salt()
+        .unwrap();
+    let site_key = site_stable_key_for(&salt, SENTINEL_HOST);
+    let app_key = app_stable_key_for(&salt, SENTINEL_APP_NAME);
+    drop(router);
+    drop(persistence);
+
+    let tokens = [
+        SENTINEL_APP_TOKEN,
+        SENTINEL_TITLE_TOKEN,
+        SENTINEL_BUNDLE_TOKEN,
+        SENTINEL_DECLARED_CATEGORY_TOKEN,
+        SENTINEL_DOCUMENT_TYPE_TOKEN,
+        SENTINEL_HOST_TOKEN,
+        SENTINEL_PATH_TOKEN,
+        SENTINEL_QUERY_TOKEN,
+    ];
+    let wire = serde_json::to_string(&prompt).unwrap().to_lowercase();
+    for token in
+        tokens
+            .iter()
+            .copied()
+            .chain([SENTINEL_BROWSER, site_key.as_str(), app_key.as_str()])
+    {
+        assert!(
+            !wire.contains(&token.to_lowercase()),
+            "{token} is in the card or the reminder: {wire}"
+        );
+    }
+
+    let connection = Connection::open(&scratch.path).unwrap();
+    let mut sightings = BTreeSet::new();
+    let mut entry_keys = Vec::new();
+    let mut filed = Vec::new();
+    scan_every_value(&connection, |table, column, value| {
+        if !table.starts_with("category_prompt_") {
+            return;
+        }
+        if let Value::Text(text) = value {
+            match (table, column) {
+                ("category_prompt_entry", "entry_key") => entry_keys.push(text.clone()),
+                ("category_prompt_card_entry", "entry_key") => filed.push(text.clone()),
+                ("category_prompt_card_entry", "prompt_id") => assert_eq!(
+                    Some(text.as_str()),
+                    prompt.prompt_id.as_deref(),
+                    "the one card on record is the one handed over"
+                ),
+                _ => {}
+            }
+        }
+        for token in tokens {
+            if holds_token(value, token) {
+                sightings.insert(format!("{table}.{column}: {token}"));
+            }
+        }
+    });
+    assert!(
+        entry_keys.contains(&format!("site:{site_key}")),
+        "the sentinel site's key is not in category_prompt_entry, so this walk \
+         proves nothing: {entry_keys:?}"
+    );
+    assert!(
+        entry_keys
+            .iter()
+            .all(|key| key == &format!("site:{site_key}")
+                || key == &format!("application:{app_key}")),
+        "category_prompt_entry holds a key the list never carried: {entry_keys:?}"
+    );
+    filed.sort();
+    entry_keys.sort();
+    assert_eq!(
+        filed, entry_keys,
+        "the card covers exactly the entries on the list"
+    );
+    let card_id = prompt.prompt_id.as_deref().unwrap();
+    for key in [&site_key, &app_key] {
+        assert_ne!(card_id, key.as_str(), "the card id is a key");
+    }
+    assert!(
+        sightings.is_empty(),
+        "a sentinel reached the needs-a-category ledger, which PRIVACY.md describes \
+         as keys, dates, times and counts: {sightings:?}"
+    );
+    let reminders: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM category_prompt_notification",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reminders, 1, "the reminder was claimed and recorded once");
+}
+
+// ---------------------------------------------------------------------------
 // 4 — The table inventory is closed
 // ---------------------------------------------------------------------------
 
@@ -1537,6 +1748,9 @@ const MIGRATED_TABLES: &[&str] = &[
     "antecedent_finding",
     "batch_event",
     "block_antecedent",
+    "category_prompt_card_entry",
+    "category_prompt_entry",
+    "category_prompt_notification",
     "classification_telemetry",
     "classifier_artifact_telemetry",
     "egress_ledger",

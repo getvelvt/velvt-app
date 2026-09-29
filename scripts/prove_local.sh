@@ -131,8 +131,14 @@ annotation_for() {
       echo "HMAC-SHA-256 of the browser site's hostname under this Mac's stable_key_salt, the same in every browser — read as naming the site: a holder of this file can hash a list of hostnames under the salt beside it" ;;
     local_site_name.host)
       echo "HOSTNAME of a site Velvt could not categorize (www. removed, nothing else from the address) — kept so Velvt can ask you about it; gone when you teach a rule for it, or 14 days after the last visit Velvt could not categorize" ;;
-    personal_override.activity_name|personal_app_override.activity_name|personal_site_override.activity_name)
+    category_prompt_entry.entry_key|category_prompt_card_entry.entry_key)
+      echo "application: or site: and the same salted key as raw_event_buffer, for an app or site that needed a category — read as naming the app or site; no name, hostname or category" ;;
+    category_prompt_card_entry.prompt_id)
+      echo "a needs-a-category card's id: 32 random bytes, drawn on this Mac — says nothing about any app or site" ;;
+    personal_override.activity_name|personal_site_override.activity_name)
       echo "a name YOU typed when you corrected a classification" ;;
+    personal_app_override.activity_name)
+      echo "a name YOU typed when you corrected a classification — or, for an app taught from the needs-a-category list, the APP'S OWN LOCAL NAME, which the list sends back as the rule's name; kept until you remove the rule or use Reset Corrections" ;;
     work_block.intention)
       echo "the sentence you typed when you started a block — expires after 24h" ;;
     schema_migration.checksum)

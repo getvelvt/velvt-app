@@ -14,10 +14,11 @@ pub use models::{
     InitiationInvitationOutcome, InitiationInvitationRecord, InsightCacheEntry,
     InterventionDecision, InterventionDemotionState, LocalDisplayAggregate, LocalEventMetadata,
     NewUploadBatch, OutOfBlockRun, PersonalOverrideRecord, QuietHoursOfferResponse,
-    QuietHoursOfferState, RawEventEntry, UnclassifiedAppEntry, UploadBatch, UploadBatchStatus,
-    UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection,
-    WorkBlockCompletion, WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation,
-    WorkBlockOrigin, WorkBlockRecord, WrongInterventionCounts,
+    QuietHoursOfferState, RawEventEntry, UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch,
+    UploadBatchStatus, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
+    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
+    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockOrigin, WorkBlockRecord,
+    WrongInterventionCounts,
 };
 pub use models::{ReportedDwell, MAX_REPORTED_DWELL_SECONDS};
 pub use sqlite::{MigrationChecksumMismatch, MigrationReport, PersistenceError, SqlitePersistence};

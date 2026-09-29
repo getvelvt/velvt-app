@@ -75,6 +75,19 @@ pub trait AbstractionMappingStore: Send + Sync {
         app_stable_key: &str,
     ) -> Result<Option<PersonalOverride>, StoreError>;
 
+    /// Returns a user-selected category for a site, in whichever browser it is
+    /// open (`site_stable_key_for`).
+    ///
+    /// Consulted after the window rule and before either application rule. A
+    /// browser tab's window rule names one site in one browser, which is more
+    /// specific than the site in every browser; and for a browser window the
+    /// site says what the window is, where the application only says which
+    /// browser is showing it.
+    fn personal_site_override(
+        &self,
+        site_key: &str,
+    ) -> Result<Option<PersonalOverride>, StoreError>;
+
     /// Returns the existing ID for a key or atomically persists the fresh mapping.
     fn resolve_id(&self, mapping: MappingResolution<'_>) -> Result<String, StoreError>;
 
@@ -101,6 +114,7 @@ pub struct InMemoryMappingStore {
     mappings: Mutex<HashMap<String, String>>,
     overrides: Mutex<HashMap<String, PersonalOverride>>,
     app_overrides: Mutex<HashMap<String, PersonalOverride>>,
+    site_overrides: Mutex<HashMap<String, PersonalOverride>>,
     salt: StableKeySalt,
 }
 
@@ -115,6 +129,7 @@ impl Default for InMemoryMappingStore {
             mappings: Mutex::default(),
             overrides: Mutex::default(),
             app_overrides: Mutex::default(),
+            site_overrides: Mutex::default(),
             salt: StableKeySalt::from_bytes(Sha256::digest(seed.as_bytes()).into()),
         }
     }
@@ -132,6 +147,13 @@ impl InMemoryMappingStore {
     pub fn set_app_override(&self, app_stable_key: &str, value: PersonalOverride) {
         if let Ok(mut overrides) = self.app_overrides.lock() {
             overrides.insert(app_stable_key.to_owned(), value);
+        }
+    }
+
+    /// Test seam: records a site-scoped correction.
+    pub fn set_site_override(&self, site_key: &str, value: PersonalOverride) {
+        if let Ok(mut overrides) = self.site_overrides.lock() {
+            overrides.insert(site_key.to_owned(), value);
         }
     }
 }
@@ -155,6 +177,18 @@ impl AbstractionMappingStore for InMemoryMappingStore {
             .lock()
             .map_err(|_| StoreError::Unavailable)?
             .get(app_stable_key)
+            .cloned())
+    }
+
+    fn personal_site_override(
+        &self,
+        site_key: &str,
+    ) -> Result<Option<PersonalOverride>, StoreError> {
+        Ok(self
+            .site_overrides
+            .lock()
+            .map_err(|_| StoreError::Unavailable)?
+            .get(site_key)
             .cloned())
     }
 

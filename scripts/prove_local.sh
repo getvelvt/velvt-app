@@ -127,7 +127,11 @@ annotation_for() {
       echo "local display name for the activity list" ;;
     personal_app_override.bundle_key_hash)
       echo "the bundle-id hash of the app this rule was taught for, as under raw_event_buffer — NULL on rules taught before migration 0034" ;;
-    personal_override.activity_name|personal_app_override.activity_name)
+    raw_event_buffer.site_stable_id)
+      echo "HMAC-SHA-256 of the browser site's hostname under this Mac's stable_key_salt, the same in every browser — read as naming the site: a holder of this file can hash a list of hostnames under the salt beside it" ;;
+    local_site_name.host)
+      echo "HOSTNAME of a site Velvt could not categorize (www. removed, nothing else from the address) — kept so Velvt can ask you about it; gone when you teach a rule for it, or 14 days after the last visit Velvt could not categorize" ;;
+    personal_override.activity_name|personal_app_override.activity_name|personal_site_override.activity_name)
       echo "a name YOU typed when you corrected a classification" ;;
     work_block.intention)
       echo "the sentence you typed when you started a block — expires after 24h" ;;

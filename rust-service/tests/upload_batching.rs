@@ -1520,6 +1520,7 @@ fn raw_entry(id: &str, eligible: bool) -> velvt_service::persistence::RawEventEn
         upload_eligible: eligible,
         app_stable_id: None,
         app_scope_eligible: true,
+        site_stable_id: None,
     }
 }
 

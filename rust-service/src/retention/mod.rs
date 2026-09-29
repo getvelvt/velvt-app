@@ -26,10 +26,11 @@ mod targets;
 pub use scheduler::RetentionScheduler;
 pub use targets::{
     AbstractionMapRetentionTarget, CacheRetentionTarget, EgressLedgerRetentionTarget,
-    InterventionDecisionOutcomeTarget, RawEventRetentionTarget,
+    InterventionDecisionOutcomeTarget, LocalSiteNameRetentionTarget, RawEventRetentionTarget,
     SemanticEmbeddingCacheRetentionTarget, UploadBatchRetentionTarget,
     WorkBlockIntentionRetentionTarget, ABSTRACTION_MAP_RETENTION_DAYS,
-    DECISION_OUTCOME_HORIZON_SECONDS, SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
+    DECISION_OUTCOME_HORIZON_SECONDS, LOCAL_SITE_NAME_RETENTION_DAYS,
+    SEMANTIC_EMBEDDING_CACHE_RETENTION_DAYS,
 };
 
 use crate::persistence::PersistenceError;

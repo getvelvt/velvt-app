@@ -66,6 +66,12 @@ pub struct RawEventEntry {
     /// Whether generalizing a correction to the whole app is meaningful.
     /// False for a browser window carrying a site context.
     pub app_scope_eligible: bool,
+    /// Site identity this event was classified under (`site_stable_key_for`,
+    /// migration 0040), the same in every browser. `None` for every window
+    /// that is not a browser tab on a named site, and for rows written before
+    /// the column existed. The hostname it was computed from is not here: it
+    /// is written, if at all, only to `local_site_name`.
+    pub site_stable_id: Option<String>,
 }
 
 impl std::fmt::Debug for RawEventEntry {
@@ -92,6 +98,10 @@ impl std::fmt::Debug for RawEventEntry {
             .field("occurred_at", &self.occurred_at)
             .field("duration_seconds", &self.duration_seconds)
             .field("upload_eligible", &self.upload_eligible)
+            .field(
+                "site_stable_id",
+                &self.site_stable_id.as_ref().map(|_| "[local_identifier]"),
+            )
             .finish()
     }
 }
@@ -292,6 +302,31 @@ impl std::fmt::Debug for UnclassifiedAppEntry {
                     .as_ref()
                     .map(|_| "[local_identifier]"),
             )
+            .finish()
+    }
+}
+
+/// One browser site Velvt observed but could not categorize, ranked for the
+/// list that asks about it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UnclassifiedSiteEntry {
+    /// The site key a site rule is written under (`site_stable_key_for`).
+    pub site_stable_id: String,
+    /// The site's normalized hostname, read from `local_site_name`: the one
+    /// place a hostname is stored, and only while the site needs a category.
+    pub display_name: String,
+    pub seconds_observed: u64,
+    pub event_count: u64,
+}
+
+impl std::fmt::Debug for UnclassifiedSiteEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UnclassifiedSiteEntry")
+            .field("site_stable_id", &"[local_identifier]")
+            .field("display_name", &"[redacted]")
+            .field("seconds_observed", &self.seconds_observed)
+            .field("event_count", &self.event_count)
             .finish()
     }
 }

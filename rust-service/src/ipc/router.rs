@@ -941,6 +941,88 @@ mod tests {
         assert!(triage(&router, 14).await.entries.is_empty());
     }
 
+    fn browser_tab(browser: &str, url: &str, duration_seconds: u64) -> ClientMessage {
+        ClientMessage::RawEvent(velvt_shared_types::RawEvent {
+            event_id: Uuid::new_v4(),
+            occurred_at: Utc::now(),
+            duration_seconds,
+            app_name: browser.to_owned(),
+            window_title: "Zarniwoop".to_owned(),
+            bundle_id: None,
+            declared_app_category: None,
+            document_type_ids: Vec::new(),
+            focused_document_url: Some(url.to_owned()),
+            in_progress: false,
+        })
+    }
+
+    /// Ingestion fills the site columns from the classification. A tab on a
+    /// site Velvt cannot categorize records the site's key, the same one in
+    /// every browser and with or without `www.`, and keeps the site's name;
+    /// both visits then count toward one row of the site list. A tab on a
+    /// seeded site is categorized, so it adds nothing to the list.
+    #[tokio::test]
+    async fn a_browser_tab_records_its_site_and_the_name_of_a_site_that_needs_a_category() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        let salt = persistence
+            .abstraction_map_repo()
+            .stable_key_salt()
+            .unwrap();
+        for message in [
+            browser_tab("Safari", "https://www.qwybex-forum.example/t/1?q=x", 600),
+            browser_tab("Google Chrome", "https://qwybex-forum.example/t/2", 300),
+            browser_tab("Safari", "https://github.com/velvt/app", 3_600),
+        ] {
+            router.route(message).await.unwrap();
+        }
+
+        let entries = persistence
+            .raw_event_repo()
+            .unclassified_site_triage(14, 300, 8)
+            .unwrap();
+
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(
+            entries[0].site_stable_id,
+            crate::abstraction::site_stable_key_for(&salt, "qwybex-forum.example")
+        );
+        assert_eq!(entries[0].display_name, "qwybex-forum.example");
+        assert_eq!(entries[0].seconds_observed, 900);
+        assert_eq!(entries[0].event_count, 2);
+        // The application list is untouched: a tab is never an application
+        // Velvt can be taught about as a whole.
+        assert!(triage(&router, 14).await.entries.is_empty());
+    }
+
+    /// A sign-in page Velvt files as SYSTEM is categorized, even though the
+    /// drift gate never counts SYSTEM time: its hostname -- an SSO tenant's
+    /// name among them -- is not kept, and the site is not on the list. The
+    /// unseeded tab beside them is the control that shows names are kept.
+    #[tokio::test]
+    async fn a_sign_in_site_filed_as_system_keeps_no_name() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = correction_router(&persistence);
+        for message in [
+            browser_tab("Safari", "https://accounts.google.com/v3/signin", 600),
+            browser_tab("Google Chrome", "https://x.okta.com/app/UserHome", 600),
+            browser_tab("Safari", "https://qwybex-forum.example/t/1", 600),
+        ] {
+            router.route(message).await.unwrap();
+        }
+
+        let events = persistence.raw_event_repo();
+        let entries = events.unclassified_site_triage(14, 300, 8).unwrap();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].display_name, "qwybex-forum.example");
+        // Every stored name is older than tomorrow, so this removes, and
+        // counts, all of them: the control's, and nothing else.
+        let stored_names = events
+            .delete_expired_site_names(Utc::now() + chrono::Duration::days(1), 100)
+            .unwrap();
+        assert_eq!(stored_names, 1);
+    }
+
     /// Absent declared metadata must behave exactly as it did before the
     /// columns existed: the event is stored, and the triage row reads the same.
     #[tokio::test]
@@ -2460,7 +2542,10 @@ impl R7Router {
     /// Runs the privacy-enforcement boundary: classify, persist a privacy-safe
     /// audit row, feed the upload batcher, and acknowledge. Raw `app_name`/
     /// `window_title` are consumed only by `abstraction_engine.process` and
-    /// never appear in `RawEventEntry`, `BatchEventPayload`, or this ack.
+    /// never appear in `RawEventEntry`, `BatchEventPayload`, or this ack. The
+    /// hostname a browser tab's URL was reduced to appears in none of them
+    /// either: it reaches `local_site_name` alone, and only for a site that
+    /// needs a category.
     ///
     /// A dwell reported in progress (protocol 32) takes none of those steps:
     /// see [`Self::observe_dwell_in_progress`].
@@ -2527,6 +2612,7 @@ impl R7Router {
                     upload_eligible,
                     app_stable_id: Some(abstracted.app_stable_id().to_owned()),
                     app_scope_eligible: abstracted.app_scope_eligible(),
+                    site_stable_id: abstracted.site_stable_id().map(str::to_owned),
                 };
                 if let Err(err) = self
                     .raw_event_repo
@@ -2542,6 +2628,26 @@ impl R7Router {
                         status: RawEventStatus::Dropped,
                         drop_reason: Some("persistence_failed".into()),
                     });
+                }
+                // The one place a hostname is written, and it goes no further
+                // than this call. Persistence keeps it only when the row just
+                // written is time the site list counts and the site has no rule
+                // (`record_local_site_name`), so a confident visit, a visit a
+                // rule decided, or a site already taught stores nothing. A
+                // failure costs the list a name, never the event, and is logged
+                // by its code alone, so the log has nothing to say about the
+                // site.
+                if let Some(host) = abstracted.local_site_name() {
+                    if self
+                        .raw_event_repo
+                        .record_local_site_name(&entry.event_id, host, Utc::now())
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            error_code = "local_site_name_persist_failed",
+                            "failed to keep the name of a site that needs a category"
+                        );
+                    }
                 }
                 if upload_eligible {
                     if let Err(err) = self

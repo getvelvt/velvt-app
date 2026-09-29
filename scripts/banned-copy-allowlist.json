@@ -33,5 +33,25 @@
     "path": "rust-service/src/work_block/mod.rs",
     "literal": "gets smarter",
     "why": "An entry in BANNED_COPY_TOKENS, the run-time registry that rejects this word in rendered copy. It names the banned word; it is never shown to anyone."
+  },
+  {
+    "path": "rust-service/src/abstraction/sites.rs",
+    "literal": "learn",
+    "why": "A hostname label in SUBDOMAIN_LABEL_VOTES, matched against sites such as learn.example.com to infer REFERENCE. It is compared with a host, never shown to anyone."
+  },
+  {
+    "path": "rust-service/src/abstraction/site_seeds.rs",
+    "literal": "scikit-learn.org",
+    "why": "A hostname in the curated site table, matched against the site of a browser tab. It is compared with a host, never shown to anyone as copy."
+  },
+  {
+    "path": "rust-service/src/abstraction/site_seeds.rs",
+    "literal": "learning.oreilly.com",
+    "why": "A hostname in the curated site table, matched against the site of a browser tab. It is compared with a host, never shown to anyone as copy."
+  },
+  {
+    "path": "rust-service/src/abstraction/site_seeds.rs",
+    "literal": "learn.microsoft.com",
+    "why": "A hostname in the curated site table, matched against the site of a browser tab. It is compared with a host, never shown to anyone as copy."
   }
 ]

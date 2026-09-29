@@ -200,7 +200,7 @@ a Release build, so this is unavailable in the DMG.
 Device-local, deterministic, and independent of the cloud, so it works on a
 fresh install with no account and no baseline history:
 
-This is drift policy v4 (`DRIFT_POLICY_VERSION = 4`, protocol 32). The gate
+This is drift policy v5 (`DRIFT_POLICY_VERSION = 5`, protocol 32). The gate
 constants are in `rust-service/src/work_block/mod.rs`:
 ≥ 3 confident switches away from the anchor inside a rolling 10-minute window,
 after ≥ 3 minutes elapsed, with ≥ 2 minutes remaining. They are v2's (PR #40,
@@ -209,8 +209,17 @@ the gate, which is now the moment it happens. Under v2 the gate heard of a
 switch only when you came back, and the offer was withdrawn at your next
 switch, often before a notification was posted. v4 also counts a switch to an
 application Velvt cannot observe at window level (one with no window open when
-you switch to it, for example); under v3 that switch was never reported. The
-first gate, v1, was ≥ 4 switches after 5 minutes; it no longer ships.
+you switch to it, for example); under v3 that switch was never reported. v5
+changes which browser tabs count, in both directions. It counts a switch to a
+tab Velvt can place by its site: a site in its built-in table, or one whose own
+name says what it is (a `mail.` or `wiki.` in front, an `.edu` at the end).
+Under v4 a tab counted when a keyword rule matched its hostname or title (or,
+rarely, when the built-in Tier 2 classifier placed it), and almost every other
+tab was left unclear; an unclear tab is never counted.
+And v5 no longer counts a tab that only title keywords placed, when its site can
+be read but is neither in the table nor readable from its name: a Jira ticket
+on `*.atlassian.net` counted under v4 and is unclear under v5. The first gate,
+v1, was ≥ 4 switches after 5 minutes; it no longer ships.
 
 1. Start a work block of **25 minutes** (anything that leaves 2 minutes after
    the switches works).
@@ -219,7 +228,9 @@ first gate, v1, was ≥ 4 switches after 5 minutes; it no longer ships.
 3. Switch to a different category and back **three or more times within 10
    minutes**, spending long enough in each for a confident classification.
    COMMUNICATION, SOCIAL_FEED and PASSIVE_CONSUMPTION all count; a one-second
-   flick does not.
+   flick does not. For a departure to a browser, use a site in Velvt's
+   built-in table, such as youtube.com or reddit.com: a site it cannot place
+   is usually left unclear, and an unclear tab never counts.
 4. On the third switch away, stay in the other app. A notification and an
    in-app card should appear while you are still there, within a second or
    two of arriving. Coming back to the anchor withdraws the offer. The body is
@@ -242,7 +253,8 @@ delivered later).
 | Focus / DND not suppressing it | Control Centre → Focus |
 | Service running and connected | Menu bar shows a connected state, not "Collection paused" |
 | Accessibility granted | System Settings → Privacy & Security → Accessibility |
-| Gates actually met | ≥3 confident switches in 10 min, ≥3 min elapsed, ≥2 min remaining (policy v4) |
+| Gates actually met | ≥3 confident switches in 10 min, ≥3 min elapsed, ≥2 min remaining (policy v5) |
+| Browser departures counted | A tab counts only on a site Velvt can place, such as youtube.com or reddit.com; a Jira ticket on `*.atlassian.net`, or any site it cannot place, is unclear under v5 |
 | Delivery outcome | `bash scripts/watch_notifications.sh` reports `notification_delivered` or why it was not |
 | Already offered this block | One per block — start a new one |
 

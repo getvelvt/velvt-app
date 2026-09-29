@@ -217,7 +217,11 @@ for abstraction.
   stores only a domain-separated hash of it (`app_bundle_stable_id`)
 - `focused_document_url`: optional nullable raw browser document URL
   (protocol 23). Rust reduces it to a validated hostname and discards it
-  before persistence, upload, logging, or any other DTO
+  before persistence, upload, logging, or any other DTO. For a browser, the
+  hostname classifies the tab (the site table and the site's own labels) and
+  keys its site; it is stored as text only in `local_site_name`, for a site
+  Velvt could not categorize, and never uploaded (`PRIVACY.md`). Classifying
+  a tab by its site is drift policy version 5
 - `declared_app_category`: optional nullable `LSApplicationCategoryType`
   from the application's own `Info.plist` (protocol 30)
 - `document_type_ids`: optional array of the `LSItemContentTypes` the
@@ -236,7 +240,9 @@ for abstraction.
   only when the person came back, and the offer it made was withdrawn before a
   notification could be posted. Absent on a closed dwell. The gate deciding
   on each dwell as it begins is drift policy version 3; version 4 adds the
-  application-level dwells described under `window_title`.
+  application-level dwells described under `window_title`, and version 5 the
+  browser tabs classified by their site, described under
+  `focused_document_url`.
 
 ### `raw_event_ack`
 

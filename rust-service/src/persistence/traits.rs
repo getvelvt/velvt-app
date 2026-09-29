@@ -5,9 +5,10 @@ use super::{
     InitiationInvitationRecord, InsightCacheEntry, InterventionDecision, LocalDisplayAggregate,
     LocalEventMetadata, NewUploadBatch, OutOfBlockRun, PersistenceError, PersonalOverrideRecord,
     QuietHoursOfferResponse, QuietHoursOfferState, RawEventEntry, ReportedDwell,
-    UnclassifiedAppEntry, UploadBatch, UploadQueueDiagnostics, VelvtQuietHours, WeeklyDigestRecord,
-    WorkBlockCategoryCorrection, WorkBlockCompletion, WorkBlockIntervention,
-    WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord, WrongInterventionCounts,
+    UnclassifiedAppEntry, UnclassifiedSiteEntry, UploadBatch, UploadQueueDiagnostics,
+    VelvtQuietHours, WeeklyDigestRecord, WorkBlockCategoryCorrection, WorkBlockCompletion,
+    WorkBlockIntervention, WorkBlockInterventionOutcome, WorkBlockObservation, WorkBlockRecord,
+    WrongInterventionCounts,
 };
 use crate::abstraction::{EmbeddingSalt, StableKeySalt};
 use chrono::{DateTime, Utc};
@@ -110,6 +111,36 @@ pub trait AbstractionMapRepo: Send + Sync {
     /// surviving app rule and answering exactly as before.
     fn remove_app_scope_override(&self, app_key_hash: &str) -> Result<bool, PersistenceError>;
 
+    /// Writes the rule for one site, in every browser (`personal_site_override`,
+    /// migration 0040), from its key alone.
+    ///
+    /// The site list names a site, not one visit to it, so there is no event
+    /// to resolve an identity from: the key is the one the list offered. The
+    /// engine consults the rule after the window rule and before either
+    /// application rule.
+    ///
+    /// The site's stored hostname (`local_site_name`) is deleted in the same
+    /// transaction. It was kept only so Velvt could ask what the site is, and
+    /// it has now been told; with a rule in place no later visit writes it
+    /// back.
+    ///
+    /// Idempotent in the way `save_app_scope_override` is: saving the same
+    /// answer twice is saving it once, and a repeat still counts as a
+    /// correction.
+    fn save_site_scope_override(
+        &self,
+        site_key_hash: &str,
+        category: &str,
+        local_activity_name: Option<&str>,
+    ) -> Result<(), PersistenceError>;
+
+    /// Removes one site rule, and the typed name it mirrored into the windows
+    /// buffered under that site. Returns whether a rule was removed.
+    ///
+    /// The hostname is not restored: the next visit Velvt cannot categorize
+    /// writes it again, as it would for a site never taught.
+    fn remove_site_scope_override(&self, site_key_hash: &str) -> Result<bool, PersistenceError>;
+
     fn remove_personal_override(&self, stable_id: &str) -> Result<bool, PersistenceError>;
     fn reset_personal_overrides(&self) -> Result<u64, PersistenceError>;
     fn personal_override_count(&self) -> Result<u64, PersistenceError>;
@@ -157,8 +188,8 @@ pub trait AbstractionMapRepo: Send + Sync {
     /// correction can match its window again, and a rule the history lists but
     /// that never applies is worse than no rule. So minting also removes every
     /// row keyed under the lost salt, in the same transaction -- the corrections,
-    /// the mappings, both vector stores, and the application keys on buffered
-    /// events -- for the reason [`Self::embedding_salt`] empties the vector
+    /// the mappings, both vector stores, the site names, and the application and
+    /// site keys on buffered events -- for the reason [`Self::embedding_salt`] empties the vector
     /// stores when it mints: a key from the old salt compared against a key from
     /// the new one is an equality test about nothing.
     fn stable_key_salt(&self) -> Result<StableKeySalt, PersistenceError>;
@@ -316,6 +347,9 @@ pub const TRIAGE_MAX_LOOKBACK_DAYS: u32 = 14;
 pub const TRIAGE_MIN_SECONDS: u64 = 300;
 
 /// The most applications one triage list may hold, for the same reason.
+///
+/// The site list (`RawEventRepo::unclassified_site_triage`) takes all three
+/// bounds unchanged: it is the same task, asked about a site.
 pub const TRIAGE_MAX_ENTRIES: usize = 8;
 
 pub trait RawEventRepo: Send + Sync {
@@ -379,6 +413,57 @@ pub trait RawEventRepo: Send + Sync {
         min_seconds: u64,
         limit: usize,
     ) -> Result<Vec<UnclassifiedAppEntry>, PersistenceError>;
+    /// Keeps the hostname of the site the stored event `event_id` was on, so
+    /// Velvt can name the site when it asks what it is. Returns whether a row
+    /// was written.
+    ///
+    /// `local_site_name` is the only place a hostname is stored, and this is
+    /// the only writer. It writes only when that event is one the site list
+    /// counts -- a browser tab with a site key whose classification was not
+    /// confident (a confident SYSTEM one counts as confident here) and was not
+    /// decided by a rule of the user's -- and its site
+    /// has no site rule. A confident visit, a visit a rule decided, and a site
+    /// already taught write nothing and leave any stored row as it was.
+    ///
+    /// `host` must be the normalized host the event's site key was computed
+    /// from (`sites::site_identity`). `seen_at` becomes `last_seen_at`, which
+    /// the retention sweep counts from, so the caller passes the time the
+    /// visit was recorded.
+    fn record_local_site_name(
+        &self,
+        event_id: &str,
+        host: &str,
+        seen_at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError>;
+    /// The browser sites Velvt observed but could not categorize, ranked by
+    /// observed time, longest first.
+    ///
+    /// The time counted is the time Velvt could not categorize: events whose
+    /// classification is not confident by the drift gate's rule
+    /// (`work_block::is_confident`), which for a browser tab is mostly the
+    /// ambiguous browser prior rather than UNLOGGED, except that a confident
+    /// SYSTEM visit counts as categorized here: the gate never uses SYSTEM
+    /// time, but a sign-in or account page Velvt filed as SYSTEM is not a
+    /// question. A visit a rule of the user's decided is not counted,
+    /// confident or not: there is nothing left to ask about it.
+    ///
+    /// Bounded exactly as [`Self::unclassified_triage`] is. A site with a site
+    /// rule is excluded, and so is one with no stored name (`local_site_name`),
+    /// because a row Velvt cannot name is not one the user can answer. Nothing
+    /// here rewrites history or makes a network call.
+    fn unclassified_site_triage(
+        &self,
+        lookback_days: u32,
+        min_seconds: u64,
+        limit: usize,
+    ) -> Result<Vec<UnclassifiedSiteEntry>, PersistenceError>;
+    /// Deletes at most `limit` rows from `local_site_name` whose `last_seen_at`
+    /// is before `cutoff`.
+    fn delete_expired_site_names(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<u64, PersistenceError>;
     fn delete_before(&self, cutoff: DateTime<Utc>) -> Result<u64, PersistenceError>;
     /// Deletes at most `limit` rows whose `created_at` is before `cutoff`.
     /// Returns the number of rows actually deleted.

@@ -534,10 +534,32 @@ pub enum EmotionalStage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HistoryPayload {
-    /// Number of days requested.
+    /// Number of summary rows this payload carries, one per day (protocol 33).
+    ///
+    /// It was the number of days requested, which the cloud does not honour:
+    /// it answers at most seven whatever it is asked, so a request for 14
+    /// arrived labelled 14 with 7 rows and Swift padded seven empty days in
+    /// front of them — a prior week that could never count.
     pub days: u32,
+    /// Where these summaries were built (protocol 33).
+    pub source: HistorySource,
     /// Daily summary records.
     pub summaries: Vec<DailySummary>,
+}
+
+/// Where a `history_payload`'s summaries were built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistorySource {
+    /// Synced daily summaries from `GET /v1/history/daily`: UTC calendar days,
+    /// computed server side from uploaded abstractions.
+    Cloud,
+    /// Built on this Mac from its own retained events, per local calendar
+    /// day, when the account is signed out or the cloud could not answer.
+    /// Nothing is stored and nothing leaves the Mac; the cloud-only fields
+    /// (`focus_score`, `fragmentation_score`, the baseline) are null or
+    /// `unavailable`.
+    ThisMac,
 }
 
 /// One privacy-safe daily summary.
@@ -726,6 +748,10 @@ pub struct RequestLatestInsight {
 pub struct RequestLatestHistory {
     /// Number of days of history to return (1–30).
     pub days: u8,
+    /// The client's current UTC offset (protocol 33), so summaries built on
+    /// this Mac cover the same local calendar days as the Daily Activity
+    /// chart. Rust clamps it to -64800..=64800.
+    pub utc_offset_seconds: i32,
 }
 
 /// Swift requests a fresh menu-bar status snapshot.

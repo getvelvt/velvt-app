@@ -102,13 +102,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         displayCoordinator = displayCoord
 
-        let dataLoader = MenuBarDataLoader(ipcClient: client)
-        dataLoader.start(accountState: accountStateManager.$accountState.eraseToAnyPublisher())
-        menuBarDataLoader = dataLoader
-
         let statusViewModel = MenuStatusViewModel(ipcClient: client, messages: accountStateManager.serverMessages)
         statusViewModel.start()
         menuStatusViewModel = statusViewModel
+
+        // After the status model, whose 60-second cadence it shares: while the
+        // history came from this Mac, it is asked for again at most every ten
+        // minutes on that tick rather than on a timer of its own.
+        let dataLoader = MenuBarDataLoader(ipcClient: client)
+        dataLoader.start(
+            accountStateManager: accountStateManager,
+            displayCoordinator: displayCoord,
+            statusViewModel: statusViewModel
+        )
+        menuBarDataLoader = dataLoader
+
         let serviceAlertModel = ServiceAlertModel(messages: accountStateManager.serverMessages)
         let workBlocks = WorkBlockCoordinator(ipcClient: client)
         workBlocks.start(

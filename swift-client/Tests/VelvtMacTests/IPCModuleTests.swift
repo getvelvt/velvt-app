@@ -256,7 +256,7 @@ final class IPCModuleTests: XCTestCase {
     /// the cloud API's name, which never crosses the socket, so History showed 0.
     func testHistorySummaryReadsTheLongestStretchUnderTheNameRustSends() throws {
         let json = """
-            {"type":"history_payload","payload":{"days":1,"summaries":[
+            {"type":"history_payload","payload":{"days":1,"source":"cloud","summaries":[
               {"date":"2026-09-25","status":"ready","event_count":4,"focus_score":null,
                "fragmentation_score":null,"confidence_level":"medium","active_seconds":3600,
                "focused_seconds":2400,"meaningful_switch_count":3,
@@ -268,6 +268,56 @@ final class IPCModuleTests: XCTestCase {
             return XCTFail("expected a history payload, decoded \(message)")
         }
         XCTAssertEqual(payload.summaries.first?.longestUninterruptedSeconds, 1500)
+    }
+
+    func testTheHistoryRequestCarriesTheOffsetTheSchemaAllows() throws {
+        let message = ClientMessage.requestLatestHistory(RequestLatestHistory(days: 14, utcOffsetSeconds: 19_800))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoder.encode(message)) as? [String: Any])
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
+
+        XCTAssertEqual(object["type"] as? String, "request_latest_history")
+        XCTAssertEqual(Set(payload.keys), try historySchemaPayloadKeys("request_latest_history"))
+        XCTAssertEqual(payload["utc_offset_seconds"] as? Int, 19_800)
+        XCTAssertEqual(RequestLatestHistory(days: 14, utcOffsetSeconds: 90_000).utcOffsetSeconds, 64_800)
+        XCTAssertEqual(RequestLatestHistory(days: 14, utcOffsetSeconds: -90_000).utcOffsetSeconds, -64_800)
+    }
+
+    func testAHistoryPayloadSaysWhereItWasBuilt() throws {
+        let json = """
+            {"type":"history_payload","payload":{"days":1,"source":"this_mac","summaries":[
+              {"date":"2026-09-27","status":"ready","event_count":4,"focus_score":null,
+               "fragmentation_score":null,"confidence_level":"low","active_seconds":3600,
+               "focused_seconds":2400,"meaningful_switch_count":3,
+               "longest_uninterrupted_seconds":1500,"baseline_status":"unavailable",
+               "baseline_comparison":{"status":"unavailable"},"type_proportions":[]}]}}
+            """
+        let message = try decoder.decode(ServerMessage.self, from: Data(json.utf8))
+        guard case .historyPayload(let payload) = message else {
+            return XCTFail("expected a history payload, decoded \(message)")
+        }
+        XCTAssertEqual(payload.source, .thisMac)
+        XCTAssertEqual(try historySchemaPayloadKeys("history_payload"), ["days", "source", "summaries"])
+
+        let unlabelled = json.replacingOccurrences(of: #""source":"this_mac","#, with: "")
+        XCTAssertThrowsError(
+            try decoder.decode(ServerMessage.self, from: Data(unlabelled.utf8)),
+            "a protocol 32 history, with no source, must not decode")
+    }
+
+    private func historySchemaPayloadKeys(_ name: String) throws -> Set<String> {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("proto/schema/\(name).json")
+        let schema = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        let payload = try XCTUnwrap(properties["payload"] as? [String: Any])
+        let payloadProperties = try XCTUnwrap(payload["properties"] as? [String: Any])
+        return Set(payloadProperties.keys)
     }
 
     func testCorrectionHistoryWireContractIsBoundedAndLocalOnly() throws {

@@ -572,10 +572,25 @@ public struct RequestLatestInsight: Codable, Equatable, Sendable {
 }
 
 public struct RequestLatestHistory: Codable, Equatable, Sendable {
-    public let days: Int
+    /// The offsets the schema accepts, in seconds: UTC-18:00 to UTC+18:00.
+    public static let utcOffsetRange = -64_800...64_800
 
-    public init(days: Int) {
+    public let days: Int
+    /// The client's UTC offset (protocol 33), so summaries built on this Mac
+    /// cover the same local days the Daily Activity chart draws.
+    public let utcOffsetSeconds: Int
+
+    public init(days: Int, utcOffsetSeconds: Int = TimeZone.current.secondsFromGMT()) {
         self.days = days
+        self.utcOffsetSeconds = min(
+            max(utcOffsetSeconds, Self.utcOffsetRange.lowerBound),
+            Self.utcOffsetRange.upperBound
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case days
+        case utcOffsetSeconds = "utc_offset_seconds"
     }
 }
 
@@ -1212,27 +1227,42 @@ public struct BaselineComparison: Codable, Equatable, Sendable {
     }
 }
 
+/// Where a history payload's summaries were built (protocol 33).
+public enum HistorySource: String, Codable, Equatable, Sendable {
+    /// Synced daily summaries from the cloud, per UTC day.
+    case cloud
+    /// Built on this Mac from its own retained events, per local day, when
+    /// the account is signed out or the cloud could not answer.
+    case thisMac = "this_mac"
+}
+
 /// A ready-to-display multi-day history payload.
 public struct HistoryPayload: Codable, Equatable, Sendable {
+    /// The number of summary rows carried (protocol 33), not the number asked
+    /// for: the cloud answers at most seven days whatever it is asked.
     public let days: Int
+    public let source: HistorySource
     public let summaries: [DailySummary]
 
-    public init(days: Int, summaries: [DailySummary]) {
+    public init(days: Int, summaries: [DailySummary], source: HistorySource = .cloud) {
         self.days = days
+        self.source = source
         self.summaries = summaries
     }
 
-    private enum CodingKeys: String, CodingKey { case days, summaries }
+    private enum CodingKeys: String, CodingKey { case days, source, summaries }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         days = try container.decode(Int.self, forKey: .days)
+        source = try container.decode(HistorySource.self, forKey: .source)
         summaries = try container.decode([DailySummary].self, forKey: .summaries)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(days, forKey: .days)
+        try container.encode(source, forKey: .source)
         try container.encode(summaries, forKey: .summaries)
     }
 }

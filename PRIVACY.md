@@ -614,8 +614,18 @@ compares with this list.
   open up to 70 seconds, then asked again. No body.
 - **`GET /v1/history/daily?days=N`** and
   **`GET /v1/insights/daily?date=YYYY-MM-DD`** — every 10 minutes while signed
-  in, and when the app asks for history or an insight that is not cached:
-  read-only requests for already-abstracted, server-side-derived summaries.
+  in, and, while signed in, when the app asks for history or an insight that
+  is not cached: read-only requests for already-abstracted,
+  server-side-derived summaries. N is 7, the most days the server returns, so
+  the 10-minute request usually leaves the app's own asks for history
+  nothing to fetch. The app asks for history when it connects and when the
+  account signs in or out; and, while the history it shows is not the synced
+  one, when Patterns opens and every 10 minutes. While it shows synced
+  history, opening Patterns sends nothing. Once one of the app's asks for
+  history fails to get it from the server, later asks make no request of
+  their own until the 10-minute request succeeds or the session changes. The
+  app also asks for history while signed out; that answer is built on this
+  Mac from its own events and makes no request.
 - **`GET /v1/ready`** — when the menu asks whether the server is reachable, at
   most once a minute. No body and no account token.
 

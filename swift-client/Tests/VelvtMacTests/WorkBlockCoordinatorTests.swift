@@ -552,10 +552,12 @@ final class WorkBlockCoordinatorTests: XCTestCase {
         await relay.stop()
     }
 
-    /// The service closes the ledger at a pause too, so a pause gets the
-    /// same treatment. Ending a block that is already paused does not flush
-    /// again: its dwell was reported at the pause.
-    func testPauseFlushesFirstAndEndingAPausedBlockDoesNot() async throws {
+    /// A pause does not flush: a flush re-anchors the dwell, and the closed
+    /// report sent after the resume would then no longer be recognised as
+    /// the continuation of a dwell the drift gate already decided on, which
+    /// changes decisions the pre-registered drift policy v5 makes. Ending a
+    /// paused block does not flush either.
+    func testPauseDoesNotFlushAndEndingAPausedBlockDoesNot() async throws {
         let client = FakeIPCClient()
         client.setConnectionStatus(.connected)
         let order = OrderRecorder()
@@ -578,7 +580,38 @@ final class WorkBlockCoordinatorTests: XCTestCase {
         coordinator.end()
         try await waitUntil { order.entries.contains("end") }
 
-        XCTAssertEqual(order.entries, ["flush", "pause", "end"])
+        XCTAssertEqual(order.entries, ["pause", "end"])
+    }
+
+    /// The sleep that pauses an active block does not flush, for the same
+    /// reason a pause does not.
+    func testSleepDuringAnActiveBlockDoesNotFlush() async throws {
+        let client = FakeIPCClient()
+        let flushes = FlushCounter()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let workspace = NotificationCenter()
+        let coordinator = WorkBlockCoordinator(
+            ipcClient: client,
+            flushPendingDwell: { flushes.count += 1 },
+            sleep: { _ in try await Task.sleep(for: .seconds(3_600)) }
+        )
+        coordinator.start(
+            messages: messages,
+            connectionStatus: Empty<ConnectionStatus, Never>(),
+            workspaceNotifications: workspace,
+            systemNotifications: NotificationCenter()
+        )
+        let active = activeSnapshot()
+        messages.send(.workBlockState(active))
+        try await waitUntil { coordinator.snapshot == active }
+
+        workspace.post(name: NSWorkspace.willSleepNotification, object: nil)
+        try await waitUntil {
+            client.sentMessages.contains(.workBlockLifecycle(.init(event: .sleep)))
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(flushes.count, 0)
     }
 
     /// A block that runs out is finished by the service at `ends_at`, and

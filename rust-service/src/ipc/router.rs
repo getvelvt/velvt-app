@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     future::Future,
     hash::{BuildHasher, Hash, Hasher, RandomState},
     pin::Pin,
@@ -2222,7 +2222,7 @@ mod tests {
     async fn cloud_reads_settled(router: &R7Router) {
         eventually("the background cloud reads finished", || {
             !router.cloud_history_fetch.load(Ordering::SeqCst)
-                && !router.cloud_insight_fetch.load(Ordering::SeqCst)
+                && router.cloud_insight_fetch.lock().unwrap().is_empty()
         })
         .await;
     }
@@ -2582,7 +2582,128 @@ mod tests {
             latest_insight(&router).await,
             Some(cache_empty("insight_payload", "insufficient_evidence"))
         );
-        assert!(!router.cloud_insight_fetch.load(Ordering::SeqCst));
+        assert!(router.cloud_insight_fetch.lock().unwrap().is_empty());
+    }
+
+    /// A cloud whose insight read takes a while and finds none.
+    #[derive(Default)]
+    struct SlowInsightCloud {
+        insight_dates: std::sync::Mutex<Vec<chrono::NaiveDate>>,
+    }
+
+    impl crate::delivery::CacheManager for SlowInsightCloud {
+        fn daily_history<'a>(
+            &'a self,
+            _days: u8,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<velvt_shared_types::HistoryPayload, CacheError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async {
+                Err(CacheError::Fetch(crate::delivery::FetchError::ApiError {
+                    status: 522,
+                }))
+            })
+        }
+
+        fn cached_daily_history<'a>(
+            &'a self,
+            _days: u8,
+        ) -> Pin<Box<dyn Future<Output = Option<velvt_shared_types::HistoryPayload>> + Send + 'a>>
+        {
+            Box::pin(async { None })
+        }
+
+        fn daily_insight<'a>(
+            &'a self,
+            date: chrono::NaiveDate,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<velvt_shared_types::InsightPayload>, CacheError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            self.insight_dates.lock().unwrap().push(date);
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok(None)
+            })
+        }
+
+        fn cached_daily_insight<'a>(
+            &'a self,
+            _date: chrono::NaiveDate,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Option<Option<velvt_shared_types::InsightPayload>>> + Send + 'a,
+            >,
+        > {
+            Box::pin(async { None })
+        }
+
+        fn invalidate_history<'a>(
+            &'a self,
+            _date: Option<chrono::NaiveDate>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn invalidate_insights<'a>(
+            &'a self,
+            _date: Option<chrono::NaiveDate>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn invalidate_all<'a>(
+            &'a self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    async fn insight_for(router: &R7Router, date: chrono::NaiveDate) -> Option<ServerMessage> {
+        router
+            .route(ClientMessage::RequestLatestInsight(
+                velvt_shared_types::RequestLatestInsight { date },
+            ))
+            .await
+            .unwrap()
+    }
+
+    /// A request for one date while another date's read is in flight gets a
+    /// read, and a push, of its own; a repeat of a date in flight starts none.
+    #[tokio::test]
+    async fn an_insight_read_in_flight_does_not_swallow_another_dates_request() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let cloud = Arc::new(SlowInsightCloud::default());
+        let queue = crate::delivery::PushQueue::new(8);
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            signed_in(),
+        )
+        .with_delivery_push(crate::delivery::PushAdapter::new(Arc::clone(&queue)));
+        let today = Utc::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+
+        assert_eq!(insight_for(&router, today).await, None);
+        assert_eq!(insight_for(&router, today).await, None);
+        assert_eq!(insight_for(&router, yesterday).await, None);
+        cloud_reads_settled(&router).await;
+
+        assert_eq!(*cloud.insight_dates.lock().unwrap(), vec![today, yesterday]);
+        for _ in 0..2 {
+            assert_eq!(
+                queue.try_pop().await,
+                Some(cache_empty("insight_payload", "insufficient_evidence"))
+            );
+        }
+        assert_eq!(queue.try_pop().await, None);
     }
 
     /// The two tiers that read declared metadata have to survive the round trip
@@ -2651,7 +2772,10 @@ pub struct R7Router {
     /// Each set while its background task runs, so a request repeated while
     /// the cloud is slow starts no second one. Shared like the outages.
     cloud_history_fetch: Arc<AtomicBool>,
-    cloud_insight_fetch: Arc<AtomicBool>,
+    /// The dates whose insight a background task is reading. Keyed by date:
+    /// a request for another date is answered by its own read, not dropped
+    /// behind the first.
+    cloud_insight_fetch: Arc<Mutex<HashSet<chrono::NaiveDate>>>,
     session_validation: Arc<AtomicBool>,
     upload_flush: Arc<AtomicBool>,
     /// Where an answer that arrives after its request is sent: an insight
@@ -3945,7 +4069,8 @@ impl R7Router {
     /// cannot be read, which also marks an outage. During an outage, requests
     /// are answered `cache_empty(backend_unavailable)` at once and do not ask
     /// the cloud; the fetch scheduler's own reads fill the cache that ends it,
-    /// and a session change ends it too.
+    /// and a session change ends it too. One read runs per date: a repeat of
+    /// a date being read starts none, and another date gets its own.
     async fn insight_response(&self, date: chrono::NaiveDate) -> Option<ServerMessage> {
         if let Some(cached) = self.cache.cached_daily_insight(date).await {
             self.cloud_insight_outage.store(false, Ordering::Relaxed);
@@ -3960,7 +4085,7 @@ impl R7Router {
         let cache = Arc::clone(&self.cache);
         let outage = Arc::clone(&self.cloud_insight_outage);
         let push = self.delivery_push.clone();
-        spawn_single_flight(&self.cloud_insight_fetch, async move {
+        spawn_single_flight_per_key(&self.cloud_insight_fetch, date, async move {
             let reason = match cache.daily_insight(date).await {
                 Ok(Some(_)) => return,
                 Ok(None) => "insufficient_evidence",
@@ -4742,6 +4867,36 @@ where
         return;
     }
     let finished = Finished(Arc::clone(running));
+    tokio::spawn(async move {
+        let _finished = finished;
+        task.await;
+    });
+}
+
+/// `spawn_single_flight` for one `key` of several: `task` is dropped unrun
+/// only while a task for the same key has not finished.
+fn spawn_single_flight_per_key<K, F>(running: &Arc<Mutex<HashSet<K>>>, key: K, task: F)
+where
+    K: Eq + Hash + Clone + Send + 'static,
+    F: Future<Output = ()> + Send + 'static,
+{
+    struct Finished<K: Eq + Hash>(Arc<Mutex<HashSet<K>>>, K);
+    impl<K: Eq + Hash> Drop for Finished<K> {
+        fn drop(&mut self) {
+            self.0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&self.1);
+        }
+    }
+    if !running
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key.clone())
+    {
+        return;
+    }
+    let finished = Finished(Arc::clone(running), key);
     tokio::spawn(async move {
         let _finished = finished;
         task.await;

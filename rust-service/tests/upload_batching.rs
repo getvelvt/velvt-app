@@ -14,9 +14,10 @@ use velvt_service::persistence::{
     UploadBatchStatus, UploadQueueDiagnostics,
 };
 use velvt_service::upload::{
-    BatchAssembler, BatchEventPayload, BatchPayload, BatchRetentionPolicy, BatchUploader,
-    EventIngestor, FakeBatchUploader, FakePrivacyAlertSink, HostBackoff, HttpBatchUploader,
-    IpcPrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator, UploadOutcome,
+    BatchAssembler, BatchEventPayload, BatchPayload, BatchRetentionPolicy, BatchUploadError,
+    BatchUploader, EventIngestor, FakeBatchUploader, FakePrivacyAlertSink, HostBackoff,
+    HttpBatchUploader, IpcPrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator,
+    UploadOutcome,
 };
 use velvt_shared_types::RawEvent;
 
@@ -131,6 +132,13 @@ impl UploadBatchRepo for FailFirstInsertRepo {
         self.inner.pending_batches()
     }
 
+    fn queued_batch_events(
+        &self,
+        limit: usize,
+    ) -> Result<(u64, Vec<BatchEvent>), PersistenceError> {
+        self.inner.queued_batch_events(limit)
+    }
+
     fn resumable_batches(&self, now: DateTime<Utc>) -> Result<Vec<UploadBatch>, PersistenceError> {
         self.inner.resumable_batches(now)
     }
@@ -157,6 +165,16 @@ impl UploadBatchRepo for FailFirstInsertRepo {
     ) -> Result<(), PersistenceError> {
         self.inner
             .mark_pending_retry(batch_id, next_attempt_at, error_code)
+    }
+
+    fn defer_batch(
+        &self,
+        batch_id: &str,
+        next_attempt_at: DateTime<Utc>,
+        error_code: &str,
+    ) -> Result<(), PersistenceError> {
+        self.inner
+            .defer_batch(batch_id, next_attempt_at, error_code)
     }
 
     fn mark_rejected(&self, batch_id: &str, error_code: &str) -> Result<(), PersistenceError> {
@@ -991,10 +1009,139 @@ async fn host_backoff_pauses_other_batches_for_same_host() {
     }
 
     assert_eq!(inspection.upload_count(), 1);
+    // Deferred, not failed: nothing was sent, so no attempt was spent.
     assert_eq!(
         repository.batch_status("batch-second").unwrap(),
-        UploadBatchStatus::Failed
+        UploadBatchStatus::Pending
     );
+    let attempts = |batch_id: &str| {
+        repository
+            .pending_batches()
+            .unwrap()
+            .into_iter()
+            .find(|batch| batch.batch_id == batch_id)
+            .map(|batch| batch.attempt_count)
+    };
+    assert_eq!(attempts("batch-first"), Some(1));
+    assert_eq!(attempts("batch-second"), Some(0));
+}
+
+/// A deferral is not an attempt. Counting one spent the ceiling of every
+/// queued batch at the rate the retry scan ran, so a multi-day outage
+/// abandoned the whole queue although only the first batch of each scan was
+/// ever sent.
+#[tokio::test]
+async fn host_backoff_deferrals_spend_no_attempts_across_retry_scans() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository = database.upload_batch_repo();
+    for batch_id in ["batch-first", "batch-second", "batch-third"] {
+        repository
+            .insert_batch_with_events(
+                &NewUploadBatch {
+                    batch_id: batch_id.into(),
+                },
+                &[BatchEvent {
+                    event_id: format!("event-{batch_id}"),
+                    stable_id: "stable".into(),
+                    label: "document:edit".into(),
+                    category: "FOCUS_WORK".into(),
+                    taxonomy_version: "mvp-1".into(),
+                    classification_tier: "exact_match".into(),
+                    occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+                    duration_seconds: 5,
+                }],
+            )
+            .unwrap();
+    }
+    let coordinator = UploadCoordinator::new(
+        repository.clone(),
+        TransportFailingUploader::default(),
+        FakePrivacyAlertSink::default(),
+    );
+
+    for _ in 0..3 {
+        // Every batch due again, as when the host's backoff has run out.
+        for batch in repository.pending_batches().unwrap() {
+            repository
+                .defer_batch(&batch.batch_id, Utc::now(), "host_backoff")
+                .unwrap();
+        }
+        repository
+            .set_host_backoff("dev-api.getvelvt.com", 0, Utc::now())
+            .unwrap();
+        coordinator.resume_pending("1", "0.1.0").await.unwrap();
+    }
+
+    let attempts = repository
+        .pending_batches()
+        .unwrap()
+        .into_iter()
+        .map(|batch| (batch.batch_id, batch.attempt_count))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        attempts,
+        vec![
+            ("batch-first".to_owned(), 3),
+            ("batch-second".to_owned(), 0),
+            ("batch-third".to_owned(), 0),
+        ]
+    );
+}
+
+/// "Send all now" against a host that does not answer: one request, not one
+/// per batch. The rest keep their place under the backoff that failure set.
+#[tokio::test]
+async fn flush_all_pending_stops_at_the_first_transport_failure() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository = database.upload_batch_repo();
+    for batch_id in ["batch-first", "batch-second", "batch-third"] {
+        repository
+            .insert_batch_with_events(
+                &NewUploadBatch {
+                    batch_id: batch_id.into(),
+                },
+                &[BatchEvent {
+                    event_id: format!("event-{batch_id}"),
+                    stable_id: "stable".into(),
+                    label: "document:edit".into(),
+                    category: "FOCUS_WORK".into(),
+                    taxonomy_version: "mvp-1".into(),
+                    classification_tier: "exact_match".into(),
+                    occurred_at: Utc.timestamp_opt(10, 0).unwrap(),
+                    duration_seconds: 5,
+                }],
+            )
+            .unwrap();
+    }
+    let uploader = TransportFailingUploader::default();
+    let coordinator = UploadCoordinator::new(
+        repository.clone(),
+        uploader.clone(),
+        FakePrivacyAlertSink::default(),
+    );
+
+    coordinator.flush_all_pending("1", "0.1.0").await.unwrap();
+
+    assert_eq!(*uploader.0.lock().unwrap(), 1);
+    assert!(repository
+        .host_backoff_until("dev-api.getvelvt.com")
+        .unwrap()
+        .is_some_and(|until| until > Utc::now()));
+    assert_eq!(repository.pending_batches().unwrap().len(), 3);
+}
+
+/// An uploader whose every request fails in transport, counting them.
+#[derive(Clone, Default)]
+struct TransportFailingUploader(Arc<Mutex<usize>>);
+
+impl BatchUploader for TransportFailingUploader {
+    fn upload<'a>(
+        &'a self,
+        _batch: &'a BatchPayload,
+    ) -> Pin<Box<dyn Future<Output = Result<UploadOutcome, BatchUploadError>> + Send + 'a>> {
+        *self.0.lock().unwrap() += 1;
+        Box::pin(async { Err(BatchUploadError::Transport) })
+    }
 }
 
 #[tokio::test]

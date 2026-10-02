@@ -424,6 +424,14 @@ impl UploadBatchStatus {
 /// recovery the device has made. A host that is simply gone reaches it in three
 /// days instead of one and stops generating retry traffic then.
 ///
+/// Those counts include deferrals: until 1.0.14 a batch the retry scan skipped
+/// because the host was in backoff spent an attempt as well, so every queued
+/// batch neared the ceiling together and an outage of about three days
+/// abandoned the whole queue. Only a request that was sent counts now. During
+/// an outage the scan sends the oldest due batch and defers the rest, so the
+/// ceiling ends one batch at a time, each after about three days of its own
+/// retries.
+///
 /// The ceiling is the belt, not the braces: `delete_stale_queued_batch` bounds
 /// the queue by age on its own, so this errs long. The cost of a ceiling that is
 /// too high is three days of retry traffic; the cost of one that is too low is

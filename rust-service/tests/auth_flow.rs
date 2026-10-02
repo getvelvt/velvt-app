@@ -264,6 +264,98 @@ async fn restored_session_validation_reissues_revoked_device_token_with_user_tok
     );
 }
 
+/// An access token inside the refresh buffer has not expired: the cloud still
+/// accepts it. A refresh that fails in transport must not stop it being used,
+/// must not move the auth state Swift shows, and must not be tried again by
+/// every request for the next minute, each waiting out its own timeout.
+#[tokio::test]
+async fn a_refresh_that_fails_in_transport_keeps_a_token_that_has_not_expired() {
+    let store = Arc::new(FakeTokenStore::default());
+    let current = token_pair(Duration::minutes(2), "current-access", "current-refresh");
+    store.store_pair(current.clone()).unwrap();
+    let http = Arc::new(FakeHttpClient::with_results(vec![
+        Err(AuthError::Transport),
+        Ok(response(200, None, None)),
+        Ok(response(200, None, None)),
+    ]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let states = state.subscribe();
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::minutes(5),
+    );
+
+    for _ in 0..2 {
+        let answered = manager
+            .send_authenticated(HttpRequest::get("/v1/events"))
+            .await
+            .unwrap();
+        assert_eq!(answered.status, 200);
+    }
+
+    let paths = http
+        .requests()
+        .into_iter()
+        .map(|request| request.path)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        vec!["/v1/auth/refresh", "/v1/events", "/v1/events"],
+        "the failed refresh was tried again within the minute"
+    );
+    assert!(http.requests()[1..]
+        .iter()
+        .all(|request| request.authorization.as_ref() == Some(current.access_token())));
+    assert_eq!(store.load_tokens().unwrap(), Some(current));
+    assert!(
+        !states.has_changed().unwrap(),
+        "a transport failure moved the auth state"
+    );
+}
+
+/// An expired token cannot be used, and a refresh that failed in transport a
+/// moment ago will not get through either: the request fails at once instead
+/// of waiting out another timeout.
+#[tokio::test]
+async fn an_expired_token_fails_at_once_while_a_refresh_failure_is_remembered() {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(
+            Duration::seconds(-1),
+            "old-access",
+            "old-refresh",
+        ))
+        .unwrap();
+    let http = Arc::new(FakeHttpClient::with_results(vec![Err(
+        AuthError::Transport,
+    )]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    for _ in 0..3 {
+        assert!(matches!(
+            manager
+                .send_authenticated(HttpRequest::get("/v1/events"))
+                .await,
+            Err(AuthError::Transport)
+        ));
+    }
+
+    assert_eq!(http.requests().len(), 1, "the refresh was tried again");
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+}
+
 #[tokio::test]
 async fn refresh_transport_failure_preserves_tokens_and_retries_next_cycle() {
     let store = Arc::new(FakeTokenStore::default());
@@ -283,7 +375,9 @@ async fn refresh_transport_failure_preserves_tokens_and_retries_next_cycle() {
         Arc::clone(&http),
         Arc::clone(&state),
         Duration::zero(),
-    );
+    )
+    // The next cycle, without waiting out the minute a failure is remembered.
+    .with_refresh_transport_retry_after(StdDuration::ZERO);
 
     assert!(matches!(
         manager
@@ -878,4 +972,104 @@ async fn forbidden_device_request_requires_reauthentication() {
         Err(AuthError::NeedsReauth)
     ));
     assert_eq!(state.current(), AuthState::NeedsReauth);
+}
+
+/// What `AccountAuthService::log_out` does to the local session, without
+/// waiting on the refresh lock.
+fn log_out_locally(store: &FakeTokenStore, state: &AuthStateMachine) {
+    let _ = state.transition(AuthState::Unauthenticated);
+    store.clear_tokens().unwrap();
+    store.clear_user_tokens().unwrap();
+    let _ = state.transition(AuthState::Unauthenticated);
+}
+
+async fn refresh_raced_by(
+    expires_in: Duration,
+    during_refresh: impl FnOnce(&FakeTokenStore, &AuthStateMachine),
+) -> (
+    Result<(), AuthError>,
+    Arc<FakeTokenStore>,
+    Arc<AuthStateMachine>,
+    Arc<FakeHttpClient>,
+) {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(expires_in, "old-access", "old-refresh"))
+        .unwrap();
+    let fresh = token_pair(Duration::hours(1), "refreshed-access", "refreshed-refresh");
+    let http = Arc::new(
+        FakeHttpClient::with_responses(vec![
+            response(200, None, Some(fresh)),
+            response(200, None, None),
+        ])
+        .with_refresh_delay(StdDuration::from_millis(300)),
+    );
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = Arc::new(AuthManager::new(
+        Arc::clone(&store),
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::minutes(5),
+    ));
+    let validation = {
+        let manager = Arc::clone(&manager);
+        tokio::spawn(async move { manager.validate_session().await })
+    };
+    tokio::time::sleep(StdDuration::from_millis(100)).await;
+    during_refresh(&store, &state);
+    let result = validation.await.unwrap();
+    (result, store, state, http)
+}
+
+#[tokio::test]
+async fn sign_out_during_a_refresh_ahead_of_expiry_stays_signed_out() {
+    let (result, store, state, http) =
+        refresh_raced_by(Duration::minutes(2), log_out_locally).await;
+
+    assert!(matches!(result, Err(AuthError::NeedsReauth)));
+    assert_eq!(state.current(), AuthState::Unauthenticated);
+    assert_eq!(store.load_tokens().unwrap(), None);
+    assert_eq!(
+        http.requests()
+            .iter()
+            .map(|request| request.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/v1/auth/refresh"]
+    );
+}
+
+#[tokio::test]
+async fn sign_out_during_a_refresh_of_an_expired_token_stays_signed_out() {
+    let (result, store, state, _) = refresh_raced_by(Duration::seconds(-1), log_out_locally).await;
+
+    assert!(matches!(result, Err(AuthError::NeedsReauth)));
+    assert_eq!(state.current(), AuthState::Unauthenticated);
+    assert_eq!(store.load_tokens().unwrap(), None);
+}
+
+#[tokio::test]
+async fn login_during_a_refresh_keeps_its_own_tokens() {
+    let login = token_pair(Duration::hours(1), "login-access", "login-refresh");
+    let stored_login = login.clone();
+    let (result, store, state, _) = refresh_raced_by(Duration::minutes(2), move |store, state| {
+        log_out_locally(store, state);
+        store.store_pair(stored_login).unwrap();
+        state
+            .transition(AuthState::Authenticated {
+                device_id: "device-1".into(),
+            })
+            .unwrap();
+    })
+    .await;
+
+    assert!(matches!(result, Err(AuthError::NeedsReauth)));
+    assert_eq!(
+        state.current(),
+        AuthState::Authenticated {
+            device_id: "device-1".into()
+        }
+    );
+    assert_eq!(store.load_tokens().unwrap(), Some(login));
 }

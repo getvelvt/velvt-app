@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     future::Future,
     hash::{BuildHasher, Hash, Hasher, RandomState},
     pin::Pin,
@@ -63,8 +63,18 @@ pub struct MenuStatusProvider {
     batches: Arc<dyn UploadBatchRepo>,
     raw_events: Arc<dyn RawEventRepo>,
     abstraction_map: Arc<dyn AbstractionMapRepo>,
-    readiness: Mutex<Option<(Instant, bool)>>,
+    readiness: Arc<Mutex<Readiness>>,
 }
+
+/// What `/v1/ready` last answered, and whether a probe is asking it now.
+#[derive(Default)]
+struct Readiness {
+    checked: Option<(Instant, bool)>,
+    probing: bool,
+}
+
+/// How long a readiness answer is used before the cloud is asked again.
+const READINESS_TTL: Duration = Duration::from_secs(60);
 
 impl MenuStatusProvider {
     pub fn new(
@@ -80,38 +90,48 @@ impl MenuStatusProvider {
             batches,
             raw_events,
             abstraction_map,
-            readiness: Mutex::new(None),
+            readiness: Arc::default(),
         }
+    }
+
+    /// The last readiness answer, `false` until there is one, starting a
+    /// probe in the background when the answer is missing or older than
+    /// `READINESS_TTL` and no probe is running.
+    ///
+    /// The probe is never awaited here. A menu status is built on the
+    /// connection that carries every raw event, and a probe of a cloud that
+    /// accepts the connection and never answers held it for the 10-second
+    /// HTTP timeout about once a minute.
+    fn cloud_ready(&self) -> bool {
+        let Ok(mut readiness) = self.readiness.lock() else {
+            return false;
+        };
+        let (ready, fresh) = match readiness.checked {
+            Some((checked_at, ready)) => (ready, checked_at.elapsed() < READINESS_TTL),
+            None => (false, false),
+        };
+        if !fresh && !readiness.probing {
+            readiness.probing = true;
+            let http = Arc::clone(&self.http);
+            let shared = Arc::clone(&self.readiness);
+            tokio::spawn(async move {
+                let ready = matches!(http.send(HttpRequest::get("/v1/ready")).await, Ok(response) if response.status / 100 == 2 && response.raw_body.as_ref().and_then(|body| body.get("status")).and_then(|value| value.as_str()) == Some("ready"));
+                if let Ok(mut readiness) = shared.lock() {
+                    readiness.checked = Some((Instant::now(), ready));
+                    readiness.probing = false;
+                }
+            });
+        }
+        ready
     }
 }
 
 impl MenuStatusProviding for MenuStatusProvider {
     fn snapshot<'a>(&'a self) -> Pin<Box<dyn Future<Output = MenuStatus> + Send + 'a>> {
         Box::pin(async move {
-            let cached_ready = self.readiness.lock().ok().and_then(|cache| {
-                cache.as_ref().and_then(|(checked_at, ready)| {
-                    (checked_at.elapsed() < Duration::from_secs(60)).then_some(*ready)
-                })
-            });
-            let cloud_ready = match cached_ready {
-                Some(ready) => ready,
-                None => {
-                    let ready = matches!(self.http.send(HttpRequest::get("/v1/ready")).await, Ok(response) if response.status / 100 == 2 && response.raw_body.as_ref().and_then(|body| body.get("status")).and_then(|value| value.as_str()) == Some("ready"));
-                    if let Ok(mut cache) = self.readiness.lock() {
-                        *cache = Some((Instant::now(), ready));
-                    }
-                    ready
-                }
-            };
-            let mut events: Vec<_> = self
-                .batches
-                .pending_batches()
-                .unwrap_or_default()
-                .into_iter()
-                .flat_map(|batch| batch.events)
-                .collect();
-            events.sort_by_key(|event| std::cmp::Reverse(event.occurred_at));
-            let queued_event_count = events.len() as u64;
+            let cloud_ready = self.cloud_ready();
+            let (queued_event_count, events) =
+                self.batches.queued_batch_events(10).unwrap_or_default();
             let event_ids = events
                 .iter()
                 .map(|event| event.event_id.clone())
@@ -362,6 +382,148 @@ mod tests {
                 })
             })
         }
+    }
+
+    /// A cloud that accepts the request and never answers.
+    #[derive(Default)]
+    struct BlackHoleHttp {
+        sent: std::sync::atomic::AtomicUsize,
+    }
+
+    impl HttpClient for BlackHoleHttp {
+        fn send<'a>(
+            &'a self,
+            _request: HttpRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, AuthError>> + Send + 'a>> {
+            self.sent.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// Lets background tasks run until `done` holds.
+    async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "never happened: {what}");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// The readiness probe is never awaited by a status: against a cloud that
+    /// never answers, every status is built at once, says the cloud is not
+    /// ready, and one probe at a time is outstanding.
+    #[tokio::test]
+    async fn a_menu_status_never_waits_on_the_readiness_probe() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let http = Arc::new(BlackHoleHttp::default());
+        let provider = MenuStatusProvider::new(
+            Arc::clone(&http) as Arc<dyn HttpClient>,
+            Arc::new(FakeTokenStore::default()) as Arc<dyn TokenStore>,
+            persistence.upload_batch_repo(),
+            persistence.raw_event_repo(),
+            persistence.abstraction_map_repo(),
+        );
+
+        for _ in 0..3 {
+            let status = tokio::time::timeout(Duration::from_millis(100), provider.snapshot())
+                .await
+                .expect("the status waited on the probe");
+            assert!(!status.cloud_ready);
+            assert_eq!(status.upload_status, "network_unavailable");
+        }
+        eventually("the probe was sent", || {
+            http.sent.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        provider.snapshot().await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            http.sent.load(Ordering::SeqCst),
+            1,
+            "a second probe started while the first was outstanding"
+        );
+    }
+
+    /// The probe's answer is reported once it arrives.
+    #[tokio::test]
+    async fn a_menu_status_reports_the_probes_answer_once_it_arrives() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let provider = MenuStatusProvider::new(
+            Arc::new(ReadyHttp) as Arc<dyn HttpClient>,
+            Arc::new(FakeTokenStore::default()) as Arc<dyn TokenStore>,
+            persistence.upload_batch_repo(),
+            persistence.raw_event_repo(),
+            persistence.abstraction_map_repo(),
+        );
+
+        assert!(!provider.snapshot().await.cloud_ready);
+        let readiness = Arc::clone(&provider.readiness);
+        eventually("the probe answered", || {
+            readiness
+                .lock()
+                .unwrap()
+                .checked
+                .is_some_and(|(_, ready)| ready)
+        })
+        .await;
+        assert!(provider.snapshot().await.cloud_ready);
+    }
+
+    /// The queued count is counted, not loaded: every queued event counts,
+    /// and only the newest ten are listed.
+    #[tokio::test]
+    async fn a_menu_status_counts_every_queued_event_and_lists_the_newest_ten() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let batches = persistence.upload_batch_repo();
+        for batch in 0..4 {
+            let events = (0..5)
+                .map(|event| {
+                    let seconds = batch * 5 + event;
+                    crate::persistence::BatchEvent {
+                        event_id: Uuid::from_u128(seconds as u128 + 1).to_string(),
+                        stable_id: format!("stable-{seconds}"),
+                        label: "document:code".into(),
+                        category: "FOCUS_WORK".into(),
+                        taxonomy_version: "mvp-2".into(),
+                        classification_tier: "exact_match".into(),
+                        occurred_at: chrono::DateTime::from_timestamp(1_000 + seconds, 0).unwrap(),
+                        duration_seconds: 5,
+                    }
+                })
+                .collect::<Vec<_>>();
+            batches
+                .insert_batch_with_events(
+                    &crate::persistence::NewUploadBatch {
+                        batch_id: format!("batch-{batch}"),
+                    },
+                    &events,
+                )
+                .unwrap();
+        }
+        batches.mark_sent("batch-0").unwrap();
+        let provider = MenuStatusProvider::new(
+            Arc::new(ReadyHttp) as Arc<dyn HttpClient>,
+            Arc::new(FakeTokenStore::default()) as Arc<dyn TokenStore>,
+            batches,
+            persistence.raw_event_repo(),
+            persistence.abstraction_map_repo(),
+        );
+
+        let status = provider.snapshot().await;
+
+        assert_eq!(status.queued_event_count, 15);
+        let listed = status
+            .queued_events
+            .iter()
+            .map(|event| event.stable_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            listed,
+            (10..20)
+                .rev()
+                .map(|seconds| format!("stable-{seconds}"))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
@@ -1450,6 +1612,10 @@ mod tests {
             Vec::<String>::new(),
             "teaching a site made a correction request"
         );
+        eventually("the readiness probe was sent", || {
+            !status_http.requests().is_empty()
+        })
+        .await;
         let status_requests = status_http.requests();
         assert!(
             !status_requests.is_empty(),
@@ -1925,6 +2091,7 @@ mod tests {
     #[derive(Default)]
     struct UnreachableCloud {
         calls: std::sync::atomic::AtomicUsize,
+        insight_calls: std::sync::atomic::AtomicUsize,
         cached: std::sync::Mutex<Option<velvt_shared_types::HistoryPayload>>,
     }
 
@@ -1966,7 +2133,24 @@ mod tests {
                     + 'a,
             >,
         > {
-            Box::pin(async { Ok(None) })
+            self.insight_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Err(CacheError::Fetch(crate::delivery::FetchError::ApiError {
+                    status: 522,
+                }))
+            })
+        }
+
+        fn cached_daily_insight<'a>(
+            &'a self,
+            _date: chrono::NaiveDate,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Option<Option<velvt_shared_types::InsightPayload>>> + Send + 'a,
+            >,
+        > {
+            Box::pin(async { None })
         }
 
         fn invalidate_history<'a>(
@@ -2032,6 +2216,15 @@ mod tests {
                 site_stable_id: None,
             })
             .unwrap();
+    }
+
+    /// Waits until no background cloud read the router started is running.
+    async fn cloud_reads_settled(router: &R7Router) {
+        eventually("the background cloud reads finished", || {
+            !router.cloud_history_fetch.load(Ordering::SeqCst)
+                && router.cloud_insight_fetch.lock().unwrap().is_empty()
+        })
+        .await;
     }
 
     async fn daily_history(router: &R7Router) -> ServerMessage {
@@ -2126,6 +2319,7 @@ mod tests {
         );
 
         let history = this_mac_history(daily_history(&router).await);
+        cloud_reads_settled(&router).await;
 
         assert_eq!(cloud.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(history.days, 14);
@@ -2135,13 +2329,11 @@ mod tests {
             .any(|day| day.status == velvt_shared_types::HistoryStatus::Ready));
     }
 
-    /// The connection reads one message at a time, so every request that
-    /// waited on an unreachable cloud held the connection for its timeout.
     /// Once the cloud has failed, later requests are answered on this Mac
     /// without asking it: Swift asks each time Patterns opens and every ten
     /// minutes while its history is this Mac's.
     #[tokio::test]
-    async fn an_unreachable_cloud_is_waited_on_once_per_outage() {
+    async fn an_unreachable_cloud_is_asked_once_per_outage() {
         let persistence = SqlitePersistence::open_in_memory().unwrap();
         an_observed_half_hour(&persistence);
         let cloud = Arc::new(UnreachableCloud::default());
@@ -2152,14 +2344,16 @@ mod tests {
         );
 
         this_mac_history(daily_history(&router).await);
+        cloud_reads_settled(&router).await;
         for _ in 0..3 {
             this_mac_history(daily_history(&router.clone()).await);
         }
+        cloud_reads_settled(&router).await;
 
         assert_eq!(
             cloud.calls.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "the cloud was waited on again during the outage"
+            "the cloud was asked again during the outage"
         );
     }
 
@@ -2176,6 +2370,7 @@ mod tests {
             signed_in(),
         );
         this_mac_history(daily_history(&router).await);
+        cloud_reads_settled(&router).await;
 
         *cloud.cached.lock().unwrap() = Some(synced_week());
         let ServerMessage::HistoryPayload(history) = daily_history(&router).await else {
@@ -2186,6 +2381,7 @@ mod tests {
 
         *cloud.cached.lock().unwrap() = None;
         this_mac_history(daily_history(&router).await);
+        cloud_reads_settled(&router).await;
         assert_eq!(cloud.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
@@ -2201,17 +2397,20 @@ mod tests {
         let calls = || cloud.calls.load(std::sync::atomic::Ordering::SeqCst);
 
         daily_history(&router).await;
+        cloud_reads_settled(&router).await;
         router
             .route(ClientMessage::LogOut(velvt_shared_types::LogOut {}))
             .await
             .unwrap();
         daily_history(&router).await;
+        cloud_reads_settled(&router).await;
         assert_eq!(calls(), 2, "a log out did not end the outage");
 
         auth.send(AuthState::Unauthenticated).unwrap();
         daily_history(&router).await;
         auth.send(signed_in()).unwrap();
         daily_history(&router).await;
+        cloud_reads_settled(&router).await;
         assert_eq!(calls(), 3, "a signed-out request did not end the outage");
     }
 
@@ -2308,6 +2507,205 @@ mod tests {
         assert_eq!(history.source, velvt_shared_types::HistorySource::Cloud);
     }
 
+    async fn latest_insight(router: &R7Router) -> Option<ServerMessage> {
+        router
+            .route(ClientMessage::RequestLatestInsight(
+                velvt_shared_types::RequestLatestInsight {
+                    date: Utc::now().date_naive(),
+                },
+            ))
+            .await
+            .unwrap()
+    }
+
+    /// A cache miss is not answered by waiting on the cloud: the request is
+    /// answered from where the read finishes, as a push, and the answer to an
+    /// unreachable cloud is `backend_unavailable`. Until a session change or
+    /// a cached answer ends the outage, later requests are answered at once
+    /// and do not ask the cloud.
+    #[tokio::test]
+    async fn an_unreachable_cloud_answers_the_insight_by_push_and_once_per_outage() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let cloud = Arc::new(UnreachableCloud::default());
+        let queue = crate::delivery::PushQueue::new(8);
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            signed_in(),
+        )
+        .with_delivery_push(crate::delivery::PushAdapter::new(Arc::clone(&queue)));
+        let insight_calls = || cloud.insight_calls.load(Ordering::SeqCst);
+
+        assert_eq!(latest_insight(&router).await, None);
+        cloud_reads_settled(&router).await;
+        assert_eq!(
+            queue.try_pop().await,
+            Some(cache_empty("insight_payload", "backend_unavailable"))
+        );
+
+        for _ in 0..3 {
+            assert_eq!(
+                latest_insight(&router.clone()).await,
+                Some(cache_empty("insight_payload", "backend_unavailable"))
+            );
+        }
+        assert_eq!(
+            insight_calls(),
+            1,
+            "the cloud was asked again during the outage"
+        );
+
+        router
+            .route(ClientMessage::LogOut(velvt_shared_types::LogOut {}))
+            .await
+            .unwrap();
+        assert_eq!(latest_insight(&router).await, None);
+        cloud_reads_settled(&router).await;
+        assert_eq!(insight_calls(), 2, "a log out did not end the outage");
+    }
+
+    /// An insight the cache holds, or the cloud's cached answer that there is
+    /// none, is the answer, with no read of the cloud.
+    #[tokio::test]
+    async fn a_cached_insight_answer_is_sent_at_once() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let router = history_router(
+            &persistence,
+            Arc::new(
+                crate::delivery::FakeCacheManager::new()
+                    .with_insight(Utc::now().date_naive(), None),
+            ),
+            signed_in(),
+        );
+
+        assert_eq!(
+            latest_insight(&router).await,
+            Some(cache_empty("insight_payload", "insufficient_evidence"))
+        );
+        assert!(router.cloud_insight_fetch.lock().unwrap().is_empty());
+    }
+
+    /// A cloud whose insight read takes a while and finds none.
+    #[derive(Default)]
+    struct SlowInsightCloud {
+        insight_dates: std::sync::Mutex<Vec<chrono::NaiveDate>>,
+    }
+
+    impl crate::delivery::CacheManager for SlowInsightCloud {
+        fn daily_history<'a>(
+            &'a self,
+            _days: u8,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<velvt_shared_types::HistoryPayload, CacheError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async {
+                Err(CacheError::Fetch(crate::delivery::FetchError::ApiError {
+                    status: 522,
+                }))
+            })
+        }
+
+        fn cached_daily_history<'a>(
+            &'a self,
+            _days: u8,
+        ) -> Pin<Box<dyn Future<Output = Option<velvt_shared_types::HistoryPayload>> + Send + 'a>>
+        {
+            Box::pin(async { None })
+        }
+
+        fn daily_insight<'a>(
+            &'a self,
+            date: chrono::NaiveDate,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Option<velvt_shared_types::InsightPayload>, CacheError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            self.insight_dates.lock().unwrap().push(date);
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok(None)
+            })
+        }
+
+        fn cached_daily_insight<'a>(
+            &'a self,
+            _date: chrono::NaiveDate,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Option<Option<velvt_shared_types::InsightPayload>>> + Send + 'a,
+            >,
+        > {
+            Box::pin(async { None })
+        }
+
+        fn invalidate_history<'a>(
+            &'a self,
+            _date: Option<chrono::NaiveDate>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn invalidate_insights<'a>(
+            &'a self,
+            _date: Option<chrono::NaiveDate>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn invalidate_all<'a>(
+            &'a self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CacheError>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    async fn insight_for(router: &R7Router, date: chrono::NaiveDate) -> Option<ServerMessage> {
+        router
+            .route(ClientMessage::RequestLatestInsight(
+                velvt_shared_types::RequestLatestInsight { date },
+            ))
+            .await
+            .unwrap()
+    }
+
+    /// A request for one date while another date's read is in flight gets a
+    /// read, and a push, of its own; a repeat of a date in flight starts none.
+    #[tokio::test]
+    async fn an_insight_read_in_flight_does_not_swallow_another_dates_request() {
+        let persistence = SqlitePersistence::open_in_memory().unwrap();
+        let cloud = Arc::new(SlowInsightCloud::default());
+        let queue = crate::delivery::PushQueue::new(8);
+        let router = history_router(
+            &persistence,
+            Arc::clone(&cloud) as Arc<dyn crate::delivery::CacheManager>,
+            signed_in(),
+        )
+        .with_delivery_push(crate::delivery::PushAdapter::new(Arc::clone(&queue)));
+        let today = Utc::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+
+        assert_eq!(insight_for(&router, today).await, None);
+        assert_eq!(insight_for(&router, today).await, None);
+        assert_eq!(insight_for(&router, yesterday).await, None);
+        cloud_reads_settled(&router).await;
+
+        assert_eq!(*cloud.insight_dates.lock().unwrap(), vec![today, yesterday]);
+        for _ in 0..2 {
+            assert_eq!(
+                queue.try_pop().await,
+                Some(cache_empty("insight_payload", "insufficient_evidence"))
+            );
+        }
+        assert_eq!(queue.try_pop().await, None);
+    }
+
     /// The two tiers that read declared metadata have to survive the round trip
     /// through the audit row, or the menu reports them as `fallback`.
     #[test]
@@ -2366,9 +2764,23 @@ pub struct R7Router {
     in_progress_dwells: Arc<InProgressDwells>,
     /// Set when the cloud failed to give `request_latest_history` a usable
     /// history, and shared by every connection's clone of the router. While
-    /// it is set a history request never waits on the cloud (see
+    /// it is set a history request does not ask the cloud (see
     /// `history_response`).
     cloud_history_outage: Arc<AtomicBool>,
+    /// The same for `request_latest_insight` (see `insight_response`).
+    cloud_insight_outage: Arc<AtomicBool>,
+    /// Each set while its background task runs, so a request repeated while
+    /// the cloud is slow starts no second one. Shared like the outages.
+    cloud_history_fetch: Arc<AtomicBool>,
+    /// The dates whose insight a background task is reading. Keyed by date:
+    /// a request for another date is answered by its own read, not dropped
+    /// behind the first.
+    cloud_insight_fetch: Arc<Mutex<HashSet<chrono::NaiveDate>>>,
+    session_validation: Arc<AtomicBool>,
+    upload_flush: Arc<AtomicBool>,
+    /// Where an answer that arrives after its request is sent: an insight
+    /// fetched in the background (see `insight_response`).
+    delivery_push: Option<Arc<PushAdapter>>,
 }
 
 impl R7Router {
@@ -2399,6 +2811,12 @@ impl R7Router {
             auth_state: None,
             in_progress_dwells: Arc::default(),
             cloud_history_outage: Arc::default(),
+            cloud_insight_outage: Arc::default(),
+            cloud_history_fetch: Arc::default(),
+            cloud_insight_fetch: Arc::default(),
+            session_validation: Arc::default(),
+            upload_flush: Arc::default(),
+            delivery_push: None,
         }
     }
 
@@ -2436,6 +2854,14 @@ impl R7Router {
 
     pub fn with_auth_state(mut self, auth_state: tokio::sync::watch::Receiver<AuthState>) -> Self {
         self.auth_state = Some(auth_state);
+        self
+    }
+
+    /// Attaches the queue that carries answers the cloud gives after their
+    /// request was answered. Without it, an insight request the cache cannot
+    /// answer is answered `cache_empty(backend_unavailable)`.
+    pub fn with_delivery_push(mut self, push: Arc<PushAdapter>) -> Self {
+        self.delivery_push = Some(push);
         self
     }
 
@@ -2552,35 +2978,43 @@ impl MessageRouter for R7Router {
                 // An account switch expires any invitation left over from
                 // the previous session.
                 self.expire_open_invitation();
-                self.forget_cloud_history_outage();
+                self.forget_cloud_outages();
                 Ok(Some(self.account.log_in(req.email, req.password).await))
             }
 
             ClientMessage::AuthSession(session) => {
                 self.account.apply_session(session);
-                self.forget_cloud_history_outage();
+                self.forget_cloud_outages();
+                // Validated in the background: Swift sends the session on
+                // every connection, and a validation that waited on an
+                // unreachable cloud held back every raw event behind it. The
+                // outcome reaches Swift as the auth state the validation
+                // leaves, not as a reply.
                 if let Some(session_validator) = &self.session_validator {
-                    match session_validator.validate_restored_session().await {
-                        Ok(()) => {
-                            tracing::info!(
-                                message_type = "auth_session",
-                                "restored auth session validated"
-                            );
+                    let session_validator = Arc::clone(session_validator);
+                    spawn_single_flight(&self.session_validation, async move {
+                        match session_validator.validate_restored_session().await {
+                            Ok(()) => {
+                                tracing::info!(
+                                    message_type = "auth_session",
+                                    "restored auth session validated"
+                                );
+                            }
+                            Err(AuthError::Transport | AuthError::RateLimited) => {
+                                tracing::warn!(
+                                    message_type = "auth_session",
+                                    "restored auth session validation was deferred"
+                                );
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    message_type = "auth_session",
+                                    error = %error,
+                                    "restored auth session validation failed"
+                                );
+                            }
                         }
-                        Err(AuthError::Transport | AuthError::RateLimited) => {
-                            tracing::warn!(
-                                message_type = "auth_session",
-                                "restored auth session validation was deferred"
-                            );
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                message_type = "auth_session",
-                                error = %error,
-                                "restored auth session validation failed"
-                            );
-                        }
-                    }
+                    });
                 }
                 Ok(None)
             }
@@ -2590,8 +3024,8 @@ impl MessageRouter for R7Router {
                 // not outlive it (requirement: logout/account switch
                 // expires invitation state).
                 self.expire_open_invitation();
-                self.forget_cloud_history_outage();
-                self.account.log_out().await;
+                self.forget_cloud_outages();
+                self.account.log_out();
                 Ok(None)
             }
 
@@ -2650,19 +3084,20 @@ impl MessageRouter for R7Router {
             }
 
             ClientMessage::FlushUploadQueue(_) => {
-                if self.ingestor.flush_now().await.is_err() {
-                    tracing::error!(
-                        error_code = "upload_flush_now_failed",
-                        "failed to flush the upload queue"
-                    );
-                    return Ok(Some(ServerMessage::ErrorResponse(
-                        velvt_shared_types::ErrorResponse {
-                            code: "upload_flush_failed".into(),
-                            message: "Unable to send queued events. Try again later.".into(),
-                            related_event_id: None,
-                        },
-                    )));
-                }
+                // "Send all now" is answered with the queue as it stands and
+                // sent in the background: one batch after another against an
+                // unreachable host held the connection for a request timeout
+                // each. The menu status Swift asks for next shows the outcome.
+                // A press while a drain is running starts no second one.
+                let ingestor = Arc::clone(&self.ingestor);
+                spawn_single_flight(&self.upload_flush, async move {
+                    if ingestor.flush_now().await.is_err() {
+                        tracing::error!(
+                            error_code = "upload_flush_now_failed",
+                            "failed to flush the upload queue"
+                        );
+                    }
+                });
                 Ok(Some(ServerMessage::MenuStatus(
                     self.menu_status.snapshot().await,
                 )))
@@ -2746,26 +3181,31 @@ impl MessageRouter for R7Router {
                     )));
                 }
 
+                // Best-effort, and sent in the background: the correction has
+                // taken effect on this Mac, and its confirmation must not wait
+                // on the cloud.
                 if self.upload_eligible() {
-                    match correction_http
-                        .send(HttpRequest::patch(
-                            format!("/v1/events/{}/classification", correction.event_id),
-                            serde_json::json!({ "category": correction.category }),
-                        ))
-                        .await
-                    {
-                        Ok(response) if response.status / 100 == 2 || response.status == 404 => {}
-                        Ok(response) => tracing::warn!(
-                            status = response.status,
-                            error_code = "classification_correction_sync_failed",
-                            "local classification correction saved but cloud sync failed"
-                        ),
-                        Err(error) => tracing::warn!(
-                            error = %error,
-                            error_code = "classification_correction_sync_failed",
-                            "local classification correction saved but cloud sync was deferred"
-                        ),
-                    }
+                    let correction_http = Arc::clone(correction_http);
+                    let request = HttpRequest::patch(
+                        format!("/v1/events/{}/classification", correction.event_id),
+                        serde_json::json!({ "category": correction.category }),
+                    );
+                    tokio::spawn(async move {
+                        match correction_http.send(request).await {
+                            Ok(response)
+                                if response.status / 100 == 2 || response.status == 404 => {}
+                            Ok(response) => tracing::warn!(
+                                status = response.status,
+                                error_code = "classification_correction_sync_failed",
+                                "local classification correction saved but cloud sync failed"
+                            ),
+                            Err(error) => tracing::warn!(
+                                error = %error,
+                                error_code = "classification_correction_sync_failed",
+                                "local classification correction saved but cloud sync was deferred"
+                            ),
+                        }
+                    });
                 }
                 Ok(Some(ServerMessage::MenuStatus(
                     self.menu_status_acknowledging(
@@ -3404,34 +3844,7 @@ impl MessageRouter for R7Router {
                 }
             }
 
-            ClientMessage::RequestLatestInsight(req) => {
-                let result = self.cache.daily_insight(req.date).await;
-                let response = match result {
-                    Ok(Some(insight)) => match shaper::shape_insight(insight) {
-                        Ok(validated) => ServerMessage::InsightPayload(validated.into_inner()),
-                        Err(err) => {
-                            tracing::warn!(
-                                message_type = "insight_payload",
-                                error_code = "outbound_validation_failed",
-                                error = %err,
-                                "shaped insight failed validation; sending cache_empty"
-                            );
-                            cache_empty("insight_payload", "invalid_cached_payload")
-                        }
-                    },
-                    Ok(None) => cache_empty("insight_payload", "insufficient_evidence"),
-                    Err(err) => {
-                        tracing::warn!(
-                            date = %req.date,
-                            error_code = "cache_read_failed",
-                            error = %err,
-                            "failed to read insight from cache"
-                        );
-                        cache_empty("insight_payload", "backend_unavailable")
-                    }
-                };
-                Ok(Some(response))
-            }
+            ClientMessage::RequestLatestInsight(req) => Ok(self.insight_response(req.date).await),
 
             ClientMessage::RequestLatestHistory(req) => Ok(Some(self.history_response(req).await)),
 
@@ -3561,47 +3974,37 @@ fn parse_classification_source(value: Option<&str>) -> ClassificationSource {
 }
 
 impl R7Router {
-    /// Synced daily summaries when the cloud answers, and summaries built on
-    /// this Mac otherwise (protocol 33).
+    /// Synced daily summaries when the cache holds them, and summaries built
+    /// on this Mac otherwise (protocol 33).
     ///
-    /// Cloud-first: signed in, the cloud's history is sent whenever it can be
-    /// read and passes the shaper. Signed out, or when the read fails for any
-    /// reason (unreachable, a timeout, a non-200, an unparseable body, no rows
-    /// at all), the reply is built on this Mac (`source: this_mac`) instead of
+    /// Signed in, the cloud's history is sent whenever the cache holds it and
+    /// it passes the shaper. Signed out, or when the cache cannot answer, the
+    /// reply is built on this Mac (`source: this_mac`) instead of
     /// `cache_empty`: until protocol 33 the Patterns card had no source but
-    /// the cloud, so an outage, and every signed-out Mac, left it with
-    /// nothing to say about days this Mac had watched. Only when the local
-    /// read fails too is the answer `cache_empty(local_history_unavailable)`.
+    /// the cloud, so an outage, and every signed-out Mac, left it with nothing
+    /// to say about days this Mac had watched. Only when the local read fails
+    /// too is the answer `cache_empty(local_history_unavailable)`.
     ///
-    /// The cloud is waited on once per outage, not once per request. The
-    /// connection reads one message at a time, so a cloud read that runs to
-    /// the 10-second HTTP timeout holds back every raw event, command and
-    /// push behind it, and Swift asks for history each time Patterns opens
-    /// and every ten minutes while its history is this Mac's. After a failed
-    /// read, requests are answered from the cache when the cloud's history is
-    /// back in it, and otherwise on this Mac at once, without a request. The
-    /// fetch scheduler keeps asking the cloud in its own task every
-    /// `VELVT_FETCH_INTERVAL_SECONDS` and pushes the history when it answers
-    /// (`FetchService::daily_history`), which is how a recovered cloud reaches
-    /// the card, and fills the cache that ends the outage here. A session
-    /// change (log in, log out, a restored session) ends it too.
+    /// The cloud is never waited on here. The connection reads one message at
+    /// a time, so a cloud read that ran to the 10-second HTTP timeout held
+    /// back every raw event, command and push behind it. On a cache miss the
+    /// cloud is asked in a background task, and `FetchService::daily_history`
+    /// pushes what it fetches when the history has a ready day; until then
+    /// the card shows this Mac's. A failed read marks an outage, during which
+    /// requests do not ask the cloud at all: the fetch scheduler keeps asking
+    /// in its own task every `VELVT_FETCH_INTERVAL_SECONDS`, pushes the
+    /// history when the cloud answers, and fills the cache that ends the
+    /// outage here. A session change (log in, log out, a restored session)
+    /// ends it too.
     async fn history_response(&self, request: RequestLatestHistory) -> ServerMessage {
         if !self.signed_in() {
-            self.forget_cloud_history_outage();
+            self.forget_cloud_outages();
             return self.local_history_response(&request);
         }
-        if self.cloud_history_outage.load(Ordering::Relaxed) {
-            if let Some(history) = self.cache.cached_daily_history(request.days).await {
-                if let Ok(validated) = shaper::shape_history(history) {
-                    self.forget_cloud_history_outage();
-                    return self.synced_or_local_history(&request, validated.into_inner());
-                }
-            }
-            return self.local_history_response(&request);
-        }
-        match self.cache.daily_history(request.days).await {
-            Ok(history) => match shaper::shape_history(history) {
+        if let Some(history) = self.cache.cached_daily_history(request.days).await {
+            match shaper::shape_history(history) {
                 Ok(validated) => {
+                    self.cloud_history_outage.store(false, Ordering::Relaxed);
                     return self.synced_or_local_history(&request, validated.into_inner());
                 }
                 Err(err) => {
@@ -3609,21 +4012,103 @@ impl R7Router {
                         message_type = "history_payload",
                         error_code = "outbound_validation_failed",
                         error = %err,
-                        "cloud history failed validation; building it on this Mac"
+                        "cached cloud history failed validation; building it on this Mac"
                     );
                 }
-            },
-            Err(err) => {
-                tracing::warn!(
-                    days = request.days,
-                    error_code = "cache_read_failed",
-                    error = %err,
-                    "cloud history unavailable; building it on this Mac"
-                );
             }
         }
-        self.cloud_history_outage.store(true, Ordering::Relaxed);
+        if !self.cloud_history_outage.load(Ordering::Relaxed) {
+            self.fetch_cloud_history(request.days);
+        }
         self.local_history_response(&request)
+    }
+
+    /// Asks the cloud for its history in a background task, unless one is
+    /// already asking, and marks an outage when the read fails.
+    fn fetch_cloud_history(&self, days: u8) {
+        let cache = Arc::clone(&self.cache);
+        let outage = Arc::clone(&self.cloud_history_outage);
+        spawn_single_flight(&self.cloud_history_fetch, async move {
+            let failed = match cache.daily_history(days).await {
+                Ok(history) => match shaper::shape_history(history) {
+                    Ok(_) => false,
+                    Err(err) => {
+                        tracing::warn!(
+                            message_type = "history_payload",
+                            error_code = "outbound_validation_failed",
+                            error = %err,
+                            "cloud history failed validation"
+                        );
+                        true
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!(
+                        days,
+                        error_code = "cache_read_failed",
+                        error = %err,
+                        "cloud history unavailable"
+                    );
+                    true
+                }
+            };
+            if failed {
+                outage.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+
+    /// The insight for `date` from the cache, or none yet.
+    ///
+    /// Answered from the cache when it holds the insight, or holds the cloud's
+    /// answer that there is none. Otherwise the cloud is asked in a background
+    /// task, for the reason `history_response` gives, and this request gets
+    /// its answer from there as a push: the insight (`FetchService` pushes
+    /// every insight it fetches), `cache_empty(insufficient_evidence)` when
+    /// the cloud has none, or `cache_empty(backend_unavailable)` when it
+    /// cannot be read, which also marks an outage. During an outage, requests
+    /// are answered `cache_empty(backend_unavailable)` at once and do not ask
+    /// the cloud; the fetch scheduler's own reads fill the cache that ends it,
+    /// and a session change ends it too. One read runs per date: a repeat of
+    /// a date being read starts none, and another date gets its own.
+    async fn insight_response(&self, date: chrono::NaiveDate) -> Option<ServerMessage> {
+        if let Some(cached) = self.cache.cached_daily_insight(date).await {
+            self.cloud_insight_outage.store(false, Ordering::Relaxed);
+            return Some(match cached {
+                Some(insight) => shaped_insight(insight),
+                None => cache_empty("insight_payload", "insufficient_evidence"),
+            });
+        }
+        if self.cloud_insight_outage.load(Ordering::Relaxed) {
+            return Some(cache_empty("insight_payload", "backend_unavailable"));
+        }
+        let cache = Arc::clone(&self.cache);
+        let outage = Arc::clone(&self.cloud_insight_outage);
+        let push = self.delivery_push.clone();
+        spawn_single_flight_per_key(&self.cloud_insight_fetch, date, async move {
+            let reason = match cache.daily_insight(date).await {
+                Ok(Some(_)) => return,
+                Ok(None) => "insufficient_evidence",
+                Err(err) => {
+                    tracing::warn!(
+                        date = %date,
+                        error_code = "cache_read_failed",
+                        error = %err,
+                        "failed to read insight from cache"
+                    );
+                    outage.store(true, Ordering::Relaxed);
+                    "backend_unavailable"
+                }
+            };
+            if let Some(push) = push {
+                push.push_cache_empty_because("insight_payload", reason)
+                    .await;
+            }
+        });
+        match self.delivery_push {
+            Some(_) => None,
+            None => Some(cache_empty("insight_payload", "backend_unavailable")),
+        }
     }
 
     /// The synced history, unless it has no ready day and this Mac has one.
@@ -3649,9 +4134,10 @@ impl R7Router {
         }
     }
 
-    /// The next signed-in history request asks the cloud again.
-    fn forget_cloud_history_outage(&self) {
+    /// The next signed-in history or insight request asks the cloud again.
+    fn forget_cloud_outages(&self) {
         self.cloud_history_outage.store(false, Ordering::Relaxed);
+        self.cloud_insight_outage.store(false, Ordering::Relaxed);
     }
 
     fn local_history_response(&self, request: &RequestLatestHistory) -> ServerMessage {
@@ -4348,6 +4834,73 @@ fn work_block_error(code: &str) -> ServerMessage {
         message: "Unable to update this local work block. Try again.".into(),
         related_event_id: None,
     })
+}
+
+fn shaped_insight(insight: velvt_shared_types::InsightPayload) -> ServerMessage {
+    match shaper::shape_insight(insight) {
+        Ok(validated) => ServerMessage::InsightPayload(validated.into_inner()),
+        Err(err) => {
+            tracing::warn!(
+                message_type = "insight_payload",
+                error_code = "outbound_validation_failed",
+                error = %err,
+                "shaped insight failed validation; sending cache_empty"
+            );
+            cache_empty("insight_payload", "invalid_cached_payload")
+        }
+    }
+}
+
+/// Runs `task` in the background unless the task `running` marks has not
+/// finished, in which case `task` is dropped unrun.
+fn spawn_single_flight<F>(running: &Arc<AtomicBool>, task: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    struct Finished(Arc<AtomicBool>);
+    impl Drop for Finished {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    if running.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let finished = Finished(Arc::clone(running));
+    tokio::spawn(async move {
+        let _finished = finished;
+        task.await;
+    });
+}
+
+/// `spawn_single_flight` for one `key` of several: `task` is dropped unrun
+/// only while a task for the same key has not finished.
+fn spawn_single_flight_per_key<K, F>(running: &Arc<Mutex<HashSet<K>>>, key: K, task: F)
+where
+    K: Eq + Hash + Clone + Send + 'static,
+    F: Future<Output = ()> + Send + 'static,
+{
+    struct Finished<K: Eq + Hash>(Arc<Mutex<HashSet<K>>>, K);
+    impl<K: Eq + Hash> Drop for Finished<K> {
+        fn drop(&mut self) {
+            self.0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&self.1);
+        }
+    }
+    if !running
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key.clone())
+    {
+        return;
+    }
+    let finished = Finished(Arc::clone(running), key);
+    tokio::spawn(async move {
+        let _finished = finished;
+        task.await;
+    });
 }
 
 fn cache_empty(payload_type: &'static str, reason: &'static str) -> ServerMessage {

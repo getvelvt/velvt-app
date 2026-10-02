@@ -498,6 +498,214 @@ final class WorkBlockCoordinatorTests: XCTestCase {
         try await waitUntil { coordinator.explanation == nil }
     }
 
+    // MARK: - The dwell in progress at a block boundary
+
+    /// The defect: the service closes a block's last ledger row where that
+    /// dwell's closed report says it ended, and a dwell is reported closed
+    /// only when the person leaves it. A block spent entirely in the editor
+    /// ended with no closed report at all and a coverage of 0.0. Ending must
+    /// put that report on the socket first, through the real relay, which
+    /// sends on a task of its own.
+    func testEndingAnActiveBlockSendsTheClosedDwellBeforeEndWorkBlock() async throws {
+        let client = FakeIPCClient()
+        client.setConnectionStatus(.connected)
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        // Let the relay's own status observer deliver `.connected`.
+        try await Task.sleep(for: .milliseconds(100))
+        let dwell = RawEvent(
+            appName: "Editor",
+            windowTitle: "code",
+            occurredAt: Date(timeIntervalSince1970: 1_800_000_000),
+            durationSeconds: 300
+        )
+        let flushes = FlushCounter()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let coordinator = WorkBlockCoordinator(
+            ipcClient: client,
+            flushPendingDwell: {
+                flushes.count += 1
+                relay.receive(dwell)
+                await relay.waitForQueuedEvents()
+            },
+            sleep: { _ in try await Task.sleep(for: .seconds(3_600)) }
+        )
+        coordinator.start(messages: messages, connectionStatus: Empty<ConnectionStatus, Never>())
+        let snapshot = activeSnapshot()
+        messages.send(.workBlockState(snapshot))
+        try await waitUntil { coordinator.snapshot == snapshot }
+
+        coordinator.end()
+        try await waitUntil {
+            client.sentMessages.contains(.endWorkBlock(.init(blockID: snapshot.blockID!)))
+        }
+
+        let sent = client.sentMessages.compactMap { message -> String? in
+            switch message {
+            case .rawEvent(let event): return "raw:\(event.appName):\(event.durationSeconds):\(event.inProgress)"
+            case .endWorkBlock: return "end"
+            default: return nil
+            }
+        }
+        XCTAssertEqual(sent, ["raw:Editor:300:false", "end"])
+        XCTAssertEqual(flushes.count, 1)
+        await relay.stop()
+    }
+
+    /// A pause does not flush: a flush re-anchors the dwell, and the closed
+    /// report sent after the resume would then no longer be recognised as
+    /// the continuation of a dwell the drift gate already decided on, which
+    /// changes decisions the pre-registered drift policy v5 makes. Ending a
+    /// paused block does not flush either.
+    func testPauseDoesNotFlushAndEndingAPausedBlockDoesNot() async throws {
+        let client = FakeIPCClient()
+        client.setConnectionStatus(.connected)
+        let order = OrderRecorder()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let coordinator = WorkBlockCoordinator(
+            ipcClient: RecordingOrderIPCClient(wrapping: client, order: order),
+            flushPendingDwell: { order.entries.append("flush") },
+            sleep: { _ in try await Task.sleep(for: .seconds(3_600)) }
+        )
+        coordinator.start(messages: messages, connectionStatus: Empty<ConnectionStatus, Never>())
+        let active = activeSnapshot()
+        messages.send(.workBlockState(active))
+        try await waitUntil { coordinator.snapshot == active }
+
+        coordinator.pause()
+        try await waitUntil { order.entries.contains("pause") }
+        let paused = snapshot(active, phase: .paused)
+        messages.send(.workBlockState(paused))
+        try await waitUntil { coordinator.snapshot == paused }
+        coordinator.end()
+        try await waitUntil { order.entries.contains("end") }
+
+        XCTAssertEqual(order.entries, ["pause", "end"])
+    }
+
+    /// The sleep that pauses an active block does not flush, for the same
+    /// reason a pause does not.
+    func testSleepDuringAnActiveBlockDoesNotFlush() async throws {
+        let client = FakeIPCClient()
+        let flushes = FlushCounter()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let workspace = NotificationCenter()
+        let coordinator = WorkBlockCoordinator(
+            ipcClient: client,
+            flushPendingDwell: { flushes.count += 1 },
+            sleep: { _ in try await Task.sleep(for: .seconds(3_600)) }
+        )
+        coordinator.start(
+            messages: messages,
+            connectionStatus: Empty<ConnectionStatus, Never>(),
+            workspaceNotifications: workspace,
+            systemNotifications: NotificationCenter()
+        )
+        let active = activeSnapshot()
+        messages.send(.workBlockState(active))
+        try await waitUntil { coordinator.snapshot == active }
+
+        workspace.post(name: NSWorkspace.willSleepNotification, object: nil)
+        try await waitUntil {
+            client.sentMessages.contains(.workBlockLifecycle(.init(event: .sleep)))
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(flushes.count, 0)
+    }
+
+    /// A block that runs out is finished by the service at `ends_at`, and
+    /// the only thing Swift hears is the finished snapshot, too late for a
+    /// report to count. The flush is armed for one second before the end.
+    func testATimedOutBlockFlushesOneSecondBeforeEndsAtAndOnlyOnce() async throws {
+        let client = FakeIPCClient()
+        let flushes = FlushCounter()
+        let sleeps = SleepRecorder()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let active = activeSnapshot()
+        let now = active.startedAt!.addingTimeInterval(60)
+        let coordinator = WorkBlockCoordinator(
+            ipcClient: client,
+            flushPendingDwell: { flushes.count += 1 },
+            now: { now },
+            sleep: { seconds in await sleeps.record(seconds) }
+        )
+        coordinator.start(messages: messages, connectionStatus: Empty<ConnectionStatus, Never>())
+
+        messages.send(.workBlockState(active))
+        try await waitUntil { flushes.count == 1 }
+        let recorded = await sleeps.delays
+        XCTAssertEqual(recorded, [active.endsAt!.timeIntervalSince(now) - 1])
+        XCTAssertEqual(recorded.first, 1_439)
+
+        // Further snapshots of the same block and deadline, then the
+        // finished one, add nothing: one dwell, one report.
+        messages.send(.workBlockState(active))
+        messages.send(.workBlockState(snapshot(active, phase: .completed)))
+        try await waitUntil { coordinator.snapshot?.phase == .completed }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(flushes.count, 1)
+        let finalSleeps = await sleeps.delays
+        XCTAssertEqual(finalSleeps.count, 1)
+        XCTAssertFalse(client.sentMessages.contains { if case .endWorkBlock = $0 { true } else { false } })
+    }
+
+    /// Ending by hand disarms the deadline flush, so the person's dwell is
+    /// reported once, by the end, and not a second time when the timer that
+    /// was armed for the deadline would have fired.
+    func testEndingByHandDisarmsTheDeadlineFlush() async throws {
+        let client = FakeIPCClient()
+        client.setConnectionStatus(.connected)
+        let flushes = FlushCounter()
+        let gate = SleepGate()
+        let messages = PassthroughSubject<ServerMessage, Never>()
+        let coordinator = WorkBlockCoordinator(
+            ipcClient: client,
+            flushPendingDwell: { flushes.count += 1 },
+            now: { Date(timeIntervalSince1970: 1_800_000_060) },
+            sleep: { _ in await gate.wait() }
+        )
+        coordinator.start(messages: messages, connectionStatus: Empty<ConnectionStatus, Never>())
+        let active = activeSnapshot()
+        messages.send(.workBlockState(active))
+        try await waitUntil { coordinator.snapshot == active }
+        try await waitUntilAsync { await gate.isWaiting }
+
+        coordinator.end()
+        try await waitUntil {
+            client.sentMessages.contains(.endWorkBlock(.init(blockID: active.blockID!)))
+        }
+        await gate.open()
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(flushes.count, 1)
+    }
+
+    private func snapshot(_ base: WorkBlockSnapshot, phase: WorkBlockPhase) -> WorkBlockSnapshot {
+        WorkBlockSnapshot(
+            stateVersion: base.stateVersion + 1,
+            phase: phase,
+            blockID: base.blockID,
+            intention: base.intention,
+            purpose: base.purpose,
+            intensity: base.intensity,
+            plannedDurationSeconds: base.plannedDurationSeconds,
+            elapsedDurationSeconds: base.elapsedDurationSeconds,
+            remainingDurationSeconds: base.remainingDurationSeconds,
+            startedAt: base.startedAt,
+            endsAt: base.endsAt,
+            pausedAt: phase == .paused ? base.startedAt?.addingTimeInterval(60) : nil,
+            recoveredAfterRestart: false,
+            currentCategory: base.currentCategory,
+            anchorCategory: base.anchorCategory,
+            classificationStatus: base.classificationStatus,
+            confidence: base.confidence,
+            statusLine: base.statusLine,
+            result: nil,
+            activeIntervention: nil
+        )
+    }
+
     private func syntheticDemotionState(kind: DemotionStateKind) -> DemotionState {
         DemotionState(
             state: kind,
@@ -580,6 +788,90 @@ final class WorkBlockCoordinatorTests: XCTestCase {
             }
             await Task.yield()
         }
+    }
+
+    private func waitUntilAsync(
+        timeout: Duration = .seconds(1),
+        condition: @escaping @MainActor () async -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !(await condition()) {
+            if clock.now >= deadline {
+                XCTFail("condition timed out")
+                return
+            }
+            await Task.yield()
+        }
+    }
+}
+
+@MainActor
+private final class FlushCounter {
+    var count = 0
+}
+
+@MainActor
+private final class OrderRecorder {
+    var entries: [String] = []
+}
+
+private actor SleepRecorder {
+    private(set) var delays: [TimeInterval] = []
+
+    func record(_ delay: TimeInterval) {
+        delays.append(delay)
+    }
+}
+
+/// A sleep that does not return until the test opens it, and never throws,
+/// so only the coordinator's own disarming can stop what follows it.
+private actor SleepGate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var opened = false
+
+    var isWaiting: Bool { !waiters.isEmpty }
+
+    func wait() async {
+        guard !opened else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        for waiter in waiters {
+            waiter.resume()
+        }
+        waiters.removeAll()
+    }
+}
+
+/// Records each work-block command into the same ordered log as the flush.
+private final class RecordingOrderIPCClient: IPCClientProtocol, @unchecked Sendable {
+    private let wrapped: FakeIPCClient
+    private let order: OrderRecorder
+
+    init(wrapping wrapped: FakeIPCClient, order: OrderRecorder) {
+        self.wrapped = wrapped
+        self.order = order
+    }
+
+    var incomingMessages: AsyncStream<ServerMessage> { wrapped.incomingMessages }
+    var connectionStatus: AnyPublisher<ConnectionStatus, Never> { wrapped.connectionStatus }
+    func connect() async throws {}
+    func disconnect() {}
+
+    func send(_ message: ClientMessage) async throws {
+        let entry: String?
+        switch message {
+        case .pauseWorkBlock: entry = "pause"
+        case .endWorkBlock: entry = "end"
+        default: entry = nil
+        }
+        if let entry {
+            await MainActor.run { order.entries.append(entry) }
+        }
+        try await wrapped.send(message)
     }
 }
 

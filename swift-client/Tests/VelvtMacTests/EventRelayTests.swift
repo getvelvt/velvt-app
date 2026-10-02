@@ -241,6 +241,34 @@ final class EventRelayTests: XCTestCase {
         XCTAssertEqual(sentRawEvents(client).first?.bundleID, "com.apple.Safari")
     }
 
+    /// The in-progress report is the one the drift gate decides on, and for
+    /// a browser the page is part of what it is classified by. It has to
+    /// carry the URL as the closed report does, not only the title.
+    func testInProgressBrowserReportCarriesFocusedDocumentURL() async throws {
+        let client = FakeIPCClient()
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        await drain()
+        await relay.connectionDidChange(to: .connected)
+
+        relay.activityBegan(
+            RawEvent(
+                appName: "Browser",
+                bundleIdentifier: "com.apple.Safari",
+                windowTitle: "Private title",
+                focusedDocumentURL: "https://example.test/private/path?token=local",
+                occurredAt: Date(timeIntervalSince1970: 1)
+            )
+        )
+        await drain()
+
+        let sent = try XCTUnwrap(sentRawEvents(client).first)
+        XCTAssertTrue(sent.inProgress)
+        XCTAssertEqual(sent.durationSeconds, 0)
+        XCTAssertEqual(sent.focusedDocumentURL, "https://example.test/private/path?token=local")
+        XCTAssertEqual(sent.bundleID, "com.apple.Safari")
+    }
+
     /// The barrier a work-block command waits on: everything handed over
     /// before it has been sent by the time it returns.
     func testWaitForQueuedEventsReturnsAfterEarlierEventsAreSent() async throws {

@@ -264,7 +264,7 @@ if grep -qF "PRIMARY OUTCOME (pre-registered 2026-08-09)" <<<"$report"; then
   fail "the retired 2026-08-09 outcome is headlined as the primary one again"
 fi
 grep -qF "NOT COMPUTED HERE" <<<"$report" && fail "the primary outcome still says it is not computed"
-grep -qF "returned within 600s: 1/2 = 50.0% — underpowered, see POWER above" <<<"$report" \
+grep -qF "returned within 600s, unanswered offers only: 1/2 = 50.0% — underpowered, see POWER above" <<<"$report" \
   || fail "delivered denominator drifted off 2, or the power marker went missing"
 
 # ===========================================================================

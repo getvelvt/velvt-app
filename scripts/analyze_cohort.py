@@ -61,7 +61,10 @@ from pathlib import Path
 # primary outcome by the 2026-08-21 amendment (a ceiling effect readable in the
 # gate's own source), and kept only as a descriptive figure. The state machine
 # records `returned` whenever the anchor category reappears while an offer is
-# unanswered, with no time bound, so the bound is applied here.
+# unanswered, with no time bound, so the bound is applied here. An answered
+# offer is terminal: someone who tapped "Back to work" and then returned has
+# outcome `accepted_action`, never `returned`, so this counts only returns
+# recorded while the offer was still unanswered.
 RETURN_WINDOW_SECONDS = 600
 
 # The replacement primary outcome, 2026-08-21: at each eligible decision
@@ -1706,8 +1709,11 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
                 "primary outcome and never the headline."
             ),
             "definition": (
-                "Of drift interventions delivered, the fraction followed by a return "
-                "to the anchor category within 10 minutes."
+                "Of drift interventions delivered, the fraction whose recorded "
+                "outcome is a return to the anchor category within 10 minutes, "
+                "recorded while the offer was still unanswered. An answered offer "
+                "is terminal and never records a return, so a person who answered "
+                "(for example 'Back to work') and then returned is not counted."
             ),
             "numerator": len(returned),
             "denominator": denominator,
@@ -1924,7 +1930,7 @@ def render(result: dict) -> str:
     add("  the same ten minutes, so this measures the gate's selection rule")
     add("  rather than what the intervention changed. Never the headline.")
     para(retired["definition"])
-    add(f"  returned within {retired['window_seconds']}s: "
+    add(f"  returned within {retired['window_seconds']}s, unanswered offers only: "
         f"{_ratio(retired['numerator'], retired['denominator'])}")
     if retired["unbounded_returned_numerator"] != retired["numerator"]:
         add(f"  unbounded 'returned' would report {retired['unbounded_returned_numerator']}"
@@ -1976,7 +1982,7 @@ def render(result: dict) -> str:
     add("  ignored quiet offer never rang. Pooling understates responsiveness.")
     for salience, stats in result["salience_split"].items():
         add(f"  {salience:8} offers={stats['offers']:4} "
-            f"returned={stats['returned_within_10min']:4} "
+            f"returned_unanswered={stats['returned_within_10min']:4} "
             f"no_response={stats['no_response']:4}")
 
     blocks = result["blocks_per_participant"]

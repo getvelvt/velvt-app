@@ -227,6 +227,9 @@ SELECT
     -- descriptive figure. The state machine records a return whenever the
     -- anchor category reappears while the offer is unanswered, with no time
     -- bound, so the 10-minute window is applied here rather than in the app.
+    -- An answered offer is terminal and never records a return, so this is 0
+    -- for someone who answered ("Back to work") and then returned: it counts
+    -- only returns recorded while the offer was still unanswered.
     CASE
         WHEN i.outcome = 'returned'
              AND i.outcome_at IS NOT NULL
@@ -835,7 +838,7 @@ epoch seconds.
 The decisions file adds each time the detector looked: when, the broad anchor
 category, switch count, elapsed and remaining seconds, the policy version, the
 verdict (including every time it chose to stay quiet), and whether you were
-back in the anchor category within 10 minutes. The outcomes file adds, for
+back in the anchor category within 10 minutes before answering the nudge. The outcomes file adds, for
 each of those moments, whether you then spent at least 10 of the next 15
 minutes in the anchor category, whether you left it again within 10 minutes,
 how many seconds passed before you stayed in it for 5 minutes straight, why

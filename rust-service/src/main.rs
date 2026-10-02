@@ -57,7 +57,9 @@ async fn main() {
     let Ok(filter) =
         EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(&config.log_level))
     else {
-        return;
+        // As above: no tracing without a filter.
+        eprintln!("velvt-service: startup halted: the log level is not a valid filter");
+        std::process::exit(78); // EX_CONFIG
     };
     // Plain text, never terminal colour: stdout and stderr are a pipe the Mac
     // app reads, and it lifts `error_code=` out of each chunk to decide
@@ -71,7 +73,8 @@ async fn main() {
         .try_init()
         .is_err()
     {
-        return;
+        eprintln!("velvt-service: startup halted: logging could not be initialized");
+        std::process::exit(STARTUP_FAILED);
     }
 
     #[cfg(unix)]
@@ -80,7 +83,7 @@ async fn main() {
             error_code = "duplicate_service_instance",
             "another velvt-service instance is already listening on this socket; exiting"
         );
-        return;
+        std::process::exit(STARTUP_FAILED);
     }
 
     let (persistence, migration_report) = match SqlitePersistence::open_with_migration_report(
@@ -101,7 +104,7 @@ async fn main() {
                 embedded,
                 "service startup halted: this database applied a different migration under the same number"
             );
-            return;
+            std::process::exit(STARTUP_FAILED);
         }
         // A debug build only: release builds open the database and report the
         // mismatch in `migration_report` (see `MigrationChecksumPolicy`).
@@ -114,14 +117,14 @@ async fn main() {
                 embedded = mismatch.embedded.as_str(),
                 "service startup halted: this database applied a different version of a migration than this build carries"
             );
-            return;
+            std::process::exit(STARTUP_FAILED);
         }
-        Err(_) => {
+        Err(error) => {
             tracing::error!(
-                error_code = "persistence_initialization_failed",
+                error_code = persistence_startup_error_code(&error),
                 "service startup halted"
             );
-            return;
+            std::process::exit(STARTUP_FAILED);
         }
     };
     let Ok(taxonomy) = Taxonomy::from_path(&config.abstraction_taxonomy_path) else {
@@ -129,7 +132,7 @@ async fn main() {
             error_code = "abstraction_taxonomy_load_failed",
             "service startup halted"
         );
-        return;
+        std::process::exit(STARTUP_FAILED);
     };
     if taxonomy.version() != API_EXPECTED_TAXONOMY_VERSION {
         tracing::warn!(
@@ -184,7 +187,7 @@ async fn main() {
             error_code = "abstraction_engine_initialization_failed",
             "service startup halted"
         );
-        return;
+        std::process::exit(STARTUP_FAILED);
     };
 
     #[cfg(unix)]
@@ -693,25 +696,48 @@ async fn main() {
         .with_auth_state(auth_state.subscribe())
         .with_reconnect_tracker(reconnect_tracker, config.push_write_timeout)
         .with_shutdown(token.subscribe());
-        let server_task = tokio::spawn(async move { transport.run().await });
+        let mut server_task = tokio::spawn(async move { transport.run().await });
 
-        // Wait for SIGTERM or SIGINT.
+        // Wait for SIGTERM or SIGINT, or for the IPC server to stop.
         use tokio::signal::unix::{signal, SignalKind};
         let mut sigterm = match signal(SignalKind::terminate()) {
             Ok(s) => s,
             Err(_) => {
-                tracing::error!("failed to install SIGTERM handler");
-                return;
+                tracing::error!(
+                    error_code = "signal_handler_failed",
+                    "failed to install SIGTERM handler"
+                );
+                std::process::exit(STARTUP_FAILED);
             }
         };
         let reason = tokio::select! {
             _ = sigterm.recv() => "sigterm",
             result = tokio::signal::ctrl_c() => {
                 if result.is_err() {
-                    tracing::error!("failed to install SIGINT handler");
-                    return;
+                    tracing::error!(
+                        error_code = "signal_handler_failed",
+                        "failed to install SIGINT handler"
+                    );
+                    std::process::exit(STARTUP_FAILED);
                 }
                 "sigint"
+            }
+            // The server only returns before shutdown when it could not bind
+            // its socket. A helper left running without a listener is never
+            // reached and never relaunched: the app relaunches a helper that
+            // exits, not one that idles.
+            result = &mut server_task => {
+                match result {
+                    Ok(Err(_)) => tracing::error!(
+                        error_code = "ipc_bind_failed",
+                        "service halted: the IPC socket could not be bound"
+                    ),
+                    Ok(Ok(())) | Err(_) => tracing::error!(
+                        error_code = "ipc_server_stopped",
+                        "service halted: the IPC server stopped"
+                    ),
+                }
+                std::process::exit(STARTUP_FAILED);
             }
         };
         tracing::info!(reason, "shutdown signal received");
@@ -745,7 +771,36 @@ async fn main() {
     }
 
     #[cfg(not(unix))]
-    tracing::error!("Unix domain socket transport is unavailable on this platform");
+    {
+        tracing::error!("Unix domain socket transport is unavailable on this platform");
+        std::process::exit(STARTUP_FAILED);
+    }
+}
+
+/// The exit status of a helper that could not start, or could not keep its
+/// socket. The app relaunches a helper whatever its status; a zero made a
+/// failed start read as a clean stop in its log.
+const STARTUP_FAILED: i32 = 1;
+
+/// A fixed token for why the database could not be opened, so the app's log
+/// tells a damaged file from a full disk without the path or the message.
+fn persistence_startup_error_code(
+    error: &velvt_service::persistence::PersistenceError,
+) -> &'static str {
+    use rusqlite::ErrorCode;
+    use velvt_service::persistence::PersistenceError;
+    match error {
+        PersistenceError::Sqlite(rusqlite::Error::SqliteFailure(failure, _)) => {
+            match failure.code {
+                ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase => "database_corrupt",
+                ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked => "database_busy",
+                ErrorCode::DiskFull => "database_full",
+                _ => "database_io",
+            }
+        }
+        PersistenceError::Sqlite(_) => "database_io",
+        _ => "persistence_initialization_failed",
+    }
 }
 
 /// `velvt-service --dry-run-egress`: prints every request the helper would
@@ -888,4 +943,50 @@ fn load_embedding_plugin(
         tracing::warn!(error_code, "Tier 2 classification disabled");
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::persistence_startup_error_code;
+    use velvt_service::persistence::PersistenceError;
+
+    fn sqlite(code: i32) -> PersistenceError {
+        PersistenceError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
+    }
+
+    #[test]
+    fn each_database_failure_has_its_own_token() {
+        use rusqlite::ffi;
+        assert_eq!(
+            persistence_startup_error_code(&sqlite(ffi::SQLITE_CORRUPT)),
+            "database_corrupt"
+        );
+        assert_eq!(
+            persistence_startup_error_code(&sqlite(ffi::SQLITE_NOTADB)),
+            "database_corrupt"
+        );
+        assert_eq!(
+            persistence_startup_error_code(&sqlite(ffi::SQLITE_BUSY)),
+            "database_busy"
+        );
+        assert_eq!(
+            persistence_startup_error_code(&sqlite(ffi::SQLITE_LOCKED)),
+            "database_busy"
+        );
+        assert_eq!(
+            persistence_startup_error_code(&sqlite(ffi::SQLITE_FULL)),
+            "database_full"
+        );
+        assert_eq!(
+            persistence_startup_error_code(&sqlite(ffi::SQLITE_IOERR)),
+            "database_io"
+        );
+        assert_eq!(
+            persistence_startup_error_code(&PersistenceError::LockUnavailable),
+            "persistence_initialization_failed"
+        );
+    }
 }

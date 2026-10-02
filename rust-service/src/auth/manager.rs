@@ -172,6 +172,9 @@ where
                 if matches!(error, AuthError::Transport) {
                     self.record_refresh_transport(true);
                 }
+                if self.session_replaced_since(Some(tokens.refresh_token())) {
+                    return Err(AuthError::NeedsReauth);
+                }
                 if token_unusable {
                     self.state
                         .transition(AuthState::Authenticated { device_id })?;
@@ -180,6 +183,9 @@ where
             }
         };
         self.record_refresh_transport(false);
+        if self.session_replaced_since(Some(tokens.refresh_token())) {
+            return Err(AuthError::NeedsReauth);
+        }
         if response.status == 200 {
             let Some(fresh) = response.tokens else {
                 self.state.transition(AuthState::NeedsReauth)?;
@@ -212,6 +218,27 @@ where
             429 => Err(AuthError::RateLimited),
             _ => Err(AuthError::NeedsReauth),
         }
+    }
+
+    /// Whether the session a refresh or reissue started from was ended or
+    /// replaced while its request was in flight.
+    ///
+    /// `log_out` clears the tokens and moves to `Unauthenticated` without
+    /// waiting on the refresh lock, and a login stores its own tokens the
+    /// same way. A response that arrives afterwards belongs to the old
+    /// session: storing its tokens would sign a signed-out device back in, or
+    /// overwrite the new login's tokens, so it is dropped and nothing is
+    /// stored or transitioned.
+    fn session_replaced_since(&self, started_from: Option<&super::RedactedString>) -> bool {
+        if self.state.current() == AuthState::Unauthenticated {
+            return true;
+        }
+        // A store that cannot be read says nothing about a sign-out; the
+        // store write that follows reports its own failure.
+        let Ok(current) = self.store.load_tokens() else {
+            return false;
+        };
+        current.as_ref().map(super::TokenPair::refresh_token) != started_from
     }
 
     async fn handle_response(
@@ -278,6 +305,10 @@ where
                 return Err(AuthError::NeedsReauth);
             }
         };
+        let started_from = self
+            .store
+            .load_tokens()?
+            .map(|tokens| tokens.refresh_token().clone());
         self.state.transition(AuthState::RefreshInFlight)?;
         let mut request = HttpRequest::post("/v1/auth/devices/reissue");
         request.authorization = Some(user_tokens.access_token().clone());
@@ -285,11 +316,17 @@ where
         let response = match self.http.send(request).await {
             Ok(response) => response,
             Err(error) => {
+                if self.session_replaced_since(started_from.as_ref()) {
+                    return Err(AuthError::NeedsReauth);
+                }
                 self.state
                     .transition(AuthState::Authenticated { device_id })?;
                 return Err(error);
             }
         };
+        if self.session_replaced_since(started_from.as_ref()) {
+            return Err(AuthError::NeedsReauth);
+        }
         if response.status == 200 {
             let Some(fresh) = response.tokens else {
                 self.state.transition(AuthState::NeedsReauth)?;

@@ -671,10 +671,12 @@ PY2
 
 # ===========================================================================
 # 11. Corrections made per participant (2026-08-17 measure 3). A count per
-#     participant, summed from the app rows; window rules are descriptive; a
-#     participant with no corrections is a zero; one whose export has no file
-#     is not measurable, never a zero; a malformed row is reported and not
-#     counted; a founder export's corrections go nowhere.
+#     participant, summed from the app rows and the site rows (0040, taught
+#     from 1.0.14); window rules are descriptive; a participant with no
+#     corrections is a zero; one whose export has no file is not measurable,
+#     never a zero; an export whose database could not hold a site rule says
+#     so; a malformed row is reported and not counted; a founder export's
+#     corrections go nowhere.
 # ===========================================================================
 make_export "$work/corr/p-teacher" <<'JSON'
 {"blocks": [{"block_id": "a", "started_at": 1800000000}],
@@ -682,8 +684,10 @@ make_export "$work/corr/p-teacher" <<'JSON'
  "corrections": [
    {"scope": "app", "category": "FOCUS_WORK", "rules": 2, "corrections": 5},
    {"scope": "app", "category": "COMMUNICATION", "rules": 1, "corrections": 1},
+   {"scope": "site", "category": "REFERENCE", "rules": 2, "corrections": 3},
    {"scope": "window", "category": "REFERENCE", "rules": 3}
- ]}
+ ],
+ "meta": {"site_rules": "present"}}
 JSON
 make_export "$work/corr/p-zero" <<'JSON'
 {"blocks": [{"block_id": "a", "started_at": 1800000000}],
@@ -712,8 +716,12 @@ make_export "$work/corr/p-bad" <<'JSON'
    {"scope": "app", "category": "SYSTEM", "rules": 2, "corrections": 1},
    {"scope": "app", "category": "REFERENCE", "rules": 1, "corrections": 4},
    {"scope": "app", "category": "REFERENCE", "rules": 1, "corrections": 4},
+   {"scope": "site", "category": "REFERENCE", "rules": 1, "corrections": 2},
+   {"scope": "site", "category": "SOCIAL_FEED", "rules": 2, "corrections": 1},
+   {"scope": "site", "category": "SOCIAL_FEED", "rules": 1},
    {"scope": "window", "category": "SYSTEM", "rules": 0}
- ]}
+ ],
+ "meta": {"site_rules": "present"}}
 JSON
 make_export "$work/corr/p-upgraded" <<'JSON'
 {"blocks": [{"block_id": "a", "started_at": 1800000000}],
@@ -732,17 +740,30 @@ c = r["corrections_per_participant"]
 per = c["per_participant"]
 assert sorted(per) == ["p-bad", "p-teacher", "p-upgraded", "p-zero"], sorted(per)
 assert per["p-teacher"] == {
-    "app_scoped_corrections": 6, "applications_with_an_app_rule": 3, "window_rules": 3,
-    "app_scoped_corrections_by_category": {"COMMUNICATION": 1, "FOCUS_WORK": 5}}, per["p-teacher"]
+    "corrections": 9, "app_scoped_corrections": 6, "site_scoped_corrections": 3,
+    "site_rules_recordable": True,
+    "applications_with_an_app_rule": 3, "sites_with_a_site_rule": 2, "window_rules": 3,
+    "app_scoped_corrections_by_category": {"COMMUNICATION": 1, "FOCUS_WORK": 5},
+    "site_scoped_corrections_by_category": {"REFERENCE": 3}}, per["p-teacher"]
 assert per["p-zero"]["app_scoped_corrections"] == 0, per["p-zero"]
+assert per["p-zero"]["corrections"] == 0, per["p-zero"]
 assert c["participants_with_zero_app_scoped_corrections"] == ["p-zero"], c
-# Only the first REFERENCE row survives; the unknown category, the app row
+assert c["participants_with_zero_corrections"] == ["p-zero"], c
+# No `site_rules` key in the meta file: an older database or an older
+# exporter, so a zero site count there is not a measured zero.
+assert c["site_rules_not_recordable"] == ["p-upgraded", "p-zero"], c
+# Only the first app REFERENCE row survives; the unknown category, the app row
 # with fewer corrections than rules, the duplicate and the empty window row
-# are each reported.
+# are each reported. A site row is validated like an app row: one with fewer
+# corrections than rules and one with no counts at all are reported, and a
+# site rule in the same category as an app rule is not a duplicate.
 assert per["p-bad"]["app_scoped_corrections"] == 4, per["p-bad"]
+assert per["p-bad"]["site_scoped_corrections"] == 2, per["p-bad"]
 assert per["p-bad"]["window_rules"] == 0, per["p-bad"]
 bad = [m for m in r["data_quality"]["malformed"] if m.startswith("p-bad:")]
-assert len(bad) == 4, bad
+assert len(bad) == 6, bad
+assert sum("scope='site'" in m and "site corrections missing or fewer" in m
+           for m in bad) == 2, bad
 # A file that never came and a file that never existed are not zeros.
 assert c["not_measurable_for"] == ["p-lost", "p-older"], c
 assert any("p-lost: the export wrote a corrections file" in m
@@ -753,11 +774,18 @@ assert c["includes_history_before_analysed_policy"] == ["p-upgraded"], c
 assert c["total_app_scoped_corrections"] == 6 + 0 + 4 + 2, c
 assert c["app_scoped_corrections_by_category"] == {
     "COMMUNICATION": 1, "FOCUS_WORK": 7, "REFERENCE": 4}, c
+assert c["total_site_scoped_corrections"] == 3 + 2, c
+assert c["site_scoped_corrections_by_category"] == {"REFERENCE": 5}, c
+assert c["total_corrections"] == 12 + 5, c
 assert r["exclusions"]["founder_devices_excluded"] == ["founder-corr"], r["exclusions"]
 PY
 corr_report="$("$analyze" "$work/corr"/*/)"
 check_power_markers "$corr_report"
 for needle in "p-teacher                   6 app-scoped correction(s) on 3 app(s); 3 window rule(s)" \
+              "3 site-scoped correction(s) on 2 site(s); 9 correction(s) in all" \
+              "site rules not recordable (database before migration 0040); 0 correction(s) in all" \
+              "site-scoped corrections by category: {'REFERENCE': 5}" \
+              "site rules not recordable: ['p-upgraded', 'p-zero']" \
               "no corrections file: ['p-lost', 'p-older']" \
               "counts include time before policy v5, not separable: ['p-upgraded']" \
               "Each count is a lower bound."; do

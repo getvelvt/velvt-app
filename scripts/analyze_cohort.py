@@ -302,11 +302,15 @@ INVITATION_TERMINAL_OUTCOMES = ("accepted", "dismissed", "no_response", "expired
 INVITATION_OPEN_OUTCOMES = ("offered",)
 
 # The corrections file (2026-08-17 measure 3), one row per rule scope and broad
-# category. `app` is `personal_app_override`, whose summed correction_count is
-# the pre-registered count; `window` is `personal_override`, which keeps no
-# count. The exporter writes any category outside the service's accepted set
-# as `unrecognized`.
-CORRECTION_SCOPES = ("app", "window")
+# category. `app` is `personal_app_override` and `site` is
+# `personal_site_override` (migration 0040, taught from 1.0.14); the sum of
+# their correction_count is the pre-registered count. `window` is
+# `personal_override`, which keeps no count. The exporter writes any category
+# outside the service's accepted set as `unrecognized`, and writes `site` rows
+# only from a database that has the table (meta `site_rules,present`).
+CORRECTION_SCOPES = ("app", "site", "window")
+# Scopes whose rows carry a correction count.
+COUNTED_CORRECTION_SCOPES = ("app", "site")
 CORRECTION_CATEGORIES = (
     "FOCUS_WORK",
     "PASSIVE_CONSUMPTION",
@@ -1129,7 +1133,9 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
 
     # --- Corrections (2026-08-17 measure 3) -------------------------------------
     if participant.correction_rows is not None:
-        app: dict[str, tuple[int, int]] = {}
+        counted: dict[str, dict[str, tuple[int, int]]] = {
+            scope: {} for scope in COUNTED_CORRECTION_SCOPES
+        }
         window: dict[str, int] = {}
         for row in participant.correction_rows:
             scope = _text(row, "scope")
@@ -1141,21 +1147,31 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
                 problem = "unknown scope or category"
             elif rules is None or rules < 1:
                 problem = "rules is not a positive count"
-            elif scope == "app" and (corrections is None or corrections < rules):
-                # Every app rule is written by at least one correction.
-                problem = "app corrections missing or fewer than its rules"
-            elif category in (app if scope == "app" else window):
+            elif scope in COUNTED_CORRECTION_SCOPES and (
+                corrections is None or corrections < rules
+            ):
+                # Every app or site rule is written by at least one correction.
+                problem = f"{scope} corrections missing or fewer than its rules"
+            elif category in counted.get(scope, window):
                 problem = "a second row for one scope and category"
             if problem:
                 cohort.malformed.append(
                     f"{name}: corrections row scope={scope!r} category={category!r}: {problem}"
                 )
                 continue
-            if scope == "app":
-                app[category] = (rules, corrections)
+            if scope in counted:
+                counted[scope][category] = (rules, corrections)
             else:
                 window[category] = rules
-        cohort.corrections[name] = {"app": app, "window": window}
+        cohort.corrections[name] = {
+            "app": counted["app"],
+            "site": counted["site"],
+            "window": window,
+            # A database from before migration 0040 cannot hold a site rule,
+            # and an export from before the exporter read them has no key.
+            "site_rules_recordable": participant.meta.get("site_rules") == "present"
+            or bool(counted["site"]),
+        }
         if other_policy_until is not None:
             cohort.corrections_span_policy_change.append(name)
 
@@ -1487,35 +1503,53 @@ def _explain(cohort: Cohort) -> dict:
 def _corrections(cohort: Cohort) -> dict:
     per_participant = {}
     by_category = Counter()
+    site_by_category = Counter()
     for name in sorted(cohort.corrections):
         app = cohort.corrections[name]["app"]
+        site = cohort.corrections[name]["site"]
         window = cohort.corrections[name]["window"]
+        app_count = sum(c for _, c in app.values())
+        site_count = sum(c for _, c in site.values())
         per_participant[name] = {
-            "app_scoped_corrections": sum(c for _, c in app.values()),
+            "corrections": app_count + site_count,
+            "app_scoped_corrections": app_count,
+            "site_scoped_corrections": site_count,
+            "site_rules_recordable": cohort.corrections[name]["site_rules_recordable"],
             "applications_with_an_app_rule": sum(r for r, _ in app.values()),
+            "sites_with_a_site_rule": sum(r for r, _ in site.values()),
             "window_rules": sum(window.values()),
             "app_scoped_corrections_by_category": {
                 category: c for category, (_, c) in sorted(app.items())
             },
+            "site_scoped_corrections_by_category": {
+                category: c for category, (_, c) in sorted(site.items())
+            },
         }
         for category, (_, c) in app.items():
             by_category[category] += c
+        for category, (_, c) in site.items():
+            site_by_category[category] += c
     measured = sorted(per_participant)
     return {
         "definition": (
-            "2026-08-17 addition, measure 3: the count of app-scoped classification "
-            "corrections per participant. Reported as a count only. It measures how "
-            "far the seed dictionary missed that person's apps: not engagement, and "
-            "not to be presented as such."
+            "2026-08-17 addition, measure 3: the count of classification corrections "
+            "per participant that a rule keeps a count of, app-scoped and, from "
+            "1.0.14, site-scoped. Reported as a count only. It measures how far the "
+            "seed dictionary missed that person's apps and sites: not engagement, "
+            "and not to be presented as such."
         ),
         "how_counted": (
             "The sum of correction_count over the participant's app-scoped rules "
             "(personal_app_override, migration 0017), from the corrections CSV. A "
             "rule starts at 1 and every later correction that lands on the same "
             "application adds 1, whether it came from correcting an activity or "
-            "from the list of apps Velvt could not read. Applications with a rule "
-            "and window rules (personal_override, which keeps no count) are "
-            "descriptive."
+            "from the list of apps Velvt could not read. Plus the same sum over the "
+            "site-scoped rules (personal_site_override, migration 0040), which "
+            "count the same way for a site in every browser. Applications and "
+            "sites with a rule, and window rules (personal_override, which keeps "
+            "no count), are descriptive. An export from a database before 0040 "
+            "cannot hold a site rule; its site count is 0 by construction and it "
+            "is listed under site_rules_not_recordable."
         ),
         "lower_bound": (
             "Only rules that exist at export are counted. A correction the "
@@ -1524,8 +1558,9 @@ def _corrections(cohort: Cohort) -> dict:
         "not_counted": (
             "The 'Wrong category' reply to a drift offer is block-scoped "
             "(work_block_category_correction), not a classification rule. It is "
-            "counted in the trust figure as wrong_classification. A correction of a "
-            "browser tab is window-scoped only and appears under window rules."
+            "counted in the trust figure as wrong_classification. Before 1.0.14 a "
+            "correction of a browser tab was window-scoped only and appears under "
+            "window rules."
         ),
         "measurable": bool(measured),
         "participants_measured": len(measured),
@@ -1533,8 +1568,17 @@ def _corrections(cohort: Cohort) -> dict:
         "participants_with_zero_app_scoped_corrections": [
             n for n in measured if not per_participant[n]["app_scoped_corrections"]
         ],
+        "participants_with_zero_corrections": [
+            n for n in measured if not per_participant[n]["corrections"]
+        ],
+        "total_corrections": sum(by_category.values()) + sum(site_by_category.values()),
         "total_app_scoped_corrections": sum(by_category.values()),
         "app_scoped_corrections_by_category": dict(sorted(by_category.items())),
+        "total_site_scoped_corrections": sum(site_by_category.values()),
+        "site_scoped_corrections_by_category": dict(sorted(site_by_category.items())),
+        "site_rules_not_recordable": [
+            n for n in measured if not per_participant[n]["site_rules_recordable"]
+        ],
         "includes_history_before_analysed_policy": sorted(cohort.corrections_span_policy_change),
         "not_measurable_for": sorted(
             p.name for p in cohort.analysed if p.name not in cohort.corrections
@@ -1997,8 +2041,19 @@ def render(result: dict) -> str:
             add(f"  {name:24} {entry['app_scoped_corrections']:4} app-scoped correction(s) "
                 f"on {entry['applications_with_an_app_rule']} app(s); "
                 f"{entry['window_rules']} window rule(s)")
+            site_line = (
+                f"{entry['site_scoped_corrections']} site-scoped correction(s) "
+                f"on {entry['sites_with_a_site_rule']} site(s)"
+                if entry["site_rules_recordable"]
+                else "site rules not recordable (database before migration 0040)"
+            )
+            add(f"  {'':24} {site_line}; {entry['corrections']} correction(s) in all")
         add(f"  app-scoped corrections by category: "
             f"{corrections['app_scoped_corrections_by_category'] or '{}'}")
+        add(f"  site-scoped corrections by category: "
+            f"{corrections['site_scoped_corrections_by_category'] or '{}'}")
+        if corrections["site_rules_not_recordable"]:
+            add(f"  site rules not recordable: {corrections['site_rules_not_recordable']}")
         para(f"Each count is a lower bound. {corrections['lower_bound']}")
     else:
         add("  not measurable from the cohort export (no corrections file)")

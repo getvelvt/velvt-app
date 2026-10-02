@@ -6,7 +6,12 @@ use chrono::{Duration, Utc};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
+
+/// How long a refresh that failed in transport is remembered before the next
+/// request tries again.
+const REFRESH_TRANSPORT_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub trait SessionValidator: Send + Sync {
     fn validate_restored_session<'a>(
@@ -20,6 +25,9 @@ pub struct AuthManager<S, H> {
     state: Arc<AuthStateMachine>,
     refresh_buffer: Duration,
     refresh_lock: Mutex<()>,
+    /// When a refresh last failed in transport, until one gets a response.
+    refresh_transport_failed_at: std::sync::Mutex<Option<Instant>>,
+    refresh_transport_retry_after: std::time::Duration,
 }
 
 impl<S, H> AuthManager<S, H>
@@ -39,7 +47,16 @@ where
             state,
             refresh_buffer,
             refresh_lock: Mutex::new(()),
+            refresh_transport_failed_at: std::sync::Mutex::new(None),
+            refresh_transport_retry_after: REFRESH_TRANSPORT_RETRY_AFTER,
         }
+    }
+
+    /// Replaces `REFRESH_TRANSPORT_RETRY_AFTER`, for a test that cannot wait
+    /// a minute.
+    pub fn with_refresh_transport_retry_after(mut self, retry_after: std::time::Duration) -> Self {
+        self.refresh_transport_retry_after = retry_after;
+        self
     }
 
     pub async fn send_authenticated(
@@ -78,19 +95,62 @@ where
         }
     }
 
+    /// The device tokens to send a request with, refreshed first when they
+    /// are within `refresh_buffer` of expiring.
+    ///
+    /// A refresh that fails in transport does not stop a token that has not
+    /// expired from being used: the cloud still accepts it. The failure is
+    /// remembered for `REFRESH_TRANSPORT_RETRY_AFTER`, so requests in that
+    /// time neither try the refresh again nor wait on it; one that needs a
+    /// refresh because its token has expired fails at once with `Transport`.
     async fn tokens_for_request(&self) -> Result<super::TokenPair, AuthError> {
         let tokens = self.store.load_tokens()?.ok_or(AuthError::NeedsReauth)?;
         if tokens.expires_at() > Utc::now() + self.refresh_buffer {
             return Ok(tokens);
         }
-        self.refresh_tokens(false).await
+        let still_valid = |tokens: &super::TokenPair| tokens.expires_at() > Utc::now();
+        if self.refresh_recently_failed_in_transport() {
+            return if still_valid(&tokens) {
+                Ok(tokens)
+            } else {
+                Err(AuthError::Transport)
+            };
+        }
+        match self.refresh_tokens(false).await {
+            Err(AuthError::Transport) if still_valid(&tokens) => Ok(tokens),
+            result => result,
+        }
     }
 
+    fn refresh_recently_failed_in_transport(&self) -> bool {
+        self.refresh_transport_failed_at
+            .lock()
+            .ok()
+            .and_then(|failed_at| *failed_at)
+            .is_some_and(|failed_at| failed_at.elapsed() < self.refresh_transport_retry_after)
+    }
+
+    fn record_refresh_transport(&self, failed: bool) {
+        if let Ok(mut failed_at) = self.refresh_transport_failed_at.lock() {
+            *failed_at = failed.then(Instant::now);
+        }
+    }
+
+    /// Exchanges the refresh token for new device tokens.
+    ///
+    /// `RefreshInFlight` is published only when the current access token can
+    /// no longer be used — it has expired, or the cloud refused it (`force`).
+    /// A refresh ahead of expiry leaves the device `Authenticated` throughout,
+    /// so one that fails in transport changes no state at all; publishing the
+    /// roundtrip made every failed attempt flip the state Swift shows twice.
     async fn refresh_tokens(&self, force: bool) -> Result<super::TokenPair, AuthError> {
         let _guard = self.refresh_lock.lock().await;
         let tokens = self.store.load_tokens()?.ok_or(AuthError::NeedsReauth)?;
         if !force && tokens.expires_at() > Utc::now() + self.refresh_buffer {
             return Ok(tokens);
+        }
+        if force && self.refresh_recently_failed_in_transport() {
+            return Err(AuthError::Transport);
         }
         let device_id = match self.state.current() {
             AuthState::Authenticated { device_id } => device_id,
@@ -100,17 +160,26 @@ where
                 return Err(AuthError::NeedsReauth)
             }
         };
-        self.state.transition(AuthState::RefreshInFlight)?;
+        let token_unusable = force || tokens.expires_at() <= Utc::now();
+        if token_unusable {
+            self.state.transition(AuthState::RefreshInFlight)?;
+        }
         let mut refresh_request = HttpRequest::post("/v1/auth/refresh");
         refresh_request.refresh_token = Some(tokens.refresh_token().clone());
         let response = match self.http.send(refresh_request).await {
             Ok(response) => response,
             Err(error) => {
-                self.state
-                    .transition(AuthState::Authenticated { device_id })?;
+                if matches!(error, AuthError::Transport) {
+                    self.record_refresh_transport(true);
+                }
+                if token_unusable {
+                    self.state
+                        .transition(AuthState::Authenticated { device_id })?;
+                }
                 return Err(error);
             }
         };
+        self.record_refresh_transport(false);
         if response.status == 200 {
             let Some(fresh) = response.tokens else {
                 self.state.transition(AuthState::NeedsReauth)?;

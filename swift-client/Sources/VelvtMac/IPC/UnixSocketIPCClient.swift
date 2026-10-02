@@ -29,7 +29,12 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
         statusSubject.eraseToAnyPublisher()
     }
 
+    public nonisolated var versionMismatches: AnyPublisher<IPCVersionMismatch, Never> {
+        versionMismatchSubject.eraseToAnyPublisher()
+    }
+
     private nonisolated let statusSubject = CurrentValueSubject<ConnectionStatus, Never>(.disconnected)
+    private nonisolated let versionMismatchSubject = PassthroughSubject<IPCVersionMismatch, Never>()
     private nonisolated let incomingContinuation: AsyncStream<ServerMessage>.Continuation
     private let socketPath: String
     private let protocolVersion: Int
@@ -227,9 +232,12 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
                 return
             } catch let error as IPCError {
                 await closeTransport()
-                if case .versionMismatch = error {
+                if case .versionMismatch(let expected, let got) = error {
                     publish(.disconnected)
                     reconnectTask = nil
+                    // Nothing awaits a reconnect, so the mismatch goes where
+                    // the first connect's would: to the app's recovery path.
+                    versionMismatchSubject.send(IPCVersionMismatch(expected: expected, got: got))
                     return
                 }
                 attempt += 1

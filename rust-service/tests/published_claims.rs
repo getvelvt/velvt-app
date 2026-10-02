@@ -1240,6 +1240,11 @@ async fn no_declared_fact_reaches_an_upload_payload() {
 
     // The positive control, and the reason the batch threshold is one event: an
     // uploader that was handed nothing satisfies every assertion below it.
+    // The upload runs in a task of its own once the batch is persisted.
+    let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+    while uploader.captured().is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(StdDuration::from_millis(1)).await;
+    }
     let batches = uploader.captured();
     assert_eq!(
         batches.len(),
@@ -1524,6 +1529,11 @@ async fn no_part_of_a_web_address_reaches_an_upload_payload() {
          {acknowledgement:?}"
     );
 
+    // The upload runs in a task of its own once the batch is persisted.
+    let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+    while uploader.captured().is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(StdDuration::from_millis(1)).await;
+    }
     let batches = uploader.captured();
     assert_eq!(
         batches.len(),

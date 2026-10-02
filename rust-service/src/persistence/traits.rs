@@ -252,6 +252,10 @@ pub trait UploadBatchRepo: Send + Sync {
     ) -> Result<(), PersistenceError>;
     fn mark_sent(&self, batch_id: &str) -> Result<(), PersistenceError>;
     fn pending_batches(&self) -> Result<Vec<UploadBatch>, PersistenceError>;
+    /// How many events wait in pending and failed batches, and the newest
+    /// `limit` of them, newest first, without loading the rest.
+    fn queued_batch_events(&self, limit: usize)
+        -> Result<(u64, Vec<BatchEvent>), PersistenceError>;
     fn resumable_batches(&self, now: DateTime<Utc>) -> Result<Vec<UploadBatch>, PersistenceError>;
     fn queue_diagnostics(&self) -> Result<UploadQueueDiagnostics, PersistenceError>;
     fn mark_failed(

@@ -254,6 +254,21 @@ impl<H: HttpClient> FetchService<H> {
             .map(cloud_history)
     }
 
+    /// What [`Self::daily_insight`] would answer from the cache alone:
+    /// `Some(None)` for the cloud's cached answer that there is no insight,
+    /// and `None` when it would have to ask the cloud. Never makes a request.
+    pub async fn cached_daily_insight(&self, date: NaiveDate) -> Option<Option<InsightPayload>> {
+        let entry = self
+            .read_insight_cached(&date.format("%Y-%m-%d").to_string())
+            .await?;
+        if entry.is_negative {
+            return Some(None);
+        }
+        serde_json::from_str::<InsightPayload>(&entry.payload)
+            .ok()
+            .map(Some)
+    }
+
     pub async fn daily_insight(
         &self,
         date: NaiveDate,

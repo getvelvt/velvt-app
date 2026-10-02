@@ -681,6 +681,7 @@ async fn main() {
             .with_receipts(Arc::clone(&receipts))
             .with_category_prompt(Arc::clone(&category_prompt))
             .with_auth_state(auth_state.subscribe())
+            .with_delivery_push(Arc::clone(&push_adapter))
             .with_menu_status(Arc::new(MenuStatusProvider::new(
                 Arc::clone(&raw_http) as Arc<dyn HttpClient>,
                 Arc::clone(&token_store) as Arc<dyn TokenStore>,

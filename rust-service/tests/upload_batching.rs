@@ -132,6 +132,13 @@ impl UploadBatchRepo for FailFirstInsertRepo {
         self.inner.pending_batches()
     }
 
+    fn queued_batch_events(
+        &self,
+        limit: usize,
+    ) -> Result<(u64, Vec<BatchEvent>), PersistenceError> {
+        self.inner.queued_batch_events(limit)
+    }
+
     fn resumable_batches(&self, now: DateTime<Utc>) -> Result<Vec<UploadBatch>, PersistenceError> {
         self.inner.resumable_batches(now)
     }

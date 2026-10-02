@@ -285,6 +285,26 @@ impl PushAdapter {
         }
     }
 
+    /// A `cache_empty` that says why: the answer to a request whose cloud read
+    /// finished after the request was answered.
+    pub async fn push_cache_empty_because(&self, payload_type: &str, reason: &str) {
+        match shaper::shape_cache_empty_because(payload_type, reason) {
+            Ok(validated) => {
+                self.queue
+                    .enqueue(ServerMessage::CacheEmpty(validated.into_inner()))
+                    .await;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    message_type = "cache_empty",
+                    error_code = "outbound_validation_failed",
+                    error = %err,
+                    "outbound payload failed validation; dropped without sending"
+                );
+            }
+        }
+    }
+
     /// Enqueues a `ShuttingDown` message at the front of the queue so it is
     /// delivered before any pending payloads.  Called during graceful shutdown
     /// before the cancellation token is set.

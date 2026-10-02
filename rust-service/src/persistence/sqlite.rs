@@ -2758,6 +2758,36 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
         self.resumable_batches(DateTime::<Utc>::MAX_UTC)
     }
 
+    fn queued_batch_events(
+        &self,
+        limit: usize,
+    ) -> Result<(u64, Vec<BatchEvent>), PersistenceError> {
+        let connection = self.0.connection()?;
+        let count = connection.query_row(
+            "SELECT COUNT(*)
+             FROM batch_event
+             JOIN upload_batch ON upload_batch.batch_id = batch_event.batch_id
+             WHERE upload_batch.status IN ('pending', 'failed')",
+            [],
+            |row| row.get::<_, u64>(0),
+        )?;
+        let mut statement = connection.prepare(
+            "SELECT batch_event.event_id, batch_event.stable_id, batch_event.label,
+                    batch_event.category, batch_event.taxonomy_version,
+                    batch_event.classification_tier, batch_event.occurred_at,
+                    batch_event.duration_seconds
+             FROM batch_event
+             JOIN upload_batch ON upload_batch.batch_id = batch_event.batch_id
+             WHERE upload_batch.status IN ('pending', 'failed')
+             ORDER BY batch_event.occurred_at DESC, batch_event.id DESC
+             LIMIT ?1",
+        )?;
+        let newest = statement
+            .query_map([limit as i64], batch_event_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((count, newest))
+    }
+
     fn resumable_batches(&self, now: DateTime<Utc>) -> Result<Vec<UploadBatch>, PersistenceError> {
         let connection = self.0.connection()?;
         let mut batch_statement = connection.prepare(

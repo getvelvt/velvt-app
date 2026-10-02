@@ -241,6 +241,31 @@ final class EventRelayTests: XCTestCase {
         XCTAssertEqual(sentRawEvents(client).first?.bundleID, "com.apple.Safari")
     }
 
+    /// The barrier a work-block command waits on: everything handed over
+    /// before it has been sent by the time it returns.
+    func testWaitForQueuedEventsReturnsAfterEarlierEventsAreSent() async throws {
+        let client = FakeIPCClient()
+        client.setConnectionStatus(.connected)
+        let relay = EventRelay(ipcClient: client, capacity: 10)
+        await relay.start()
+        await drain()
+
+        relay.receive(makeEvent(index: 1))
+        relay.receive(makeEvent(index: 2))
+        await relay.waitForQueuedEvents()
+
+        XCTAssertEqual(sentRawEvents(client).map(\.appName), ["App1", "App2"])
+        await relay.stop()
+        // Stopped, there is nothing to wait for.
+        await relay.waitForQueuedEvents()
+    }
+
+    /// A relay that never started has no send loop to reach the barrier.
+    func testWaitForQueuedEventsReturnsAtOnceBeforeStart() async {
+        let relay = EventRelay(ipcClient: FakeIPCClient(), capacity: 10)
+        await relay.waitForQueuedEvents()
+    }
+
     func testReceivingEventIncrementsActionsLoggedMetric() async throws {
         let client = FakeIPCClient()
         let metrics = AppMetricsStore(defaults: UserDefaults(suiteName: "EventRelayTests.\(UUID().uuidString)")!)

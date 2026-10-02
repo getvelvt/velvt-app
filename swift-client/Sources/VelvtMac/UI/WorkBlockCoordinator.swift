@@ -37,13 +37,44 @@ public final class WorkBlockCoordinator: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var sendChain: Task<Void, Never>?
     private let utcOffsetSeconds: () -> Int
+    private let flushPendingDwell: (@MainActor () async -> Void)?
+    private let now: () -> Date
+    private let sleep: @Sendable (TimeInterval) async throws -> Void
+    private var deadlineFlush: (key: DeadlineFlushKey, task: Task<Void, Never>)?
 
+    /// How long before a block's planned end the dwell in progress is closed
+    /// for a block that runs out rather than being ended.
+    ///
+    /// The service finishes a timed-out block itself, at `ends_at`, and the
+    /// only thing Swift hears afterwards is the finished snapshot. A report
+    /// that arrives then lands on a block that is no longer active, so it has
+    /// to arrive first. One second costs the block one second of coverage.
+    nonisolated static let deadlineFlushLeadSeconds: TimeInterval = 1
+
+    private struct DeadlineFlushKey: Equatable {
+        let blockID: UUID
+        let endsAt: Date
+    }
+
+    /// - Parameter flushPendingDwell: Closes the dwell the person is in right
+    ///   now and returns once its report has gone to the service. The service
+    ///   is told about a dwell only when it ends, so without this the one in
+    ///   progress at a pause or at the end of a block never reaches it, and
+    ///   the block's result drops it. `nil` sends the commands alone.
     public init(
         ipcClient: any IPCClientProtocol,
-        utcOffsetSeconds: @escaping () -> Int = { TimeZone.current.secondsFromGMT() }
+        utcOffsetSeconds: @escaping () -> Int = { TimeZone.current.secondsFromGMT() },
+        flushPendingDwell: (@MainActor () async -> Void)? = nil,
+        now: @escaping () -> Date = Date.init,
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+            try await Task.sleep(for: .seconds(seconds))
+        }
     ) {
         self.ipcClient = ipcClient
         self.utcOffsetSeconds = utcOffsetSeconds
+        self.flushPendingDwell = flushPendingDwell
+        self.now = now
+        self.sleep = sleep
     }
 
     public func start(
@@ -59,6 +90,7 @@ public final class WorkBlockCoordinator: ObservableObject {
                 case .workBlockState(let snapshot):
                     self?.snapshot = snapshot
                     self?.commandError = nil
+                    self?.scheduleDeadlineFlush(for: snapshot)
                     // A live block supersedes any invitation card; the service has
                     // already expired the stored invitation.
                     if snapshot.phase == .active || snapshot.phase == .paused {
@@ -108,8 +140,14 @@ public final class WorkBlockCoordinator: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // The service pauses an active block on sleep, which closes its
+        // ledger exactly as a pause does, so the dwell goes first here too.
         workspaceNotifications.publisher(for: NSWorkspace.willSleepNotification)
-            .sink { [weak self] _ in self?.reportLifecycle(.sleep) }
+            .sink { [weak self] _ in
+                self?.send(
+                    .workBlockLifecycle(.init(event: .sleep)),
+                    flushingDwellFirst: self?.snapshot?.phase == .active)
+            }
             .store(in: &cancellables)
         workspaceNotifications.publisher(for: NSWorkspace.didWakeNotification)
             .sink { [weak self] _ in
@@ -142,9 +180,13 @@ public final class WorkBlockCoordinator: ObservableObject {
                 )))
     }
 
+    /// The service closes the block's ledger at a pause, so the dwell in
+    /// progress is reported first, the same as at the end.
     public func pause() {
         guard let blockID = snapshot?.blockID else { return }
-        send(.pauseWorkBlock(.init(blockID: blockID)))
+        send(
+            .pauseWorkBlock(.init(blockID: blockID)),
+            flushingDwellFirst: snapshot?.phase == .active)
     }
 
     public func resume() {
@@ -152,9 +194,19 @@ public final class WorkBlockCoordinator: ObservableObject {
         send(.resumeWorkBlock(.init(blockID: blockID)))
     }
 
+    /// Reports the dwell in progress, then ends the block.
+    ///
+    /// The order is the fix. The service closes the block's last ledger row
+    /// where that dwell's closed report says it ended, and a dwell is
+    /// reported closed only when the person leaves it. Ended without the
+    /// report, a block spent entirely in one app had no measured time at all.
+    /// A paused block needs no flush: its dwell was reported at the pause.
     public func end() {
         guard let blockID = snapshot?.blockID else { return }
-        send(.endWorkBlock(.init(blockID: blockID)))
+        cancelDeadlineFlush()
+        send(
+            .endWorkBlock(.init(blockID: blockID)),
+            flushingDwellFirst: snapshot?.phase == .active)
     }
 
     public func acceptRecovery() {
@@ -349,11 +401,51 @@ public final class WorkBlockCoordinator: ObservableObject {
         send(.workBlockLifecycle(.init(event: event)))
     }
 
-    private func send(_ message: ClientMessage) {
+    /// Arms the flush for a block that runs out instead of being ended.
+    ///
+    /// Re-armed only when the block or its `ends_at` changes: a resume moves
+    /// the deadline, and every other snapshot of the same block leaves the
+    /// pending flush alone. Anything but an active block disarms it, so a
+    /// block that was ended or paused is never flushed again later.
+    private func scheduleDeadlineFlush(for snapshot: WorkBlockSnapshot) {
+        guard flushPendingDwell != nil,
+            snapshot.phase == .active,
+            let blockID = snapshot.blockID,
+            let endsAt = snapshot.endsAt
+        else {
+            cancelDeadlineFlush()
+            return
+        }
+        let key = DeadlineFlushKey(blockID: blockID, endsAt: endsAt)
+        guard deadlineFlush?.key != key else { return }
+        cancelDeadlineFlush()
+        guard endsAt > now() else { return }
+        let delay = max(0, endsAt.timeIntervalSince(now()) - Self.deadlineFlushLeadSeconds)
+        let task = Task { [weak self, sleep] in
+            do {
+                try await sleep(delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self,
+                self.snapshot?.blockID == blockID,
+                self.snapshot?.phase == .active
+            else { return }
+            self.enqueue { [weak self] in await self?.flushPendingDwell?() }
+        }
+        deadlineFlush = (key, task)
+    }
+
+    private func cancelDeadlineFlush() {
+        deadlineFlush?.task.cancel()
+        deadlineFlush = nil
+    }
+
+    private func send(_ message: ClientMessage, flushingDwellFirst: Bool = false) {
         commandError = nil
-        let previous = sendChain
-        sendChain = Task { [weak self, ipcClient] in
-            await previous?.value
+        let flush = flushingDwellFirst ? flushPendingDwell : nil
+        enqueue { [weak self, ipcClient] in
+            await flush?()
             do {
                 try await ipcClient.send(message)
             } catch {
@@ -361,6 +453,17 @@ public final class WorkBlockCoordinator: ObservableObject {
                     self?.commandError = "The local service is offline. Your work block was not changed."
                 }
             }
+        }
+    }
+
+    /// Runs `operation` after everything this coordinator has already
+    /// queued, so a flush and the command it precedes reach the service in
+    /// the order they were asked for.
+    private func enqueue(_ operation: @escaping @MainActor () async -> Void) {
+        let previous = sendChain
+        sendChain = Task {
+            await previous?.value
+            await operation()
         }
     }
 }

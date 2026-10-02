@@ -394,22 +394,25 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     /// workspace, and it reports only an observation the agent has already
     /// made. The caller supplies `instant`; the agent never wakes itself.
     ///
-    /// **Not yet wired to work-block end, deliberately.** Two facts block it,
-    /// both verified against the service on 2026-08-21:
+    /// **Called at work-block boundaries.** `WorkBlockCoordinator` calls it,
+    /// and waits for the relay to send the result, before it sends
+    /// `pause_work_block` or `end_work_block`, before the sleep that pauses a
+    /// block, and about a second before `ends_at` for a block that runs out.
+    /// The service closes a block's last ledger row where that dwell's closed
+    /// report says it ended (`close_open_observation_at_reported_end` in
+    /// `work_block/mod.rs`), so without this a block spent in one app ends
+    /// with no measured time. The block-end signal Swift receives after a
+    /// timeout is the finished snapshot, too late to report against, which is
+    /// why that case fires off `ends_at` instead.
     ///
-    /// 1. The only block-end signal Swift receives is the `work_block_state`
-    ///    snapshot the deadline scheduler pushes *after* it has already run
-    ///    `finish` (`work_block/mod.rs:1289`). By then the block reads
-    ///    `completed`, so a flush sent on that signal is discarded by the
-    ///    phase guard at `work_block/mod.rs:519` and changes nothing.
-    /// 2. Firing earlier — off the snapshot's `ends_at` — would land the event
-    ///    while the block is still active and would fix the ledger, but the
-    ///    service also runs `evaluate_drift` on every observation
-    ///    (`work_block/mod.rs:563`) and can push an OS notification from it
-    ///    (`ipc/router.rs:1507`). The gates read the flushed event's
-    ///    `occurred_at`, which is the dwell's start, so a long terminal dwell
-    ///    can clear them and interrupt the user seconds before their block
-    ///    ends. Suppressing that needs a field the v28 protocol does not have.
+    /// The flushed report cannot interrupt the person at the end of a block.
+    /// When the dwell's in-progress report has already opened its ledger row,
+    /// the closed report lands on that row and the service does nothing else
+    /// with it. When it has not, the drift gate does evaluate it, but the gate
+    /// abstains with less than `DRIFT_MIN_REMAINING_SECONDS` (two minutes)
+    /// left, which covers every timeout flush. An early manual end with more
+    /// than two minutes left whose in-progress report was dropped can still
+    /// reach the gate; the block is ended immediately afterwards.
     ///
     /// - Returns: `true` when an event was emitted.
     @discardableResult

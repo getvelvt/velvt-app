@@ -117,8 +117,32 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         menuBarDataLoader = dataLoader
 
+        let relay = EventRelay(ipcClient: client, metrics: metricsStore)
+        let currentActivity = CurrentActivityModel()
+        let collectionSettings = CollectionSettingsModel()
+        let eventSinkFanout = EventSinkFanout([relay, currentActivity])
+        let collectionAgent = AXCollectionAgent(eventSink: eventSinkFanout)
+        let coordinator = PermissionCollectionCoordinator(
+            permissionManager: permissionManager,
+            collectionAgent: collectionAgent,
+            connectionStatus: client.connectionStatus,
+            collectionSettings: collectionSettings
+        )
+        self.eventRelay = relay
+        self.eventSinkFanout = eventSinkFanout
+        self.collectionAgent = collectionAgent
+        permissionCoordinator = coordinator
+
         let serviceAlertModel = ServiceAlertModel(messages: accountStateManager.serverMessages)
-        let workBlocks = WorkBlockCoordinator(ipcClient: client)
+        let workBlocks = WorkBlockCoordinator(
+            ipcClient: client,
+            flushPendingDwell: { [weak collectionAgent, weak relay] in
+                // Closed at the moment of the command, then delivered ahead
+                // of it: the relay and the command travel on separate tasks.
+                collectionAgent?.flushPendingDwell(at: Date())
+                await relay?.waitForQueuedEvents()
+            }
+        )
         workBlocks.start(
             messages: accountStateManager.serverMessages,
             connectionStatus: client.connectionStatus
@@ -135,22 +159,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             connectionStatus: client.connectionStatus
         )
         localDashboardCoordinator = localDashboard
-
-        let relay = EventRelay(ipcClient: client, metrics: metricsStore)
-        let currentActivity = CurrentActivityModel()
-        let collectionSettings = CollectionSettingsModel()
-        let eventSinkFanout = EventSinkFanout([relay, currentActivity])
-        let collectionAgent = AXCollectionAgent(eventSink: eventSinkFanout)
-        let coordinator = PermissionCollectionCoordinator(
-            permissionManager: permissionManager,
-            collectionAgent: collectionAgent,
-            connectionStatus: client.connectionStatus,
-            collectionSettings: collectionSettings
-        )
-        self.eventRelay = relay
-        self.eventSinkFanout = eventSinkFanout
-        self.collectionAgent = collectionAgent
-        permissionCoordinator = coordinator
 
         let scheduler = UNNotificationScheduler(metrics: metricsStore)
         // One line on the unified log per delivery attempt, on both surfaces.

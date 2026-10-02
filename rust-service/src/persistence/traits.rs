@@ -266,6 +266,14 @@ pub trait UploadBatchRepo: Send + Sync {
         next_attempt_at: DateTime<Utc>,
         error_code: &str,
     ) -> Result<(), PersistenceError>;
+    /// Moves a batch's next attempt to `next_attempt_at` without spending an
+    /// attempt: the batch was not sent, because the host was in backoff.
+    fn defer_batch(
+        &self,
+        batch_id: &str,
+        next_attempt_at: DateTime<Utc>,
+        error_code: &str,
+    ) -> Result<(), PersistenceError>;
     fn mark_rejected(&self, batch_id: &str, error_code: &str) -> Result<(), PersistenceError>;
     fn discard_batch(&self, batch_id: &str) -> Result<(), PersistenceError>;
     fn batch_status(&self, batch_id: &str) -> Result<super::UploadBatchStatus, PersistenceError>;

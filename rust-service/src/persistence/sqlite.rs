@@ -2885,6 +2885,21 @@ impl UploadBatchRepo for SqliteUploadBatchRepo {
         )
     }
 
+    fn defer_batch(
+        &self,
+        batch_id: &str,
+        next_attempt_at: DateTime<Utc>,
+        error_code: &str,
+    ) -> Result<(), PersistenceError> {
+        update_batch_state(
+            &self.0,
+            "UPDATE upload_batch SET next_attempt_at = ?2, last_error_code = ?3 WHERE batch_id = ?1",
+            batch_id,
+            next_attempt_at.timestamp(),
+            error_code,
+        )
+    }
+
     fn mark_rejected(&self, batch_id: &str, error_code: &str) -> Result<(), PersistenceError> {
         update_batch_state(
             &self.0,

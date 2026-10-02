@@ -132,23 +132,32 @@ where
     }
 
     pub async fn upload_batch(&self, batch: BatchPayload) -> Result<(), CoordinatorError> {
-        self.upload_batch_with_backoff(batch, true).await
+        self.upload_batch_with_backoff(batch, true).await?;
+        Ok(())
     }
 
+    /// Sends one batch, or defers it while the host is in backoff, and says
+    /// whether the host can be sent another batch now.
     async fn upload_batch_with_backoff(
         &self,
         batch: BatchPayload,
         respect_host_backoff: bool,
-    ) -> Result<(), CoordinatorError> {
+    ) -> Result<HostAvailability, CoordinatorError> {
         if respect_host_backoff {
             if let Some(next_attempt_at) = self.repository.host_backoff_until(&self.host)? {
                 if next_attempt_at > Utc::now() {
-                    self.repository.mark_failed(
+                    // Not an attempt: nothing was sent, so nothing is counted
+                    // against the batch's ceiling. Counting deferrals spent
+                    // every queued batch's attempts at the rate the retry scan
+                    // ran, so an outage of about three days abandoned the
+                    // whole queue although only the first batch of each scan
+                    // had ever been tried.
+                    self.repository.defer_batch(
                         &batch.batch_id,
                         next_attempt_at,
                         "host_backoff",
                     )?;
-                    return Ok(());
+                    return Ok(HostAvailability::InBackoff);
                 }
             }
         }
@@ -156,7 +165,7 @@ where
             Ok(outcome) => outcome,
             Err(BatchUploadError::Transport) => {
                 self.schedule_network_retry(&batch.batch_id)?;
-                return Ok(());
+                return Ok(HostAvailability::InBackoff);
             }
             Err(BatchUploadError::AuthenticationRequired) => {
                 let next_attempt_at = Utc::now() + Duration::minutes(15);
@@ -169,7 +178,7 @@ where
                     error_code = "upload_authentication_required",
                     "upload paused pending device reauthentication"
                 );
-                return Ok(());
+                return Ok(HostAvailability::Available);
             }
         };
         match outcome {
@@ -212,6 +221,7 @@ where
                 )?;
                 self.repository
                     .mark_failed(&batch.batch_id, next_attempt_at, "rate_limited")?;
+                return Ok(HostAvailability::InBackoff);
             }
             UploadOutcome::Retryable { code } => {
                 let attempt = self.repository.host_backoff_attempt(&self.host)?;
@@ -229,9 +239,10 @@ where
                 )?;
                 self.repository
                     .mark_failed(&batch.batch_id, next_attempt_at, &code)?;
+                return Ok(HostAvailability::InBackoff);
             }
         }
-        Ok(())
+        Ok(HostAvailability::Available)
     }
 
     /// Deletes the batch and reports `true` when the retention policy refuses
@@ -256,6 +267,14 @@ where
         Ok(true)
     }
 
+    /// "Send all now": sends every queued batch, the first one even while the
+    /// host is in backoff, because a person asked.
+    ///
+    /// Stops at the first batch that leaves the host in backoff (a transport
+    /// failure, a rate limit, a retryable status) and leaves the rest where
+    /// they are, under the backoff that failure set. Sending on regardless
+    /// cost each remaining batch a full request timeout against a host that
+    /// had just failed to answer, one after another.
     pub async fn flush_all_pending(
         &self,
         schema_version: &str,
@@ -267,11 +286,15 @@ where
             if self.discard_disowned(&batch)? {
                 continue;
             }
-            self.upload_batch_with_backoff(
-                payload_for_queued_batch(batch, schema_version, client_version),
-                false,
-            )
-            .await?;
+            let availability = self
+                .upload_batch_with_backoff(
+                    payload_for_queued_batch(batch, schema_version, client_version),
+                    false,
+                )
+                .await?;
+            if availability == HostAvailability::InBackoff {
+                break;
+            }
         }
         Ok(count)
     }
@@ -423,6 +446,14 @@ fn unique_abstraction_types(events: &[BatchEventPayload]) -> Vec<String> {
         }
     }
     types
+}
+
+/// What a send left the upload host in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostAvailability {
+    Available,
+    /// The host is in backoff: this send set it, or found it set.
+    InBackoff,
 }
 
 #[derive(Debug, thiserror::Error)]

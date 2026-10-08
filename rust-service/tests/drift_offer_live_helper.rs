@@ -612,7 +612,7 @@ fn a_departure_to_an_application_seen_only_at_application_level_reaches_the_gate
             3
         ))
     );
-    assert_eq!(velvt_service::work_block::DRIFT_POLICY_VERSION, 5);
+    assert_eq!(velvt_service::work_block::DRIFT_POLICY_VERSION, 6);
     let returned = &after
         .pushed
         .iter()
@@ -797,7 +797,7 @@ fn a_browser_tab_on_a_site_velvt_can_place_is_a_departure_the_gate_decides_on() 
                 .iter()
                 .find(|decision| decision.0 == 320)
                 .map(|decision| (decision.1, decision.2.as_str(), decision.3)),
-            Some((5, "offered", 3))
+            Some((6, "offered", 3))
         );
         let returned = &replay
             .pushed

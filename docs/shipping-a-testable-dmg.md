@@ -211,7 +211,7 @@ a Release build, so this is unavailable in the DMG.
 Device-local, deterministic, and independent of the cloud, so it works on a
 fresh install with no account and no baseline history:
 
-This is drift policy v5 (`DRIFT_POLICY_VERSION = 5`, protocol 33). The gate
+This is drift policy v6 (`DRIFT_POLICY_VERSION = 6`, protocol 33). The gate
 constants are in `rust-service/src/work_block/mod.rs`:
 ≥ 3 confident switches away from the anchor inside a rolling 10-minute window,
 after ≥ 3 minutes elapsed, with ≥ 2 minutes remaining. They are v2's (PR #40,
@@ -229,7 +229,12 @@ rarely, when the built-in Tier 2 classifier placed it), and almost every other
 tab was left unclear; an unclear tab is never counted.
 And v5 no longer counts a tab that only title keywords placed, when its site can
 be read but is neither in the table nor readable from its name: a Jira ticket
-on `*.atlassian.net` counted under v4 and is unclear under v5. The first gate,
+on `*.atlassian.net` counted under v4 and is unclear under v5. v6 changes two
+sites. A YouTube tab is decided by its video title: a lecture or a tutorial is
+REFERENCE, highlights or a music video PASSIVE_CONSUMPTION, and a video whose
+title says neither is unclear and never counted; under v5 every YouTube tab
+was PASSIVE_CONSUMPTION. TikTok's web app is SOCIAL_FEED, where v5 had it as
+PASSIVE_CONSUMPTION. The first gate,
 v1, was ≥ 4 switches after 5 minutes; it no longer ships.
 
 1. Start a work block of **25 minutes** (anything that leaves 2 minutes after

@@ -396,7 +396,9 @@ fn different_focused_websites_receive_distinct_local_identities() {
     let engine = engine();
     let mut github = raw_event("Google Chrome", "Work");
     github.focused_document_url = Some("https://github.com/velvt/private".into());
-    let mut youtube = raw_event("Google Chrome", "Work");
+    // The bare feed: under policy v6 a YouTube video's title decides its
+    // category, and "Work" names neither a lesson nor entertainment.
+    let mut youtube = raw_event("Google Chrome", "YouTube");
     youtube.focused_document_url = Some("https://youtube.com/watch?v=private".into());
 
     let github = engine.process(github).unwrap();

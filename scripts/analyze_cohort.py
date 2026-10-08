@@ -15,7 +15,9 @@ is read from that file's pre-registration (2026-08-09), its additions
 (2026-08-17), the amendment that replaced the primary outcome (2026-08-21), the
 correction of 2026-08-31, the drift policy v2 amendment and 0.1.6 metrics
 (both 2026-09-25), the drift policy v3 and v4 amendments (both 2026-09-26),
-the drift policy v5 amendment (2026-09-27), and the instrument addendum that
+the drift policy v5 amendment (2026-09-27), the drift policy v6 amendment
+(drafted 2026-10-07; it must be in that file before any v6 build reaches a
+tester), and the instrument addendum that
 fixes how the outcomes are computed (drafted 2026-09-27; it must be in that
 file before any export is used), all written before any cohort data existed.
 Nothing may be added after seeing results. If a definition turns out to be
@@ -83,7 +85,7 @@ CENSORED_REPORT_SHARE = 0.10
 CENSORED_INSUFFICIENT_SHARE = 0.25
 
 # The 2026-08-21 rule: until randomization is enabled, every comparison this
-# outcome supports is associational and must be labelled as such. Policy v5
+# outcome supports is associational and must be labelled as such. Policy v6
 # offers every eligible point (propensity 1.0), so there is no silence arm and
 # no rate here is an effect of the nudge. The tag goes on every rendered
 # primary-outcome result, so a line copied on its own keeps it.
@@ -211,7 +213,19 @@ WARMUP_EXCLUSION_SECONDS = 180
 # open. Rows from v1 to v5 are never pooled, and every cohort result uses
 # policy_version 5 only. The founder appended the note to traction-summary.md
 # as its 2026-09-27 amendment.
-ANALYSED_POLICY_VERSION = 5
+#
+# Note, dated 2026-10-07: drift policy v6 (no protocol change) keeps every v5
+# constant and timing, so the warm-up exclusion above stands, but two sites are
+# classified differently. A YouTube tab was PASSIVE_CONSUMPTION whatever video
+# it showed; under v6 its video title decides it (a learning marker is
+# REFERENCE, an entertainment marker PASSIVE_CONSUMPTION, both at medium
+# confidence, and a title with neither or both is the ambiguous prior, never
+# evidence), and TikTok's web app is SOCIAL_FEED instead of
+# PASSIVE_CONSUMPTION. Anchors, switches and decision points differ wherever
+# either was open. Rows from v1 to v6 are never pooled, and every cohort result
+# uses policy_version 6 only. [Pending: the founder appends the v6 note to
+# traction-summary.md before any v6 build reaches a tester.]
+ANALYSED_POLICY_VERSION = 6
 
 # A `work_block_intervention` row has no policy column. It takes the
 # policy_version of the decision-log row for the same block_id whose verdict is
@@ -1617,8 +1631,8 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
         "policy": {
             "analysed_policy_version": ANALYSED_POLICY_VERSION,
             "rule": (
-                "2026-09-25 amendment and 2026-09-26/27 notes: policy_version 1 to "
-                "5 are never pooled and every result uses policy_version "
+                "2026-09-25 amendment and 2026-09-26/27/10-07 notes: policy_version 1 to "
+                "6 are never pooled and every result uses policy_version "
                 f"{ANALYSED_POLICY_VERSION} only. An intervention row takes "
                 "the policy_version of the decision-log row for the same block_id "
                 "whose gate_verdict is offered, withheld_demotion or suppressed_dnd; "
@@ -1726,7 +1740,7 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
         "exclusions": {
             "declared_in_advance": [
                 f"blocks whose elapsed time (ended_at - started_at - total_paused_seconds) "
-                f"is under {WARMUP_EXCLUSION_SECONDS}s, below the policy v2 to v5 warm-up "
+                f"is under {WARMUP_EXCLUSION_SECONDS}s, below the policy v2 to v6 warm-up "
                 "(2026-09-25; was 300 s)",
                 "the founder's own device",
                 "any participant who reinstalled mid-cohort (local history resets with the database)",

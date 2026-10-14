@@ -22,8 +22,9 @@
 #    schema: protocol 30 (1.0.11), protocol 28 (1.0.9, no `card_seen_at`), a
 #    28 -> 30 upgrade (rows from before migration 0032 are "unknown", not
 #    "unseen"), protocol 25 (1.0.1, no decision log at all), 1.0.0 (no
-#    app-scoped corrections), and protocol 31 (develop) for the corrections
-#    file. Older than protocol 25 must still stop with an error.
+#    app-scoped corrections), protocol 31 (no site rules) and policy v5
+#    (0040, site rules) for the corrections file. Older than protocol 25 must
+#    still stop with an error.
 #
 # The tester receives the script pasted or attached, with no execute bit, and
 # runs `bash export_cohort_evidence.sh` under the bash 3.2 that ships with
@@ -417,7 +418,7 @@ for phrase in "block start and end times" "total time paused" \
               "at least 10 of the next 15 minutes in the anchor category" \
               "the record of your session it is worked out from stays here." \
               "named by the date of its Monday" \
-              "It does not say which apps or windows they were." \
+              "It does not say which apps, sites or windows they were." \
               "Please send every file listed above."; do
   grep -qF -- "$phrase" <<<"$folded" || fail "disclosure omits: $phrase"
 done
@@ -593,12 +594,18 @@ assert r["decisions_recorded"]["total"] == 0, r["decisions_recorded"]
 PY
 
 # ===========================================================================
-# F. Corrections (2026-08-17 measure 3) on protocol 28 (1.0.9) and protocol 31
-#    (develop, with salted keys and the egress ledger). The same rows on both:
-#    five app rules and four window rules, one of each with a category nothing
-#    could have written through the IPC layer, plus a block-scoped "Wrong
-#    category" reply that is not a classification rule and is not counted.
-#    Only columns 0017 already had are written, so one seed fits both schemas.
+# F. Corrections (2026-08-17 measure 3) on protocol 28 (1.0.9), protocol 31
+#    (salted keys and the egress ledger, no site rules) and policy v5 (0040,
+#    site rules). The same rows on all three: five app rules and four window
+#    rules, one of each with a category nothing could have written through the
+#    IPC layer, plus a block-scoped "Wrong category" reply that is not a
+#    classification rule and is not counted. Only columns 0017 already had are
+#    written, so one seed fits every schema. On policy v5 three site rules are
+#    added, one with a sentinel category and one with a typed name, and a
+#    sentinel hostname sits in `local_site_name`: the counts leave, the site
+#    keys and the hostname do not. The two older schemas have no
+#    `personal_site_override`, so they write no site rows and say
+#    `site_rules,absent`.
 # ===========================================================================
 seed_corrections() {
   sqlite3 "$1" <<SQL
@@ -618,16 +625,39 @@ VALUES ('block-4','REFERENCE','FOCUS_WORK',$((T0 + 30500)));
 SQL
 }
 
-for proto in 28 31; do
+# Lowercase, because `local_site_name.host` admits only what the normalizer
+# produces.
+S_SITEHOST='zzsentinelsitehostzz.example'
+seed_site_rules() {
+  sqlite3 "$1" <<SQL
+INSERT INTO personal_site_override (site_key_hash, category, activity_name, correction_count)
+VALUES
+ ('ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff01','FOCUS_WORK',NULL,2),
+ ('ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff02','FOCUS_WORK','$S_OVERRIDE site',1),
+ ('ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff03','$S_CATEGORY',NULL,4);
+INSERT INTO local_site_name (site_key_hash, host, last_seen_at)
+VALUES ('ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff04','$S_SITEHOST',$T0);
+SQL
+}
+
+for proto in 28 31 v5; do
   case "$proto" in
     28) last="$FIXTURE_MIGRATIONS_PROTOCOL_28" ;;
     31) last="$FIXTURE_MIGRATIONS_PROTOCOL_31" ;;
+    v5) last="$FIXTURE_MIGRATIONS_POLICY_V5" ;;
   esac
   dbc="$work/corrections$proto.sqlite3"
   migrate_fixture_db "$dbc" "$last" "$INSTALLED_AT"
   seed_blocks_and_offers "$dbc"
   seed_sentinels "$dbc"
   seed_corrections "$dbc"
+  site_rows=""
+  site_meta="absent"
+  if [[ "$proto" == "v5" ]]; then
+    seed_site_rules "$dbc"
+    site_rows="$(printf '%s\n' 'site,FOCUS_WORK,2,3' 'site,unrecognized,1,4')"
+    site_meta="present"
+  fi
   outdir="$work/cohort-corrections/c$proto"
   mkdir -p "$outdir"
   run_export "$dbc" "$outdir/c$proto.csv" "$work/stdoutc$proto.txt"
@@ -638,6 +668,7 @@ for proto in 28 31; do
     'app,FOCUS_WORK,3,5' \
     'app,SOCIAL_FEED,1,2' \
     'app,unrecognized,1,1' \
+    ${site_rows:+"$site_rows"} \
     'window,FOCUS_WORK,2,' \
     'window,REFERENCE,1,' \
     'window,unrecognized,1,')"
@@ -651,18 +682,31 @@ for proto in 28 31; do
     || fail "protocol $proto meta: corrections"
   [[ "$(meta_of "$outdir/c$proto-meta.csv" schema_version)" == "$last" ]] \
     || fail "protocol $proto fixture is not at migration $last"
+  [[ "$(meta_of "$outdir/c$proto-meta.csv" site_rules)" == "$site_meta" ]] \
+    || fail "protocol $proto meta: site_rules"
+  if [[ "$proto" == "v5" ]]; then
+    [[ "$(sqlite3 "$dbc" "SELECT COUNT(*) FROM personal_site_override WHERE category = '$S_CATEGORY';")" == "1" ]] \
+      || fail "seeding failed, the site category leak test would be vacuous"
+    [[ "$(sqlite3 "$dbc" "SELECT COUNT(*) FROM local_site_name WHERE host = '$S_SITEHOST';")" == "1" ]] \
+      || fail "seeding failed, the hostname leak test would be vacuous"
+    grep -rqF "$S_SITEHOST" "$outdir" "$work/stdoutc$proto.txt" && fail "a site hostname was exported"
+  else
+    [[ "$(sqlite3 "$dbc" "SELECT COUNT(*) FROM sqlite_master WHERE name = 'personal_site_override';")" == "0" ]] \
+      || fail "protocol $proto fixture already has site rules"
+  fi
   # The sentinel category and both typed names really are in the database.
   [[ "$(sqlite3 "$dbc" "SELECT COUNT(*) FROM personal_app_override WHERE category = '$S_CATEGORY';")" == "1" ]] \
     || fail "seeding failed, the category leak test would be vacuous"
   assert_no_sentinel "$outdir"/*.csv "$work/stdoutc$proto.txt"
   # No key digest leaves either: none of the 64-character keys seeded here.
-  grep -qE '[0-9a-e]{64}' "$outdir/c$proto-corrections.csv" && fail "a key digest was exported"
+  grep -qE '[0-9a-f]{64}' "$outdir/c$proto-corrections.csv" && fail "a key digest was exported"
 
   python3 "$analyze" --json "$outdir" > "$work/analysisc$proto.json"
-  python3 - "$work/analysisc$proto.json" "c$proto" <<'PY' || fail "exporter/analyser round trip (corrections, protocol $proto)"
+  python3 - "$work/analysisc$proto.json" "c$proto" "$site_meta" <<'PY' || fail "exporter/analyser round trip (corrections, protocol $proto)"
 import json, sys
 r = json.load(open(sys.argv[1]))
 name = sys.argv[2]
+sites = sys.argv[3] == "present"
 assert r["data_quality"]["malformed"] == [], r["data_quality"]
 c = r["corrections_per_participant"]
 assert c["participants_measured"] == 1, c
@@ -675,6 +719,21 @@ assert entry["window_rules"] == 4, entry
 assert c["app_scoped_corrections_by_category"] == {
     "FOCUS_WORK": 5, "SOCIAL_FEED": 2, "unrecognized": 1}, c
 assert c["not_measurable_for"] == [], c
+if sites:
+    assert entry["site_rules_recordable"] is True, entry
+    assert entry["site_scoped_corrections"] == 7, entry
+    assert entry["sites_with_a_site_rule"] == 3, entry
+    assert entry["corrections"] == 8 + 7, entry
+    assert c["site_scoped_corrections_by_category"] == {
+        "FOCUS_WORK": 3, "unrecognized": 4}, c
+    assert c["site_rules_not_recordable"] == [], c
+else:
+    # An older build: no site rule could exist, and the report says so
+    # rather than presenting the zero as measured.
+    assert entry["site_rules_recordable"] is False, entry
+    assert entry["site_scoped_corrections"] == 0, entry
+    assert entry["corrections"] == 8, entry
+    assert c["site_rules_not_recordable"] == [name], c
 PY
 done
 

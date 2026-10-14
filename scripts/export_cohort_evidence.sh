@@ -42,9 +42,10 @@
 #                           declared blocks in that week, counted on this Mac.
 #   <stem>-corrections.csv  one row per rule scope and broad category: how many
 #                           classification rules this Mac holds, and for the
-#                           app-scoped ones how many corrections wrote them
-#                           (migration 0017). Counts only. No key, no typed
-#                           name, no label: nothing that names an app or window.
+#                           app- and site-scoped ones how many corrections
+#                           wrote them (migrations 0017 and 0040). Counts only.
+#                           No key, no hostname, no typed name, no label:
+#                           nothing that names an app, site or window.
 #   <stem>-meta.csv         what this database could and could not record:
 #                           schema version, whether the decision log exists,
 #                           when card sightings started being recorded, and
@@ -226,6 +227,9 @@ SELECT
     -- descriptive figure. The state machine records a return whenever the
     -- anchor category reappears while the offer is unanswered, with no time
     -- bound, so the 10-minute window is applied here rather than in the app.
+    -- An answered offer is terminal and never records a return, so this is 0
+    -- for someone who answered ("Back to work") and then returned: it counts
+    -- only returns recorded while the offer was still unanswered.
     CASE
         WHEN i.outcome = 'returned'
              AND i.outcome_at IS NOT NULL
@@ -657,6 +661,16 @@ fi
 #            `correction_count` starts at 1 and each later correction
 #            that lands on the same application adds 1, so its sum is the
 #            number of app-scoped corrections behind the rules that exist now.
+#    site    `personal_site_override` (0040): one row per site the person
+#            taught a category, in every browser at once. `correction_count`
+#            works as it does for app rules, so its sum is the number of
+#            site-scoped corrections behind the rules that exist now. Only the
+#            category and the count are read: never the site key, and never
+#            `local_site_name`, the one table that holds a hostname. A
+#            database from before 0040 has no site rules, so it writes no
+#            `site` rows and the meta file says `site_rules,absent`; a
+#            database with the table and no rules says `present` and writes no
+#            `site` rows, which is a zero, not a gap.
 #    window  `personal_override` (0007): one row per corrected window. It keeps
 #            no count, because correcting the same window again overwrites it,
 #            so `corrections` is left empty rather than guessed.
@@ -680,6 +694,15 @@ fi
 # ---------------------------------------------------------------------------
 CORRECTIONS="absent"
 CORRECTION_ROWS=0
+SITE_RULES="absent"
+SITE_RULES_SQL=""
+if has_table personal_site_override; then
+  SITE_RULES="present"
+  SITE_RULES_SQL="
+       SELECT 'site' AS scope, s.category AS category, s.correction_count AS corrections
+         FROM personal_site_override AS s
+       UNION ALL"
+fi
 if has_table personal_app_override && has_table personal_override; then
   CORRECTIONS="present"
   write_csv "$CORRECTIONS_OUT" \
@@ -687,7 +710,7 @@ if has_table personal_app_override && has_table personal_override; then
     "WITH rules AS (
        SELECT 'app' AS scope, a.category AS category, a.correction_count AS corrections
          FROM personal_app_override AS a
-       UNION ALL
+       UNION ALL$SITE_RULES_SQL
        SELECT 'window' AS scope, w.category AS category, NULL AS corrections
          FROM personal_override AS w)
      SELECT
@@ -731,6 +754,7 @@ fi
   printf 'invitations,%s\n' "$INVITATIONS"
   printf 'explain_probe,%s\n' "$EXPLAIN_PROBE"
   printf 'corrections,%s\n' "$CORRECTIONS"
+  printf 'site_rules,%s\n' "$SITE_RULES"
   printf 'card_seen_recorded_since,%s\n' "$CARD_SEEN_SINCE"
   printf 'invitations_enabled,%s\n' "$INVITATIONS_ENABLED"
 } > "$META_OUT"
@@ -814,7 +838,7 @@ epoch seconds.
 The decisions file adds each time the detector looked: when, the broad anchor
 category, switch count, elapsed and remaining seconds, the policy version, the
 verdict (including every time it chose to stay quiet), and whether you were
-back in the anchor category within 10 minutes. The outcomes file adds, for
+back in the anchor category within 10 minutes before answering the nudge. The outcomes file adds, for
 each of those moments, whether you then spent at least 10 of the next 15
 minutes in the anchor category, whether you left it again within 10 minutes,
 how many seconds passed before you stayed in it for 5 minutes straight, why
@@ -828,9 +852,9 @@ it ended, and its timings. The invitations file lists each invitation and your
 answer. The explain file counts "Explain this nudge" taps per week, next to
 the nudges and sessions in that week, with each week named by the date of its
 Monday. The corrections file counts the category corrections you have made,
-per broad category only: how many apps and how many windows you corrected,
-and how many corrections the apps took in total. It does not say which apps
-or windows they were.
+per broad category only: how many apps, sites and windows you corrected, and
+how many corrections the apps and sites took in total. It does not say which
+apps, sites or windows they were.
 
 Does NOT contain: your block intentions, app names, window titles, URLs,
 filenames, or anything you typed or read. Open the files and check before

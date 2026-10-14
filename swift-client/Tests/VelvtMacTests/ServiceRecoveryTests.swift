@@ -48,6 +48,63 @@ final class IPCVersionMismatchRetryTests: XCTestCase {
     }
 }
 
+/// A mismatch met by the client's own reconnect reaches the same recovery
+/// (reclaim the socket, then the Retry alert) that the first connect uses.
+final class IPCReconnectVersionMismatchRecoveryTests: XCTestCase {
+
+    func testReconnectMismatchRunsTheRecovery() async {
+        let client = FakeIPCClient()
+        let recovered = expectation(description: "recovery ran")
+        let cancellable = AppDelegate.recoverOnReconnectVersionMismatch(client) {
+            recovered.fulfill()
+        }
+
+        client.simulateReconnectVersionMismatch(expected: 33, got: 32)
+        await fulfillment(of: [recovered], timeout: 1)
+        cancellable.cancel()
+    }
+
+    func testRecoveryThatRedialsReachesTheMismatchAlert() async {
+        let client = ScriptedConnectIPCClient(failures: [IPCError.versionMismatch(expected: 33, got: 32)])
+        let prompt = VersionMismatchPromptRecorder(answer: false)
+        let finished = expectation(description: "recovery finished")
+        let mismatches = PassthroughSubject<IPCVersionMismatch, Never>()
+        let source = MismatchPublishingIPCClient(wrapping: client, mismatches: mismatches)
+        let cancellable = AppDelegate.recoverOnReconnectVersionMismatch(source) {
+            await AppDelegate.connectRetryingVersionMismatch(client) { expected, got in
+                prompt.answer(expected: expected, got: got)
+            }
+            finished.fulfill()
+        }
+
+        mismatches.send(IPCVersionMismatch(expected: 33, got: 32))
+        await fulfillment(of: [finished], timeout: 1)
+
+        XCTAssertEqual(prompt.count, 1, "the person is told, as on the first connect")
+        XCTAssertEqual(prompt.lastExpected, 33)
+        XCTAssertEqual(prompt.lastGot, 32)
+        XCTAssertEqual(client.connectCount, 1)
+        cancellable.cancel()
+    }
+}
+
+private final class MismatchPublishingIPCClient: IPCClientProtocol, @unchecked Sendable {
+    private let wrapped: any IPCClientProtocol
+    private let mismatches: PassthroughSubject<IPCVersionMismatch, Never>
+
+    init(wrapping wrapped: any IPCClientProtocol, mismatches: PassthroughSubject<IPCVersionMismatch, Never>) {
+        self.wrapped = wrapped
+        self.mismatches = mismatches
+    }
+
+    var incomingMessages: AsyncStream<ServerMessage> { wrapped.incomingMessages }
+    var connectionStatus: AnyPublisher<ConnectionStatus, Never> { wrapped.connectionStatus }
+    var versionMismatches: AnyPublisher<IPCVersionMismatch, Never> { mismatches.eraseToAnyPublisher() }
+    func connect() async throws { try await wrapped.connect() }
+    func disconnect() { wrapped.disconnect() }
+    func send(_ message: ClientMessage) async throws { try await wrapped.send(message) }
+}
+
 // MARK: - Service launcher re-arm and helper diagnostics
 
 @MainActor

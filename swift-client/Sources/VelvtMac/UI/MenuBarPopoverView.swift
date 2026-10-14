@@ -1276,7 +1276,17 @@ public struct PopoverConnectionPresentation {
     /// for the rest of the session while collection carried on. That failure
     /// now reads as `.limited`: said calmly, in secondary ink, and gone at the
     /// next app switch that registers.
-    public init(accessibility: PermissionStatus, collection: CollectionStatus) {
+    ///
+    /// Collection is a Swift-side observer and keeps running whether or not
+    /// the local service is there to receive what it sees. With the service
+    /// gone, "Collection active" in green described a running observer whose
+    /// every report was being dropped, so the label says what is true for the
+    /// person instead: their activity is not being saved.
+    public init(
+        accessibility: PermissionStatus,
+        collection: CollectionStatus,
+        servicePhase: LocalServiceConnectionPhase? = nil
+    ) {
         switch accessibility {
         case .unknown:
             label = "Checking Accessibility…"
@@ -1285,6 +1295,16 @@ public struct PopoverConnectionPresentation {
             label = "Collection paused: Accessibility permission required"
             color = VelvtPalette.signal
         case .granted:
+            switch collection {
+            case .running, .limited:
+                guard servicePhase != .unavailable else {
+                    label = LocalServiceHealthRow.notSavingLabel
+                    color = VelvtPalette.signal
+                    return
+                }
+            case .idle, .permissionRevoked, .error:
+                break
+            }
             switch collection {
             case .running:
                 label = "Collection active"
@@ -1297,6 +1317,41 @@ public struct PopoverConnectionPresentation {
                 color = VelvtPalette.signal
             }
         }
+    }
+}
+
+/// The one-line health row above the workspace.
+///
+/// Once onboarding is done this row is the only standing statement of whether
+/// Velvt is working. It used to be built from two things: an alert the service
+/// itself sends, and whether Swift's collection observer is running. A helper
+/// that has died sends nothing, and the observer runs on without it, so a dead
+/// helper read as a green "Local collection active" with nothing being saved.
+/// The connection phase is the one signal that sees a dead helper, so it
+/// decides first.
+public enum LocalServiceHealthRow: Equatable, Sendable {
+    /// The local service is not reachable: nothing collected is being saved.
+    case serviceNotRunning
+    /// The service is reachable and collection is running.
+    case collectionActive
+    /// Nothing to say: collection is not running, or the service is still
+    /// starting or waking and has its own grace period to come back.
+    case hidden
+
+    public static let notRunningTitle = "The local service isn't running"
+    public static let notRunningMessage = "Your activity isn't being saved until it's back."
+    public static let restartActionTitle = "Restart Local Service"
+    public static let collectionActiveLabel = "Local collection active"
+    public static let notSavingLabel = "Activity not being saved"
+
+    public static func resolve(
+        servicePhase: LocalServiceConnectionPhase,
+        collection: CollectionStatus
+    ) -> LocalServiceHealthRow {
+        if servicePhase == .unavailable {
+            return .serviceNotRunning
+        }
+        return collection == .running ? .collectionActive : .hidden
     }
 }
 
@@ -2103,9 +2158,15 @@ public struct MenuBarPopoverView: View {
                 serviceAlertRow(alert)
                 Divider().opacity(0.15)
             }
-            if collectionActivityStatus.status == .running {
+            switch localServiceHealthRow {
+            case .serviceNotRunning:
+                serviceNotRunningRow
+                Divider().opacity(0.15)
+            case .collectionActive:
                 gatheringInfoStatus
                 Divider().opacity(0.15)
+            case .hidden:
+                EmptyView()
             }
 
             // Every tab scrolls, not only Settings. Measured at the 600pt
@@ -2376,13 +2437,50 @@ public struct MenuBarPopoverView: View {
             Circle()
                 .fill(VelvtInk.affirmative)
                 .frame(width: 7, height: 7)
-            Text("Local collection active")
+            Text(LocalServiceHealthRow.collectionActiveLabel)
                 .font(VelvtType.caption(11))
                 .foregroundStyle(VelvtInk.secondaryOnInk)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
+    }
+
+    private var localServiceHealthRow: LocalServiceHealthRow {
+        LocalServiceHealthRow.resolve(
+            servicePhase: serviceConnectionStatus.phase,
+            collection: collectionActivityStatus.status
+        )
+    }
+
+    /// Shown in place of "Local collection active" while the service is
+    /// unreachable, with the same restart the Settings tab offers.
+    private var serviceNotRunningRow: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(VelvtPalette.signal)
+                .frame(width: 7, height: 7)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(LocalServiceHealthRow.notRunningTitle)
+                    .font(VelvtType.heading(11.5))
+                    .foregroundStyle(VelvtInk.primaryOnInk)
+                Text(LocalServiceHealthRow.notRunningMessage)
+                    .font(VelvtType.caption(10))
+                    .foregroundStyle(VelvtInk.secondaryOnInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            if let restartLocalService {
+                Button(LocalServiceHealthRow.restartActionTitle) { restartLocalService() }
+                    .buttonStyle(.plain)
+                    .font(VelvtType.bodyEmphasis(11))
+                    .foregroundStyle(VelvtPalette.signal)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .contain)
     }
 
     private func serviceAlertRow(_ alert: ServiceAlert) -> some View {
@@ -2616,7 +2714,7 @@ public struct MenuBarPopoverView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
                 if restartLocalService != nil {
-                    Button("Restart Local Service") { restartLocalService?() }
+                    Button(LocalServiceHealthRow.restartActionTitle) { restartLocalService?() }
                         .buttonStyle(.plain)
                         .font(VelvtType.bodyEmphasis(13))
                         .foregroundStyle(VelvtPalette.signal)
@@ -2849,7 +2947,8 @@ public struct MenuBarPopoverView: View {
     private var localCollectionPresentation: PopoverConnectionPresentation {
         PopoverConnectionPresentation(
             accessibility: presentation.statuses[.accessibility] ?? .unknown,
-            collection: collectionActivityStatus.status
+            collection: collectionActivityStatus.status,
+            servicePhase: serviceConnectionStatus.phase
         )
     }
 

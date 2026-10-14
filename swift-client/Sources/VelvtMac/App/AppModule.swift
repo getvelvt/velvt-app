@@ -44,6 +44,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var focusStateObserver: FocusStateObserver?
     private var localDashboardCoordinator: LocalDashboardCoordinator?
     private var accountMetricsCancellable: AnyCancellable?
+    private var versionMismatchCancellable: AnyCancellable?
     private let metricsStore = AppMetricsStore()
     private let serviceProcessLauncher = ServiceProcessLauncher()
 
@@ -117,8 +118,32 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         menuBarDataLoader = dataLoader
 
+        let relay = EventRelay(ipcClient: client, metrics: metricsStore)
+        let currentActivity = CurrentActivityModel()
+        let collectionSettings = CollectionSettingsModel()
+        let eventSinkFanout = EventSinkFanout([relay, currentActivity])
+        let collectionAgent = AXCollectionAgent(eventSink: eventSinkFanout)
+        let coordinator = PermissionCollectionCoordinator(
+            permissionManager: permissionManager,
+            collectionAgent: collectionAgent,
+            connectionStatus: client.connectionStatus,
+            collectionSettings: collectionSettings
+        )
+        self.eventRelay = relay
+        self.eventSinkFanout = eventSinkFanout
+        self.collectionAgent = collectionAgent
+        permissionCoordinator = coordinator
+
         let serviceAlertModel = ServiceAlertModel(messages: accountStateManager.serverMessages)
-        let workBlocks = WorkBlockCoordinator(ipcClient: client)
+        let workBlocks = WorkBlockCoordinator(
+            ipcClient: client,
+            flushPendingDwell: { [weak collectionAgent, weak relay] in
+                // Closed at the moment of the command, then delivered ahead
+                // of it: the relay and the command travel on separate tasks.
+                collectionAgent?.flushPendingDwell(at: Date())
+                await relay?.waitForQueuedEvents()
+            }
+        )
         workBlocks.start(
             messages: accountStateManager.serverMessages,
             connectionStatus: client.connectionStatus
@@ -135,22 +160,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             connectionStatus: client.connectionStatus
         )
         localDashboardCoordinator = localDashboard
-
-        let relay = EventRelay(ipcClient: client, metrics: metricsStore)
-        let currentActivity = CurrentActivityModel()
-        let collectionSettings = CollectionSettingsModel()
-        let eventSinkFanout = EventSinkFanout([relay, currentActivity])
-        let collectionAgent = AXCollectionAgent(eventSink: eventSinkFanout)
-        let coordinator = PermissionCollectionCoordinator(
-            permissionManager: permissionManager,
-            collectionAgent: collectionAgent,
-            connectionStatus: client.connectionStatus,
-            collectionSettings: collectionSettings
-        )
-        self.eventRelay = relay
-        self.eventSinkFanout = eventSinkFanout
-        self.collectionAgent = collectionAgent
-        permissionCoordinator = coordinator
 
         let scheduler = UNNotificationScheduler(metrics: metricsStore)
         // One line on the unified log per delivery attempt, on both surfaces.
@@ -296,7 +305,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             helperExecutablePath: serviceProcessLauncher.bundledServiceURL()?.path
         )
         let launcher = serviceProcessLauncher
-        Task.detached {
+        let recoverFromVersionMismatch: @Sendable () async -> Void = {
             await AppDelegate.connectRetryingVersionMismatch(
                 client,
                 reclaimOrphanedHelper: {
@@ -308,25 +317,48 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     await MainActor.run { launcher.restart() }
                     await reaper.waitForRelaunchedHelper()
                     return true
-                }
-            ) { expected, got in
-                await MainActor.run {
-                    let alert = NSAlert()
-                    alert.alertStyle = .warning
-                    alert.messageText = "Velvt can't reach its background service"
-                    alert.informativeText = """
-                        An older Velvt background service is still holding the \
-                        connection on this Mac. It speaks protocol version \(got); \
-                        this version of Velvt needs version \(expected).
+                },
+                presentVersionMismatch: { expected, got in
+                    await MainActor.run {
+                        let alert = NSAlert()
+                        alert.alertStyle = .warning
+                        alert.messageText = "Velvt can't reach its background service"
+                        alert.informativeText = """
+                            An older Velvt background service is still holding the \
+                            connection on this Mac. It speaks protocol version \(got); \
+                            this version of Velvt needs version \(expected).
 
-                        Retry gives it another moment to exit. Restarting the Mac \
-                        clears it for good.
-                        """
-                    alert.addButton(withTitle: "Retry")
-                    alert.addButton(withTitle: "Close")
-                    return alert.runModal() == .alertFirstButtonReturn
+                            Retry gives it another moment to exit. Restarting the Mac \
+                            clears it for good.
+                            """
+                        alert.addButton(withTitle: "Retry")
+                        alert.addButton(withTitle: "Close")
+                        return alert.runModal() == .alertFirstButtonReturn
+                    }
                 }
-            }
+            )
+        }
+        Task.detached { await recoverFromVersionMismatch() }
+        // The same mismatch can be met later, by the client's own reconnect:
+        // the helper drops, and what answers on the socket next is a helper
+        // speaking another version. That reconnect used to stop on
+        // `.disconnected` and say nothing, leaving the app offline until it
+        // was relaunched; it goes through the same recovery now.
+        versionMismatchCancellable = Self.recoverOnReconnectVersionMismatch(
+            client,
+            recover: recoverFromVersionMismatch
+        )
+    }
+
+    /// Runs `recover` each time the client's own reconnect meets a version
+    /// mismatch. The first `connect()` reports one by throwing; a reconnect
+    /// has nobody to throw to.
+    nonisolated static func recoverOnReconnectVersionMismatch(
+        _ client: any IPCClientProtocol,
+        recover: @escaping @Sendable () async -> Void
+    ) -> AnyCancellable {
+        client.versionMismatches.sink { _ in
+            Task.detached { await recover() }
         }
     }
 

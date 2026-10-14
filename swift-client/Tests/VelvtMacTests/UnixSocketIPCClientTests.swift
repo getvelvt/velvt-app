@@ -74,6 +74,81 @@ final class UnixSocketIPCClientTests: XCTestCase {
         XCTAssertEqual(latestStatus, .disconnected)
     }
 
+    /// A reconnect has no caller to throw to. It used to publish
+    /// `.disconnected` and stop, which looks like any other drop; the
+    /// mismatch now goes out where the app's recovery can hear it.
+    func testVersionMismatchDuringReconnectIsPublishedForRecovery() async throws {
+        let initial = ScriptedIPCTransport(
+            receives: [
+                .success(try frame(.serverHello(ServerHello(protocolVersion: 1)))),
+                .success(try frame(.acknowledged(Acknowledged()))),
+                .failure(IPCError.connectionClosed),
+            ]
+        )
+        let mismatched = ScriptedIPCTransport(
+            receives: [
+                .success(try frame(.serverHello(ServerHello(protocolVersion: 3)))),
+                .success(
+                    try frame(.versionMismatch(VersionMismatch(serverProtocolVersion: 3, clientProtocolVersion: 1)))
+                ),
+            ]
+        )
+        let transports = TransportQueue([initial, mismatched])
+        let client = UnixSocketIPCClient(
+            socketPath: "/tmp/velvt-test.sock",
+            protocolVersion: 1,
+            clientVersion: "1.0.0",
+            backoff: ReconnectBackoff(jitter: { 1 }),
+            sleeper: RecordingSleeper(stopAfter: 10),
+            transportFactory: { transports.next() }
+        )
+        let published = expectation(description: "mismatch published")
+        var mismatches: [IPCVersionMismatch] = []
+        var latestStatus = ConnectionStatus.disconnected
+        client.connectionStatus.sink { latestStatus = $0 }.store(in: &cancellables)
+        client.versionMismatches.sink {
+            mismatches.append($0)
+            published.fulfill()
+        }
+        .store(in: &cancellables)
+
+        try await client.connect()
+        await fulfillment(of: [published], timeout: 1)
+
+        XCTAssertEqual(mismatches, [IPCVersionMismatch(expected: 3, got: 1)])
+        XCTAssertEqual(latestStatus, .disconnected)
+        client.disconnect()
+    }
+
+    /// The first connect still throws its mismatch to the caller, which
+    /// runs the recovery itself; publishing it as well would run it twice.
+    func testVersionMismatchOnFirstConnectIsThrownNotPublished() async throws {
+        let transport = ScriptedIPCTransport(
+            receives: [
+                .success(try frame(.serverHello(ServerHello(protocolVersion: 2)))),
+                .success(
+                    try frame(.versionMismatch(VersionMismatch(serverProtocolVersion: 2, clientProtocolVersion: 1)))
+                ),
+            ]
+        )
+        let client = UnixSocketIPCClient(
+            socketPath: "/tmp/velvt-test.sock",
+            protocolVersion: 1,
+            clientVersion: "1.0.0",
+            transportFactory: { transport }
+        )
+        var published = 0
+        client.versionMismatches.sink { _ in published += 1 }.store(in: &cancellables)
+
+        do {
+            try await client.connect()
+            XCTFail("Expected version mismatch")
+        } catch {
+            XCTAssertEqual(error as? IPCError, .versionMismatch(expected: 2, got: 1))
+        }
+        XCTAssertEqual(published, 0)
+    }
+
     func testReconnectPublishesDoublingDelaysAfterFailures() async throws {
         let initial = ScriptedIPCTransport(
             receives: [

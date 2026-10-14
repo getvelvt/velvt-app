@@ -166,8 +166,13 @@ Python, Docker, Terminal, or a separate local backend.
 
 The Xcode phase writes `velvt-service.version` and
 `velvt-service.protocol-version` beside the helper. Release verification also
-executes `velvt-service --protocol-version` and compares the result with the
-app's processed Info.plist, so a stale sidecar cannot hide a binary mismatch.
+executes `velvt-service --protocol-version`, `--version` and `--source-commit`
+and compares the results with the app's processed Info.plist, so a stale
+sidecar cannot hide a binary mismatch. It asks every slice of the universal
+helper the build Mac can run: on Apple Silicon that includes the x86_64 slice,
+under Rosetta 2. Without Rosetta a local verification warns that the x86_64
+slice went unchecked, and a production verification (`alpha-dmg`, `release`)
+refuses; install it with `softwareupdate --install-rosetta --agree-to-license`.
 
 If the helper becomes unavailable after launch, Settings offers **Restart Local
 Service**. This sends a graceful termination, waits briefly, and starts the

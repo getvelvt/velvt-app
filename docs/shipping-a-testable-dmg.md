@@ -108,6 +108,16 @@ commit, and a build number that is not above every build in
 both record the commit, and on success the target tags `v<version>` locally.
 Push the tag and add the release to `RELEASES.md`.
 
+**The backend must answer first.** The API URL (`VELVT_API_BASE_URL`, default
+`https://dev-api.getvelvt.com`) is compiled into the helper, and nobody who
+installs the build can point it anywhere else. So before it builds anything,
+`make alpha-dmg` requests `<that URL>/v1/ready` and stops unless the answer is
+200 (`scripts/check_api_ready.sh`; `make release` does the same for
+`VELVT_PRODUCTION_API_BASE_URL`). If it stops, restore the backend and run the
+target again. `VELVT_ALLOW_UNREACHABLE_API=1` skips the request; it exists for
+an offline test of the build pipeline only, and a build made with it has not
+been checked against a live backend.
+
 **Pick a new `VELVT_DMG_PATH` for every attempt.** DMG outputs are treated as
 immutable and the target refuses to overwrite one.
 

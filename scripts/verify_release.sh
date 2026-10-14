@@ -42,17 +42,22 @@ read_plist() {
 # Each call passes a flag that prints and exits. A helper that does not know the
 # flag would start the whole service instead, so every call runs with an empty
 # environment and a scratch HOME (never the real ~/.velvt) and is killed after
-# 20 seconds.
+# 20 seconds. With a second argument, that slice of the universal helper runs
+# under arch(1) rather than the one this Mac picks natively.
 helper_flag() {
-  local scratch_home output status
+  local flag="$1" slice="${2:-}" scratch_home output status
   scratch_home="$(mktemp -d "${TMPDIR:-/tmp}/velvt-verify-home.XXXXXX")"
   set +e
-  output="$(env -i PATH="$PATH" HOME="$scratch_home" perl -e 'alarm 20; exec @ARGV or die "exec failed\n"' "$helper" "$1" 2>/dev/null)"
+  if [[ -n "$slice" ]]; then
+    output="$(env -i PATH="$PATH" HOME="$scratch_home" perl -e 'alarm 20; exec @ARGV or die "exec failed\n"' arch "-$slice" "$helper" "$flag" 2>/dev/null)"
+  else
+    output="$(env -i PATH="$PATH" HOME="$scratch_home" perl -e 'alarm 20; exec @ARGV or die "exec failed\n"' "$helper" "$flag" 2>/dev/null)"
+  fi
   status=$?
   set -e
   rm -rf "$scratch_home"
   [[ $status -eq 0 ]] || {
-    echo "ERROR: velvt-service $1 failed or did not exit (status $status)." >&2
+    echo "ERROR: velvt-service${slice:+ ($slice slice)} $flag failed or did not exit (status $status)." >&2
     exit 1
   }
   printf '%s\n' "$output"
@@ -114,6 +119,42 @@ helper_commit="$(helper_flag --source-commit)"
   echo "ERROR: helper was built from $helper_commit, but the app records $source_commit." >&2
   exit 1
 }
+
+# The three checks above ran the slice this Mac picks natively, which on Apple
+# Silicon is arm64 alone. A universal helper lipo'd from two builds would pass
+# them with its x86_64 slice never run, and on an Intel Mac every launch would
+# end in the version-mismatch alert. So every other slice this Mac can run (the
+# x86_64 one under Rosetta 2) is asked the same three questions.
+native_slice="$(uname -m)"
+slices_run="$native_slice"
+for slice in $(lipo -archs "$helper" 2>/dev/null || true); do
+  [[ "$slice" != "$native_slice" ]] || continue
+  if ! arch "-$slice" /usr/bin/true >/dev/null 2>&1; then
+    if [[ "$slice" == "x86_64" && "$mode" == "production" ]]; then
+      echo "ERROR: this Mac cannot run the helper's x86_64 slice to check it; Rosetta 2 is not installed." >&2
+      echo "Install it with: softwareupdate --install-rosetta --agree-to-license" >&2
+      exit 1
+    fi
+    echo "WARNING: this Mac cannot run the helper's $slice slice, so its protocol, version and source commit were not checked." >&2
+    continue
+  fi
+  slice_protocol="$(helper_flag --protocol-version "$slice")"
+  [[ "$slice_protocol" == "$app_protocol" ]] || {
+    echo "ERROR: the helper's $slice slice speaks protocol $slice_protocol, but the app speaks $app_protocol." >&2
+    exit 1
+  }
+  slice_version="$(helper_flag --version "$slice")"
+  [[ "$slice_version" == "$app_version" ]] || {
+    echo "ERROR: the helper's $slice slice reports version $slice_version, but the app is $app_version." >&2
+    exit 1
+  }
+  slice_commit="$(helper_flag --source-commit "$slice")"
+  [[ "$slice_commit" == "$source_commit" ]] || {
+    echo "ERROR: the helper's $slice slice was built from $slice_commit, but the app records $source_commit." >&2
+    exit 1
+  }
+  slices_run+=" $slice"
+done
 
 # SIL OFL 1.1 condition 2: the license travels with every copy of the fonts.
 [[ -f "$resources/Fonts/OFL.txt" ]] || {
@@ -343,6 +384,7 @@ echo "  version: $app_version ($app_build)"
 echo "  source commit: $source_commit"
 echo "  protocol: $app_protocol"
 echo "  helper: embedded"
+echo "  helper slices run: $slices_run"
 echo "  preview/debug dylibs: absent"
 echo "  codesign: valid"
 echo "  hardened runtime: enabled"

@@ -20,8 +20,23 @@ if [[ "$distributable" == "YES" ]]; then
   done
 fi
 
-mkdir -p "$(dirname "$output_path")"
+output_dir="$(dirname "$output_path")"
+mkdir -p "$output_dir"
+output_dir="$(cd "$output_dir" && pwd -P)"
+output_path="$output_dir/$(basename "$output_path")"
+# Whatever an earlier build left here goes first, so a build that fails part
+# way leaves no helper or model behind for Xcode to bundle as if it were new.
+rm -f "$output_path"
+for artifact in abstraction-model.onnx tokenizer.json abstraction-prototypes.bin; do
+  rm -f "$output_dir/$artifact"
+done
 cd "$rust_dir"
+
+# Where cargo writes. A relative CARGO_TARGET_DIR is relative to the directory
+# cargo runs in, which is this one. Copying from a fixed ./target instead
+# bundled whatever older helper ./target still held whenever the variable was
+# set, or failed when it held nothing.
+target_dir="${CARGO_TARGET_DIR:-target}"
 
 if [[ "$distributable" == "NO" ]]; then
   if [[ "$(uname -m)" == "arm64" ]]; then
@@ -29,9 +44,9 @@ if [[ "$distributable" == "NO" ]]; then
   else
     cargo build --release
   fi
-  cp target/release/velvt-service "$output_path"
+  cp "$target_dir/release/velvt-service" "$output_path"
   for artifact in abstraction-model.onnx tokenizer.json abstraction-prototypes.bin; do
-    [[ ! -f "resources/$artifact" ]] || cp "resources/$artifact" "$(dirname "$output_path")/$artifact"
+    [[ ! -f "resources/$artifact" ]] || cp "resources/$artifact" "$output_dir/$artifact"
   done
   exit 0
 fi
@@ -76,12 +91,12 @@ for arch in arm64 x86_64; do
 done
 
 lipo -create \
-  target/aarch64-apple-darwin/release/velvt-service \
-  target/x86_64-apple-darwin/release/velvt-service \
+  "$target_dir/aarch64-apple-darwin/release/velvt-service" \
+  "$target_dir/x86_64-apple-darwin/release/velvt-service" \
   -output "$output_path"
 
 for artifact in abstraction-model.onnx tokenizer.json abstraction-prototypes.bin; do
-  [[ ! -f "resources/$artifact" ]] || cp "resources/$artifact" "$(dirname "$output_path")/$artifact"
+  [[ ! -f "resources/$artifact" ]] || cp "resources/$artifact" "$output_dir/$artifact"
 done
 
 actual_archs="$(lipo -archs "$output_path")"

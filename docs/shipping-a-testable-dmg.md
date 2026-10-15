@@ -253,7 +253,13 @@ sites. A YouTube tab is decided by its video title: a lecture or a tutorial is
 REFERENCE, highlights or a music video PASSIVE_CONSUMPTION, and a video whose
 title says neither is unclear and never counted; under v5 every YouTube tab
 was PASSIVE_CONSUMPTION. TikTok's web app is SOCIAL_FEED, where v5 had it as
-PASSIVE_CONSUMPTION. The first gate,
+PASSIVE_CONSUMPTION. v6 also limits what the anchor can be to a work category:
+FOCUS_WORK, REFERENCE, TASK_MANAGEMENT or COMMUNICATION. Under v5 the anchor
+was whichever category had the most time, so after five minutes of Xcode and
+fifteen of YouTube it was PASSIVE_CONSUMPTION, each return to Xcode counted as
+a switch, and the offer fired as you came back to work. Under v6 time on
+YouTube or a feed never becomes the anchor, and a block with no work time yet
+has no anchor and gets no offer. The first gate,
 v1, was ≥ 4 switches after 5 minutes; it no longer ships.
 
 1. Start a work block of **25 minutes** (anything that leaves 2 minutes after
@@ -262,14 +268,17 @@ v1, was ≥ 4 switches after 5 minutes; it no longer ships.
    **3 minutes** — this establishes the anchor and clears the warm-up.
 3. Switch to a different category and back **three or more times within 10
    minutes**, spending long enough in each for a confident classification.
-   A switch is any confident move away from the anchor, the category you have
-   spent most of the block in, so every category other than the anchor counts:
+   A switch is any confident move away from the anchor, the work category
+   (FOCUS_WORK, REFERENCE, TASK_MANAGEMENT or COMMUNICATION) you have spent
+   most of the block in, so every category other than the anchor counts:
    REFERENCE and TASK_MANAGEMENT as much as COMMUNICATION, SOCIAL_FEED and
-   PASSIVE_CONSUMPTION. SYSTEM, UNLOGGED and unclassified or low-confidence
-   activity never count, and a one-second flick does not. For a departure to a
-   browser, use a site in Velvt's built-in table, such as youtube.com or
-   reddit.com: a site it cannot place is usually left unclear, and an unclear
-   tab never counts.
+   PASSIVE_CONSUMPTION. Time in SOCIAL_FEED or PASSIVE_CONSUMPTION never
+   becomes the anchor, however long it lasts. SYSTEM, UNLOGGED and
+   unclassified or low-confidence activity never count, and a one-second flick
+   does not. For a departure to a browser, use a site in Velvt's built-in
+   table, such as reddit.com or the YouTube home page: a site it cannot place
+   is usually left unclear, a YouTube video counts only when its title says
+   what it is, and an unclear tab never counts.
 4. On the third switch away, stay in the other app. A notification and an
    in-app card should appear while you are still there, within a second or
    two of arriving. Coming back to the anchor withdraws the offer. The body is
@@ -282,18 +291,22 @@ v1, was ≥ 4 switches after 5 minutes; it no longer ships.
 
 At most **one** offer is made per block, by design. An offer is also held back
 while Velvt is demoted and while Focus/DND is on (recorded as suppressed, not
-delivered later).
+delivered later), but the Focus hold needs a build that can read Focus status:
+one signed with the Communication Notifications entitlement. A build without
+it (every release through 1.0.13) posts the offer and macOS holds it in
+Notification Center, unless Velvt is in that Focus's Allowed Apps; the
+decision row records `focus_state = unknown` (protocol 36).
 
 ### When nothing appears
 
 | Check | How |
 |---|---|
 | Authorization granted | System Settings → Notifications → Velvt |
-| Focus / DND not suppressing it | Control Centre → Focus |
+| Focus / DND not suppressing it | Control Centre → Focus; or add Velvt to the Focus's Allowed Apps (System Settings → Focus → the Focus → Allowed Notifications). `scripts/watch_notifications.sh 1h` shows the launch `focus_status_self_check` line: `availability=unavailable` means this build cannot see Focus |
 | Service running and connected | Menu bar shows a connected state, not "Collection paused" |
 | Accessibility granted | System Settings → Privacy & Security → Accessibility |
-| Gates actually met | ≥3 confident switches in 10 min, ≥3 min elapsed, ≥2 min remaining (policy v5) |
-| Browser departures counted | A tab counts only on a site Velvt can place, such as youtube.com or reddit.com; a Jira ticket on `*.atlassian.net`, or any site it cannot place, is unclear under v5 |
+| Gates actually met | ≥3 confident switches in 10 min, ≥3 min elapsed, ≥2 min remaining, and some work time to anchor the block (policy v6) |
+| Browser departures counted | A tab counts only on a site Velvt can place, such as reddit.com or the YouTube home page (a YouTube video only when its title says what it is); a Jira ticket on `*.atlassian.net`, or any site it cannot place, is unclear under v5 and v6 |
 | Delivery outcome | `bash scripts/watch_notifications.sh` reports `notification_delivered` or why it was not |
 | Already offered this block | One per block — start a new one |
 

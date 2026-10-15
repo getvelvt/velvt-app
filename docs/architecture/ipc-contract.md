@@ -1,8 +1,10 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 35 on 2026-10-14** (protocol 33 on
+> **Reconciled with `proto/` at protocol 37 on 2026-10-15** (protocol 33 on
 > 2026-09-27; 34 adds `auth_session.user_id`, two `menu_status.upload_status`
-> values and the `account_deleted` reason; 35 adds `intervention_delivery`).
+> values and the `account_deleted` reason; 35 adds `intervention_delivery`; 36
+> adds `focus_status_availability`; 37 adds the `rate_limited` code to
+> `auth_failure`).
 > This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
@@ -83,6 +85,7 @@ Swift Client                                      Rust Service
      |<-- category_prompt ------------------------------|
      |--- acknowledge_category_prompt ----------------->|
      |                                                  |
+     |--- focus_status_availability (no reply) -------->|
      |--- focus_state_changed ------------------------->|
      |<-- quiet_hours_offer ----------------------------|
      |--- respond_quiet_hours_offer ------------------->|
@@ -128,7 +131,7 @@ Direction is enforced by the workspace message envelopes:
     `work_block_lifecycle`, `clear_work_block_data`;
   - local dashboard: `request_local_dashboard`;
   - Focus/DND and quiet hours: `focus_state_changed`,
-    `respond_quiet_hours_offer`;
+    `focus_status_availability`, `respond_quiet_hours_offer`;
   - initiation: `request_initiation_invitation`,
     `dismiss_initiation_invitation`, `set_initiation_settings`,
     `request_initiation_settings`;
@@ -166,12 +169,13 @@ recovery acceptance, lifecycle, and clear; Rust to Swift for
 
 Protocol state version 1 contains the persisted phase and timing, optional
 local intention/purpose/intensity, current safe classification evidence, the
-live block's anchor category (protocol 31; the drift gate's own anchor, null
-until a confident observation has closed and outside an active or paused
-block), Rust-authored status line, and optional terminal result. The result
-contains planned/elapsed duration, longest stretch, neutral transition and return
-counts, confidence/coverage, safe evidence category, Rust-authored observation,
-and exactly one next action from a closed registry: `protect_next_10` or, since
+live block's anchor category (protocol 31; the drift gate's own anchor, the
+work category with the most confident, closed time since drift policy v6, null
+until a confident observation of a work category has closed and outside an
+active or paused block), Rust-authored status line, and optional terminal
+result. The result contains planned/elapsed duration, longest stretch, neutral
+transition and return counts, confidence/coverage, safe evidence category,
+Rust-authored observation, and exactly one next action from a closed registry: `protect_next_10` or, since
 protocol 27, `soft_restart_10`. The in-block drift offer (`active_intervention`,
 protocol 24) only ever carries `protect_next_10`. Since protocol 26 the result
 may also carry `dnd_outcomes` and one Rust-authored `reconciliation` line for
@@ -313,7 +317,23 @@ Each summary contains:
   aggregate Today-surface counts (protocol 18). The cloud API names the last one
   `focus_seconds`; Rust renames it when it parses the API response
 - `baseline_status`, `baseline_comparison`, `type_proportions` (per-category
-  seconds and proportion)
+  seconds and proportion). Since velvt-core merges two Macs' time (#42), each
+  category's `seconds` is its own merged time and `proportion` its share of
+  the categories' total, which can exceed `active_seconds` on a day two Macs
+  ran different categories at once. `HistoryListView` draws the bar from
+  `proportion` and says "N% of active time" from `seconds / active_seconds`
+  (protocol 37); the app does not mount that view (see below).
+
+How Swift reads the dates (protocol 37, cross-device-10): a `cloud` row is a UTC
+calendar day, and Swift never matches one against the local date. The one
+place the app shows this is the Patterns tab's coaching card: its "Today so
+far" tier describes only a `this_mac` history, so a synced history with one
+ready day reads "This week so far". The "UTC days" labels on the Daily Activity
+rows (`HistoryListView`) and the Today metrics that no longer read a synced row
+(`TodayWorkspaceView`) are in views the app does not mount; only `#if DEBUG`
+previews create them, through `VelvtPopoverContentView`. Local-day cloud
+summaries wait on a disclosure decision (velvt-core
+`docs/local-day-summaries.md`).
 
 ### `service_status`
 
@@ -462,6 +482,27 @@ Only `loc` and `type` are read: a detail may also echo the submitted value in
 `input`. Swift checks the same rule before sending a sign-up (12 to 256
 characters) or a login (at most 256), counted in Unicode scalars.
 
+A sign-up or login the cloud refuses with `429` answers `auth_failure` with
+`rate_limited` (protocol 37) and Rust's words for the wait, from the
+response's `Retry-After` rounded up to the minute: "Too many attempts. Try
+again in 15 minutes.", or "Too many attempts. Try again later." when the server
+sent no usable `Retry-After` (the server deployed before velvt-core #41). A
+sign-in whose credentials were accepted but whose device registration
+(`POST /v1/devices`, limited to 10 an hour per user from #41) or reissue of
+the stored device was refused with `429` answers `rate_limited` too: "This
+Mac could not be registered yet. Too many attempts. Try again in 60 minutes.",
+or after a sign-up "Your account was created, but this Mac could not be
+registered yet. Too many attempts. Log in to try again in 60 minutes." Swift
+shows it as it is.
+
+Once per launch, after a restored session is validated, Rust sends
+`PATCH /v1/devices/{device_id}` with `{"client_version"}` from a task of its
+own, spawned by the validation's background task (velvt-core #41,
+install-release-09). Any answer ends it for the launch, including the 404 or
+405 of a server without the route; no answer (a transport failure, a 429, a
+5xx) leaves it for the next restored session. Nothing waits on it, the next
+session's validation included, and no message reports it.
+
 `auth_success` is sent only once a device exists to upload as: a sign-up or
 login whose device registration fails answers `auth_failure`, and Swift refuses
 an `auth_success` with an empty `device_id`. A sign-in on a Mac whose device was
@@ -604,8 +645,11 @@ version in brackets is where the message or field arrived.
   notification.
 - `work_block_state.anchor_category` [31]: the broad category the drift gate
   treats as the live block's anchor, computed by the gate's own function.
-  Required and nullable: null outside an active or paused block and until a
-  confident observation has closed; absent entirely from a pre-31 service.
+  Since drift policy v6 (2026-10-15) it is always a work category
+  (`FOCUS_WORK`, `REFERENCE`, `TASK_MANAGEMENT` or `COMMUNICATION`): the one
+  with the most confident, closed time. Required and nullable: null outside an
+  active or paused block and until a confident observation of a work category
+  has closed; absent entirely from a pre-31 service.
 - `report_intervention_outcome` [24; `was_focused` 25]: Swift to Rust. The
   person's explicit answer to an offer. Silence is not representable; it is
   recorded when the block ends unanswered.
@@ -637,7 +681,19 @@ version in brackets is where the message or field arrived.
 
 - `focus_state_changed` [26]: Swift to Rust. A coarse Focus/DND transition:
   `active`, the time, and the UTC offset. The Focus mode's name and schedule
-  are unrepresentable.
+  are unrepresentable. Since 36, sent only while the app reports Focus status
+  `available`.
+- `focus_status_availability` [36]: Swift to Rust, `{availability}`. Whether
+  this copy of the app can read Focus status at all: `available` (it holds
+  the Communication Notifications entitlement Apple requires, and the person
+  allowed Focus status), `unavailable` (no entitlement, a restriction, or no
+  value from the system), `denied` or `not_determined`. Sent on every
+  connection ahead of any `focus_state_changed`, and when it changes at an
+  activation or wake; answered with nothing. Rust keeps the latest in memory
+  and records on each drift decision `intervention_decision_log.focus_state`
+  (`on`/`off` only while `available` and an edge is recorded, else `unknown`;
+  migration 0044). It decides nothing: the Focus hold reads the transition
+  record as before.
 - `quiet_hours_offer` / `respond_quiet_hours_offer` [26]: a next-morning offer
   from the late-night DND rule; accepting configures Velvt's own quiet hours.
 

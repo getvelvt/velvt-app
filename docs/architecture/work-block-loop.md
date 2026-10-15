@@ -143,6 +143,35 @@ open, which is why the version changed. `tests/drift_offer_live_helper.rs`
 replays one block with the departure on a site nothing names, on a seeded
 site, and on a site whose name is read.
 
+Drift policy version 6 (`DRIFT_POLICY_VERSION = 6`, no protocol change) keeps
+every constant, branch and timing of version 5 and changes two things. The
+evidence from two sites (2026-10-07): a YouTube tab is decided by its video
+title (a learning marker is REFERENCE, an entertainment marker
+PASSIVE_CONSUMPTION, both at medium confidence, and a title with neither or
+both is the ambiguous prior, never evidence), and TikTok's web app is
+SOCIAL_FEED. And the anchor (the founder's rule of 2026-10-15): it is the work
+category (`ANCHOR_CATEGORIES`: FOCUS_WORK, REFERENCE, TASK_MANAGEMENT,
+COMMUNICATION) with the most confident, closed time in the block. Through
+version 5 it was whichever category had the most, so a long stretch of YouTube
+or a feed became the anchor, each return to work counted as a departure, and
+the offer fired as the person came back, naming the drift as the work they
+chose; a return to the drift then closed the offer as `returned`. Under
+version 6, PASSIVE_CONSUMPTION and SOCIAL_FEED time never makes or moves the
+anchor, and a block with no confident work time yet has no anchor: the gate
+records `abstained_no_anchor` and makes no offer. The snapshot's
+`anchor_category` is the same value. The list is fixed, so a long stretch in
+one work category can still outweigh another: fifteen minutes of Hacker News,
+Wikipedia, a news app or a YouTube lecture (all REFERENCE) after five of Xcode
+makes REFERENCE the anchor, and the return to Xcode is a departure; Slack
+first (COMMUNICATION) does the same. The end-of-block result is not the gate:
+its evidence category, switch-away and return counts are still measured from
+whichever category had the most confident time. In a block with five minutes
+of Xcode and fifteen of YouTube, the offer therefore counts switches away from
+focus work while the result card reads "You left passive consumption 4 times
+and came back 3 of them". Whether the result follows the anchor rule is an
+open founder decision. The cohort export reads none of these fields; the
+weekly digest and the dashboard read `recovery_count`.
+
 An observation row's end is the next row's start. At a boundary — pause or
 sleep, a service restart, or the end of the block — there is no next row, and
 the dwell the user is in has not been measured yet. The open row is therefore
@@ -198,6 +227,16 @@ Rust owns the evidence record: transition times are floored to five-minute
 buckets, reduced to local hour/date buckets, pruned after 14 days, and the
 schema has no column that could hold a Focus mode's name, configuration, or
 schedule.
+
+The boolean is real only in a build signed with the Communication
+Notifications entitlement, which release builds through 1.0.13 lack (see
+`s7-menu-bar-and-notifications.md`, "Focus status: what a build can read").
+Since protocol 36 Swift reports `focus_status_availability` beside the edges,
+and sends edges only while it is `available`. Every drift decision records
+`intervention_decision_log.focus_state`: `on` or `off` from the evidence while
+the app can read Focus status, `unknown` otherwise (migration 0044). The record
+is not an input: the decisions below read the evidence exactly as before, so
+in a build that cannot read Focus none of them ever applies.
 
 Decisions derived from that record, all in Rust:
 

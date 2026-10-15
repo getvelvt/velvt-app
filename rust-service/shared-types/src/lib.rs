@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Current breaking-change version of the local IPC contract.
-pub const PROTOCOL_VERSION: u32 = 35;
+pub const PROTOCOL_VERSION: u32 = 37;
 
 /// Client-to-server messages accepted by the Rust service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -93,6 +93,11 @@ pub enum ClientMessage {
     /// A coarse system Focus/DND transition observed by the client. Swift
     /// observes only; Rust owns the evidence record and every decision.
     FocusStateChanged(FocusStateChanged),
+    /// Whether this copy of the app can read the coarse Focus status at all
+    /// (protocol 36). A fact about the app, never about the person's Focus:
+    /// the service records it on each drift decision as whether it knew if
+    /// a Focus was on, and no decision reads it.
+    FocusStatusAvailability(FocusStatusAvailability),
     /// The user's one-tap reply to a quiet-hours offer.
     RespondQuietHoursOffer(RespondQuietHoursOffer),
     /// Asks the deterministic initiation policy whether one invitation is
@@ -1496,6 +1501,57 @@ pub struct FocusStateChanged {
     pub utc_offset_seconds: i32,
 }
 
+/// Whether the app can read the coarse Focus status (protocol 36).
+///
+/// Apple gives Focus status only to an app signed with the Communication
+/// Notifications entitlement. Without it the person can still allow Focus
+/// status, and `INFocusStatusCenter` still answers, but with a value the
+/// system never read: a `focus_state_changed` from such an app says nothing
+/// about the person's Focus. Swift reports this beside the transitions so
+/// the service can tell "no Focus" from "could not tell".
+///
+/// PRIVACY: one closed value about the app. No Focus mode name,
+/// configuration, schedule, or on/off value is representable here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FocusStatusAvailability {
+    pub availability: FocusAvailability,
+}
+
+/// Whether, and why not, the coarse Focus status is readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusAvailability {
+    /// The app holds the entitlement and the person allowed Focus status:
+    /// `focus_state_changed` carries what the system read.
+    Available,
+    /// Unreadable whatever the person answers: the entitlement is missing,
+    /// a restriction applies, or the system gives no value.
+    Unavailable,
+    /// The person turned Focus status off for Velvt.
+    Denied,
+    /// Never asked, or never answered.
+    NotDetermined,
+}
+
+impl FocusAvailability {
+    pub const ALL: [FocusAvailability; 4] = [
+        FocusAvailability::Available,
+        FocusAvailability::Unavailable,
+        FocusAvailability::Denied,
+        FocusAvailability::NotDetermined,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Unavailable => "unavailable",
+            Self::Denied => "denied",
+            Self::NotDetermined => "not_determined",
+        }
+    }
+}
+
 /// The user's one-tap reply to a quiet-hours offer. Accepting configures
 /// Velvt's own quiet hours; declining is remembered locally for a versioned
 /// interval and changes nothing else.
@@ -1805,10 +1861,12 @@ pub struct WorkBlockSnapshot {
     pub paused_at: Option<DateTime<Utc>>,
     pub recovered_after_restart: bool,
     pub current_category: Option<String>,
-    /// The broad category the drift gate treats as this block's anchor: the
-    /// one holding the most confidently observed time so far. Set only while
-    /// the block is active or paused, and `None` until a confident
-    /// observation has closed. A category label and nothing else — no app
+    /// The broad category the drift gate treats as this block's anchor: since
+    /// drift policy v6, the work category (FOCUS_WORK, REFERENCE,
+    /// TASK_MANAGEMENT or COMMUNICATION) holding the most confidently
+    /// observed, closed time so far. Set only while the block is active or
+    /// paused, and `None` until a confident observation of a work category
+    /// has closed. A category label and nothing else — no app
     /// identity, title, URL, or intention — so it is exactly as local as
     /// `current_category`. Absent in pre-v31 payloads, which decode as `None`.
     #[serde(default)]
@@ -2333,6 +2391,10 @@ pub enum AuthFailureCode {
     InvalidCredentials,
     NetworkError,
     ServerError,
+    /// The cloud refused the sign-up or login for too many attempts (`429`,
+    /// protocol 37). `message` says how long to wait, worked out by Rust from
+    /// `Retry-After`; Swift shows it as it is.
+    RateLimited,
 }
 
 /// Signup or login failed. Direction: Rust to Swift.
@@ -2422,7 +2484,7 @@ mod v28_demotion_receipts_probe_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 35);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     #[test]
@@ -3044,7 +3106,7 @@ mod v30_classification_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 35);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     /// A v29 raw event — no declared metadata at all — must decode, and must
@@ -3367,7 +3429,7 @@ mod v32_in_progress_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 35);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     /// A closed dwell is the only thing a pre-32 client ever sent, and it has
@@ -3413,7 +3475,7 @@ mod v33_needs_a_category_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 35);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     /// Both kinds on one list, in the exact wire shape: `kind` and
@@ -3628,7 +3690,7 @@ mod v35_intervention_delivery_contract {
 
     #[test]
     fn protocol_version_is_current() {
-        assert_eq!(PROTOCOL_VERSION, 35);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     /// The exact frame Swift sends, for every channel, both ways.
@@ -3707,6 +3769,89 @@ mod v35_intervention_delivery_contract {
                 InterventionDeliveryChannel::NotificationPosted,
                 InterventionDeliveryChannel::AlertStyleNone
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod v36_focus_status_availability_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_current() {
+        assert_eq!(PROTOCOL_VERSION, 37);
+    }
+
+    /// The exact frame Swift sends, for every value, both ways.
+    #[test]
+    fn every_availability_round_trips_in_the_wire_shape() {
+        for (availability, wire) in [
+            (FocusAvailability::Available, "available"),
+            (FocusAvailability::Unavailable, "unavailable"),
+            (FocusAvailability::Denied, "denied"),
+            (FocusAvailability::NotDetermined, "not_determined"),
+        ] {
+            let message =
+                ClientMessage::FocusStatusAvailability(FocusStatusAvailability { availability });
+            let encoded = serde_json::to_string(&message).unwrap();
+            assert_eq!(
+                encoded,
+                format!(
+                    r#"{{"type":"focus_status_availability","payload":{{"availability":"{wire}"}}}}"#
+                )
+            );
+            assert_eq!(
+                serde_json::from_str::<ClientMessage>(&encoded).unwrap(),
+                message
+            );
+            assert_eq!(availability.as_str(), wire);
+        }
+        assert_eq!(FocusAvailability::ALL.len(), 4);
+    }
+
+    /// A fact about the app, never about the person's Focus: an on/off value,
+    /// a mode name or an unlisted value is refused at decode time.
+    #[test]
+    fn the_availability_fact_refuses_anything_about_the_focus_itself() {
+        for payload in [
+            r#"{"availability":"available","active":true}"#,
+            r#"{"availability":"available","mode_name":"Work"}"#,
+            r#"{"availability":"authorized"}"#,
+            r#"{}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<FocusStatusAvailability>(payload).is_err(),
+                "{payload} decoded"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod v37_rate_limited_sign_in_contract {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_current() {
+        assert_eq!(PROTOCOL_VERSION, 37);
+    }
+
+    /// The exact frame Rust sends when the cloud refuses a sign-in for too
+    /// many attempts, both ways.
+    #[test]
+    fn a_rate_limited_sign_in_round_trips_in_the_wire_shape() {
+        let message = ServerMessage::AuthFailure(AuthFailure {
+            code: AuthFailureCode::RateLimited,
+            message: "Too many attempts. Try again in 15 minutes.".into(),
+        });
+        let encoded = serde_json::to_string(&message).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"auth_failure","payload":{"code":"rate_limited","message":"Too many attempts. Try again in 15 minutes."}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ServerMessage>(&encoded).unwrap(),
+            message
         );
     }
 }

@@ -44,6 +44,12 @@ final class IPCModuleTests: XCTestCase {
                     blockID: UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
                 )
             ),
+            .interventionDelivery(
+                InterventionDeliveryReport(
+                    blockID: UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!,
+                    channel: .alertStyleNone
+                )
+            ),
         ]
 
         for message in messages {
@@ -94,6 +100,37 @@ final class IPCModuleTests: XCTestCase {
             (payload["block_id"] as? String)?.lowercased(),
             blockID.uuidString.lowercased()
         )
+    }
+
+    /// Proto v35. What became of the notification reaches Rust as
+    /// `intervention_delivery` with exactly the block and one channel from the
+    /// closed set `proto/schema/intervention_delivery.json` declares, and no
+    /// key a reply, a title or a client clock could sit in.
+    func testInterventionDeliveryCarriesTheBlockAndOneChannelFromTheSchema() throws {
+        let schemaURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("proto/schema/intervention_delivery.json")
+        let schema = try JSONSerialization.jsonObject(with: Data(contentsOf: schemaURL)) as? [String: Any]
+        let payloadSchema = (schema?["properties"] as? [String: Any])?["payload"] as? [String: Any]
+        let channelSchema = (payloadSchema?["properties"] as? [String: Any])?["channel"] as? [String: Any]
+        let declared = try XCTUnwrap(channelSchema?["enum"] as? [String])
+        XCTAssertEqual(declared.sorted(), InterventionDeliveryChannel.allCases.map(\.rawValue).sorted())
+
+        let blockID = UUID(uuidString: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")!
+        for channel in InterventionDeliveryChannel.allCases {
+            let data = try encoder.encode(
+                ClientMessage.interventionDelivery(.init(blockID: blockID, channel: channel)))
+            let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+
+            XCTAssertEqual(envelope["type"] as? String, "intervention_delivery")
+            let payload = envelope["payload"] as? [String: Any] ?? [:]
+            XCTAssertEqual(payload.keys.sorted(), ["block_id", "channel"])
+            XCTAssertEqual(payload["channel"] as? String, channel.rawValue)
+            XCTAssertEqual((payload["block_id"] as? String)?.lowercased(), blockID.uuidString.lowercased())
+        }
     }
 
     func testEveryServerMessageRoundTrips() throws {

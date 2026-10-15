@@ -13,7 +13,9 @@
 # would be pooled by the first person who opened it in a spreadsheet.
 #
 #   <stem>.csv              one row per recorded intervention
-#                           (`work_block_intervention`), with `card_seen_at`.
+#                           (`work_block_intervention`), with `card_seen_at`
+#                           and, from protocol 35, what became of its
+#                           notification (`delivery_channel`, migration 0043).
 #                           Two outcomes are terminal at creation and reached no
 #                           channel, `delivery_suppressed_dnd` (0020) and
 #                           `withheld_demotion` (0023). They are exported like
@@ -183,6 +185,33 @@ else
   CARD_SEEN_SQL="'unknown'"
 fi
 
+# `delivery_channel` arrived in migration 0043 (protocol 35): what Swift
+# reported became of the offer's notification. Read the same way as
+# `card_seen`: `notification_delivery` is the channel when one was reported,
+#   not_reported  NULL on a row offered after this Mac applied 0043: Swift
+#                 never reported one (the app quit mid-attempt, or the offer
+#                 never reached it: held for Focus or withheld)
+#   unknown       NULL on a row offered before that, or no such column.
+# A descriptive diagnostic only. No pre-registered denominator reads it.
+DELIVERY_SINCE="$(migrated_at 43)"
+if has_column work_block_intervention delivery_channel; then
+  DELIVERY_CHANNEL_SQL="i.delivery_channel"
+  DELIVERY_REPORTED_AT_SQL="i.delivery_reported_at"
+  if [[ -n "$DELIVERY_SINCE" ]]; then
+    NOTIFICATION_DELIVERY_SQL="CASE
+        WHEN i.delivery_channel IS NOT NULL THEN i.delivery_channel
+        WHEN i.offered_at >= $DELIVERY_SINCE THEN 'not_reported'
+        ELSE 'unknown'
+    END"
+  else
+    NOTIFICATION_DELIVERY_SQL="COALESCE(i.delivery_channel, 'unknown')"
+  fi
+else
+  DELIVERY_CHANNEL_SQL="NULL"
+  DELIVERY_REPORTED_AT_SQL="NULL"
+  NOTIFICATION_DELIVERY_SQL="'unknown'"
+fi
+
 # `read -d ''` rather than `$(cat <<'SQL')`: bash 3.2 mis-parses a quoted heredoc
 # inside a command substitution when the body holds an apostrophe.
 IFS= read -r -d '' OFFERS_SQL <<'SQL' || true
@@ -242,16 +271,22 @@ SELECT
         ELSE 0
     END                                          AS wrong_intervention,
     @CARD_SEEN_AT@                               AS card_seen_at,
-    @CARD_SEEN@                                  AS card_seen
+    @CARD_SEEN@                                  AS card_seen,
+    @DELIVERY_CHANNEL@                           AS delivery_channel,
+    @DELIVERY_REPORTED_AT@                       AS delivery_reported_at,
+    @NOTIFICATION_DELIVERY@                      AS notification_delivery
 FROM work_block_intervention AS i
 JOIN work_block AS b ON b.block_id = i.block_id
 ORDER BY i.offered_at, i.block_id;
 SQL
 OFFERS_SQL="${OFFERS_SQL/@CARD_SEEN_AT@/$CARD_SEEN_AT_SQL}"
 OFFERS_SQL="${OFFERS_SQL/@CARD_SEEN@/$CARD_SEEN_SQL}"
+OFFERS_SQL="${OFFERS_SQL/@DELIVERY_CHANNEL@/$DELIVERY_CHANNEL_SQL}"
+OFFERS_SQL="${OFFERS_SQL/@DELIVERY_REPORTED_AT@/$DELIVERY_REPORTED_AT_SQL}"
+OFFERS_SQL="${OFFERS_SQL/@NOTIFICATION_DELIVERY@/$NOTIFICATION_DELIVERY_SQL}"
 # Keep this list in step with the aliases above.
 write_csv "$OUT" \
-  'block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention,card_seen_at,card_seen' \
+  'block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention,card_seen_at,card_seen,delivery_channel,delivery_reported_at,notification_delivery' \
   "$OFFERS_SQL"
 OFFER_ROWS="$(rows_in "$OUT")"
 
@@ -745,7 +780,7 @@ if has_table initiation_settings; then
 fi
 {
   printf 'key,value\n'
-  printf 'export_format,4\n'
+  printf 'export_format,5\n'
   printf 'exported_at,%s\n' "$EXPORTED_AT"
   printf 'schema_version,%s\n' "$SCHEMA_VERSION"
   printf 'decision_log,%s\n' "$DECISION_LOG"
@@ -756,6 +791,7 @@ fi
   printf 'corrections,%s\n' "$CORRECTIONS"
   printf 'site_rules,%s\n' "$SITE_RULES"
   printf 'card_seen_recorded_since,%s\n' "$CARD_SEEN_SINCE"
+  printf 'delivery_channel_recorded_since,%s\n' "$DELIVERY_SINCE"
   printf 'invitations_enabled,%s\n' "$INVITATIONS_ENABLED"
 } > "$META_OUT"
 
@@ -832,8 +868,10 @@ Please send every file listed above.
 Contains: block id, purpose, intensity, planned duration, block phase, block
 start and end times, total time paused, offer time, how much of the block was
 left when the offer fired, anchor category, switch count, salience, outcome,
-outcome time, and when the nudge card was first on screen. Times are plain
-epoch seconds.
+outcome time, when the nudge card was first on screen, and what became of the
+nudge's notification (posted, listed without a banner, blocked by your
+notification settings, quiet, withdrawn before it was posted, or too old to
+post). Times are plain epoch seconds.
 
 The decisions file adds each time the detector looked: when, the broad anchor
 category, switch count, elapsed and remaining seconds, the policy version, the

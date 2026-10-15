@@ -8,7 +8,7 @@ import Foundation
 /// Rust snapshot. It does not persist intention text, aggregate events, derive
 /// evidence, or author behavioral claims.
 @MainActor
-public final class WorkBlockCoordinator: ObservableObject {
+public final class WorkBlockCoordinator: ObservableObject, InterventionDeliveryRecording {
     @Published public private(set) var snapshot: WorkBlockSnapshot?
     @Published public private(set) var commandError: String?
     /// The Rust-authored quiet-hours offer, present until the user replies.
@@ -246,6 +246,21 @@ public final class WorkBlockCoordinator: ObservableObject {
             snapshot?.activeIntervention != nil
         else { return }
         send(.interventionCardSeen(.init(blockID: blockID)))
+    }
+
+    /// Reports what became of the OS notification for `blockID`'s drift offer
+    /// (proto v35).
+    ///
+    /// Not a reply, and it must never be treated as one. Unlike the commands
+    /// here it is not guarded on a live offer: a withdrawal is reported once
+    /// the attempt it interrupted returns, after the offer is gone, and the
+    /// service keeps the fact for a resolved offer too. It clears no error and
+    /// sets none, because nothing the person asked for depends on it; a
+    /// service that is offline never hears it, and the row keeps no channel.
+    public func reportInterventionDelivery(blockID: UUID, channel: InterventionDeliveryChannel) {
+        enqueue { [ipcClient] in
+            try? await ipcClient.send(.interventionDelivery(.init(blockID: blockID, channel: channel)))
+        }
     }
 
     /// Sends the one-tap reply to a quiet-hours offer and dismisses the card.

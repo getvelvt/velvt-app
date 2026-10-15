@@ -1,8 +1,9 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 34 on 2026-10-14** (protocol 33 on
+> **Reconciled with `proto/` at protocol 35 on 2026-10-14** (protocol 33 on
 > 2026-09-27; 34 adds `auth_session.user_id`, two `menu_status.upload_status`
-> values and the `account_deleted` reason). This page
+> values and the `account_deleted` reason; 35 adds `intervention_delivery`).
+> This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
 > reconciliation the page had last been reconciled on 2026-07-17 (protocol 15–17
@@ -69,6 +70,7 @@ Swift Client                                      Rust Service
      |<-- work_block_state (incl. active_intervention) -|
      |--- report_intervention_outcome ----------------->|
      |--- intervention_card_seen ---------------------->|
+     |--- intervention_delivery (no reply) ------------>|
      |                                                  |
      |--- request_local_dashboard --------------------->|
      |<-- local_dashboard ------------------------------|
@@ -122,8 +124,8 @@ Direction is enforced by the workspace message envelopes:
   - work blocks: `start_work_block`, `pause_work_block`, `resume_work_block`,
     `end_work_block`, `request_work_block_state`,
     `accept_work_block_recovery`, `report_intervention_outcome`,
-    `intervention_card_seen`, `work_block_lifecycle`,
-    `clear_work_block_data`;
+    `intervention_card_seen`, `intervention_delivery`,
+    `work_block_lifecycle`, `clear_work_block_data`;
   - local dashboard: `request_local_dashboard`;
   - Focus/DND and quiet hours: `focus_state_changed`,
     `respond_quiet_hours_offer`;
@@ -451,6 +453,15 @@ another Mac; Rust has by then destroyed what it queued for the account and
 cleared the session, and Swift signs out without asking to sign in to it
 again. Every request carries `User-Agent: Velvt/<version> (macOS)`.
 
+A `422 validation_error` whose `details[].loc` names the email or the
+password answers `auth_failure` with `invalid_credentials` and words of
+Rust's ("Enter a valid email address.", "Use at least 12 characters for your
+password.", "Use at most 256 characters for your password."), not velvt-core's
+"Request validation failed.", which named neither the field nor the rule.
+Only `loc` and `type` are read: a detail may also echo the submitted value in
+`input`. Swift checks the same rule before sending a sign-up (12 to 256
+characters) or a login (at most 256), counted in Unicode scalars.
+
 `auth_success` is sent only once a device exists to upload as: a sign-up or
 login whose device registration fails answers `auth_failure`, and Swift refuses
 an `auth_success` with an empty `device_id`. A sign-in on a Mac whose device was
@@ -600,6 +611,20 @@ version in brackets is where the message or field arrived.
   recorded when the block ends unanswered.
 - `intervention_card_seen` [29]: Swift to Rust. The card was actually on
   screen — a delivery fact, never a response.
+- `intervention_delivery` [35]: Swift to Rust, `{block_id, channel}`. What
+  became of the offer's OS notification when an attempt to post it settled:
+  `notification_posted`, `alert_style_none` (posted, and the alert style for
+  Velvt is None), `permission_denied`, `permission_unknown`, `rejected`,
+  `withdrawn` (the offer was over before the notification centre had it),
+  `quiet` or `stale` (not posted: `offered_at`, the time of the evidence the
+  gate decided on, was more than two minutes past when the app first saw the
+  offer). A delivery fact, never a response, and answered with nothing: a
+  `work_block_state` reply would republish the snapshot, and the notifier
+  retries an unposted offer on every republish. Stored as
+  `work_block_intervention.delivery_channel` (migration 0043); a posted channel
+  is final, `withdrawn` and `stale` fill only an empty one, and any other is
+  replaced by the next report. Swift sends it once per change for the current
+  offer, and for a block with no offer row it changes nothing.
 - `request_intervention_explanation` / `intervention_explanation` [28]: one
   grounded sentence explaining the block's most recent shown offer. Accepts no
   user text.

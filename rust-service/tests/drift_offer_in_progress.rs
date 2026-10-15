@@ -29,8 +29,9 @@ use velvt_service::persistence::{
 use velvt_service::upload::EventIngestor;
 use velvt_service::work_block::WorkBlockManager;
 use velvt_shared_types::{
-    ClientMessage, RawEvent, RawEventAck, RawEventStatus, ServerMessage, StartWorkBlock,
-    WorkBlockIntensity, WorkBlockPurpose, WorkBlockSnapshot,
+    ClientMessage, InterventionDelivery, InterventionDeliveryChannel, RawEvent, RawEventAck,
+    RawEventStatus, ServerMessage, StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose,
+    WorkBlockSnapshot,
 };
 
 struct OfflineHttp;
@@ -531,4 +532,62 @@ async fn outside_a_block_an_in_progress_report_is_acknowledged_and_goes_nowhere(
         .unwrap()
         .is_empty());
     assert_eq!(harness.ingested.0.load(Ordering::SeqCst), 0);
+}
+
+/// Protocol 35: what became of the notification travels back through the
+/// router and lands on the offer's row. The router answers it with nothing,
+/// and pushes nothing: a `work_block_state` reply would republish the snapshot,
+/// the notifier retries an unposted offer on every republish, and each retry
+/// would send the next fact.
+#[tokio::test]
+async fn the_delivery_fact_reaches_the_offer_row_and_is_answered_with_nothing() {
+    let harness = harness();
+    let (block, pushed) = replay(&harness, &wire_order(true)).await;
+    let (live, _) = offer_window(&pushed);
+    assert!(!live.is_empty(), "the timeline produces an offer");
+    let block_id = block.block_id.unwrap();
+    let row = |harness: &Harness| {
+        harness
+            .blocks
+            .intervention(&block_id.to_string())
+            .unwrap()
+            .expect("the timeline produces an offer")
+    };
+    assert_eq!(row(&harness).delivery_channel, None, "nothing reported yet");
+
+    for channel in [
+        InterventionDeliveryChannel::PermissionDenied,
+        InterventionDeliveryChannel::NotificationPosted,
+        InterventionDeliveryChannel::Withdrawn,
+    ] {
+        let reply = harness
+            .router
+            .route(ClientMessage::InterventionDelivery(InterventionDelivery {
+                block_id,
+                channel,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(reply, None, "{channel:?} was answered");
+        assert!(drain_pushes(&harness.pushes).await.is_empty());
+    }
+
+    let stored = row(&harness);
+    assert_eq!(
+        stored.delivery_channel,
+        Some(InterventionDeliveryChannel::NotificationPosted),
+        "a denied attempt is replaced by the post, and the post is final"
+    );
+    assert!(stored.delivery_reported_at.is_some());
+
+    // A block that does not exist is not an error either.
+    let reply = harness
+        .router
+        .route(ClientMessage::InterventionDelivery(InterventionDelivery {
+            block_id: uuid::Uuid::new_v4(),
+            channel: InterventionDeliveryChannel::Quiet,
+        }))
+        .await
+        .unwrap();
+    assert_eq!(reply, None);
 }

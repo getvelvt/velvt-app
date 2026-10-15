@@ -30,8 +30,8 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use velvt_shared_types::{
-    ClassificationConfidence, ClassificationStatus, CorrectionScope, InterventionSalience,
-    WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
+    ClassificationConfidence, ClassificationStatus, CorrectionScope, InterventionDeliveryChannel,
+    InterventionSalience, WorkBlockIntensity, WorkBlockPhase, WorkBlockPurpose, WorkBlockResult,
 };
 
 struct Migration {
@@ -3595,7 +3595,8 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         connection
             .query_row(
                 "SELECT offered_at, action_id, anchor_category, switch_count,
-                        window_seconds, outcome, outcome_at, salience, card_seen_at
+                        window_seconds, outcome, outcome_at, salience, card_seen_at,
+                        delivery_channel, delivery_reported_at
                  FROM work_block_intervention WHERE block_id = ?1",
                 [block_id],
                 |row| {
@@ -3618,6 +3619,14 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                             .get::<_, Option<i64>>(8)?
                             .map(|value| timestamp_to_datetime(value, 8))
                             .transpose()?,
+                        delivery_channel: row
+                            .get::<_, Option<String>>(9)?
+                            .map(|value| parse_intervention_delivery_channel(&value))
+                            .transpose()?,
+                        delivery_reported_at: row
+                            .get::<_, Option<i64>>(10)?
+                            .map(|value| timestamp_to_datetime(value, 10))
+                            .transpose()?,
                     })
                 },
             )
@@ -3632,7 +3641,8 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
         let connection = self.0.connection()?;
         let mut statement = connection.prepare(
             "SELECT offered_at, action_id, anchor_category, switch_count,
-                    window_seconds, outcome, outcome_at, salience, card_seen_at
+                    window_seconds, outcome, outcome_at, salience, card_seen_at,
+                    delivery_channel, delivery_reported_at
              FROM work_block_intervention
              ORDER BY offered_at DESC LIMIT ?1",
         )?;
@@ -3653,6 +3663,14 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
                 card_seen_at: row
                     .get::<_, Option<i64>>(8)?
                     .map(|value| timestamp_to_datetime(value, 8))
+                    .transpose()?,
+                delivery_channel: row
+                    .get::<_, Option<String>>(9)?
+                    .map(|value| parse_intervention_delivery_channel(&value))
+                    .transpose()?,
+                delivery_reported_at: row
+                    .get::<_, Option<i64>>(10)?
+                    .map(|value| timestamp_to_datetime(value, 10))
                     .transpose()?,
             })
         })?;
@@ -3675,6 +3693,37 @@ impl WorkBlockRepo for SqliteWorkBlockRepo {
              SET card_seen_at = ?2
              WHERE block_id = ?1 AND card_seen_at IS NULL",
             params![block_id, at.timestamp()],
+        )?;
+        Ok(changed > 0)
+    }
+
+    fn record_intervention_delivery(
+        &self,
+        block_id: &str,
+        channel: InterventionDeliveryChannel,
+        at: DateTime<Utc>,
+    ) -> Result<bool, PersistenceError> {
+        let connection = self.0.connection()?;
+        // A posted offer stays posted. Swift reports each settled attempt, and
+        // an attempt for the same offer can follow a posted one (a relaunch
+        // while the offer is live). What happened after a post cannot unsay
+        // that the notification centre had it.
+        //
+        // `withdrawn` and `stale` fill only an empty channel. Neither is
+        // something an attempt found: a withdrawal is reported by an attempt
+        // the offer's end cut short, which can be the retry of an offer that
+        // was already denied, and a stale skip is a relaunch declining to
+        // try. Either replacing `permission_denied` would erase the one thing
+        // known about why the offer did not ring.
+        let changed = connection.execute(
+            "UPDATE work_block_intervention
+             SET delivery_channel = ?2, delivery_reported_at = ?3
+             WHERE block_id = ?1
+               AND (delivery_channel IS NULL
+                    OR (delivery_channel NOT IN ('notification_posted', 'alert_style_none')
+                        AND ?2 NOT IN ('withdrawn', 'stale')))
+               AND delivery_channel IS NOT ?2",
+            params![block_id, channel.as_str(), at.timestamp()],
         )?;
         Ok(changed > 0)
     }
@@ -5157,6 +5206,12 @@ fn parse_work_block_phase(value: &str) -> rusqlite::Result<WorkBlockPhase> {
         "expired" => Ok(WorkBlockPhase::Expired),
         _ => Err(invalid_enum()),
     }
+}
+
+fn parse_intervention_delivery_channel(
+    value: &str,
+) -> rusqlite::Result<InterventionDeliveryChannel> {
+    InterventionDeliveryChannel::from_db_value(value).ok_or_else(invalid_enum)
 }
 
 fn parse_intervention_salience(value: &str) -> rusqlite::Result<InterventionSalience> {

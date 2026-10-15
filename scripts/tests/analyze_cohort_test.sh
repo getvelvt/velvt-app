@@ -37,6 +37,12 @@
 #      wrong, which is reported and never imputed. Every result carries the
 #      2026-08-21 label: associational, since every eligible point was offered
 #      and there is no silence arm. observer_gap is broken down by cause.
+#  13. Whether a nudge was shown was never recorded (1.0.14 simulation, B7).
+#      From protocol 35 the export carries what became of each offer's
+#      notification. It is reported as an ADDITIONAL descriptive breakdown and
+#      changes no pre-registered denominator; an older export is unknown,
+#      never not_reported. A posted notification is not called shown: a Focus
+#      Velvt could not detect still holds it.
 #
 # Fixtures are CSVs written the way export_cohort_evidence.sh writes them.
 # export_cohort_evidence_test.sh covers the databases behind them, across
@@ -73,7 +79,7 @@ import csv, json, sys
 from pathlib import Path
 
 HEADERS = {
-    "offers": "block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention,card_seen_at,card_seen",
+    "offers": "block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention,card_seen_at,card_seen,delivery_channel,delivery_reported_at,notification_delivery",
     "decisions": "decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds",
     "blocks": "block_id,origin,phase,started_at,ended_at,total_paused_seconds,planned_duration_seconds",
     "invitations": "invitation_id,offered_at,action_id,policy_version,backoff_policy_version,outcome,outcome_at",
@@ -125,6 +131,9 @@ for o in spec.get("offers", []):
         returned_within_10min=int(o["outcome"] == "returned" and outcome_at is not None and outcome_at - offered <= 600),
         wrong_intervention=int(o["outcome"] in ("was_focused", "wrong_classification")),
         card_seen_at=o.get("card_seen_at"), card_seen=o.get("card_seen", "unknown"),
+        delivery_channel=o.get("delivery_channel"),
+        delivery_reported_at=o.get("delivery_reported_at"),
+        notification_delivery=o.get("notification_delivery"),
     ))
 write("offers", offers)
 
@@ -233,6 +242,10 @@ eq("salience.quiet.offers", r["salience_split"]["quiet"]["offers"], 1)
 
 # An export from before card_seen_at is exported says "unknown", never "unseen".
 eq("card_seen.delivered", r["card_seen"]["delivered"], {"seen": 0, "unseen": 0, "unknown": 2})
+# And one from before delivery_channel says "unknown", never "not_reported".
+nd = r["notification_delivery"]
+eq("notification_delivery.unknown", nd["by_channel"]["unknown"]["offers"], 2)
+eq("notification_delivery.not_recorded", (nd["posted_with_visible_alert_style"], nd["not_posted_with_visible_alert_style"], nd["not_recorded"]), (0, 0, 2))
 
 if problems:
     raise SystemExit("\n".join(problems))
@@ -1050,5 +1063,93 @@ assert p["not_measurable"] == {
 assert p["with_outcome_row"] == 0, p
 assert p["numerator"] is None, p
 PY
+
+# ===========================================================================
+# 13. What became of each nudge's notification (protocol 35, migration 0043).
+#     A descriptive breakdown beside the pre-registered figures, which it
+#     leaves exactly as they were: the same export with the delivery columns
+#     emptied analyses to the same result everywhere else.
+# ===========================================================================
+delivery_spec='{"blocks": [
+   {"block_id": "posted",    "started_at": 1800000000},
+   {"block_id": "no-style",  "started_at": 1800010000},
+   {"block_id": "denied",    "started_at": 1800020000},
+   {"block_id": "quiet",     "started_at": 1800030000},
+   {"block_id": "withdrawn", "started_at": 1800040000},
+   {"block_id": "stale",     "started_at": 1800045000},
+   {"block_id": "silent",    "started_at": 1800050000},
+   {"block_id": "raw-only",  "started_at": 1800060000},
+   {"block_id": "held",      "started_at": 1800070000}
+ ],
+ "offers": [
+   {"block_id": "posted",    "outcome": "returned", "outcome_at": 1800000700, "delivery_channel": "notification_posted", "delivery_reported_at": 1800000601, "notification_delivery": "notification_posted"},
+   {"block_id": "no-style",  "outcome": "no_response", "delivery_channel": "alert_style_none", "notification_delivery": "alert_style_none"},
+   {"block_id": "denied",    "outcome": "returned", "outcome_at": 1800020700, "delivery_channel": "permission_denied", "notification_delivery": "permission_denied"},
+   {"block_id": "quiet",     "outcome": "no_response", "salience": "quiet", "delivery_channel": "quiet", "notification_delivery": "quiet"},
+   {"block_id": "withdrawn", "outcome": "returned", "outcome_at": 1800040601, "delivery_channel": "withdrawn", "notification_delivery": "withdrawn"},
+   {"block_id": "stale",     "outcome": "no_response", "delivery_channel": "stale", "notification_delivery": "stale"},
+   {"block_id": "silent",    "outcome": "dismissed", "notification_delivery": "not_reported"},
+   {"block_id": "raw-only",  "outcome": "was_focused", "delivery_channel": "permission_unknown"},
+   {"block_id": "held",      "outcome": "delivery_suppressed_dnd", "notification_delivery": "not_reported"}
+ ],
+ "decisions": [
+   {"block_id": "posted",    "gate_verdict": "offered"},
+   {"block_id": "no-style",  "gate_verdict": "offered"},
+   {"block_id": "denied",    "gate_verdict": "offered"},
+   {"block_id": "quiet",     "gate_verdict": "offered"},
+   {"block_id": "withdrawn", "gate_verdict": "offered"},
+   {"block_id": "stale",     "gate_verdict": "offered"},
+   {"block_id": "silent",    "gate_verdict": "offered"},
+   {"block_id": "raw-only",  "gate_verdict": "offered"},
+   {"block_id": "held",      "gate_verdict": "suppressed_dnd"}
+ ],
+ "meta": {"export_format": "5", "delivery_channel_recorded_since": "1799900000"}}'
+make_export "$work/delivery/p-delivery" <<<"$delivery_spec"
+python3 - "$delivery_spec" > "$work/no-delivery-spec.json" <<'PY'
+import json, sys
+spec = json.loads(sys.argv[1])
+for offer in spec["offers"]:
+    for key in ("delivery_channel", "delivery_reported_at", "notification_delivery"):
+        offer.pop(key, None)
+print(json.dumps(spec))
+PY
+make_export "$work/no-delivery/p-delivery" < "$work/no-delivery-spec.json"
+"$analyze" --json "$work/delivery/p-delivery" > "$work/delivery.json"
+"$analyze" --json "$work/no-delivery/p-delivery" > "$work/no-delivery.json"
+check "$work/delivery.json" "the notification-delivery breakdown" <<'PY'
+nd = r["notification_delivery"]
+assert nd["status"].startswith("DESCRIPTIVE"), nd["status"]
+by = nd["by_channel"]
+offers = {k: v["offers"] for k, v in by.items() if v["offers"]}
+# Eight delivered offers; the Focus-held decision stays out, as it does of
+# every delivered figure. raw-only has the channel but not the derived column.
+assert offers == {"notification_posted": 1, "alert_style_none": 1, "permission_denied": 1,
+                  "permission_unknown": 1, "quiet": 1, "withdrawn": 1, "stale": 1,
+                  "not_reported": 1}, offers
+assert by["notification_posted"]["returned_within_10min"] == 1, by
+assert by["permission_denied"]["returned_within_10min"] == 1, by
+assert by["alert_style_none"]["no_response"] == 1, by
+assert (nd["posted_with_visible_alert_style"], nd["not_posted_with_visible_alert_style"],
+        nd["not_recorded"], nd["delivered"]) == (1, 6, 1, 8), nd
+# Posted is not seen: the definition says a Focus Velvt could not detect still
+# holds a posted notification, so the figure is an upper bound.
+assert "Focus" in nd["definition"] and "upper bound" in nd["definition"], nd["definition"]
+assert "shown_on_screen" not in nd, nd
+assert r["decisions_recorded"]["delivered"] == 8, r["decisions_recorded"]
+PY
+python3 - "$work/delivery.json" "$work/no-delivery.json" <<'PY' || fail "the delivery breakdown changed a pre-registered figure"
+import json, sys
+with_delivery, without = (json.load(open(path)) for path in sys.argv[1:3])
+for result in (with_delivery, without):
+    result.pop("notification_delivery")
+assert with_delivery == without, [k for k in with_delivery if with_delivery[k] != without.get(k)]
+PY
+delivery_report="$("$analyze" "$work/delivery/p-delivery")"
+for needle in "NOTIFICATION DELIVERY (descriptive, protocol 35)" \
+              "Changes no" \
+              "posted with a visible alert style: 1, not: 6, not recorded: 1, of delivered=8" \
+              "Posted is not seen: a Focus mode Velvt could not detect holds a posted"; do
+  grep -qF -- "$needle" <<<"$delivery_report" || fail "delivery report omits: $needle"
+done
 
 echo "analyze_cohort_test.sh: OK"

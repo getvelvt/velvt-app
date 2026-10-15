@@ -127,4 +127,38 @@ final class MenuBarStateStreamTests: XCTestCase {
         XCTAssertEqual(recorded, [.collectionPaused])
         cancellable.cancel()
     }
+
+    /// The notifier's "offer waiting" flag reaches the icon through the same
+    /// debounced stream, and clears with the offer.
+    func testAnUnshownOfferSettlesToOfferWaitingAndClearsWithTheOffer() async throws {
+        let offerWaiting = CurrentValueSubject<Bool, Never>(false)
+        var recorded: [MenuBarState] = []
+        let waiting = expectation(description: "offer waiting emitted")
+        let cleared = expectation(description: "normal emitted after the offer")
+
+        let cancellable = MenuBarStateStream.make(
+            resolver: MenuBarStateResolver(),
+            collectionStatus: Just(CollectionStatus.running),
+            connectionStatus: Just(ConnectionStatus.connected),
+            accountStateManager: AccountStateManager(keychain: FakeKeychain()),
+            offerWaitingUnshown: offerWaiting.eraseToAnyPublisher(),
+            debounceInterval: .milliseconds(20)
+        ).sink { state in
+            recorded.append(state)
+            if state == .offerWaiting {
+                waiting.fulfill()
+            } else if state == .normal, recorded.contains(.offerWaiting) {
+                cleared.fulfill()
+            }
+        }
+
+        try await Task.sleep(for: .milliseconds(60))
+        offerWaiting.send(true)
+        await fulfillment(of: [waiting], timeout: 2)
+        offerWaiting.send(false)
+        await fulfillment(of: [cleared], timeout: 2)
+
+        XCTAssertEqual(recorded, [.normal, .offerWaiting, .normal])
+        cancellable.cancel()
+    }
 }

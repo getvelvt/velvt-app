@@ -224,7 +224,7 @@ and had to be retroactively closed during this MVP integration pass).
 Unknown future server discriminators decode as `ServerMessage.unknown(type:)`
 on the Swift side so older clients degrade gracefully rather than crashing.
 [`docs/architecture/ipc-contract.md`](docs/architecture/ipc-contract.md) is the
-message catalog, reconciled through protocol 34.
+message catalog, reconciled through protocol 35.
 
 ## The auth state machine
 

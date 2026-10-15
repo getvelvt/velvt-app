@@ -596,6 +596,12 @@ fn registration_failure(flow: CredentialFlow, code: AuthFailureCode) -> ServerMe
 /// "Something went wrong", which made a 409 email-conflict indistinguishable
 /// from any other failure.
 fn map_auth_failure(response: &super::HttpResponse) -> AuthFailure {
+    if let Some(message) = credential_validation_message(response) {
+        return AuthFailure {
+            code: AuthFailureCode::InvalidCredentials,
+            message: message.into(),
+        };
+    }
     match (response.status, response.error_code.as_deref()) {
         (401 | 403, _) | (_, Some("invalid_credentials")) => AuthFailure {
             code: AuthFailureCode::InvalidCredentials,
@@ -612,6 +618,56 @@ fn map_auth_failure(response: &super::HttpResponse) -> AuthFailure {
                 .unwrap_or_else(|| "Something went wrong. Please try again.".into()),
         },
     }
+}
+
+/// Shown when velvt-core refuses the password's length. Its sign-up rule is
+/// 12 to 256 characters (`SignupRequest` in `app/schemas/auth.py`); the forms
+/// say the same before anything is sent.
+const PASSWORD_TOO_SHORT_MESSAGE: &str = "Use at least 12 characters for your password.";
+const PASSWORD_TOO_LONG_MESSAGE: &str = "Use at most 256 characters for your password.";
+const PASSWORD_INVALID_MESSAGE: &str = "Use a password of 12 to 256 characters.";
+const EMAIL_INVALID_MESSAGE: &str = "Enter a valid email address.";
+
+/// Readable text for a 422 `validation_error` on the email or the password.
+///
+/// velvt-core answers every request it cannot validate with "Request
+/// validation failed.", the same words for an 11-character password as for a
+/// malformed address, and the app showed them as they came (1.0.14
+/// simulation, helper-backend-08). The field is in `details[].loc` and the
+/// rule in `details[].type`. Nothing else in a detail is read: a detail can
+/// also echo the submitted value in `input`. The email is named first, since
+/// it is the first field on both forms. `None` for any other validation
+/// error, which keeps the server's own message.
+fn credential_validation_message(response: &super::HttpResponse) -> Option<&'static str> {
+    if response.status != 422 || response.error_code.as_deref() != Some("validation_error") {
+        return None;
+    }
+    let details = response
+        .raw_body
+        .as_ref()?
+        .pointer("/error/details")?
+        .as_array()?;
+    let mut password = None;
+    for detail in details {
+        let field = detail
+            .get("loc")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|loc| loc.last())
+            .and_then(serde_json::Value::as_str);
+        let kind = detail.get("type").and_then(serde_json::Value::as_str);
+        match field {
+            Some("email") => return Some(EMAIL_INVALID_MESSAGE),
+            Some("password") if password.is_none() => {
+                password = Some(match kind {
+                    Some("string_too_short") => PASSWORD_TOO_SHORT_MESSAGE,
+                    Some("string_too_long") => PASSWORD_TOO_LONG_MESSAGE,
+                    _ => PASSWORD_INVALID_MESSAGE,
+                });
+            }
+            _ => {}
+        }
+    }
+    password
 }
 
 fn auth_success_from_device_tokens(
@@ -1315,6 +1371,112 @@ mod tests {
         };
         assert_eq!(failure.code, AuthFailureCode::ServerError);
         assert_eq!(failure.message, "Email is already registered.");
+    }
+
+    /// velvt-core's 422 for an 11-character sign-up password, as the 1.0.14
+    /// simulation captured it, `input` and all. The app showed "Request
+    /// validation failed." for it, coded `server_error`.
+    fn validation_error(details: serde_json::Value) -> HttpResponse {
+        HttpResponse {
+            status: 422,
+            error_code: Some("validation_error".into()),
+            tokens: None,
+            retry_after: None,
+            message: Some("Request validation failed.".into()),
+            raw_body: Some(serde_json::json!({
+                "error": {
+                    "code": "validation_error",
+                    "message": "Request validation failed.",
+                    "details": details,
+                }
+            })),
+            user_id: None,
+            device_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_email_or_password_is_named_in_words_a_person_can_act_on() {
+        for (details, expected) in [
+            (
+                serde_json::json!([{
+                    "type": "string_too_short",
+                    "loc": ["body", "password"],
+                    "msg": "String should have at least 12 characters",
+                    "input": "short-pw-11",
+                }]),
+                "Use at least 12 characters for your password.",
+            ),
+            (
+                serde_json::json!([{
+                    "type": "string_too_long",
+                    "loc": ["body", "password"],
+                    "msg": "String should have at most 256 characters",
+                }]),
+                "Use at most 256 characters for your password.",
+            ),
+            (
+                serde_json::json!([{"type": "missing", "loc": ["body", "password"]}]),
+                "Use a password of 12 to 256 characters.",
+            ),
+            (
+                serde_json::json!([{
+                    "type": "string_pattern_mismatch",
+                    "loc": ["body", "email"],
+                    "msg": "String should match pattern",
+                    "input": "not-an-address",
+                }]),
+                "Enter a valid email address.",
+            ),
+            (
+                serde_json::json!([
+                    {"type": "string_too_short", "loc": ["body", "password"]},
+                    {"type": "string_pattern_mismatch", "loc": ["body", "email"]},
+                ]),
+                "Enter a valid email address.",
+            ),
+        ] {
+            let raw_http = Arc::new(FakeHttpClient::with_responses(vec![validation_error(
+                details.clone(),
+            )]));
+            let (service, token_store) = service(Arc::clone(&raw_http));
+
+            let outcome = service
+                .sign_up("a@example.test".into(), "short-pw-11".into())
+                .await;
+
+            let ServerMessage::AuthFailure(failure) = outcome else {
+                panic!("expected AuthFailure, got {outcome:?}");
+            };
+            assert_eq!(failure.message, expected, "{details}");
+            assert_eq!(failure.code, AuthFailureCode::InvalidCredentials);
+            assert!(
+                !failure.message.contains("short-pw")
+                    && !failure.message.contains("not-an-address"),
+                "the submitted value must never be echoed: {}",
+                failure.message
+            );
+            assert_eq!(token_store.load_device_id().unwrap(), None);
+        }
+    }
+
+    /// A validation error on any other field keeps the server's own words.
+    #[tokio::test]
+    async fn a_validation_error_on_another_field_keeps_the_servers_message() {
+        let raw_http = Arc::new(FakeHttpClient::with_responses(vec![validation_error(
+            serde_json::json!([{"type": "missing", "loc": ["body", "device_name"]}]),
+        )]));
+        let (service, _) = service(Arc::clone(&raw_http));
+
+        let outcome = service
+            .log_in("a@example.test".into(), "password".into())
+            .await;
+
+        let ServerMessage::AuthFailure(failure) = outcome else {
+            panic!("expected AuthFailure, got {outcome:?}");
+        };
+        assert_eq!(failure.code, AuthFailureCode::ServerError);
+        assert_eq!(failure.message, "Request validation failed.");
     }
 
     #[tokio::test]

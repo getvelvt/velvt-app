@@ -221,7 +221,7 @@ assert_no_sentinel() { # FILE...
   done
 }
 
-OFFERS_HEADER='block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention,card_seen_at,card_seen'
+OFFERS_HEADER='block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention,card_seen_at,card_seen,delivery_channel,delivery_reported_at,notification_delivery'
 DECISIONS_HEADER='decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds'
 OUTCOMES_HEADER='decision_id,censor_reason,observer_gap_cause,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category'
 BLOCKS_HEADER='block_id,origin,phase,started_at,ended_at,total_paused_seconds,planned_duration_seconds'
@@ -300,6 +300,12 @@ for block, want in expected.items():
            row["remaining_seconds_at_offer"], row["card_seen_at"], row["card_seen"])
     if got != tuple(str(v) for v in want):
         problems.append(f"{block}: expected {want}, got {got}")
+# A protocol-30 database cannot record what became of a notification (0043,
+# protocol 35): every row is unknown, never not_reported.
+for block, row in rows.items():
+    got = (row["delivery_channel"], row["delivery_reported_at"], row["notification_delivery"])
+    if got != ("", "", "unknown"):
+        problems.append(f"{block}: delivery columns {got}")
 if problems:
     raise SystemExit("\n".join(problems))
 PY
@@ -375,7 +381,8 @@ assert meta["explain_probe"] == "present", meta
 assert meta["card_seen_recorded_since"] == str(1800000000 - 86400), meta
 assert meta["invitations_enabled"] == "0", meta
 assert meta["exported_at"].isdigit(), meta
-assert meta["export_format"] == "4", meta
+assert meta["export_format"] == "5", meta
+assert meta["delivery_channel_recorded_since"] == "", meta
 assert meta["corrections"] == "present", meta
 assert meta["outcomes"] == "present", meta
 assert meta["outcomes_definition_version"] == "1", meta
@@ -412,6 +419,7 @@ folded="$(tr '\n' ' ' < "$work/stdout30.txt" | tr -s ' ')"
 for phrase in "block start and end times" "total time paused" \
               "how much of the block was left when the offer fired" \
               "when the nudge card was first on screen" \
+              "what became of the nudge's notification" \
               "Times are plain epoch seconds." \
               "the policy version" "every session you started" \
               "The outcomes file adds" \
@@ -464,6 +472,69 @@ PY
 if sed 's/[[:space:]]*#.*$//' "$export_script" | grep -qiE 'select[[:space:]]+\*'; then
   fail "a SELECT * appeared in the exporter"
 fi
+
+# ===========================================================================
+# A2. Protocol 35: what became of each offer's notification (migration 0043).
+#     Upgraded mid-day from the policy-v5 schema: offers made before 0043 are
+#     unknown, offers after it either carry the channel Swift reported or are
+#     not_reported. The analyser shows it as a descriptive breakdown and keeps
+#     every delivered denominator as it was.
+# ===========================================================================
+db35="$work/p35.sqlite3"
+migrate_fixture_db "$db35" "$FIXTURE_MIGRATIONS_POLICY_V5" "$INSTALLED_AT"
+seed_blocks_and_offers "$db35"
+DELIVERY_MIGRATED_AT=$((T0 + 20000))
+migrate_fixture_db "$db35" "$FIXTURE_MIGRATIONS_PROTOCOL_35" "$DELIVERY_MIGRATED_AT"
+sqlite3 "$db35" "UPDATE work_block_intervention SET delivery_channel = 'quiet', delivery_reported_at = $((T0 + 30401)) WHERE block_id = 'block-4';
+                 UPDATE work_block_intervention SET delivery_channel = 'permission_denied', delivery_reported_at = $((T0 + 63601)) WHERE block_id = 'block-7';"
+# The CHECK constraint holds the vocabulary closed, and takes every channel
+# the analyser knows (checked on a copy, so the export below is unchanged).
+if sqlite3 "$db35" "UPDATE work_block_intervention SET delivery_channel = 'shown' WHERE block_id = 'block-1';" 2>/dev/null; then
+  fail "migration 0043 accepted a channel outside its vocabulary"
+fi
+cp "$db35" "$work/p35-vocabulary.sqlite3"
+for channel in $(python3 -c "import ast, sys
+tree = ast.parse(open(sys.argv[1]).read())
+print(' '.join(next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                    and getattr(n.targets[0], 'id', '') == 'DELIVERY_CHANNELS')))" "$analyze"); do
+  sqlite3 "$work/p35-vocabulary.sqlite3" \
+    "UPDATE work_block_intervention SET delivery_channel = '$channel' WHERE block_id = 'block-1';" \
+    || fail "migration 0043 refused the analyser's channel $channel"
+done
+mkdir -p "$work/p35"
+run_export "$db35" "$work/p35/export.csv" "$work/p35/log.txt"
+check_header "$work/p35/export.csv" "$OFFERS_HEADER"
+python3 - "$work/p35/export.csv" "$work/p35/export-meta.csv" <<'PY' || fail "protocol 35 delivery columns"
+import csv, sys
+T0 = 1800000000
+rows = {r["block_id"]: r for r in csv.DictReader(open(sys.argv[1]))}
+got = {b: (r["delivery_channel"], r["delivery_reported_at"], r["notification_delivery"]) for b, r in rows.items()}
+assert got == {
+    "block-1": ("", "", "unknown"),            # offered before 0043
+    "block-2": ("", "", "unknown"),            # before 0043, and held for Focus
+    "block-3": ("", "", "not_reported"),       # withheld: Swift never saw it
+    "block-4": ("quiet", str(T0 + 30401), "quiet"),
+    "block-7": ("permission_denied", str(T0 + 63601), "permission_denied"),
+}, got
+meta = {r["key"]: r["value"] for r in csv.DictReader(open(sys.argv[2]))}
+assert meta["delivery_channel_recorded_since"] == str(T0 + 20000), meta
+PY
+mkdir -p "$work/cohort35/p35"
+cp "$work/p35"/export*.csv "$work/cohort35/p35/"
+python3 "$analyze" --json "$work/cohort35/p35" > "$work/analysis35.json"
+python3 - "$work/analysis35.json" <<'PY' || fail "exporter/analyser round trip (protocol 35)"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["data_quality"]["malformed"] == [], r["data_quality"]
+d = r["decisions_recorded"]
+assert (d["total"], d["delivered"], d["withheld"]) == (5, 3, 2), d
+nd = r["notification_delivery"]
+offers = {k: v["offers"] for k, v in nd["by_channel"].items() if v["offers"]}
+assert offers == {"unknown": 1, "quiet": 1, "permission_denied": 1}, offers
+assert nd["by_channel"]["quiet"]["no_response"] == 1, nd
+assert (nd["posted_with_visible_alert_style"], nd["not_posted_with_visible_alert_style"],
+        nd["not_recorded"]) == (0, 2, 1), nd
+PY
 
 # ===========================================================================
 # B. Protocol 28 (1.0.9): no card_seen_at column. The export must still work

@@ -1070,6 +1070,11 @@ public struct OnboardingAccountExperienceView: View {
                     text: $authViewModel.password,
                     isSecure: true
                 )
+                if let hint = authViewModel.passwordHint {
+                    Text(hint)
+                        .font(VelvtType.caption())
+                        .foregroundStyle(VelvtInk.tertiaryOnInk)
+                }
 
                 if authViewModel.authMode == .logIn {
                     Button("Forgot password?") {

@@ -45,6 +45,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
     /// reply — it reuses the bare identifier payload precisely because there
     /// is nowhere in it a user answer could be smuggled.
     case interventionCardSeen(WorkBlockIdentifier)
+    /// What became of the OS notification for a drift offer (proto v35). A
+    /// delivery fact, never a reply: a block id and one closed channel value.
+    case interventionDelivery(InterventionDeliveryReport)
     case workBlockLifecycle(WorkBlockLifecycle)
     case clearWorkBlockData
     case focusStateChanged(FocusStateChanged)
@@ -126,6 +129,8 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             self = .reportInterventionOutcome(try ReportInterventionOutcome(from: payload))
         case "intervention_card_seen":
             self = .interventionCardSeen(try WorkBlockIdentifier(from: payload))
+        case "intervention_delivery":
+            self = .interventionDelivery(try InterventionDeliveryReport(from: payload))
         case "work_block_lifecycle":
             self = .workBlockLifecycle(try WorkBlockLifecycle(from: payload))
         case "clear_work_block_data":
@@ -253,6 +258,9 @@ public enum ClientMessage: Codable, Equatable, Sendable {
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .interventionCardSeen(let value):
             try envelope.encode("intervention_card_seen", forKey: .type)
+            try value.encode(to: envelope.superEncoder(forKey: .payload))
+        case .interventionDelivery(let value):
+            try envelope.encode("intervention_delivery", forKey: .type)
             try value.encode(to: envelope.superEncoder(forKey: .payload))
         case .workBlockLifecycle(let value):
             try envelope.encode("work_block_lifecycle", forKey: .type)
@@ -2358,6 +2366,57 @@ public struct ReportInterventionOutcome: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case blockID = "block_id"
         case response
+    }
+}
+
+/// How a drift offer reached, or failed to reach, the notification centre
+/// (proto v35). Swift reports the fact; Rust stores it beside the outcome and
+/// never reads it as an answer.
+public enum InterventionDeliveryChannel: String, Codable, Equatable, Sendable, CaseIterable {
+    /// Accepted by the notification centre, and the alert style for Velvt
+    /// shows it on screen.
+    case notificationPosted = "notification_posted"
+    /// Accepted, but the alert style for Velvt is None: listed in
+    /// Notification Center, never shown on screen.
+    case alertStyleNone = "alert_style_none"
+    /// Notifications are turned off for Velvt.
+    case permissionDenied = "permission_denied"
+    /// Permission was never answered, or could not be read.
+    case permissionUnknown = "permission_unknown"
+    /// The notification centre refused the request.
+    case rejected
+    /// The offer was over before the notification centre had it: it ended
+    /// while the attempt was waiting on the permission check, or the post
+    /// landed after it ended and was taken down at once.
+    case withdrawn
+    /// A quiet offer: in-app card only, by design.
+    case quiet
+    /// Not posted: the offer's `offeredAt` was already more than
+    /// `InterventionNotifier.maximumPostingAge` past when this process first
+    /// saw it.
+    case stale
+
+    /// Whether the notification centre accepted the request.
+    public var wasPosted: Bool {
+        self == .notificationPosted || self == .alertStyleNone
+    }
+
+    /// Whether the person could have seen a banner or an alert for it.
+    public var wasShownOnScreen: Bool { self == .notificationPosted }
+}
+
+public struct InterventionDeliveryReport: Codable, Equatable, Sendable {
+    public let blockID: UUID
+    public let channel: InterventionDeliveryChannel
+
+    public init(blockID: UUID, channel: InterventionDeliveryChannel) {
+        self.blockID = blockID
+        self.channel = channel
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case blockID = "block_id"
+        case channel
     }
 }
 

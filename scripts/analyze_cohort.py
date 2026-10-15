@@ -297,6 +297,30 @@ GATE_VERDICTS = (
 # (every 1.0.9 database). Unknown is never folded into unseen.
 CARD_SEEN_BUCKETS = ("seen", "unseen", "unknown")
 
+# `notification_delivery` as the exporter derives it from `delivery_channel`
+# (migration 0043, protocol 35): what Swift reported became of the offer's OS
+# notification. The first eight are the channels Swift can report;
+# not_reported = NULL on a row offered after the Mac applied 0043; unknown =
+# NULL before that, or an export without the column (every export before
+# format 5). Unknown is never folded into not_reported. Descriptive only: no
+# pre-registered denominator reads it.
+DELIVERY_CHANNELS = (
+    "notification_posted",
+    "alert_style_none",
+    "permission_denied",
+    "permission_unknown",
+    "rejected",
+    "withdrawn",
+    "quiet",
+    "stale",
+)
+DELIVERY_BUCKETS = DELIVERY_CHANNELS + ("not_reported", "unknown")
+# The one channel posted under an alert style that puts it on screen. Posted
+# is not seen: a Focus mode Velvt could not detect (no Focus-status
+# permission) holds a posted notification in Notification Center, and it is
+# still recorded as notification_posted. An upper bound on offers seen.
+DELIVERY_POSTED_VISIBLE = ("notification_posted",)
+
 BLOCK_TERMINAL_PHASES = ("completed", "abandoned", "expired")
 BLOCK_OPEN_PHASES = ("active", "paused")
 BLOCK_ORIGINS = ("manual", "invitation")
@@ -366,6 +390,7 @@ class Offer:
     outcome_at: int | None
     returned_within_window: bool
     card_seen: str
+    notification_delivery: str = "unknown"
 
 
 @dataclass
@@ -1048,6 +1073,12 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
             # An export without the derived column: a timestamp is still proof
             # of a sighting, and anything else is unknown, never unseen.
             card_seen = "seen" if _text(row, "card_seen_at") else "unknown"
+        delivery = _text(row, "notification_delivery")
+        if delivery not in DELIVERY_BUCKETS:
+            # An export without the derived column: a reported channel is still
+            # a fact, and anything else is unknown, never not_reported.
+            channel = _text(row, "delivery_channel")
+            delivery = channel if channel in DELIVERY_CHANNELS else "unknown"
 
         record = Offer(
             participant=name,
@@ -1063,6 +1094,7 @@ def _load_participant(cohort: Cohort, participant: Participant) -> None:
                 False if outcome in WITHHELD_TERMINAL_OUTCOMES else returned
             ),
             card_seen=card_seen,
+            notification_delivery=delivery,
         )
         if outcome in WITHHELD_TERMINAL_OUTCOMES:
             cohort.withheld.append(record)
@@ -1637,6 +1669,17 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
             "no_response": sum(1 for o in subset if o.outcome == "no_response"),
         }
 
+    by_delivery: dict[str, dict] = {}
+    for bucket in DELIVERY_BUCKETS:
+        subset = [o for o in offers if o.notification_delivery == bucket]
+        by_delivery[bucket] = {
+            "offers": len(subset),
+            "returned_within_10min": sum(1 for o in subset if o.returned_within_window),
+            "no_response": sum(1 for o in subset if o.outcome == "no_response"),
+        }
+    posted_visible = sum(by_delivery[b]["offers"] for b in DELIVERY_POSTED_VISIBLE)
+    unrecorded = by_delivery["not_reported"]["offers"] + by_delivery["unknown"]["offers"]
+
     withheld_counts = Counter(o.outcome for o in withheld)
     eligible = len(cohort.eligible)
     primary = _primary(cohort)
@@ -1741,6 +1784,34 @@ def analyse(cohort: Cohort, cohort_start: datetime | None = None, cohort_weeks: 
             ),
             "no_response": {b: sum(1 for o in silent if o.card_seen == b) for b in CARD_SEEN_BUCKETS},
             "delivered": {b: sum(1 for o in offers if o.card_seen == b) for b in CARD_SEEN_BUCKETS},
+        },
+        "notification_delivery": {
+            "status": (
+                "DESCRIPTIVE. An additional breakdown of the delivered offers; it "
+                "changes no pre-registered denominator, which still counts every "
+                "delivered offer whatever became of its notification."
+            ),
+            "definition": (
+                "From delivery_channel (migration 0043, protocol 35): what the app "
+                "reported became of each offer's OS notification. "
+                "notification_posted: posted with an alert style that shows it (banner "
+                "or alert). Posted is not seen: a Focus mode Velvt could not detect "
+                "still holds it in Notification Center, so this is an upper bound on "
+                "offers seen. alert_style_none: posted, listed in Notification Center, "
+                "never shown. permission_denied / permission_unknown: notifications off "
+                "or never answered, nothing posted. rejected: the notification centre "
+                "refused it. withdrawn: the offer was over before the notification "
+                "centre had it. quiet: in-app card only, by design. stale: not posted, "
+                "because the app first saw the offer more than 2 minutes after the "
+                "evidence it was decided on. not_reported: no report on a Mac that "
+                "records them. unknown: recorded before migration 0043. Never folded "
+                "into not_reported."
+            ),
+            "by_channel": by_delivery,
+            "posted_with_visible_alert_style": posted_visible,
+            "not_posted_with_visible_alert_style": denominator - posted_visible - unrecorded,
+            "not_recorded": unrecorded,
+            "delivered": denominator,
         },
         "withheld": {
             "definition": (
@@ -1962,6 +2033,22 @@ def render(result: dict) -> str:
     for bucket in CARD_SEEN_BUCKETS:
         add(f"  {bucket:8} no_response={seen['no_response'][bucket]:4} "
             f"of delivered={seen['delivered'][bucket]:4}")
+
+    delivery = result["notification_delivery"]
+    heading("NOTIFICATION DELIVERY (descriptive, protocol 35)")
+    add("  What became of each delivered offer's OS notification. Changes no")
+    add("  denominator above: every delivered offer stays in them.")
+    for bucket in DELIVERY_BUCKETS:
+        stats = delivery["by_channel"][bucket]
+        add(f"  {bucket:20} offers={stats['offers']:4} "
+            f"returned_unanswered={stats['returned_within_10min']:4} "
+            f"no_response={stats['no_response']:4}")
+    add(f"  posted with a visible alert style: {delivery['posted_with_visible_alert_style']}, "
+        f"not: {delivery['not_posted_with_visible_alert_style']}, "
+        f"not recorded: {delivery['not_recorded']}, of delivered={delivery['delivered']}")
+    add("  Posted is not seen: a Focus mode Velvt could not detect holds a posted")
+    add("  notification in Notification Center, so the first figure is an upper")
+    add("  bound on offers seen.")
 
     held = result["withheld"]
     heading("WITHHELD (recorded, never delivered)")

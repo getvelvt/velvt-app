@@ -174,6 +174,8 @@ Rust to Swift:
 | `429` | Return rate-limited error; the session stays |
 | Anything else, including `403` without a code and `5xx` | Return the response (or `Transport` from a refresh or reissue); the session stays, and a refresh or reissue is not retried for a minute |
 
+A sign-up or login answered `422 validation_error` on the email or the password (`details[].loc` ends in `email` or `password`) answers `auth_failure` with `invalid_credentials` and Rust's own words: "Enter a valid email address.", or for the password, by `details[].type`, "Use at least 12 characters for your password.", "Use at most 256 characters for your password." or "Use a password of 12 to 256 characters." (`credential_validation_message` in `auth/account.rs`). velvt-core's own message, "Request validation failed.", named neither the field nor the rule. Nothing else in a detail is read; velvt-core echoes the submitted value in `details[].input`. A validation error on any other field keeps the server's message.
+
 ## UI Notification of Auth State
 
 `src/main.rs` subscribes to the Rust auth state machine. When state becomes `DeviceRevoked` or `NeedsReauth`, it pushes the corresponding IPC message through `PushAdapter`; when it becomes `AccountDeleted`, `ipc::SessionWatch` runs `ipc::end_deleted_account_session`, which pushes `needs_reauth` with the reason `account_deleted`. When a session becomes usable, the retry loop makes due every batch put off as `authentication_required` and resumes the queue, and `SessionWatch` runs the menu's readiness probe again. This is independent of the request that caused the state change, which keeps the menu bar UI accurate even if the user is not actively using an auth screen.

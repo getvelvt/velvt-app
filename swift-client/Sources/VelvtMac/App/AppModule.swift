@@ -178,10 +178,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // A drift offer renders as an in-app card, which is a surface the
         // person is not looking at when they have drifted. This carries the
         // same offer to the notification centre.
+        // What became of each offer's notification goes to the service too
+        // (proto v35), so an offer that never rang is not recorded like one
+        // that did.
         let interventionNotifier = InterventionNotifier(
             scheduler: scheduler,
             permissionManager: permissionManager,
-            reporter: deliveryReporter
+            reporter: deliveryReporter,
+            deliveryFacts: workBlocks,
+            alertStyle: SystemNotificationAlertStyleReader()
         )
         interventionNotifier.start(snapshots: workBlocks.$snapshot)
         self.interventionNotifier = interventionNotifier
@@ -255,7 +260,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar.observe(
             collectionStatus: collectionAgent.status,
             connectionStatus: client.connectionStatus,
-            accountStateManager: accountStateManager
+            accountStateManager: accountStateManager,
+            offerWaitingUnshown: interventionNotifier.$isOfferWaitingUnshown.eraseToAnyPublisher()
         )
         menuBarController = menuBar
 

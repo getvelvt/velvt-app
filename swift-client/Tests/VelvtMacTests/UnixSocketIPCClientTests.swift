@@ -74,6 +74,50 @@ final class UnixSocketIPCClientTests: XCTestCase {
         XCTAssertEqual(latestStatus, .disconnected)
     }
 
+    /// Protocol 35 adds `intervention_delivery`. An app built at 35 that meets
+    /// a 1.0.14 helper still running at 34 (the upgrade path) is refused at the
+    /// handshake with the typed error, and never sends a fact the helper would
+    /// answer as malformed.
+    func testAProtocol35AppIsRefusedByAProtocol34Helper() async throws {
+        let protoVersion = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("proto/version"),
+            encoding: .utf8
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(protoVersion, "35")
+        let transport = ScriptedIPCTransport(
+            receives: [
+                .success(try frame(.serverHello(ServerHello(protocolVersion: 34)))),
+                .success(
+                    try frame(.versionMismatch(VersionMismatch(serverProtocolVersion: 34, clientProtocolVersion: 35)))
+                ),
+            ]
+        )
+        let client = UnixSocketIPCClient(
+            socketPath: "/tmp/velvt-test.sock",
+            protocolVersion: 35,
+            clientVersion: "1.0.15",
+            transportFactory: { transport }
+        )
+
+        do {
+            try await client.connect()
+            XCTFail("Expected version mismatch")
+        } catch {
+            XCTAssertEqual(error as? IPCError, .versionMismatch(expected: 34, got: 35))
+        }
+        let sent = await transport.sentFrames()
+        XCTAssertEqual(sent.count, 1, "the hello, and nothing after it")
+        XCTAssertEqual(
+            try IPCMessageCodec.makeDecoder().decode(ClientMessage.self, from: sent[0]),
+            .clientHello(ClientHello(expectedProtocolVersion: 35, clientVersion: "1.0.15"))
+        )
+    }
+
     /// A reconnect has no caller to throw to. It used to publish
     /// `.disconnected` and stop, which looks like any other drop; the
     /// mismatch now goes out where the app's recovery can hear it.

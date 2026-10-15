@@ -3879,6 +3879,9 @@ private struct MenuBarAuthenticationView: View {
                 .velvtDisplay(22)
             CredentialTextField(placeholder: "Email", text: $authViewModel.email)
             CredentialTextField(placeholder: "Password", text: $authViewModel.password, isSecure: true)
+            if let hint = authViewModel.passwordHint {
+                Text(hint).font(VelvtType.body(11)).foregroundStyle(VelvtInk.labelOnInk)
+            }
             if authViewModel.authMode == .logIn {
                 Button("Forgot password?") { authViewModel.openForgotPasswordPage() }
                     .buttonStyle(.plain).font(VelvtType.body(11))

@@ -129,12 +129,12 @@ pub fn parse_insight_with_rehydrator(
 ) -> Result<InsightPayload, ParseError> {
     let raw: RawInsightResponse = serde_json::from_value(value)?;
     let fallback_text = raw.text.ok_or(ParseError::MissingField { field: "text" })?;
-    let text = match (raw.template, raw.label_references, rehydrator) {
-        (Some(template), Some(references), Some(rehydrator)) => {
-            rehydrator.rehydrate(&template, &references)
-        }
-        _ => fallback_text,
-    };
+    let text = super::rehydrate::insight_text(
+        fallback_text,
+        raw.template,
+        raw.label_references,
+        rehydrator,
+    );
     let evidence = parse_evidence(raw.quality_metadata)?;
     Ok(InsightPayload {
         date: raw.date.ok_or(ParseError::MissingField { field: "date" })?,

@@ -2,10 +2,14 @@
 # Watch what actually happens to every Velvt notification delivery attempt.
 #
 # Layer 3 of the delivery path — whether macOS displayed the notification — is
-# the one the database cannot answer. `work_block_intervention` is written by
-# Rust when the offer is *recorded*; Swift's delivery outcome goes only to the
-# unified log and is never written back. So an offer that never rang is stored
-# exactly like one that did.
+# the one the database can only partly answer. Since protocol 35 Swift reports
+# what became of each drift offer's notification to the service
+# (`work_block_intervention.delivery_channel`, migration 0043): posted, posted
+# with alert style None, permission denied or unknown, rejected, withdrawn,
+# quiet, or stale (too old to post when the app first saw it). What the database still cannot hold is whether macOS then showed a
+# posted banner (a Focus Velvt could not see holds it in Notification Center),
+# or anything about the daily insight and the needs-a-category reminder. This
+# log has every attempt on every surface.
 #
 # `OSLogNotificationDeliveryReporter` (swift-client/Sources/VelvtMac/Delivery/
 # NotificationDeliveryReporter.swift) emits one line per attempt under
@@ -36,7 +40,19 @@ What you are looking for, verbatim as the app emits it:
 
   notification_delivered                     the request reached
                                              UNUserNotificationCenter and was
-                                             accepted. THIS is layer 3 passing.
+                                             accepted. THIS is layer 3 passing,
+                                             unless the line ends in
+                                             alert_style=none:
+  notification_delivered ... alert_style=none
+                                             accepted, but the alert style for
+                                             Velvt is None in System Settings:
+                                             listed in Notification Center and
+                                             never shown on screen
+  notification_skipped_stale                 the offer was more than two
+                                             minutes past its evidence when the
+                                             app first saw it (a relaunch, or a
+                                             decision on a long dwell's closed
+                                             report): not posted, by design
   notification_suppressed_by_salience        a quiet offer: in-app card only,
                                              by design, not a fault
   notification_withdrawn_before_delivery     the offer ended (you came back,
@@ -95,5 +111,5 @@ log show --predicate "$PREDICATE" --last "$WINDOW" --style compact --info 2>/dev
 echo
 echo "--- delivery attempts only ---"
 log show --predicate "$PREDICATE" --last "$WINDOW" --style compact --info 2>/dev/null \
-    | grep -E 'notification_delivered|notification_suppressed_by_salience|notification_withdrawn_before_delivery|notification_presented_while_active|notification_permission_blocked|notification_centre_rejected|notification_add_rejected' \
+    | grep -E 'notification_delivered|notification_skipped_stale|notification_suppressed_by_salience|notification_withdrawn_before_delivery|notification_presented_while_active|notification_permission_blocked|notification_centre_rejected|notification_add_rejected' \
     || echo "(no delivery attempts recorded in this window)"

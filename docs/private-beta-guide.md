@@ -9,10 +9,12 @@
 > not sign up or sign in, they are asked to allow notifications because the
 > drift offer is the thing being tested, and 1.0.11 and 1.0.9 run drift policy
 > v2 (≥ 3 switches after a 3-minute warm-up). Later builds keep those
-> thresholds and carry v3 to v5: v3 (1.0.12) decides as each switch happens,
+> thresholds and carry v3 to v6: v3 (1.0.12) decides as each switch happens,
 > v4 (1.0.13) also counts a switch to an application Velvt can see only at
-> application level, and v5, from the first build after 1.0.13, counts a
-> browser tab by its site.
+> application level, and v6, from 1.0.14, counts a browser tab by its site
+> (v5's change, which no release carried on its own), decides a YouTube tab
+> by its video title, files TikTok's web app as a feed, and keeps the anchor
+> to a work category.
 > Where the two disagree, the kit is
 > right. The one correction made here is the app's name: it installs as
 > **Velvt.app**, not `velvt-mac.app`.

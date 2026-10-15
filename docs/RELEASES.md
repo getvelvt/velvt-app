@@ -69,6 +69,34 @@ Not in the table:
   (2026-07-31), which is an ancestor of `develop`. It marks no notarized build.
   It has never been pushed, and it is being left as it is.
 
+## Pending: 1.0.14 (build 20), not built yet
+
+The next release. velvt-app PR #74 sets it in `Version.xcconfig`. Its build
+number follows 1.0.12 (build 18) and 1.0.13 (build 19). Both were built and
+installed on the founder's Macs and are tagged `v1.0.12` and `v1.0.13` in the
+maintainer's clone, but neither has a row in the table above yet.
+
+This is a plan, not a release. Its Version cell is not a bare version number,
+so `scripts/release_provenance.sh` does not read it as shipped. Once the DMG is
+notarized, replace this section with a row in the table above (DMG date,
+sha256, notarization IDs) that also says it runs drift policy 6.
+
+| Version | Build | IPC protocol | Migrations | Drift policy | Source |
+|---|---:|---:|---|---|---|
+| 1.0.14 (pending) | 20 | 36 | 0001–0044 | 6: browser tabs by site (#62), YouTube by video title and TikTok's web app as a feed (#78), and an anchor that is always a work category (#83) | `develop` after #83 (`fix/anchor-work-lane`), then #84 (`fix/focus-status-unknown`, protocol 36, migration 0044), then #74, which merges last. Untagged |
+
+Before cutting it:
+
+1. Merge #83, then #84, then #74. #74 merged on its own would give 1.0.14 to a
+   protocol 35 tree that still has the anchor rule #83 replaces. No build of
+   that tree may reach a tester.
+2. Check the tree to be built: `proto/version` is 36, the newest file in
+   `rust-service/migrations/` is `0044_decision_focus_state.sql`, and
+   `DRIFT_POLICY_VERSION` in `rust-service/src/work_block/mod.rs` is 6.
+3. The v6 pre-registration, which describes the work-category anchor, must be
+   appended to `pitch-deck-inputs/evidence/traction-summary.md` before the
+   build is cut. It is not there yet.
+
 ## Cutting the next release
 
 The version and build number live in `swift-client/Configs/Version.xcconfig`

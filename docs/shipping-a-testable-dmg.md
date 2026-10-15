@@ -230,8 +230,9 @@ a Release build, so this is unavailable in the DMG.
 Device-local, deterministic, and independent of the cloud, so it works on a
 fresh install with no account and no baseline history:
 
-This is drift policy v6 (`DRIFT_POLICY_VERSION = 6`, protocol 33). The gate
-constants are in `rust-service/src/work_block/mod.rs`:
+This is drift policy v6 (`DRIFT_POLICY_VERSION = 6`), whose first build is
+1.0.14, at protocol 36. The gate constants are in
+`rust-service/src/work_block/mod.rs`:
 ≥ 3 confident switches away from the anchor inside a rolling 10-minute window,
 after ≥ 3 minutes elapsed, with ≥ 2 minutes remaining. They are v2's (PR #40,
 1.0.9 to 1.0.11); v3 (velvt-app PR #56, 1.0.12) changed when a switch reaches

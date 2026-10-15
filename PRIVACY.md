@@ -57,10 +57,10 @@ on a site in Velvt's built-in table, the site decides the category and title
 words cannot move it; the one refinement is telling a Google Sheets or Slides
 tab on `docs.google.com` from a Docs one. Since drift policy version 6
 (`DRIFT_POLICY_VERSION = 6`) there is one site whose category the title
-decides: YouTube (`youtube.com`, its subdomains, and `youtu.be`), where the
-same site shows lectures and music videos. `youtube_by_title`
-(`rust-service/src/abstraction/sites.rs`) reads the video's title in the Rust
-service and decides:
+decides: YouTube (`youtube.com` and its subdomains other than
+`music.youtube.com`, and `youtu.be`), where the same site shows lectures and
+music videos. `youtube_by_title` (`rust-service/src/abstraction/sites.rs`)
+reads the video's title in the Rust service and decides:
 
 - a title with a lesson word or phrase (lecture, tutorial, lesson, explained,
   webinar, how to, crash course, practice problems, and a few more) and no
@@ -77,21 +77,24 @@ service and decides:
 
 The full word lists sit beside `youtube_by_title`. `music.youtube.com` is
 PASSIVE_CONSUMPTION whatever the title. Your own corrections still come first:
-where one applies, the title is not consulted. Velvt 1.0.13 and earlier do not
-have this rule.
+where one applies, the title rule does not run, though the title still goes
+into the sketch described below. Velvt 1.0.13 and earlier do not have this
+rule.
 
 The rule keeps its answer and nothing else of the title: the category, and a
 local label that records which way the title went (`reference:youtube` or
 `video:youtube`, in the label columns described below). The title itself is
-stored nowhere and sent nowhere. A YouTube event is uploaded like any other,
-as its category and the category-scoped type for it (`reference:inferred` or
-`video:inferred`), so the cloud can see that a video counted as REFERENCE or
-as PASSIVE_CONSUMPTION, and nothing that names YouTube or the video. When the
-title decides nothing, the site's name (`youtube.com`, for `www.youtube.com`)
-is kept in `local_site_name` so the needs-a-category list can ask you about
-it, on the same terms as any other site; a video the title did decide keeps no
-hostname. `published_claims` drives a decided and an undecided YouTube tab
-with a sentinel title through the service and checks this by value.
+stored nowhere and sent nowhere. A YouTube event is uploaded like any other:
+an event ID, a timestamp, a duration, its category, the category-scoped type
+for that category (`reference:inferred` or `video:inferred` for a video the
+title decided, the same types every REFERENCE or PASSIVE_CONSUMPTION event
+carries), and a classification tier. Nothing in it says the time was YouTube
+or names the video. When the title decides nothing, the site's name
+(`youtube.com`, for `www.youtube.com`) is kept in `local_site_name` so the
+needs-a-category list can ask you about it, on the same terms as any other
+site; a video the title did decide keeps no hostname. `published_claims`
+drives a decided and an undecided YouTube tab with a sentinel title through
+the service and checks this by value.
 
 The rule does not change the embedding sketch. As for every window, a YouTube
 tab's title goes into the Tier 2 sketch described below, with the browser's
@@ -100,10 +103,10 @@ name and the hostname in front of it, and that sketch is kept on the Mac in
 and individual words are partially recoverable from it by someone holding the
 whole file.
 
-TikTok's web app, `tiktok.com`, is placed by its site alone, like every other
-site in the table. Since version 6 it is SOCIAL_FEED, a feed; version 5 had it
-as PASSIVE_CONSUMPTION. Its titles decide nothing. The native TikTok app is
-unchanged, PASSIVE_CONSUMPTION.
+TikTok's web app, `tiktok.com`, is placed by its site alone, like every site
+in the table except YouTube. Since version 6 it is SOCIAL_FEED, a feed;
+version 5 had it as PASSIVE_CONSUMPTION. Its titles decide nothing. The native
+TikTok app is unchanged, PASSIVE_CONSUMPTION.
 
 ## What stays local
 

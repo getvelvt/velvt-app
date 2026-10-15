@@ -298,6 +298,15 @@ impl FakeCore {
         client: &FakeClient,
         request: &HttpRequest,
     ) -> Result<HttpResponse, AuthError> {
+        // `AuthManager` never sends a request bound to another account's
+        // session (`HttpRequest::account`): it fails as `NeedsReauth`.
+        if request
+            .account
+            .as_deref()
+            .is_some_and(|account| account != client.user)
+        {
+            return Err(AuthError::NeedsReauth);
+        }
         let now = self.clock.now();
         let mut state = self.state.lock().unwrap();
         let received = Received {

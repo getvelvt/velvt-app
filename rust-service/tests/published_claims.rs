@@ -1802,6 +1802,7 @@ const MIGRATED_TABLES: &[&str] = &[
     "semantic_embedding_cache",
     "stable_key_salt",
     "sync_known_device",
+    "sync_notice",
     "upload_batch",
     "upload_host_backoff",
     "vault_rule_link",

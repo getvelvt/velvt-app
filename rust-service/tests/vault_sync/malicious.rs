@@ -647,3 +647,438 @@ async fn withheld_updates_converge_once_the_server_stops() {
         .collect();
     assert!(names.contains(&"Renamed".to_owned()), "{names:?}");
 }
+
+// --- Review follow-ups (PR #91) ---------------------------------------------------
+
+/// §6.1, T5: a Mac on the same Apple ID that holds the vault's key K1 and has
+/// never synced (J2) trusts K1. Served an unrelated key with no rotation and
+/// no reset, it pauses and offers no code: the server cannot use it to phish
+/// one. With a rotation K1 signed, it waits for the rotated key instead.
+#[tokio::test]
+async fn a_fresh_mac_holding_the_key_is_never_steered_to_a_key_it_did_not_sign() {
+    let (core, clock) = setup();
+    let (studio, _) = syncing(&core, &clock).await;
+    let attacker = VaultKey::generate().unwrap();
+    core.with_account(studio.user.as_str(), |account| {
+        let vault = account.vault.as_mut().unwrap();
+        vault.key_id = attacker.key_id();
+        vault.write_pk = *attacker.write_public_key();
+    });
+    let fresh = Mac::new(&core, &clock, &studio.user, &studio.keychain, 2).await;
+    core.clear_received();
+    let paused = fresh.turn_on("Mac mini").await;
+    assert_state(&paused, SyncState::ServerInconsistent);
+    assert_eq!(paused.error_code.as_deref(), Some("unverified_key_change"));
+    paused_without_a_code(&paused);
+    assert!(
+        !paused.status_line.contains("code"),
+        "{}",
+        paused.status_line
+    );
+    wrote_nothing(&core);
+    assert_eq!(
+        fresh.row().unwrap().key_id,
+        None,
+        "the served key not adopted"
+    );
+
+    // A code typed anyway changes nothing (I3: Rust judges, not the window).
+    let refused = fresh.engine.adopt_delivered_key(attacker).await;
+    assert_state(&refused, SyncState::ServerInconsistent);
+    assert_eq!(fresh.row().unwrap().key_id, None);
+    wrote_nothing(&core);
+
+    // The same Mac, served a rotation K1 signed, to a key not yet here.
+    let (core, clock) = setup();
+    let (studio, k1_again) = syncing(&core, &clock).await;
+    let k2 = VaultKey::generate().unwrap();
+    let answer = super::harness::rotate(&studio.client(), &studio.user, &k1_again, &k2).await;
+    assert_eq!(answer.status, 200);
+    let keychain = MemoryKeyStore::new();
+    keychain.insert(
+        &studio.user,
+        &k1_again,
+        HeldKey {
+            key_id: k1_again.key_id(),
+            supersedes: None,
+            retired_by: None,
+            created_at_ms: Some(START_MS),
+        },
+    );
+    let fresh = Mac::new(&core, &clock, &studio.user, &keychain, 2).await;
+    let waiting = fresh.turn_on("Mac mini").await;
+    assert_state(&waiting, SyncState::WaitingForRotatedKey);
+    assert!(
+        waiting.offers_code_entry,
+        "a verified rotation makes a code safe"
+    );
+    assert_eq!(
+        fresh.row().unwrap().key_id,
+        Some(k1_again.key_id().to_hex()),
+        "it trusts the key it holds while it waits"
+    );
+}
+
+/// T5, T11: a server backdates a pending reset so that it comes due minutes
+/// after a polling Mac first sees it, while a work block holds the notice.
+/// The first sight is refused: never recorded, so the "completed" claim that
+/// follows is refused too, and no code is offered.
+#[tokio::test]
+async fn a_backdated_pending_reset_never_comes_due_on_a_polling_mac() {
+    let (core, clock) = setup();
+    let (mac, key) = syncing(&core, &clock).await;
+    for _ in 0..12 {
+        clock.advance(10 * MINUTE);
+        assert_state(&mac.sync().await, SyncState::Syncing);
+    }
+    mac.blocks.set(true);
+    let now = clock.now();
+    let reset_id = uuid::Uuid::new_v4().to_string();
+    core.with_account(mac.user.as_str(), |account| {
+        let key_id = account.vault.as_ref().unwrap().key_id;
+        account.resets.push(super::fake_core::StoredReset {
+            id: reset_id.clone(),
+            key_id,
+            status: "pending",
+            requested_at_ms: now - RESET_DELAY_MS + 5 * MINUTE,
+            effective_at_ms: now + 5 * MINUTE,
+            resolved_at_ms: None,
+        });
+    });
+    core.clear_received();
+    let first_sight = mac.sync().await;
+    assert_state(&first_sight, SyncState::ServerInconsistent);
+    assert_eq!(first_sight.error_code.as_deref(), Some("unseen_reset"));
+    assert_eq!(mac.row().unwrap().seen_reset_request_id, None);
+    assert!(first_sight.pending_reset_effective_at_ms.is_none());
+    assert!(!first_sight
+        .notices
+        .iter()
+        .any(|notice| notice.kind == NoticeKind::ResetRequested));
+    paused_without_a_code(&first_sight);
+    wrote_nothing(&core);
+
+    clock.advance(10 * MINUTE);
+    let completed = mac.sync().await;
+    assert_state(&completed, SyncState::ServerInconsistent);
+    assert_eq!(completed.error_code.as_deref(), Some("unseen_reset"));
+    paused_without_a_code(&completed);
+    wrote_nothing(&core);
+    assert_eq!(
+        live_key(&mac.keychain, &mac.user).await.key_id(),
+        key.key_id(),
+        "no item touched"
+    );
+}
+
+/// I3, §6.1: a code typed while sync is paused for a key change nobody
+/// signed changes nothing: no Keychain item, no new anchor, no write. The
+/// served key here is a vault the server's operator made after hiding the
+/// real one.
+#[tokio::test]
+async fn a_code_typed_while_paused_changes_nothing() {
+    let (core, clock) = setup();
+    let icloud = MemoryKeyStore::new();
+    let person = user("person");
+    let studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    let laptop = Mac::new(&core, &clock, &person, &icloud, 2).await;
+    studio.turn_on("Studio Mac").await;
+    laptop.turn_on("Laptop C").await;
+    clock.advance(MINUTE);
+    studio.sync().await;
+    let trusted = studio.row().unwrap().key_id;
+    core.with_account(person.as_str(), |account| {
+        account.vault = None;
+        account.blob = None;
+    });
+    let rogue = Mac::new(&core, &clock, &person, &MemoryKeyStore::new(), 9).await;
+    rogue.turn_on("Rogue").await;
+    let rogue_key = live_key(&rogue.keychain, &person).await;
+    let rogue_id = rogue_key.key_id();
+    clock.advance(MINUTE);
+    let paused = studio.sync().await;
+    assert_state(&paused, SyncState::ServerInconsistent);
+    assert!(!paused.offers_code_entry);
+    let version = stored_version(&core, person.as_str());
+
+    core.clear_received();
+    let after = studio.engine.adopt_delivered_key(rogue_key).await;
+    assert_state(&after, SyncState::ServerInconsistent);
+    assert!(core.received().is_empty(), "nothing asked, nothing written");
+    assert_eq!(studio.row().unwrap().key_id, trusted, "the anchor stands");
+    assert!(
+        icloud
+            .held(&person)
+            .iter()
+            .all(|held| held.key_id != rogue_id),
+        "the served key never reaches iCloud Keychain"
+    );
+    assert_eq!(stored_version(&core, person.as_str()), version);
+    // Nor does it reach a fresh Mac on this Apple ID, which trusts the key it
+    // holds.
+    let fresh = Mac::new(&core, &clock, &person, &icloud, 4).await;
+    assert_state(
+        &fresh.turn_on("Mac mini").await,
+        SyncState::ServerInconsistent,
+    );
+}
+
+/// T14, §5.5: a Mac on another Apple ID takes the rotated key by code. Its
+/// Apple ID then holds the rotation markers too, so a fresh Mac there served
+/// the pre-rotation copy refuses it instead of writing under the key the lost
+/// Mac still holds.
+#[tokio::test]
+async fn a_rotated_key_taken_by_code_keeps_the_markers_on_that_apple_id() {
+    use velvt_service::vault::sync::keys::VaultKeyStore;
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let work_icloud = MemoryKeyStore::new();
+    let studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    let work = Mac::new(&core, &clock, &person, &work_icloud, 3).await;
+    studio.turn_on("Studio Mac").await;
+    let old = live_key(&icloud, &person).await;
+    assert_state(
+        &work
+            .engine
+            .adopt_delivered_key(live_key(&icloud, &person).await)
+            .await,
+        SyncState::Syncing,
+    );
+    let pre_vault = core.with_account(person.as_str(), |account| account.vault.clone().unwrap());
+    let pre_blob = core.with_account(person.as_str(), |account| account.blob.clone().unwrap());
+
+    let new = VaultKey::generate().unwrap();
+    icloud
+        .store(&person, &new, Some(old.key_id()))
+        .await
+        .unwrap();
+    assert_eq!(
+        super::harness::rotate(&studio.client(), &person, &old, &new)
+            .await
+            .status,
+        200
+    );
+    clock.advance(MINUTE);
+    assert_state(&work.sync().await, SyncState::WaitingForRotatedKey);
+    work_icloud.set_clock_ms(clock.now());
+    let typed = icloud.load(&person, new.key_id()).await.unwrap();
+    assert_state(
+        &work.engine.adopt_delivered_key(typed).await,
+        SyncState::Syncing,
+    );
+    let held = work_icloud.held(&person);
+    let new_item = held
+        .iter()
+        .find(|item| item.key_id == new.key_id())
+        .unwrap();
+    assert_eq!(new_item.supersedes, Some(old.key_id()));
+    let old_item = held
+        .iter()
+        .find(|item| item.key_id == old.key_id())
+        .unwrap();
+    assert_eq!(old_item.retired_by, Some(RetiredBy::Key(new.key_id())));
+
+    core.with_account(person.as_str(), |account| {
+        account.vault = Some(pre_vault.clone());
+        account.blob = Some(pre_blob.clone());
+    });
+    let fresh = Mac::new(&core, &clock, &person, &work_icloud, 4).await;
+    core.clear_received();
+    let refused = fresh.turn_on("New Mac").await;
+    assert_state(&refused, SyncState::ServerInconsistent);
+    assert_eq!(refused.error_code.as_deref(), Some("retired_key_served"));
+    assert_eq!(fresh.row().unwrap().key_id, None);
+    paused_without_a_code(&refused);
+    wrote_nothing(&core);
+}
+
+/// T4: a code for the key this Mac already trusts, typed while the server
+/// shows another key, keeps the anchor and its rollback guard. A replay of
+/// an older version afterwards is merged, never taken as current.
+#[tokio::test]
+async fn a_code_for_the_trusted_key_keeps_the_rollback_guard() {
+    let (core, clock) = setup();
+    let keychain = MemoryKeyStore::new();
+    let person = user("person");
+    let mut mac = Mac::new(&core, &clock, &person, &keychain, 1).await;
+    mac.turn_on("Studio Mac").await;
+    let first = core.with_account(person.as_str(), |account| account.blob.clone().unwrap());
+    let this =
+        velvt_service::vault::doc::SyncDeviceId::parse(&mac.row().unwrap().sync_device_id).unwrap();
+    mac.engine
+        .rename_device(
+            this,
+            velvt_service::vault::doc::DeviceName::new("Renamed").unwrap(),
+        )
+        .await;
+    clock.advance(MINUTE);
+    mac.sync().await;
+    assert_eq!(mac.row().unwrap().highest_seen_version, 2);
+    let key = live_key(&keychain, &person).await;
+    keychain.remove(&person, key.key_id());
+    mac.restart().await;
+    clock.advance(MINUTE);
+    assert_state(&mac.sync().await, SyncState::WaitingForKey);
+
+    let real = core.with_account(person.as_str(), |account| account.vault.clone().unwrap());
+    let other = VaultKey::generate().unwrap();
+    core.with_account(person.as_str(), |account| {
+        let vault = account.vault.as_mut().unwrap();
+        vault.key_id = other.key_id();
+        vault.write_pk = *other.write_public_key();
+    });
+    let typed = mac.engine.adopt_delivered_key(key).await;
+    assert_state(&typed, SyncState::ServerInconsistent);
+    assert_eq!(typed.error_code.as_deref(), Some("delivered_key_mismatch"));
+    let row = mac.row().unwrap();
+    assert_eq!(row.highest_seen_version, 2, "the guard stands");
+    assert!(row.highest_seen_sha256.is_some());
+
+    core.with_account(person.as_str(), |account| {
+        account.vault = Some(real.clone());
+        account.blob = Some(first.clone());
+    });
+    clock.advance(MINUTE);
+    let merged = mac.sync().await;
+    let names: Vec<_> = merged
+        .devices
+        .iter()
+        .filter_map(|row| row.name.clone())
+        .collect();
+    assert_eq!(names, vec!["Renamed".to_owned()], "the older register lost");
+    assert_eq!(mac.row().unwrap().highest_seen_version, 3);
+}
+
+/// T4: the Keychain could not give the key at launch (before first unlock),
+/// so the sealed copy in the row was not opened then. It is opened on the
+/// first pass that has the key, and an older copy served then is merged into
+/// it rather than taken as the base.
+#[tokio::test]
+async fn an_older_copy_after_a_launch_without_the_key_is_merged_into_the_cache() {
+    use velvt_service::vault::sync::keys::KeyStoreError;
+    let (core, clock) = setup();
+    let keychain = MemoryKeyStore::new();
+    let person = user("person");
+    let mut mac = Mac::new(&core, &clock, &person, &keychain, 1).await;
+    mac.turn_on("Studio Mac").await;
+    let first = core.with_account(person.as_str(), |account| account.blob.clone().unwrap());
+    let this =
+        velvt_service::vault::doc::SyncDeviceId::parse(&mac.row().unwrap().sync_device_id).unwrap();
+    mac.engine
+        .rename_device(
+            this,
+            velvt_service::vault::doc::DeviceName::new("Renamed").unwrap(),
+        )
+        .await;
+    clock.advance(MINUTE);
+    mac.sync().await;
+    assert!(mac.row().unwrap().ciphertext.is_some());
+    keychain.set_unavailable(Some(KeyStoreError::KeychainUnavailable));
+    mac.restart().await;
+    keychain.set_unavailable(None);
+    core.with_account(person.as_str(), |account| {
+        account.blob = Some(first.clone())
+    });
+    clock.advance(MINUTE);
+    let snapshot = mac.sync().await;
+    assert_state(&snapshot, SyncState::Syncing);
+    let names: Vec<_> = snapshot
+        .devices
+        .iter()
+        .filter_map(|row| row.name.clone())
+        .collect();
+    assert_eq!(names, vec!["Renamed".to_owned()], "the rename survives");
+    let stored = core.with_account(person.as_str(), |account| account.blob.clone().unwrap());
+    let document = open_copy(
+        &live_key(&keychain, &person).await,
+        &person,
+        stored.version,
+        &stored.ciphertext,
+    );
+    assert_eq!(document.devices[&this].name.value.as_str(), "Renamed");
+}
+
+/// A pass already running when the person switches accounts sends this
+/// account's requests bound to it, so they are never answered from the
+/// other account's vault and nothing of it reaches this account's anchor.
+#[tokio::test]
+async fn a_pass_never_reads_another_account_s_vault_into_this_anchor() {
+    let (core, clock) = setup();
+    let (alice, bob) = (user("alice"), user("bob"));
+    let studio = Mac::new(&core, &clock, &alice, &MemoryKeyStore::new(), 1).await;
+    studio.turn_on("Studio Mac").await;
+    let bobs = Mac::new(&core, &clock, &bob, &MemoryKeyStore::new(), 2).await;
+    bobs.turn_on("Bob's Mac").await;
+    let bob_reset = core.request_reset(bob.as_str());
+    let before = studio.row().unwrap();
+    studio.session_moves_to(&bob);
+    core.clear_received();
+    clock.advance(10 * MINUTE);
+    let snapshot = studio.sync().await;
+    assert_eq!(snapshot.error_code.as_deref(), Some("needs_reauth"));
+    assert!(
+        core.received().is_empty(),
+        "nothing sent under Bob's session"
+    );
+    let after = studio.row().unwrap();
+    assert_ne!(after.seen_reset_request_id, Some(bob_reset));
+    assert_eq!(after.fetched_at_ms, before.fetched_at_ms);
+    assert_eq!(after.key_id, before.key_id);
+    assert!(studio
+        .persistence
+        .vault_state_repo()
+        .known_devices()
+        .unwrap()
+        .iter()
+        .all(|device| device.server_device_id != bobs.device.to_string()));
+}
+
+/// I6: `401 account_deleted` is a server's claim, and `AuthManager` gives
+/// it to every request once told. It ends the session and deletes no
+/// Keychain item; the auth layer's own account_deleted call (A4) deletes the
+/// row for the account it saw deleted.
+#[tokio::test]
+async fn an_account_deleted_answer_deletes_no_keychain_item() {
+    let (core, clock) = setup();
+    let (mac, key) = syncing(&core, &clock).await;
+    core.delete_account(mac.user.as_str());
+    clock.advance(MINUTE);
+    let ended = mac.sync().await;
+    assert_state(&ended, SyncState::Off);
+    assert_eq!(
+        live_key(&mac.keychain, &mac.user).await.key_id(),
+        key.key_id(),
+        "no item deleted on the server's word"
+    );
+    let row = mac.row().unwrap();
+    assert!(!row.enabled && row.ciphertext.is_none());
+    assert_eq!(row.key_id, Some(key.key_id().to_hex()), "the anchor stands");
+}
+
+/// A Mac that cannot save its anchor does not act on what it fetched: no
+/// write reaches velvt-core while the row cannot be kept.
+#[tokio::test]
+async fn a_mac_that_cannot_save_its_anchor_writes_nothing() {
+    let (core, clock) = setup();
+    let (mac, _) = syncing(&core, &clock).await;
+    let this =
+        velvt_service::vault::doc::SyncDeviceId::parse(&mac.row().unwrap().sync_device_id).unwrap();
+    mac.engine
+        .rename_device(
+            this,
+            velvt_service::vault::doc::DeviceName::new("Renamed").unwrap(),
+        )
+        .await;
+    mac.repo.refuse_saves(true);
+    core.clear_received();
+    clock.advance(MINUTE);
+    let stopped = mac.sync().await;
+    assert_state(&stopped, SyncState::Error);
+    assert_eq!(stopped.error_code.as_deref(), Some("state_not_saved"));
+    wrote_nothing(&core);
+    mac.repo.refuse_saves(false);
+    clock.advance(MINUTE);
+    assert_state(&mac.sync().await, SyncState::Syncing);
+    assert_eq!(stored_version(&core, mac.user.as_str()), Some(2));
+}

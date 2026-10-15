@@ -116,9 +116,9 @@ all described below. Migration 0041 starts with the same build:
 `category_prompt_entry`, `category_prompt_card_entry` and
 `category_prompt_notification`, the record behind the needs-a-category card and
 reminder, also described below. Migration 0046 adds `vault_state`,
-`vault_rule_link` and `sync_known_device`, for sync across your Macs. Nothing in
-this build can turn sync on, so all three stay empty; they are described below
-because the file has them. Migration 0047 lets `egress_ledger` record a `PUT`,
+`vault_rule_link`, `sync_known_device` and `sync_notice`, for sync across your
+Macs. Nothing in this build can turn sync on, so all four stay empty; they are
+described below because the file has them. Migration 0047 lets `egress_ledger` record a `PUT`,
 the method sync writes with; its rows are copied as they are.
 
 | Table | Contents | Default retention |
@@ -350,14 +350,14 @@ generates the salt and re-keys every digest already on disk under it.
 
 The first table above is every store that holds something drawn from your Mac. It is
 not every table in the file. A database with every migration in this source
-tree applied holds 45 tables, plus SQLite's own `sqlite_sequence`. A Velvt
+tree applied holds 46 tables, plus SQLite's own `sqlite_sequence`. A Velvt
 1.0.11 database (migrations 0001–0036) holds 34: it has no `stable_key_salt`,
 `egress_ledger`, `egress_ledger_checkpoint`, `personal_site_override`,
 `local_site_name`, `category_prompt_entry`, `category_prompt_card_entry`,
-`category_prompt_notification`, `vault_state`, `vault_rule_link`, or
-`sync_known_device`, which migrations 0037, 0038, 0040, 0041 and 0046
-add. Of the 45,
-the 22 that are not in that table hold counters, settings, keys, feature state,
+`category_prompt_notification`, `vault_state`, `vault_rule_link`,
+`sync_known_device`, or `sync_notice`, which migrations 0037, 0038, 0040, 0041
+and 0046 add. Of the 46,
+the 23 that are not in that table hold counters, settings, keys, feature state,
 and the record of what was sent. They are listed here for the same reason the
 three empty ones are — you will see them if you open the file.
 
@@ -380,7 +380,8 @@ three empty ones are — you will see them if you open the file.
 | `initiation_invitation` | one row per soft-start invitation: when it was offered, its local date, the fixed action id, and its outcome. No app identity, title, or intention text | no sweep; removed by Clear Local Work Blocks |
 | `category_prompt_notification` | one row per local day on which Velvt handed the app a needs-a-category reminder to post (migration 0041): the local date (`local_date`, the primary key, which is what makes one reminder a day a property of the table), when (`posted_at`), how many entries it counted (`entry_count`), the policy version it was decided under, and when you next opened the list from the card or a reminder (`opened_at`), which is what the reminder's backoff reads. No key, name, hostname, or notification text | 30 days after `posted_at`; it survives Clear Local Work Blocks |
 | `initiation_settings` | the single invitations on/off switch | singleton; no sweep, and it survives Clear Local Work Blocks for the same reason |
-| `sync_known_device` | for sync across your Macs (migration 0046): velvt-core's ids of the account's devices this Mac has already listed, when it first saw each, and when it posted a "new sign-in" notice for one, so a device that signs in later is noticed once and turning sync on notices none. Ids and times only, no name. Empty in this build | cleared with the sync session (Log Out, Turn Off Sync, this Mac's removal, another account signing in) |
+| `sync_known_device` | for sync across your Macs (migration 0046): velvt-core's ids of the account's devices this Mac has already listed, when it first saw each, and when it queued a "new sign-in" notice for one (`sync_notice` keeps the notice until it is posted), so a device that signs in later is noticed once and turning sync on notices none. Ids and times only, no name. Empty in this build | cleared with the sync session (Log Out, Turn Off Sync, this Mac's removal, another account signing in) |
+| `sync_notice` | for sync across your Macs (migration 0046): the security notices this Mac owes you — a new sign-in, a Mac that joined, this Mac's removal, a changed sync key, a reset requested or completed, sync paused — so one held during a work block is still posted after a restart, once, and listed until you acknowledge it. Per notice: the account id, the kind, the id it is about (velvt-core's device id, a sync device id, a key id, a reset id, or an error code and key id), the times its text names, one yes/no its text reads, and when it was queued, posted and acknowledged. Ids and times only: the text is written when the notice is shown, and a Mac's name is read then from the encrypted copy, so no name is stored. Empty in this build | cleared at Log Out, when another account signs in, and when the account is deleted; an acknowledged notice's row goes 30 days after you acknowledged it |
 | `weekly_digest` | one row per completed local week: bounded counts — blocks declared and completed, recoveries, wrong interventions, invitations accepted, withheld — and when the digest was shown and closed. No categories, copy, or per-day breakdown is representable | 12 completed weeks, pruned when the next digest is generated; removed by Clear Local Work Blocks |
 | `explain_probe_week` | one tap counter per local week, for the explain-tap metric. Which nudge was explained is not representable | pruned on the same 12-week rule; removed by Clear Local Work Blocks |
 | `schema_migration` | one row per applied migration: its version, its file name, a checksum of the migration's SQL (since migration 0039, the first build after 1.0.11; computed from the public source file, so nothing in it comes from your Mac), and when it ran. Created by the migration runner rather than by a migration file | no sweep; one row is added per migration and none is removed |
@@ -535,6 +536,7 @@ fails until this list is updated in the same commit.
 | `semantic_embedding_cache` | `key_hash`, `embedding`, `dimensions`, `updated_at` |
 | `stable_key_salt` | `id`, `salt`, `created_at` |
 | `sync_known_device` | `server_device_id`, `first_seen_at`, `alerted_at` |
+| `sync_notice` | `user_id`, `notice_id`, `kind`, `subject`, `at`, `until_at`, `flag`, `queued_at`, `posted_at`, `acknowledged_at` |
 | `upload_batch` | `id`, `batch_id`, `status`, `sent_at`, `attempt_count`, `next_attempt_at`, `last_error_code`, `created_at`, `owner_user_id` |
 | `upload_host_backoff` | `id`, `host`, `attempt_count`, `next_attempt_at`, `created_at`, `updated_at` |
 | `vault_rule_link` | `local_kind`, `local_key_hash`, `person_key`, `category`, `deleted`, `hlc` |
@@ -678,7 +680,9 @@ site, app or window (`velvt-service --dry-run-egress --vault` prints it in
 plaintext):
 
 - **`GET /v1/vault`** — every 10 minutes, on wake, and when you open Your Macs
-  (at most once a minute). No body.
+  (at most once a minute). With sync off on this Mac, also once after you sign
+  in, and only if your iCloud Keychain already holds a sync key for your
+  account, to ask whether to turn sync on here. No body.
 - **`GET /v1/vault/blobs/prefs`** — right after it, unless this Mac already has
   the current copy. No body; the version this Mac holds goes in a header.
 - **`PUT /v1/vault/blobs/prefs`** — 5 seconds after your synced choices change:

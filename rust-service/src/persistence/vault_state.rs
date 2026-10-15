@@ -1,5 +1,6 @@
-//! The Sync v1 tables (migration 0046): `vault_state`, `vault_rule_link` and
-//! `sync_known_device`, and the two local settings the document mirrors.
+//! The Sync v1 tables (migration 0046): `vault_state`, `vault_rule_link`,
+//! `sync_known_device` and `sync_notice`, and the two local settings the
+//! document mirrors.
 //!
 //! `vault::sync` decides what the rows mean; this layer stores and reads them.
 //! Nothing here is document plaintext: `ciphertext` is the sealed copy, and
@@ -91,6 +92,23 @@ pub struct KnownDeviceRecord {
     pub alerted_at_ms: Option<i64>,
 }
 
+/// One row of `sync_notice`: a security notice owed to the account, by ids
+/// and times only (`vault::sync::notices::NoticeEvent` says what each column
+/// means for each kind).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncNoticeRecord {
+    pub user_id: String,
+    pub notice_id: String,
+    pub kind: String,
+    pub subject: Option<String>,
+    pub at_ms: i64,
+    pub until_ms: Option<i64>,
+    pub flag: bool,
+    pub queued_at_ms: i64,
+    pub posted_at_ms: Option<i64>,
+    pub acknowledged_at_ms: Option<i64>,
+}
+
 /// The two settings the document mirrors and never applies (§10.1): this
 /// Mac's quiet hours, and its invitations switch with when it was set. `None`
 /// when this Mac never set one.
@@ -112,7 +130,8 @@ pub trait VaultStateRepo: Send + Sync {
     /// session, so a sign-in back to the same account keeps them. Returns
     /// whether any session was cleared.
     fn clear_sessions(&self, keep: Option<&str>) -> Result<bool, PersistenceError>;
-    /// Deletes the account's row, anchor included, and the session tables.
+    /// Deletes the account's row, anchor included, its notices, and the
+    /// session tables.
     fn delete_vault_state(&self, user_id: &str) -> Result<(), PersistenceError>;
     fn rule_links(&self) -> Result<Vec<VaultRuleLinkRecord>, PersistenceError>;
     fn upsert_rule_link(&self, link: &VaultRuleLinkRecord) -> Result<(), PersistenceError>;
@@ -127,6 +146,15 @@ pub trait VaultStateRepo: Send + Sync {
     /// Adds each device not already known; a known one is left as it is.
     fn insert_known_devices(&self, devices: &[KnownDeviceRecord]) -> Result<(), PersistenceError>;
     fn local_sync_settings(&self) -> Result<LocalSyncSettings, PersistenceError>;
+    /// The account's notices, oldest first.
+    fn sync_notices(&self, user_id: &str) -> Result<Vec<SyncNoticeRecord>, PersistenceError>;
+    /// Inserts or replaces the notice's row.
+    fn save_sync_notice(&self, notice: &SyncNoticeRecord) -> Result<(), PersistenceError>;
+    /// Deletes every account's notices but `keep`'s; with `keep` `None`,
+    /// every notice.
+    fn delete_sync_notices(&self, keep: Option<&str>) -> Result<(), PersistenceError>;
+    /// Deletes notices acknowledged before `before_ms`.
+    fn prune_sync_notices(&self, before_ms: i64) -> Result<u64, PersistenceError>;
 }
 
 pub(super) struct SqliteVaultStateRepo(pub(super) SqlitePersistence);
@@ -257,6 +285,7 @@ impl VaultStateRepo for SqliteVaultStateRepo {
         let mut connection = self.0.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute("DELETE FROM vault_state WHERE user_id = ?1", [user_id])?;
+        transaction.execute("DELETE FROM sync_notice WHERE user_id = ?1", [user_id])?;
         transaction.execute("DELETE FROM vault_rule_link", [])?;
         transaction.execute("DELETE FROM sync_known_device", [])?;
         transaction.commit()?;
@@ -412,5 +441,147 @@ impl VaultStateRepo for SqliteVaultStateRepo {
             quiet_hours,
             invitations,
         })
+    }
+
+    fn sync_notices(&self, user_id: &str) -> Result<Vec<SyncNoticeRecord>, PersistenceError> {
+        let connection = self.0.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT user_id, notice_id, kind, subject, at, until_at, flag, queued_at,
+                    posted_at, acknowledged_at
+             FROM sync_notice WHERE user_id = ?1 ORDER BY queued_at, notice_id",
+        )?;
+        let rows = statement.query_map([user_id], |row| {
+            Ok(SyncNoticeRecord {
+                user_id: row.get(0)?,
+                notice_id: row.get(1)?,
+                kind: row.get(2)?,
+                subject: row.get(3)?,
+                at_ms: row.get(4)?,
+                until_ms: row.get(5)?,
+                flag: row.get::<_, i64>(6)? != 0,
+                queued_at_ms: row.get(7)?,
+                posted_at_ms: row.get(8)?,
+                acknowledged_at_ms: row.get(9)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    fn save_sync_notice(&self, notice: &SyncNoticeRecord) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "INSERT OR REPLACE INTO sync_notice(user_id, notice_id, kind, subject, at, until_at,
+                 flag, queued_at, posted_at, acknowledged_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                notice.user_id,
+                notice.notice_id,
+                notice.kind,
+                notice.subject,
+                notice.at_ms,
+                notice.until_ms,
+                i64::from(notice.flag),
+                notice.queued_at_ms,
+                notice.posted_at_ms,
+                notice.acknowledged_at_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn delete_sync_notices(&self, keep: Option<&str>) -> Result<(), PersistenceError> {
+        let connection = self.0.connection()?;
+        connection.execute(
+            "DELETE FROM sync_notice WHERE user_id != ?1",
+            [keep.unwrap_or("")],
+        )?;
+        Ok(())
+    }
+
+    fn prune_sync_notices(&self, before_ms: i64) -> Result<u64, PersistenceError> {
+        let connection = self.0.connection()?;
+        let removed = connection.execute(
+            "DELETE FROM sync_notice WHERE acknowledged_at IS NOT NULL AND acknowledged_at < ?1",
+            [before_ms],
+        )?;
+        Ok(removed as u64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncNoticeRecord;
+    use crate::persistence::SqlitePersistence;
+
+    fn notice(user: &str, id: &str, acknowledged_at_ms: Option<i64>) -> SyncNoticeRecord {
+        SyncNoticeRecord {
+            user_id: user.into(),
+            notice_id: format!("new_sign_in:{id}"),
+            kind: "new_sign_in".into(),
+            subject: Some(id.into()),
+            at_ms: 1_000,
+            until_ms: None,
+            flag: false,
+            queued_at_ms: 1_000,
+            posted_at_ms: None,
+            acknowledged_at_ms,
+        }
+    }
+
+    /// `sync_notice` keeps each account's notices apart, updates one in
+    /// place, and forgets acknowledged ones after the cutoff only.
+    #[test]
+    fn notices_are_kept_per_account_and_pruned_once_acknowledged() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.vault_state_repo();
+        let device = "8f14e45f-ceea-467a-9575-1f2ab6c9d0e1";
+        repo.save_sync_notice(&notice("a", device, None)).unwrap();
+        repo.save_sync_notice(&notice("b", device, None)).unwrap();
+        let mut posted = notice("a", device, None);
+        posted.posted_at_ms = Some(2_000);
+        repo.save_sync_notice(&posted).unwrap();
+        assert_eq!(repo.sync_notices("a").unwrap(), vec![posted]);
+
+        repo.delete_sync_notices(Some("a")).unwrap();
+        assert!(repo.sync_notices("b").unwrap().is_empty());
+        assert_eq!(repo.sync_notices("a").unwrap().len(), 1);
+
+        let old = "45c48cce-2e2d-4fbd-b6a0-3f0bd1b6f5e2";
+        repo.save_sync_notice(&notice("a", old, Some(5_000)))
+            .unwrap();
+        assert_eq!(repo.prune_sync_notices(5_000).unwrap(), 0);
+        assert_eq!(repo.prune_sync_notices(5_001).unwrap(), 1);
+        assert_eq!(
+            repo.sync_notices("a").unwrap().len(),
+            1,
+            "unacknowledged stays"
+        );
+
+        repo.delete_sync_notices(None).unwrap();
+        assert!(repo.sync_notices("a").unwrap().is_empty());
+    }
+
+    /// The table takes an id, never text: a subject the length of a sentence
+    /// and a kind it does not know are refused.
+    #[test]
+    fn a_notice_row_refuses_what_is_not_an_id() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.vault_state_repo();
+        let mut long = notice("a", "x", None);
+        long.subject = Some("y".repeat(97));
+        assert!(repo.save_sync_notice(&long).is_err());
+        let mut unknown = notice("a", "x", None);
+        unknown.kind = "marketing".into();
+        assert!(repo.save_sync_notice(&unknown).is_err());
+    }
+
+    /// Deleting an account's row deletes its notices too.
+    #[test]
+    fn deleting_the_row_deletes_the_account_s_notices() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.vault_state_repo();
+        repo.save_sync_notice(&notice("a", "x", None)).unwrap();
+        repo.delete_vault_state("a").unwrap();
+        assert!(repo.sync_notices("a").unwrap().is_empty());
     }
 }

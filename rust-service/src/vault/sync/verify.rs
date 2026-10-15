@@ -6,6 +6,15 @@
 //! `server_inconsistent`, which pauses sync and never offers code entry: a
 //! server that wants a Mac to type an attacker's code has to make it believe
 //! a key change, and nothing below believes one the Mac cannot check.
+//!
+//! What this Mac trusts (§6.1): its anchor, or, with no anchor yet, every key
+//! its own Keychain holds live (the *roots*, which the engine derives from
+//! the items, since an item carries no public key). A Mac on the same Apple
+//! ID that holds the vault's key but has never synced is therefore checked
+//! against that key: a server that serves it another key with no rotation
+//! and no reset is `server_inconsistent`, not `waiting_for_key` (T5). Only a
+//! Mac that trusts nothing at all, with no anchor and no live item, may wait
+//! for a key and be offered a code.
 
 use crate::vault::crypto::statement::{DeleteStatement, PutStatement, Signed, SignedRotation};
 use crate::vault::crypto::{sha256, BlobName, KeyId, UserId, WritePublicKey};
@@ -99,6 +108,32 @@ pub enum ResetJudgement {
     Refused,
 }
 
+/// Whether a pending reset this Mac has not recorded yet may be recorded as
+/// seen. `check_reset` accepts a completed reset whose id this Mac saw
+/// pending, so the first sight carries the same tests a completed reset this
+/// Mac never saw would face, or a server could backdate `requested_at`, show
+/// the reset once, and complete it minutes later (T5, T11):
+/// - its window is at least 72 hours (a client-side constant);
+/// - it was requested after this Mac's last fetch, less the clock margin:
+///   a fetch after the request that did not show it means the server hid it.
+///
+/// A Mac that never fetched (no `fetched_at`) has nothing to compare with:
+/// T5's stated residual. The reset's key is not compared: velvt-core keeps
+/// the key named when the reset was requested and names the vault's key
+/// only when it completes, so a reset requested before a rotation still
+/// names the old one. The guarantee is the window: a reset recorded here is
+/// shown for at least 72 hours, less the margin, before `check_reset` can
+/// accept it.
+pub fn pending_reset_believable(pending: &ServerReset, anchor: &Anchor) -> bool {
+    pending
+        .effective_at_ms
+        .saturating_sub(pending.requested_at_ms)
+        >= RESET_DELAY_MS
+        && anchor.fetched_at_ms.is_none_or(|fetched_at| {
+            fetched_at < pending.requested_at_ms.saturating_add(CLOCK_MARGIN_MS)
+        })
+}
+
 /// `check_reset` (§6.1).
 pub fn check_reset(reset: &ServerReset, anchor: &Anchor, now_ms: i64) -> ResetJudgement {
     if reset.effective_at_ms.saturating_sub(reset.requested_at_ms) < RESET_DELAY_MS
@@ -140,10 +175,12 @@ pub enum VaultJudgement {
         key_id: KeyId,
         write_pk: WritePublicKey,
     },
-    /// A rotation path from the trusted key, every step signed by the key
-    /// before it and the key it introduces (§5.6 step 7).
+    /// A rotation path from the trusted key `from` (the anchor, or a root),
+    /// every step signed by the key before it and the key it introduces
+    /// (§5.6 step 7).
     Rotated {
         path: Vec<SignedRotation>,
+        from: Trusted,
         to: Trusted,
     },
     /// The trusted vault was deleted by a holder of its key (J9).
@@ -154,6 +191,8 @@ pub enum VaultJudgement {
     /// made since, if any: adopted only through J3's routes.
     ResetCompleted {
         reset_id: String,
+        /// The key the reset retired: the anchor's, or a root's.
+        key_id: KeyId,
         while_offline: bool,
         new_vault: Option<Trusted>,
     },
@@ -169,19 +208,39 @@ pub enum VaultJudgement {
 pub struct Judged {
     pub judgement: VaultJudgement,
     pub seen_reset: SeenReset,
+    /// The pending reset, if the server showed one and this Mac believes it:
+    /// the one to notify about and offer [Cancel Reset] for.
+    pub pending_reset: Option<ServerReset>,
 }
 
-/// §6.1 for `GET /v1/vault`, 200 or 404.
+/// §6.1 for `GET /v1/vault`, 200 or 404. `roots` are the keys this Mac's
+/// Keychain holds live, read only when it has no anchor (module docs).
 pub fn judge_vault(
     view: &VaultView,
     anchor: &Anchor,
     held: &KeyInventory,
+    roots: &[Trusted],
     user: &UserId,
     now_ms: i64,
 ) -> Judged {
     let facts = view.facts();
+    let mut pending_reset = None;
+    let mut hidden_reset = false;
     let seen_reset = match (&facts.pending_reset, &anchor.seen_reset_request_id) {
-        (Some(pending), _) => SeenReset::Set(pending.id.clone()),
+        (Some(pending), Some(seen)) if &pending.id == seen => {
+            pending_reset = Some(pending.clone());
+            SeenReset::Keep
+        }
+        (Some(pending), _) if pending_reset_believable(pending, anchor) => {
+            pending_reset = Some(pending.clone());
+            SeenReset::Set(pending.id.clone())
+        }
+        // Backdated, or hidden from an earlier fetch: never recorded, so
+        // no later "completed" claim for it rides on it.
+        (Some(_), _) => {
+            hidden_reset = true;
+            SeenReset::Keep
+        }
         // Cancelled: a later "completed" claim for it must pass the
         // fetched_at test.
         (None, Some(seen))
@@ -194,10 +253,15 @@ pub fn judge_vault(
         }
         (None, _) => SeenReset::Keep,
     };
-    let judgement = judgement(view, anchor, held, user, now_ms);
+    let judgement = if hidden_reset {
+        VaultJudgement::Inconsistent(Inconsistency::UnseenReset)
+    } else {
+        judgement(view, anchor, held, roots, user, now_ms)
+    };
     Judged {
         judgement,
         seen_reset,
+        pending_reset,
     }
 }
 
@@ -205,43 +269,52 @@ fn judgement(
     view: &VaultView,
     anchor: &Anchor,
     held: &KeyInventory,
+    roots: &[Trusted],
     user: &UserId,
     now_ms: i64,
 ) -> VaultJudgement {
     let facts = view.facts();
-    let trusted = anchor.trusted;
-    let reset = match (&facts.completed_reset, trusted) {
-        (Some(completed), Some(trusted)) if completed.key_id == trusted.key_id => {
-            Some((completed, check_reset(completed, anchor, now_ms)))
-        }
-        _ => None,
+    let trusted: Vec<Trusted> = match anchor.trusted {
+        Some(trusted) => vec![trusted],
+        None => roots.to_vec(),
     };
-    let tombstone = match (&facts.tombstone, trusted) {
-        (Some(tombstone), Some(trusted)) if tombstone.key_id == trusted.key_id => Some(
-            verify_tombstone(tombstone, user, &trusted)
-                .then_some(trusted.key_id)
-                .ok_or(Inconsistency::ForgedTombstone),
-        ),
-        _ => None,
+    let trusted_with = |key_id: KeyId| trusted.iter().find(|root| root.key_id == key_id);
+    let reset = facts.completed_reset.as_ref().and_then(|completed| {
+        trusted_with(completed.key_id).map(|root| {
+            (
+                completed,
+                root.key_id,
+                check_reset(completed, anchor, now_ms),
+            )
+        })
+    });
+    let tombstone = facts.tombstone.as_ref().and_then(|tombstone| {
+        trusted_with(tombstone.key_id).map(|root| {
+            verify_tombstone(tombstone, user, root)
+                .then_some(root.key_id)
+                .ok_or(Inconsistency::ForgedTombstone)
+        })
+    });
+    let deleted = |tombstone: Result<KeyId, Inconsistency>| match tombstone {
+        Ok(key_id) => VaultJudgement::Deleted { key_id },
+        Err(inconsistency) => VaultJudgement::Inconsistent(inconsistency),
     };
 
     match view {
         VaultView::Missing { .. } => {
             if let Some(tombstone) = tombstone {
-                return match tombstone {
-                    Ok(key_id) => VaultJudgement::Deleted { key_id },
-                    Err(inconsistency) => VaultJudgement::Inconsistent(inconsistency),
-                };
+                return deleted(tombstone);
             }
             match reset {
-                Some((completed, ResetJudgement::Accepted { while_offline })) => {
+                Some((completed, key_id, ResetJudgement::Accepted { while_offline })) => {
                     VaultJudgement::ResetCompleted {
                         reset_id: completed.id.clone(),
+                        key_id,
                         while_offline,
                         new_vault: None,
                     }
                 }
-                Some((_, ResetJudgement::Refused)) => {
+                Some((_, _, ResetJudgement::Refused)) => {
                     VaultJudgement::Inconsistent(Inconsistency::UnseenReset)
                 }
                 None if held.live().next().is_some() || anchor.highest_seen_version > 0 => {
@@ -259,41 +332,51 @@ fn judgement(
             if held.retires(*key_id) {
                 return VaultJudgement::Inconsistent(Inconsistency::RetiredKeyServed);
             }
-            let Some(trusted) = trusted else {
-                return VaultJudgement::Untrusted {
-                    key_id: *key_id,
-                    write_pk: *write_pk,
-                };
-            };
-            if *key_id == trusted.key_id {
-                return if *write_pk == trusted.write_pk {
-                    VaultJudgement::Current
-                } else {
-                    VaultJudgement::Inconsistent(Inconsistency::WriteKeyChanged)
-                };
-            }
-            if let Some(tombstone) = tombstone {
-                return match tombstone {
-                    Ok(key_id) => VaultJudgement::Deleted { key_id },
-                    Err(inconsistency) => VaultJudgement::Inconsistent(inconsistency),
-                };
-            }
             let served = Trusted {
                 key_id: *key_id,
                 write_pk: *write_pk,
             };
-            if let Some(path) = rotation_path(rotations, user, &trusted, &served) {
-                return VaultJudgement::Rotated { path, to: served };
+            if let Some(root) = trusted_with(*key_id) {
+                return match (root.write_pk == *write_pk, anchor.trusted.is_some()) {
+                    (false, _) => VaultJudgement::Inconsistent(Inconsistency::WriteKeyChanged),
+                    (true, true) => VaultJudgement::Current,
+                    (true, false) => VaultJudgement::Untrusted {
+                        key_id: *key_id,
+                        write_pk: *write_pk,
+                    },
+                };
+            }
+            // Nothing to check against: no anchor and no live item, or the
+            // served key's own live item (the engine then reads no roots).
+            // The key is adopted only if K gives `write_pk`.
+            if anchor.trusted.is_none() && (trusted.is_empty() || held.holds_live(*key_id)) {
+                return VaultJudgement::Untrusted {
+                    key_id: *key_id,
+                    write_pk: *write_pk,
+                };
+            }
+            if let Some(tombstone) = tombstone {
+                return deleted(tombstone);
+            }
+            for from in &trusted {
+                if let Some(path) = rotation_path(rotations, user, from, &served) {
+                    return VaultJudgement::Rotated {
+                        path,
+                        from: *from,
+                        to: served,
+                    };
+                }
             }
             match reset {
-                Some((completed, ResetJudgement::Accepted { while_offline })) => {
+                Some((completed, key_id, ResetJudgement::Accepted { while_offline })) => {
                     VaultJudgement::ResetCompleted {
                         reset_id: completed.id.clone(),
+                        key_id,
                         while_offline,
                         new_vault: Some(served),
                     }
                 }
-                Some((_, ResetJudgement::Refused)) => {
+                Some((_, _, ResetJudgement::Refused)) => {
                     VaultJudgement::Inconsistent(Inconsistency::UnseenReset)
                 }
                 None => VaultJudgement::Inconsistent(Inconsistency::UnverifiedKeyChange),
@@ -420,8 +503,9 @@ pub fn judge_blob(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_reset, judge_blob, judge_vault, rotation_path, Anchor, BlobJudgement, Inconsistency,
-        ResetJudgement, SeenReset, Trusted, VaultJudgement, CLOCK_MARGIN_MS, RESET_DELAY_MS,
+        check_reset, judge_blob, judge_vault, pending_reset_believable, rotation_path, Anchor,
+        BlobJudgement, Inconsistency, ResetJudgement, SeenReset, Trusted, VaultJudgement,
+        CLOCK_MARGIN_MS, RESET_DELAY_MS,
     };
     use crate::vault::crypto::statement::{DeleteStatement, PutStatement, Signed, SignedRotation};
     use crate::vault::crypto::{sha256, BlobName, VaultKey};
@@ -488,7 +572,24 @@ mod tests {
     }
 
     fn judge(view: &VaultView, anchor: &Anchor, held: &KeyInventory) -> VaultJudgement {
-        judge_vault(view, anchor, held, &user(), NOW).judgement
+        judge_vault(view, anchor, held, &[], &user(), NOW).judgement
+    }
+
+    /// A Mac with no anchor whose Keychain holds `roots` live.
+    fn judge_fresh(view: &VaultView, roots: &[&VaultKey]) -> VaultJudgement {
+        let held = KeyInventory {
+            keys: roots
+                .iter()
+                .map(|key| HeldKey {
+                    key_id: key.key_id(),
+                    supersedes: None,
+                    retired_by: None,
+                    created_at_ms: None,
+                })
+                .collect(),
+        };
+        let roots: Vec<Trusted> = roots.iter().map(|key| trusted(key)).collect();
+        judge_vault(view, &Anchor::default(), &held, &roots, &user(), NOW).judgement
     }
 
     #[test]
@@ -517,7 +618,8 @@ mod tests {
         let view = present(&new, vec![rotation.to_bytes()], VaultFacts::default());
         assert!(matches!(
             judge(&view, &anchor(&old), &KeyInventory::default()),
-            VaultJudgement::Rotated { ref path, to } if path.len() == 1 && to == trusted(&new)
+            VaultJudgement::Rotated { ref path, from, to }
+                if path.len() == 1 && from == trusted(&old) && to == trusted(&new)
         ));
 
         let unsigned = present(&new, vec![], VaultFacts::default());
@@ -720,6 +822,7 @@ mod tests {
             judge(&missing, &offline, &KeyInventory::default()),
             VaultJudgement::ResetCompleted {
                 reset_id: RESET_ID.into(),
+                key_id: key.key_id(),
                 while_offline: true,
                 new_vault: None
             }
@@ -730,6 +833,7 @@ mod tests {
             judge(&remade, &offline, &KeyInventory::default()),
             VaultJudgement::ResetCompleted {
                 reset_id: RESET_ID.into(),
+                key_id: key.key_id(),
                 while_offline: true,
                 new_vault: Some(trusted(&other))
             }
@@ -749,16 +853,177 @@ mod tests {
                 ..VaultFacts::default()
             },
         );
-        let first = judge_vault(&view, &anchor(&key), &KeyInventory::default(), &user(), NOW);
+        let first = judge_vault(
+            &view,
+            &anchor(&key),
+            &KeyInventory::default(),
+            &[],
+            &user(),
+            NOW,
+        );
         assert_eq!(first.seen_reset, SeenReset::Set(RESET_ID.into()));
+        assert_eq!(first.judgement, VaultJudgement::Current);
+        assert!(first.pending_reset.is_some());
         let mut seen = anchor(&key);
         seen.seen_reset_request_id = Some(RESET_ID.into());
-        let again = judge_vault(&view, &seen, &KeyInventory::default(), &user(), NOW);
-        assert_eq!(again.seen_reset, SeenReset::Set(RESET_ID.into()));
+        let again = judge_vault(&view, &seen, &KeyInventory::default(), &[], &user(), NOW);
+        assert_eq!(again.seen_reset, SeenReset::Keep);
+        assert!(again.pending_reset.is_some());
         let cancelled = present(&key, vec![], VaultFacts::default());
         assert_eq!(
-            judge_vault(&cancelled, &seen, &KeyInventory::default(), &user(), NOW).seen_reset,
+            judge_vault(
+                &cancelled,
+                &seen,
+                &KeyInventory::default(),
+                &[],
+                &user(),
+                NOW
+            )
+            .seen_reset,
             SeenReset::Clear
+        );
+    }
+
+    /// A pending reset's first sight faces the tests a completed reset this
+    /// Mac never saw would: a server cannot backdate one so that it comes
+    /// due minutes after a polling Mac first sees it (T5, T11).
+    #[test]
+    fn a_backdated_or_hidden_pending_reset_is_never_recorded_as_seen() {
+        let key = test_key();
+        let mut polling = anchor(&key);
+        polling.fetched_at_ms = Some(NOW - 10 * 60_000);
+        let view = |pending: ServerReset| {
+            present(
+                &key,
+                vec![],
+                VaultFacts {
+                    pending_reset: Some(pending),
+                    ..VaultFacts::default()
+                },
+            )
+        };
+        // "Requested" 72 hours ago, long before this Mac's last fetch, and
+        // due in 5 minutes.
+        let mut backdated = reset(&key, NOW - RESET_DELAY_MS + 5 * 60_000);
+        backdated.resolved_at_ms = None;
+        assert!(!pending_reset_believable(&backdated, &polling));
+        let judged = judge_vault(
+            &view(backdated.clone()),
+            &polling,
+            &KeyInventory::default(),
+            &[],
+            &user(),
+            NOW,
+        );
+        assert_eq!(judged.seen_reset, SeenReset::Keep);
+        assert_eq!(
+            judged.judgement,
+            VaultJudgement::Inconsistent(Inconsistency::UnseenReset)
+        );
+        assert_eq!(judged.pending_reset, None);
+
+        // A window shorter than 72 hours, requested after the last fetch.
+        let mut short = reset(&key, NOW - 60_000);
+        short.effective_at_ms = short.requested_at_ms + RESET_DELAY_MS - 1;
+        assert!(!pending_reset_believable(&short, &polling));
+
+        // Requested after the last fetch, with the full window: recorded.
+        let mut honest = reset(&key, NOW - 60_000);
+        honest.resolved_at_ms = None;
+        assert!(pending_reset_believable(&honest, &polling));
+        // Within the clock margin of the last fetch: still believed.
+        let mut skewed = reset(&key, NOW - 10 * 60_000 - CLOCK_MARGIN_MS + 1);
+        skewed.resolved_at_ms = None;
+        assert!(pending_reset_believable(&skewed, &polling));
+        // A Mac that never fetched has nothing to compare with (T5's residual).
+        let mut fresh = polling.clone();
+        fresh.fetched_at_ms = None;
+        assert!(pending_reset_believable(&backdated, &fresh));
+    }
+
+    /// §6.1: with no anchor, the trusted key is the one this Mac holds. A
+    /// fresh Mac on the same Apple ID is never steered to a new key the key
+    /// it holds did not sign (T5).
+    #[test]
+    fn a_mac_with_no_anchor_judges_against_the_keys_it_holds() {
+        let (held, served) = (test_key(), other_key());
+        let unsigned = present(&served, vec![], VaultFacts::default());
+        assert_eq!(
+            judge_fresh(&unsigned, &[&held]),
+            VaultJudgement::Inconsistent(Inconsistency::UnverifiedKeyChange)
+        );
+        // Holding nothing: nothing to check, so it may wait for the key.
+        assert_eq!(
+            judge_fresh(&unsigned, &[]),
+            VaultJudgement::Untrusted {
+                key_id: served.key_id(),
+                write_pk: *served.write_public_key()
+            }
+        );
+        // Holding the served key: adopted, once K gives its write key.
+        assert!(matches!(
+            judge_fresh(&unsigned, &[&held, &served]),
+            VaultJudgement::Untrusted { key_id, .. } if key_id == served.key_id()
+        ));
+        // The held key id with another write key.
+        let swapped = VaultView::Present {
+            key_id: held.key_id(),
+            write_pk: *served.write_public_key(),
+            created_at_ms: NOW,
+            rotations: vec![],
+            facts: VaultFacts::default(),
+        };
+        assert_eq!(
+            judge_fresh(&swapped, &[&held]),
+            VaultJudgement::Inconsistent(Inconsistency::WriteKeyChanged)
+        );
+        // A rotation the held key signed.
+        let rotation = SignedRotation::sign(user(), &held, &served, 2).unwrap();
+        let rotated = present(&served, vec![rotation.to_bytes()], VaultFacts::default());
+        assert!(matches!(
+            judge_fresh(&rotated, &[&held]),
+            VaultJudgement::Rotated { from, to, .. }
+                if from == trusted(&held) && to == trusted(&served)
+        ));
+    }
+
+    #[test]
+    fn a_mac_with_no_anchor_checks_a_deletion_or_reset_of_the_key_it_holds() {
+        let (held, other) = (test_key(), other_key());
+        let missing = |facts| VaultView::Missing { facts };
+        let signed = VaultFacts {
+            tombstone: Some(tombstone(&held, &held)),
+            ..VaultFacts::default()
+        };
+        assert_eq!(
+            judge_fresh(&missing(signed), &[&held]),
+            VaultJudgement::Deleted {
+                key_id: held.key_id()
+            }
+        );
+        let forged = VaultFacts {
+            tombstone: Some(tombstone(&held, &other)),
+            ..VaultFacts::default()
+        };
+        assert_eq!(
+            judge_fresh(&missing(forged), &[&held]),
+            VaultJudgement::Inconsistent(Inconsistency::ForgedTombstone)
+        );
+        // A Mac that never fetched accepts a completed reset, and says it
+        // was away (T5's residual); a new vault is adopted only by J3's
+        // routes.
+        let completed = VaultFacts {
+            completed_reset: Some(reset(&held, NOW - 73 * HOUR)),
+            ..VaultFacts::default()
+        };
+        assert_eq!(
+            judge_fresh(&present(&other, vec![], completed), &[&held]),
+            VaultJudgement::ResetCompleted {
+                reset_id: RESET_ID.into(),
+                key_id: held.key_id(),
+                while_offline: true,
+                new_vault: Some(trusted(&other))
+            }
         );
     }
 

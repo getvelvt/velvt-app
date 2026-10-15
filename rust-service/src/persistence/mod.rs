@@ -31,5 +31,6 @@ pub use traits::{
     TRIAGE_MIN_SECONDS,
 };
 pub use vault_state::{
-    KnownDeviceRecord, LocalSyncSettings, VaultRuleLinkRecord, VaultStateRecord, VaultStateRepo,
+    KnownDeviceRecord, LocalSyncSettings, SyncNoticeRecord, VaultRuleLinkRecord, VaultStateRecord,
+    VaultStateRepo,
 };

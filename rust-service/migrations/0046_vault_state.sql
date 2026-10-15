@@ -74,9 +74,38 @@ CREATE TABLE vault_rule_link (
 -- The account's devices this Mac already knows of, so a device that signs in
 -- later posts one "New sign-in" notice, and turning sync on posts none (the
 -- first list seeds this table without alerting). velvt-core's device ids
--- only. Cleared with the session.
+-- only. alerted_at is when the notice was queued (sync_notice keeps it until
+-- it is posted). Cleared with the session.
 CREATE TABLE sync_known_device (
     server_device_id TEXT PRIMARY KEY CHECK(length(server_device_id) = 36),
     first_seen_at INTEGER NOT NULL,
     alerted_at INTEGER
+);
+
+-- The security notices this Mac owes the person (design J6): each is posted
+-- once, never during a work block, and listed until acknowledged. Kept here
+-- so a notice a work block is holding when the service restarts is still
+-- posted when the block ends. Ids and times only: the copy is written when
+-- the notice is shown, and a Mac's name is read then from the synced copy,
+-- so no name is stored. Cleared at Log Out, when another account signs in,
+-- and with the account's vault_state row; an acknowledged row goes 30 days
+-- after it was acknowledged.
+CREATE TABLE sync_notice (
+    user_id TEXT NOT NULL CHECK(length(user_id) BETWEEN 1 AND 64),
+    notice_id TEXT NOT NULL CHECK(length(notice_id) BETWEEN 1 AND 128),
+    kind TEXT NOT NULL CHECK(kind IN (
+        'new_sign_in', 'mac_joined_sync', 'this_mac_removed', 'sync_key_changed',
+        'reset_requested', 'reset_completed', 'server_inconsistent')),
+    -- The id the notice is about: a velvt-core device id, a sync device id,
+    -- a key id, a reset id, or an error code and a key id. Never a name.
+    subject TEXT CHECK(subject IS NULL OR length(subject) BETWEEN 1 AND 96),
+    -- The times the copy names (a reset's effective time is until_at), and
+    -- the one switch it reads: adopted, while offline, or joined by code.
+    at INTEGER NOT NULL,
+    until_at INTEGER,
+    flag INTEGER NOT NULL DEFAULT 0 CHECK(flag IN (0, 1)),
+    queued_at INTEGER NOT NULL,
+    posted_at INTEGER,
+    acknowledged_at INTEGER,
+    PRIMARY KEY (user_id, notice_id)
 );

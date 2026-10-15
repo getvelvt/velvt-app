@@ -17,7 +17,7 @@ use crate::vault::doc::{
     Category, DeviceEntry, DeviceName, DocumentError, JoinedVia, PrefsDocument, QuietHours,
     Register, RuleKey, RuleRegister, ServerDeviceId, SyncDeviceId, LAST_LOCAL_MINUTE,
 };
-use crate::vault::merge::{Hlc, HlcClock, HlcError};
+use crate::vault::merge::{Hlc, HlcClock, HlcError, TOMBSTONE_RETENTION_MS};
 
 /// The name a Mac gets when Swift reported none.
 pub const FALLBACK_NAME: &str = "Mac";
@@ -212,6 +212,30 @@ pub fn mirror_rule_links(
     over_cap
 }
 
+/// Whether a deleted rule's link is settled by `document`, the copy just
+/// stored, so its row may go: the copy holds that tombstone or a newer
+/// register for the rule, or the tombstone is past the horizon at which
+/// garbage collection drops it from every copy. A tombstone written while the
+/// write was in flight has a newer clock value than anything in the copy, so
+/// it stays for the next write.
+pub fn tombstone_settled(
+    document: &PrefsDocument,
+    link: &VaultRuleLinkRecord,
+    now_ms: u64,
+) -> bool {
+    if !link.deleted {
+        return false;
+    }
+    // A row the mirror cannot read is never written, so nothing waits on it.
+    let Some((key, register)) = rule_from_link(link) else {
+        return true;
+    };
+    match document.rules.get(&key) {
+        Some(stored) => stored.hlc >= register.hlc,
+        None => now_ms.saturating_sub(register.hlc.wall_ms()) > TOMBSTONE_RETENTION_MS,
+    }
+}
+
 fn rule_from_link(link: &VaultRuleLinkRecord) -> Option<(RuleKey, RuleRegister)> {
     let kind = PersonKeyKind::from_prefix(&link.local_kind)?;
     let key = PersonKey::from_hex(&link.person_key)?;
@@ -271,7 +295,7 @@ mod tests {
 
     use super::{
         daily_insight_here, held_summary, mark_removed, mirror_rule_links, mirror_settings,
-        write_own_entry, OwnEntry,
+        tombstone_settled, write_own_entry, OwnEntry,
     };
     use crate::persistence::{LocalSyncSettings, VaultRuleLinkRecord, VelvtQuietHours};
     use crate::vault::doc::{JoinedVia, PrefsDocument, QuietHours};
@@ -394,6 +418,38 @@ mod tests {
         mirror_rule_links(&mut document, &[older]);
         assert!(!document.rules.values().next().unwrap().deleted);
         assert_eq!(held_summary(&document).site_rules, 1);
+    }
+
+    /// A tombstone row goes only once the stored copy carries it (or
+    /// something newer): one written while the write was in flight waits.
+    #[test]
+    fn a_tombstone_is_settled_only_by_a_copy_that_carries_it() {
+        let link = |at: u64| VaultRuleLinkRecord {
+            local_kind: "site".into(),
+            local_key_hash: "0".repeat(64),
+            person_key: "a".repeat(64),
+            category: "FOCUS_WORK".into(),
+            deleted: true,
+            hlc: hlc(at, 0, 3).to_string(),
+        };
+        let mut document = PrefsDocument::new(salt(1));
+        mirror_rule_links(&mut document, &[link(NOW_MS)]);
+        assert!(tombstone_settled(&document, &link(NOW_MS), NOW_MS));
+        assert!(tombstone_settled(&document, &link(NOW_MS - 1), NOW_MS));
+        assert!(
+            !tombstone_settled(&document, &link(NOW_MS + 1), NOW_MS),
+            "deleted again while the write was in flight"
+        );
+        let mut live = link(NOW_MS);
+        live.deleted = false;
+        assert!(!tombstone_settled(&document, &live, NOW_MS));
+        let empty = PrefsDocument::new(salt(1));
+        assert!(!tombstone_settled(&empty, &link(NOW_MS), NOW_MS));
+        let horizon = crate::vault::merge::TOMBSTONE_RETENTION_MS;
+        assert!(
+            tombstone_settled(&empty, &link(NOW_MS), NOW_MS + horizon + 1),
+            "past the horizon, no copy keeps it"
+        );
     }
 
     #[test]

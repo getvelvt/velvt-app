@@ -30,13 +30,19 @@ on this Mac.
 
 | Part | Columns | Cleared by |
 |---|---|---|
-| Trust anchor | `sync_device_id`, `host_binding_salt`, `host_binding`, `key_id`, `write_pk`, `highest_seen_version`, `highest_seen_sha256`, `fetched_at`, `seen_reset_request_id` | Only a verified signed deletion and account deletion remove the row. A reset this Mac accepted replaces the trust columns when it adopts or creates the new vault |
+| Trust anchor | `sync_device_id`, `host_binding_salt`, `host_binding`, `key_id`, `write_pk`, `highest_seen_version`, `highest_seen_sha256`, `fetched_at`, `seen_reset_request_id` | Only a verified signed deletion and account deletion (`account_deleted`, below) remove the row. A reset this Mac accepted replaces the trust columns when it adopts or creates the new vault |
 | Session | `enabled`, `server_version`, `ciphertext`, `last_hlc`, `state`, `last_error` | Log Out, Turn Off Sync on This Mac, `403 device_revoked`, and another account signing in |
 
 `ciphertext` is the copy at `highest_seen_version`, still sealed. The
 plaintext document exists only in memory. `vault_rule_link` and
 `sync_known_device` belong to whichever session is open and are cleared with
-it. Times are Unix milliseconds.
+it. `sync_notice` holds the security notices owed to the signed-in account
+(below). Times are Unix milliseconds.
+
+A pass saves the row as soon as it has recorded what the fetch showed
+(`fetched_at`, `seen_reset_request_id`), before it writes anything to
+velvt-core. If the row cannot be saved, the pass stops in `error`
+(`state_not_saved`): a Mac that cannot keep its anchor does not act on it.
 
 The anchor is why a Mac that signed out for five minutes is not as easy to
 fool as one offline for three days (F2): `fetched_at` and
@@ -56,8 +62,17 @@ fetching during a reset window.
 
 ## What a Mac believes (§6.1)
 
+What this Mac trusts is its anchor or, with no anchor yet, every key its
+Keychain holds live (the *roots*; the engine loads each item to derive its
+public key, since an item carries none). A Mac on the same Apple ID that holds
+the vault's key and has never synced is therefore checked against that key,
+like an anchored Mac. Only a Mac that trusts nothing at all, with no anchor
+and no live item, may wait for a key and be offered a code.
+
 | The server says | This Mac does |
 |---|---|
+| No anchor, and the served key is one this Mac holds live | Adopts it once `K` gives its write key |
+| No anchor, nothing held, and a vault | `waiting_for_key`, where a code is offered |
 | The trusted key, with its write key | Fetches the copy |
 | The trusted key id with another write key | `server_inconsistent` |
 | A key an item this Mac holds supersedes or marks retired | `server_inconsistent` (a rollback past a rotation, F1); the key is never adopted |
@@ -65,12 +80,13 @@ fetching during a reset window.
 | A new key with no verified chain and no reset this Mac can accept | `server_inconsistent`, and no code entry is offered |
 | No vault, with a deletion of the trusted vault signed by its key (on a 404, and on a 200 when a new vault was made since, as C2 sends it) | The row and this Mac's own item for that key go; sync is off with "Sync was turned off from another of your Macs." |
 | No vault, with a forged deletion | `server_inconsistent`; nothing deleted |
+| A pending reset this Mac has not recorded | Recorded as seen only if its window is at least 72 h and it was requested after this Mac's last fetch (10-minute margin). Otherwise the server hid it or backdated it: `server_inconsistent`, not recorded, no `reset_requested` notice. A server cannot show one once and complete it minutes later (T5, T11). The reset's key is not compared: velvt-core keeps the key named when it was requested and names the vault's key when it completes |
 | A completed reset of the trusted key | `check_reset`: accepted if the window was at least 72 h and has passed, and this Mac saw it pending or made no fetch after it was requested (10-minute clock margin); otherwise `server_inconsistent` |
 | No vault, while this Mac holds a live item or has seen a version | `missing_on_server`; never creates |
 | No vault and nothing else | Creates, only when the person turns sync on |
 | A copy whose write signature fails, or that names another key | `server_inconsistent` |
 | A different copy at the version this Mac last accepted | `server_inconsistent` (a fork) |
-| A copy below the highest version seen | Merged with `merge_older_copy`, never cached; the next write goes at `highest_seen_version + 1`, which heals a restored database (F4) |
+| A copy below the highest version seen | Merged with `merge_older_copy` into the copy this Mac last accepted, never cached; the next write goes at `highest_seen_version + 1`, which heals a restored database (F4). The sealed copy in the row is opened first if this run has none, also when the Keychain could not give the key at launch |
 | A copy that does not open or validate | `server_copy_unreadable`; never overwritten, no code or delete prompt |
 | A higher schema | `read_only_newer_schema`: names and the daily-insight switch are read, nothing is written |
 
@@ -81,8 +97,24 @@ is what a copy a key holder signed but that does not open gets: a buggy Mac's
 write, or another account's copy signed with this account's key.
 
 A key delivered by a typed setup code (§7.1 step 7, `adopt_delivered_key`;
-A5 claims and opens the code) wins over the server: if the served vault has
-another key, this Mac trusts the typed key, stores nothing, and pauses.
+A5 claims and opens the code):
+- is taken only in a state that offers a code (`waiting_for_key`,
+  `waiting_for_rotated_key`, `reset_completed`) or before sync is on here. In
+  any other state, `server_inconsistent` above all, it changes nothing and
+  nothing is sent: whether a code may be entered is Rust's judgement (I3);
+- wins over the server: if the served vault has another key, this Mac trusts
+  the typed key (an anchor already on it keeps its rollback guard), stores
+  nothing, and pauses;
+- for the served vault's own key, is adopted only as a pass would adopt it:
+  the key already trusted, nothing trusted yet, a rotation the trusted key
+  signed, or a new vault after a reset §6.1 accepts or a signed deletion.
+  Otherwise it is `server_inconsistent`, and nothing is stored;
+- is stored in the Keychain only then, before the trust changes. A rotated
+  key is stored with `supersedes` and the old item is marked `retired_by`,
+  so a Mac on another Apple ID that takes the rotated key by code leaves the
+  same markers there as a Mac that found it in its Keychain (T14). When trust
+  moves to another vault, the old vault's document is dropped first, so only
+  this Mac's own registers enter the new one.
 
 ## Writes
 
@@ -94,12 +126,20 @@ another key, this Mac trusts the typed key, stores nothing, and pauses.
 - `PUT` with `If-Match: "n"` and `new_version = max(n, highest_seen_version) + 1`.
 - `412`: fetch, merge, try again, three times in all with jitter, then wait 10
   minutes. `409 vault_key_mismatch` and `404`: the next pass judges the vault.
+- After a stored write, a rule link's tombstone row is deleted only if the
+  stored copy carries it (or a newer register for the rule, or it is past the
+  tombstone horizon). A rule deleted while the write was in flight has a newer
+  clock value and waits for the next write.
 - Create: `K`, `W` and `person_salt`; the Keychain first, then `POST /v1/vault`
   (§5.5). Never while a live item is held, except the item a verified reset
-  names. `409 vault_exists` (two Macs at once): delete this Mac's own orphan
-  item, and only that, and wait for the winner's key. No answer at all: keep
-  the item, and send the create again under the same key if the next pass
-  still finds no vault and no other item.
+  names. `409 vault_exists`: `GET /v1/vault` says whose vault it is. Under
+  another key (two Macs at once): delete this Mac's own orphan item, and only
+  that, and wait for the winner's key. Under this Mac's key (its earlier
+  create landed after the answer was lost): keep the item and open the vault.
+  No answer at all: keep the item, and send the create again under the same
+  key if the next pass still finds no vault and no other item. If the next
+  pass finds a vault under another key, the item is the lost race's orphan and
+  goes then.
 - Edits (rename, the daily-insight switch) go into the in-memory document and
   are written on the next pass, 5 s after the last one. A restart inside that
   window drops them.
@@ -126,30 +166,37 @@ formats page), and velvt-core does not say which Mac removed this one.
 
 `take_due_notices` returns nothing while a work block is active: clicking a
 notification is an app switch the drift gate counts. The device list shows
-every notice at once, and each is posted once per run. The queue is in memory:
-a pending reset is queued again from the server's state on every pass, so a
-restart cannot lose it; a new-sign-in or joined notice held when the service
-restarts is not raised again.
+every notice at once. Each notice is kept in `sync_notice` when it is queued,
+with when it was posted and acknowledged, so it is posted once across
+restarts, a notice a block is holding when the service restarts is still
+posted when the block ends, and it is listed until acknowledged. The row holds
+ids and times only. The copy is written when the notice is shown, and a joined
+Mac's name is read then from the synced copy ("A Mac" if none is open). Rows
+go at Log Out, when another account signs in, with the account's row, and 30
+days after they were acknowledged.
 
 ## Account events
 
 | Event | What happens |
 |---|---|
 | `session_started` (launch, sign-in, account switch) | Every other account's session ends; the host binding is checked; a session left on resumes from the sealed cache |
-| `log_out` | Session columns and session tables cleared, `K` dropped; the anchor and every Keychain item stay |
-| `403 device_revoked` | The same, and `this_mac_removed` |
-| `401 account_deleted`, `account_deleted` | Every key item held for the account deleted, retired ones too, and the row |
+| `log_out` | Session columns, session tables and notices cleared, `K` dropped; the anchor and every Keychain item stay |
+| `403 device_revoked` | The same, keeping the notices, and `this_mac_removed` |
+| `401 account_deleted` on a vault request | The session ends as at Log Out; the anchor and every Keychain item stay. `AuthManager` gives that answer to every request once told, whichever account's session the request was for, so it alone does not say this account is gone |
+| `account_deleted(user, ThisMac)` (this Mac's own Delete Account) | Every key item held for the account deleted, retired ones too, and the row |
+| `account_deleted(user, Elsewhere)` (the auth layer saw the account deleted) | The row with its anchor, the session tables and the notices go. Every Keychain item stays: no server claim alone deletes one (I6), and a stray `K` opens nothing once the account's data is erased (§8.6). Design §8.6 and J10 ask for the items to be deleted here too; that tension is a founder question |
 | `turn_off` | This Mac's entry marked `removed` and written, then the session ends; anchor and item stay |
 | Host binding mismatch (J8) | A new `sync_device_id`, the session ends, `clone_detected`. A binding made while the host UUID was unreadable is bound for real on the first launch that reads it |
 
 ## The Keychain trait
 
 `VaultKeyStore` answers `inventory`, `load`, `store` (never overwrites),
-`retire` and `delete`. The engine never deletes an item on a server's word: only
-on account deletion, a verified deletion (its own item for that key), a lost
-create race (its own orphan), and 30 days after the item that superseded it was
-made. That last rule needs each item's `created_at`, which A4's
-`vault_keys_held` must report beside `supersedes` and `retired_by`.
+`retire` and `delete`. The engine never deletes an item on a server's word
+alone: only on this Mac's own Delete Account, a verified deletion (its own item
+for that key), a lost create race (its own orphan, once the vault is seen under
+another key), and 30 days after the item that superseded it was made. That last
+rule needs each item's `created_at`, which A4's `vault_keys_held` must report
+beside `supersedes` and `retired_by`.
 
 ## velvt-core (C2)
 
@@ -168,9 +215,15 @@ published vector was checked against C2's own `vault_formats.py`.
 
 The five requests are in `egress::ENDPOINTS` and `PRIVACY.md`, marked as sent
 only once sync is on: `GET /v1/vault`, `GET /v1/vault/blobs/prefs`,
-`PUT /v1/vault/blobs/prefs`, `POST /v1/vault` and `GET /v1/devices`. Each goes
-through the client the engine is given, which in the service is `AuthManager`
-over `ReqwestHttpClient`, so each is ledgered before it is sent. `PUT` and the
+`PUT /v1/vault/blobs/prefs`, `POST /v1/vault` and `GET /v1/devices`. The one
+exception is J2's probe (`probe_available`): with sync off, `GET /v1/vault`
+once after sign-in, and only if the Keychain holds a live key for the
+account, since only then can the card show. Each request goes through the
+client the engine is given, which in the service is `AuthManager` over
+`ReqwestHttpClient`, so each is ledgered before it is sent. Each names the
+session's account (`HttpRequest::account`), so `AuthManager` refuses to send
+it under another account's session: a pass still running when the person
+switches accounts never reads the other account's vault into this anchor. `PUT` and the
 conditional headers are new to `HttpRequest` (`Precondition`). Migration 0047
 rebuilds `egress_ledger` so its `method` CHECK takes `PUT`: 0038's allowed only
 GET, POST, PATCH and DELETE, and `ReqwestHttpClient` sends nothing the ledger
@@ -194,7 +247,9 @@ as placeholders.
 | `rename_device`, `set_notification_routing` | `rename_device`, `set_daily_insight`, then `SyncTriggers::local_change` |
 | `acknowledge_sync_notice` | `acknowledge_notice` |
 | `sync_notice` | `take_due_notices` when a block ends and after each pass |
-| `log_out`, `needs_reauth: account_deleted` | `log_out`, `account_deleted` |
+| `log_out` | `log_out` |
+| Delete Account on this Mac | `account_deleted(user, AccountDeletion::ThisMac)` |
+| `AuthState::AccountDeleted` (`SessionWatch`, for the account it saw deleted) | `account_deleted(user, AccountDeletion::Elsewhere)` |
 | the J2 card | `probe_available` |
 
 The service spawns `schedule::run` and attaches `SyncRouting` to the poll
@@ -212,3 +267,11 @@ scheduler.
   Migration Assistant, a notice held during a work block, Turn Off, restart,
   no Keychain, the vault switched off, a create race, and the privacy check
   over every request body and stored row).
+- The PR #91 review's attacks, each a named test: a fresh Mac holding the key
+  served a key it did not sign; a backdated pending reset; a code typed while
+  paused; a rotated key taken by code, then the pre-rotation copy served on
+  that Apple ID; a code for the trusted key while another is served; an older
+  copy after a launch without the Keychain; a pass during an account switch;
+  `401 account_deleted`; an anchor that cannot be saved; a notice held across
+  a restart; a rule deleted while a write is in flight; the J2 probe with no
+  key here; and a create whose answer was lost.

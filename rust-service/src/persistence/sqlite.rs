@@ -2071,11 +2071,18 @@ impl AbstractionMapRepo for SqliteAbstractionMapRepo {
                 // too: each row is filed under an application or site key, and
                 // a key under the lost salt names nothing the list can offer.
                 // The card rows filed under those entries cascade with them.
+                //
+                // So do sync's rule links (0046): each links a local rule key
+                // under the lost salt to the synced copy's key, and the rule it
+                // named is gone. The synced copy keeps the rule, written there
+                // by a person on purpose, for the other Macs; whether a re-mint
+                // should delete it everywhere is PR A6's to decide.
                 transaction.execute_batch(
                     "DELETE FROM personal_override;
                      DELETE FROM personal_app_override;
                      DELETE FROM personal_site_override;
                      DELETE FROM local_site_name;
+                     DELETE FROM vault_rule_link;
                      DELETE FROM category_prompt_entry;
                      DELETE FROM personal_semantic_prototype;
                      DELETE FROM semantic_embedding_cache;
@@ -7020,11 +7027,6 @@ mod tests {
         }
     }
 
-    /// Migration 0045 on a database that already holds observations and
-    /// decisions, the upgrade every tester's Mac takes. An observation written
-    /// before it records no source (NULL, never a guess at one), a decision
-    /// written before it has no synced-rule evidence, which is true, and the
-    /// gate reads the old rows exactly as before.
     /// Migration 0047 rebuilds `egress_ledger` so it can record a PUT (the
     /// vault's write). Rows already on disk, the checkpoint behind them, and
     /// the append-only triggers all come through: the chain verifies exactly
@@ -7113,6 +7115,11 @@ mod tests {
         assert_eq!(index, 1);
     }
 
+    /// Migration 0045 on a database that already holds observations and
+    /// decisions, the upgrade every tester's Mac takes. An observation written
+    /// before it records no source (NULL, never a guess at one), a decision
+    /// written before it has no synced-rule evidence, which is true, and the
+    /// gate reads the old rows exactly as before.
     #[test]
     fn migration_0045_leaves_rows_already_on_disk_without_a_source() {
         let connection = Connection::open_in_memory().unwrap();
@@ -10933,6 +10940,32 @@ mod category_prompt_ledger_tests {
         let reminders = ledger.recent_notifications(8).unwrap();
         assert_eq!(reminders.len(), 1);
         assert_eq!(reminders[0].local_date, "2027-01-16");
+    }
+
+    /// A re-minted salt orphans every local rule key, so sync's rule links
+    /// go with the rules they named (`vault_rule_link`, migration 0046).
+    #[test]
+    fn a_minted_stable_key_salt_removes_sync_s_rule_links() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.vault_state_repo();
+        repo.upsert_rule_link(&crate::persistence::VaultRuleLinkRecord {
+            local_kind: "site".into(),
+            local_key_hash: "a".repeat(64),
+            person_key: "b".repeat(64),
+            category: "SOCIAL_FEED".into(),
+            deleted: false,
+            hlc: format!("1760524920000.0000.{}", "0".repeat(36)),
+        })
+        .unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute("DELETE FROM stable_key_salt", [])
+            .unwrap();
+
+        database.abstraction_map_repo().stable_key_salt().unwrap();
+
+        assert!(repo.rule_links().unwrap().is_empty());
     }
 
     /// A re-minted salt orphans every application and site key, so the

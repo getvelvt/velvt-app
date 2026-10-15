@@ -568,16 +568,23 @@ no export, and no request was added.
 *Changed after this audit, 2026-10-15 (migration 0046, no protocol change):*
 the engine for sync across your Macs (`rust-service/src/vault/sync`), with
 nothing that can turn it on: no IPC message reaches it until protocol 38, so
-no vault request is sent and no row is written. Migration 0046 adds three
-empty tables, `vault_state`, `vault_rule_link` and `sync_known_device`, each in
-`PRIVACY.md`'s inventories. None holds document plaintext, a hostname, an app
-name, a bundle id or a window: `vault_state.ciphertext` is the synced copy
-sealed under a key the file never holds, `vault_rule_link` holds this install's
-salted rule keys beside keys made under a salt that is on disk only inside the
-sealed copy, and `sync_known_device` holds velvt-core's device ids. Five
-endpoints joined `egress::ENDPOINTS` and `PRIVACY.md`'s list, marked as sent
-only once sync is on: `GET /v1/vault`, `GET` and `PUT /v1/vault/blobs/prefs`,
-`POST /v1/vault` and `GET /v1/devices`. A test (`tests/vault_sync`) checks that
+no vault request is sent and no row is written. Migration 0046 adds four
+empty tables, `vault_state`, `vault_rule_link`, `sync_known_device` and
+`sync_notice`, each in `PRIVACY.md`'s inventories. None holds document
+plaintext, a hostname, an app name, a bundle id, a window or a Mac's name:
+`vault_state.ciphertext` is the synced copy sealed under a key the file never
+holds, `vault_rule_link` holds this install's salted rule keys beside keys made
+under a salt that is on disk only inside the sealed copy, `sync_known_device`
+holds velvt-core's device ids, and `sync_notice` holds the security notices
+owed, by kind, ids and times (its text, with any Mac's name, is written when
+shown, from the sealed copy). Five endpoints joined `egress::ENDPOINTS` and
+`PRIVACY.md`'s list, marked as sent only once sync is on: `GET /v1/vault`,
+`GET` and `PUT /v1/vault/blobs/prefs`, `POST /v1/vault` and `GET /v1/devices`.
+The one exception is `GET /v1/vault` with sync off, once after sign-in and only
+when the Keychain already holds a sync key for the account (the "turn on here?"
+card); both lists say so, and a test checks that a Mac without one sends
+nothing. Every vault request names the account whose session sent it, so
+`AuthManager` never sends one under another account's token. A test (`tests/vault_sync`) checks that
 no request body the engine sends, and no stored row, holds the vault key, the
 person salt, a Mac's name or any rule's category in the clear.
 `velvt-service --dry-run-egress --vault` prints the plaintext document a Mac

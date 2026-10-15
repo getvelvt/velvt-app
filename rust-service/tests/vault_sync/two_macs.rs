@@ -2,11 +2,11 @@
 
 use chrono::DateTime;
 use velvt_service::delivery::InsightNotificationRoute;
-use velvt_service::persistence::{VaultRuleLinkRecord, VelvtQuietHours};
+use velvt_service::persistence::{VaultRuleLinkRecord, VaultStateRepo, VelvtQuietHours};
 use velvt_service::vault::doc::{DeviceName, SyncDeviceId};
 use velvt_service::vault::sync::keys::{KeyStoreError, MemoryKeyStore, VaultKeyStore};
 use velvt_service::vault::sync::notices::NoticeKind;
-use velvt_service::vault::sync::SyncState;
+use velvt_service::vault::sync::{AccountDeletion, SyncState};
 
 use super::fake_core::{stored_version, Clock, FakeCore, RESET_DELAY_MS};
 use super::harness::{cancel_reset, delete_synced_data, live_key, open_copy, rotate, user, Mac};
@@ -378,8 +378,18 @@ async fn a_signed_rotation_is_adopted_where_the_new_key_arrives() {
         waiting.offers_code_entry,
         "a verified rotation makes a code safe"
     );
+    let new_id = new.key_id();
+    work.keychain.set_clock_ms(clock.now());
     let rejoined = work.engine.adopt_delivered_key(new).await;
     assert_state(&rejoined, SyncState::Syncing);
+    // The code-joined Apple ID holds the rotation markers too (§5.5).
+    let work_held = work.keychain.held(&person);
+    assert!(work_held
+        .iter()
+        .any(|held| held.key_id == new_id && held.supersedes == Some(old.key_id())));
+    assert!(work_held
+        .iter()
+        .any(|held| held.key_id == old.key_id() && held.retired_by.is_some()));
 
     // 30 days after K' was made, the retired item goes (§5.6 step 7).
     clock.advance(31 * DAY);
@@ -559,8 +569,12 @@ async fn an_account_switch_keeps_each_account_s_anchor_apart() {
     assert_eq!(repo.vault_states().unwrap().len(), 2);
 }
 
-/// J10: the account is deleted while this Mac is offline. When it next asks,
-/// it deletes its rows and every key item for the account, retired ones too.
+/// J10, I6: the account is deleted on another Mac while this one is
+/// offline. Its next request is refused, which ends the session; the auth
+/// layer then reports the deletion, and the row goes with its anchor while
+/// every Keychain item stays (no server claim alone deletes one; founder
+/// question in PR #91). This Mac's own Delete Account deletes every item for
+/// the account, retired ones too.
 #[tokio::test]
 async fn an_account_deleted_elsewhere_is_forgotten_here() {
     let (core, clock) = setup();
@@ -582,9 +596,32 @@ async fn an_account_deleted_elsewhere_is_forgotten_here() {
 
     core.delete_account(person.as_str());
     clock.advance(DAY);
-    studio.sync().await;
+    assert_state(&studio.sync().await, SyncState::Off);
+    studio
+        .engine
+        .account_deleted(&person, AccountDeletion::Elsewhere)
+        .await;
     assert!(studio.row().is_none());
-    assert!(icloud.held(&person).is_empty());
+    assert_eq!(
+        icloud.held(&person).len(),
+        2,
+        "no item deleted on the server's word"
+    );
+
+    // This Mac's own Delete Account.
+    let (core, clock) = setup();
+    let laptop = Mac::new(&core, &clock, &person, &icloud, 2).await;
+    laptop.turn_on("MacBook Pro").await;
+    laptop
+        .engine
+        .account_deleted(&person, AccountDeletion::ThisMac)
+        .await;
+    assert!(laptop.row().is_none());
+    assert!(
+        icloud.held(&person).is_empty(),
+        "every item, retired ones too"
+    );
+    let _ = clock;
 }
 
 /// J8: the database copied to another Mac (Migration Assistant) no longer
@@ -840,4 +877,208 @@ async fn no_key_salt_or_plaintext_leaves_the_mac_or_reaches_the_database() {
             "Debug prints lengths, not bytes"
         );
     }
+}
+
+/// J6: a notice a work block is holding survives a restart of the service:
+/// it is still listed, posted once the block ends, and never posted again.
+/// The joined Mac's name comes from the synced copy, not from the table.
+#[tokio::test]
+async fn a_notice_held_by_a_work_block_survives_a_restart() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let mut studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    studio.turn_on("Studio Mac").await;
+    studio.blocks.set(true);
+    let laptop = Mac::new(&core, &clock, &person, &icloud, 2).await;
+    assert_state(&laptop.turn_on("MacBook Pro").await, SyncState::Syncing);
+    clock.advance(10 * MINUTE);
+    let held = studio.sync().await;
+    assert!(kinds(&held).contains(&NoticeKind::NewSignIn));
+    assert!(kinds(&held).contains(&NoticeKind::MacJoinedSync));
+    assert!(studio.engine.take_due_notices().await.is_empty());
+
+    studio.restart().await;
+    let listed = studio.engine.snapshot().await;
+    assert!(
+        kinds(&listed).contains(&NoticeKind::NewSignIn),
+        "still listed"
+    );
+    assert!(
+        studio.engine.take_due_notices().await.is_empty(),
+        "still held"
+    );
+    studio.blocks.set(false);
+    let posted = studio.engine.take_due_notices().await;
+    assert_eq!(posted.len(), 2, "{posted:?}");
+    let joined = posted
+        .iter()
+        .find(|notice| notice.kind == NoticeKind::MacJoinedSync)
+        .unwrap();
+    assert!(joined.body.contains("“MacBook Pro”"), "{}", joined.body);
+    for row in studio.repo.sync_notices(person.as_str()).unwrap() {
+        assert!(row.posted_at_ms.is_some());
+        assert!(!format!("{row:?}").contains("MacBook Pro"), "no name kept");
+    }
+
+    studio.restart().await;
+    assert!(
+        studio.engine.take_due_notices().await.is_empty(),
+        "posted once, across restarts"
+    );
+    let notice_id = joined.notice_id.clone();
+    studio.engine.acknowledge_notice(&notice_id).await;
+    studio.restart().await;
+    let after = studio.engine.snapshot().await;
+    assert_eq!(
+        kinds(&after),
+        vec![NoticeKind::NewSignIn],
+        "listed until acknowledged"
+    );
+
+    studio.engine.log_out().await;
+    studio.sign_back_in().await;
+    assert!(studio.engine.snapshot().await.notices.is_empty());
+    assert!(studio
+        .repo
+        .sync_notices(person.as_str())
+        .unwrap()
+        .is_empty());
+}
+
+/// A rule deleted on this Mac while a write is in flight keeps its
+/// tombstone row until a copy that carries it is stored, so the deletion is
+/// never lost (A6 writes links outside the engine's lock).
+#[tokio::test]
+async fn a_rule_deleted_while_a_write_is_in_flight_is_written_next_time() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    studio.turn_on("Studio Mac").await;
+    let repo = studio.persistence.vault_state_repo();
+    repo.upsert_rule_link(&link('f', "SOCIAL_FEED", START_MS + 20, &studio))
+        .unwrap();
+    studio.sync().await;
+
+    let mut deleted = link('f', "SOCIAL_FEED", START_MS + 50, &studio);
+    deleted.deleted = true;
+    let racing = repo.clone();
+    let tombstone = deleted.clone();
+    core.lie(move |received, _| {
+        if received.method == "PUT" {
+            racing.upsert_rule_link(&tombstone).unwrap();
+        }
+        None
+    });
+    repo.upsert_rule_link(&link('d', "REFERENCE", START_MS + 30, &studio))
+        .unwrap();
+    clock.advance(MINUTE);
+    studio.sync().await;
+    core.tell_the_truth();
+    assert!(
+        repo.rule_links().unwrap().contains(&deleted),
+        "the tombstone waits for the next write"
+    );
+
+    clock.advance(MINUTE);
+    studio.sync().await;
+    assert!(
+        repo.rule_links().unwrap().iter().all(|row| !row.deleted),
+        "written, then its row goes"
+    );
+    let key = live_key(&icloud, &person).await;
+    let version = stored_version(&core, person.as_str()).unwrap();
+    let ciphertext = core.with_account(person.as_str(), |account| {
+        account.blob.clone().unwrap().ciphertext
+    });
+    let document = open_copy(&key, &person, version, &ciphertext);
+    let deleted_rule = document
+        .rules
+        .iter()
+        .find(|(key, _)| key.key.to_hex().starts_with('f'))
+        .unwrap()
+        .1;
+    assert!(deleted_rule.deleted, "the deletion reached the synced copy");
+}
+
+/// The J2 probe asks velvt-core nothing unless this Mac's Keychain holds a
+/// live key for the account: only then can the card show (egress::ENDPOINTS).
+#[tokio::test]
+async fn the_turn_on_here_probe_sends_nothing_without_a_key_here() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let studio = Mac::new(&core, &clock, &person, &MemoryKeyStore::new(), 1).await;
+    studio.turn_on("Studio Mac").await;
+    let elsewhere = Mac::new(&core, &clock, &person, &MemoryKeyStore::new(), 2).await;
+    core.clear_received();
+    let card = elsewhere.engine.probe_available().await;
+    assert_state(&card, SyncState::Off);
+    assert!(core.received().is_empty(), "{:?}", core.received());
+}
+
+/// §14, I6: this Mac's create landed but its answer was lost, and the next
+/// GET was a stale 404. The create sent again gets 409 vault_exists; the
+/// vault is under this Mac's own key, so the item is kept and the vault is
+/// opened, not deleted as a lost race's orphan would be.
+#[tokio::test]
+async fn a_create_whose_answer_was_lost_keeps_its_key_and_opens_its_vault() {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
+    use velvt_service::vault::crypto::{KeyId, Signature, WritePublicKey};
+
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    core.lie(|received, _| {
+        (received.method == "POST" && received.path == "/v1/vault")
+            .then(|| super::fake_core::error(503, "unavailable", None))
+    });
+    studio.turn_on("Studio Mac").await;
+    core.tell_the_truth();
+    assert_eq!(
+        icloud.held(&person).len(),
+        1,
+        "kept: the create may have landed"
+    );
+
+    // It had: velvt-core stored it before the answer was lost.
+    let sent = core
+        .received()
+        .into_iter()
+        .find(|request| request.method == "POST")
+        .unwrap()
+        .body
+        .unwrap();
+    let decode = |field: &serde_json::Value| BASE64.decode(field.as_str().unwrap()).unwrap();
+    core.with_account(person.as_str(), |account| {
+        account.vault = Some(super::fake_core::StoredVault {
+            key_id: KeyId::from_hex(sent["key_id"].as_str().unwrap()).unwrap(),
+            write_pk: WritePublicKey::from_slice(&decode(&sent["write_pk_b64"])).unwrap(),
+            created_at_ms: START_MS,
+            rotations: Vec::new(),
+        });
+        account.blob = Some(super::fake_core::StoredBlob {
+            version: 1,
+            base_version: 0,
+            schema: 1,
+            ciphertext: decode(&sent["blob"]["ciphertext_b64"]),
+            put_sig: Signature::from_slice(&decode(&sent["put_sig_b64"])).unwrap(),
+        });
+    });
+    let stale = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let once = std::sync::Arc::clone(&stale);
+    core.lie(move |received, _| {
+        (received.method == "GET"
+            && received.path == "/v1/vault"
+            && once.swap(false, std::sync::atomic::Ordering::SeqCst))
+        .then(|| super::fake_core::error(404, "vault_not_found", Some(serde_json::json!({}))))
+    });
+    clock.advance(MINUTE);
+    let found = studio.sync().await;
+    assert_state(&found, SyncState::Syncing);
+    let held = icloud.held(&person);
+    assert_eq!(held.len(), 1, "its own key, kept");
+    assert_eq!(studio.row().unwrap().key_id, Some(held[0].key_id.to_hex()));
 }

@@ -379,7 +379,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         method: "GET",
         path: "/v1/vault",
-        when: "only once you turn on sync across your Macs: every 10 minutes, on wake, and when you open Your Macs (at most once a minute)",
+        when: "only once you turn on sync across your Macs: every 10 minutes, on wake, and when you open Your Macs (at most once a minute); and, with sync off on this Mac, once after you sign in, only if your iCloud Keychain already holds a sync key for your account, to ask whether to turn sync on here",
         body: "none",
     },
     Endpoint {

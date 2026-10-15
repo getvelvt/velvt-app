@@ -13,7 +13,10 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde_json::json;
 use velvt_service::auth::{AuthError, HttpClient, HttpRequest, HttpResponse, Precondition};
-use velvt_service::persistence::{SqlitePersistence, VaultStateRecord};
+use velvt_service::persistence::{
+    KnownDeviceRecord, LocalSyncSettings, PersistenceError, SqlitePersistence, SyncNoticeRecord,
+    VaultRuleLinkRecord, VaultStateRecord, VaultStateRepo,
+};
 use velvt_service::vault::crypto::statement::{
     DeleteStatement, PutStatement, ResetCancelStatement, Signed, SignedRotation,
 };
@@ -56,6 +59,75 @@ impl HostIdentity for Host {
     }
 }
 
+/// The Mac's database, which a test can make refuse to save the sync row.
+pub struct Repo {
+    inner: Arc<dyn VaultStateRepo>,
+    refuse_saves: AtomicBool,
+}
+
+impl Repo {
+    pub fn refuse_saves(&self, refuse: bool) {
+        self.refuse_saves.store(refuse, Ordering::SeqCst);
+    }
+}
+
+impl VaultStateRepo for Repo {
+    fn vault_state(&self, user_id: &str) -> Result<Option<VaultStateRecord>, PersistenceError> {
+        self.inner.vault_state(user_id)
+    }
+    fn vault_states(&self) -> Result<Vec<VaultStateRecord>, PersistenceError> {
+        self.inner.vault_states()
+    }
+    fn save_vault_state(&self, record: &VaultStateRecord) -> Result<(), PersistenceError> {
+        if self.refuse_saves.load(Ordering::SeqCst) {
+            return Err(PersistenceError::InvalidTimestamp);
+        }
+        self.inner.save_vault_state(record)
+    }
+    fn clear_sessions(&self, keep: Option<&str>) -> Result<bool, PersistenceError> {
+        self.inner.clear_sessions(keep)
+    }
+    fn delete_vault_state(&self, user_id: &str) -> Result<(), PersistenceError> {
+        self.inner.delete_vault_state(user_id)
+    }
+    fn rule_links(&self) -> Result<Vec<VaultRuleLinkRecord>, PersistenceError> {
+        self.inner.rule_links()
+    }
+    fn upsert_rule_link(&self, link: &VaultRuleLinkRecord) -> Result<(), PersistenceError> {
+        self.inner.upsert_rule_link(link)
+    }
+    fn delete_pushed_tombstones(
+        &self,
+        pushed: &[VaultRuleLinkRecord],
+    ) -> Result<u64, PersistenceError> {
+        self.inner.delete_pushed_tombstones(pushed)
+    }
+    fn clear_rule_links(&self) -> Result<(), PersistenceError> {
+        self.inner.clear_rule_links()
+    }
+    fn known_devices(&self) -> Result<Vec<KnownDeviceRecord>, PersistenceError> {
+        self.inner.known_devices()
+    }
+    fn insert_known_devices(&self, devices: &[KnownDeviceRecord]) -> Result<(), PersistenceError> {
+        self.inner.insert_known_devices(devices)
+    }
+    fn local_sync_settings(&self) -> Result<LocalSyncSettings, PersistenceError> {
+        self.inner.local_sync_settings()
+    }
+    fn sync_notices(&self, user_id: &str) -> Result<Vec<SyncNoticeRecord>, PersistenceError> {
+        self.inner.sync_notices(user_id)
+    }
+    fn save_sync_notice(&self, notice: &SyncNoticeRecord) -> Result<(), PersistenceError> {
+        self.inner.save_sync_notice(notice)
+    }
+    fn delete_sync_notices(&self, keep: Option<&str>) -> Result<(), PersistenceError> {
+        self.inner.delete_sync_notices(keep)
+    }
+    fn prune_sync_notices(&self, before_ms: i64) -> Result<u64, PersistenceError> {
+        self.inner.prune_sync_notices(before_ms)
+    }
+}
+
 /// The session the service holds: whichever account is signed in.
 pub struct SessionClient(Mutex<Arc<FakeClient>>);
 
@@ -78,6 +150,7 @@ pub struct Mac {
     pub blocks: Arc<BlockSwitch>,
     pub routing: Arc<SyncRouting>,
     pub host: Arc<Host>,
+    pub repo: Arc<Repo>,
     session: Arc<SessionClient>,
     core: FakeCore,
     clock: Clock,
@@ -105,15 +178,11 @@ impl Mac {
         let routing = Arc::new(SyncRouting::default());
         let host = Arc::new(Host(Mutex::new(Some([host; 16]))));
         let session = Arc::new(SessionClient(Mutex::new(client)));
-        let engine = engine(
-            &session,
-            keychain,
-            &persistence,
-            &host,
-            clock,
-            &blocks,
-            &routing,
-        );
+        let repo = Arc::new(Repo {
+            inner: persistence.vault_state_repo(),
+            refuse_saves: AtomicBool::new(false),
+        });
+        let engine = engine(&session, keychain, &repo, &host, clock, &blocks, &routing);
         engine.session_started(user.clone(), Some(device)).await;
         Self {
             engine,
@@ -124,6 +193,7 @@ impl Mac {
             blocks,
             routing,
             host,
+            repo,
             session,
             core: core.clone(),
             clock: clock.clone(),
@@ -135,7 +205,7 @@ impl Mac {
         self.engine = engine(
             &self.session,
             &self.keychain,
-            &self.persistence,
+            &self.repo,
             &self.host,
             &self.clock,
             &self.blocks,
@@ -156,6 +226,13 @@ impl Mac {
         self.engine
             .session_started(user.clone(), Some(device))
             .await;
+    }
+
+    /// The service's session moves to `user` before the engine is told: a
+    /// pass already running when the person switches accounts.
+    pub fn session_moves_to(&self, user: &UserId) {
+        let device = uuid::Uuid::new_v4().to_string();
+        *self.session.0.lock().unwrap() = self.core.sign_in(user.as_str(), &device);
     }
 
     /// Signs back in to the same account after Log Out, on the same device.
@@ -188,7 +265,7 @@ impl Mac {
 fn engine(
     session: &Arc<SessionClient>,
     keychain: &MemoryKeyStore,
-    persistence: &SqlitePersistence,
+    repo: &Arc<Repo>,
     host: &Arc<Host>,
     clock: &Clock,
     blocks: &Arc<BlockSwitch>,
@@ -197,7 +274,7 @@ fn engine(
     SyncEngine::new(SyncDeps {
         http: Arc::clone(session) as Arc<dyn HttpClient>,
         keys: Arc::new(keychain.clone()),
-        repo: persistence.vault_state_repo(),
+        repo: Arc::clone(repo) as Arc<dyn VaultStateRepo>,
         host: Arc::clone(host) as Arc<dyn HostIdentity>,
         clock: Arc::new(clock.clone()),
         blocks: Arc::clone(blocks) as Arc<dyn BlockActivity>,

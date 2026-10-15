@@ -37,7 +37,7 @@ use std::sync::Arc;
 use crate::delivery::InsightNotificationRoute;
 use crate::persistence::FocusRepo;
 
-pub use engine::{SyncDeps, SyncEngine, SyncSnapshot};
+pub use engine::{AccountDeletion, SyncDeps, SyncEngine, SyncSnapshot};
 
 /// How often a syncing Mac fetches (§10.4).
 pub const POLL_INTERVAL_MS: i64 = 10 * 60 * 1_000;

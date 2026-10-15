@@ -11,7 +11,8 @@
 //! adopted only through a verified rotation, or after a reset §6.1 accepts
 //! and only from this Mac's own Keychain or a typed code; a key an item this
 //! Mac holds supersedes or retires is never adopted; and no server claim
-//! alone deletes or rewrites a Keychain item.
+//! alone deletes or rewrites a Keychain item. A typed code is taken only in a
+//! state that offers one, and only for a vault the pass would adopt (I3).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +21,7 @@ use tokio::sync::Mutex;
 
 use crate::auth::{retry_after_delay, HttpClient};
 use crate::persistence::{VaultRuleLinkRecord, VaultStateRecord, VaultStateRepo};
+use crate::vault::crypto::statement::SignedRotation;
 use crate::vault::crypto::statement::{CreateStatement, PutStatement};
 use crate::vault::crypto::{
     sha256, BlobName, DocumentContext, KeyId, PersonSalt, UserId, VaultKey, WritePublicKey,
@@ -38,7 +40,7 @@ use super::devices::{self, DeviceRow};
 use super::host::{self, HostIdentity};
 use super::keys::{KeyInventory, KeyStoreError, RetiredBy, VaultKeyStore};
 use super::mirror::{self, HeldSummary, OwnEntry};
-use super::notices::{self, JoinRoute, LocalTime, NoticeQueue, SyncNotice};
+use super::notices::{JoinRoute, LocalTime, NoticeEvent, NoticeQueue, SyncNotice};
 use super::verify::{
     judge_blob, judge_vault, Anchor, BlobJudgement, Inconsistency, SeenReset, Trusted,
     VaultJudgement,
@@ -51,6 +53,23 @@ use super::{
 /// A host binding made while the host UUID could not be read is this UUID's:
 /// the first launch that can read it binds the row for real.
 const UNKNOWN_HOST: [u8; 16] = [0; 16];
+
+/// An acknowledged notice's row is kept this long, so a reset still pending
+/// is not posted again after a restart, then deleted.
+const ACKNOWLEDGED_NOTICE_KEPT_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
+
+/// Who deleted the account (J10, §8.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountDeletion {
+    /// This Mac's own Delete Account: every key item held for the account
+    /// is deleted, retired ones included, and the row with its anchor.
+    ThisMac,
+    /// velvt-core said the account is gone (a deletion made elsewhere):
+    /// the row with its anchor and the session tables go, and every
+    /// Keychain item stays. No server claim alone deletes an item (I6), and
+    /// a stray `K` opens nothing once the account's data is erased (§8.6).
+    Elsewhere,
+}
 
 /// Everything the engine talks to.
 pub struct SyncDeps {
@@ -188,11 +207,28 @@ impl Session {
     /// Forgets the copy and the key, keeping the row's anchor.
     fn drop_copy(&mut self) {
         self.key = None;
+        self.forget_document();
+        self.pending_reset = None;
+    }
+
+    /// Forgets the document this Mac opened, before trust moves to another
+    /// vault: only this Mac's own registers enter the new one, never another
+    /// Mac's entries or rules from the old.
+    fn forget_document(&mut self) {
         self.base = None;
         self.working = None;
         self.newer = None;
         self.clock = None;
-        self.pending_reset = None;
+    }
+
+    /// A Mac's name in the open copy, for a notice that names it.
+    fn device_name(&self, sync_device_id: &str) -> Option<String> {
+        let id = SyncDeviceId::parse(sync_device_id)?;
+        self.working
+            .as_ref()?
+            .devices
+            .get(&id)
+            .map(|entry| entry.name.value.as_str().to_owned())
     }
 
     fn hlc_clock(&mut self) -> Option<&mut HlcClock> {
@@ -307,15 +343,70 @@ impl SyncEngine {
         }
     }
 
-    fn save(&self, session: &Session) {
-        if let Some(record) = &session.record {
-            if let Err(error) = self.deps.repo.save_vault_state(record) {
+    /// Whether the row is on disk as the session has it (or there is none).
+    fn save(&self, session: &Session) -> bool {
+        let Some(record) = &session.record else {
+            return true;
+        };
+        match self.deps.repo.save_vault_state(record) {
+            Ok(()) => true,
+            Err(error) => {
                 tracing::error!(
                     error_code = "vault_state_save_failed",
                     error = %error,
                     "the sync state could not be saved"
                 );
+                false
             }
+        }
+    }
+
+    /// Queues a notice and keeps it in `sync_notice`. `name` is the joined
+    /// Mac's, read from the copy that showed it.
+    fn queue(
+        &self,
+        session: &Session,
+        notices: &mut NoticeQueue,
+        event: NoticeEvent,
+        name: Option<&str>,
+    ) {
+        let notice = event.render(name, self.time());
+        if let Some(record) = notices.push(session.user.as_str(), event, notice, self.now()) {
+            self.keep_notice(&record);
+        }
+    }
+
+    fn keep_notice(&self, record: &crate::persistence::SyncNoticeRecord) {
+        if let Err(error) = self.deps.repo.save_sync_notice(record) {
+            tracing::error!(error_code = "sync_notice_save_failed", error = %error, "a security notice was not kept on disk");
+        }
+    }
+
+    /// The notices an earlier run of the service queued for this account.
+    fn restore_notices(&self, session: &Session, notices: &mut NoticeQueue) {
+        let cutoff = self.now().saturating_sub(ACKNOWLEDGED_NOTICE_KEPT_MS);
+        if let Err(error) = self.deps.repo.prune_sync_notices(cutoff) {
+            tracing::warn!(error_code = "sync_notice_prune_failed", error = %error, "old acknowledged notices were not deleted");
+        }
+        let records = match self.deps.repo.sync_notices(session.user.as_str()) {
+            Ok(records) => records,
+            Err(error) => {
+                tracing::error!(error_code = "sync_notice_load_failed", error = %error, "kept security notices could not be read");
+                return;
+            }
+        };
+        for record in records {
+            let Some(event) = NoticeEvent::from_record(&record) else {
+                continue;
+            };
+            let name = match &event {
+                NoticeEvent::MacJoinedSync { sync_device_id, .. } => {
+                    session.device_name(sync_device_id)
+                }
+                _ => None,
+            };
+            let notice = event.render(name.as_deref(), self.time());
+            notices.restore(&record, event, notice);
         }
     }
 
@@ -341,6 +432,10 @@ impl SyncEngine {
         if let Err(error) = self.deps.repo.clear_sessions(Some(user.as_str())) {
             tracing::error!(error_code = "vault_session_clear_failed", error = %error, "other accounts' sync sessions were not cleared");
         }
+        // Another account's notices ended with its session.
+        if let Err(error) = self.deps.repo.delete_sync_notices(Some(user.as_str())) {
+            tracing::error!(error_code = "sync_notice_clear_failed", error = %error, "other accounts' security notices were not cleared");
+        }
         let mut session = Session::new(user, server_device_id);
         session.record = self
             .deps
@@ -350,6 +445,7 @@ impl SyncEngine {
             .flatten();
         self.check_host_binding(&mut session);
         self.resume(&mut session).await;
+        self.restore_notices(&session, &mut inner.notices);
         self.deps
             .routing
             .set_daily_insight(self.daily_insight(&session));
@@ -371,33 +467,41 @@ impl SyncEngine {
         if let Err(error) = self.deps.repo.clear_sessions(None) {
             tracing::error!(error_code = "vault_session_clear_failed", error = %error, "the sync session was not cleared at log out");
         }
-        inner.notices = NoticeQueue::default();
-        self.deps.routing.reset();
-    }
-
-    /// The account was deleted, here or on another Mac (J10, §8.6): every key
-    /// item held for it is deleted, retired ones included, and its row with
-    /// the anchor.
-    pub async fn account_deleted(&self) {
-        let mut inner = self.inner.lock().await;
-        if let Some(session) = inner.session.take() {
-            self.forget_account(&session.user).await;
+        if let Err(error) = self.deps.repo.delete_sync_notices(None) {
+            tracing::error!(error_code = "sync_notice_clear_failed", error = %error, "security notices were not cleared at log out");
         }
         inner.notices = NoticeQueue::default();
         self.deps.routing.reset();
     }
 
-    async fn forget_account(&self, user: &UserId) {
-        match self.deps.keys.inventory(user).await {
-            Ok(inventory) => {
-                for held in &inventory.keys {
-                    let _ = self.deps.keys.delete(user, held.key_id).await;
+    /// `user`'s account was deleted (J10, §8.6), on this Mac or, as the auth
+    /// layer learned from velvt-core, elsewhere. The row goes with its
+    /// anchor, and with it the session tables and the account's notices.
+    /// Keychain items go only on this Mac's own Delete Account
+    /// ([`AccountDeletion`]).
+    pub async fn account_deleted(&self, user: &UserId, deletion: AccountDeletion) {
+        let mut inner = self.inner.lock().await;
+        if inner
+            .session
+            .as_ref()
+            .is_some_and(|session| &session.user == user)
+        {
+            inner.session = None;
+            inner.notices = NoticeQueue::default();
+            self.deps.routing.reset();
+        }
+        if deletion == AccountDeletion::ThisMac {
+            match self.deps.keys.inventory(user).await {
+                Ok(inventory) => {
+                    for held in &inventory.keys {
+                        let _ = self.deps.keys.delete(user, held.key_id).await;
+                    }
                 }
+                Err(error) => tracing::warn!(
+                    error_code = error.code(),
+                    "the sync key items were not deleted with the account"
+                ),
             }
-            Err(error) => tracing::warn!(
-                error_code = error.code(),
-                "the sync key items were not deleted with the account"
-            ),
         }
         if let Err(error) = self.deps.repo.delete_vault_state(user.as_str()) {
             tracing::error!(error_code = "vault_state_delete_failed", error = %error, "the sync state was not deleted with the account");
@@ -414,7 +518,29 @@ impl SyncEngine {
         session.drop_copy();
         self.save(session);
         let _ = self.deps.repo.clear_sessions(None);
-        notices.push(notices::this_mac_removed(self.now()));
+        let at_ms = self.now();
+        self.queue(
+            session,
+            notices,
+            NoticeEvent::ThisMacRemoved { at_ms },
+            None,
+        );
+        self.deps.routing.reset();
+    }
+
+    /// `401 account_deleted`. `AuthManager` answers every request so once it
+    /// has been told, whichever account's session the request was for, so
+    /// the answer alone does not say this account is gone. The session ends
+    /// as at Log Out, keeping the anchor and every Keychain item; the auth
+    /// layer, which knows whose account it was, calls [`Self::account_deleted`]
+    /// (PR A4).
+    fn session_refused(&self, session: &mut Session) {
+        if let Some(record) = session.record.as_mut() {
+            record.clear_session();
+        }
+        session.drop_copy();
+        self.save(session);
+        let _ = self.deps.repo.clear_sessions(None);
         self.deps.routing.reset();
     }
 
@@ -498,7 +624,9 @@ impl SyncEngine {
 
     /// J2: with sync off here, whether the account has a vault whose key is
     /// already in this Mac's Keychain, for the one-time "Turn on here?" card.
-    /// Writes no row.
+    /// Writes no row. The card can show only if the Keychain holds a live
+    /// key for the account, so without one nothing is asked of velvt-core
+    /// (`egress::ENDPOINTS`).
     pub async fn probe_available(&self) -> SyncSnapshot {
         let mut guard = self.inner.lock().await;
         let inner = &mut *guard;
@@ -508,10 +636,14 @@ impl SyncEngine {
         if session.record.as_ref().is_some_and(|record| record.enabled) {
             return self.snapshot_of(session, &inner.notices);
         }
-        let (Ok(inventory), Ok(view)) = (
-            self.deps.keys.inventory(&session.user).await,
-            self.api.get_vault().await,
-        ) else {
+        let Ok(inventory) = self.deps.keys.inventory(&session.user).await else {
+            return self.snapshot_of(session, &inner.notices);
+        };
+        if inventory.live().next().is_none() {
+            session.available_elsewhere = false;
+            return self.snapshot_of(session, &inner.notices);
+        }
+        let Ok(view) = self.api.get_vault(&session.user).await else {
             return self.snapshot_of(session, &inner.notices);
         };
         session.available_elsewhere = matches!(
@@ -588,86 +720,209 @@ impl SyncEngine {
     }
 
     /// A key delivered by a typed setup code (§7.1 step 7; PR A5 claims and
-    /// opens the code). The code came from the person's own screen, so it
-    /// wins over the server: if the server's vault has another key, this Mac
-    /// keeps the typed one and pauses (`server_inconsistent`), and never
-    /// adopts the served key.
+    /// opens the code).
+    ///
+    /// Whether a code may be entered is Rust's judgement (I3), not the
+    /// window's: only in a state that offers one (waiting for the key or the
+    /// rotated key, or after a reset §6.1 accepted), or before sync is on
+    /// here. Never where the server could be steering the person to type an
+    /// attacker's code (`server_inconsistent`, an unreadable copy, a vault
+    /// that vanished): there the code changes nothing.
+    ///
+    /// If the server's vault has another key, the code wins: this Mac trusts
+    /// the typed key (an anchor already on it keeps its rollback guard),
+    /// pauses (`server_inconsistent`), and never adopts the served key.
+    ///
+    /// If the server's vault is the typed key's, it is adopted only as a pass
+    /// would adopt it: the key this Mac already trusts, or nothing trusted
+    /// yet, or a rotation the trusted key signed, or a new vault after a
+    /// reset §6.1 accepts. A code does not turn a key change no Mac signed
+    /// into one (T5, T13). Only then is the key stored, synchronizable, with
+    /// `supersedes` when it is a rotation's and the old item marked
+    /// `retired_by` (§5.5), so the rotation markers exist on this Apple ID
+    /// too (T14).
     pub async fn adopt_delivered_key(&self, key: VaultKey) -> SyncSnapshot {
         let mut guard = self.inner.lock().await;
         let inner = &mut *guard;
         let Some(session) = inner.session.as_mut() else {
             return not_signed_in();
         };
+        let state = session.state();
+        if !(state.offers_code_entry()
+            || matches!(state, SyncState::Off | SyncState::AvailableElsewhere))
+        {
+            tracing::info!(
+                error_code = "setup_code_not_offered",
+                "a setup code was refused: this Mac's sync state offers no code entry"
+            );
+            return self.snapshot_of(session, &inner.notices);
+        }
         if session.record.is_none() {
             match self.new_record(session) {
                 Some(record) => session.record = Some(record),
                 None => return self.snapshot_of(session, &inner.notices),
             }
         }
+        let user = session.user.clone();
         let typed = Trusted::of(*key.write_public_key());
-        let view = match self.api.get_vault().await {
+        let inventory = match self.deps.keys.inventory(&user).await {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                session.set_state(SyncState::Error, Some(error.code()));
+                return self.snapshot_of(session, &inner.notices);
+            }
+        };
+        let view = match self.api.get_vault(&user).await {
             Ok(view) => view,
             Err(error) => {
                 self.api_failure(session, &mut inner.notices, error).await;
                 return self.snapshot_of(session, &inner.notices);
             }
         };
-        let rotation_pending = session.state() == SyncState::WaitingForRotatedKey;
-        let Some(record) = session.record.as_mut() else {
-            return not_signed_in();
+        let anchor = session.anchor();
+        if let Some(record) = session.record.as_mut() {
+            record.enabled = true;
+        }
+        let served_is_typed = matches!(
+            &view,
+            VaultView::Present { key_id, write_pk, .. }
+                if *key_id == typed.key_id && *write_pk == typed.write_pk
+        );
+        if !served_is_typed {
+            if anchor.trusted != Some(typed) {
+                session.forget_document();
+                if let Some(record) = session.record.as_mut() {
+                    replace_trust(record, typed);
+                }
+            }
+            session.key = Some(key);
+            self.inconsistent(
+                session,
+                &mut inner.notices,
+                Inconsistency::DeliveredKeyMismatch,
+            );
+            self.save(session);
+            return self.snapshot_of(session, &inner.notices);
+        }
+
+        let roots = match self.trust_roots(&user, &anchor, &inventory, &view).await {
+            Ok(roots) => roots,
+            Err(error) => {
+                session.set_state(SyncState::Error, Some(error.code()));
+                return self.snapshot_of(session, &inner.notices);
+            }
         };
-        record.enabled = true;
-        match view {
-            VaultView::Present {
-                key_id, write_pk, ..
-            } if key_id == typed.key_id && write_pk == typed.write_pk => {
-                if self
-                    .deps
-                    .keys
-                    .store(&session.user, &key, None)
-                    .await
-                    .is_err()
-                {
-                    session.set_state(SyncState::Error, Some("key_store_failed"));
-                    self.save(session);
-                    return self.snapshot_of(session, &inner.notices);
-                }
-                let record = session.record.as_mut().expect("record set above");
-                if anchor_of(record).trusted != Some(typed) {
-                    if rotation_pending {
-                        set_trusted(record, typed);
-                    } else {
-                        replace_trust(record, typed);
-                    }
-                }
-                session.key = Some(key);
-                session.joined_via = JoinedVia::Code;
-                session.line = None;
-                self.pass(session, &mut inner.notices, false).await;
+        let judged = judge_vault(&view, &anchor, &inventory, &roots, &user, self.now());
+        let adoption = match judged.judgement {
+            VaultJudgement::Current => Adoption::Keep,
+            VaultJudgement::Untrusted { .. } => Adoption::Fresh,
+            VaultJudgement::Rotated { path, to, .. } if to == typed => Adoption::Rotation(path),
+            VaultJudgement::ResetCompleted {
+                new_vault: Some(new),
+                ..
+            } if new == typed => Adoption::NewVault { deleted: None },
+            VaultJudgement::Deleted { key_id } => Adoption::NewVault {
+                deleted: Some(key_id),
+            },
+            VaultJudgement::Inconsistent(reason) => {
+                self.inconsistent(session, &mut inner.notices, reason);
+                self.save(session);
+                return self.snapshot_of(session, &inner.notices);
             }
             _ => {
-                replace_trust(record, typed);
-                session.key = Some(key);
                 self.inconsistent(
                     session,
                     &mut inner.notices,
-                    Inconsistency::DeliveredKeyMismatch,
+                    Inconsistency::UnverifiedKeyChange,
                 );
                 self.save(session);
+                return self.snapshot_of(session, &inner.notices);
+            }
+        };
+
+        // The Keychain only now, after the served vault verified against the
+        // typed key, and before any trust changes.
+        let supersedes = match &adoption {
+            Adoption::Rotation(path) => path.last().map(|step| step.statement.old_key_id),
+            _ => None,
+        };
+        if inventory.get(typed.key_id).is_none() {
+            if let Err(error) = self.deps.keys.store(&user, &key, supersedes).await {
+                session.set_state(SyncState::Error, Some(error.code()));
+                self.save(session);
+                return self.snapshot_of(session, &inner.notices);
             }
         }
+        let Some(record) = session.record.as_mut() else {
+            return not_signed_in();
+        };
+        match adoption {
+            Adoption::Keep => {}
+            Adoption::Fresh => {
+                replace_trust(record, typed);
+                session.forget_document();
+            }
+            Adoption::Rotation(path) => {
+                set_trusted(record, typed);
+                // §5.6 step 6, as on a Mac that found K' in its Keychain.
+                for step in &path {
+                    let _ = self
+                        .deps
+                        .keys
+                        .retire(&user, step.statement.old_key_id, step.statement.new_key_id)
+                        .await;
+                }
+            }
+            Adoption::NewVault { deleted } => {
+                replace_trust(record, typed);
+                session.drop_copy();
+                // A deletion its own key signed: this Mac's item for it goes,
+                // as the pass would delete it (J9).
+                if let Some(deleted) = deleted.filter(|deleted| inventory.get(*deleted).is_some()) {
+                    let _ = self.deps.keys.delete(&user, deleted).await;
+                }
+            }
+        }
+        session.key = Some(key);
+        session.joined_via = JoinedVia::Code;
+        session.line = None;
+        self.pass(session, &mut inner.notices, false).await;
         self.snapshot_of(session, &inner.notices)
     }
 
     /// The notices due to be posted now, each once: none while a work block
-    /// is active (J6, §11.3).
+    /// is active (J6, §11.3). Each is recorded as posted in `sync_notice`, so
+    /// a restart neither loses one held nor posts one again.
     pub async fn take_due_notices(&self) -> Vec<SyncNotice> {
         let block_active = self.deps.blocks.block_active();
-        self.inner.lock().await.notices.take_due(block_active)
+        let now = self.now();
+        let mut guard = self.inner.lock().await;
+        let inner = &mut *guard;
+        let Some(session) = inner.session.as_ref() else {
+            return Vec::new();
+        };
+        let (due, records) = inner
+            .notices
+            .take_due(session.user.as_str(), block_active, now);
+        for record in &records {
+            self.keep_notice(record);
+        }
+        due
     }
 
     pub async fn acknowledge_notice(&self, notice_id: &str) {
-        self.inner.lock().await.notices.acknowledge(notice_id);
+        let now = self.now();
+        let mut guard = self.inner.lock().await;
+        let inner = &mut *guard;
+        let Some(session) = inner.session.as_ref() else {
+            return;
+        };
+        if let Some(record) = inner
+            .notices
+            .acknowledge(session.user.as_str(), notice_id, now)
+        {
+            self.keep_notice(&record);
+        }
     }
 
     pub async fn snapshot(&self) -> SyncSnapshot {
@@ -755,10 +1010,25 @@ impl SyncEngine {
             self.save(session);
             return;
         }
+        self.open_cached_copy(session);
+    }
+
+    /// The copy at `highest_seen_version`, kept sealed in the row, as the
+    /// base when this run has none: at launch, and on the first pass that
+    /// has the key when the Keychain could not give it at launch. Without
+    /// it, an older copy served then would become the base, and its
+    /// rolled-back registers would be written at highest + 1 (T4).
+    fn open_cached_copy(&self, session: &mut Session) {
+        if session.base.is_some() || session.newer.is_some() {
+            return;
+        }
         let Some(record) = session.record.as_ref() else {
             return;
         };
-        let (Some(ciphertext), Some(key)) = (record.ciphertext.clone(), session.key.as_ref())
+        let Some(trusted) = anchor_of(record).trusted else {
+            return;
+        };
+        let (Some(ciphertext), Some(key)) = (record.ciphertext.as_ref(), session.key.as_ref())
         else {
             return;
         };
@@ -770,10 +1040,44 @@ impl SyncEngine {
             schema: SCHEMA_V1,
             version: record.highest_seen_version,
         };
-        if let Ok(DecodedDocument::Current(document)) = doc::open(key, &context, &ciphertext) {
+        if let Ok(DecodedDocument::Current(document)) = doc::open(key, &context, ciphertext) {
             session.working = Some(document.clone());
             session.base = Some(document);
         }
+    }
+
+    /// §6.1's trusted key for a Mac with no anchor: every key its Keychain
+    /// holds live. Read only when it is needed, since an item carries no
+    /// public key: with an anchor, or when the served key is one the
+    /// Keychain holds live, the inventory alone answers.
+    async fn trust_roots(
+        &self,
+        user: &UserId,
+        anchor: &Anchor,
+        inventory: &KeyInventory,
+        view: &VaultView,
+    ) -> Result<Vec<Trusted>, KeyStoreError> {
+        if anchor.trusted.is_some() {
+            return Ok(Vec::new());
+        }
+        if let VaultView::Present { key_id, .. } = view {
+            if inventory.holds_live(*key_id) {
+                return Ok(Vec::new());
+            }
+        }
+        let mut roots = Vec::new();
+        for held in inventory.live() {
+            match self.deps.keys.load(user, held.key_id).await {
+                Ok(key) if key.key_id() == held.key_id => {
+                    roots.push(Trusted::of(*key.write_public_key()));
+                }
+                // Gone since the inventory, or not the key its item names:
+                // it opens nothing, so it vouches for nothing.
+                Ok(_) | Err(KeyStoreError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(roots)
     }
 
     /// `K` for `key_id` into memory. A missing item leaves the Mac waiting
@@ -817,7 +1121,9 @@ impl SyncEngine {
         self.deps
             .routing
             .set_daily_insight(self.daily_insight(session));
-        self.save(session);
+        if !self.save(session) {
+            session.set_state(SyncState::Error, Some(STATE_NOT_SAVED));
+        }
     }
 
     async fn pass_steps(
@@ -829,44 +1135,72 @@ impl SyncEngine {
     ) -> Step {
         let state_before = session.state();
         let user = session.user.clone();
-        let inventory = match self.deps.keys.inventory(&user).await {
+        let mut inventory = match self.deps.keys.inventory(&user).await {
             Ok(inventory) => inventory,
             Err(error) => {
                 session.set_state(SyncState::Error, Some(error.code()));
                 return Err(Stop);
             }
         };
-        let view = match self.api.get_vault().await {
+        let view = match self.api.get_vault(&user).await {
             Ok(view) => view,
             Err(error) => {
                 self.api_failure(session, notices, error).await;
                 return Err(Stop);
             }
         };
+        // §14: a create this run sent and never heard back about lost the
+        // race if the vault is under another key. Its item is an orphan, and
+        // goes (its own key id only, §5.5); kept, it would stand as a key
+        // this Mac trusts against the winner's vault.
+        if let (Some(pending), VaultView::Present { key_id, .. }) = (&session.pending_create, &view)
+        {
+            let orphan = pending.key_id();
+            if *key_id != orphan {
+                let _ = self.deps.keys.delete(&user, orphan).await;
+                inventory.keys.retain(|held| held.key_id != orphan);
+                session.pending_create = None;
+            }
+        }
         let anchor = session.anchor();
-        let judged = judge_vault(&view, &anchor, &inventory, &user, now);
+        let roots = match self.trust_roots(&user, &anchor, &inventory, &view).await {
+            Ok(roots) => roots,
+            Err(error) => {
+                session.set_state(SyncState::Error, Some(error.code()));
+                return Err(Stop);
+            }
+        };
+        let judged = judge_vault(&view, &anchor, &inventory, &roots, &user, now);
         {
             let record = session.record.as_mut().ok_or(Stop)?;
             record.fetched_at_ms = Some(now);
-            match judged.seen_reset {
-                SeenReset::Set(id) => record.seen_reset_request_id = Some(id),
+            match &judged.seen_reset {
+                SeenReset::Set(id) => record.seen_reset_request_id = Some(id.clone()),
                 SeenReset::Clear => record.seen_reset_request_id = None,
                 SeenReset::Keep => {}
             }
         }
-        // Queued on every pass that sees it, not only the first: the queue
-        // holds each notice once per run, and a restart while a block held
-        // it would otherwise lose it, since `seen_reset_request_id` already
-        // records it as seen.
-        if let Some(pending) = &view.facts().pending_reset {
-            notices.push(notices::reset_requested(
-                &pending.id,
-                pending.requested_at_ms,
-                pending.effective_at_ms,
-                self.time(),
-            ));
+        // What this fetch showed is on disk before anything is written to
+        // velvt-core: a Mac that cannot keep its anchor does not act on it.
+        if !self.save(session) {
+            session.set_state(SyncState::Error, Some(STATE_NOT_SAVED));
+            return Err(Stop);
         }
-        session.pending_reset = view.facts().pending_reset.clone();
+        // A pending reset this Mac believes, on every pass that shows it:
+        // queued once, and kept in `sync_notice` until posted.
+        if let Some(pending) = &judged.pending_reset {
+            self.queue(
+                session,
+                notices,
+                NoticeEvent::ResetRequested {
+                    reset_id: pending.id.clone(),
+                    requested_at_ms: pending.requested_at_ms,
+                    effective_at_ms: pending.effective_at_ms,
+                },
+                None,
+            );
+        }
+        session.pending_reset = judged.pending_reset.clone();
         session.vault_created_at_ms = match &view {
             VaultView::Present { created_at_ms, .. } => Some(*created_at_ms),
             VaultView::Missing { .. } => None,
@@ -889,19 +1223,38 @@ impl SyncEngine {
                     self.inconsistent(session, notices, Inconsistency::WriteKeyChanged);
                     return Err(Stop);
                 }
+                let own_create = session
+                    .pending_create
+                    .take_if(|pending| pending.key_id() == key_id)
+                    .is_some();
+                session.forget_document();
                 let record = session.record.as_mut().ok_or(Stop)?;
                 replace_trust(record, Trusted { key_id, write_pk });
-                session.joined_via = JoinedVia::IcloudKeychain;
+                session.joined_via = if own_create {
+                    JoinedVia::Created
+                } else {
+                    JoinedVia::IcloudKeychain
+                };
                 self.sync_copy(session, notices, now).await
             }
-            VaultJudgement::Rotated { path, to } => {
+            VaultJudgement::Rotated { path, from, to } => {
                 if !inventory.holds_live(to.key_id) {
-                    notices.push(notices::sync_key_changed(
-                        &to.key_id.to_hex(),
-                        false,
-                        now,
-                        self.time(),
-                    ));
+                    // A Mac with no anchor checked the rotation from a key it
+                    // holds: that key is what it trusts while it waits.
+                    if anchor.trusted.is_none() {
+                        let record = session.record.as_mut().ok_or(Stop)?;
+                        set_trusted(record, from);
+                    }
+                    self.queue(
+                        session,
+                        notices,
+                        NoticeEvent::SyncKeyChanged {
+                            new_key_id: to.key_id.to_hex(),
+                            adopted: false,
+                            at_ms: now,
+                        },
+                        None,
+                    );
                     session.set_state(SyncState::WaitingForRotatedKey, None);
                     return Err(Stop);
                 }
@@ -925,12 +1278,16 @@ impl SyncEngine {
                 }
                 let record = session.record.as_mut().ok_or(Stop)?;
                 set_trusted(record, to);
-                notices.push(notices::sync_key_changed(
-                    &to.key_id.to_hex(),
-                    true,
-                    now,
-                    self.time(),
-                ));
+                self.queue(
+                    session,
+                    notices,
+                    NoticeEvent::SyncKeyChanged {
+                        new_key_id: to.key_id.to_hex(),
+                        adopted: true,
+                        at_ms: now,
+                    },
+                    None,
+                );
                 self.sync_copy(session, notices, now).await
             }
             VaultJudgement::Deleted { key_id } => {
@@ -948,22 +1305,34 @@ impl SyncEngine {
             }
             VaultJudgement::ResetCompleted {
                 reset_id,
+                key_id: reset_key,
                 while_offline,
                 new_vault,
             } => {
-                let reset_key = anchor.trusted.map(|trusted| trusted.key_id);
                 if let Some(completed) = view.facts().completed_reset.as_ref() {
-                    notices.push(notices::reset_completed(
-                        &reset_id,
-                        completed.effective_at_ms,
-                        while_offline,
-                        self.time(),
-                    ));
+                    self.queue(
+                        session,
+                        notices,
+                        NoticeEvent::ResetCompleted {
+                            reset_id,
+                            effective_at_ms: completed.effective_at_ms,
+                            while_offline,
+                        },
+                        None,
+                    );
                 }
                 session.drop_copy();
                 match new_vault {
                     Some(new) if inventory.holds_live(new.key_id) => {
                         self.load_key(session, new.key_id).await?;
+                        if session
+                            .key
+                            .as_ref()
+                            .is_none_or(|key| *key.write_public_key() != new.write_pk)
+                        {
+                            self.inconsistent(session, notices, Inconsistency::WriteKeyChanged);
+                            return Err(Stop);
+                        }
                         let record = session.record.as_mut().ok_or(Stop)?;
                         replace_trust(record, new);
                         self.sync_copy(session, notices, now).await
@@ -973,7 +1342,7 @@ impl SyncEngine {
                     // not block creating the new vault.
                     None if turning_on
                         && state_before == SyncState::ResetCompleted
-                        && inventory.live().all(|held| Some(held.key_id) == reset_key) =>
+                        && inventory.live().all(|held| held.key_id == reset_key) =>
                     {
                         self.create(session, notices, now).await
                     }
@@ -1043,18 +1412,18 @@ impl SyncEngine {
                 .map(|trusted| trusted.key_id.to_hex())
                 .unwrap_or_default()
         );
-        notices.push(notices::server_inconsistent(&discriminator));
+        self.queue(
+            session,
+            notices,
+            NoticeEvent::ServerInconsistent { discriminator },
+            None,
+        );
     }
 
     async fn api_failure(&self, session: &mut Session, notices: &mut NoticeQueue, error: ApiError) {
         match error {
             ApiError::DeviceRevoked => self.removed_from_account(session, notices).await,
-            ApiError::AccountDeleted => {
-                self.forget_account(&session.user).await;
-                session.record = None;
-                session.drop_copy();
-                self.deps.routing.reset();
-            }
+            ApiError::AccountDeleted => self.session_refused(session),
             ApiError::RateLimited { ref retry_after } => {
                 let wait = retry_after
                     .as_deref()
@@ -1082,6 +1451,7 @@ impl SyncEngine {
     async fn sync_copy(&self, session: &mut Session, notices: &mut NoticeQueue, now: i64) -> Step {
         let trusted = session.anchor().trusted.ok_or(Stop)?;
         self.load_key(session, trusted.key_id).await?;
+        self.open_cached_copy(session);
         self.fetch_copy(session, notices).await?;
         if session.newer.is_some() {
             session.set_state(SyncState::ReadOnlyNewerSchema, None);
@@ -1111,7 +1481,7 @@ impl SyncEngine {
                     .and_then(|record| record.server_version)
             })
             .flatten();
-        let blob = match self.api.get_blob(if_none_match).await {
+        let blob = match self.api.get_blob(&session.user, if_none_match).await {
             Ok(BlobFetch::NotModified) => return Ok(()),
             Ok(BlobFetch::Blob(blob)) => blob,
             Ok(BlobFetch::VaultMissing(_) | BlobFetch::BlobMissing) => {
@@ -1222,13 +1592,16 @@ impl SyncEngine {
                 JoinedVia::IcloudKeychain => JoinRoute::ICloudKeychain,
                 JoinedVia::Created => continue,
             };
-            notices.push(notices::mac_joined_sync(
-                &id.to_string(),
-                entry.name.value.as_str(),
-                route,
-                entry.joined_at_ms as i64,
-                self.time(),
-            ));
+            self.queue(
+                session,
+                notices,
+                NoticeEvent::MacJoinedSync {
+                    sync_device_id: id.to_string(),
+                    route,
+                    at_ms: entry.joined_at_ms as i64,
+                },
+                Some(entry.name.value.as_str()),
+            );
         }
     }
 
@@ -1374,7 +1747,11 @@ impl SyncEngine {
             ciphertext: &sealed,
             put_signature,
         };
-        let outcome = match self.api.put_blob(server_version, &body).await {
+        let outcome = match self
+            .api
+            .put_blob(&session.user, server_version, &body)
+            .await
+        {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.api_failure(session, notices, error).await;
@@ -1383,13 +1760,16 @@ impl SyncEngine {
         };
         match outcome {
             WriteOutcome::Stored { version: stored } if stored == version => {
+                // Only the tombstones this copy carries: a rule deleted while
+                // the PUT was in flight has a newer clock value and waits for
+                // the next write.
                 let pushed: Vec<VaultRuleLinkRecord> = self
                     .deps
                     .repo
                     .rule_links()
                     .unwrap_or_default()
                     .into_iter()
-                    .filter(|link| link.deleted)
+                    .filter(|link| mirror::tombstone_settled(&document, link, now as u64))
                     .collect();
                 let _ = self.deps.repo.delete_pushed_tombstones(&pushed);
                 let last_hlc = max_hlc(&document).map(|hlc| hlc.to_string());
@@ -1517,7 +1897,7 @@ impl SyncEngine {
             create_signature,
             put_signature,
         };
-        match self.api.create_vault(&body).await {
+        match self.api.create_vault(&session.user, &body).await {
             Ok(WriteOutcome::Stored { .. }) => {
                 let last_hlc = max_hlc(&document).map(|hlc| hlc.to_string());
                 let record = session.record.as_mut().ok_or(Stop)?;
@@ -1538,12 +1918,40 @@ impl SyncEngine {
                 Ok(())
             }
             Ok(WriteOutcome::Exists) => {
-                // Two Macs turned sync on at once (§14): the other won. This
-                // Mac deletes its own orphan item, and only that one, then
-                // adopts the winner's vault if its key is here.
-                let _ = self.deps.keys.delete(&session.user, trusted.key_id).await;
-                session.set_state(SyncState::WaitingForKey, None);
-                Err(Stop)
+                // Two Macs turned sync on at once (§14), or this Mac's own
+                // earlier create landed after its answer was lost. Which one
+                // the vault is decides whether this item is an orphan: it is
+                // deleted (its own key id only) only once velvt-core shows
+                // the vault under another key. If it shows this key, the
+                // vault is this Mac's own, and is opened as any copy is.
+                match self.api.get_vault(&session.user).await {
+                    Ok(VaultView::Present {
+                        key_id, write_pk, ..
+                    }) if key_id == trusted.key_id => {
+                        if write_pk != trusted.write_pk {
+                            self.inconsistent(session, notices, Inconsistency::WriteKeyChanged);
+                            return Err(Stop);
+                        }
+                        let record = session.record.as_mut().ok_or(Stop)?;
+                        replace_trust(record, trusted);
+                        session.forget_document();
+                        session.key = Some(key);
+                        session.joined_via = JoinedVia::Created;
+                        self.sync_copy(session, notices, now).await
+                    }
+                    Ok(VaultView::Present { .. }) => {
+                        let _ = self.deps.keys.delete(&session.user, trusted.key_id).await;
+                        session.set_state(SyncState::WaitingForKey, None);
+                        Err(Stop)
+                    }
+                    Ok(VaultView::Missing { .. }) | Err(_) => {
+                        // Not known: kept, and resolved like a create that
+                        // got no answer.
+                        session.pending_create = Some(key);
+                        session.set_state(SyncState::WaitingForKey, None);
+                        Err(Stop)
+                    }
+                }
             }
             Ok(_) => {
                 let _ = self.deps.keys.delete(&session.user, trusted.key_id).await;
@@ -1561,18 +1969,22 @@ impl SyncEngine {
     }
 
     async fn refresh_devices(&self, session: &mut Session, notices: &mut NoticeQueue, now: i64) {
-        let Ok(listed) = self.api.list_devices().await else {
+        let Ok(listed) = self.api.list_devices(&session.user).await else {
             return;
         };
         let known = self.deps.repo.known_devices().unwrap_or_default();
         let diff = devices::diff(&known, &listed, now);
         if self.deps.repo.insert_known_devices(&diff.to_record).is_ok() {
             for device in &diff.signed_in {
-                notices.push(notices::new_sign_in(
-                    &device.id,
-                    device.created_at_ms,
-                    self.time(),
-                ));
+                self.queue(
+                    session,
+                    notices,
+                    NoticeEvent::NewSignIn {
+                        server_device_id: device.id.clone(),
+                        at_ms: device.created_at_ms,
+                    },
+                    None,
+                );
             }
         }
         session.devices = listed;
@@ -1711,6 +2123,21 @@ enum PutResult {
     Done,
     Conflict,
 }
+
+/// How a typed code's key is taken (`adopt_delivered_key`).
+enum Adoption {
+    /// The key this Mac already trusts.
+    Keep,
+    /// Nothing trusted yet: a new anchor.
+    Fresh,
+    /// A rotation the trusted key signed: the versions go on.
+    Rotation(Vec<SignedRotation>),
+    /// A new vault, after a reset §6.1 accepts or a deletion its key signed.
+    NewVault { deleted: Option<KeyId> },
+}
+
+/// `vault_state.last_error` when the row could not be saved.
+const STATE_NOT_SAVED: &str = "state_not_saved";
 
 /// A uniform fraction for jitter. Not a secret, so `SystemRandom` is plenty.
 fn random_fraction() -> f32 {

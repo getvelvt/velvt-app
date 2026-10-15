@@ -3,9 +3,13 @@
 //!
 //! Every request goes through the `HttpClient` the engine is given: in the
 //! service that is `AuthManager`, so each one carries this device's token and
-//! is written to the egress ledger before it is sent. Nothing here judges a
-//! response: it parses what the server said, strictly, and `verify` decides
-//! whether to believe it.
+//! is written to the egress ledger before it is sent. Each names the account
+//! whose sync session sent it (`HttpRequest::account`), so `AuthManager`
+//! refuses to send it under another account's session: a pass still running
+//! when the person switches accounts never reads the other account's vault
+//! into this account's anchor. Nothing here judges a response: it parses
+//! what the server said, strictly, and `verify` decides whether to believe
+//! it.
 //!
 //! Error bodies are velvt-core's envelope, `{"error": {"code", "message",
 //! "details"?}}`. A `404 vault_not_found` carries the reset and tombstone
@@ -21,7 +25,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::auth::{AuthError, HttpClient, HttpRequest, HttpResponse, Precondition};
-use crate::vault::crypto::{KeyId, Signature, WritePublicKey};
+use crate::vault::crypto::{KeyId, Signature, UserId, WritePublicKey};
 
 pub const VAULT_PATH: &str = "/v1/vault";
 pub const PREFS_BLOB_PATH: &str = "/v1/vault/blobs/prefs";
@@ -243,7 +247,9 @@ impl VaultApi {
         Self { http }
     }
 
-    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, ApiError> {
+    /// Sends `request` under `user`'s session only.
+    async fn send(&self, user: &UserId, request: HttpRequest) -> Result<HttpResponse, ApiError> {
+        let request = request.under_account(Some(user.as_str().to_owned()));
         let response = self.http.send(request).await?;
         if response.status == 429 {
             return Err(ApiError::RateLimited {
@@ -256,8 +262,8 @@ impl VaultApi {
         Ok(response)
     }
 
-    pub async fn get_vault(&self) -> Result<VaultView, ApiError> {
-        let response = self.send(HttpRequest::get(VAULT_PATH)).await?;
+    pub async fn get_vault(&self, user: &UserId) -> Result<VaultView, ApiError> {
+        let response = self.send(user, HttpRequest::get(VAULT_PATH)).await?;
         match (response.status, response.error_code.as_deref()) {
             (200, _) => parse_vault(body(&response)?),
             (404, Some("vault_not_found")) => Ok(VaultView::Missing {
@@ -267,12 +273,16 @@ impl VaultApi {
         }
     }
 
-    pub async fn get_blob(&self, if_none_match: Option<u64>) -> Result<BlobFetch, ApiError> {
+    pub async fn get_blob(
+        &self,
+        user: &UserId,
+        if_none_match: Option<u64>,
+    ) -> Result<BlobFetch, ApiError> {
         let mut request = HttpRequest::get(PREFS_BLOB_PATH);
         if let Some(version) = if_none_match {
             request = request.with_precondition(Precondition::IfNoneMatch(entity_tag(version)));
         }
-        let response = self.send(request).await?;
+        let response = self.send(user, request).await?;
         match (response.status, response.error_code.as_deref()) {
             (200, _) => Ok(BlobFetch::Blob(parse_blob(body(&response)?)?)),
             (304, _) => Ok(BlobFetch::NotModified),
@@ -284,6 +294,7 @@ impl VaultApi {
 
     pub async fn put_blob(
         &self,
+        user: &UserId,
         base_version: u64,
         put: &PutBody<'_>,
     ) -> Result<WriteOutcome, ApiError> {
@@ -298,11 +309,15 @@ impl VaultApi {
             }),
         )
         .with_precondition(Precondition::IfMatch(entity_tag(base_version)));
-        let response = self.send(request).await?;
+        let response = self.send(user, request).await?;
         write_outcome(&response)
     }
 
-    pub async fn create_vault(&self, create: &CreateBody<'_>) -> Result<WriteOutcome, ApiError> {
+    pub async fn create_vault(
+        &self,
+        user: &UserId,
+        create: &CreateBody<'_>,
+    ) -> Result<WriteOutcome, ApiError> {
         let mut request = HttpRequest::post(VAULT_PATH);
         request.json_body = Some(json!({
             "key_id": create.key_id.to_hex(),
@@ -315,15 +330,15 @@ impl VaultApi {
             "create_sig_b64": create.create_signature.to_base64(),
             "put_sig_b64": create.put_signature.to_base64(),
         }));
-        let response = self.send(request).await?;
+        let response = self.send(user, request).await?;
         if response.status == 201 {
             return Ok(WriteOutcome::Stored { version: 1 });
         }
         write_outcome(&response)
     }
 
-    pub async fn list_devices(&self) -> Result<Vec<ServerDevice>, ApiError> {
-        let response = self.send(HttpRequest::get(DEVICES_PATH)).await?;
+    pub async fn list_devices(&self, user: &UserId) -> Result<Vec<ServerDevice>, ApiError> {
+        let response = self.send(user, HttpRequest::get(DEVICES_PATH)).await?;
         if response.status != 200 {
             return Err(unexpected(response.status, response.error_code.as_deref()));
         }
@@ -460,12 +475,18 @@ struct WireDevice {
     is_current: bool,
 }
 
+/// A reset id in the one form this Mac stores and compares: hyphenated and
+/// lowercase, 36 characters (`vault_state.seen_reset_request_id`'s CHECK).
+/// `Uuid::try_parse` also takes the simple, braced and URN forms, which C2
+/// never sends; stored as sent, one would fail the CHECK and every later
+/// save of the anchor with it.
 fn reset(wire: WireReset) -> Result<ServerReset, ApiError> {
-    if uuid::Uuid::try_parse(&wire.id).is_err() {
-        return Err(ApiError::Malformed("reset id"));
-    }
+    let id = uuid::Uuid::try_parse(&wire.id)
+        .map_err(|_| ApiError::Malformed("reset id"))?
+        .hyphenated()
+        .to_string();
     Ok(ServerReset {
-        id: wire.id.to_ascii_lowercase(),
+        id,
         key_id: parse_key_id(&wire.key_id, "reset key_id")?,
         requested_at_ms: parse_time(&wire.requested_at, "requested_at")?,
         effective_at_ms: parse_time(&wire.effective_at, "effective_at")?,
@@ -589,6 +610,32 @@ mod tests {
             72 * 3_600_000
         );
         assert!(facts.completed_reset.is_none() && facts.tombstone.is_none());
+    }
+
+    /// Every form `Uuid::try_parse` takes comes out as the one form the
+    /// anchor stores, so a server cannot make the anchor unsavable.
+    #[test]
+    fn a_reset_id_is_stored_in_one_form_whatever_form_it_arrives_in() {
+        let key = test_key();
+        for id in [
+            "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+            "6f9619ff8b86d011b42d00c04fc964ff",
+            "{6f9619ff-8b86-d011-b42d-00c04fc964ff}",
+            "urn:uuid:6f9619ff-8b86-d011-b42d-00c04fc964ff",
+        ] {
+            let facts = parse_facts(&json!({"pending_reset": {
+                "id": id,
+                "key_id": key.key_id().to_hex(),
+                "requested_at": "2025-10-15T10:42:00Z",
+                "effective_at": "2025-10-18T10:42:00Z"
+            }}))
+            .unwrap();
+            assert_eq!(
+                facts.pending_reset.unwrap().id,
+                "6f9619ff-8b86-d011-b42d-00c04fc964ff",
+                "{id}"
+            );
+        }
     }
 
     #[test]

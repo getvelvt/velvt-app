@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 pub struct HostBackoff {
@@ -58,16 +57,5 @@ impl HostBackoff {
 }
 
 fn parse_retry_after(value: &str) -> Option<Duration> {
-    if let Ok(seconds) = value.trim().parse::<u64>() {
-        return Some(Duration::from_secs(seconds));
-    }
-    let retry_at = DateTime::parse_from_rfc2822(value)
-        .ok()?
-        .with_timezone(&Utc);
-    Some(
-        retry_at
-            .signed_duration_since(Utc::now())
-            .to_std()
-            .unwrap_or_default(),
-    )
+    crate::auth::retry_after_delay(value)
 }

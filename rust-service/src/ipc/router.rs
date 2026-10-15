@@ -3270,8 +3270,11 @@ impl MessageRouter for R7Router {
                                     message_type = "auth_session",
                                     "restored auth session validated"
                                 );
+                                // Once per launch; any answer, a missing
+                                // route included, is fine (install-release-09).
+                                session_validator.report_client_version().await;
                             }
-                            Err(AuthError::Transport | AuthError::RateLimited) => {
+                            Err(AuthError::Transport | AuthError::RateLimited { .. }) => {
                                 tracing::warn!(
                                     message_type = "auth_session",
                                     "restored auth session validation was deferred"

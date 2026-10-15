@@ -71,8 +71,11 @@ history, the router answers with daily summaries Rust builds from
 router stops waiting on the cloud for history, which would hold the whole
 connection for the HTTP timeout, until the fetch scheduler's cache holds the
 cloud's history again or the session changes. The Patterns card renders
-either source; the Today tab's baseline label and day metrics read only the
-cloud's.
+either source; the Today tab's baseline label reads only the cloud's. Synced
+rows are UTC calendar days, so Swift labels them as UTC days and never matches
+one against the local "today" (protocol 37, cross-device-10): the Today tab's
+day metrics come from this Mac's local window, and "Today so far" describes
+only a history built on this Mac.
 
 Daily insights additionally produce a `notification_payload` IPC push (see
 "IPC framing and versioning" below), consumed by

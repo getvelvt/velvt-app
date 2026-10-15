@@ -315,6 +315,12 @@ pub const ENDPOINTS: &[Endpoint] = &[
         body: "{\"client_version\"}",
     },
     Endpoint {
+        method: "PATCH",
+        path: "/v1/devices/{device_id}",
+        when: "once a launch, after a saved session is restored and the server confirms it",
+        body: "{\"client_version\"} (the app version device registration and every batch already send)",
+    },
+    Endpoint {
         method: "POST",
         path: "/v1/auth/devices/reissue",
         when: "when you sign in on a Mac that is already registered, and when the server says this device's token was revoked",

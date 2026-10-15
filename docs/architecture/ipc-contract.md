@@ -1,9 +1,10 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 36 on 2026-10-15** (protocol 33 on
+> **Reconciled with `proto/` at protocol 37 on 2026-10-15** (protocol 33 on
 > 2026-09-27; 34 adds `auth_session.user_id`, two `menu_status.upload_status`
 > values and the `account_deleted` reason; 35 adds `intervention_delivery`; 36
-> adds `focus_status_availability`).
+> adds `focus_status_availability`; 37 adds the `rate_limited` code to
+> `auth_failure`).
 > This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
@@ -316,7 +317,18 @@ Each summary contains:
   aggregate Today-surface counts (protocol 18). The cloud API names the last one
   `focus_seconds`; Rust renames it when it parses the API response
 - `baseline_status`, `baseline_comparison`, `type_proportions` (per-category
-  seconds and proportion)
+  seconds and proportion). Since velvt-core merges two Macs' time (#42), each
+  category's `seconds` is its own merged time and `proportion` its share of
+  the categories' total, which can exceed `active_seconds` on a day two Macs
+  ran different categories at once. Swift draws the bar from `proportion` and
+  says "N% of active time" from `seconds / active_seconds` (protocol 37).
+
+How Swift reads the dates (protocol 37, cross-device-10): a `cloud` row is a UTC
+calendar day. Swift labels the Daily Activity rows "UTC days" and never matches
+a `cloud` row against the local date: the Today tab's day metrics come from
+this Mac's local window, and the Patterns card's "Today so far" tier describes
+only a `this_mac` history. Local-day cloud summaries wait on a disclosure
+decision (velvt-core `docs/local-day-summaries.md`).
 
 ### `service_status`
 
@@ -464,6 +476,20 @@ password.", "Use at most 256 characters for your password."), not velvt-core's
 Only `loc` and `type` are read: a detail may also echo the submitted value in
 `input`. Swift checks the same rule before sending a sign-up (12 to 256
 characters) or a login (at most 256), counted in Unicode scalars.
+
+A sign-up or login the cloud refuses with `429` answers `auth_failure` with
+`rate_limited` (protocol 37) and Rust's words for the wait, from the
+response's `Retry-After` rounded up to the minute: "Too many attempts. Try
+again in 15 minutes.", or "Too many attempts. Try again later." when the server
+sent no usable `Retry-After` (the server deployed before velvt-core #41). Swift
+shows it as it is.
+
+Once per launch, after a restored session is validated, Rust sends
+`PATCH /v1/devices/{device_id}` with `{"client_version"}` in the same
+background task (velvt-core #41, install-release-09). Any answer ends it for
+the launch, including the 404 or 405 of a server without the route; no answer
+(a transport failure, a 429, a 5xx) leaves it for the next restored session.
+Nothing waits on it and no message reports it.
 
 `auth_success` is sent only once a device exists to upload as: a sign-up or
 login whose device registration fails answers `auth_failure`, and Swift refuses

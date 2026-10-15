@@ -619,6 +619,12 @@ compares with this list.
   account or sign in: your email address and password.
 - **`POST /v1/devices`** — when you sign in on a Mac with no registered
   device: the app version.
+- **`PATCH /v1/devices/{device_id}`** — once each time the app starts with a
+  saved session, after the server confirms it: the app version, as
+  `{"client_version": ...}`, so the server's record of this Mac names the
+  version it runs rather than the one it first signed in with. It is the same
+  version device registration and every batch already send; nothing new
+  leaves the Mac.
 - **`POST /v1/auth/devices/reissue`** — when you sign in on a Mac that is
   already registered, or the server says this device's token was revoked: the
   device ID. After a reissue that gets no answer, or no verdict on the session,

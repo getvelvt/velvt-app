@@ -12,7 +12,7 @@
       "additionalProperties": false,
       "required": ["code", "message"],
       "properties": {
-        "code": { "enum": ["invalid_credentials", "network_error", "server_error"] },
+        "code": { "enum": ["invalid_credentials", "network_error", "server_error", "rate_limited"], "description": "rate_limited (protocol 37): the cloud refused the sign-up or login for too many attempts (429). The message says how long to wait, which Rust works out from the response's Retry-After; Swift shows it as it is." },
         "message": { "type": "string", "minLength": 1 }
       }
     }

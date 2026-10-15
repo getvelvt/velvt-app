@@ -596,6 +596,12 @@ fn registration_failure(flow: CredentialFlow, code: AuthFailureCode) -> ServerMe
 /// "Something went wrong", which made a 409 email-conflict indistinguishable
 /// from any other failure.
 fn map_auth_failure(response: &super::HttpResponse) -> AuthFailure {
+    if response.status == 429 {
+        return AuthFailure {
+            code: AuthFailureCode::RateLimited,
+            message: rate_limited_message(response.retry_after.as_deref()),
+        };
+    }
     if let Some(message) = credential_validation_message(response) {
         return AuthFailure {
             code: AuthFailureCode::InvalidCredentials,
@@ -618,6 +624,28 @@ fn map_auth_failure(response: &super::HttpResponse) -> AuthFailure {
                 .unwrap_or_else(|| "Something went wrong. Please try again.".into()),
         },
     }
+}
+
+/// The words for a sign-up or login the cloud refused for too many attempts
+/// (backend-e2e-07, helper-backend-12), with the wait taken from
+/// `Retry-After`.
+///
+/// velvt-core sends `Retry-After` in whole seconds on every rate-limit 429
+/// from #41 on, and words of its own that say the same wait; a server from
+/// before sends neither, only "Too many requests.". The wait is read from the
+/// header, so the app says the same thing to either server, and rounded up to
+/// the minute, so the person never comes back early.
+fn rate_limited_message(retry_after: Option<&str>) -> String {
+    let Some(wait) = retry_after.and_then(super::retry_after_delay) else {
+        return "Too many attempts. Try again later.".into();
+    };
+    let minutes = wait.as_secs().div_ceil(60).max(1);
+    let wait = match minutes {
+        1 => "a minute".to_owned(),
+        2..=119 => format!("{minutes} minutes"),
+        _ => format!("{} hours", minutes.div_ceil(60)),
+    };
+    format!("Too many attempts. Try again in {wait}.")
 }
 
 /// Shown when velvt-core refuses the password's length. Its sign-up rule is
@@ -1477,6 +1505,105 @@ mod tests {
         };
         assert_eq!(failure.code, AuthFailureCode::ServerError);
         assert_eq!(failure.message, "Request validation failed.");
+    }
+
+    fn rate_limited(retry_after: Option<&str>, message: &str) -> HttpResponse {
+        HttpResponse {
+            status: 429,
+            error_code: Some("rate_limit_exceeded".into()),
+            tokens: None,
+            retry_after: retry_after.map(str::to_owned),
+            message: Some(message.into()),
+            raw_body: None,
+            user_id: None,
+            device_id: None,
+        }
+    }
+
+    /// backend-e2e-07 / helper-backend-12: a refused sign-in for too many
+    /// attempts was `server_error` with whatever words the server sent. It is
+    /// its own failure now, and its wait comes from `Retry-After`, the same
+    /// way from velvt-core with #41 (seconds and words) and from the server
+    /// deployed before it (neither).
+    #[tokio::test]
+    async fn a_rate_limited_sign_in_is_its_own_failure_with_the_wait_from_retry_after() {
+        for (case, response, expected) in [
+            (
+                "velvt-core with #41",
+                rate_limited(Some("900"), "Too many attempts. Try again in 15 minutes."),
+                "Too many attempts. Try again in 15 minutes.",
+            ),
+            (
+                "velvt-core with #41, under a minute left",
+                rate_limited(Some("12"), "Too many attempts. Try again in a minute."),
+                "Too many attempts. Try again in a minute.",
+            ),
+            (
+                "the server deployed before #41",
+                rate_limited(None, "Too many requests."),
+                "Too many attempts. Try again later.",
+            ),
+        ] {
+            for flow in ["sign_up", "log_in"] {
+                let raw_http = Arc::new(FakeHttpClient::with_responses(vec![response.clone()]));
+                let (service, token_store) = service(Arc::clone(&raw_http));
+
+                let outcome = if flow == "sign_up" {
+                    service
+                        .sign_up("a@example.test".into(), "password".into())
+                        .await
+                } else {
+                    service
+                        .log_in("a@example.test".into(), "password".into())
+                        .await
+                };
+
+                assert_eq!(
+                    outcome,
+                    ServerMessage::AuthFailure(AuthFailure {
+                        code: AuthFailureCode::RateLimited,
+                        message: expected.into(),
+                    }),
+                    "{case}, {flow}"
+                );
+                assert_eq!(
+                    raw_http.requests().len(),
+                    1,
+                    "{case}, {flow}: nothing after it"
+                );
+                assert_eq!(
+                    token_store.load_device_id().unwrap(),
+                    None,
+                    "{case}, {flow}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_wait_is_rounded_up_to_the_minute_and_never_shorter_than_retry_after() {
+        for (retry_after, expected) in [
+            (Some("0"), "Too many attempts. Try again in a minute."),
+            (Some("60"), "Too many attempts. Try again in a minute."),
+            (Some("61"), "Too many attempts. Try again in 2 minutes."),
+            (Some(" 300 "), "Too many attempts. Try again in 5 minutes."),
+            (Some("7140"), "Too many attempts. Try again in 119 minutes."),
+            (Some("7200"), "Too many attempts. Try again in 2 hours."),
+            (Some("not a wait"), "Too many attempts. Try again later."),
+            (None, "Too many attempts. Try again later."),
+        ] {
+            assert_eq!(
+                rate_limited_message(retry_after),
+                expected,
+                "{retry_after:?}"
+            );
+        }
+        let in_ten_minutes = (Utc::now() + Duration::seconds(600)).to_rfc2822();
+        assert_eq!(
+            rate_limited_message(Some(&in_ten_minutes)),
+            "Too many attempts. Try again in 10 minutes.",
+            "an HTTP date is a wait too"
+        );
     }
 
     #[tokio::test]

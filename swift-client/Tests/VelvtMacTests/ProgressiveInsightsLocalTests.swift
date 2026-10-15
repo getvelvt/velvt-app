@@ -53,7 +53,6 @@ final class ProgressiveInsightsLocalTests: XCTestCase {
         history.update(from: localHistoryWeeks(readyRecent: 7, readyPrior: 7))
 
         XCTAssertEqual(history.baselineProgress.collectedDays, 0)
-        XCTAssertNil(history.todayReadyDay)
     }
 
     func testTheCaptionSaysWhereTheHistoryCameFromAndPromisesNothing() {
@@ -76,27 +75,30 @@ final class ProgressiveInsightsLocalTests: XCTestCase {
     /// A single ready day under a minute is not described: `formatActiveTime`
     /// writes whole minutes, and the card read "100% of 0m observed active
     /// time". velvt-core calls a day ready from any modelled time, so a
-    /// synced day can still arrive this short.
+    /// synced day can still arrive this short; since protocol 37 a synced day
+    /// is never "Today so far" (it is a UTC day), and the partial-week copy it
+    /// gets names no minutes either.
     func testADayUnderAMinuteIsNotDescribedAsZeroMinutes() throws {
-        let history = HistoryViewModel()
-        history.today = { "2026-09-27" }
-        history.update(
-            from: HistoryPayload(
-                days: 1,
-                summaries: [
-                    DailySummary(
-                        date: "2026-09-27", status: .ready, eventCount: 3, focusScore: nil,
-                        fragmentationScore: nil, confidenceLevel: .low, activeSeconds: 45,
-                        focusedSeconds: 45, meaningfulSwitchCount: 0,
-                        longestUninterruptedSeconds: 45, baselineStatus: "unavailable")
-                ],
-                source: .cloud))
+        let short = DailySummary(
+            date: "2026-09-27", status: .ready, eventCount: 3, focusScore: nil,
+            fragmentationScore: nil, confidenceLevel: .low, activeSeconds: 45,
+            focusedSeconds: 45, meaningfulSwitchCount: 0,
+            longestUninterruptedSeconds: 45, baselineStatus: "unavailable")
 
-        let insight = try XCTUnwrap(history.progressiveInsight)
-        XCTAssertEqual(insight.tier, .todaySoFar)
-        XCTAssertFalse(insight.observation.contains("0m"), insight.observation)
+        let local = HistoryViewModel()
+        local.today = { "2026-09-27" }
+        local.update(from: HistoryPayload(days: 1, summaries: [short], source: .thisMac))
+        let today = try XCTUnwrap(local.progressiveInsight)
+        XCTAssertEqual(today.tier, .todaySoFar)
         XCTAssertEqual(
-            insight.observation, "No qualifying activity has been recorded in this observed day yet.")
+            today.observation, "No qualifying activity has been recorded in this observed day yet.")
+
+        let synced = HistoryViewModel()
+        synced.today = { "2026-09-27" }
+        synced.update(from: HistoryPayload(days: 1, summaries: [short], source: .cloud))
+        let partial = try XCTUnwrap(synced.progressiveInsight)
+        XCTAssertEqual(partial.tier, .thisWeekSoFar)
+        XCTAssertFalse(partial.observation.contains("0m"), partial.observation)
     }
 
     func testEveryPlaceholderIsOneTheCardCanKeep() {

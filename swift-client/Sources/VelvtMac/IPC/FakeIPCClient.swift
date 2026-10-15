@@ -13,7 +13,12 @@ public final class FakeIPCClient: IPCClientProtocol, @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    public var versionMismatches: AnyPublisher<IPCVersionMismatch, Never> {
+        versionMismatchSubject.eraseToAnyPublisher()
+    }
+
     private let statusSubject = CurrentValueSubject<ConnectionStatus, Never>(.disconnected)
+    private let versionMismatchSubject = PassthroughSubject<IPCVersionMismatch, Never>()
     private let continuation: AsyncStream<ServerMessage>.Continuation
     private var recordedMessages: [ClientMessage] = []
 
@@ -56,5 +61,11 @@ public final class FakeIPCClient: IPCClientProtocol, @unchecked Sendable {
 
     public func setConnectionStatus(_ status: ConnectionStatus) {
         statusSubject.send(status)
+    }
+
+    /// Simulates a reconnect that met a helper speaking another version.
+    public func simulateReconnectVersionMismatch(expected: Int, got: Int) {
+        statusSubject.send(.disconnected)
+        versionMismatchSubject.send(IPCVersionMismatch(expected: expected, got: got))
     }
 }

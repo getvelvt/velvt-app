@@ -86,6 +86,9 @@ private enum RelayItem: Sendable {
     case closed(RawEvent)
     /// A dwell that has just begun (proto v32). Sent live or not at all.
     case began(RawEvent)
+    /// Not an event: resumed when the send loop reaches it, which is after
+    /// every item handed over before it has been sent or buffered.
+    case barrier(CheckedContinuation<Void, Never>)
 }
 
 /// Routes `RawEvent`s from the collection agent to the Rust service over IPC.
@@ -202,6 +205,35 @@ public actor EventRelay: EventRelayProtocol {
         }
     }
 
+    /// Returns once every event handed to the relay before this call has
+    /// been sent, or buffered because the socket is down.
+    ///
+    /// The relay and the work-block commands reach the service on separate
+    /// tasks, so without this a dwell flushed at a block's end could be
+    /// written to the socket after `end_work_block` and miss the block it
+    /// belongs to. The service handles one connection's frames in order, so
+    /// an event sent before this returns is read before anything the caller
+    /// sends afterwards. A relay that is not running returns at once.
+    ///
+    /// It does not wait for a reconnect: an event that went to the buffer
+    /// stays there, and so would anything the caller sends next.
+    public nonisolated func waitForQueuedEvents() async {
+        await withCheckedContinuation { (reached: CheckedContinuation<Void, Never>) in
+            let queued = continuationLock.withLock { () -> Bool in
+                guard let continuation = _ingestContinuation else {
+                    return false
+                }
+                if case .enqueued = continuation.yield(.barrier(reached)) {
+                    return true
+                }
+                return false
+            }
+            if !queued {
+                reached.resume()
+            }
+        }
+    }
+
     private nonisolated func drainStartupBuffer() -> (events: [RawEvent], dropped: Int) {
         startupBufferLock.withLock {
             let events = startupBuffer
@@ -308,6 +340,8 @@ public actor EventRelay: EventRelayProtocol {
                 }
             case .began(let event):
                 await sendLive(event)
+            case .barrier(let reached):
+                reached.resume()
             }
         }
     }

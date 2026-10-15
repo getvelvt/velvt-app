@@ -71,6 +71,96 @@ final class MenuBarNavigationTests: XCTestCase {
         }
     }
 
+    /// A dead helper sends no alert and collection keeps running without it,
+    /// so the health row used to say "Local collection active" in green with
+    /// nothing being saved. The unreachable service now decides the row.
+    func testHealthRowSaysTheServiceIsNotRunningAndSuppressesCollectionActive() {
+        let limited = CollectionStatus.limited("ax_observer_failed")
+        for collection in [CollectionStatus.running, limited, .idle, .error("ax_observer_failed")] {
+            XCTAssertEqual(
+                LocalServiceHealthRow.resolve(servicePhase: .unavailable, collection: collection),
+                .serviceNotRunning,
+                "\(collection)"
+            )
+        }
+        XCTAssertEqual(
+            LocalServiceHealthRow.resolve(servicePhase: .connected, collection: .running),
+            .collectionActive
+        )
+        // Starting and waking have their own grace period; nothing is claimed
+        // either way until it runs out.
+        for phase in [LocalServiceConnectionPhase.starting, .waking] {
+            XCTAssertEqual(
+                LocalServiceHealthRow.resolve(servicePhase: phase, collection: .running),
+                .collectionActive
+            )
+        }
+        XCTAssertEqual(
+            LocalServiceHealthRow.resolve(servicePhase: .connected, collection: .idle),
+            .hidden
+        )
+        XCTAssertEqual(LocalServiceHealthRow.notRunningTitle, "The local service isn't running")
+        XCTAssertEqual(
+            LocalServiceHealthRow.notRunningMessage,
+            "Your activity isn't being saved until it's back."
+        )
+        XCTAssertEqual(LocalServiceHealthRow.restartActionTitle, "Restart Local Service")
+    }
+
+    /// Driven the way the app drives it: a connected helper goes away, the
+    /// grace period runs out, and the row flips.
+    func testHealthRowFlipsWhenAConnectedHelperDies() async {
+        let client = FakeIPCClient()
+        let scheduler = ManualConnectionGraceScheduler()
+        let model = ServiceConnectionStatusModel(
+            connectionStatus: client.connectionStatus,
+            scheduler: scheduler,
+            workspaceNotifications: NotificationCenter()
+        )
+        client.setConnectionStatus(.connected)
+        await Task.yield()
+        XCTAssertEqual(
+            LocalServiceHealthRow.resolve(servicePhase: model.phase, collection: .running),
+            .collectionActive
+        )
+
+        client.setConnectionStatus(.reconnecting(attempt: 1, nextRetryIn: 1))
+        await Task.yield()
+        scheduler.fireLatest()
+
+        XCTAssertEqual(model.phase, .unavailable)
+        XCTAssertEqual(
+            LocalServiceHealthRow.resolve(servicePhase: model.phase, collection: .running),
+            .serviceNotRunning
+        )
+    }
+
+    /// The header line agrees with the row: an observer feeding a service
+    /// that is not there is not "Collection active".
+    func testCollectionLabelSaysActivityIsNotSavedWhileTheServiceIsUnavailable() {
+        for collection in [CollectionStatus.running, .limited("ax_observer_failed")] {
+            let presentation = PopoverConnectionPresentation(
+                accessibility: .granted,
+                collection: collection,
+                servicePhase: .unavailable
+            )
+            XCTAssertEqual(presentation.label, "Activity not being saved", "\(collection)")
+            XCTAssertEqual(presentation.color, VelvtPalette.signal, "\(collection)")
+        }
+        XCTAssertEqual(
+            PopoverConnectionPresentation(
+                accessibility: .granted, collection: .running, servicePhase: .connected
+            ).label,
+            "Collection active"
+        )
+        XCTAssertEqual(
+            PopoverConnectionPresentation(
+                accessibility: .granted, collection: .idle, servicePhase: .unavailable
+            ).label,
+            "Collection paused"
+        )
+    }
+
     func testServiceConnectionStatusModelReflectsSocketUpdates() async {
         let client = FakeIPCClient()
         let model = ServiceConnectionStatusModel(connectionStatus: client.connectionStatus)

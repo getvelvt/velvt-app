@@ -394,22 +394,34 @@ public final class AXCollectionAgent: CollectionAgentProtocol {
     /// workspace, and it reports only an observation the agent has already
     /// made. The caller supplies `instant`; the agent never wakes itself.
     ///
-    /// **Not yet wired to work-block end, deliberately.** Two facts block it,
-    /// both verified against the service on 2026-08-21:
+    /// **Called at the end of a work block only.** `WorkBlockCoordinator`
+    /// calls it, and waits for the relay to send the result, before it sends
+    /// `end_work_block` for an active block, and about a second before
+    /// `ends_at` for a block that runs out. The service closes a block's last
+    /// ledger row where that dwell's closed report says it ended
+    /// (`close_open_observation_at_reported_end` in `work_block/mod.rs`), so
+    /// without this a block spent in one app ends with no measured time. The
+    /// block-end signal Swift receives after a timeout is the finished
+    /// snapshot, too late to report against, which is why that case fires off
+    /// `ends_at` instead.
     ///
-    /// 1. The only block-end signal Swift receives is the `work_block_state`
-    ///    snapshot the deadline scheduler pushes *after* it has already run
-    ///    `finish` (`work_block/mod.rs:1289`). By then the block reads
-    ///    `completed`, so a flush sent on that signal is discarded by the
-    ///    phase guard at `work_block/mod.rs:519` and changes nothing.
-    /// 2. Firing earlier — off the snapshot's `ends_at` — would land the event
-    ///    while the block is still active and would fix the ledger, but the
-    ///    service also runs `evaluate_drift` on every observation
-    ///    (`work_block/mod.rs:563`) and can push an OS notification from it
-    ///    (`ipc/router.rs:1507`). The gates read the flushed event's
-    ///    `occurred_at`, which is the dwell's start, so a long terminal dwell
-    ///    can clear them and interrupt the user seconds before their block
-    ///    ends. Suppressing that needs a field the v28 protocol does not have.
+    /// It is not called at a pause or at the sleep that pauses a block. The
+    /// re-anchor moves the dwell's start, and the service recognises a closed
+    /// report as the continuation of a dwell the drift gate already decided
+    /// on by that start (`continues_decided_dwell`); after a re-anchor the
+    /// report sent once the block resumes would be decided on afresh, which
+    /// the pre-registered drift policy (version 5) does not do.
+    ///
+    /// The flushed report cannot interrupt the person at the end of a block.
+    /// When the gate does evaluate it, it abstains: for warm-up when the block
+    /// is under three minutes old, or because less than
+    /// `DRIFT_MIN_REMAINING_SECONDS` (two minutes) is left, which covers every
+    /// deadline flush. A manual end with more than two minutes left reaches
+    /// the gate only when the dwell's in-progress report was dropped; the
+    /// block is ended immediately afterwards. The flush can add one abstention
+    /// row to `intervention_decision_log` (for example `abstained_warmup` at
+    /// elapsed 0, when the dwell began before the block), with no offer and
+    /// no effect on any outcome.
     ///
     /// - Returns: `true` when an event was emitted.
     @discardableResult

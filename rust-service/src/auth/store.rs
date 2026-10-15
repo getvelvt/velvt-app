@@ -22,6 +22,15 @@ pub trait TokenStore: Send + Sync {
     fn load_device_id(&self) -> Result<Option<String>, TokenStoreError>;
     fn clear_device_id(&self) -> Result<(), TokenStoreError>;
 
+    /// The account the current session belongs to, as the cloud named it in
+    /// `auth_success` or the client handed it back in `auth_session`. The
+    /// upload queue is stamped with it, so a batch recorded under one account
+    /// is never sent under another's token. Held for exactly as long as the
+    /// tokens are.
+    fn store_user_id(&self, user_id: &str) -> Result<(), TokenStoreError>;
+    fn load_user_id(&self) -> Result<Option<String>, TokenStoreError>;
+    fn clear_user_id(&self) -> Result<(), TokenStoreError>;
+
     fn store_pair(&self, tokens: TokenPair) -> Result<(), TokenStoreError> {
         self.store_tokens(
             tokens.access_token().clone(),
@@ -61,6 +70,7 @@ pub struct FakeTokenStore {
     tokens: Arc<Mutex<Option<TokenPair>>>,
     user_tokens: Arc<Mutex<Option<TokenPair>>>,
     device_id: Arc<Mutex<Option<String>>>,
+    user_id: Arc<Mutex<Option<String>>>,
 }
 
 impl TokenStore for FakeTokenStore {
@@ -144,6 +154,29 @@ impl TokenStore for FakeTokenStore {
             .map_err(|_| TokenStoreError::Unavailable)? = None;
         Ok(())
     }
+
+    fn store_user_id(&self, user_id: &str) -> Result<(), TokenStoreError> {
+        *self
+            .user_id
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)? = Some(user_id.to_owned());
+        Ok(())
+    }
+
+    fn load_user_id(&self) -> Result<Option<String>, TokenStoreError> {
+        self.user_id
+            .lock()
+            .map(|user_id| user_id.clone())
+            .map_err(|_| TokenStoreError::Unavailable)
+    }
+
+    fn clear_user_id(&self) -> Result<(), TokenStoreError> {
+        *self
+            .user_id
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)? = None;
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -151,6 +184,7 @@ pub struct VolatileTokenStore {
     tokens: Mutex<Option<TokenPair>>,
     user_tokens: Mutex<Option<TokenPair>>,
     device_id: Mutex<Option<String>>,
+    user_id: Mutex<Option<String>>,
     updates: Mutex<Option<mpsc::UnboundedSender<AuthSession>>>,
 }
 
@@ -187,6 +221,7 @@ impl VolatileTokenStore {
                     .as_ref()
                     .map(|tokens| tokens.refresh_token().expose().to_owned()),
                 user_expires_at: user_tokens.as_ref().map(TokenPair::expires_at),
+                user_id: self.load_user_id()?,
             });
         }
         Ok(())
@@ -270,6 +305,29 @@ impl TokenStore for VolatileTokenStore {
     fn clear_device_id(&self) -> Result<(), TokenStoreError> {
         *self
             .device_id
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)? = None;
+        Ok(())
+    }
+
+    fn store_user_id(&self, user_id: &str) -> Result<(), TokenStoreError> {
+        *self
+            .user_id
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)? = Some(user_id.to_owned());
+        Ok(())
+    }
+
+    fn load_user_id(&self) -> Result<Option<String>, TokenStoreError> {
+        self.user_id
+            .lock()
+            .map(|user_id| user_id.clone())
+            .map_err(|_| TokenStoreError::Unavailable)
+    }
+
+    fn clear_user_id(&self) -> Result<(), TokenStoreError> {
+        *self
+            .user_id
             .lock()
             .map_err(|_| TokenStoreError::Unavailable)? = None;
         Ok(())

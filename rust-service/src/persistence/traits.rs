@@ -279,7 +279,25 @@ pub trait UploadBatchRepo: Send + Sync {
         error_code: &str,
     ) -> Result<(), PersistenceError>;
     fn mark_rejected(&self, batch_id: &str, error_code: &str) -> Result<(), PersistenceError>;
+    /// Deletes a queued batch that must never be sent, and makes its events
+    /// local-only in the same transaction.
+    ///
+    /// Deleting the batch alone left its events upload-eligible and in no
+    /// batch, which is exactly what `UploadBatcher::recover_unbatched` re-queues
+    /// at the next start: a batch destroyed with a deleted account came back
+    /// under the next one.
     fn discard_batch(&self, batch_id: &str) -> Result<(), PersistenceError>;
+    /// Makes every queued batch that failed for want of a session due now,
+    /// and says how many there were.
+    ///
+    /// Called when a session becomes usable. A batch the retry loop reached
+    /// before the session was handed over (always, after a restart) was put
+    /// off fifteen minutes as `authentication_required`, and waited them out
+    /// while new uploads went through and the menu said "Sign in required".
+    fn reschedule_authentication_required(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError>;
     fn batch_status(&self, batch_id: &str) -> Result<super::UploadBatchStatus, PersistenceError>;
     fn host_backoff_attempt(&self, host: &str) -> Result<u32, PersistenceError>;
     fn host_backoff_until(&self, host: &str) -> Result<Option<DateTime<Utc>>, PersistenceError>;
@@ -405,7 +423,27 @@ pub trait RawEventRepo: Send + Sync {
         event: &RawEventEntry,
         metadata: &DeclaredAppMetadata,
     ) -> Result<(), PersistenceError>;
+    /// Inserts an event as [`Self::insert_with_declared_metadata`] does, with
+    /// the account it may be uploaded under (migration 0042). `None` writes
+    /// the row exactly as that method does.
+    fn insert_with_upload_owner(
+        &self,
+        event: &RawEventEntry,
+        metadata: &DeclaredAppMetadata,
+        upload_owner_user_id: Option<&str>,
+    ) -> Result<(), PersistenceError>;
     fn unbatched_events(&self, limit: usize) -> Result<Vec<RawEventEntry>, PersistenceError>;
+    /// The account each of `event_ids` was recorded for upload under, for
+    /// those that have one.
+    fn upload_owners(
+        &self,
+        event_ids: &[String],
+    ) -> Result<HashMap<String, String>, PersistenceError>;
+    /// Makes every upload-eligible event that is in no batch local-only, and
+    /// says how many there were. Run when the account they were recorded
+    /// under is deleted: those are the events `recover_unbatched` would
+    /// otherwise queue at the next start, under whoever signs in then.
+    fn withdraw_unbatched_uploads(&self) -> Result<u64, PersistenceError>;
     fn events_before(&self, cutoff: DateTime<Utc>) -> Result<Vec<RawEventEntry>, PersistenceError>;
     /// Returns at most `limit` abstracted events in a bounded time window.
     fn events_between(

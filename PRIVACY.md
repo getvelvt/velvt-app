@@ -116,8 +116,8 @@ reminder, also described below.
 | Table | Contents | Default retention |
 |---|---|---|
 | `abstraction_map` | stable-key hash → stable ID, the on-device `label` (such as `video:youtube`), category, taxonomy version, classification provenance, and `display_name` — a friendly name for the window, or the activity name you typed when you renamed a classification. The key is an HMAC under this install's `stable_key_salt` (migration 0037), described below | a mapping is swept once 14 days pass with no further observation of its window, unless a correction you made or an event still in `raw_event_buffer` points at it — so a window you corrected keeps its mapping until you undo that correction. `display_name` also goes when you undo that correction, or with Reset Corrections, which nulls the column on every row |
-| `raw_event_buffer` | abstracted event metadata for short-lived audit/replay and the local 14-day activity chart, plus seven device-local columns that can name or identify an application, all described below (`label`, `local_display_label`, `local_name_suggestion`, `app_stable_id`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids`), and since migration 0040 `site_stable_id`, a salted key of the site a browser tab was on, also described below | 14 days (`VELVT_RAW_EVENT_TTL_HOURS`) |
-| `upload_batch` / `batch_event` | the upload queue: each batch's id, status, attempt count and last error code, and per queued event its id, timestamp, duration, category, classification tier and taxonomy version — plus two device-local columns that are never sent, the random stable ID and the on-device `label` (which can name a service, as `communication:slack` does); the serializer turns the label into the category-scoped type that is sent | sent batches: 30 days; rejected batches: 7 days (audit window); pending and failed batches: 30 days, the same horizon as sent |
+| `raw_event_buffer` | abstracted event metadata for short-lived audit/replay and the local 14-day activity chart, plus seven device-local columns that can name or identify an application, all described below (`label`, `local_display_label`, `local_name_suggestion`, `app_stable_id`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids`), and since migration 0040 `site_stable_id`, a salted key of the site a browser tab was on, also described below; since migration 0042, on an event recorded for upload, `upload_owner_user_id`, the cloud's opaque id for the account that was signed in, which decides whose session may upload it and is never sent | 14 days (`VELVT_RAW_EVENT_TTL_HOURS`) |
+| `upload_batch` / `batch_event` | the upload queue: each batch's id, status, attempt count, last error code and (since migration 0042) `owner_user_id`, the cloud's opaque id for the account the batch was recorded under, which is never sent and means a batch is uploaded only while that account is signed in and is discarded once another account signs in on this Mac; and per queued event its id, timestamp, duration, category, classification tier and taxonomy version — plus two device-local columns that are never sent, the random stable ID and the on-device `label` (which can name a service, as `communication:slack` does); the serializer turns the label into the category-scoped type that is sent | sent batches: 30 days; rejected batches: 7 days (audit window); pending and failed batches: 30 days, the same horizon as sent |
 | `personal_override` | one correction you made to a single window: the window's stable-key hash, the category you chose, `activity_name` (the name you typed for it), and since migration 0036 `app_key_hash` — the application key the correction also taught, the same salted app-name digest as `raw_event_buffer.app_stable_id`, so Undo can remove that application rule without reading the event buffer | until you undo that correction or use Reset Corrections. No sweep expires it |
 | `personal_site_override` | a rule you taught about one site, applied in every browser: the site's key — the same salted digest of the site's hostname as `raw_event_buffer.site_stable_id`, never the hostname itself — the category you chose, `activity_name` (the name you typed for it), a correction count, and when the rule was made and last changed | until you remove that rule or use Reset Corrections. No sweep expires it |
 | `local_site_name` | **the hostname of a site Velvt could not categorize**, in `host` (such as `forum.example.org`, with a leading `www.` removed), beside the site's key and `last_seen_at`, so Velvt can name the site when it asks you what it is. Written, and `last_seen_at` moved, only on a visit Velvt could not confidently classify, to a site you have taught no rule for, and not when one of your own corrections decided the visit. A visit it did classify confidently neither writes the row nor moves `last_seen_at`. It is the only column in the database that holds the hostname of a site you visited, and it holds nothing else from the address: no path, query, port, or credentials | removed when you teach a rule for that site; otherwise 14 days after `last_seen_at`, the last visit to the site Velvt could not categorize |
@@ -402,9 +402,18 @@ this is the whole of what it reaches:
   `antecedent_finding`.
 - **Delete Account** is a request to the cloud. The Rust service marks an open
   invitation expired, relays the deletion to the account-deletion endpoint, and
-  on acceptance clears the session it holds in memory and destroys the upload
-  batches still waiting to be sent. It deletes nothing else from this database
-  (`ClientMessage::DeleteAccount`, `rust-service/src/ipc/router.rs`).
+  on acceptance clears the session it holds in memory, destroys the upload
+  batches still waiting to be sent, and makes every event not yet in a batch
+  local-only, so none of it is sent under the next account to sign in. It
+  deletes nothing else from this database (`ClientMessage::DeleteAccount`,
+  `rust-service/src/ipc/router.rs`). An account deleted from another Mac is
+  treated the same way here once the server answers this Mac that the account
+  was deleted.
+- **Signing out** keeps what is waiting to upload, under the account it was
+  recorded for. It is sent if that account signs in again on this Mac, and
+  discarded, never sent, once a different account signs in: activity recorded
+  under one account is never uploaded into another
+  (`SessionOwnership`, `rust-service/src/upload/coordinator.rs`).
 
 A deleted row is also gone from the file itself. The service opens the database
 with SQLite's `secure_delete` on, so SQLite overwrites a deleted row's bytes with
@@ -505,11 +514,11 @@ fails until this list is updated in the same commit.
 | `personal_semantic_prototype` | `key_hash`, `category`, `embedding`, `dimensions`, `correction_count`, `updated_at` |
 | `personal_site_override` | `site_key_hash`, `category`, `activity_name`, `correction_count`, `created_at`, `updated_at` |
 | `quiet_hours_offer_state` | `id`, `rule_version`, `triggered_at`, `offered_at`, `response`, `responded_at` |
-| `raw_event_buffer` | `id`, `event_id`, `stable_id`, `label`, `category`, `taxonomy_version`, `occurred_at`, `created_at`, `duration_seconds`, `local_display_label`, `classification_tier`, `classification_status`, `classification_confidence`, `classification_source`, `local_name_suggestion`, `upload_eligible`, `app_stable_id`, `app_scope_eligible`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids`, `site_stable_id` |
+| `raw_event_buffer` | `id`, `event_id`, `stable_id`, `label`, `category`, `taxonomy_version`, `occurred_at`, `created_at`, `duration_seconds`, `local_display_label`, `classification_tier`, `classification_status`, `classification_confidence`, `classification_source`, `local_name_suggestion`, `upload_eligible`, `app_stable_id`, `app_scope_eligible`, `app_bundle_stable_id`, `declared_app_category`, `document_type_ids`, `site_stable_id`, `upload_owner_user_id` |
 | `schema_migration` | `id`, `version`, `name`, `created_at`, `checksum` |
 | `semantic_embedding_cache` | `key_hash`, `embedding`, `dimensions`, `updated_at` |
 | `stable_key_salt` | `id`, `salt`, `created_at` |
-| `upload_batch` | `id`, `batch_id`, `status`, `sent_at`, `attempt_count`, `next_attempt_at`, `last_error_code`, `created_at` |
+| `upload_batch` | `id`, `batch_id`, `status`, `sent_at`, `attempt_count`, `next_attempt_at`, `last_error_code`, `created_at`, `owner_user_id` |
 | `upload_host_backoff` | `id`, `host`, `attempt_count`, `next_attempt_at`, `created_at`, `updated_at` |
 | `velvt_quiet_hours` | `id`, `start_local_minutes`, `end_local_minutes`, `rule_version`, `configured_at` |
 | `weekly_digest` | `week_start_local_date`, `generated_at`, `blocks_declared`, `blocks_completed`, `recoveries`, `wrong_interventions`, `invitations_accepted`, `withheld`, `digest_version`, `delivered_at`, `acknowledged_at` |
@@ -604,10 +613,12 @@ compares with this list.
   device: the app version.
 - **`POST /v1/auth/devices/reissue`** — when you sign in on a Mac that is
   already registered, or the server says this device's token was revoked: the
-  device ID.
+  device ID. After a reissue that gets no answer, or no verdict on the session,
+  none is sent for a minute.
 - **`POST /v1/auth/refresh`** — when the access token is about to expire: the
-  refresh token. After a refresh that gets no answer from the server, none is
-  sent for a minute.
+  refresh token. After a refresh that gets no answer from the server, or an
+  answer that is not the server's verdict on the session (a network edge's
+  refusal, an outage, a rate limit), none is sent for a minute.
 - **`GET /v1/auth/session`** — when the app restores a saved session. No body.
 - **`POST /v1/auth/logout`** — when you sign out. No body.
 - **`DELETE /v1/account`** — when you use Delete Account. No body.
@@ -628,13 +639,16 @@ compares with this list.
   succeeds or the session changes. The
   app also asks for history while signed out; that answer is built on this
   Mac from its own events and makes no request.
-- **`GET /v1/ready`** — when the menu asks whether the server is reachable, at
-  most once a minute. No body and no account token.
+- **`GET /v1/ready`** — when the service starts, when you sign in, and when
+  the menu asks whether the server is reachable, at most once a minute. No body
+  and no account token.
 
 Sign-up, log-in, and `/v1/ready` carry no token, and a token refresh carries
 the refresh token in its body; every other request carries an access token.
-Like any HTTPS request, each one also shows the server your IP address and the
-time.
+Every request carries the header `User-Agent: Velvt/<app version> (macOS)`,
+the same version the batches and device registration already send; a request
+without one is the kind a network edge's bot rules challenge. Like any HTTPS
+request, each one also shows the server your IP address and the time.
 
 Two things outside the Rust service can reach the network, and neither is in the
 ledger. The Swift app's own update check (Sparkle) requests an appcast from

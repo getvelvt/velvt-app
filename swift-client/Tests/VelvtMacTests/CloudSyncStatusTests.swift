@@ -153,6 +153,18 @@ final class CloudSyncStatusPresentationTests: XCTestCase {
         XCTAssertNil(sut.detail)
     }
 
+    /// helper-backend-11: before its first readiness answer the service says
+    /// `checking`, which used to arrive as `network_unavailable` and read
+    /// "Offline" after every start. `signed_out` while this app is signed in
+    /// is the moment before the session reaches the service.
+    func testTheServiceStillCheckingIsCheckingNotOffline() {
+        for uploadStatus in ["checking", "signed_out"] {
+            let sut = presentation(signedIn, status(cloudReady: false, uploadStatus: uploadStatus, queued: 3))
+            XCTAssertEqual(sut.state, .checking, uploadStatus)
+            XCTAssertEqual(sut.headline, "Checking sync…", uploadStatus)
+        }
+    }
+
     func testNoAccountModelAtAll() {
         let sut = presentation(nil, status())
 

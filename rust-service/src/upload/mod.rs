@@ -9,12 +9,13 @@ mod transport;
 
 pub use assembly::BatchAssembler;
 pub use coordinator::{
-    payload_for_queued_batch, BatchRetentionPolicy, CoordinatorError, FakePrivacyAlertSink,
-    IpcPrivacyAlertSink, KeepAllBatches, PrivacyAlertSink, UploadCoordinator,
+    payload_for_queued_batch, BatchDisposition, BatchOwnershipPolicy, CoordinatorError,
+    FakePrivacyAlertSink, IpcPrivacyAlertSink, PrivacyAlertSink, SendEveryBatch, SessionOwnership,
+    UploadCoordinator,
 };
 pub use dto::{BatchEventPayload, BatchPayload};
 pub use retry::HostBackoff;
-pub use runtime::{EventIngestor, SharedUploadBatcher, UploadBatcher};
+pub use runtime::{destroy_upload_queue, EventIngestor, SharedUploadBatcher, UploadBatcher};
 pub use transport::{
     BatchUploadError, BatchUploader, FakeBatchUploader, HttpBatchUploader, UploadOutcome,
 };

@@ -10,8 +10,8 @@ use velvt_service::abstraction::{
 use velvt_service::dashboard;
 use velvt_service::delivery::{parse_insight_with_rehydrator, LocalInsightRehydrator};
 use velvt_service::persistence::{
-    AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, NewUploadBatch,
-    PersistenceError, RawEventEntry, SqlitePersistence, UploadBatchStatus,
+    AbstractionMapping, BatchEvent, DeclaredAppMetadata, HistoryCacheEntry, InsightCacheEntry,
+    NewUploadBatch, PersistenceError, RawEventEntry, SqlitePersistence, UploadBatchStatus,
     WorkBlockCategoryCorrection, WorkBlockIntervention, WorkBlockInterventionOutcome,
     WorkBlockOrigin, WorkBlockRecord,
 };
@@ -277,6 +277,59 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
     assert!(repository.events_before(timestamp(11)).unwrap().is_empty());
 }
 
+/// The account an event is recorded for upload under (migration 0042) is
+/// what `recover_unbatched` re-queues it under at the next start; an event
+/// read back with no owner is sent under whoever is signed in then.
+#[test]
+fn an_events_upload_owner_is_read_back_as_written() {
+    let database = database();
+    let repository = database.raw_event_repo();
+    let event = |event_id: &str, upload_eligible: bool| RawEventEntry {
+        event_id: event_id.into(),
+        stable_id: format!("abs_{event_id}"),
+        label: "document:edit".into(),
+        local_display_label: None,
+        local_name_suggestion: None,
+        category: "FOCUS_WORK".into(),
+        taxonomy_version: "mvp-2".into(),
+        classification_tier: "exact_match".into(),
+        classification_status: "classified".into(),
+        classification_confidence: "high".into(),
+        classification_source: "seed".into(),
+        occurred_at: timestamp(10),
+        duration_seconds: 60,
+        upload_eligible,
+        app_stable_id: None,
+        app_scope_eligible: true,
+        site_stable_id: None,
+    };
+
+    repository
+        .insert_with_upload_owner(
+            &event("owned", true),
+            &DeclaredAppMetadata::ABSENT,
+            Some("account-a"),
+        )
+        .unwrap();
+    repository.insert(&event("ownerless", true)).unwrap();
+    repository
+        .insert_with_upload_owner(
+            &event("local-only", false),
+            &DeclaredAppMetadata::ABSENT,
+            Some("account-a"),
+        )
+        .unwrap();
+
+    let owners = repository
+        .upload_owners(&["owned".into(), "ownerless".into(), "local-only".into()])
+        .unwrap();
+    assert_eq!(
+        owners,
+        HashMap::from([("owned".to_owned(), "account-a".to_owned())]),
+        "only an event that may be uploaded has an owner to upload it under"
+    );
+}
+
 #[test]
 fn local_display_aggregation_is_bounded_to_five_labels_plus_other() {
     let database = database();
@@ -351,6 +404,7 @@ fn upload_batch_repo_contract() {
     let repository = database.upload_batch_repo();
     let batch = NewUploadBatch {
         batch_id: "batch-1".into(),
+        owner_user_id: None,
     };
     let event = BatchEvent {
         event_id: "event-1".into(),
@@ -380,6 +434,7 @@ fn sent_upload_batches_do_not_report_stale_retry_errors() {
     let repository = database.upload_batch_repo();
     let batch = NewUploadBatch {
         batch_id: "batch-with-recovered-error".into(),
+        owner_user_id: None,
     };
 
     repository.insert_batch(&batch).unwrap();
@@ -442,6 +497,7 @@ fn multi_table_batch_write_rolls_back_on_failure() {
     let repository = database.upload_batch_repo();
     let batch = NewUploadBatch {
         batch_id: "batch-rollback".into(),
+        owner_user_id: None,
     };
     let event = BatchEvent {
         event_id: "event-duplicate".into(),
@@ -569,6 +625,7 @@ fn personal_override_runs_before_plugins_and_is_not_taxonomy_version_scoped() {
         .insert_batch_with_events(
             &NewUploadBatch {
                 batch_id: "uploaded-correction".into(),
+                owner_user_id: None,
             },
             &[BatchEvent {
                 event_id: Uuid::new_v4().to_string(),
@@ -686,6 +743,7 @@ fn correction_history_search_paginates_beyond_twenty_five_and_survives_upload_re
             .insert_batch_with_events(
                 &NewUploadBatch {
                     batch_id: "correction-history-upload".into(),
+                    owner_user_id: None,
                 },
                 &[BatchEvent {
                     event_id: Uuid::new_v4().to_string(),
@@ -1037,6 +1095,7 @@ fn failed_batches_are_resumed_and_rejected_batches_are_terminal() {
     repository
         .insert_batch(&NewUploadBatch {
             batch_id: "batch-recovery".into(),
+            owner_user_id: None,
         })
         .unwrap();
 

@@ -404,7 +404,7 @@ public final class AccountStateManager: ObservableObject {
         listenerTask = Task { [weak self] in
             for await message in client.incomingMessages {
                 guard let self, !Task.isCancelled else { break }
-                self.handle(message)
+                self.handle(message, from: client)
             }
             // Stream ended while the task was not cancelled — the IPC connection
             // dropped unexpectedly. Revert transient states so the UI does not
@@ -437,13 +437,13 @@ public final class AccountStateManager: ObservableObject {
 
     // MARK: - Private
 
-    private func handle(_ message: ServerMessage) {
+    private func handle(_ message: ServerMessage, from client: any IPCClientProtocol) {
         authLogger.debug("IPC message received: \(message.safeLogDescription)")
         serverMessages.send(message)
         switch message {
         case .authSuccess(let success):
             authLogger.debug("auth.handle: authSuccess received for userId \(success.userId)")
-            handleAuthSuccess(success)
+            handleAuthSuccess(success, from: client)
         case .authSessionUpdated(let session):
             store(session: session)
         case .authFailure(let failure):
@@ -462,13 +462,15 @@ public final class AccountStateManager: ObservableObject {
             accountEmailCache = .some(nil)
             requiresReauthentication = false
             accountState = .loggedOut
-        case .needsReauth:
+        case .needsReauth(let needs):
             keychain.deleteAll()
             cachedSnapshot = nil
             cachedSession = nil
             pendingEmail = nil
             accountEmailCache = .some(nil)
-            requiresReauthentication = true
+            // An account deleted elsewhere is gone, not expired: there is
+            // nothing to sign in to again, so the app does not ask.
+            requiresReauthentication = needs.reason != Self.accountDeletedReason
             accountState = .loggedOut
         case .deviceRevoked:
             keychain.deleteAll()
@@ -484,11 +486,30 @@ public final class AccountStateManager: ObservableObject {
         }
     }
 
-    private func handleAuthSuccess(_ success: AuthSuccess) {
+    private func handleAuthSuccess(_ success: AuthSuccess, from client: any IPCClientProtocol) {
         guard case .loggingIn = accountState else {
             authLogger.warning(
                 "auth.handleAuthSuccess: received authSuccess but state is \(String(describing: self.accountState)), ignoring"
             )
+            return
+        }
+        // A session with no device uploads nothing, and handed back after a
+        // restart it signs the person out. The service no longer answers one,
+        // and one that arrives is refused rather than stored as a sign-in.
+        // The service stored that session before it answered, so it is told
+        // to drop it: otherwise it would go on uploading as signed in while
+        // the app says signed out.
+        guard !success.deviceId.isEmpty, !success.userId.isEmpty else {
+            authLogger.error("auth.handleAuthSuccess: authSuccess carried no device; refusing it")
+            Task { try? await client.send(.logOut) }
+            serverMessages.send(
+                .authFailure(
+                    AuthFailure(
+                        code: .serverError,
+                        message: "This Mac could not be registered. Please try again."
+                    )))
+            pendingEmail = nil
+            accountState = .loggedOut
             return
         }
         authLogger.debug("auth.handleAuthSuccess: writing auth snapshot to Keychain")
@@ -500,7 +521,8 @@ public final class AccountStateManager: ObservableObject {
                 expiresAt: success.expiresAt,
                 userAccessToken: success.userAccessToken,
                 userRefreshToken: success.userRefreshToken,
-                userExpiresAt: success.userExpiresAt
+                userExpiresAt: success.userExpiresAt,
+                userId: success.userId
             )
             let snapshot = StoredAuthSnapshot(
                 userId: success.userId,
@@ -556,9 +578,15 @@ public final class AccountStateManager: ObservableObject {
         // from the IPC thread. `cachedSession` is main-actor state; if a future edit
         // drops the `receive(on:)` hop this fires in debug instead of racing.
         assert(Thread.isMainThread, "sendStoredSession reads main-actor state off the main thread")
-        guard let session = cachedSession else {
+        guard let stored = cachedSession else {
             isSessionHandedOver = true
             return
+        }
+        // A session stored before 1.0.14 names no account; the snapshot it is
+        // stored in does.
+        var session = stored
+        if stored.userId == nil, let userId = cachedSnapshot?.userId {
+            session = stored.owned(by: userId)
         }
         isSessionHandedOver = false
         Task { [weak self] in
@@ -570,6 +598,10 @@ public final class AccountStateManager: ObservableObject {
             isSessionHandedOver = true
         }
     }
+
+    /// The `needs_reauth` reason for an account the server reported deleted,
+    /// here or on another Mac.
+    static let accountDeletedReason = "account_deleted"
 
     private var currentUserId: String? {
         if case .loggedIn(let userId) = accountState {

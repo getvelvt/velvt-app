@@ -45,9 +45,16 @@ A `raw_field_rejected` response
 permanently rejects the batch, emits a structured error, and broadcasts
 `privacy_violation_alert` to Swift.
 
-`BatchRetentionPolicy` is the R8 integration seam. R5 defaults to
-`KeepAllBatches`; a future retention policy can discard expired batches before
-the uploader is invoked without changing transport or retry logic.
+Every queued batch carries the account it was recorded under
+(`upload_batch.owner_user_id`, migration 0042), and `BatchOwnershipPolicy`
+decides on every send path whose token may send it. The service installs
+`SessionOwnership`: a batch is sent only while its account is signed in, every
+batch is held while no session is usable, and a batch recorded under another
+account is discarded, its events made local-only, once a different account has
+signed in. Log Out writes the open batch to the queue under the departing
+account; Delete Account, here or (as `401 account_deleted`) on another Mac,
+destroys the queue. The retry loop wakes when a session becomes usable and
+makes due every batch put off as `authentication_required`.
 
 ## Auth State Machine
 

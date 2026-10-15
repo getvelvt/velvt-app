@@ -19,7 +19,10 @@ pub use connection::{
     serve_connection_with_push_queue, serve_connection_with_push_queue_and_shutdown,
 };
 pub use reconnect::ReconnectTracker;
-pub use router::{DefaultRouter, MenuStatusProvider, MessageRouter, R7Router};
+pub use router::{
+    end_deleted_account_session, DefaultRouter, MenuStatusProvider, MessageRouter, R7Router,
+    SessionWatch, ACCOUNT_DELETED_REASON,
+};
 
 /// Errors produced by IPC transport or protocol handling.
 #[derive(Debug, thiserror::Error)]

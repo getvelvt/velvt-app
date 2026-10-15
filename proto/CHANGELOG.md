@@ -1,5 +1,49 @@
 # IPC Protocol Changelog
 
+## Version 34 - 2026-10-14
+
+Account safety before any tester signs in. Activity queued under one account
+was uploaded into another: events acked while account A was signed in, and
+still in the open batch or the queue at Log Out, were sent under account B's
+token after B signed in on the same Mac; and after an account was deleted on
+another Mac, the queue this Mac held for it was sent under the next account to
+sign in here.
+
+- `auth_session` and `auth_session_updated` gain optional `user_id` (string,
+  at least one character): the account the session belongs to, as
+  `auth_success.user_id` named it. Rust stamps every event it records for
+  upload, and every batch, with it (`raw_event_buffer.upload_owner_user_id`,
+  `upload_batch.owner_user_id`, migration 0042) and sends a batch only while
+  that account is signed in; a batch recorded under another account is
+  discarded, and its events made local-only, once a different account is
+  signed in. Swift sends the snapshot's `userId` with every handover,
+  including for a session stored before this version. Rust's `AuthSession`
+  denies unknown fields, so a 33 helper would refuse the field: hence the
+  version.
+- `menu_status.upload_status` gains `signed_out` (the service holds no
+  session) and `checking` (no readiness answer yet, which was reported as
+  `network_unavailable` after every start). The session decides first: a
+  session the cloud ended (reauthentication, a revoked device, a deleted
+  account) reports `auth_required` whatever the queue holds, and a queue's
+  `authentication_required` error is no longer reported as `auth_required`
+  while a session is usable.
+- `needs_reauth.reason` may be `account_deleted`: the cloud answered `401
+  account_deleted`. Rust has destroyed what it queued for the account and
+  cleared the session and device id; Swift clears the Keychain and does not
+  ask the person to sign in to the account again. `service_status.reason` may
+  be `account_deleted` too. (velvt-core does not send this code yet; until it
+  does, a deleted account reaches other Macs as `401 invalid_token`, the reason
+  stays `session_expired`, and the queue is discarded when the next account
+  signs in.)
+- Behaviour on unchanged messages: a sign-up or login whose device
+  registration fails answers `auth_failure` and keeps nothing (it answered
+  `auth_success` with an empty `device_id`); Swift refuses an `auth_success`
+  with an empty `device_id` and sends `log_out`, so the service does not keep
+  a session the app shows as signed out. A 403 with no session error code, a 5xx or a 429
+  no longer ends the session (`needs_reauth`); only an attributed code does.
+  A sign-in on a Mac whose device was revoked registers a new device instead
+  of answering "Unable to register this device." until a relaunch.
+
 ## Version 33 - 2026-09-27
 
 - `unclassified_triage` now lists browser sites beside applications, as one

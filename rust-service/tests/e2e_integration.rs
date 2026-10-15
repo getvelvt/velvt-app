@@ -428,6 +428,7 @@ async fn request_menu_status_reports_upload_auth_and_retry_state() {
     let repo = persistence.upload_batch_repo();
     let batch = NewUploadBatch {
         batch_id: "auth-paused-batch".into(),
+        owner_user_id: None,
     };
     let occurred_at = Utc.timestamp_opt(1_800, 0).unwrap();
     repo.insert_batch_with_events(

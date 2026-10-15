@@ -14,10 +14,10 @@ use velvt_service::persistence::{
     UploadBatchStatus, UploadQueueDiagnostics,
 };
 use velvt_service::upload::{
-    BatchAssembler, BatchEventPayload, BatchPayload, BatchRetentionPolicy, BatchUploadError,
-    BatchUploader, EventIngestor, FakeBatchUploader, FakePrivacyAlertSink, HostBackoff,
-    HttpBatchUploader, IpcPrivacyAlertSink, SharedUploadBatcher, UploadBatcher, UploadCoordinator,
-    UploadOutcome,
+    BatchAssembler, BatchDisposition, BatchEventPayload, BatchOwnershipPolicy, BatchPayload,
+    BatchUploadError, BatchUploader, EventIngestor, FakeBatchUploader, FakePrivacyAlertSink,
+    HostBackoff, HttpBatchUploader, IpcPrivacyAlertSink, SharedUploadBatcher, UploadBatcher,
+    UploadCoordinator, UploadOutcome,
 };
 use velvt_shared_types::RawEvent;
 
@@ -185,6 +185,13 @@ impl UploadBatchRepo for FailFirstInsertRepo {
         self.inner.discard_batch(batch_id)
     }
 
+    fn reschedule_authentication_required(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<u64, PersistenceError> {
+        self.inner.reschedule_authentication_required(now)
+    }
+
     fn batch_status(&self, batch_id: &str) -> Result<UploadBatchStatus, PersistenceError> {
         self.inner.batch_status(batch_id)
     }
@@ -290,9 +297,9 @@ impl BatchUploader for RecordingUploader {
 
 struct DiscardAll;
 
-impl BatchRetentionPolicy for DiscardAll {
-    fn should_discard(&self, _batch: &velvt_service::persistence::UploadBatch) -> bool {
-        true
+impl BatchOwnershipPolicy for DiscardAll {
+    fn disposition(&self, _owner_user_id: Option<&str>) -> BatchDisposition {
+        BatchDisposition::Discard
     }
 }
 
@@ -586,6 +593,7 @@ async fn raw_field_rejected_is_terminal_and_alerted() {
     repository
         .insert_batch(&NewUploadBatch {
             batch_id: "batch-rejected".into(),
+            owner_user_id: None,
         })
         .unwrap();
     let http = Arc::new(FakeHttp {
@@ -637,6 +645,7 @@ async fn pending_batch_is_resumed_after_restart() {
         .insert_batch_with_events(
             &NewUploadBatch {
                 batch_id: "batch-pending".into(),
+                owner_user_id: None,
             },
             &[BatchEvent {
                 event_id: "event-one".into(),
@@ -829,13 +838,14 @@ async fn shutdown_during_in_flight_upload_is_persisted_and_restart_submits_once(
 }
 
 #[tokio::test]
-async fn retention_policy_discards_old_batch_before_upload() {
+async fn an_ownership_policy_discards_a_batch_before_upload() {
     let database = SqlitePersistence::open_in_memory().unwrap();
     let repository = database.upload_batch_repo();
     repository
         .insert_batch_with_events(
             &NewUploadBatch {
                 batch_id: "batch-expired".into(),
+                owner_user_id: None,
             },
             &[BatchEvent {
                 event_id: "event-expired".into(),
@@ -857,7 +867,7 @@ async fn retention_policy_discards_old_batch_before_upload() {
         uploader,
         FakePrivacyAlertSink::default(),
     )
-    .with_retention_policy(Arc::new(DiscardAll))
+    .with_ownership_policy(Arc::new(DiscardAll))
     .resume_pending("1", "0.1.0")
     .await
     .unwrap();
@@ -873,6 +883,7 @@ async fn raw_field_rejected_broadcasts_ipc_alert_and_rejects_batch() {
     repository
         .insert_batch(&NewUploadBatch {
             batch_id: "batch-ipc-alert".into(),
+            owner_user_id: None,
         })
         .unwrap();
     let (alerts, mut receiver) = tokio::sync::broadcast::channel(1);
@@ -926,6 +937,7 @@ async fn rate_limit_retry_after_is_persisted() {
     repository
         .insert_batch(&NewUploadBatch {
             batch_id: "batch-rate-limited".into(),
+            owner_user_id: None,
         })
         .unwrap();
     let coordinator = UploadCoordinator::new(
@@ -974,6 +986,7 @@ async fn host_backoff_pauses_other_batches_for_same_host() {
         repository
             .insert_batch(&NewUploadBatch {
                 batch_id: batch_id.into(),
+                owner_user_id: None,
             })
             .unwrap();
     }
@@ -1039,6 +1052,7 @@ async fn host_backoff_deferrals_spend_no_attempts_across_retry_scans() {
             .insert_batch_with_events(
                 &NewUploadBatch {
                     batch_id: batch_id.into(),
+                    owner_user_id: None,
                 },
                 &[BatchEvent {
                     event_id: format!("event-{batch_id}"),
@@ -1099,6 +1113,7 @@ async fn flush_all_pending_stops_at_the_first_transport_failure() {
             .insert_batch_with_events(
                 &NewUploadBatch {
                     batch_id: batch_id.into(),
+                    owner_user_id: None,
                 },
                 &[BatchEvent {
                     event_id: format!("event-{batch_id}"),
@@ -1196,6 +1211,7 @@ async fn upload_batcher_flush_now_drains_memory_and_resumes_ready_batches() {
         .insert_batch_with_events(
             &NewUploadBatch {
                 batch_id: "batch-pending".into(),
+                owner_user_id: None,
             },
             &[BatchEvent {
                 event_id: "event-pending".into(),
@@ -1264,6 +1280,7 @@ async fn manual_flush_uploads_a_batch_even_while_its_host_is_backed_off() {
         .insert_batch_with_events(
             &NewUploadBatch {
                 batch_id: "batch-delayed".into(),
+                owner_user_id: None,
             },
             &[BatchEvent {
                 event_id: "event-delayed".into(),
@@ -1591,6 +1608,7 @@ async fn shared_flush_now_does_not_block_ingestion_during_persisted_replay() {
         .insert_batch_with_events(
             &NewUploadBatch {
                 batch_id: "batch-pending".into(),
+                owner_user_id: None,
             },
             &[BatchEvent {
                 event_id: "event-pending".into(),

@@ -78,6 +78,8 @@ When `IPCClientProtocol.connectionStatus` becomes `.connected`, it sends:
 try await client.send(.authSession(session))
 ```
 
+The handed-over session names its account as `user_id` (protocol 34); a session stored before 1.0.14 has none, and `sendStoredSession` adds the snapshot's `userId`. Rust stamps every event it queues for upload with that account, so activity recorded under one account is never uploaded under another.
+
 This lets a restarted Rust service resume authenticated upload/fetch work using the persisted device session. If the device token is expired, Rust refreshes it with the device refresh token. If the device token has been revoked, Rust uses the persisted user session to refresh user auth if needed and then reissue device-bound credentials. Swift clears Keychain and returns to login only after Rust reports that both recovery paths failed.
 
 ## Auth Message Handling
@@ -88,11 +90,11 @@ Handled server messages:
 
 | Message | Swift behavior |
 |---|---|
-| `auth_success` | Store tokens/session in Keychain and transition to `.loggedIn` |
+| `auth_success` | Store tokens/session in Keychain, with `userId` on the session, and transition to `.loggedIn`. One with an empty `deviceId` or `userId` is refused: nothing is stored, `serverMessages` carries an `auth_failure` ("This Mac could not be registered. Please try again."), the state returns to `.loggedOut`, and `log_out` is sent so the service drops the session it stored before answering |
 | `auth_session_updated` | Update Keychain tokens after Rust refresh/reissue |
 | `auth_failure` | Return from `.loggingIn` to `.loggedOut` |
 | `account_deletion_accepted` | Clear Keychain and transition to `.loggedOut` |
-| `needs_reauth` | Clear Keychain and transition to `.loggedOut` |
+| `needs_reauth` | Clear Keychain and transition to `.loggedOut`; set `requiresReauthentication` unless the reason is `account_deleted` (the account is gone, so there is nothing to sign in to again) |
 | `device_revoked` | Clear Keychain, transition to `.loggedOut`, set `isDeviceRevoked` |
 
 ## Logout

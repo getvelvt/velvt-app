@@ -1,6 +1,7 @@
 use super::{
     BatchEventPayload, BatchPayload, BatchUploadError, BatchUploader, HostBackoff, UploadOutcome,
 };
+use crate::auth::{AuthState, TokenStore};
 use crate::persistence::{BatchEvent, NewUploadBatch, PersistenceError, UploadBatchRepo};
 use chrono::{Duration, Utc};
 use std::{
@@ -9,37 +10,92 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration as StdDuration,
 };
+use tokio::sync::watch;
 
-/// Whether a persisted batch must be deleted instead of resumed.
-///
-/// `resume_pending` and `flush_all_pending` both ask this before rebuilding a
-/// payload, and a `true` answer routes the batch to `discard_batch` rather than
-/// to the uploader. Both, because the second is the user-facing "Send all now"
-/// and a rule enforced on the retry loop alone would be bypassed by a button.
-/// That is the
-/// shape an ownership rule needs — a batch queued under one account has to be
-/// destroyed, not uploaded under the next account's bearer token — but no such
-/// rule can be written against this trait yet. `UploadBatch` carries no device
-/// or user identifier, and neither does the `upload_batch` row behind it, so no
-/// implementation can tell one owner from another.
-///
-/// Nothing in `src/` calls `with_retention_policy`, so the coordinator runs on
-/// `KeepAllBatches` and discards nothing; the only other implementation is a
-/// test double. This is a seam, not a bound, and the `should_discard` call in
-/// `resume_pending` should not be read as one.
-pub trait BatchRetentionPolicy: Send + Sync {
-    fn should_discard(&self, batch: &crate::persistence::UploadBatch) -> bool;
+/// What may be done with a queued batch now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchDisposition {
+    /// Send it under the current session.
+    Send,
+    /// Leave it queued and untouched. No session can send it now, but the
+    /// account it belongs to may sign in again.
+    Hold,
+    /// Delete it and make its events local-only: another account is signed
+    /// in, and no session on this Mac will ever be its owner's.
+    Discard,
 }
 
-/// The policy the coordinator is constructed with, and in `src/` the only one
-/// it ever holds.
-#[derive(Debug, Default)]
-pub struct KeepAllBatches;
+/// Decides whose token may send a queued batch, from the account the batch
+/// was recorded under.
+///
+/// Every send path asks: `upload_batch` (a batch just closed), `resume_pending`
+/// (the retry loop) and `flush_all_pending` ("Send all now"). A rule enforced on
+/// the retry loop alone would be one button press away from being ignored.
+pub trait BatchOwnershipPolicy: Send + Sync {
+    fn disposition(&self, owner_user_id: Option<&str>) -> BatchDisposition;
+}
 
-impl BatchRetentionPolicy for KeepAllBatches {
-    fn should_discard(&self, _batch: &crate::persistence::UploadBatch) -> bool {
-        false
+/// Sends every batch. What a coordinator is constructed with, for the tests
+/// that model the upload path alone; the service installs
+/// [`SessionOwnership`].
+#[derive(Debug, Default)]
+pub struct SendEveryBatch;
+
+impl BatchOwnershipPolicy for SendEveryBatch {
+    fn disposition(&self, _owner_user_id: Option<&str>) -> BatchDisposition {
+        BatchDisposition::Send
     }
+}
+
+/// The service's rule: a batch is sent only under its own account's session.
+///
+/// - No usable session (signed out, the session needs reauthentication, the
+///   device was revoked or the account deleted): hold everything. Sending
+///   then failed every due batch as `authentication_required` and put it off
+///   fifteen minutes, which after every restart meant the batches due before
+///   the client handed its session over (helper-backend-02).
+/// - A batch with no owner was queued before migration 0042, or under a
+///   client that named no account: sent, as it was before owners existed.
+/// - The signed-in account's own batch: sent.
+/// - Another account's batch: discarded. A batch queued under account A was
+///   sent under B's token after Log Out and a sign-in to B, and a deleted
+///   account's queue was sent under the next account to sign in.
+/// - Signed in, but the service does not know the account: held, because
+///   whose it is cannot be told.
+pub struct SessionOwnership {
+    tokens: Arc<dyn TokenStore>,
+    auth_state: watch::Receiver<AuthState>,
+}
+
+impl SessionOwnership {
+    pub fn new(tokens: Arc<dyn TokenStore>, auth_state: watch::Receiver<AuthState>) -> Self {
+        Self { tokens, auth_state }
+    }
+}
+
+impl BatchOwnershipPolicy for SessionOwnership {
+    fn disposition(&self, owner_user_id: Option<&str>) -> BatchDisposition {
+        if !session_usable(&self.auth_state.borrow()) {
+            return BatchDisposition::Hold;
+        }
+        let Some(owner_user_id) = owner_user_id else {
+            return BatchDisposition::Send;
+        };
+        match self.tokens.load_user_id() {
+            Ok(Some(current)) if current == owner_user_id => BatchDisposition::Send,
+            Ok(Some(_)) => BatchDisposition::Discard,
+            Ok(None) | Err(_) => BatchDisposition::Hold,
+        }
+    }
+}
+
+/// Whether the device holds a session that can send: `RefreshInFlight` is
+/// mid-roundtrip with a valid refresh token.
+fn session_usable(state: &AuthState) -> bool {
+    matches!(
+        state,
+        AuthState::Authenticated { .. } | AuthState::RefreshInFlight
+    )
 }
 
 pub trait PrivacyAlertSink: Send + Sync {
@@ -93,7 +149,7 @@ pub struct UploadCoordinator<U, A> {
     alerts: A,
     host: String,
     backoff: Mutex<HostBackoff>,
-    retention: Arc<dyn BatchRetentionPolicy>,
+    ownership: Arc<dyn BatchOwnershipPolicy>,
 }
 
 impl<U, A> UploadCoordinator<U, A>
@@ -111,7 +167,7 @@ where
                 StdDuration::from_secs(30),
                 StdDuration::from_secs(15 * 60),
             )),
-            retention: Arc::new(KeepAllBatches),
+            ownership: Arc::new(SendEveryBatch),
         }
     }
 
@@ -126,13 +182,21 @@ where
         self
     }
 
-    pub fn with_retention_policy(mut self, retention: Arc<dyn BatchRetentionPolicy>) -> Self {
-        self.retention = retention;
+    pub fn with_ownership_policy(mut self, ownership: Arc<dyn BatchOwnershipPolicy>) -> Self {
+        self.ownership = ownership;
         self
     }
 
+    /// Sends a batch that was just persisted, if its account's session is
+    /// the one signed in. A held batch stays queued for the retry loop.
     pub async fn upload_batch(&self, batch: BatchPayload) -> Result<(), CoordinatorError> {
-        self.upload_batch_with_backoff(batch, true).await?;
+        match self.ownership.disposition(batch.owner_user_id.as_deref()) {
+            BatchDisposition::Send => {
+                self.upload_batch_with_backoff(batch, true).await?;
+            }
+            BatchDisposition::Hold => {}
+            BatchDisposition::Discard => self.discard_disowned(&batch.batch_id)?,
+        }
         Ok(())
     }
 
@@ -245,26 +309,20 @@ where
         Ok(HostAvailability::Available)
     }
 
-    /// Deletes the batch and reports `true` when the retention policy refuses
-    /// it, leaving the caller to move on to the next one.
-    ///
-    /// Shared by both send paths on purpose. `flush_all_pending` backs the
-    /// user-facing "Send all now", so a policy consulted only by the retry loop
-    /// would be one button press away from being ignored.
-    fn discard_disowned(
-        &self,
-        batch: &crate::persistence::UploadBatch,
-    ) -> Result<bool, CoordinatorError> {
-        if !self.retention.should_discard(batch) {
-            return Ok(false);
+    /// Deletes a batch recorded under an account other than the one signed
+    /// in. Its events become local-only in the same transaction, so nothing
+    /// re-queues them.
+    fn discard_disowned(&self, batch_id: &str) -> Result<(), CoordinatorError> {
+        match self.repository.discard_batch(batch_id) {
+            Ok(()) | Err(PersistenceError::NotFound { .. }) => {}
+            Err(error) => return Err(error.into()),
         }
-        self.repository.discard_batch(&batch.batch_id)?;
         tracing::info!(
-            batch_id = batch.batch_id,
-            reason = "retention_boundary",
-            "discarded upload batch before upload"
+            batch_id,
+            reason = "another_account",
+            "discarded upload batch recorded under another account"
         );
-        Ok(true)
+        Ok(())
     }
 
     /// "Send all now": sends every queued batch, the first one even while the
@@ -283,8 +341,13 @@ where
         let batches = self.repository.pending_batches()?;
         let count = batches.len();
         for batch in batches {
-            if self.discard_disowned(&batch)? {
-                continue;
+            match self.ownership.disposition(batch.owner_user_id.as_deref()) {
+                BatchDisposition::Send => {}
+                BatchDisposition::Hold => continue,
+                BatchDisposition::Discard => {
+                    self.discard_disowned(&batch.batch_id)?;
+                    continue;
+                }
             }
             let availability = self
                 .upload_batch_with_backoff(
@@ -322,6 +385,7 @@ where
         self.repository.insert_batch_with_events(
             &NewUploadBatch {
                 batch_id: batch.batch_id.clone(),
+                owner_user_id: batch.owner_user_id.clone(),
             },
             &events,
         )?;
@@ -336,9 +400,6 @@ where
         let batches = self.repository.resumable_batches(Utc::now())?;
         let count = batches.len();
         for batch in batches {
-            if self.discard_disowned(&batch)? {
-                continue;
-            }
             self.upload_batch(payload_for_queued_batch(
                 batch,
                 schema_version,
@@ -365,13 +426,26 @@ where
         Ok(())
     }
 
+    /// Resumes due batches every `interval`, and at once whenever a session
+    /// becomes usable.
+    ///
+    /// `session` is the auth state: while it holds no usable session the loop
+    /// sends nothing (the ownership policy holds every batch), and the moment
+    /// one arrives, batches put off as `authentication_required` are made due
+    /// and the queue is resumed. After a restart that is the client handing
+    /// its session over, half a second after the loop's first scan; the
+    /// batches that scan reached used to wait fifteen minutes.
     pub async fn run_retry_loop(
         &self,
         interval: StdDuration,
-        mut shutdown: tokio::sync::watch::Receiver<bool>,
+        mut shutdown: watch::Receiver<bool>,
+        mut session: Option<watch::Receiver<AuthState>>,
         schema_version: &str,
         client_version: &str,
     ) {
+        let mut was_usable = session
+            .as_ref()
+            .is_some_and(|session| session_usable(&session.borrow()));
         loop {
             if *shutdown.borrow() {
                 return;
@@ -386,15 +460,62 @@ where
                     "failed to resume persisted upload batches"
                 );
             }
-            tokio::select! {
-                _ = tokio::time::sleep(interval) => {}
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        return;
+            let next_scan = tokio::time::Instant::now() + interval;
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep_until(next_scan) => break,
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() {
+                            return;
+                        }
+                    }
+                    changed = session_changed(session.as_mut()) => {
+                        if changed.is_err() {
+                            session = None;
+                            continue;
+                        }
+                        let usable = session
+                            .as_ref()
+                            .is_some_and(|session| session_usable(&session.borrow()));
+                        let became_usable = usable && !was_usable;
+                        was_usable = usable;
+                        if became_usable {
+                            self.reschedule_authentication_required();
+                            break;
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// Makes due every batch that failed for want of a session.
+    pub fn reschedule_authentication_required(&self) {
+        match self
+            .repository
+            .reschedule_authentication_required(Utc::now())
+        {
+            Ok(0) => {}
+            Ok(rescheduled) => tracing::info!(
+                rescheduled_batches = rescheduled,
+                "session usable; batches put off for authentication are due now"
+            ),
+            Err(error) => tracing::error!(
+                error_code = "upload_reschedule_failed",
+                error = %error,
+                "failed to reschedule batches put off for authentication"
+            ),
+        }
+    }
+}
+
+/// Resolves when `session` changes, and never when there is none to watch.
+async fn session_changed(
+    session: Option<&mut watch::Receiver<AuthState>>,
+) -> Result<(), watch::error::RecvError> {
+    match session {
+        Some(session) => session.changed().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -436,6 +557,7 @@ pub fn payload_for_queued_batch(
         taxonomy,
         events,
     )
+    .owned_by(batch.owner_user_id)
 }
 
 fn unique_abstraction_types(events: &[BatchEventPayload]) -> Vec<String> {

@@ -283,6 +283,35 @@ async fn a_redirect_is_not_followed() {
     assert_eq!(ledger.entries().unwrap().len(), 1);
 }
 
+/// critic-04: reqwest sends no `User-Agent` of its own, and a request without
+/// one is what Cloudflare's bot rules challenge. Every request names Velvt and
+/// its version, and nothing else.
+#[tokio::test]
+async fn every_request_names_velvt_and_its_version() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let server = TestServer::start(OK_ACCEPTED, None).await;
+    let client = ReqwestHttpClient::new(server.base_url.clone(), persistence.egress_ledger_repo());
+
+    client.send(HttpRequest::get("/v1/ready")).await.unwrap();
+
+    let headers = server.arrivals()[0].headers.to_ascii_lowercase();
+    let expected = format!(
+        "user-agent: velvt/{} (macos)",
+        velvt_service::build_info::SERVICE_VERSION
+    );
+    assert!(
+        headers.lines().any(|line| line.trim() == expected),
+        "no `{expected}` among {headers}"
+    );
+    assert_eq!(
+        velvt_service::auth::user_agent(),
+        format!(
+            "Velvt/{} (macOS)",
+            velvt_service::build_info::SERVICE_VERSION
+        )
+    );
+}
+
 #[tokio::test]
 async fn a_password_is_sent_but_never_hashed_into_the_ledger() {
     let persistence = SqlitePersistence::open_in_memory().unwrap();
@@ -379,6 +408,7 @@ async fn the_dry_run_prints_the_bytes_the_next_attempt_sends_and_the_hash_the_le
         .insert_batch_with_events(
             &NewUploadBatch {
                 batch_id: "batch-1".into(),
+                owner_user_id: None,
             },
             &[queued_event("e-1"), queued_event("e-2")],
         )

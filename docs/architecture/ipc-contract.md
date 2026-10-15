@@ -1,6 +1,8 @@
 # Velvt IPC Contract
 
-> **Reconciled with `proto/` at protocol 33 on 2026-09-27.** This page
+> **Reconciled with `proto/` at protocol 34 on 2026-10-14** (protocol 33 on
+> 2026-09-27; 34 adds `auth_session.user_id`, two `menu_status.upload_status`
+> values and the `account_deleted` reason). This page
 > summarizes the contract; `proto/schema/*.json` is authoritative for every
 > field, and `proto/CHANGELOG.md` records why each version exists. Before this
 > reconciliation the page had last been reconciled on 2026-07-17 (protocol 15–17
@@ -319,8 +321,9 @@ Direction: Rust to Swift. Purpose: notify Swift of service health.
 - `state`: `ready`, `degraded`, `upload_paused`, or `auth_required`
 - `reason`: optional safe diagnostic reason
 
-Rust sends `auth_refresh_in_flight`, `needs_reauth` and `device_revoked` from
-the auth state, on every connection and every transition. It sends
+Rust sends `auth_refresh_in_flight`, `needs_reauth`, `device_revoked` and
+(protocol 34) `account_deleted` from the auth state, on every connection and
+every transition. It sends
 `tier2_classification_unavailable` and `migration_checksum_mismatch` once, when
 the service starts. The second means a release helper opened a database whose
 applied migrations differ from its own files (migration 0039). That condition
@@ -429,6 +432,30 @@ watching: each holds the connection for up to one 10-second HTTP timeout per
 request it sends (a sign-in can send three: the outstanding revocation, the
 credentials, and the device registration or reissue).
 
+`auth_session` and `auth_session_updated` carry an optional `user_id`
+(protocol 34): the account the session belongs to, as `auth_success` named it.
+Rust stamps every event it queues for upload with it and sends a queued batch
+only while that account is signed in; once another account signs in on the
+Mac, the batch is discarded. A session stored before 1.0.14 carries none, and
+Swift adds it from the snapshot it is stored in before the handover.
+
+A session ends only on an error code the cloud attributes to it (1.0.14):
+`401 invalid_token`, `token_expired`, `invalid_credentials` or `missing_token`
+after a refresh (`needs_reauth`), `403 device_revoked` or reissue's `403
+device_inactive` (`device_revoked`), and `401 account_deleted`. A 403 with no
+code (a Cloudflare WAF rule, Bot Fight Mode, a challenge), a 5xx or a 429 is
+returned to the caller as a status and backed off from, and a refresh it
+answers keeps the session. `needs_reauth` carries the reason
+`account_deleted` when the cloud reports the account deleted, here or on
+another Mac; Rust has by then destroyed what it queued for the account and
+cleared the session, and Swift signs out without asking to sign in to it
+again. Every request carries `User-Agent: Velvt/<version> (macOS)`.
+
+`auth_success` is sent only once a device exists to upload as: a sign-up or
+login whose device registration fails answers `auth_failure`, and Swift refuses
+an `auth_success` with an empty `device_id`. A sign-in on a Mac whose device was
+revoked registers a new device, as one whose device another account owns does.
+
 Credentials and tokens are permitted only in these auth-specific wire
 messages. Rust redacts credential-carrying DTOs in `Debug`, Swift stores
 received tokens in Keychain, and neither workspace may log these payloads.
@@ -472,12 +499,19 @@ Direction: Rust to Swift. Purpose: report service status for the menu popover.
 - `device_id`: optional device identifier
 - `cloud_ready`: whether the Rust service's last cloud readiness probe
   succeeded; `false` until a probe has answered. A status never waits on the
-  probe (1.0.14): a status that finds the answer missing or more than 60
-  seconds old starts one in the background, and a later status reports it
+  probe (1.0.14): the service probes at start and whenever a session becomes
+  usable, and a status that finds the answer missing or more than 60 seconds
+  old starts one in the background; a later status reports it
 - `last_successful_sync_at`: timestamp of the last successful sync, or null
 - `upload_status`: privacy-safe upload state. Values are `ready`, `pending`,
-  `retrying`, `auth_required`, `network_unavailable`, `rate_limited`, and
-  `privacy_rejected`.
+  `retrying`, `auth_required`, `signed_out`, `checking`,
+  `network_unavailable`, `rate_limited`, and `privacy_rejected`. The session
+  decides first (protocol 34): `signed_out` while the service holds no session,
+  `auth_required` while the cloud has ended it (reauthentication, a revoked
+  device, a deleted account). A queue's `authentication_required` error is
+  reported as `auth_required` only when no session state is known. `checking`
+  is the time before the first readiness answer, which was reported as
+  `network_unavailable`.
 - `last_upload_error_code`: optional safe error code from an active pending,
   failed, or rejected upload batch. Sent batches must not keep stale retry or
   authentication errors visible.

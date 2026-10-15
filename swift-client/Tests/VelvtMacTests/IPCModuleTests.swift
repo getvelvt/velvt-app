@@ -1057,6 +1057,36 @@ final class AuthIPCContractTests: XCTestCase {
         XCTAssertEqual(s.userId, "u")
     }
 
+    /// Protocol 34: `auth_session` names its account as `user_id`, and a
+    /// session without one still decodes.
+    func testAuthSessionCarriesItsAccountOnTheWire() throws {
+        let session = AuthSession(
+            deviceId: "device-1",
+            accessToken: "a",
+            refreshToken: "r",
+            expiresAt: Date(timeIntervalSince1970: 1_750_000_000),
+            userId: "account-1"
+        )
+        let data = try encoder.encode(ClientMessage.authSession(session))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
+        XCTAssertEqual(payload["user_id"] as? String, "account-1")
+        XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), .authSession(session))
+
+        let older =
+            #"{"type":"auth_session_updated","payload":{"device_id":"device-1","access_token":"a","refresh_token":"r","expires_at":"2026-06-15T00:00:00Z"}}"#
+        guard case .authSessionUpdated(let decoded) = try decoder.decode(ServerMessage.self, from: Data(older.utf8))
+        else {
+            return XCTFail("Expected .authSessionUpdated")
+        }
+        XCTAssertNil(decoded.userId)
+        let unowned = try encoder.encode(ClientMessage.authSession(decoded))
+        XCTAssertFalse(
+            String(decoding: unowned, as: UTF8.self).contains("user_id"),
+            "no account is sent as an absent key, which the schema allows"
+        )
+    }
+
     func testAllNewClientMessagesRoundTripTogether() throws {
         let messages: [ClientMessage] = [
             .signUp(SignUpRequest(email: "a@b.com", password: "pw")),

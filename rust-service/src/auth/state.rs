@@ -6,10 +6,17 @@ use super::{TokenStore, TokenStoreError};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthState {
     Unauthenticated,
-    Authenticated { device_id: String },
+    Authenticated {
+        device_id: String,
+    },
     NeedsReauth,
     DeviceRevoked,
     RefreshInFlight,
+    /// The cloud answered `401 account_deleted`: the account this session
+    /// belonged to was deleted, here or on another Mac. Terminal until the
+    /// service has destroyed what it queued for that account and cleared the
+    /// session, which moves it to `Unauthenticated`.
+    AccountDeleted,
 }
 
 pub struct AuthStateMachine {
@@ -81,6 +88,10 @@ fn valid_transition(from: &AuthState, to: &AuthState) -> bool {
                 | (AuthState::NeedsReauth, AuthState::Authenticated { .. })
                 | (AuthState::NeedsReauth, AuthState::Unauthenticated)
                 | (AuthState::DeviceRevoked, AuthState::Unauthenticated)
+                | (AuthState::Authenticated { .. }, AuthState::AccountDeleted)
+                | (AuthState::RefreshInFlight, AuthState::AccountDeleted)
+                | (AuthState::NeedsReauth, AuthState::AccountDeleted)
+                | (AuthState::AccountDeleted, AuthState::Unauthenticated)
         )
 }
 

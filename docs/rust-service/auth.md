@@ -21,7 +21,14 @@ Unauthenticated
   -> RefreshInFlight
   -> NeedsReauth
   -> DeviceRevoked
+  -> AccountDeleted
 ```
+
+`DeviceRevoked` and `AccountDeleted` are terminal: no transition leads from
+either to `Authenticated`. A sign-in from either clears the session and the
+stored device id first, then registers a new device. `AccountDeleted` is left
+by the service itself once it has destroyed what it queued for the account
+(`ipc::end_deleted_account_session`).
 
 Normal login flow:
 
@@ -30,12 +37,22 @@ Swift sign_up/log_in IPC
 AccountAuthService credential request
 cloud returns user tokens
 Rust registers or reissues device tokens
-Rust stores device tokens in TokenStore
+Rust stores device tokens and the account id in TokenStore
 Rust stores user tokens in TokenStore for device reissue recovery
 Rust transitions to Authenticated { device_id }
 Rust sends auth_success to Swift
 Swift stores host session in Keychain
 ```
+
+A registration that fails (transport, a refusal, a response without a device)
+answers `auth_failure` and keeps nothing; `auth_success` is sent only once a
+device exists to upload as. That includes a sign-in that reissues a stored
+device id and falls through to registering: the new account's user tokens are
+stored only once the reissue or the registration succeeds. Swift refuses an
+`auth_success` with an empty device id and sends `log_out`, so the service
+drops whatever it stored. A sign-up's failure says the account was created
+and asks the person to log in, because signing up again would be refused as an
+email already registered.
 
 Refresh flow:
 
@@ -55,13 +72,46 @@ Terminal/device flow:
 403 device_revoked -> DeviceRevoked -> push device_revoked to Swift
 403 device_token_revoked -> try device token reissue -> Authenticated or NeedsReauth
 invalid/expired token that cannot refresh -> NeedsReauth -> push needs_reauth to Swift
+401 account_deleted -> AccountDeleted -> destroy the queue, clear the session,
+  push needs_reauth { reason: account_deleted } to Swift
 ```
+
+Only an error code the cloud attributes to the session ends it. A 403 with no
+code is what Cloudflare's WAF, Bot Fight Mode or a challenge answers with; it,
+a 5xx and a 429 are returned to the caller as a status (or `Transport` /
+`RateLimited` from a refresh or reissue), the caller backs off, and the session
+and Keychain stay. One such 403 used to sign the tester out and wipe the
+Keychain (critic-04). A refresh, a reissue, or the user-token refresh a reissue
+needs, answered that way or not answered at all, is not tried again for a
+minute: requests in that minute use the unexpired token in hand, and one whose
+token has expired, or that is answered `device_token_revoked`, fails at once
+with `Transport`.
+
+Every authenticated request is bound to an account: the one it names
+(`HttpRequest::account`; `HttpBatchUploader` names the batch's owner), else the
+one signed in when it starts. `AuthManager` checks the account after it reads
+the tokens it is about to send with, and again before a refresh-and-retry or a
+reissue-and-retry, and fails the request as `NeedsReauth`, changing no state,
+when the account has changed. A batch the ownership policy judged account A's,
+waiting on the refresh lock while A logged out and B signed in, was otherwise
+POSTed under B's token. The check holds because every path that puts another
+account's session in place (`AccountAuthService::store_session`) clears the old
+account id before the tokens change and stores the new one after them. A
+session handed over with no account id binds nothing until
+`GET /v1/auth/session` names it.
 
 ## Token Storage
 
 The Rust service must not store auth tokens in SQLite. The current implementation uses `VolatileTokenStore`, which keeps device access/refresh tokens and optional user access/refresh tokens in memory and emits `auth_session_updated` IPC messages when tokens change.
 
 Swift receives those messages and persists the session in Keychain. On reconnect or relaunch, Swift sends `auth_session` back to Rust so the service can resume authenticated cloud work.
+
+The store also holds the id of the account the session belongs to, from
+`auth_success` or from `auth_session.user_id` (protocol 34), and, for a session
+handed over without one, from the answer to `GET /v1/auth/session`. The upload
+queue is stamped with it: `upload::SessionOwnership` sends a batch only while
+its account is signed in, holds every batch while no session is usable, and
+discards one recorded under another account once that account has signed in.
 
 Authenticated API calls use the device token pair. User tokens are retained only so Rust can refresh user auth and call `/v1/auth/devices/reissue` if the device token pair is revoked after relaunch. If neither device refresh nor user-backed device reissue succeeds, Rust enters `NeedsReauth` and Swift clears Keychain.
 
@@ -87,7 +137,7 @@ Credentials enter Rust only through local IPC:
 
 Device registration cannot happen at service startup because `/v1/devices` requires a logged-in user's access token. `AccountAuthService` therefore registers the device after the first successful sign-up or login if no device ID is already stored.
 
-If a device ID already exists, the service reissues device-bound tokens for that device using a valid user-bound access token, refreshing the user token first when needed. This keeps the cloud upload/fetch path using device-scoped credentials rather than long-lived user credentials.
+If a device ID already exists, the service reissues device-bound tokens for that device using a valid user-bound access token, refreshing the user token first when needed. This keeps the cloud upload/fetch path using device-scoped credentials rather than long-lived user credentials. A reissue refused with `404` (the device is another account's) or `403 device_inactive` / `device_revoked` (the device was removed) clears the stored id and registers a new device.
 
 ## Auth-Related IPC Messages
 
@@ -117,20 +167,23 @@ Rust to Swift:
 | Response | Behavior |
 |---|---|
 | `200` refresh/reissue with tokens | Store tokens and return to authenticated state |
-| `401 invalid_credentials`, `invalid_token`, or `token_expired` | Refresh once when possible; otherwise enter `NeedsReauth` |
-| `403 device_token_revoked` | Try device-token reissue; enter `NeedsReauth` if reissue fails |
-| `403 device_revoked` | Enter `DeviceRevoked` |
-| `429` | Return rate-limited error without logging sensitive payloads |
+| `401 invalid_credentials`, `invalid_token`, `token_expired` or `missing_token` | Refresh once when possible; otherwise enter `NeedsReauth` |
+| `401`/`403 device_token_revoked` | Try device-token reissue; enter `NeedsReauth` if reissue is refused with a session code |
+| `403 device_revoked`, or `403 device_inactive` from reissue | Enter `DeviceRevoked` |
+| `401 account_deleted` | Enter `AccountDeleted` |
+| `429` | Return rate-limited error; the session stays |
+| Anything else, including `403` without a code and `5xx` | Return the response (or `Transport` from a refresh or reissue); the session stays, and a refresh or reissue is not retried for a minute |
 
 ## UI Notification of Auth State
 
-`src/main.rs` subscribes to the Rust auth state machine. When state becomes `DeviceRevoked` or `NeedsReauth`, it pushes the corresponding IPC message through `PushAdapter`. This is independent of the request that caused the state change, which keeps the menu bar UI accurate even if the user is not actively using an auth screen.
+`src/main.rs` subscribes to the Rust auth state machine. When state becomes `DeviceRevoked` or `NeedsReauth`, it pushes the corresponding IPC message through `PushAdapter`; when it becomes `AccountDeleted`, `ipc::SessionWatch` runs `ipc::end_deleted_account_session`, which pushes `needs_reauth` with the reason `account_deleted`. When a session becomes usable, the retry loop makes due every batch put off as `authentication_required` and resumes the queue, and `SessionWatch` runs the menu's readiness probe again. This is independent of the request that caused the state change, which keeps the menu bar UI accurate even if the user is not actively using an auth screen.
 
 ## Tests to Update
 
 When changing auth behavior, inspect and update:
 
 - `rust-service/tests/auth_flow.rs`
+- `rust-service/tests/account_switch.rs` (whose session a queued batch or a waiting request is sent under)
 - `rust-service/tests/auth_state.rs`
 - `rust-service/tests/device_registrar.rs`
 - `rust-service/shared-types/src/lib.rs` DTO tests for auth message JSON shape

@@ -8,7 +8,13 @@ pub struct BatchAssembler {
     count_threshold: usize,
     age_threshold: Duration,
     opened_at: Option<DateTime<Utc>>,
-    events: Vec<BatchEventPayload>,
+    events: Vec<Buffered>,
+}
+
+/// One buffered event and the account it was recorded under.
+struct Buffered {
+    owner_user_id: Option<String>,
+    event: BatchEventPayload,
 }
 
 impl BatchAssembler {
@@ -37,31 +43,52 @@ impl BatchAssembler {
         }
     }
 
+    /// Buffers an event recorded with no known owner. See [`Self::push_owned`].
     pub fn push(&mut self, event: BatchEventPayload, now: DateTime<Utc>) -> Option<BatchPayload> {
+        self.push_owned(event, None, now)
+    }
+
+    /// Buffers `event`, recorded while `owner_user_id` was signed in, and
+    /// returns a batch when one closes.
+    pub fn push_owned(
+        &mut self,
+        event: BatchEventPayload,
+        owner_user_id: Option<String>,
+        now: DateTime<Utc>,
+    ) -> Option<BatchPayload> {
         // A taxonomy upgrade closes the open batch. `category_taxonomy_version`
         // is one field for the whole batch, so a batch straddling the upgrade
         // would label some of its events with a version they were not
         // classified under. Carrying the version per event is not the
         // alternative: the per-event DTO is frozen and nothing new crosses the
         // wire, so grouping here is the only honest option.
-        if self
-            .events
-            .first()
-            .is_some_and(|open| open.taxonomy_version != event.taxonomy_version)
-        {
+        //
+        // A change of account closes it for the same reason: a batch is sent
+        // under one account's token, so it may hold only that account's
+        // events.
+        if self.events.first().is_some_and(|open| {
+            open.event.taxonomy_version != event.taxonomy_version
+                || open.owner_user_id != owner_user_id
+        }) {
             let closed = self.take_batch();
             // `get_or_insert`, not an assignment: `take_batch` clears
             // `opened_at` only when it drained the buffer, and a remainder keeps
             // the age it already had rather than being handed a fresh window.
             self.opened_at.get_or_insert(now);
-            self.events.push(event);
+            self.events.push(Buffered {
+                owner_user_id,
+                event,
+            });
             // Non-`None`: the buffer held at least the event we just compared
             // against. The new event stays open and leaves on the next push or
             // flush, which is the same treatment any single buffered event gets.
             return closed;
         }
         self.opened_at.get_or_insert(now);
-        self.events.push(event);
+        self.events.push(Buffered {
+            owner_user_id,
+            event,
+        });
         (self.events.len() >= self.count_threshold)
             .then(|| self.take_batch())
             .flatten()
@@ -83,22 +110,42 @@ impl BatchAssembler {
         self.take_batch()
     }
 
-    pub fn requeue(&mut self, mut batch: BatchPayload) {
+    pub fn requeue(&mut self, batch: BatchPayload) {
         if batch.events.is_empty() {
             return;
         }
         let reopened_at = batch.events.iter().map(|event| event.occurred_at).min();
-        batch.events.append(&mut self.events);
-        self.events = batch.events;
+        let owner_user_id = batch.owner_user_id;
+        let mut events = batch
+            .events
+            .into_iter()
+            .map(|event| Buffered {
+                owner_user_id: owner_user_id.clone(),
+                event,
+            })
+            .collect::<Vec<_>>();
+        events.append(&mut self.events);
+        self.events = events;
         self.opened_at = match (self.opened_at, reopened_at) {
             (Some(current), Some(reopened)) => Some(current.min(reopened)),
             (current, reopened) => current.or(reopened),
         };
     }
 
+    /// Drops every buffered event and says how many there were.
+    ///
+    /// For an account that was deleted: what it recorded and has not yet
+    /// queued is sent nowhere.
+    pub fn discard_all(&mut self) -> usize {
+        let discarded = self.events.len();
+        self.events.clear();
+        self.opened_at = None;
+        discarded
+    }
+
     /// Drains the buffer into one batch, or — when the buffer holds more than
-    /// one taxonomy version — into the batch for the oldest event's version,
-    /// leaving the rest buffered.
+    /// one taxonomy version or account — into the batch for the oldest
+    /// event's version and account, leaving the rest buffered.
     ///
     /// `push` closes a batch at a version boundary, so the buffer is normally
     /// homogeneous already and this splits nothing. `requeue` is the path that
@@ -115,14 +162,23 @@ impl BatchAssembler {
     /// `recover_unbatched` exists for: retention spares unbatched eligible rows
     /// and the next start re-ingests them.
     fn take_batch(&mut self) -> Option<BatchPayload> {
-        let taxonomy = self.events.first()?.taxonomy_version.clone();
+        let first = self.events.first()?;
+        let taxonomy = first.event.taxonomy_version.clone();
+        let owner_user_id = first.owner_user_id.clone();
         let (events, remainder): (Vec<_>, Vec<_>) = std::mem::take(&mut self.events)
             .into_iter()
-            .partition(|event| event.taxonomy_version == taxonomy);
+            .partition(|buffered| {
+                buffered.event.taxonomy_version == taxonomy
+                    && buffered.owner_user_id == owner_user_id
+            });
         if remainder.is_empty() {
             self.opened_at = None;
         }
         self.events = remainder;
+        let events = events
+            .into_iter()
+            .map(|buffered| buffered.event)
+            .collect::<Vec<_>>();
         let batch_id = deterministic_batch_id(&self.device_id, &events);
         let mut supported_abstraction_types = Vec::new();
         for event in &events {
@@ -130,14 +186,17 @@ impl BatchAssembler {
                 supported_abstraction_types.push(event.label.clone());
             }
         }
-        Some(BatchPayload::new(
-            batch_id,
-            "1",
-            crate::build_info::SERVICE_VERSION,
-            supported_abstraction_types,
-            taxonomy,
-            events,
-        ))
+        Some(
+            BatchPayload::new(
+                batch_id,
+                "1",
+                crate::build_info::SERVICE_VERSION,
+                supported_abstraction_types,
+                taxonomy,
+                events,
+            )
+            .owned_by(owner_user_id),
+        )
     }
 }
 
@@ -262,5 +321,81 @@ mod tests {
             .expect("the remainder is still buffered, not discarded");
         assert_eq!(second.category_taxonomy_version, "mvp-2");
         assert_eq!(second.events.len(), 1);
+    }
+
+    /// A batch is sent under one account's token, so a sign-in to another
+    /// account closes the open batch rather than adding to it.
+    #[test]
+    fn a_change_of_account_closes_the_open_batch() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let mut assembler = BatchAssembler::new("device-1", 8, Duration::from_secs(60));
+
+        assert!(assembler
+            .push_owned(
+                event("event-a", "document:docs", "FOCUS_WORK"),
+                Some("account-a".into()),
+                now,
+            )
+            .is_none());
+        let closed = assembler
+            .push_owned(
+                event("event-b", "document:docs", "FOCUS_WORK"),
+                Some("account-b".into()),
+                now,
+            )
+            .expect("another account's event closes the batch below the count threshold");
+
+        assert_eq!(closed.owner_user_id.as_deref(), Some("account-a"));
+        assert_eq!(closed.events.len(), 1);
+        assert_eq!(closed.events[0].event_id, "event-a");
+        let open = assembler.flush_shutdown().expect("B's event is still open");
+        assert_eq!(open.owner_user_id.as_deref(), Some("account-b"));
+        assert_eq!(open.events[0].event_id, "event-b");
+    }
+
+    /// A batch that failed to persist goes back under the account it was
+    /// recorded for, even when another account's events arrived since.
+    #[test]
+    fn a_requeued_batch_keeps_its_owner() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let mut assembler = BatchAssembler::new("device-1", 8, Duration::from_secs(60));
+
+        assembler.push_owned(
+            event("event-a", "document:docs", "FOCUS_WORK"),
+            Some("account-a".into()),
+            now,
+        );
+        let failed = assembler.flush_shutdown().expect("A's batch");
+        assembler.push_owned(
+            event("event-b", "document:docs", "FOCUS_WORK"),
+            Some("account-b".into()),
+            now,
+        );
+        assembler.requeue(failed);
+
+        let first = assembler.flush_shutdown().expect("A's events first");
+        assert_eq!(first.owner_user_id.as_deref(), Some("account-a"));
+        assert_eq!(first.events.len(), 1);
+        let second = assembler.flush_shutdown().expect("then B's");
+        assert_eq!(second.owner_user_id.as_deref(), Some("account-b"));
+        assert_eq!(second.events.len(), 1);
+        assert!(assembler.flush_shutdown().is_none());
+    }
+
+    #[test]
+    fn discard_all_empties_the_buffer() {
+        let now = Utc.timestamp_opt(1_800_000_000, 0).unwrap();
+        let mut assembler = BatchAssembler::new("device-1", 8, Duration::from_secs(60));
+        assembler.push_owned(
+            event("event-a", "document:docs", "FOCUS_WORK"),
+            Some("account-a".into()),
+            now,
+        );
+
+        assert_eq!(assembler.discard_all(), 1);
+        assert!(assembler.flush_shutdown().is_none());
+        assert!(assembler
+            .flush_due(now + chrono::Duration::hours(1))
+            .is_none());
     }
 }

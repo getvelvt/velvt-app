@@ -55,6 +55,12 @@
 //!     the card and the reminder, and reads both, and the three tables
 //!     migration 0041 added, for every sentinel by value. A reminder's text is kept by
 //!     macOS Notification Center, so a name in it could never be deleted.
+//! 11. `a_youtube_title_decides_the_category_and_is_kept_nowhere` drives two
+//!     YouTube tabs carrying the sentinel title token through the real router.
+//!     Drift policy v6 reads a YouTube video's title to decide its category,
+//!     and `PRIVACY.md` says what that keeps: the category and a label, the
+//!     title in no column, `youtube.com` in `local_site_name` only for a video
+//!     the title left undecided, and nothing on the wire that says YouTube.
 //!
 //! `persistence_contract::schema_has_no_forbidden_raw_content_columns` still
 //! exists and still checks column names. It is kept: a forbidden name is worth
@@ -1736,6 +1742,187 @@ async fn the_category_prompt_holds_keys_and_counts_and_names_nothing() {
         )
         .unwrap();
     assert_eq!(reminders, 1, "the reminder was claimed and recorded once");
+}
+
+// ---------------------------------------------------------------------------
+// 3d — A YouTube video's title decides its category and is kept nowhere
+// ---------------------------------------------------------------------------
+
+/// A YouTube video's title as a browser reports it: the sentinel title's token
+/// and one lesson word, so drift policy version 6 decides it is REFERENCE.
+const SENTINEL_LESSON_TITLE: &str = "Brindlow settlement lecture - YouTube";
+/// The same video with neither a lesson word nor an entertainment word in its
+/// title, which the title rule leaves undecided.
+const SENTINEL_UNDECIDED_TITLE: &str = "Brindlow settlement draft - YouTube";
+/// A YouTube watch address whose query carries the sentinel token as well.
+const SENTINEL_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=brindlow-7f3a";
+
+fn sentinel_youtube_tab(event_id: Uuid, window_title: &str) -> RawEvent {
+    RawEvent {
+        event_id,
+        occurred_at: Utc::now(),
+        app_name: SENTINEL_BROWSER.into(),
+        window_title: window_title.into(),
+        bundle_id: None,
+        declared_app_category: None,
+        document_type_ids: Vec::new(),
+        focused_document_url: Some(SENTINEL_YOUTUBE_URL.into()),
+        in_progress: false,
+        duration_seconds: 300,
+    }
+}
+
+/// `PRIVACY.md` says what reading a YouTube video's title keeps: the category,
+/// and a local label saying which way the title went. The title is in no
+/// column. A video the title decided keeps no hostname; one it left undecided
+/// keeps `youtube.com` in `local_site_name` alone, as any site that needs a
+/// category does. And nothing on the wire says YouTube.
+///
+/// The column walk and the upload seam above drive a tab on a site no rule
+/// names, where the title reaches only the sketch. This drives the one path
+/// that reads a title to decide a category, `youtube_by_title`.
+#[tokio::test]
+async fn a_youtube_title_decides_the_category_and_is_kept_nowhere() {
+    let scratch = ScratchDatabase::new();
+    // The undecided video falls below the title rule to Tier 2, whose answer
+    // depends on the salt: pinned, as the hostname test pins it, so the video
+    // stays undecided and its site needs a category.
+    pin_sentinel_embedding_salt(&scratch.path);
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    let uploader = RecordingUploader::default();
+    let router = sentinel_router_with_uploader(&persistence, uploader.clone());
+    let kept_hosts = || -> Vec<String> {
+        let connection = Connection::open(&scratch.path).unwrap();
+        let mut statement = connection
+            .prepare("SELECT host FROM local_site_name ORDER BY host")
+            .unwrap();
+        let hosts = statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<String>, _>>()
+            .unwrap();
+        hosts
+    };
+
+    let decided = Uuid::new_v4();
+    let undecided = Uuid::new_v4();
+    for (event_id, title) in [
+        (decided, SENTINEL_LESSON_TITLE),
+        (undecided, SENTINEL_UNDECIDED_TITLE),
+    ] {
+        let acknowledgement = router
+            .route(ClientMessage::RawEvent(sentinel_youtube_tab(
+                event_id, title,
+            )))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                acknowledgement,
+                Some(ServerMessage::RawEventAck(RawEventAck {
+                    status: RawEventStatus::Accepted,
+                    ..
+                }))
+            ),
+            "the YouTube tab `{title}` was not accepted: {acknowledgement:?}"
+        );
+        if event_id == decided {
+            assert!(
+                kept_hosts().is_empty(),
+                "a YouTube video its title decided kept a hostname: {:?}",
+                kept_hosts()
+            );
+            // The decided video's batch is the one read off the wire. The
+            // recording uploader refuses it, which backs the host off, so the
+            // undecided video's batch stays queued on disk, where the column
+            // walk below reads it.
+            let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+            while uploader.captured().is_empty() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(StdDuration::from_millis(1)).await;
+            }
+        }
+    }
+    let batches = uploader.captured();
+    assert!(
+        !batches.is_empty(),
+        "the decided YouTube tab did not reach the uploader, so this test asserts \
+         nothing about an upload payload"
+    );
+    drop(persistence);
+    let connection = Connection::open(&scratch.path).unwrap();
+
+    // The positive control: the title was read and decided the first video,
+    // and left the second undecided.
+    let classification = |event_id: Uuid| -> (String, String, String) {
+        connection
+            .query_row(
+                "SELECT label, category, classification_status FROM raw_event_buffer
+                  WHERE event_id = ?1",
+                [event_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("each YouTube tab is buffered")
+    };
+    assert_eq!(
+        classification(decided),
+        (
+            "reference:youtube".to_owned(),
+            "REFERENCE".to_owned(),
+            "classified".to_owned()
+        ),
+        "a YouTube video titled as a lecture is REFERENCE under drift policy v6, so \
+         the title rule this test is about did not run"
+    );
+    assert_eq!(
+        classification(undecided).2,
+        "ambiguous",
+        "a YouTube video whose title says neither is left to the browser prior"
+    );
+    assert_eq!(
+        kept_hosts(),
+        vec!["youtube.com".to_owned()],
+        "an undecided YouTube video keeps its site's name for the needs-a-category \
+         list, and only that, with the leading `www.` removed"
+    );
+
+    let mut title_sightings = BTreeSet::new();
+    scan_every_value(&connection, |table, column, value| {
+        if holds_token(value, SENTINEL_TITLE_TOKEN) {
+            title_sightings.insert(format!("{table}.{column}"));
+        }
+    });
+    assert!(
+        title_sightings.is_empty(),
+        "a YouTube video's title, or the watch address's query, reached \
+         {title_sightings:?}. PRIVACY.md states the title rule keeps the category \
+         and a label, and that the literal title is stored nowhere"
+    );
+
+    for batch in &batches {
+        let wire = serde_json::to_string(batch).unwrap().to_lowercase();
+        for (fact, value) in [
+            ("a fragment of the video title", SENTINEL_TITLE_TOKEN),
+            ("the site", "youtube"),
+        ] {
+            assert!(
+                !wire.contains(value),
+                "{fact} ({value}) appears in the batch this device would have POSTed. \
+                 PRIVACY.md states a YouTube video leaves the Mac as its category \
+                 only.\nThe payload was: {wire}"
+            );
+        }
+    }
+    // Each batch uploads in a task of its own, so they are found by event.
+    let decided_wire = batches
+        .iter()
+        .map(|batch| serde_json::to_string(batch).unwrap())
+        .find(|wire| wire.contains(&decided.to_string()))
+        .expect("one captured batch carries the decided video");
+    assert!(
+        decided_wire.contains("\"REFERENCE\"") && decided_wire.contains("reference:inferred"),
+        "the decided video does not leave as its category and the category-scoped \
+         type: {decided_wire}"
+    );
 }
 
 // ---------------------------------------------------------------------------

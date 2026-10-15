@@ -1,0 +1,100 @@
+# provenance in the golden replay of tests/fixtures/golden_replay/trace.json
+
+[work_block_observation]
+id=1 | block_id='block-1' | occurred_at=1700000010 | ended_at=1700000200 | category='FOCUS_WORK' | classification_source='seed'
+id=2 | block_id='block-1' | occurred_at=1700000200 | ended_at=1700000215 | category='COMMUNICATION' | classification_source='seed'
+id=3 | block_id='block-1' | occurred_at=1700000215 | ended_at=1700000260 | category='FOCUS_WORK' | classification_source='seed'
+id=4 | block_id='block-1' | occurred_at=1700000260 | ended_at=1700000275 | category='COMMUNICATION' | classification_source='seed'
+id=5 | block_id='block-1' | occurred_at=1700000275 | ended_at=1700000320 | category='FOCUS_WORK' | classification_source='seed'
+id=6 | block_id='block-1' | occurred_at=1700000320 | ended_at=1700000368 | category='PASSIVE_CONSUMPTION' | classification_source='heuristic'
+id=7 | block_id='block-1' | occurred_at=1700000368 | ended_at=1700000600 | category='FOCUS_WORK' | classification_source='seed'
+id=8 | block_id='block-1' | occurred_at=1700000600 | ended_at=1700000700 | category='UNLOGGED' | classification_source='fallback'
+id=9 | block_id='block-1' | occurred_at=1700000700 | ended_at=1700000900 | category='FOCUS_WORK' | classification_source='declared_document_types'
+id=10 | block_id='block-1' | occurred_at=1700000900 | ended_at=1700001000 | category='REFERENCE' | classification_source='declared_app_category'
+id=11 | block_id='block-1' | occurred_at=1700001000 | ended_at=1700001100 | category='COMMUNICATION' | classification_source='heuristic'
+id=12 | block_id='block-1' | occurred_at=1700001100 | ended_at=1700001250 | category='FOCUS_WORK' | classification_source='seed'
+id=13 | block_id='block-1' | occurred_at=1700001250 | ended_at=1700001400 | category='UNLOGGED' | classification_source='heuristic'
+id=14 | block_id='block-1' | occurred_at=1700001400 | ended_at=1700001400 | category='COMMUNICATION' | classification_source='seed'
+id=15 | block_id='block-2' | occurred_at=1700003010 | ended_at=1700003200 | category='FOCUS_WORK' | classification_source='seed'
+id=16 | block_id='block-2' | occurred_at=1700003200 | ended_at=1700003210 | category='COMMUNICATION' | classification_source='seed'
+id=17 | block_id='block-2' | occurred_at=1700003210 | ended_at=1700003250 | category='FOCUS_WORK' | classification_source='seed'
+id=18 | block_id='block-2' | occurred_at=1700003250 | ended_at=1700003270 | category='REFERENCE' | classification_source='seed'
+id=19 | block_id='block-2' | occurred_at=1700003270 | ended_at=1700003300 | category='FOCUS_WORK' | classification_source='seed'
+id=20 | block_id='block-2' | occurred_at=1700003300 | ended_at=1700003330 | category='REFERENCE' | classification_source='heuristic'
+id=21 | block_id='block-2' | occurred_at=1700003330 | ended_at=1700003330 | category='FOCUS_WORK' | classification_source='seed'
+id=22 | block_id='block-2' | occurred_at=1700003700 | ended_at=1700004500 | category='FOCUS_WORK' | classification_source='user_rule'
+id=23 | block_id='block-3' | occurred_at=1700006010 | ended_at=1700006200 | category='FOCUS_WORK' | classification_source='seed'
+id=24 | block_id='block-3' | occurred_at=1700006200 | ended_at=1700006215 | category='COMMUNICATION' | classification_source='seed'
+id=25 | block_id='block-3' | occurred_at=1700006215 | ended_at=1700006260 | category='FOCUS_WORK' | classification_source='seed'
+id=26 | block_id='block-3' | occurred_at=1700006260 | ended_at=1700006275 | category='COMMUNICATION' | classification_source='seed'
+id=27 | block_id='block-3' | occurred_at=1700006275 | ended_at=1700006320 | category='FOCUS_WORK' | classification_source='seed'
+id=28 | block_id='block-3' | occurred_at=1700006320 | ended_at=1700006340 | category='COMMUNICATION' | classification_source='seed'
+id=29 | block_id='block-3' | occurred_at=1700006340 | ended_at=1700006500 | category='FOCUS_WORK' | classification_source='user_rule'
+id=30 | block_id='block-3' | occurred_at=1700006500 | ended_at=1700006560 | category='SOCIAL_FEED' | classification_source='seed'
+id=31 | block_id='block-3' | occurred_at=1700006560 | ended_at=1700006700 | category='FOCUS_WORK' | classification_source='seed'
+id=32 | block_id='block-4' | occurred_at=1700012010 | ended_at=1700012260 | category='FOCUS_WORK' | classification_source='user_rule'
+id=33 | block_id='block-4' | occurred_at=1700012260 | ended_at=1700012275 | category='COMMUNICATION' | classification_source='seed'
+id=34 | block_id='block-4' | occurred_at=1700012275 | ended_at=1700012320 | category='FOCUS_WORK' | classification_source='seed'
+id=35 | block_id='block-4' | occurred_at=1700012320 | ended_at=1700012335 | category='COMMUNICATION' | classification_source='seed'
+id=36 | block_id='block-4' | occurred_at=1700012335 | ended_at=1700012380 | category='FOCUS_WORK' | classification_source='user_rule'
+id=37 | block_id='block-4' | occurred_at=1700012380 | ended_at=1700012400 | category='COMMUNICATION' | classification_source='seed'
+id=38 | block_id='block-4' | occurred_at=1700012400 | ended_at=1700013000 | category='FOCUS_WORK' | classification_source='seed'
+id=39 | block_id='block-5' | occurred_at=1700015010 | ended_at=1700015300 | category='PASSIVE_CONSUMPTION' | classification_source='heuristic'
+id=40 | block_id='block-5' | occurred_at=1700015300 | ended_at=1700015500 | category='SOCIAL_FEED' | classification_source='seed'
+id=41 | block_id='block-5' | occurred_at=1700015500 | ended_at=1700015700 | category='PASSIVE_CONSUMPTION' | classification_source='heuristic'
+id=42 | block_id='block-6' | occurred_at=1700018010 | ended_at=1700018100 | category='FOCUS_WORK' | classification_source='seed'
+id=43 | block_id='block-6' | occurred_at=1700018100 | ended_at=1700018110 | category='COMMUNICATION' | classification_source='seed'
+id=44 | block_id='block-6' | occurred_at=1700018110 | ended_at=1700018130 | category='FOCUS_WORK' | classification_source='seed'
+id=45 | block_id='block-6' | occurred_at=1700018130 | ended_at=1700018140 | category='COMMUNICATION' | classification_source='seed'
+id=46 | block_id='block-6' | occurred_at=1700018140 | ended_at=1700018150 | category='FOCUS_WORK' | classification_source='seed'
+id=47 | block_id='block-6' | occurred_at=1700018150 | ended_at=1700018185 | category='COMMUNICATION' | classification_source='seed'
+id=48 | block_id='block-6' | occurred_at=1700018185 | ended_at=1700018600 | category='FOCUS_WORK' | classification_source='seed'
+
+[intervention_decision_log]
+decision_id='decision-1' | block_id='block-1' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-2' | block_id='block-1' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-3' | block_id='block-1' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-4' | block_id='block-1' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-5' | block_id='block-1' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-6' | block_id='block-1' | gate_verdict='offered' | synced_rule_evidence=0
+decision_id='decision-7' | block_id='block-1' | gate_verdict='abstained_block_cap' | synced_rule_evidence=0
+decision_id='decision-8' | block_id='block-1' | gate_verdict='abstained_block_cap' | synced_rule_evidence=0
+decision_id='decision-9' | block_id='block-1' | gate_verdict='abstained_block_cap' | synced_rule_evidence=0
+decision_id='decision-10' | block_id='block-1' | gate_verdict='abstained_block_cap' | synced_rule_evidence=0
+decision_id='decision-11' | block_id='block-1' | gate_verdict='abstained_block_cap' | synced_rule_evidence=0
+decision_id='decision-12' | block_id='block-1' | gate_verdict='abstained_block_cap' | synced_rule_evidence=0
+decision_id='decision-13' | block_id='block-1' | gate_verdict='abstained_block_cap' | synced_rule_evidence=0
+decision_id='decision-14' | block_id='block-1' | gate_verdict='abstained_remaining' | synced_rule_evidence=0
+decision_id='decision-15' | block_id='block-2' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-16' | block_id='block-2' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-17' | block_id='block-2' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-18' | block_id='block-2' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-19' | block_id='block-2' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-20' | block_id='block-2' | gate_verdict='offered' | synced_rule_evidence=0
+decision_id='decision-21' | block_id='block-2' | gate_verdict='abstained_block_cap' | synced_rule_evidence=0
+decision_id='decision-22' | block_id='block-3' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-23' | block_id='block-3' | gate_verdict='abstained_backoff' | synced_rule_evidence=0
+decision_id='decision-24' | block_id='block-3' | gate_verdict='abstained_backoff' | synced_rule_evidence=0
+decision_id='decision-25' | block_id='block-3' | gate_verdict='abstained_backoff' | synced_rule_evidence=0
+decision_id='decision-26' | block_id='block-3' | gate_verdict='abstained_backoff' | synced_rule_evidence=0
+decision_id='decision-27' | block_id='block-3' | gate_verdict='abstained_backoff' | synced_rule_evidence=0
+decision_id='decision-28' | block_id='block-3' | gate_verdict='abstained_backoff' | synced_rule_evidence=0
+decision_id='decision-29' | block_id='block-3' | gate_verdict='abstained_backoff' | synced_rule_evidence=0
+decision_id='decision-30' | block_id='block-3' | gate_verdict='abstained_backoff' | synced_rule_evidence=0
+decision_id='decision-31' | block_id='block-4' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-32' | block_id='block-4' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-33' | block_id='block-4' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-34' | block_id='block-4' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-35' | block_id='block-4' | gate_verdict='abstained_min_switches' | synced_rule_evidence=0
+decision_id='decision-36' | block_id='block-4' | gate_verdict='offered' | synced_rule_evidence=0
+decision_id='decision-37' | block_id='block-4' | gate_verdict='abstained_block_cap' | synced_rule_evidence=0
+decision_id='decision-38' | block_id='block-5' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-39' | block_id='block-5' | gate_verdict='abstained_no_anchor' | synced_rule_evidence=0
+decision_id='decision-40' | block_id='block-5' | gate_verdict='abstained_no_anchor' | synced_rule_evidence=0
+decision_id='decision-41' | block_id='block-6' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-42' | block_id='block-6' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-43' | block_id='block-6' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-44' | block_id='block-6' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-45' | block_id='block-6' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-46' | block_id='block-6' | gate_verdict='abstained_warmup' | synced_rule_evidence=0
+decision_id='decision-47' | block_id='block-6' | gate_verdict='abstained_at_anchor' | synced_rule_evidence=0

@@ -16,14 +16,44 @@ public struct HistoryListView: View {
         } else if viewModel.days.isEmpty {
             EmptyDeliveryState(text: "No daily history generated yet", systemImage: "calendar")
         } else {
-            HistoryDashboardView(days: viewModel.days)
+            HistoryDashboardView(days: viewModel.days, source: viewModel.source)
         }
+    }
+
+    /// How many rows there are and which calendar they follow, beside the
+    /// title. Synced rows are UTC calendar days: velvt-core sums every Mac's
+    /// time by UTC date until local-day summaries ship, so "Mon 9" there is
+    /// the UTC Monday (cross-device-10).
+    static func dayBoundaryLabel(for source: HistorySource?, dayCount: Int) -> String {
+        let days = dayCount == 1 ? "day" : "days"
+        return source == .thisMac ? "\(dayCount) local \(days)" : "\(dayCount) UTC \(days)"
+    }
+
+    /// Where the rows were built, under the title.
+    static func caption(for source: HistorySource?) -> String {
+        source == .thisMac ? "Built on this Mac" : "Privacy-safe cloud summaries"
+    }
+
+    /// A row's spoken label: its date, and for a synced row that it is a UTC day.
+    static func rowAccessibilityLabel(date: String, source: HistorySource?) -> String {
+        source == .thisMac ? date : "\(date), UTC day"
+    }
+
+    /// The text for one category's segment of a day's bar.
+    static func segmentHelpText(category: String, seconds: Int, activeSeconds: Int) -> String {
+        let time = "\(categoryLabel(category)): \(formatSeconds(seconds))"
+        guard
+            let percent = DaySummaryViewModel.percentOfActiveTime(
+                seconds: seconds, activeSeconds: activeSeconds)
+        else { return "\(time)." }
+        return "\(time), \(percent)% of active time."
     }
 }
 // MARK: - HistoryDashboardView
 
 private struct HistoryDashboardView: View {
     let days: [DaySummaryViewModel]
+    let source: HistorySource?
     @State private var hoveredActivityDetail: String?
 
     var body: some View {
@@ -44,13 +74,13 @@ private struct HistoryDashboardView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Daily Activity")
                         .velvtHeading(14)
-                    Text(hoveredActivityDetail ?? "Privacy-safe cloud summaries")
+                    Text(hoveredActivityDetail ?? HistoryListView.caption(for: source))
                         .font(VelvtType.caption(10.5))
                         .foregroundStyle(VelvtInk.tertiaryOnInk)
                         .lineLimit(1)
                 }
                 Spacer()
-                Text("7 days")
+                Text(HistoryListView.dayBoundaryLabel(for: source, dayCount: days.count))
                     .font(VelvtType.label(9.5))
                     .tracking(VelvtType.labelTracking)
                     .textCase(.uppercase)
@@ -59,7 +89,7 @@ private struct HistoryDashboardView: View {
 
             VStack(spacing: 3) {
                 ForEach(days) { day in
-                    DailyActivityRow(day: day, palette: activityPalette) { detail in
+                    DailyActivityRow(day: day, source: source, palette: activityPalette) { detail in
                         hoveredActivityDetail = detail
                     }
                 }
@@ -83,6 +113,7 @@ private struct HistoryDashboardView: View {
 
 private struct DailyActivityRow: View {
     let day: DaySummaryViewModel
+    let source: HistorySource?
     let palette: [String: Color]
     let onActivityHover: (String?) -> Void
 
@@ -106,7 +137,7 @@ private struct DailyActivityRow: View {
         }
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(day.date)
+        .accessibilityLabel(HistoryListView.rowAccessibilityLabel(date: day.date, source: source))
         .accessibilityValue(
             day.isNoData ? "No activity" : day.activeTime
         )
@@ -161,7 +192,8 @@ private struct SplitActivityBar: View {
     }
 
     private func helpText(for segment: ActivityProportion) -> String {
-        "\(categoryLabel(segment.category)): \(formatSeconds(segment.seconds)), \(Int((segment.proportion * 100).rounded()))% of active time."
+        HistoryListView.segmentHelpText(
+            category: segment.category, seconds: segment.seconds, activeSeconds: day.activeSeconds)
     }
 
     private func color(for category: String, index: Int) -> Color {

@@ -3270,8 +3270,17 @@ impl MessageRouter for R7Router {
                                     message_type = "auth_session",
                                     "restored auth session validated"
                                 );
+                                // Once per launch; any answer, a missing
+                                // route included, is fine (install-release-09).
+                                // A task of its own, so the next session's
+                                // validation is not dropped while the report
+                                // waits; `AuthManager` sends at most one at a
+                                // time.
+                                tokio::spawn(async move {
+                                    session_validator.report_client_version().await;
+                                });
                             }
-                            Err(AuthError::Transport | AuthError::RateLimited) => {
+                            Err(AuthError::Transport | AuthError::RateLimited { .. }) => {
                                 tracing::warn!(
                                     message_type = "auth_session",
                                     "restored auth session validation was deferred"
@@ -3961,6 +3970,24 @@ impl MessageRouter for R7Router {
                     return Ok(None);
                 }
                 self.push_pending_quiet_hours_offer().await;
+                Ok(None)
+            }
+
+            // Answered with nothing, and decides nothing: it lets each drift
+            // decision record whether Focus was known, and prunes Focus
+            // evidence past its retention window.
+            ClientMessage::FocusStatusAvailability(report) => {
+                if let Some(focus) = &self.focus {
+                    if focus
+                        .record_availability(report.availability, Utc::now())
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            error_code = "focus_evidence_prune_failed",
+                            "old focus evidence was not pruned"
+                        );
+                    }
+                }
                 Ok(None)
             }
 
@@ -4914,6 +4941,7 @@ impl R7Router {
             abstracted.category(),
             abstracted.classification_status(),
             abstracted.classification_confidence(),
+            abstracted.classification_source(),
             occurred_at,
         ) {
             Ok(Some(outcome)) => {

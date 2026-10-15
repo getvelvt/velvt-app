@@ -50,6 +50,7 @@ final class IPCModuleTests: XCTestCase {
                     channel: .alertStyleNone
                 )
             ),
+            .focusStatusAvailability(FocusStatusAvailabilityReport(availability: .notDetermined)),
         ]
 
         for message in messages {
@@ -131,6 +132,36 @@ final class IPCModuleTests: XCTestCase {
             XCTAssertEqual(payload["channel"] as? String, channel.rawValue)
             XCTAssertEqual((payload["block_id"] as? String)?.lowercased(), blockID.uuidString.lowercased())
         }
+    }
+
+    /// Proto v36. Whether Focus status is readable reaches Rust as
+    /// `focus_status_availability` with one value from the closed set
+    /// `proto/schema/focus_status_availability.json` declares, and no key an
+    /// on/off value or a Focus mode name could sit in.
+    func testFocusStatusAvailabilityCarriesOneValueFromTheSchema() throws {
+        let schemaURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("proto/schema/focus_status_availability.json")
+        let schema = try JSONSerialization.jsonObject(with: Data(contentsOf: schemaURL)) as? [String: Any]
+        let payloadSchema = (schema?["properties"] as? [String: Any])?["payload"] as? [String: Any]
+        let valueSchema = (payloadSchema?["properties"] as? [String: Any])?["availability"] as? [String: Any]
+        let declared = try XCTUnwrap(valueSchema?["enum"] as? [String])
+        XCTAssertEqual(declared.sorted(), FocusStatusAvailability.allCases.map(\.rawValue).sorted())
+
+        for availability in FocusStatusAvailability.allCases {
+            let message = ClientMessage.focusStatusAvailability(.init(availability: availability))
+            let data = try encoder.encode(message)
+            let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            XCTAssertEqual(envelope["type"] as? String, "focus_status_availability")
+            let payload = envelope["payload"] as? [String: Any] ?? [:]
+            XCTAssertEqual(payload.keys.sorted(), ["availability"])
+            XCTAssertEqual(payload["availability"] as? String, availability.rawValue)
+            XCTAssertEqual(try decoder.decode(ClientMessage.self, from: data), message)
+        }
+        XCTAssertEqual(FocusStatusAvailability.notDetermined.rawValue, "not_determined")
     }
 
     func testEveryServerMessageRoundTrips() throws {
@@ -1011,13 +1042,27 @@ final class AuthIPCContractTests: XCTestCase {
     }
 
     func testAuthFailureAllCodes() throws {
-        let codes: [AuthFailureCode] = [.invalidCredentials, .networkError, .serverError]
+        let codes: [AuthFailureCode] = [.invalidCredentials, .networkError, .serverError, .rateLimited]
         for code in codes {
             let msg = ServerMessage.authFailure(AuthFailure(code: code, message: "m"))
             let data = try encoder.encode(msg)
             let decoded = try decoder.decode(ServerMessage.self, from: data)
             XCTAssertEqual(decoded, msg, "Round-trip failed for code \(code)")
         }
+    }
+
+    /// Protocol 37: the exact frame Rust sends for a sign-in refused for too
+    /// many attempts. At 36 this frame failed to decode, which drops the
+    /// connection.
+    func testARateLimitedSignInFrameFromRustDecodes() throws {
+        let frame = Data(
+            #"{"type":"auth_failure","payload":{"code":"rate_limited","message":"Too many attempts. Try again in 15 minutes."}}"#
+                .utf8)
+        XCTAssertEqual(
+            try decoder.decode(ServerMessage.self, from: frame),
+            .authFailure(
+                AuthFailure(code: .rateLimited, message: "Too many attempts. Try again in 15 minutes."))
+        )
     }
 
     func testAccountDeletionAcceptedRoundTrip() throws {

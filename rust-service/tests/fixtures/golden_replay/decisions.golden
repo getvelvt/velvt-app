@@ -1,0 +1,155 @@
+# golden replay of tests/fixtures/golden_replay/trace.json, drift policy 6
+
+[pushes]
+step 1 in_progress: no offer
+step 2 in_progress: no offer
+step 3 in_progress: no offer
+step 4 in_progress: no offer
+step 5 in_progress: no offer
+step 6 in_progress: offer action_id=protect_next_10 anchor_category=FOCUS_WORK switch_count=3 window_seconds=600 offered_at=1700000320 salience=Normal
+step 7 in_progress: no offer
+step 8 in_progress: no offer
+step 9 in_progress: no offer
+step 10 in_progress: no offer
+step 11 in_progress: no offer
+step 12 in_progress: no offer
+step 13 in_progress: no offer
+step 14 in_progress: no offer
+step 17 in_progress: no offer
+step 18 in_progress: no offer
+step 19 in_progress: no offer
+step 20 in_progress: no offer
+step 21 in_progress: no offer
+step 22 in_progress: offer action_id=protect_next_10 anchor_category=FOCUS_WORK switch_count=3 window_seconds=600 offered_at=1700003300 salience=Normal
+step 24 in_progress: no offer
+step 24 closed: no offer
+step 32 in_progress: no offer
+step 33 in_progress: no offer
+step 34 in_progress: no offer
+step 35 in_progress: no offer
+step 36 in_progress: no offer
+step 37 in_progress: no offer
+step 39 in_progress: no offer
+step 40 in_progress: no offer
+step 41 in_progress: no offer
+step 44 in_progress: no offer
+step 46 in_progress: no offer
+step 47 in_progress: no offer
+step 48 in_progress: no offer
+step 49 in_progress: no offer
+step 50 in_progress: offer action_id=protect_next_10 anchor_category=FOCUS_WORK switch_count=3 window_seconds=600 offered_at=1700012380 salience=Quiet
+step 51 in_progress: no offer
+step 54 in_progress: no offer
+step 55 in_progress: no offer
+step 56 in_progress: no offer
+step 59 in_progress: no offer
+step 60 in_progress: no offer
+step 61 in_progress: no offer
+step 62 in_progress: no offer
+step 63 in_progress: no offer
+step 64 in_progress: no offer
+step 65 in_progress: no offer
+
+[work_block_intervention]
+block_id='block-1' | offered_at=1700000320 | action_id='protect_next_10' | anchor_category='FOCUS_WORK' | switch_count=3 | window_seconds=600 | outcome='returned' | outcome_at=1700000368 | salience='normal' | card_seen_at=NULL | delivery_channel=NULL | delivery_reported_at=NULL
+block_id='block-2' | offered_at=1700003300 | action_id='protect_next_10' | anchor_category='FOCUS_WORK' | switch_count=3 | window_seconds=600 | outcome='was_focused' | outcome_at=1700003310 | salience='normal' | card_seen_at=NULL | delivery_channel=NULL | delivery_reported_at=NULL
+block_id='block-4' | offered_at=1700012380 | action_id='protect_next_10' | anchor_category='FOCUS_WORK' | switch_count=3 | window_seconds=600 | outcome='returned' | outcome_at=1700012400 | salience='quiet' | card_seen_at=NULL | delivery_channel=NULL | delivery_reported_at=NULL
+
+[intervention_decision_log]
+decision_id='decision-1' | occurred_at=1700000010 | block_id='block-1' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=10 | remaining_seconds=1490 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-2' | occurred_at=1700000200 | block_id='block-1' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=1 | elapsed_seconds=200 | remaining_seconds=1300 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700000800 | focus_state='unknown'
+decision_id='decision-3' | occurred_at=1700000215 | block_id='block-1' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=1 | elapsed_seconds=215 | remaining_seconds=1285 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700000815 | focus_state='unknown'
+decision_id='decision-4' | occurred_at=1700000260 | block_id='block-1' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=2 | elapsed_seconds=260 | remaining_seconds=1240 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700000860 | focus_state='unknown'
+decision_id='decision-5' | occurred_at=1700000275 | block_id='block-1' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=2 | elapsed_seconds=275 | remaining_seconds=1225 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700000875 | focus_state='unknown'
+decision_id='decision-6' | occurred_at=1700000320 | block_id='block-1' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=3 | elapsed_seconds=320 | remaining_seconds=1180 | gate_verdict='offered' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700000920 | focus_state='unknown'
+decision_id='decision-7' | occurred_at=1700000368 | block_id='block-1' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=368 | remaining_seconds=1132 | gate_verdict='abstained_block_cap' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-8' | occurred_at=1700000600 | block_id='block-1' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=600 | remaining_seconds=900 | gate_verdict='abstained_block_cap' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-9' | occurred_at=1700000700 | block_id='block-1' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=700 | remaining_seconds=800 | gate_verdict='abstained_block_cap' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-10' | occurred_at=1700000900 | block_id='block-1' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=900 | remaining_seconds=600 | gate_verdict='abstained_block_cap' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-11' | occurred_at=1700001000 | block_id='block-1' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=1000 | remaining_seconds=500 | gate_verdict='abstained_block_cap' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-12' | occurred_at=1700001100 | block_id='block-1' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=1100 | remaining_seconds=400 | gate_verdict='abstained_block_cap' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-13' | occurred_at=1700001250 | block_id='block-1' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=1250 | remaining_seconds=250 | gate_verdict='abstained_block_cap' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-14' | occurred_at=1700001400 | block_id='block-1' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=1400 | remaining_seconds=100 | gate_verdict='abstained_remaining' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-15' | occurred_at=1700003010 | block_id='block-2' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=10 | remaining_seconds=1790 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-16' | occurred_at=1700003200 | block_id='block-2' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=1 | elapsed_seconds=200 | remaining_seconds=1600 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700003800 | focus_state='unknown'
+decision_id='decision-17' | occurred_at=1700003210 | block_id='block-2' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=1 | elapsed_seconds=210 | remaining_seconds=1590 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700003810 | focus_state='unknown'
+decision_id='decision-18' | occurred_at=1700003250 | block_id='block-2' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=2 | elapsed_seconds=250 | remaining_seconds=1550 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700003850 | focus_state='unknown'
+decision_id='decision-19' | occurred_at=1700003270 | block_id='block-2' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=2 | elapsed_seconds=270 | remaining_seconds=1530 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700003870 | focus_state='unknown'
+decision_id='decision-20' | occurred_at=1700003300 | block_id='block-2' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=3 | elapsed_seconds=300 | remaining_seconds=1500 | gate_verdict='offered' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700003900 | focus_state='unknown'
+decision_id='decision-21' | occurred_at=1700003330 | block_id='block-2' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=330 | remaining_seconds=1470 | gate_verdict='abstained_block_cap' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-22' | occurred_at=1700006010 | block_id='block-3' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=10 | remaining_seconds=1490 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-23' | occurred_at=1700006200 | block_id='block-3' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=200 | remaining_seconds=1300 | gate_verdict='abstained_backoff' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-24' | occurred_at=1700006215 | block_id='block-3' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=215 | remaining_seconds=1285 | gate_verdict='abstained_backoff' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-25' | occurred_at=1700006260 | block_id='block-3' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=260 | remaining_seconds=1240 | gate_verdict='abstained_backoff' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-26' | occurred_at=1700006275 | block_id='block-3' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=275 | remaining_seconds=1225 | gate_verdict='abstained_backoff' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-27' | occurred_at=1700006320 | block_id='block-3' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=320 | remaining_seconds=1180 | gate_verdict='abstained_backoff' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-28' | occurred_at=1700006340 | block_id='block-3' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=340 | remaining_seconds=1160 | gate_verdict='abstained_backoff' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-29' | occurred_at=1700006500 | block_id='block-3' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=500 | remaining_seconds=1000 | gate_verdict='abstained_backoff' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-30' | occurred_at=1700006560 | block_id='block-3' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=560 | remaining_seconds=940 | gate_verdict='abstained_backoff' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-31' | occurred_at=1700012010 | block_id='block-4' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=10 | remaining_seconds=1490 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-32' | occurred_at=1700012260 | block_id='block-4' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=1 | elapsed_seconds=260 | remaining_seconds=1240 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700012860 | focus_state='unknown'
+decision_id='decision-33' | occurred_at=1700012275 | block_id='block-4' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=1 | elapsed_seconds=275 | remaining_seconds=1225 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700012875 | focus_state='unknown'
+decision_id='decision-34' | occurred_at=1700012320 | block_id='block-4' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=2 | elapsed_seconds=320 | remaining_seconds=1180 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700012920 | focus_state='unknown'
+decision_id='decision-35' | occurred_at=1700012335 | block_id='block-4' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=2 | elapsed_seconds=335 | remaining_seconds=1165 | gate_verdict='abstained_min_switches' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700012935 | focus_state='unknown'
+decision_id='decision-36' | occurred_at=1700012380 | block_id='block-4' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=3 | elapsed_seconds=380 | remaining_seconds=1120 | gate_verdict='offered' | propensity=1.0 | anchor_seen_within_600s=1 | outcome_at=1700012980 | focus_state='unknown'
+decision_id='decision-37' | occurred_at=1700012400 | block_id='block-4' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=400 | remaining_seconds=1100 | gate_verdict='abstained_block_cap' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-38' | occurred_at=1700015010 | block_id='block-5' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=10 | remaining_seconds=1190 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-39' | occurred_at=1700015300 | block_id='block-5' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=300 | remaining_seconds=900 | gate_verdict='abstained_no_anchor' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-40' | occurred_at=1700015500 | block_id='block-5' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=500 | remaining_seconds=700 | gate_verdict='abstained_no_anchor' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-41' | occurred_at=1700018010 | block_id='block-6' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=10 | remaining_seconds=1490 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-42' | occurred_at=1700018100 | block_id='block-6' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=100 | remaining_seconds=1400 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-43' | occurred_at=1700018110 | block_id='block-6' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=110 | remaining_seconds=1390 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-44' | occurred_at=1700018130 | block_id='block-6' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=130 | remaining_seconds=1370 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-45' | occurred_at=1700018140 | block_id='block-6' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=140 | remaining_seconds=1360 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-46' | occurred_at=1700018150 | block_id='block-6' | policy_version=6 | anchor_category=NULL | switch_count=0 | elapsed_seconds=150 | remaining_seconds=1350 | gate_verdict='abstained_warmup' | propensity=1.0 | anchor_seen_within_600s=NULL | outcome_at=NULL | focus_state='unknown'
+decision_id='decision-47' | occurred_at=1700018185 | block_id='block-6' | policy_version=6 | anchor_category='FOCUS_WORK' | switch_count=3 | elapsed_seconds=185 | remaining_seconds=1315 | gate_verdict='abstained_at_anchor' | propensity=1.0 | anchor_seen_within_600s=0 | outcome_at=1700018785 | focus_state='unknown'
+
+[work_block_observation]
+id=1 | block_id='block-1' | occurred_at=1700000010 | ended_at=1700000200 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=2 | block_id='block-1' | occurred_at=1700000200 | ended_at=1700000215 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=3 | block_id='block-1' | occurred_at=1700000215 | ended_at=1700000260 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=4 | block_id='block-1' | occurred_at=1700000260 | ended_at=1700000275 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=5 | block_id='block-1' | occurred_at=1700000275 | ended_at=1700000320 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=6 | block_id='block-1' | occurred_at=1700000320 | ended_at=1700000368 | category='PASSIVE_CONSUMPTION' | classification_status='classified' | classification_confidence='medium'
+id=7 | block_id='block-1' | occurred_at=1700000368 | ended_at=1700000600 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=8 | block_id='block-1' | occurred_at=1700000600 | ended_at=1700000700 | category='UNLOGGED' | classification_status='unclassified' | classification_confidence='none'
+id=9 | block_id='block-1' | occurred_at=1700000700 | ended_at=1700000900 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='medium'
+id=10 | block_id='block-1' | occurred_at=1700000900 | ended_at=1700001000 | category='REFERENCE' | classification_status='classified' | classification_confidence='medium'
+id=11 | block_id='block-1' | occurred_at=1700001000 | ended_at=1700001100 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='medium'
+id=12 | block_id='block-1' | occurred_at=1700001100 | ended_at=1700001250 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=13 | block_id='block-1' | occurred_at=1700001250 | ended_at=1700001400 | category='UNLOGGED' | classification_status='ambiguous' | classification_confidence='low'
+id=14 | block_id='block-1' | occurred_at=1700001400 | ended_at=1700001400 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=15 | block_id='block-2' | occurred_at=1700003010 | ended_at=1700003200 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=16 | block_id='block-2' | occurred_at=1700003200 | ended_at=1700003210 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=17 | block_id='block-2' | occurred_at=1700003210 | ended_at=1700003250 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=18 | block_id='block-2' | occurred_at=1700003250 | ended_at=1700003270 | category='REFERENCE' | classification_status='classified' | classification_confidence='high'
+id=19 | block_id='block-2' | occurred_at=1700003270 | ended_at=1700003300 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=20 | block_id='block-2' | occurred_at=1700003300 | ended_at=1700003330 | category='REFERENCE' | classification_status='classified' | classification_confidence='medium'
+id=21 | block_id='block-2' | occurred_at=1700003330 | ended_at=1700003330 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=22 | block_id='block-2' | occurred_at=1700003700 | ended_at=1700004500 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=23 | block_id='block-3' | occurred_at=1700006010 | ended_at=1700006200 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=24 | block_id='block-3' | occurred_at=1700006200 | ended_at=1700006215 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=25 | block_id='block-3' | occurred_at=1700006215 | ended_at=1700006260 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=26 | block_id='block-3' | occurred_at=1700006260 | ended_at=1700006275 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=27 | block_id='block-3' | occurred_at=1700006275 | ended_at=1700006320 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=28 | block_id='block-3' | occurred_at=1700006320 | ended_at=1700006340 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=29 | block_id='block-3' | occurred_at=1700006340 | ended_at=1700006500 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=30 | block_id='block-3' | occurred_at=1700006500 | ended_at=1700006560 | category='SOCIAL_FEED' | classification_status='classified' | classification_confidence='high'
+id=31 | block_id='block-3' | occurred_at=1700006560 | ended_at=1700006700 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=32 | block_id='block-4' | occurred_at=1700012010 | ended_at=1700012260 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=33 | block_id='block-4' | occurred_at=1700012260 | ended_at=1700012275 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=34 | block_id='block-4' | occurred_at=1700012275 | ended_at=1700012320 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=35 | block_id='block-4' | occurred_at=1700012320 | ended_at=1700012335 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=36 | block_id='block-4' | occurred_at=1700012335 | ended_at=1700012380 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=37 | block_id='block-4' | occurred_at=1700012380 | ended_at=1700012400 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=38 | block_id='block-4' | occurred_at=1700012400 | ended_at=1700013000 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=39 | block_id='block-5' | occurred_at=1700015010 | ended_at=1700015300 | category='PASSIVE_CONSUMPTION' | classification_status='classified' | classification_confidence='medium'
+id=40 | block_id='block-5' | occurred_at=1700015300 | ended_at=1700015500 | category='SOCIAL_FEED' | classification_status='classified' | classification_confidence='high'
+id=41 | block_id='block-5' | occurred_at=1700015500 | ended_at=1700015700 | category='PASSIVE_CONSUMPTION' | classification_status='classified' | classification_confidence='medium'
+id=42 | block_id='block-6' | occurred_at=1700018010 | ended_at=1700018100 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=43 | block_id='block-6' | occurred_at=1700018100 | ended_at=1700018110 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=44 | block_id='block-6' | occurred_at=1700018110 | ended_at=1700018130 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=45 | block_id='block-6' | occurred_at=1700018130 | ended_at=1700018140 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=46 | block_id='block-6' | occurred_at=1700018140 | ended_at=1700018150 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'
+id=47 | block_id='block-6' | occurred_at=1700018150 | ended_at=1700018185 | category='COMMUNICATION' | classification_status='classified' | classification_confidence='high'
+id=48 | block_id='block-6' | occurred_at=1700018185 | ended_at=1700018600 | category='FOCUS_WORK' | classification_status='classified' | classification_confidence='high'

@@ -19,7 +19,9 @@
 #
 # 3. The export must still run on the databases testers actually have. Every
 #    fixture is built by replaying the shipped migrations up to a real build's
-#    schema: protocol 30 (1.0.11), protocol 28 (1.0.9, no `card_seen_at`), a
+#    schema: protocol 30 (1.0.11), protocol 35 and 36 upgrades (what became of
+#    a notification, what was known about Focus), the 0045 provenance upgrade
+#    (which must change nothing the export writes), protocol 28 (1.0.9, no `card_seen_at`), a
 #    28 -> 30 upgrade (rows from before migration 0032 are "unknown", not
 #    "unseen"), protocol 25 (1.0.1, no decision log at all), 1.0.0 (no
 #    app-scoped corrections), protocol 31 (no site rules) and policy v5
@@ -222,7 +224,7 @@ assert_no_sentinel() { # FILE...
 }
 
 OFFERS_HEADER='block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention,card_seen_at,card_seen,delivery_channel,delivery_reported_at,notification_delivery'
-DECISIONS_HEADER='decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds'
+DECISIONS_HEADER='decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,focus_state,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds'
 OUTCOMES_HEADER='decision_id,censor_reason,observer_gap_cause,sustained_anchor_900s,departure_free_600s,seconds_to_sustained_return,departure_category'
 BLOCKS_HEADER='block_id,origin,phase,started_at,ended_at,total_paused_seconds,planned_duration_seconds'
 INVITATIONS_HEADER='invitation_id,offered_at,action_id,policy_version,backoff_policy_version,outcome,outcome_at'
@@ -324,6 +326,9 @@ assert rows["d-02"]["anchor_seen_within_600s"] == "1", rows["d-02"]
 assert rows["d-02"]["propensity"] == "1.0", rows["d-02"]
 assert rows["d-03"]["block_total_paused_seconds"] == "300", rows["d-03"]
 assert rows["d-06"]["block_ended_at"] == str(T0 + 40100), rows["d-06"]
+# A protocol-30 database cannot record what was known about Focus (0044,
+# protocol 36): empty on every row, never "off".
+assert {r["focus_state"] for r in rows.values()} == {""}, rows
 PY
 
 # 3b. The outcome labels: one row per decision with an anchor (d-01 and d-06
@@ -381,8 +386,9 @@ assert meta["explain_probe"] == "present", meta
 assert meta["card_seen_recorded_since"] == str(1800000000 - 86400), meta
 assert meta["invitations_enabled"] == "0", meta
 assert meta["exported_at"].isdigit(), meta
-assert meta["export_format"] == "5", meta
+assert meta["export_format"] == "6", meta
 assert meta["delivery_channel_recorded_since"] == "", meta
+assert meta["focus_state_recorded_since"] == "", meta
 assert meta["corrections"] == "present", meta
 assert meta["outcomes"] == "present", meta
 assert meta["outcomes_definition_version"] == "1", meta
@@ -535,6 +541,108 @@ assert nd["by_channel"]["quiet"]["no_response"] == 1, nd
 assert (nd["posted_with_visible_alert_style"], nd["not_posted_with_visible_alert_style"],
         nd["not_recorded"]) == (0, 2, 1), nd
 PY
+
+# ===========================================================================
+# A3. Protocol 36: what the service knew about Focus at each decision
+#     (migration 0044). Upgraded from the protocol-35 schema: decisions made
+#     before 0044 carry nothing (not "off"), later ones on, off or unknown. The
+#     analyser shows offers by it as a descriptive breakdown and keeps every
+#     delivered denominator as it was.
+# ===========================================================================
+db36="$work/p36.sqlite3"
+migrate_fixture_db "$db36" "$FIXTURE_MIGRATIONS_PROTOCOL_35" "$INSTALLED_AT"
+seed_blocks_and_offers "$db36"
+FOCUS_MIGRATED_AT=$((T0 + 25000))
+migrate_fixture_db "$db36" "$FIXTURE_MIGRATIONS_PROTOCOL_36" "$FOCUS_MIGRATED_AT"
+sqlite3 "$db36" "UPDATE intervention_decision_log SET focus_state = 'on' WHERE decision_id = 'd-03';
+                 UPDATE intervention_decision_log SET focus_state = 'unknown' WHERE decision_id IN ('d-04', 'd-05');
+                 UPDATE intervention_decision_log SET focus_state = 'off' WHERE decision_id = 'd-07';"
+# The CHECK constraint holds the vocabulary closed, and takes every state the
+# analyser knows (checked on a copy, so the export below is unchanged).
+if sqlite3 "$db36" "UPDATE intervention_decision_log SET focus_state = 'dnd' WHERE decision_id = 'd-02';" 2>/dev/null; then
+  fail "migration 0044 accepted a focus state outside its vocabulary"
+fi
+cp "$db36" "$work/p36-vocabulary.sqlite3"
+for state in $(python3 -c "import ast, sys
+tree = ast.parse(open(sys.argv[1]).read())
+print(' '.join(next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                    and getattr(n.targets[0], 'id', '') == 'FOCUS_STATES')))" "$analyze"); do
+  sqlite3 "$work/p36-vocabulary.sqlite3" \
+    "UPDATE intervention_decision_log SET focus_state = '$state' WHERE decision_id = 'd-02';" \
+    || fail "migration 0044 refused the analyser's focus state $state"
+done
+mkdir -p "$work/p36"
+run_export "$db36" "$work/p36/export.csv" "$work/p36/log.txt"
+check_header "$work/p36/export-decisions.csv" "$DECISIONS_HEADER"
+python3 - "$work/p36/export-decisions.csv" "$work/p36/export-meta.csv" <<'PY' || fail "protocol 36 focus_state column"
+import csv, sys
+T0 = 1800000000
+rows = {r["decision_id"]: r["focus_state"] for r in csv.DictReader(open(sys.argv[1]))}
+assert rows == {"d-01": "", "d-02": "", "d-03": "on", "d-04": "unknown",
+                "d-05": "unknown", "d-06": "", "d-07": "off"}, rows
+meta = {r["key"]: r["value"] for r in csv.DictReader(open(sys.argv[2]))}
+assert meta["focus_state_recorded_since"] == str(T0 + 25000), meta
+assert meta["export_format"] == "6", meta
+PY
+grep -qF "whether Velvt knew a Focus mode was on at that moment" "$work/p36/log.txt" \
+  || fail "the participant summary does not say the decisions file carries the Focus state"
+mkdir -p "$work/cohort36/p36"
+cp "$work/p36"/export*.csv "$work/cohort36/p36/"
+python3 "$analyze" --json "$work/cohort36/p36" > "$work/analysis36.json"
+python3 - "$work/analysis36.json" <<'PY' || fail "exporter/analyser round trip (protocol 36)"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["data_quality"]["malformed"] == [], r["data_quality"]
+d = r["decisions_recorded"]
+assert (d["total"], d["delivered"], d["withheld"]) == (5, 3, 2), d
+by = r["focus_state_at_decision"]["by_focus_state"]
+delivered = {k: v["offers"] for k, v in by.items() if v["offers"]}
+withheld = {k: v["withheld"] for k, v in by.items() if v["withheld"]}
+# block-1 (d-02) was decided before 0044; block-4 (d-05) unknown; block-7 off.
+assert delivered == {"not_recorded": 1, "unknown": 1, "off": 1}, delivered
+assert withheld == {"on": {"delivery_suppressed_dnd": 1},
+                    "unknown": {"withheld_demotion": 1}}, withheld
+PY
+
+# ===========================================================================
+# A4. Migration 0045 (classification provenance, no protocol change). The
+#     exporter names every column it selects, so the two columns 0045 adds
+#     change nothing it writes, even set to values no build writes yet: every
+#     file is byte-identical to the export of the same rows before the
+#     upgrade, except the meta file's export time and schema version.
+# ===========================================================================
+db44="$work/p44.sqlite3"
+migrate_fixture_db "$db44" "$FIXTURE_MIGRATIONS_PROTOCOL_36" "$INSTALLED_AT"
+seed_blocks_and_offers "$db44"
+seed_invitations_and_probe "$db44"
+seed_sentinels "$db44"
+db45="$work/p45.sqlite3"
+cp "$db44" "$db45"
+migrate_fixture_db "$db45" "$FIXTURE_MIGRATIONS_PROVENANCE" "$((T0 + 90000))"
+sqlite3 "$db45" "UPDATE work_block_observation SET classification_source = 'vault_rule';
+                 UPDATE intervention_decision_log SET synced_rule_evidence = 7;"
+mkdir -p "$work/p44" "$work/p45"
+run_export "$db44" "$work/p44/export.csv" "$work/p44/log.txt"
+run_export "$db45" "$work/p45/export.csv" "$work/p45/log.txt"
+[[ "$(meta_of "$work/p45/export-meta.csv" schema_version)" == "$FIXTURE_MIGRATIONS_PROVENANCE" ]] \
+  || fail "the provenance fixture is not at migration $FIXTURE_MIGRATIONS_PROVENANCE"
+for before in "$work/p44"/export*.csv; do
+  name="$(basename "$before")"
+  if [[ "$name" == "export-meta.csv" ]]; then
+    continue
+  fi
+  cmp -s "$before" "$work/p45/$name" || {
+    diff "$before" "$work/p45/$name" >&2 || true
+    fail "migration 0045 changed $name"
+  }
+done
+diff <(grep -v -e '^exported_at,' -e '^schema_version,' "$work/p44/export-meta.csv") \
+     <(grep -v -e '^exported_at,' -e '^schema_version,' "$work/p45/export-meta.csv") >&2 \
+  || fail "migration 0045 changed the meta file beyond its schema version"
+if grep -q -e classification_source -e synced_rule_evidence -e vault_rule "$work/p45"/*.csv; then
+  fail "the export carries a provenance column"
+fi
+assert_no_sentinel "$work/p45"/*.csv
 
 # ===========================================================================
 # B. Protocol 28 (1.0.9): no card_seen_at column. The export must still work

@@ -5,9 +5,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 use velvt_service::auth::{
-    AuthError, AuthManager, AuthState, AuthStateMachine, DeviceRegistrar, FakeTokenStore,
-    HttpClient, HttpMethod, HttpRequest, HttpResponse, NoOpDeviceRegistrar, RedactedString,
-    TokenPair, TokenStore,
+    AuthError, AuthManager, AuthState, AuthStateMachine, ClientVersionReport, DeviceRegistrar,
+    FakeTokenStore, HttpClient, HttpMethod, HttpRequest, HttpResponse, NoOpDeviceRegistrar,
+    RedactedString, TokenPair, TokenStore,
 };
 
 #[derive(Clone, Default)]
@@ -685,7 +685,7 @@ async fn a_rate_limited_refresh_is_typed_and_keeps_the_session() {
         manager
             .send_authenticated(HttpRequest::get("/v1/events"))
             .await,
-        Err(AuthError::RateLimited)
+        Err(AuthError::RateLimited { .. })
     ));
     assert!(matches!(state.current(), AuthState::Authenticated { .. }));
     assert_eq!(store.load_tokens().unwrap(), Some(expired));
@@ -1214,7 +1214,7 @@ async fn rate_limit_is_returned_without_changing_authenticated_state() {
         manager
             .send_authenticated(HttpRequest::get("/v1/events"))
             .await,
-        Err(AuthError::RateLimited)
+        Err(AuthError::RateLimited { .. })
     ));
     assert!(matches!(state.current(), AuthState::Authenticated { .. }));
 }
@@ -1447,4 +1447,320 @@ async fn login_during_a_refresh_keeps_its_own_tokens() {
         }
     );
     assert_eq!(store.load_tokens().unwrap(), Some(login));
+}
+
+// ---------------------------------------------------------------------------
+// The running version, once per launch (install-release-09, velvt-core #41)
+// ---------------------------------------------------------------------------
+
+fn signed_in_manager(
+    http: Arc<FakeHttpClient>,
+) -> (
+    AuthManager<FakeTokenStore, FakeHttpClient>,
+    Arc<AuthStateMachine>,
+) {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
+        .unwrap();
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(store, http, Arc::clone(&state), Duration::zero());
+    (manager, state)
+}
+
+/// velvt-core asks for `PATCH /v1/devices/{id}` with the running version
+/// once per launch: registration records it once, so a device row named the
+/// build the Mac first signed in with.
+#[tokio::test]
+async fn the_running_version_is_reported_once_per_launch() {
+    let http = Arc::new(FakeHttpClient::with_responses(vec![response(
+        200, None, None,
+    )]));
+    let (manager, state) = signed_in_manager(Arc::clone(&http));
+
+    assert_eq!(
+        manager.report_client_version().await,
+        ClientVersionReport::Recorded
+    );
+    assert_eq!(
+        manager.report_client_version().await,
+        ClientVersionReport::AlreadyAnswered
+    );
+
+    let requests = http.requests();
+    assert_eq!(requests.len(), 1, "one request per launch");
+    assert_eq!(requests[0].method, HttpMethod::Patch);
+    assert_eq!(requests[0].path, "/v1/devices/device-1");
+    assert_eq!(
+        requests[0].json_body,
+        Some(serde_json::json!({
+            "client_version": velvt_service::build_info::SERVICE_VERSION
+        })),
+        "the version registration and every batch already send, and nothing else"
+    );
+    assert_eq!(
+        requests[0].authorization,
+        Some(RedactedString::new("access"))
+    );
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+}
+
+/// A server without the route (404, 405), or one that refuses the body, has
+/// answered: the session is untouched and nothing is sent again this launch.
+#[tokio::test]
+async fn a_server_that_does_not_take_the_version_is_answered_once_and_left_alone() {
+    for (status, code) in [
+        (404, None),
+        (405, None),
+        (404, Some("device_not_found")),
+        (403, Some("device_forbidden")),
+        (422, Some("validation_error")),
+    ] {
+        let http = Arc::new(FakeHttpClient::with_responses(vec![response(
+            status, code, None,
+        )]));
+        let (manager, state) = signed_in_manager(Arc::clone(&http));
+
+        assert_eq!(
+            manager.report_client_version().await,
+            ClientVersionReport::Declined { status },
+            "{status} {code:?}"
+        );
+        assert_eq!(
+            manager.report_client_version().await,
+            ClientVersionReport::AlreadyAnswered,
+            "{status} {code:?}"
+        );
+        assert_eq!(http.requests().len(), 1, "{status} {code:?}");
+        assert_eq!(
+            state.current(),
+            AuthState::Authenticated {
+                device_id: "device-1".into()
+            },
+            "{status} {code:?}: the session stands"
+        );
+    }
+}
+
+/// No answer is not an answer: the next restored session asks again, until
+/// one comes.
+#[tokio::test]
+async fn a_report_that_gets_no_answer_is_sent_again_at_the_next_restore() {
+    let mut rate_limited = response(429, Some("rate_limit_exceeded"), None);
+    rate_limited.retry_after = Some("30".into());
+    let http = Arc::new(FakeHttpClient::with_results(vec![
+        Err(AuthError::Transport),
+        Ok(response(503, None, None)),
+        Ok(rate_limited),
+        Ok(response(200, None, None)),
+    ]));
+    let (manager, state) = signed_in_manager(Arc::clone(&http));
+
+    for _ in 0..3 {
+        assert_eq!(
+            manager.report_client_version().await,
+            ClientVersionReport::Deferred
+        );
+    }
+    assert_eq!(
+        manager.report_client_version().await,
+        ClientVersionReport::Recorded
+    );
+    assert_eq!(
+        manager.report_client_version().await,
+        ClientVersionReport::AlreadyAnswered
+    );
+    assert_eq!(http.requests().len(), 4);
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+}
+
+#[tokio::test]
+async fn nothing_is_reported_without_a_session() {
+    let http = Arc::new(FakeHttpClient::default());
+    let store = Arc::new(FakeTokenStore::default());
+    let state = Arc::new(AuthStateMachine::new(AuthState::Unauthenticated));
+    let manager = AuthManager::new(store, Arc::clone(&http), state, Duration::zero());
+
+    assert_eq!(
+        manager.report_client_version().await,
+        ClientVersionReport::Deferred
+    );
+    assert!(http.requests().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// One reissue for requests refused together (velvt-core #41, follow-up 3)
+// ---------------------------------------------------------------------------
+
+/// Refuses every `/v1/events` request sent with the revoked token, but only
+/// once `refused_together` of them have arrived, and answers the reissue.
+struct RevokedTokenCloud {
+    requests: Mutex<Vec<HttpRequest>>,
+    arrived: tokio::sync::Barrier,
+}
+
+impl HttpClient for RevokedTokenCloud {
+    fn send<'a>(
+        &'a self,
+        request: HttpRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, AuthError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.requests.lock().unwrap().push(request.clone());
+            if request.path == "/v1/auth/devices/reissue" {
+                let reissues = self
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|request| request.path == "/v1/auth/devices/reissue")
+                    .count();
+                let access = format!("reissued-access-{reissues}");
+                return Ok(response(
+                    200,
+                    None,
+                    Some(token_pair(Duration::hours(1), &access, "reissued-refresh")),
+                ));
+            }
+            if request.authorization == Some(RedactedString::new("revoked-access")) {
+                self.arrived.wait().await;
+                return Ok(response(401, Some("device_token_revoked"), None));
+            }
+            Ok(response(200, None, None))
+        })
+    }
+}
+
+/// Two requests refused as `device_token_revoked` at once each ran a reissue,
+/// one after the other behind the refresh lock. velvt-core keeps every pair a
+/// burst replaced working for its grace, so nothing broke, but the second
+/// reissue was redundant. The one that waits now finds the tokens already
+/// replaced since it was refused, and retries with them.
+#[tokio::test]
+async fn requests_refused_together_share_one_reissue() {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(
+            Duration::hours(1),
+            "revoked-access",
+            "revoked-refresh",
+        ))
+        .unwrap();
+    store
+        .store_user_pair(token_pair(
+            Duration::hours(1),
+            "user-access",
+            "user-refresh",
+        ))
+        .unwrap();
+    let cloud = Arc::new(RevokedTokenCloud {
+        requests: Mutex::default(),
+        arrived: tokio::sync::Barrier::new(2),
+    });
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        Arc::clone(&cloud),
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    let (first, second) = tokio::join!(
+        manager.send_authenticated(HttpRequest::get("/v1/events")),
+        manager.send_authenticated(HttpRequest::get("/v1/history/daily?days=7")),
+    );
+
+    assert_eq!(first.unwrap().status, 200);
+    assert_eq!(second.unwrap().status, 200);
+    let requests = cloud.requests.lock().unwrap().clone();
+    let reissues = requests
+        .iter()
+        .filter(|request| request.path == "/v1/auth/devices/reissue")
+        .count();
+    assert_eq!(reissues, 1, "one reissue answers both refusals");
+    let reissued = Some(RedactedString::new("reissued-access-1"));
+    let retried_with = requests
+        .iter()
+        .skip(3)
+        .map(|request| request.authorization.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retried_with,
+        vec![reissued.clone(), reissued.clone()],
+        "both retries carry the one reissued token"
+    );
+    assert_eq!(
+        store
+            .load_tokens()
+            .unwrap()
+            .map(|tokens| tokens.access_token().clone()),
+        reissued
+    );
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+}
+
+/// A request refused with the very tokens a reissue just stored is not
+/// handed them back: it reissues, as before.
+#[tokio::test]
+async fn a_refusal_of_the_stored_tokens_still_reissues() {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
+        .unwrap();
+    store
+        .store_user_pair(token_pair(
+            Duration::hours(1),
+            "user-access",
+            "user-refresh",
+        ))
+        .unwrap();
+    let first = token_pair(Duration::hours(1), "first-reissue", "first-refresh");
+    let second = token_pair(Duration::hours(1), "second-reissue", "second-refresh");
+    let http = Arc::new(FakeHttpClient::with_responses(vec![
+        response(401, Some("device_token_revoked"), None),
+        response(200, None, Some(first)),
+        response(200, None, None),
+        response(401, Some("device_token_revoked"), None),
+        response(200, None, Some(second.clone())),
+        response(200, None, None),
+    ]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    manager
+        .send_authenticated(HttpRequest::get("/v1/events"))
+        .await
+        .unwrap();
+    manager
+        .send_authenticated(HttpRequest::get("/v1/events"))
+        .await
+        .unwrap();
+
+    let paths = http
+        .requests()
+        .into_iter()
+        .map(|request| request.path)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        vec![
+            "/v1/events",
+            "/v1/auth/devices/reissue",
+            "/v1/events",
+            "/v1/events",
+            "/v1/auth/devices/reissue",
+            "/v1/events",
+        ]
+    );
+    assert_eq!(store.load_tokens().unwrap(), Some(second));
 }

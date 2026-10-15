@@ -31,7 +31,10 @@ async fn main() {
                 println!("{}", velvt_service::build_info::SOURCE_COMMIT);
                 return;
             }
-            "--dry-run-egress" => std::process::exit(dry_run_egress().await),
+            "--dry-run-egress" => {
+                let vault = std::env::args().nth(2).as_deref() == Some("--vault");
+                std::process::exit(dry_run_egress(vault).await)
+            }
             _ => {}
         }
     }
@@ -841,8 +844,9 @@ fn persistence_startup_error_code(
 /// `velvt-service --dry-run-egress`: prints every request the helper would
 /// send next, and every endpoint it can reach, without sending anything or
 /// writing to the database. Reads the same `VELVT_DATABASE_PATH` and
-/// `VELVT_API_BASE_URL` the service does. Returns the process exit code.
-async fn dry_run_egress() -> i32 {
+/// `VELVT_API_BASE_URL` the service does. With `--vault`, also prints the
+/// document sync would seal, in plaintext. Returns the process exit code.
+async fn dry_run_egress(vault: bool) -> i32 {
     let config = match velvt_service::config::ServiceConfig::load() {
         Ok(config) => config,
         Err(error) => {
@@ -851,12 +855,21 @@ async fn dry_run_egress() -> i32 {
         }
     };
     let mut report = Vec::new();
-    let result = velvt_service::egress::dry_run::run(
-        &config.database_path,
-        &config.upload_api_base_url,
-        &mut report,
-    )
-    .await;
+    let result = if vault {
+        velvt_service::egress::dry_run::run_with_vault(
+            &config.database_path,
+            &config.upload_api_base_url,
+            &mut report,
+        )
+        .await
+    } else {
+        velvt_service::egress::dry_run::run(
+            &config.database_path,
+            &config.upload_api_base_url,
+            &mut report,
+        )
+        .await
+    };
     use std::io::Write;
     if std::io::stdout().write_all(&report).is_err() {
         return 74; // EX_IOERR

@@ -14,7 +14,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use uuid::Uuid;
 use velvt_service::auth::{
-    AuthError, HttpClient, HttpRequest, HttpResponse, RedactedString, ReqwestHttpClient,
+    AuthError, HttpClient, HttpRequest, HttpResponse, Precondition, RedactedString,
+    ReqwestHttpClient,
 };
 use velvt_service::egress::{
     dry_run, sha256_hex, verify_chain, EgressCheckpoint, EgressLedgerEntry, EgressRecord,
@@ -496,6 +497,81 @@ async fn the_dry_run_shows_events_not_yet_batched_in_their_wire_shape() {
     }
 }
 
+/// The vault's compare-and-swap reaches the wire as a PUT carrying `If-Match`,
+/// recorded in the ledger like any other request, and a read carries
+/// `If-None-Match`; neither header is part of what the ledger hashes.
+#[tokio::test]
+async fn a_vault_write_is_a_ledgered_put_with_its_precondition() {
+    let persistence = SqlitePersistence::open_in_memory().unwrap();
+    let ledger = persistence.egress_ledger_repo();
+    let server = TestServer::start(OK_ACCEPTED, Some(Arc::clone(&ledger))).await;
+    let client = WithBearer(ReqwestHttpClient::new(
+        server.base_url.clone(),
+        Arc::clone(&ledger),
+    ));
+    let put = HttpRequest::put("/v1/vault/blobs/prefs", json!({"new_version": 8}))
+        .with_precondition(Precondition::IfMatch("\"7\"".into()));
+    client.send(put).await.unwrap();
+    let get = HttpRequest::get("/v1/vault/blobs/prefs")
+        .with_precondition(Precondition::IfNoneMatch("\"8\"".into()));
+    client.send(get).await.unwrap();
+
+    let arrivals = server.arrivals();
+    assert!(arrivals[0]
+        .request_line
+        .starts_with("PUT /v1/vault/blobs/prefs "));
+    assert!(arrivals[0]
+        .headers
+        .to_ascii_lowercase()
+        .contains("if-match: \"7\""));
+    assert_eq!(arrivals[0].ledger_entries_on_arrival, 1);
+    assert!(arrivals[1]
+        .headers
+        .to_ascii_lowercase()
+        .contains("if-none-match: \"8\""));
+    let entries = ledger.entries().unwrap();
+    assert_eq!(entries[0].method, "PUT");
+    assert_eq!(entries[0].body_sha256, sha256_hex(&arrivals[0].body));
+    assert_eq!(entries[1].method, "GET");
+}
+
+/// `--dry-run-egress --vault` prints the document sync would seal, from this
+/// Mac's own tables, and still sends nothing and writes nothing.
+#[tokio::test]
+async fn the_vault_dry_run_prints_the_plaintext_document_and_sends_nothing() {
+    let scratch = ScratchDatabase::new();
+    let persistence = SqlitePersistence::open(&scratch.path).unwrap();
+    persistence
+        .initiation_repo()
+        .set_invitations_enabled(false, Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).unwrap())
+        .unwrap();
+    drop(persistence);
+    let before = std::fs::read(&scratch.path).unwrap();
+
+    let mut out = Vec::new();
+    dry_run::run_with_vault(&scratch.path, "https://api.example.test", &mut out)
+        .await
+        .unwrap();
+    let report = String::from_utf8(out).unwrap();
+
+    assert!(report.contains("== Sync across your Macs"));
+    assert!(report.contains("Accounts with sync on on this Mac: 0."));
+    assert!(report.contains("\"invitations_enabled\": {"));
+    assert!(report.contains("<this Mac's device id at Velvt>"));
+    assert!(report.contains("\"person_salt\": \"<32 random bytes"));
+    assert_eq!(
+        std::fs::read(&scratch.path).unwrap(),
+        before,
+        "nothing written"
+    );
+    let ledger = SqlitePersistence::open(&scratch.path)
+        .unwrap()
+        .egress_ledger_repo()
+        .entries()
+        .unwrap();
+    assert!(ledger.is_empty(), "nothing sent");
+}
+
 #[tokio::test]
 async fn the_dry_run_without_a_database_sends_nothing_and_says_so() {
     let scratch = ScratchDatabase::new();
@@ -685,6 +761,7 @@ fn every_request_construction_site_is_accounted_for() {
     const CONSTRUCTORS: &[&str] = &[
         "HttpRequest::get(",
         "HttpRequest::post(",
+        "HttpRequest::put(",
         "HttpRequest::patch(",
         "HttpRequest::delete(",
     ];
@@ -697,7 +774,7 @@ fn every_request_construction_site_is_accounted_for() {
             .sum::<usize>();
     }
     assert_eq!(
-        sites, 16,
+        sites, 22,
         "the number of HttpRequest constructions in shipped code changed. Check \
          the new or removed request against egress::ENDPOINTS, then update this count"
     );

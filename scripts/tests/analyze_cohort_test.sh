@@ -43,6 +43,17 @@
 #      changes no pre-registered denominator; an older export is unknown,
 #      never not_reported. A posted notification is not called shown: a Focus
 #      Velvt could not detect still holds it.
+#  14. Policy 6 holds two anchor rules on develop: builds cut between #78 and
+#      #83 took the category with the most confident time, later ones a work
+#      category only (2026-10-15). Nothing checked that no build from the gap
+#      reached a tester. A policy-6 row whose anchor is not a work category can
+#      only come from one; that export is reported and excluded whole.
+#  15. An offer made during a Focus Velvt could not see was counted exactly
+#      like one made with no Focus (1.0.14 simulation, B5): builds without the
+#      Communication Notifications entitlement cannot read Focus status. From
+#      protocol 36 each decision says on, off or unknown, and offers are broken
+#      down by it as an ADDITIONAL descriptive figure that changes no
+#      pre-registered denominator. An older row is not_recorded, never off.
 #
 # Fixtures are CSVs written the way export_cohort_evidence.sh writes them.
 # export_cohort_evidence_test.sh covers the databases behind them, across
@@ -80,7 +91,7 @@ from pathlib import Path
 
 HEADERS = {
     "offers": "block_id,purpose,intensity,planned_duration_seconds,block_phase,started_at,ended_at,total_paused_seconds,offered_at,remaining_seconds_at_offer,action_id,anchor_category,switch_count,window_seconds,salience,outcome,outcome_at,seconds_to_outcome,returned_within_10min,wrong_intervention,card_seen_at,card_seen,delivery_channel,delivery_reported_at,notification_delivery",
-    "decisions": "decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds",
+    "decisions": "decision_id,occurred_at,block_id,policy_version,anchor_category,switch_count,elapsed_seconds,remaining_seconds,gate_verdict,propensity,anchor_seen_within_600s,outcome_at,focus_state,block_started_at,block_ended_at,block_total_paused_seconds,block_planned_duration_seconds",
     "blocks": "block_id,origin,phase,started_at,ended_at,total_paused_seconds,planned_duration_seconds",
     "invitations": "invitation_id,offered_at,action_id,policy_version,backoff_policy_version,outcome,outcome_at",
     "explain": "week_start_local_date,taps,delivered_interventions,blocks_declared",
@@ -125,7 +136,7 @@ for o in spec.get("offers", []):
         started_at=b["started_at"], ended_at=b["ended_at"],
         total_paused_seconds=b["total_paused_seconds"], offered_at=offered,
         remaining_seconds_at_offer=0, action_id="protect_next_10",
-        anchor_category="FOCUS_WORK", switch_count=3, window_seconds=600,
+        anchor_category=o.get("anchor_category", "FOCUS_WORK"), switch_count=3, window_seconds=600,
         salience=o.get("salience", "normal"), outcome=o["outcome"], outcome_at=outcome_at,
         seconds_to_outcome=None if outcome_at is None else outcome_at - offered,
         returned_within_10min=int(o["outcome"] == "returned" and outcome_at is not None and outcome_at - offered <= 600),
@@ -151,6 +162,7 @@ if spec.get("decisions") is not None:
             remaining_seconds=600, gate_verdict=d["gate_verdict"],
             propensity=d.get("propensity", "1.0"),
             anchor_seen_within_600s=d.get("anchor_seen_within_600s"), outcome_at=None,
+            focus_state=d.get("focus_state"),
             block_started_at=b.get("started_at"), block_ended_at=b.get("ended_at"),
             block_total_paused_seconds=b.get("total_paused_seconds"),
             block_planned_duration_seconds=b.get("planned_duration_seconds"),
@@ -1140,8 +1152,10 @@ PY
 python3 - "$work/delivery.json" "$work/no-delivery.json" <<'PY' || fail "the delivery breakdown changed a pre-registered figure"
 import json, sys
 with_delivery, without = (json.load(open(path)) for path in sys.argv[1:3])
+# The focus breakdown (15) is descriptive too, and counts posted offers in it.
 for result in (with_delivery, without):
     result.pop("notification_delivery")
+    result.pop("focus_state_at_decision")
 assert with_delivery == without, [k for k in with_delivery if with_delivery[k] != without.get(k)]
 PY
 delivery_report="$("$analyze" "$work/delivery/p-delivery")"
@@ -1151,5 +1165,186 @@ for needle in "NOTIFICATION DELIVERY (descriptive, protocol 35)" \
               "Posted is not seen: a Focus mode Velvt could not detect holds a posted"; do
   grep -qF -- "$needle" <<<"$delivery_report" || fail "delivery report omits: $needle"
 done
+
+# ===========================================================================
+# 14. A policy-6 anchor is a work category (2026-10-15, velvt-app #83). A v6
+#     build cut before that rule wrote the same policy number with the
+#     most-time anchor, and its rows show it only where that anchor was
+#     PASSIVE_CONSUMPTION or SOCIAL_FEED, on a decision row or on the offer a
+#     decision made. Such an export is malformed and excluded whole: its rows
+#     with a work anchor cannot be told apart from a later build's. Rows under
+#     policy 5 keep whatever anchor they recorded.
+# ===========================================================================
+make_export "$work/anchor-rule/p-gap-decision" <<'JSON'
+{"blocks": [{"block_id": "b", "started_at": 1800000000}],
+ "offers": [{"block_id": "b", "outcome": "returned", "outcome_at": 1800000700}],
+ "decisions": [
+   {"block_id": "b", "gate_verdict": "abstained_min_switches", "anchor_category": "PASSIVE_CONSUMPTION", "occurred_at": 1800000300},
+   {"block_id": "b", "gate_verdict": "offered"}
+ ]}
+JSON
+make_export "$work/anchor-rule/p-gap-offer" <<'JSON'
+{"blocks": [{"block_id": "b", "started_at": 1800000000}],
+ "offers": [{"block_id": "b", "outcome": "returned", "outcome_at": 1800000700, "anchor_category": "SOCIAL_FEED"}],
+ "decisions": [{"block_id": "b", "gate_verdict": "offered"}]}
+JSON
+make_export "$work/anchor-rule/p-v5-drift-anchor" <<'JSON'
+{"blocks": [
+   {"block_id": "v5", "started_at": 1800000000},
+   {"block_id": "v6", "started_at": 1800200000}
+ ],
+ "offers": [
+   {"block_id": "v5", "outcome": "returned", "outcome_at": 1800000700, "anchor_category": "PASSIVE_CONSUMPTION"},
+   {"block_id": "v6", "outcome": "returned", "outcome_at": 1800200700}
+ ],
+ "decisions": [
+   {"block_id": "v5", "gate_verdict": "offered", "policy_version": 5, "anchor_category": "PASSIVE_CONSUMPTION", "occurred_at": 1800000600},
+   {"block_id": "v6", "gate_verdict": "offered"}
+ ]}
+JSON
+make_export "$work/anchor-rule/p-work-anchors" <<'JSON'
+{"blocks": [
+   {"block_id": "focus",     "started_at": 1800000000},
+   {"block_id": "reference", "started_at": 1800010000},
+   {"block_id": "tasks",     "started_at": 1800020000},
+   {"block_id": "comms",     "started_at": 1800030000},
+   {"block_id": "no-work",   "started_at": 1800040000}
+ ],
+ "offers": [
+   {"block_id": "focus",     "outcome": "returned", "outcome_at": 1800000700},
+   {"block_id": "reference", "outcome": "no_response", "anchor_category": "REFERENCE"},
+   {"block_id": "tasks",     "outcome": "dismissed", "anchor_category": "TASK_MANAGEMENT"},
+   {"block_id": "comms",     "outcome": "was_focused", "anchor_category": "communication"}
+ ],
+ "decisions": [
+   {"block_id": "focus",     "gate_verdict": "offered"},
+   {"block_id": "reference", "gate_verdict": "offered", "anchor_category": "REFERENCE"},
+   {"block_id": "tasks",     "gate_verdict": "offered", "anchor_category": "TASK_MANAGEMENT"},
+   {"block_id": "comms",     "gate_verdict": "offered", "anchor_category": "communication"},
+   {"block_id": "no-work",   "gate_verdict": "abstained_no_anchor", "anchor_category": ""}
+ ]}
+JSON
+"$analyze" --json "$work/anchor-rule/p-gap-decision" "$work/anchor-rule/p-gap-offer" \
+  "$work/anchor-rule/p-v5-drift-anchor" "$work/anchor-rule/p-work-anchors" > "$work/anchor-rule.json"
+check "$work/anchor-rule.json" "a policy-6 row with a non-work anchor" <<'PY'
+parts = r["participants"]
+assert parts["exports_received"] == 4, parts
+assert parts["analysed"] == 2, parts
+whole = parts["excluded_whole"]
+assert sorted(whole) == ["p-gap-decision", "p-gap-offer"], whole
+for name in ("p-gap-decision", "p-gap-offer"):
+    assert "non-work anchor" in whole[name] and "2026-10-15 anchor rule" in whole[name], whole
+malformed = r["data_quality"]["malformed"]
+assert any(m.startswith("p-gap-decision:") and "'PASSIVE_CONSUMPTION'" in m for m in malformed), malformed
+assert any(m.startswith("p-gap-offer:") and "'SOCIAL_FEED'" in m for m in malformed), malformed
+assert not any(m.startswith(("p-v5-drift-anchor:", "p-work-anchors:")) for m in malformed), malformed
+# One eligible v6 point from the upgraded Mac and four from the work anchors;
+# nothing from the two excluded exports.
+assert r["power"]["observed_eligible_decision_points"] == 5, r["power"]
+assert r["policy"]["decisions_by_policy_version"] == {"5": 1, "6": 6}, r["policy"]
+assert r["decisions_recorded"]["total"] == 5, r["decisions_recorded"]
+PY
+anchor_report="$("$analyze" "$work/anchor-rule/p-gap-decision")"
+for needle in "p-gap-decision" "non-work anchor"; do
+  grep -qF -- "$needle" <<<"$anchor_report" || fail "anchor-rule report omits: $needle"
+done
+
+# ===========================================================================
+# 15. What Velvt knew about Focus when each offer was decided (protocol 36,
+#     migration 0044). A descriptive breakdown beside the pre-registered
+#     figures, which it leaves exactly as they were.
+# ===========================================================================
+focus_spec='{"blocks": [
+   {"block_id": "on-held",        "started_at": 1800000000},
+   {"block_id": "off-posted",     "started_at": 1800010000},
+   {"block_id": "unknown-posted", "started_at": 1800020000},
+   {"block_id": "unknown-denied", "started_at": 1800030000},
+   {"block_id": "unknown-demoted","started_at": 1800040000},
+   {"block_id": "before-0044",    "started_at": 1800050000}
+ ],
+ "offers": [
+   {"block_id": "on-held",        "outcome": "delivery_suppressed_dnd", "notification_delivery": "not_reported"},
+   {"block_id": "off-posted",     "outcome": "returned", "outcome_at": 1800010700, "delivery_channel": "notification_posted", "notification_delivery": "notification_posted"},
+   {"block_id": "unknown-posted", "outcome": "no_response", "delivery_channel": "notification_posted", "notification_delivery": "notification_posted"},
+   {"block_id": "unknown-denied", "outcome": "dismissed", "delivery_channel": "permission_denied", "notification_delivery": "permission_denied"},
+   {"block_id": "unknown-demoted","outcome": "withheld_demotion", "notification_delivery": "not_reported"},
+   {"block_id": "before-0044",    "outcome": "returned", "outcome_at": 1800050700, "notification_delivery": "unknown"}
+ ],
+ "decisions": [
+   {"block_id": "on-held",        "gate_verdict": "abstained_min_switches", "focus_state": "on", "occurred_at": 1800000300},
+   {"block_id": "on-held",        "gate_verdict": "suppressed_dnd", "focus_state": "on"},
+   {"block_id": "off-posted",     "gate_verdict": "offered", "focus_state": "off"},
+   {"block_id": "unknown-posted", "gate_verdict": "offered", "focus_state": "unknown"},
+   {"block_id": "unknown-denied", "gate_verdict": "offered", "focus_state": "unknown"},
+   {"block_id": "unknown-demoted","gate_verdict": "withheld_demotion", "focus_state": "unknown"},
+   {"block_id": "before-0044",    "gate_verdict": "offered"}
+ ],
+ "meta": {"export_format": "6", "delivery_channel_recorded_since": "1799900000",
+          "focus_state_recorded_since": "1800005000"}}'
+make_export "$work/focus/p-focus" <<<"$focus_spec"
+python3 - "$focus_spec" > "$work/no-focus-spec.json" <<'PY'
+import json, sys
+spec = json.loads(sys.argv[1])
+for decision in spec["decisions"]:
+    decision.pop("focus_state", None)
+print(json.dumps(spec))
+PY
+make_export "$work/no-focus/p-focus" < "$work/no-focus-spec.json"
+"$analyze" --json "$work/focus/p-focus" > "$work/focus.json"
+"$analyze" --json "$work/no-focus/p-focus" > "$work/no-focus.json"
+check "$work/focus.json" "the focus-state breakdown" <<'PY'
+assert r["data_quality"]["malformed"] == [], r["data_quality"]
+fs = r["focus_state_at_decision"]
+assert fs["status"].startswith("DESCRIPTIVE"), fs["status"]
+assert "Communication Notifications" in fs["definition"], fs["definition"]
+assert "Never folded into off" in fs["definition"], fs["definition"]
+by = fs["by_focus_state"]
+summary = {k: (v["offers"], v["posted_with_visible_alert_style"], v["returned_within_10min"],
+               v["no_response"], v["withheld"]) for k, v in by.items()}
+assert summary == {
+    "on": (0, 0, 0, 0, {"delivery_suppressed_dnd": 1}),
+    "off": (1, 1, 1, 0, {}),
+    "unknown": (2, 1, 0, 1, {"withheld_demotion": 1}),
+    "not_recorded": (1, 0, 1, 0, {}),
+}, summary
+assert fs["delivered"] == 4, fs
+assert r["decisions_recorded"]["delivered"] == 4, r["decisions_recorded"]
+PY
+check "$work/no-focus.json" "an export without focus_state" <<'PY'
+by = r["focus_state_at_decision"]["by_focus_state"]
+assert by["not_recorded"]["offers"] == 4, by
+assert by["off"]["offers"] == 0 and by["unknown"]["offers"] == 0, by
+PY
+python3 - "$work/focus.json" "$work/no-focus.json" <<'PY' || fail "the focus breakdown changed a pre-registered figure"
+import json, sys
+with_focus, without = (json.load(open(path)) for path in sys.argv[1:3])
+for result in (with_focus, without):
+    result.pop("focus_state_at_decision")
+assert with_focus == without, [k for k in with_focus if with_focus[k] != without.get(k)]
+PY
+focus_report="$("$analyze" "$work/focus/p-focus")"
+for needle in "OFFERS BY FOCUS STATE AT DECISION (descriptive, protocol 36)" \
+              "unknown: Velvt could not read Focus status, so a" \
+              "  unknown      delivered=   2 posted_visible=   1 returned_unanswered=   0 no_response=   1 withheld=   1" \
+              "  not_recorded delivered=   1"; do
+  grep -qF -- "$needle" <<<"$focus_report" || fail "focus report omits: $needle"
+done
+
+# A value outside the closed set is reported, and its offer is not_recorded
+# rather than guessed into a bucket.
+make_export "$work/focus-bad/p-focus-bad" <<'JSON'
+{"blocks": [{"block_id": "b", "started_at": 1800000000}],
+ "offers": [{"block_id": "b", "outcome": "returned", "outcome_at": 1800000700}],
+ "decisions": [{"block_id": "b", "gate_verdict": "offered", "focus_state": "dnd"}]}
+JSON
+"$analyze" --json "$work/focus-bad/p-focus-bad" > "$work/focus-bad.json"
+check "$work/focus-bad.json" "a focus_state outside the closed set" <<'PY'
+malformed = r["data_quality"]["malformed"]
+assert any("focus_state='dnd'" in m for m in malformed), malformed
+by = r["focus_state_at_decision"]["by_focus_state"]
+assert by["not_recorded"]["offers"] == 1, by
+# The decision itself still counts: focus_state is descriptive.
+assert r["decisions_recorded"]["delivered"] == 1, r["decisions_recorded"]
+PY
 
 echo "analyze_cohort_test.sh: OK"

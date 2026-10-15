@@ -16,4 +16,5 @@ pub mod persistence;
 pub mod receipts;
 pub mod retention;
 pub mod upload;
+pub mod vault;
 pub mod work_block;

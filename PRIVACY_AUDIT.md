@@ -519,6 +519,83 @@ title. The app reads its own notification alert style
 (`UNNotificationSettings.alertStyle`) to tell a banner from alert style None.
 No upload path reads the table, and no request was added.
 
+*Changed after this audit, 2026-10-15 (protocol 36):* the app reports to the
+local service whether it can read Focus status at all
+(`focus_status_availability {availability}`: available, unavailable, denied or
+not_determined), and the service records on each drift decision whether it knew
+a Focus was on (`intervention_decision_log.focus_state`: on, off or unknown,
+migration 0044). Both are closed values about the app and the decision: no
+Focus mode name, configuration or schedule. The app reads its own code
+signature for the Communication Notifications entitlement
+(`SecTaskCopyValueForEntitlement`), and logs one line at launch with the
+authorization status, whether the system gave an `isFocused` value, whether the
+entitlement is present and the availability, all fixed tokens. On a build with
+the entitlement the line says `value` or `nil`, never the boolean, which there
+is the person's Focus; without it the line carries the raw boolean, which is
+not the person's Focus because `donotdisturbd` refuses that read. The
+availability is held in the service's memory only. No upload path reads either,
+and no request was added; the cohort export carries `focus_state` in its
+decisions file.
+
+*Changed after this audit, 2026-10-15 (protocol 37):* one request was added.
+Once a launch, after a restored session is confirmed, the service sends
+`PATCH /v1/devices/{device_id}` with `{"client_version": ...}`; a request that
+gets no answer (transport, 429, 5xx) is sent again at the next restored
+session, which can be the next IPC connection, until one is answered. The
+body is the app version that device registration, every batch body and the
+`User-Agent` already carry, so the server's device row names the running build
+(velvt-core #41, install-release-09). The device id is the server's own identifier for this
+device, already sent in the reissue body. The request is in `egress::ENDPOINTS`,
+in `PRIVACY.md`'s list, and in the ledger like every other. No install
+identifier and no UTC offset is sent; both wait on disclosure decisions
+(velvt-core `docs/device-install-id.md`, `docs/local-day-summaries.md`). The
+same version adds an `auth_failure` code, `rate_limited`, whose message says
+how long to wait, worked out from the cloud's `Retry-After`; it carries no
+credential.
+
+*Changed after this audit, 2026-10-15 (migration 0045, no protocol change):*
+each observation the drift gate sees records which rung of the classifier
+classified the report that opened it (`work_block_observation.classification_source`:
+seed, heuristic, embedding, user_rule, declared_document_types,
+declared_app_category or fallback), or `user_rule` when a taught rule
+classified a later report the open row absorbed because its evidence matched,
+and each decision row has `synced_rule_evidence`, a count that is 0 on every
+row. The token names a rung, never the app, site, rule or label it
+matched. The CHECK also accepts `vault_rule`, which nothing in this build
+produces. Both columns are local records, read by no gate, no upload path and
+no export, and no request was added.
+
+*Changed after this audit, 2026-10-15 (migration 0046, no protocol change):*
+the engine for sync across your Macs (`rust-service/src/vault/sync`), with
+nothing that can turn it on: no IPC message reaches it until protocol 38, so
+no vault request is sent and no row is written. Migration 0046 adds four
+empty tables, `vault_state`, `vault_rule_link`, `sync_known_device` and
+`sync_notice`, each in `PRIVACY.md`'s inventories. None holds document
+plaintext, a hostname, an app name, a bundle id, a window or a Mac's name:
+`vault_state.ciphertext` is the synced copy sealed under a key the file never
+holds, `vault_rule_link` holds this install's salted rule keys beside keys made
+under a salt that is on disk only inside the sealed copy, `sync_known_device`
+holds velvt-core's device ids, and `sync_notice` holds the security notices
+owed, by kind, ids and times (its text, with any Mac's name, is written when
+shown, from the sealed copy). Five endpoints joined `egress::ENDPOINTS` and
+`PRIVACY.md`'s list, marked as sent only once sync is on: `GET /v1/vault`,
+`GET` and `PUT /v1/vault/blobs/prefs`, `POST /v1/vault` and `GET /v1/devices`.
+The one exception is `GET /v1/vault` with sync off, once after sign-in and only
+when the Keychain already holds a sync key for the account (the "turn on here?"
+card); both lists say so, and a test checks that a Mac without one sends
+nothing. Every vault request names the account whose session sent it, so
+`AuthManager` never sends one under another account's token. A test (`tests/vault_sync`) checks that
+no request body the engine sends, and no stored row, holds the vault key, the
+person salt, a Mac's name or any rule's category in the clear.
+`velvt-service --dry-run-egress --vault` prints the plaintext document a Mac
+would seal. The five `vault_state` BLOB columns join the allowlist
+`published_claims` holds, and `scripts/prove_local.sh` names them. Migration
+0047 rebuilds `egress_ledger` with `PUT` added to the methods its CHECK allows:
+0038 refused one, and the client sends nothing it cannot record, so the vault's
+write would have failed closed. Every row is copied unchanged and the chain,
+the checkpoint and the append-only triggers verify as before (a test upgrades a
+pruned ledger and checks each).
+
 `PRIVACY.md`'s list of what leaves the device was wrong in both directions: it
 named `/v1/auth/account/delete`, which nothing sends, and omitted
 `DELETE /v1/account`, `GET /v1/auth/session`, `GET /v1/insights/poll`,

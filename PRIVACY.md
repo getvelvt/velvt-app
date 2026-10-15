@@ -21,7 +21,11 @@ The macOS client observes, locally:
   (`LSItemContentTypes`) it says it can open. These are properties of the
   application's build, the same on every Mac, not of anything you did in it
 - Whether a macOS Focus mode is on, if you allow Focus status during
-  onboarding: one yes-or-no value, never which Focus mode or its schedule
+  onboarding: one yes-or-no value, never which Focus mode or its schedule.
+  macOS gives that value only to apps signed with Apple's Communication
+  Notifications entitlement, so the app also tells the local service whether
+  it can read it at all (available, unavailable, denied, or not yet asked),
+  and Velvt records "unknown" rather than "off" when it cannot
 - Timestamps for these events
 
 That list is exhaustive. Velvt does not use screen recording, keylogging,
@@ -111,7 +115,11 @@ described. Migration 0040 starts later, with the first build after 1.0.13:
 all described below. Migration 0041 starts with the same build:
 `category_prompt_entry`, `category_prompt_card_entry` and
 `category_prompt_notification`, the record behind the needs-a-category card and
-reminder, also described below.
+reminder, also described below. Migration 0046 adds `vault_state`,
+`vault_rule_link`, `sync_known_device` and `sync_notice`, for sync across your
+Macs. Nothing in this build can turn sync on, so all four stay empty; they are
+described below because the file has them. Migration 0047 lets `egress_ledger` record a `PUT`,
+the method sync writes with; its rows are copied as they are.
 
 | Table | Contents | Default retention |
 |---|---|---|
@@ -128,11 +136,13 @@ reminder, also described below.
 | `personal_semantic_prototype` | a copy of that same sketch, kept for a category you corrected so the classifier can recognise the activity again | the 64 most-corrected pairs, at most 12 per category; removed by undoing that correction or by Reset Corrections. No sweep expires it |
 | `history_cache` / `insight_cache` | ready-to-display summaries fetched from the cloud | minutes to tens of minutes, per `VELVT_HISTORY_TTL_SECONDS`/`VELVT_INSIGHT_TTL_SECONDS` |
 | `work_block` | local state and optional free-form intention | intention: 24 hours; the safe state until Clear Local Work Blocks |
-| `work_block_observation` | safe category/status/confidence spans only | removed with its block, and by Clear Local Work Blocks |
+| `work_block_observation` | safe category/status/confidence spans, and since migration 0045 `classification_source`: which rung of the classifier classified the activity that began each span (a seed entry, a heuristic, Tier 2, a rule you taught, the application's declared document types or App Store category, or the fallback), or a rule you taught when it classified later activity that continued the same span, one closed token. NULL on a span begun before that migration that no such rule continued. No app identity, site, rule, label or window title | removed with its block, and by Clear Local Work Blocks |
 | `work_block_result` | safe local duration, transition, recovery, coverage, evidence, observation, and one next action | removed with its block, and by Clear Local Work Blocks |
-| `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: policy version, broad anchor category, switch count, elapsed and remaining seconds, the verdict, the propensity (always 1.0: the policy is deterministic), and, once its horizon passes, whether the anchor category was seen again within 600 seconds. No label, no app identity, no window title, no URL, no intention text | removed with the block it belongs to, and by Clear Local Work Blocks, which also deletes any row logged without a block |
+| `intervention_decision_log` | every moment the drift policy was evaluated and what it decided, including the times it decided to stay silent: policy version, broad anchor category, switch count, elapsed and remaining seconds, the verdict, the propensity (always 1.0: the policy is deterministic), whether Velvt knew a Focus mode was on at that moment (`focus_state`, migration 0044: on, off, or unknown when this copy of Velvt cannot read Focus status), once its horizon passes, whether the anchor category was seen again within 600 seconds, and `synced_rule_evidence` (migration 0045), a count reserved for a later version, 0 on every row in this one. No label, no app identity, no window title, no URL, no intention text, no Focus mode name | removed with the block it belongs to, and by Clear Local Work Blocks, which also deletes any row logged without a block |
 | `out_of_block_run` | activity outside a declared work block, as broad category plus coarse time: start floored to a five-minute bucket, duration, local hour, and local date. Structurally cannot hold an application name, a label, a stable ID, a window title, or a URL — it is deliberately less informative than the 14-day `raw_event_buffer` it would be derived from. **Nothing writes it today** — see the note below the table | 90 days once written |
 | `block_antecedent` | the bounded window of activity immediately before a block started, recorded once and never updated: the *set* of broad categories present (not their order), a switch count, a dominant category and its dwell, weekday/weekend, and hour bucket. The window is capped at 30 minutes by the database schema, so it cannot be widened by a setting. **Nothing writes it today** — see the note below the table | removed with its block, and by Clear Local Work Blocks |
+| `vault_state` | sync across your Macs (migration 0046): one row per account that has turned sync on on this Mac, and **none in this build, which cannot turn it on**. The row is the trust anchor — this Mac's random sync device id; an HMAC of this Mac's host UUID under a random salt, so a copy of this file restored onto another Mac is recognised as one; the key id and public key every synced copy must be signed with; the highest version seen and the SHA-256 of that copy; when this Mac last fetched; the id of the last pending reset it saw; and the key id of a synced copy this Mac asked Velvt's server to create and has not yet seen created (so its key, kept in iCloud Keychain, is still known as this Mac's own after a restart) — and the session: whether sync is on here, the server's version, the last copy opened, **still encrypted** (`ciphertext`: Mac names, notification choices, category rules as keyed fingerprints, quiet hours and the invitations switch, sealed under a key this file never holds), the last clock value this Mac wrote, the engine's state and an error code. No plaintext of the copy, and no site, app, bundle id or window | the anchor until a deletion of the synced copy signed by one of your Macs is seen, or the account is deleted; the session columns are cleared at Log Out, Turn Off Sync, when this Mac is removed from the account, and when another account signs in |
+| `vault_rule_link` | which of your rules became which rule in the synced copy (migration 0046): the rule's kind (site, bundle or app), its key — the same salted digest your rule is stored under in `personal_site_override` or `personal_app_override` — the key the synced copy uses for the same rule (an HMAC under a salt that is on disk only inside the encrypted copy), the category, whether the rule was deleted, and a clock value. Nothing writes it in this build. Treat the first key as naming the site or application, like the digests it copies | cleared with the sync session (Log Out, Turn Off Sync, this Mac's removal, another account signing in); a deleted rule's row goes once its deletion is in the synced copy |
 | `antecedent_finding` | a discovered pattern about what precedes a block: a key from a closed compile-time registry (a time bin, a day type, a broad category, a coarse elapsed bucket), an effect size, and a q-value. The registry has no constructor that could mint an application name, a label, a window title, or a URL. **Nothing writes it today** — see the note below the table | no sweep, no cascade, and no in-app action removes a row — deleting `~/.velvt/` is the only removal. Empty today |
 
 Three of those tables are empty on every install, and their rows above say so
@@ -340,13 +350,14 @@ generates the salt and re-keys every digest already on disk under it.
 
 The first table above is every store that holds something drawn from your Mac. It is
 not every table in the file. A database with every migration in this source
-tree applied holds 42 tables, plus SQLite's own `sqlite_sequence`. A Velvt
+tree applied holds 46 tables, plus SQLite's own `sqlite_sequence`. A Velvt
 1.0.11 database (migrations 0001–0036) holds 34: it has no `stable_key_salt`,
 `egress_ledger`, `egress_ledger_checkpoint`, `personal_site_override`,
-`local_site_name`, `category_prompt_entry`, `category_prompt_card_entry`, or
-`category_prompt_notification`, which migrations 0037, 0038, 0040 and 0041
-add. Of the 42,
-the 21 that are not in that table hold counters, settings, keys, feature state,
+`local_site_name`, `category_prompt_entry`, `category_prompt_card_entry`,
+`category_prompt_notification`, `vault_state`, `vault_rule_link`,
+`sync_known_device`, or `sync_notice`, which migrations 0037, 0038, 0040, 0041
+and 0046 add. Of the 46,
+the 23 that are not in that table hold counters, settings, keys, feature state,
 and the record of what was sent. They are listed here for the same reason the
 three empty ones are — you will see them if you open the file.
 
@@ -362,13 +373,15 @@ three empty ones are — you will see them if you open the file.
 | `work_block_intervention` | the drift offer a block received: broad anchor category, switch count, window length, salience, the fixed action id, when it was offered, when its in-app card was first on screen (`card_seen_at`, migration 0032), what became of its notification and when the app reported it (`delivery_channel`, `delivery_reported_at`, migration 0043: posted, posted with alert style None, notifications off or unanswered, refused by macOS, withdrawn before it was posted, quiet, or too old to post), and the outcome you gave it and when. The block id is the primary key, so a block holds at most one. No label, app identity, window title, URL, or intention text | removed with its block, and by Clear Local Work Blocks |
 | `work_block_category_correction` | when you answer an offer with "wrong classification", the broad category that counts as focus work for that block. Categories only | removed with its block, and by Clear Local Work Blocks |
 | `intervention_demotion_state` | one row recording whether interventions are currently demoted, when that happened, and when you last reset it. The current state only, never a history | singleton; removed by Clear Local Work Blocks |
-| `focus_state_evidence` | coarse macOS Focus/DND transitions: active or inactive, the time floored to a five-minute bucket, and a local hour and date. No Focus mode name, schedule, or configuration is representable | 14 days, pruned when the next transition is reported rather than on a timer; removed by Clear Local Work Blocks |
+| `focus_state_evidence` | coarse macOS Focus/DND transitions: active or inactive, the time floored to a five-minute bucket, and a local hour and date. No Focus mode name, schedule, or configuration is representable | 14 days, pruned when the app next reports Focus or whether it can read Focus, which it does on every connection, rather than on a timer; removed by Clear Local Work Blocks |
 | `focus_observer_state` | one row holding the client's most recent UTC offset, so a local-hour rule never needs a locale or an identity | singleton, overwritten in place; removed by Clear Local Work Blocks |
 | `quiet_hours_offer_state` | one row remembering whether the quiet-hours offer was triggered, offered, accepted, or declined, when, and under which rule version | singleton; removed by Clear Local Work Blocks |
 | `velvt_quiet_hours` | Velvt's own quiet-hours window, if you accepted that offer: start and end local minutes, the rule version, and when it was configured. Not the macOS Focus configuration, which Velvt never reads or writes | singleton; no sweep, and it survives Clear Local Work Blocks — it is a setting you chose, not evidence |
 | `initiation_invitation` | one row per soft-start invitation: when it was offered, its local date, the fixed action id, and its outcome. No app identity, title, or intention text | no sweep; removed by Clear Local Work Blocks |
 | `category_prompt_notification` | one row per local day on which Velvt handed the app a needs-a-category reminder to post (migration 0041): the local date (`local_date`, the primary key, which is what makes one reminder a day a property of the table), when (`posted_at`), how many entries it counted (`entry_count`), the policy version it was decided under, and when you next opened the list from the card or a reminder (`opened_at`), which is what the reminder's backoff reads. No key, name, hostname, or notification text | 30 days after `posted_at`; it survives Clear Local Work Blocks |
 | `initiation_settings` | the single invitations on/off switch | singleton; no sweep, and it survives Clear Local Work Blocks for the same reason |
+| `sync_known_device` | for sync across your Macs (migration 0046): velvt-core's ids of the account's devices this Mac has already listed, when it first saw each, and when it queued a "new sign-in" notice for one (`sync_notice` keeps the notice until it is posted), so a device that signs in later is noticed once and turning sync on notices none. Ids and times only, no name. Empty in this build | cleared with the sync session (Log Out, Turn Off Sync, this Mac's removal, another account signing in) |
+| `sync_notice` | for sync across your Macs (migration 0046): the security notices this Mac owes you — a new sign-in, a Mac that joined, this Mac's removal, a changed sync key, a reset requested or completed, sync paused — so one held during a work block is still posted after a restart, once, and listed until you acknowledge it. Per notice: the account id, the kind, the id it is about (velvt-core's device id, a sync device id, a key id, a reset id, or an error code and key id), the times its text names, one yes/no its text reads, and when it was queued, posted and acknowledged. Ids and times only: the text is written when the notice is shown, and a Mac's name is read then from the encrypted copy, so no name is stored. Empty in this build | cleared at Log Out, when another account signs in, and when the account is deleted; an acknowledged notice's row goes 30 days after you acknowledged it |
 | `weekly_digest` | one row per completed local week: bounded counts — blocks declared and completed, recoveries, wrong interventions, invitations accepted, withheld — and when the digest was shown and closed. No categories, copy, or per-day breakdown is representable | 12 completed weeks, pruned when the next digest is generated; removed by Clear Local Work Blocks |
 | `explain_probe_week` | one tap counter per local week, for the explain-tap metric. Which nudge was explained is not representable | pruned on the same 12-week rule; removed by Clear Local Work Blocks |
 | `schema_migration` | one row per applied migration: its version, its file name, a checksum of the migration's SQL (since migration 0039, the first build after 1.0.11; computed from the public source file, so nothing in it comes from your Mac), and when it ran. Created by the migration runner rather than by a migration file | no sweep; one row is added per migration and none is removed |
@@ -508,7 +521,7 @@ fails until this list is updated in the same commit.
 | `initiation_invitation` | `invitation_id`, `offered_at`, `local_date`, `action_id`, `policy_version`, `backoff_policy_version`, `outcome`, `outcome_at` |
 | `initiation_settings` | `id`, `invitations_enabled`, `updated_at` |
 | `insight_cache` | `id`, `date`, `payload`, `ttl`, `created_at`, `not_found` |
-| `intervention_decision_log` | `decision_id`, `occurred_at`, `block_id`, `policy_version`, `anchor_category`, `switch_count`, `elapsed_seconds`, `remaining_seconds`, `gate_verdict`, `propensity`, `anchor_seen_within_600s`, `outcome_at` |
+| `intervention_decision_log` | `decision_id`, `occurred_at`, `block_id`, `policy_version`, `anchor_category`, `switch_count`, `elapsed_seconds`, `remaining_seconds`, `gate_verdict`, `propensity`, `anchor_seen_within_600s`, `outcome_at`, `focus_state`, `synced_rule_evidence` |
 | `intervention_demotion_state` | `id`, `state`, `demoted_at`, `manual_reset_at`, `threshold_policy_version`, `repromotion_policy_version`, `updated_at` |
 | `local_site_name` | `site_key_hash`, `host`, `last_seen_at` |
 | `out_of_block_run` | `id`, `started_at_bucket`, `duration_seconds`, `category`, `classification_status`, `classification_confidence`, `local_hour`, `local_date` |
@@ -522,14 +535,18 @@ fails until this list is updated in the same commit.
 | `schema_migration` | `id`, `version`, `name`, `created_at`, `checksum` |
 | `semantic_embedding_cache` | `key_hash`, `embedding`, `dimensions`, `updated_at` |
 | `stable_key_salt` | `id`, `salt`, `created_at` |
+| `sync_known_device` | `server_device_id`, `first_seen_at`, `alerted_at` |
+| `sync_notice` | `user_id`, `notice_id`, `kind`, `subject`, `at`, `until_at`, `flag`, `queued_at`, `posted_at`, `acknowledged_at` |
 | `upload_batch` | `id`, `batch_id`, `status`, `sent_at`, `attempt_count`, `next_attempt_at`, `last_error_code`, `created_at`, `owner_user_id` |
 | `upload_host_backoff` | `id`, `host`, `attempt_count`, `next_attempt_at`, `created_at`, `updated_at` |
+| `vault_rule_link` | `local_kind`, `local_key_hash`, `person_key`, `category`, `deleted`, `hlc` |
+| `vault_state` | `user_id`, `sync_device_id`, `host_binding_salt`, `host_binding`, `key_id`, `write_pk`, `highest_seen_version`, `highest_seen_sha256`, `fetched_at`, `seen_reset_request_id`, `pending_create_key_id`, `enabled`, `server_version`, `ciphertext`, `last_hlc`, `state`, `last_error` |
 | `velvt_quiet_hours` | `id`, `start_local_minutes`, `end_local_minutes`, `rule_version`, `configured_at` |
 | `weekly_digest` | `week_start_local_date`, `generated_at`, `blocks_declared`, `blocks_completed`, `recoveries`, `wrong_interventions`, `invitations_accepted`, `withheld`, `digest_version`, `delivered_at`, `acknowledged_at` |
 | `work_block` | `block_id`, `state_version`, `phase`, `intention`, `purpose`, `intensity`, `planned_duration_seconds`, `started_at`, `paused_at`, `total_paused_seconds`, `ended_at`, `recovered_after_restart`, `recovery_of`, `intention_expires_at`, `created_at`, `updated_at`, `origin` |
 | `work_block_category_correction` | `block_id`, `category`, `counts_as_category`, `corrected_at` |
 | `work_block_intervention` | `block_id`, `offered_at`, `action_id`, `anchor_category`, `switch_count`, `window_seconds`, `outcome`, `outcome_at`, `salience`, `card_seen_at`, `delivery_channel`, `delivery_reported_at` |
-| `work_block_observation` | `id`, `block_id`, `occurred_at`, `ended_at`, `category`, `classification_status`, `classification_confidence` |
+| `work_block_observation` | `id`, `block_id`, `occurred_at`, `ended_at`, `category`, `classification_status`, `classification_confidence`, `classification_source` |
 | `work_block_result` | `block_id`, `payload`, `created_at` |
 
 ### Corrections to earlier versions of this section
@@ -615,6 +632,14 @@ compares with this list.
   account or sign in: your email address and password.
 - **`POST /v1/devices`** — when you sign in on a Mac with no registered
   device: the app version.
+- **`PATCH /v1/devices/{device_id}`** — once each time the app starts with a
+  saved session, after the server confirms it; if that request gets no answer
+  (no connection, or the server is busy or down), again each time the app
+  restores the saved session, until one is answered: the app
+  version, as `{"client_version": ...}`, so the server's record of this Mac
+  names the version it runs rather than the one it first signed in with. It
+  is the same version device registration and every batch already send;
+  nothing new leaves the Mac.
 - **`POST /v1/auth/devices/reissue`** — when you sign in on a Mac that is
   already registered, or the server says this device's token was revoked: the
   device ID. After a reissue that gets no answer, or no verdict on the session,
@@ -646,6 +671,27 @@ compares with this list.
 - **`GET /v1/ready`** — when the service starts, when you sign in, and when
   the menu asks whether the server is reachable, at most once a minute. No body
   and no account token.
+
+Five more belong to sync across your Macs, which is off until you turn it on,
+and which nothing in this build can turn on, so none of them is sent yet. With
+sync on, each carries only what is below; the synced copy is encrypted on the Mac
+under a key that stays on your Macs and in your iCloud Keychain, and it names no
+site, app or window (`velvt-service --dry-run-egress --vault` prints it in
+plaintext):
+
+- **`GET /v1/vault`** — every 10 minutes, on wake, and when you open Your Macs
+  (at most once a minute). With sync off on this Mac, also once after you sign
+  in, and only if your iCloud Keychain already holds a sync key for your
+  account, to ask whether to turn sync on here. No body.
+- **`GET /v1/vault/blobs/prefs`** — right after it, unless this Mac already has
+  the current copy. No body; the version this Mac holds goes in a header.
+- **`PUT /v1/vault/blobs/prefs`** — 5 seconds after your synced choices change:
+  the encrypted copy, its key id and version numbers, and a signature.
+- **`POST /v1/vault`** — when you turn sync on and the account has no synced copy
+  yet: the first encrypted copy, its key id, the public key that checks its
+  signatures, and two signatures.
+- **`GET /v1/devices`** — every 10 minutes while sync is on, so Your Macs can
+  list your signed-in Macs and notice a new sign-in. No body.
 
 Sign-up, log-in, and `/v1/ready` carry no token, and a token refresh carries
 the refresh token in its body; every other request carries an access token.

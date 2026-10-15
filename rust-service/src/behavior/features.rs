@@ -156,7 +156,7 @@ pub const OBSERVABLES: [Observable; 12] = [
     Observable {
         symbol: "a_t",
         definition: "1[c_t == anchor]",
-        source: "anchor from `dominant_category` in work_block/mod.rs",
+        source: "anchor from `work_anchor` in work_block/mod.rs",
     },
     Observable {
         symbol: "s_t",

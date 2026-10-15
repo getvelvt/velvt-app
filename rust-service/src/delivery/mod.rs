@@ -17,7 +17,7 @@ pub use cache::{CacheError, CacheManager, FakeCacheManager};
 pub(crate) use fetch::has_a_ready_day;
 pub use fetch::{FetchConfig, FetchError, FetchService, Fetchable};
 pub use parser::{parse_insight, parse_insight_with_rehydrator};
-pub use poll::{PollClient, PollConfig, PollScheduler};
+pub use poll::{InsightNotificationRoute, PollClient, PollConfig, PollScheduler};
 #[cfg(any(test, feature = "test-helpers"))]
 pub use push::FakePushAdapter;
 pub use push::{PushAdapter, PushAdapterAlertSink, PushConfig, PushQueue};

@@ -670,6 +670,23 @@ pub trait WorkBlockRepo: Send + Sync {
         observation: &WorkBlockObservation,
         source: ClassificationSource,
     ) -> Result<(), PersistenceError>;
+    /// Records the rung of a report that the block's open observation
+    /// absorbed: one whose category, status and confidence matched the open
+    /// row, so it extended that row instead of opening its own.
+    ///
+    /// The open row's `classification_source` becomes `source` when `source`
+    /// outranks it, in the order `vault_rule`, then `user_rule`, then every
+    /// other rung, which never replaces the rung that opened the row. A rule
+    /// that classified any report a row absorbed therefore shows on that row,
+    /// so `synced_rule_evidence` counted from the rows cannot miss evidence a
+    /// rule extended (personal-vault design § 11.1, lock 3). A record, like
+    /// the source `append_observation` writes: nothing reads it back, closed
+    /// rows never change, and with no open row it changes nothing.
+    fn record_absorbed_source(
+        &self,
+        block_id: &str,
+        source: ClassificationSource,
+    ) -> Result<(), PersistenceError>;
     fn observations(&self, block_id: &str) -> Result<Vec<WorkBlockObservation>, PersistenceError>;
     fn latest_observation(
         &self,

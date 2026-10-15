@@ -13,13 +13,19 @@
 -- `ClassificationSource` of the classification that opened the row, as the
 -- abstraction engine reported it: a seed entry, a heuristic, Tier 2, a rule
 -- you taught, the application's declared document types or App Store
--- category, or the fallback. `vault_rule` is accepted here and produced by
--- nothing: the rung that would produce it is not compiled in. NULL means the
--- row was written before this migration.
+-- category, or the fallback. A later report with the same evidence opens no
+-- row; the open row absorbs it, and takes its source when that outranks the
+-- row's: `vault_rule`, then `user_rule`, then every other rung, which never
+-- replaces the opener. So a row names a rule whenever a rule classified any
+-- report the row holds, including a dwell the rule kept from being a switch
+-- away. `vault_rule` is accepted here and produced by nothing: the rung that
+-- would produce it is not compiled in. NULL means the row was opened before
+-- this migration and has absorbed no rule's report since.
 --
 -- `intervention_decision_log.synced_rule_evidence` will count the confident
--- observations in a decision's window that a synced rule classified. It is 0
--- on every row, including every row written before this migration.
+-- observations in a decision's window that a synced rule classified, read
+-- from the rows above. It is 0 on every row, including every row written
+-- before this migration.
 --
 -- A record, not an input: the gate reads the observation's category, status
 -- and confidence exactly as it did before, and never this column, so no

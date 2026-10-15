@@ -555,10 +555,12 @@ credential.
 
 *Changed after this audit, 2026-10-15 (migration 0045, no protocol change):*
 each observation the drift gate sees records which rung of the classifier
-produced it (`work_block_observation.classification_source`: seed, heuristic,
-embedding, user_rule, declared_document_types, declared_app_category or
-fallback), and each decision row has `synced_rule_evidence`, a count that is 0
-on every row. The token names a rung, never the app, site, rule or label it
+classified the report that opened it (`work_block_observation.classification_source`:
+seed, heuristic, embedding, user_rule, declared_document_types,
+declared_app_category or fallback), or `user_rule` when a taught rule
+classified a later report the open row absorbed because its evidence matched,
+and each decision row has `synced_rule_evidence`, a count that is 0 on every
+row. The token names a rung, never the app, site, rule or label it
 matched. The CHECK also accepts `vault_rule`, which nothing in this build
 produces. Both columns are local records, read by no gate, no upload path and
 no export, and no request was added.

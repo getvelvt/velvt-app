@@ -648,11 +648,16 @@ impl WorkBlockManager {
     /// Records one classified observation against the active block and runs
     /// the drift gate on it.
     ///
-    /// `source` is the ladder rung that classified it. It is stored with the
-    /// observation that this call opens (`classification_source`, migration
-    /// 0045) and decides nothing: the gate, the outcome resolver and the
-    /// result read `category`, `status` and `confidence` only, and two reports
-    /// with the same evidence from different rungs are the same evidence here.
+    /// `source` is the ladder rung that classified it, and it decides
+    /// nothing: the gate, the outcome resolver and the result read
+    /// `category`, `status` and `confidence` only, and two reports with the
+    /// same evidence from different rungs are the same evidence here. It is
+    /// recorded (`classification_source`, migration 0045) on the row this
+    /// report opens, or, when the open row absorbs the report because the
+    /// evidence matches, on that row if a rule produced it
+    /// ([`WorkBlockRepo::record_absorbed_source`]). So a rule that extended a
+    /// span shows on it even though it opened nothing: without the rule that
+    /// report might have been a switch away.
     pub fn observe_safe_category(
         &self,
         category: &str,
@@ -692,11 +697,24 @@ impl WorkBlockManager {
         // begins, and closed, with the same `occurred_at`, when it ends. The
         // first report opens the row and runs the gate; the second finds its
         // own row still open with the same evidence and stops here, so one
-        // dwell is one observation and one decision either way.
+        // dwell is one observation and one decision either way. A different
+        // dwell with the same evidence stops here too. Either way the report's
+        // rung is recorded on the row that absorbed it, which is a record
+        // only: the row's evidence, and so every decision, is unchanged. Like
+        // the decision log, a record that cannot be written changes nothing
+        // else, so its error is logged, not returned.
         if latest
             .as_ref()
             .is_some_and(|latest| latest.ended_at.is_none() && same_evidence(latest))
         {
+            if let Err(error) = self.repo.record_absorbed_source(&record.block_id, source) {
+                tracing::error!(
+                    error_code = "observation_source_record_failed",
+                    error = %error,
+                    "the classifier rung of an absorbed report could not be recorded; \
+                     the observation itself is unchanged"
+                );
+            }
             return Ok(None);
         }
         // A boundary between the two reports (a pause, a sleep, a service
@@ -2556,6 +2574,70 @@ mod tests {
             seed_only.3.len(),
             evidence.len() - 1,
             "the repeated report is not a new observation"
+        );
+    }
+
+    /// A dwell that a rule classified into the same evidence as the open row
+    /// opens no row of its own; the open row absorbs it. Its rung is still
+    /// recorded, on that row: without the rule the dwell might have been a
+    /// switch away, so a row that only named the rung that opened it would
+    /// hide the rule's effect on the evidence (personal-vault design § 11.1,
+    /// lock 3). The absorbing report still returns nothing and decides
+    /// nothing, and a later report from another rung does not take the rule
+    /// back.
+    #[test]
+    fn a_rule_report_the_open_row_absorbs_is_recorded_on_it() {
+        let directory =
+            std::env::temp_dir().join(format!("velvt-absorbed-source-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("velvt-service.sqlite3");
+        let manager =
+            WorkBlockManager::new(SqlitePersistence::open(&path).unwrap().work_block_repo());
+        let observe = |category: &str, source: ClassificationSource, seconds: i64| {
+            manager
+                .observe_safe_category(
+                    category,
+                    ClassificationStatus::Classified,
+                    ClassificationConfidence::High,
+                    source,
+                    at(seconds),
+                )
+                .unwrap()
+        };
+        let block_id = manager
+            .start(request(1_500), at(0))
+            .unwrap()
+            .block_id
+            .unwrap();
+
+        assert!(observe("FOCUS_WORK", ClassificationSource::Seed, 10).is_some());
+        assert!(
+            observe("FOCUS_WORK", ClassificationSource::UserRule, 200).is_none(),
+            "a report with the open row's evidence is absorbed, as before"
+        );
+        assert!(observe("FOCUS_WORK", ClassificationSource::Heuristic, 260).is_none());
+        assert!(observe("COMMUNICATION", ClassificationSource::Seed, 300).is_some());
+        assert!(observe("COMMUNICATION", ClassificationSource::Fallback, 320).is_none());
+        manager.end(block_id, at(600)).unwrap();
+
+        let sources: Vec<(String, Option<String>)> = rusqlite::Connection::open(&path)
+            .unwrap()
+            .prepare(
+                "SELECT category, classification_source FROM work_block_observation
+                 ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&directory);
+        assert_eq!(
+            sources,
+            vec![
+                ("FOCUS_WORK".to_owned(), Some("user_rule".to_owned())),
+                ("COMMUNICATION".to_owned(), Some("seed".to_owned())),
+            ]
         );
     }
 
@@ -5005,6 +5087,13 @@ mod tests {
             source: ClassificationSource,
         ) -> Result<(), PersistenceError> {
             self.0.append_observation(block_id, observation, source)
+        }
+        fn record_absorbed_source(
+            &self,
+            block_id: &str,
+            source: ClassificationSource,
+        ) -> Result<(), PersistenceError> {
+            self.0.record_absorbed_source(block_id, source)
         }
         fn observations(
             &self,

@@ -202,10 +202,18 @@ report which opened it, in `classification_source`: `seed`, `heuristic`,
 `embedding`, `user_rule`, `declared_document_types`, `declared_app_category` or
 `fallback`, the `ClassificationSource` the abstraction engine reported. The
 second report of a dwell, or any report with the same category, status and
-confidence as the open row, changes nothing, whatever rung produced it, so a
-row keeps the source of the report that opened it. Rows written before the
-migration hold NULL. Every decision row also has `synced_rule_evidence`, 0 on
-every row.
+confidence as the open row, opens no row and changes no evidence, whatever rung
+produced it. Its rung is still recorded on the row that absorbed it when it
+outranks the row's: `vault_rule`, then `user_rule`, then every other rung, which
+never replaces the opener (`WorkBlockRepo::record_absorbed_source`). So a row
+names a rule whenever a rule classified any report the row holds. Without that,
+a dwell a rule moved into the open row's category, which without the rule
+would have been a switch away, would leave no trace on the row: the replay's
+taught app at t=3900 and taught site at t=12200 both fall inside rows a seed
+entry opened. Rows opened before the migration hold NULL unless a rule's report
+is absorbed into them afterwards. Every decision row also has
+`synced_rule_evidence`, 0 on every row; the build that applies synced rules
+counts it from these rows.
 
 Both columns are records, not inputs. `WorkBlockObservation`, which the gate,
 the decision-outcome pass and the result read, has no field for the source, so
@@ -223,8 +231,12 @@ through the router, the shipped ladder, the gate and the decision-outcome pass,
 and compares every push and every row of `work_block_intervention`,
 `intervention_decision_log` and `work_block_observation`, column by column, with
 `decisions.golden`, which was recorded before the columns existed. The two
-columns are compared on their own in `provenance.golden`. A difference from
-`decisions.golden` is a changed decision and needs a new `DRIFT_POLICY_VERSION`.
+columns are compared on their own in `provenance.golden`, and a test checks
+that every dwell a taught rule classified, and no other, is attributed to
+`user_rule`. A difference from `decisions.golden` is a changed decision and
+needs a new `DRIFT_POLICY_VERSION`; record mode refuses to overwrite a golden
+recorded under the current version unless `VELVT_GOLDEN_REPLAY_SAME_POLICY`
+gives the reason (a parent PR's amendment, a new trace step).
 
 ## Exact Local and Cloud Field Table
 

@@ -34,7 +34,12 @@
 //! changed. Re-record (`VELVT_GOLDEN_REPLAY_RECORD=1 cargo test --test
 //! golden_replay`) only for a change meant to move decisions, which is a new
 //! `DRIFT_POLICY_VERSION`; the golden's first line names the version it was
-//! recorded under.
+//! recorded under. Record mode enforces that: it refuses to overwrite a golden
+//! recorded under the current version with a different one unless
+//! `VELVT_GOLDEN_REPLAY_SAME_POLICY` holds the reason, for a change that is
+//! not a policy change (an amendment in a parent PR, a new trace step). Such a
+//! re-record is its own commit, recorded on the code before the change it
+//! protects, and names the reason.
 //!
 //! **Provenance.** `decisions.golden` was recorded before migration 0045 added
 //! `work_block_observation.classification_source` and
@@ -42,7 +47,23 @@
 //! evidence came from and decide nothing, so they are left out of it
 //! (`RECORD_ONLY_COLUMNS`), and it still proves that the decisions are the
 //! ones the code made before the columns existed. They are compared on their
-//! own in `provenance.golden`.
+//! own in `provenance.golden`, which records no decision and is re-recorded
+//! whenever what the columns record changes. A row's source is the rung of the
+//! report that opened it, unless a rule classified a report the row absorbed
+//! (same evidence, so no row of its own), in which case it names the rule:
+//! each post-teach dwell of the taught app and site shows `user_rule`, even
+//! the two that fall inside a row a seed entry opened.
+//!
+//! **Not reached.** No activity in the trace reaches Tier 2, so `embedding`
+//! never appears. The Focus source and Velvt's quiet hours are wired as
+//! `main.rs` wires them, but the trace reports no Focus transition or
+//! availability and sets no quiet hours, so every decision logs
+//! `focus_state = 'unknown'` and nothing is held or quieted by them. The
+//! populated-vault arm (design § 11.3, PR A7) needs a trace that reaches all
+//! three: an activity that would otherwise reach Tier 2 (the vault rung sits
+//! before the plugins), Focus on during a block, and quiet hours. It is
+//! recorded as a second trace and golden on the code before A7, so this
+//! golden stays as it is.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -62,11 +83,12 @@ use velvt_service::auth::{
     HttpRequest, HttpResponse,
 };
 use velvt_service::delivery::{FakeCacheManager, PushAdapter, PushQueue};
+use velvt_service::focus::FocusManager;
 use velvt_service::ipc::{MessageRouter, R7Router};
 use velvt_service::persistence::SqlitePersistence;
 use velvt_service::retention::{InterventionDecisionOutcomeTarget, RetentionTarget};
 use velvt_service::upload::EventIngestor;
-use velvt_service::work_block::{WorkBlockManager, DRIFT_POLICY_VERSION};
+use velvt_service::work_block::{FocusStateSource, WorkBlockManager, DRIFT_POLICY_VERSION};
 use velvt_shared_types::{
     ClientMessage, InterventionResponse, RawEvent, RawEventAck, RawEventStatus, ServerMessage,
     SetApplicationCategory, SetSiteCategory, StartWorkBlock, WorkBlockIntensity, WorkBlockPurpose,
@@ -76,6 +98,9 @@ const TRACE: &str = "trace.json";
 const DECISIONS_GOLDEN: &str = "decisions.golden";
 const PROVENANCE_GOLDEN: &str = "provenance.golden";
 const RECORD_ENV: &str = "VELVT_GOLDEN_REPLAY_RECORD";
+/// The reason a golden recorded under the current `DRIFT_POLICY_VERSION` is
+/// re-recorded under that same version. Record mode refuses without it.
+const SAME_POLICY_ENV: &str = "VELVT_GOLDEN_REPLAY_SAME_POLICY";
 
 /// The tables the comparison reads, in the order the golden lists them.
 const TABLES: [&str; 3] = [
@@ -96,6 +121,8 @@ const RECORD_ONLY_COLUMNS: [(&str, &str); 2] = [
 
 /// The sources the trace is written to produce: every rung a Mac reaches
 /// without a Tier 2 match. `vault_rule` is not among them and must never be.
+/// `embedding` is missing because no activity reaches Tier 2; the trace A7
+/// adds has to reach it (see "Not reached" above).
 const EXPECTED_SOURCES: [&str; 6] = [
     "'declared_app_category'",
     "'declared_document_types'",
@@ -265,7 +292,10 @@ fn response_of(value: &str) -> InterventionResponse {
 }
 
 // ---------------------------------------------------------------------------
-// The service, wired as main.rs wires the parts this trace reaches
+// The service, wired as main.rs wires the parts this trace reaches: the
+// ladder, the router, the work-block manager, and the Focus source the manager
+// and the router both read. Initiation, receipts, the category prompt and the
+// upload path are not wired: no step in the trace reaches them.
 // ---------------------------------------------------------------------------
 
 /// No cloud is reachable. Nothing in this trace needs one, and a request that
@@ -370,7 +400,15 @@ fn service(scratch: &ScratchDatabase) -> Service {
         .build()
         .unwrap();
 
-    let manager = Arc::new(WorkBlockManager::new(persistence.work_block_repo()));
+    // As main.rs wires it: the manager holds offers while Focus is on and
+    // records what was known about Focus on each decision, and the router
+    // quiets an offer inside Velvt's quiet hours. The trace reports no Focus
+    // state and sets no quiet hours, so neither changes anything here.
+    let focus = FocusManager::new(persistence.focus_repo());
+    let manager = Arc::new(
+        WorkBlockManager::new(persistence.work_block_repo())
+            .with_focus_source(Arc::clone(&focus) as Arc<dyn FocusStateSource>),
+    );
     let pushes = PushQueue::new(256);
     let account = Arc::new(AccountAuthService::new(
         Arc::new(OfflineHttp),
@@ -390,7 +428,8 @@ fn service(scratch: &ScratchDatabase) -> Service {
         persistence.upload_batch_repo(),
         Arc::new(OfflineHttp),
     )
-    .with_work_blocks(manager.clone(), PushAdapter::new(pushes.clone()));
+    .with_work_blocks(manager.clone(), PushAdapter::new(pushes.clone()))
+    .with_focus(focus);
     Service {
         persistence,
         router,
@@ -739,12 +778,11 @@ fn provenance_dump(connection: &Connection) -> String {
     let ids = canonical_ids(connection);
     let mut out =
         format!("# provenance in the golden replay of tests/fixtures/golden_replay/{TRACE}\n");
+    let observation_context: &[&str] = &["id", "block_id", "occurred_at", "ended_at", "category"];
+    let decision_context: &[&str] = &["decision_id", "block_id", "gate_verdict"];
     for (table, context) in [
-        ("work_block_observation", ["id", "block_id", "category"]),
-        (
-            "intervention_decision_log",
-            ["decision_id", "block_id", "gate_verdict"],
-        ),
+        ("work_block_observation", observation_context),
+        ("intervention_decision_log", decision_context),
     ] {
         let mut columns: Vec<String> = context.iter().map(|&column| column.to_owned()).collect();
         columns.extend(
@@ -762,10 +800,51 @@ fn provenance_dump(connection: &Connection) -> String {
     out
 }
 
+/// Why record mode must not overwrite `existing` with `actual`, if it must
+/// not: `existing` names the current `DRIFT_POLICY_VERSION` on its first line,
+/// `actual` differs from it, and no reason for a same-version re-record was
+/// given. A golden that names no policy (`provenance.golden`) records no
+/// decision, and one recorded under another version is replaced by the bump
+/// that made this one.
+fn same_policy_rerecord_refusal(
+    name: &str,
+    existing: &str,
+    actual: &str,
+    reason: Option<&str>,
+) -> Option<String> {
+    let current = format!(", drift policy {DRIFT_POLICY_VERSION}");
+    let recorded_under_current = existing
+        .lines()
+        .next()
+        .is_some_and(|header| header.ends_with(&current));
+    let has_reason = reason.is_some_and(|reason| !reason.trim().is_empty());
+    (recorded_under_current && existing != actual && !has_reason).then(|| {
+        format!(
+            "{name} was recorded under drift policy {DRIFT_POLICY_VERSION} and the replay now \
+             differs from it. A changed decision is a new DRIFT_POLICY_VERSION. If this is not a \
+             policy change (an amendment in a parent PR, a new trace step), re-record on the code \
+             before the change, in a commit of its own, with {SAME_POLICY_ENV} set to the reason."
+        )
+    })
+}
+
 /// Compares `actual` with the committed golden, or writes it when recording.
 fn check_golden(name: &str, actual: &str) {
     let path = fixtures_dir().join(name);
     if std::env::var_os(RECORD_ENV).is_some() {
+        if let Ok(existing) = std::fs::read_to_string(&path) {
+            let reason = std::env::var(SAME_POLICY_ENV).ok();
+            if let Some(refusal) =
+                same_policy_rerecord_refusal(name, &existing, actual, reason.as_deref())
+            {
+                panic!("{refusal}");
+            }
+            if existing != actual {
+                if let Some(reason) = reason {
+                    println!("re-recording {name} under the same policy: {reason}");
+                }
+            }
+        }
         std::fs::write(&path, actual).unwrap();
         println!("recorded {}", path.display());
         return;
@@ -896,9 +975,10 @@ async fn the_trace_reaches_the_gate_branches_it_was_written_for() {
 }
 
 /// Migration 0045: every observation records the rung that classified the
-/// report that opened it, as `provenance.golden` lists them. The trace reaches
-/// every rung a Mac reaches without a Tier 2 match, including the two rules it
-/// teaches, and nothing records `vault_rule`, which no build can produce.
+/// report that opened it, or a rule that classified a report it absorbed, as
+/// `provenance.golden` lists them. The trace reaches every rung a Mac reaches
+/// without a Tier 2 match, including the two rules it teaches, and nothing
+/// records `vault_rule`, which no build can produce.
 #[tokio::test]
 async fn every_observation_records_the_rung_that_classified_it() {
     let provenance = replay(&load_trace()).await.provenance;
@@ -914,6 +994,140 @@ async fn every_observation_records_the_rung_that_classified_it() {
         sources,
         EXPECTED_SOURCES.into_iter().collect::<BTreeSet<_>>(),
         "an observation recorded no source, or one the trace does not produce"
+    );
+}
+
+/// The instant `offset` seconds into the trace, as `quote()` writes a stored
+/// timestamp.
+fn stored_instant(trace: &Trace, offset: i64) -> i64 {
+    trace.origin + offset
+}
+
+/// The host of a URL in the trace, which only ever holds `scheme://host/...`.
+fn host_of(url: &str) -> &str {
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    after_scheme.split('/').next().unwrap_or(after_scheme)
+}
+
+/// Every dwell after a rule is taught that the rule applies to, as
+/// `(trace offset it begins at, offset it ends at, activity)`.
+fn dwells_a_taught_rule_classifies(trace: &Trace) -> Vec<(i64, i64, &str)> {
+    let mut taught_apps: Vec<(i64, &str)> = Vec::new();
+    let mut taught_hosts: Vec<(i64, &str)> = Vec::new();
+    for step in &trace.steps {
+        match step {
+            Step::TeachApp { at, app, .. } => taught_apps.push((*at, app)),
+            Step::TeachSite { at, host, .. } => taught_hosts.push((*at, host)),
+            _ => {}
+        }
+    }
+    trace
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::Dwell {
+                at,
+                until,
+                activity,
+            } => {
+                let facts = &trace.activities[activity];
+                let by_app = taught_apps
+                    .iter()
+                    .any(|(taught_at, app)| taught_at < at && facts.app == *app);
+                let by_site = facts.url.as_deref().is_some_and(|url| {
+                    taught_hosts
+                        .iter()
+                        .any(|(taught_at, host)| taught_at < at && host_of(url) == *host)
+                });
+                (by_app || by_site).then_some((*at, *until, activity.as_str()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Migration 0045: a dwell a taught rule classifies shows `user_rule` on
+/// every observation row that spans it. That includes a dwell whose evidence
+/// matched the open row, so the row absorbed it and opened none for it
+/// (Qwybex at t=3900 and the forum at t=12200, both inside a row a seed entry
+/// opened). Without its rule Qwybex is `UNLOGGED` (block 1, t=600), so that
+/// dwell would have been a switch away: a row that showed only `seed` would
+/// hide the rule's effect on what the gate counted, which is what design
+/// § 11.1 lock 3 has to expose for a synced rule. And no row shows
+/// `user_rule` unless it spans such a dwell.
+#[tokio::test]
+async fn every_dwell_a_taught_rule_classifies_is_attributed_to_it() {
+    let trace = load_trace();
+    let provenance = replay(&trace).await.provenance;
+    let observations = section(&provenance, "work_block_observation");
+    let span = |row: &BTreeMap<&str, &str>| -> (i64, i64) {
+        let occurred_at: i64 = row["occurred_at"].parse().unwrap();
+        let ended_at: i64 = row["ended_at"].parse().unwrap_or(i64::MAX);
+        (occurred_at, ended_at)
+    };
+    let overlaps = |row: &BTreeMap<&str, &str>, at: i64, until: i64| {
+        let (occurred_at, ended_at) = span(row);
+        occurred_at < stored_instant(&trace, until) && ended_at > stored_instant(&trace, at)
+    };
+
+    let taught = dwells_a_taught_rule_classifies(&trace);
+    assert_eq!(
+        taught.iter().map(|(at, ..)| *at).collect::<Vec<_>>(),
+        vec![3900, 6340, 12200, 12335],
+        "the trace no longer has the taught dwells this test was written for"
+    );
+    for (at, until, activity) in &taught {
+        let spanning: Vec<_> = observations
+            .iter()
+            .filter(|row| overlaps(row, *at, *until))
+            .collect();
+        assert!(
+            !spanning.is_empty(),
+            "no observation spans {activity} at t={at}"
+        );
+        for row in spanning {
+            assert_eq!(
+                row["classification_source"], "'user_rule'",
+                "{activity} at t={at}, which a taught rule classified, is recorded as {row:?}"
+            );
+        }
+    }
+    for row in observations
+        .iter()
+        .filter(|row| row["classification_source"] == "'user_rule'")
+    {
+        assert!(
+            taught
+                .iter()
+                .any(|(at, until, _)| overlaps(row, *at, *until)),
+            "{row:?} shows user_rule but spans no dwell a taught rule classified"
+        );
+    }
+}
+
+/// The re-record rule is enforced, not only written down: record mode
+/// refuses to replace a golden recorded under the current policy version with
+/// a different one unless a reason is given.
+#[test]
+fn record_mode_refuses_a_same_policy_rerecord_without_a_reason() {
+    let current = format!("# golden, drift policy {DRIFT_POLICY_VERSION}\nrow=1\n");
+    let changed = format!("# golden, drift policy {DRIFT_POLICY_VERSION}\nrow=2\n");
+    let older = format!(
+        "# golden, drift policy {}\nrow=1\n",
+        DRIFT_POLICY_VERSION - 1
+    );
+    let unversioned = "# provenance\nrow=1\n";
+
+    assert!(same_policy_rerecord_refusal("g", &current, &changed, None).is_some());
+    assert!(same_policy_rerecord_refusal("g", &current, &changed, Some("  ")).is_some());
+    assert!(same_policy_rerecord_refusal("g", &current, &current, None).is_none());
+    assert!(
+        same_policy_rerecord_refusal("g", &current, &changed, Some("parent #83 amendment"))
+            .is_none()
+    );
+    assert!(same_policy_rerecord_refusal("g", &older, &changed, None).is_none());
+    assert!(
+        same_policy_rerecord_refusal("g", unversioned, "# provenance\nrow=2\n", None).is_none()
     );
 }
 

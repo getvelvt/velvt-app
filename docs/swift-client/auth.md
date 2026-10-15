@@ -90,7 +90,7 @@ Handled server messages:
 
 | Message | Swift behavior |
 |---|---|
-| `auth_success` | Store tokens/session in Keychain, with `userId` on the session, and transition to `.loggedIn`. One with an empty `deviceId` or `userId` is refused: nothing is stored, `serverMessages` carries an `auth_failure` ("This Mac could not be registered. Please try again."), and the state returns to `.loggedOut` |
+| `auth_success` | Store tokens/session in Keychain, with `userId` on the session, and transition to `.loggedIn`. One with an empty `deviceId` or `userId` is refused: nothing is stored, `serverMessages` carries an `auth_failure` ("This Mac could not be registered. Please try again."), the state returns to `.loggedOut`, and `log_out` is sent so the service drops the session it stored before answering |
 | `auth_session_updated` | Update Keychain tokens after Rust refresh/reissue |
 | `auth_failure` | Return from `.loggingIn` to `.loggedOut` |
 | `account_deletion_accepted` | Clear Keychain and transition to `.loggedOut` |

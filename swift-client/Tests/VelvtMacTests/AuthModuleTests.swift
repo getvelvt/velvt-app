@@ -205,6 +205,9 @@ final class AccountStateManagerTests: XCTestCase {
         XCTAssertEqual(sut.accountState, .loggedOut)
         XCTAssertTrue(keychain.isEmpty, "nothing is stored for a session with no device")
         XCTAssertEqual(failures.map(\.message), ["This Mac could not be registered. Please try again."])
+        XCTAssertEqual(
+            client.sentMessages, [.logOut],
+            "the service is told to drop the session it stored, so both sides agree no one is signed in")
     }
 
     func testStoredAuthSessionIsNotSentBeforeIPCConnect() async throws {

@@ -38,7 +38,8 @@ sign in here.
 - Behaviour on unchanged messages: a sign-up or login whose device
   registration fails answers `auth_failure` and keeps nothing (it answered
   `auth_success` with an empty `device_id`); Swift refuses an `auth_success`
-  with an empty `device_id`. A 403 with no session error code, a 5xx or a 429
+  with an empty `device_id` and sends `log_out`, so the service does not keep
+  a session the app shows as signed out. A 403 with no session error code, a 5xx or a 429
   no longer ends the session (`needs_reauth`); only an attributed code does.
   A sign-in on a Mac whose device was revoked registers a new device instead
   of answering "Unable to register this device." until a relaunch.

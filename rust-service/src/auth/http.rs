@@ -36,6 +36,10 @@ pub struct HttpRequest {
     pub refresh_token: Option<RedactedString>,
     pub json_body: Option<Value>,
     pub timeout: Option<Duration>,
+    /// The account whose session alone may send this request: an upload
+    /// names its batch's owner. Never sent. With none, `AuthManager` binds the
+    /// request to the account signed in when it starts.
+    pub account: Option<String>,
 }
 
 impl HttpRequest {
@@ -47,6 +51,7 @@ impl HttpRequest {
             refresh_token: None,
             json_body: None,
             timeout: None,
+            account: None,
         }
     }
 
@@ -58,6 +63,7 @@ impl HttpRequest {
             refresh_token: None,
             json_body: None,
             timeout: None,
+            account: None,
         }
     }
 
@@ -69,6 +75,7 @@ impl HttpRequest {
             refresh_token: None,
             json_body: None,
             timeout: None,
+            account: None,
         }
     }
 
@@ -80,11 +87,18 @@ impl HttpRequest {
             refresh_token: None,
             json_body: Some(json_body),
             timeout: None,
+            account: None,
         }
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// The same request, to be sent only under `account`'s session.
+    pub fn under_account(mut self, account: Option<String>) -> Self {
+        self.account = account;
         self
     }
 }

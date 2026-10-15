@@ -132,6 +132,11 @@ public struct CloudSyncStatusPresentation: Equatable {
         guard let status else { return .checking }
         // Both clear within a moment of a start or a sign-in. `checking` used
         // to arrive as `network_unavailable` and read as "Offline".
+        // `signed_out` while this app is signed in is the moment before the
+        // service holds the session the app hands it on every connection. The
+        // service keeps a handed-over session in memory as it is given, and
+        // one the server then refuses reaches the app as `needs_reauth`, which
+        // signs it out, so the two do not stay apart.
         if status.uploadStatus == "checking" || status.uploadStatus == "signed_out" {
             return .checking
         }

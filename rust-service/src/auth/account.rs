@@ -14,6 +14,7 @@
 
 use super::{
     AuthState, AuthStateMachine, HttpClient, HttpRequest, RedactedString, TokenPair, TokenStore,
+    TokenStoreError,
 };
 use std::sync::Arc;
 use velvt_shared_types::{
@@ -113,26 +114,51 @@ impl AccountAuthService {
         // A client that predates protocol 34 names no account. The owner is
         // then unknown rather than left over from an earlier session, and
         // `validate_session` fills it in from the cloud's answer.
-        let owner_stored = match session.user_id.as_deref() {
-            Some(user_id) if !user_id.is_empty() => self.token_store.store_user_id(user_id),
-            _ => self.token_store.clear_user_id(),
-        }
-        .is_ok();
-        if self
-            .token_store
-            .store_tokens(
-                RedactedString::new(session.access_token),
-                RedactedString::new(session.refresh_token),
-                session.expires_at,
+        let session_stored = self
+            .store_session(
+                TokenPair::new(
+                    RedactedString::new(session.access_token),
+                    RedactedString::new(session.refresh_token),
+                    session.expires_at,
+                ),
+                session.user_id.as_deref(),
             )
-            .is_ok()
+            .is_ok();
+        if session_stored
             && self.token_store.store_device_id(&session.device_id).is_ok()
             && user_tokens_stored
-            && owner_stored
         {
             let _ = self.auth_state.transition(AuthState::Authenticated {
                 device_id: session.device_id,
             });
+        }
+    }
+
+    /// Stores a session's device tokens and the account they were issued
+    /// for, in the order `AuthManager` relies on to bind each request to its
+    /// account: the old account id is cleared before the tokens change, and
+    /// the new one is stored after them, so no reader sees one session's
+    /// tokens beside another session's account. With no account (or an
+    /// empty one), the owner is left unknown.
+    ///
+    /// The same account's session handed over again (the app does so on
+    /// every connection) keeps its id throughout: clearing it would fail a
+    /// request of that account's that read it in between.
+    fn store_session(
+        &self,
+        tokens: TokenPair,
+        user_id: Option<&str>,
+    ) -> Result<(), TokenStoreError> {
+        let user_id = user_id.filter(|user_id| !user_id.is_empty());
+        let same_account =
+            user_id.is_some() && self.token_store.load_user_id()?.as_deref() == user_id;
+        if !same_account {
+            self.token_store.clear_user_id()?;
+        }
+        self.token_store.store_pair(tokens)?;
+        match user_id {
+            Some(user_id) => self.token_store.store_user_id(user_id),
+            None => Ok(()),
         }
     }
 
@@ -152,12 +178,15 @@ impl AccountAuthService {
         };
         match self.token_store.load_device_id() {
             Ok(Some(device_id)) => {
+                // Stored only once the reissue (or the registration it falls
+                // through to) succeeds: a sign-in that fails keeps none of
+                // the new account's session, which left beside another
+                // session's device tokens would be handed to Swift as theirs.
                 let user_tokens = TokenPair::new(
                     RedactedString::new(success.access_token.clone()),
                     RedactedString::new(success.refresh_token.clone()),
                     success.expires_at,
                 );
-                let _ = self.token_store.store_user_pair(user_tokens.clone());
                 return self
                     .reissue_device_tokens(success.user_id, user_tokens, device_id, flow)
                     .await;
@@ -223,10 +252,8 @@ impl AccountAuthService {
             return registration_failure(flow, AuthFailureCode::ServerError);
         }
         if let Err(error) = self
-            .token_store
-            .store_pair(tokens.clone())
+            .store_session(tokens.clone(), Some(&success.user_id))
             .and_then(|()| self.token_store.store_device_id(&device_id))
-            .and_then(|()| self.token_store.store_user_id(&success.user_id))
         {
             tracing::error!(
                 error_code = "device_registration_persist_failed",
@@ -341,11 +368,7 @@ impl AccountAuthService {
                 message: "The server response was invalid.".into(),
             });
         };
-        if let Err(error) = self
-            .token_store
-            .store_pair(tokens.clone())
-            .and_then(|()| self.token_store.store_user_id(&user_id))
-        {
+        if let Err(error) = self.store_session(tokens.clone(), Some(&user_id)) {
             tracing::error!(
                 error_code = "device_token_reissue_persist_failed",
                 error = %error,
@@ -357,6 +380,7 @@ impl AccountAuthService {
                 message: "Unable to save this device session.".into(),
             });
         }
+        let _ = self.token_store.store_user_pair(user_tokens.clone());
         if let Err(error) = self.auth_state.transition(AuthState::Authenticated {
             device_id: device_id.clone(),
         }) {
@@ -965,6 +989,238 @@ mod tests {
             assert_eq!(token_store.load_user_id().unwrap(), None, "{flow}");
             assert_eq!(token_store.load_device_id().unwrap(), None, "{flow}");
         }
+    }
+
+    /// The same on a Mac that already has a device id from an earlier
+    /// session, whose sign-in reissues it: a reissue refused or unreachable,
+    /// or one that falls through to a registration that fails, keeps none of
+    /// the new account's session. The user tokens used to be stored before
+    /// the reissue and left behind, where a later sign-in could hand them to
+    /// the app beside another session's device tokens.
+    #[tokio::test]
+    async fn a_failed_sign_in_on_a_mac_with_a_stored_device_keeps_no_session() {
+        let not_this_accounts = HttpResponse {
+            status: 404,
+            error_code: Some("device_not_found".into()),
+            tokens: None,
+            device_id: None,
+            ..device_response()
+        };
+        let unavailable = HttpResponse {
+            status: 503,
+            tokens: None,
+            device_id: None,
+            ..device_response()
+        };
+        for (case, after_login) in [
+            (
+                "registration after a reissue for another account's device",
+                vec![not_this_accounts, unavailable.clone()],
+            ),
+            ("reissue refused", vec![unavailable]),
+            ("reissue unreachable", vec![]),
+        ] {
+            let mut responses = vec![HttpResponse {
+                status: 200,
+                ..signup_response()
+            }];
+            responses.extend(after_login);
+            let (service, token_store) =
+                service(Arc::new(FakeHttpClient::with_responses(responses)));
+            token_store.store_device_id("earlier-device").unwrap();
+
+            let outcome = service
+                .log_in("a@example.test".into(), "password".into())
+                .await;
+
+            assert!(
+                matches!(outcome, ServerMessage::AuthFailure(_)),
+                "{case}: {outcome:?}"
+            );
+            assert!(token_store.load_tokens().unwrap().is_none(), "{case}");
+            assert!(token_store.load_user_tokens().unwrap().is_none(), "{case}");
+            assert_eq!(token_store.load_user_id().unwrap(), None, "{case}");
+        }
+    }
+
+    /// A sign-in that reissues the stored device keeps the account's user
+    /// tokens with the session, as a registration does.
+    #[tokio::test]
+    async fn a_reissued_sign_in_keeps_the_user_session() {
+        let raw_http = Arc::new(FakeHttpClient::with_responses(vec![
+            HttpResponse {
+                status: 200,
+                ..signup_response()
+            },
+            reissued_device_response(),
+        ]));
+        let (service, token_store) = service(raw_http);
+        token_store.store_device_id("existing-device").unwrap();
+
+        let outcome = service
+            .log_in("a@example.test".into(), "password".into())
+            .await;
+
+        assert!(matches!(outcome, ServerMessage::AuthSuccess(_)));
+        let user_tokens = token_store.load_user_tokens().unwrap().unwrap();
+        assert_eq!(user_tokens.access_token().expose(), "user-access");
+        assert_eq!(
+            token_store.load_user_id().unwrap().as_deref(),
+            Some("user-1")
+        );
+    }
+
+    /// Records the order of the writes `AuthManager::ensure_bound_session`
+    /// depends on.
+    #[derive(Default)]
+    struct OrderedTokenStore {
+        inner: FakeTokenStore,
+        writes: Mutex<Vec<&'static str>>,
+    }
+
+    impl OrderedTokenStore {
+        fn record(&self, write: &'static str) {
+            self.writes.lock().unwrap().push(write);
+        }
+
+        fn writes(&self) -> Vec<&'static str> {
+            self.writes.lock().unwrap().clone()
+        }
+    }
+
+    impl TokenStore for OrderedTokenStore {
+        fn store_tokens(
+            &self,
+            access: RedactedString,
+            refresh: RedactedString,
+            expiry: chrono::DateTime<Utc>,
+        ) -> Result<(), TokenStoreError> {
+            self.record("store_tokens");
+            self.inner.store_tokens(access, refresh, expiry)
+        }
+        fn load_tokens(&self) -> Result<Option<TokenPair>, TokenStoreError> {
+            self.inner.load_tokens()
+        }
+        fn clear_tokens(&self) -> Result<(), TokenStoreError> {
+            self.inner.clear_tokens()
+        }
+        fn store_device_id(&self, device_id: &str) -> Result<(), TokenStoreError> {
+            self.inner.store_device_id(device_id)
+        }
+        fn load_device_id(&self) -> Result<Option<String>, TokenStoreError> {
+            self.inner.load_device_id()
+        }
+        fn clear_device_id(&self) -> Result<(), TokenStoreError> {
+            self.inner.clear_device_id()
+        }
+        fn store_user_id(&self, user_id: &str) -> Result<(), TokenStoreError> {
+            self.record("store_user_id");
+            self.inner.store_user_id(user_id)
+        }
+        fn load_user_id(&self) -> Result<Option<String>, TokenStoreError> {
+            self.inner.load_user_id()
+        }
+        fn clear_user_id(&self) -> Result<(), TokenStoreError> {
+            self.record("clear_user_id");
+            self.inner.clear_user_id()
+        }
+        fn store_user_tokens(
+            &self,
+            access: RedactedString,
+            refresh: RedactedString,
+            expiry: chrono::DateTime<Utc>,
+        ) -> Result<(), TokenStoreError> {
+            self.inner.store_user_tokens(access, refresh, expiry)
+        }
+        fn load_user_tokens(&self) -> Result<Option<TokenPair>, TokenStoreError> {
+            self.inner.load_user_tokens()
+        }
+        fn clear_user_tokens(&self) -> Result<(), TokenStoreError> {
+            self.inner.clear_user_tokens()
+        }
+    }
+
+    /// Every path that puts a session in place clears the old account id
+    /// before the tokens change and stores the new one after them, so a
+    /// request bound to one account never reads another session's tokens
+    /// beside its account id and is sent with them.
+    #[tokio::test]
+    async fn a_session_is_stored_between_clearing_and_naming_its_account() {
+        let expected = vec!["clear_user_id", "store_tokens", "store_user_id"];
+        for (case, responses, stored_device) in [
+            (
+                "registration",
+                vec![signup_response(), device_response()],
+                None,
+            ),
+            (
+                "reissue",
+                vec![
+                    HttpResponse {
+                        status: 200,
+                        ..signup_response()
+                    },
+                    reissued_device_response(),
+                ],
+                Some("existing-device"),
+            ),
+        ] {
+            let token_store = Arc::new(OrderedTokenStore::default());
+            if let Some(device_id) = stored_device {
+                token_store.store_device_id(device_id).unwrap();
+            }
+            let service = AccountAuthService::new(
+                Arc::new(FakeHttpClient::with_responses(responses)),
+                Arc::new(FakeHttpClient::default()),
+                Arc::clone(&token_store) as Arc<dyn TokenStore>,
+                Arc::new(AuthStateMachine::new(AuthState::Unauthenticated)),
+            );
+            let outcome = if stored_device.is_some() {
+                service
+                    .log_in("a@example.test".into(), "password".into())
+                    .await
+            } else {
+                service
+                    .sign_up("a@example.test".into(), "password".into())
+                    .await
+            };
+            assert!(matches!(outcome, ServerMessage::AuthSuccess(_)), "{case}");
+            assert_eq!(token_store.writes(), expected, "{case}");
+        }
+
+        let token_store = Arc::new(OrderedTokenStore::default());
+        let service = AccountAuthService::new(
+            Arc::new(FakeHttpClient::default()),
+            Arc::new(FakeHttpClient::default()),
+            Arc::clone(&token_store) as Arc<dyn TokenStore>,
+            Arc::new(AuthStateMachine::new(AuthState::Unauthenticated)),
+        );
+        let handover = |user_id: &str| velvt_shared_types::AuthSession {
+            device_id: "device-1".into(),
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            expires_at: Utc::now() + Duration::hours(1),
+            user_access_token: None,
+            user_refresh_token: None,
+            user_expires_at: None,
+            user_id: Some(user_id.into()),
+        };
+        service.apply_session(handover("user-7"));
+        assert_eq!(token_store.writes(), expected, "handover");
+
+        // The app hands the same session over on every connection.
+        service.apply_session(handover("user-7"));
+        assert_eq!(
+            token_store.writes()[expected.len()..],
+            ["store_tokens", "store_user_id"],
+            "the same account's id is never cleared in between"
+        );
+        service.apply_session(handover("user-8"));
+        assert_eq!(
+            token_store.writes()[expected.len() + 2..],
+            expected,
+            "another account's session"
+        );
     }
 
     /// The account a session belongs to is what the upload queue is stamped

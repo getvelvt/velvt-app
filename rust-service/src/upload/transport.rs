@@ -91,7 +91,11 @@ where
         batch: &'a BatchPayload,
     ) -> Pin<Box<dyn Future<Output = Result<UploadOutcome, BatchUploadError>> + Send + 'a>> {
         Box::pin(async move {
-            let mut request = HttpRequest::post("/v1/events/batches");
+            // Sent only under the session of the account the batch was
+            // recorded under, which the ownership policy judged it by: the
+            // session can change while the request waits on a refresh.
+            let mut request =
+                HttpRequest::post("/v1/events/batches").under_account(batch.owner_user_id.clone());
             request.json_body =
                 Some(serde_json::to_value(batch).map_err(|_| BatchUploadError::Transport)?);
             let response = self.http.send(request).await.map_err(|error| match error {

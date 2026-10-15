@@ -10,8 +10,8 @@ use velvt_service::abstraction::{
 use velvt_service::dashboard;
 use velvt_service::delivery::{parse_insight_with_rehydrator, LocalInsightRehydrator};
 use velvt_service::persistence::{
-    AbstractionMapping, BatchEvent, HistoryCacheEntry, InsightCacheEntry, NewUploadBatch,
-    PersistenceError, RawEventEntry, SqlitePersistence, UploadBatchStatus,
+    AbstractionMapping, BatchEvent, DeclaredAppMetadata, HistoryCacheEntry, InsightCacheEntry,
+    NewUploadBatch, PersistenceError, RawEventEntry, SqlitePersistence, UploadBatchStatus,
     WorkBlockCategoryCorrection, WorkBlockIntervention, WorkBlockInterventionOutcome,
     WorkBlockOrigin, WorkBlockRecord,
 };
@@ -275,6 +275,59 @@ fn raw_event_repo_contract_and_timestamp_query_uses_index() {
         .contains("idx_raw_event_buffer_occurred_at"));
     assert_eq!(repository.delete_before(timestamp(11)).unwrap(), 1);
     assert!(repository.events_before(timestamp(11)).unwrap().is_empty());
+}
+
+/// The account an event is recorded for upload under (migration 0042) is
+/// what `recover_unbatched` re-queues it under at the next start; an event
+/// read back with no owner is sent under whoever is signed in then.
+#[test]
+fn an_events_upload_owner_is_read_back_as_written() {
+    let database = database();
+    let repository = database.raw_event_repo();
+    let event = |event_id: &str, upload_eligible: bool| RawEventEntry {
+        event_id: event_id.into(),
+        stable_id: format!("abs_{event_id}"),
+        label: "document:edit".into(),
+        local_display_label: None,
+        local_name_suggestion: None,
+        category: "FOCUS_WORK".into(),
+        taxonomy_version: "mvp-2".into(),
+        classification_tier: "exact_match".into(),
+        classification_status: "classified".into(),
+        classification_confidence: "high".into(),
+        classification_source: "seed".into(),
+        occurred_at: timestamp(10),
+        duration_seconds: 60,
+        upload_eligible,
+        app_stable_id: None,
+        app_scope_eligible: true,
+        site_stable_id: None,
+    };
+
+    repository
+        .insert_with_upload_owner(
+            &event("owned", true),
+            &DeclaredAppMetadata::ABSENT,
+            Some("account-a"),
+        )
+        .unwrap();
+    repository.insert(&event("ownerless", true)).unwrap();
+    repository
+        .insert_with_upload_owner(
+            &event("local-only", false),
+            &DeclaredAppMetadata::ABSENT,
+            Some("account-a"),
+        )
+        .unwrap();
+
+    let owners = repository
+        .upload_owners(&["owned".into(), "ownerless".into(), "local-only".into()])
+        .unwrap();
+    assert_eq!(
+        owners,
+        HashMap::from([("owned".to_owned(), "account-a".to_owned())]),
+        "only an event that may be uploaded has an owner to upload it under"
+    );
 }
 
 #[test]

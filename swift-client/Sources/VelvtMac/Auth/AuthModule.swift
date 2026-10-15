@@ -404,7 +404,7 @@ public final class AccountStateManager: ObservableObject {
         listenerTask = Task { [weak self] in
             for await message in client.incomingMessages {
                 guard let self, !Task.isCancelled else { break }
-                self.handle(message)
+                self.handle(message, from: client)
             }
             // Stream ended while the task was not cancelled — the IPC connection
             // dropped unexpectedly. Revert transient states so the UI does not
@@ -437,13 +437,13 @@ public final class AccountStateManager: ObservableObject {
 
     // MARK: - Private
 
-    private func handle(_ message: ServerMessage) {
+    private func handle(_ message: ServerMessage, from client: any IPCClientProtocol) {
         authLogger.debug("IPC message received: \(message.safeLogDescription)")
         serverMessages.send(message)
         switch message {
         case .authSuccess(let success):
             authLogger.debug("auth.handle: authSuccess received for userId \(success.userId)")
-            handleAuthSuccess(success)
+            handleAuthSuccess(success, from: client)
         case .authSessionUpdated(let session):
             store(session: session)
         case .authFailure(let failure):
@@ -486,7 +486,7 @@ public final class AccountStateManager: ObservableObject {
         }
     }
 
-    private func handleAuthSuccess(_ success: AuthSuccess) {
+    private func handleAuthSuccess(_ success: AuthSuccess, from client: any IPCClientProtocol) {
         guard case .loggingIn = accountState else {
             authLogger.warning(
                 "auth.handleAuthSuccess: received authSuccess but state is \(String(describing: self.accountState)), ignoring"
@@ -496,8 +496,12 @@ public final class AccountStateManager: ObservableObject {
         // A session with no device uploads nothing, and handed back after a
         // restart it signs the person out. The service no longer answers one,
         // and one that arrives is refused rather than stored as a sign-in.
+        // The service stored that session before it answered, so it is told
+        // to drop it: otherwise it would go on uploading as signed in while
+        // the app says signed out.
         guard !success.deviceId.isEmpty, !success.userId.isEmpty else {
             authLogger.error("auth.handleAuthSuccess: authSuccess carried no device; refusing it")
+            Task { try? await client.send(.logOut) }
             serverMessages.send(
                 .authFailure(
                     AuthFailure(

@@ -184,6 +184,70 @@ pub async fn end_deleted_account_session(
 /// The `needs_reauth` reason for an account the cloud reported deleted.
 pub const ACCOUNT_DELETED_REASON: &str = "account_deleted";
 
+/// What the service does as the device session changes, for as long as it
+/// runs.
+///
+/// - A session that becomes usable asks the cloud's readiness again, so the
+///   menu does not keep the answer it had before the sign-in.
+/// - `AccountDeleted` (`401 account_deleted`, for a deletion made on another
+///   Mac) ends the session through [`end_deleted_account_session`].
+///
+/// `main.rs` spawns [`Self::run`]. It lives here so a test can hold that
+/// wiring to account: a watcher that stopped ending deleted sessions would
+/// leave the queue to the next account to sign in.
+pub struct SessionWatch {
+    pub account: Arc<AccountAuthService>,
+    pub ingestor: Arc<dyn EventIngestor>,
+    pub batches: Arc<dyn UploadBatchRepo>,
+    pub raw_events: Arc<dyn RawEventRepo>,
+    pub push: Arc<PushAdapter>,
+    pub menu_status: Arc<MenuStatusProvider>,
+}
+
+impl SessionWatch {
+    /// Runs until `shutdown` is set or either channel closes.
+    pub async fn run(
+        self,
+        mut auth_changes: tokio::sync::watch::Receiver<AuthState>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let mut was_usable = false;
+        loop {
+            tokio::select! {
+                changed = auth_changes.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    let current = auth_changes.borrow_and_update().clone();
+                    let usable = matches!(
+                        current,
+                        AuthState::Authenticated { .. } | AuthState::RefreshInFlight
+                    );
+                    if usable && !was_usable {
+                        self.menu_status.probe_readiness();
+                    }
+                    was_usable = usable;
+                    if current == AuthState::AccountDeleted {
+                        end_deleted_account_session(
+                            &self.account,
+                            self.ingestor.as_ref(),
+                            self.batches.as_ref(),
+                            self.raw_events.as_ref(),
+                            &self.push,
+                        )
+                        .await;
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Where the session stands, as the menu's upload status reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionStatus {

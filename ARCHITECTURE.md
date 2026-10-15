@@ -224,23 +224,36 @@ and had to be retroactively closed during this MVP integration pass).
 Unknown future server discriminators decode as `ServerMessage.unknown(type:)`
 on the Swift side so older clients degrade gracefully rather than crashing.
 [`docs/architecture/ipc-contract.md`](docs/architecture/ipc-contract.md) is the
-message catalog, reconciled through protocol 33.
+message catalog, reconciled through protocol 34.
 
 ## The auth state machine
 
 ```
-Unauthenticated ──(device registered, tokens issued)──▶ Authenticated{device_id}
-Authenticated ──(token near expiry)──▶ RefreshInFlight ──▶ Authenticated
-Authenticated ──(401 invalid_credentials/token_expired)──▶ NeedsReauth
-Authenticated ──(403 device_token_revoked)──▶ [reissue attempt] ──▶ Authenticated | DeviceRevoked
-Authenticated ──(403 device_revoked, or reissue failure)──▶ DeviceRevoked (terminal)
+Unauthenticated ──(device registered or reissued, tokens issued)──▶ Authenticated{device_id}
+Authenticated ──(token expired, or refused)──▶ RefreshInFlight ──▶ Authenticated
+Authenticated ──(401 invalid_credentials/invalid_token/token_expired/missing_token after a refresh)──▶ NeedsReauth
+Authenticated ──(401/403 device_token_revoked)──▶ [reissue attempt] ──▶ Authenticated | NeedsReauth | DeviceRevoked
+Authenticated ──(403 device_revoked, or device_inactive from reissue)──▶ DeviceRevoked (terminal)
+Authenticated ──(401 account_deleted)──▶ AccountDeleted ──(queue destroyed, session and device id cleared)──▶ Unauthenticated
 NeedsReauth ──(successful login)──▶ Authenticated
+DeviceRevoked | AccountDeleted ──(sign-in: session and device id cleared first)──▶ Unauthenticated ──▶ Authenticated
+any ──(Log Out)──▶ Unauthenticated
 ```
+
+Only an error code the cloud attributes to the session moves this machine. A
+403 with no code (a Cloudflare WAF rule or challenge), a 5xx or a 429 goes
+back to the caller as a status, and a refresh or reissue it answers is not
+retried for a minute. Every authenticated request is sent only under the
+session of the account it was made for (`HttpRequest::account`; an upload
+names its batch's owner): one that waited on a refresh while the account
+changed fails instead of going out with the next account's token.
 
 `DeviceRevoked` and `NeedsReauth` are also pushed to Swift over IPC
 (`device_revoked`/`needs_reauth` messages) independent of any in-flight
 request, so the UI can react even if the user isn't actively triggering a
-network call.
+network call. `AccountDeleted` reaches Swift as `needs_reauth` with the reason
+`account_deleted`, once `ipc::SessionWatch` has destroyed what this Mac queued
+for the account.
 
 On relaunch, Swift replays any Keychain-backed `auth_session` only after the
 IPC client reports `.connected`. This prevents the session handoff from being

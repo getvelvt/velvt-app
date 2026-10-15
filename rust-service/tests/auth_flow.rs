@@ -692,24 +692,185 @@ async fn a_rate_limited_refresh_is_typed_and_keeps_the_session() {
 }
 
 /// A refresh answered by an outage (here a Cloudflare 522 with no JSON) keeps
-/// the session, and the token in hand, for the next attempt.
+/// the session, and the token in hand, for the next attempt, which waits a
+/// minute: a request straight after it neither refreshes again nor is sent
+/// with the expired token.
 #[tokio::test]
 async fn a_refresh_answered_by_an_outage_keeps_the_session() {
     let store = Arc::new(FakeTokenStore::default());
     let expired = token_pair(Duration::seconds(-1), "access", "refresh");
     store.store_pair(expired.clone()).unwrap();
-    let http = Arc::new(FakeHttpClient::with_responses(vec![response(
-        522, None, None,
-    )]));
+    let http = Arc::new(FakeHttpClient::with_responses(vec![
+        response(522, None, None),
+        response(200, None, Some(token_pair(Duration::hours(1), "a", "r"))),
+    ]));
     let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
         device_id: "device-1".into(),
     }));
     let manager = AuthManager::new(
         Arc::clone(&store),
-        http,
+        Arc::clone(&http),
         Arc::clone(&state),
         Duration::zero(),
     );
+
+    for attempt in ["first", "straight after"] {
+        assert!(
+            matches!(
+                manager
+                    .send_authenticated(HttpRequest::get("/v1/events"))
+                    .await,
+                Err(AuthError::Transport)
+            ),
+            "{attempt}"
+        );
+    }
+    assert_eq!(
+        http.requests().len(),
+        1,
+        "the refresh is not tried again within the minute"
+    );
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+    assert_eq!(store.load_tokens().unwrap(), Some(expired));
+}
+
+/// A reissue answered by an outage backs off as a refresh does. Every request
+/// answered `device_token_revoked` while the edge kept refusing used to POST
+/// one more reissue.
+#[tokio::test]
+async fn a_reissue_answered_by_an_outage_is_not_tried_again_for_a_minute() {
+    let store = Arc::new(FakeTokenStore::default());
+    let original = token_pair(Duration::hours(1), "access", "refresh");
+    store.store_pair(original.clone()).unwrap();
+    store
+        .store_user_pair(token_pair(
+            Duration::hours(1),
+            "user-access",
+            "user-refresh",
+        ))
+        .unwrap();
+    let http = Arc::new(FakeHttpClient::with_responses(vec![
+        response(403, Some("device_token_revoked"), None),
+        response(503, None, None),
+        response(403, Some("device_token_revoked"), None),
+        response(200, None, Some(token_pair(Duration::hours(1), "a", "r"))),
+    ]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    for attempt in ["first", "straight after"] {
+        assert!(
+            matches!(
+                manager
+                    .send_authenticated(HttpRequest::get("/v1/events"))
+                    .await,
+                Err(AuthError::Transport)
+            ),
+            "{attempt}"
+        );
+    }
+    assert_eq!(
+        http.requests()
+            .iter()
+            .map(|request| request.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/v1/events", "/v1/auth/devices/reissue", "/v1/events"],
+        "the second request is sent with the token in hand and does not reissue"
+    );
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+    assert_eq!(store.load_tokens().unwrap(), Some(original));
+}
+
+/// The same for the user-token refresh a reissue needs first.
+#[tokio::test]
+async fn a_user_token_refresh_answered_by_an_outage_is_not_tried_again_for_a_minute() {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
+        .unwrap();
+    store
+        .store_user_pair(token_pair(
+            Duration::seconds(-1),
+            "user-access",
+            "user-refresh",
+        ))
+        .unwrap();
+    let http = Arc::new(FakeHttpClient::with_responses(vec![
+        response(403, Some("device_token_revoked"), None),
+        response(522, None, None),
+        response(403, Some("device_token_revoked"), None),
+        response(200, None, Some(token_pair(Duration::hours(1), "a", "r"))),
+    ]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::zero(),
+    );
+
+    for attempt in ["first", "straight after"] {
+        assert!(
+            matches!(
+                manager
+                    .send_authenticated(HttpRequest::get("/v1/events"))
+                    .await,
+                Err(AuthError::Transport)
+            ),
+            "{attempt}"
+        );
+    }
+    assert_eq!(
+        http.requests()
+            .iter()
+            .map(|request| request.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/v1/events", "/v1/auth/refresh", "/v1/events"]
+    );
+    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
+}
+
+/// Once the minute is up, the reissue is tried again.
+#[tokio::test]
+async fn a_reissue_is_tried_again_once_its_back_off_has_passed() {
+    let store = Arc::new(FakeTokenStore::default());
+    store
+        .store_pair(token_pair(Duration::hours(1), "access", "refresh"))
+        .unwrap();
+    store
+        .store_user_pair(token_pair(
+            Duration::hours(1),
+            "user-access",
+            "user-refresh",
+        ))
+        .unwrap();
+    let reissued = token_pair(Duration::hours(1), "reissued-access", "reissued-refresh");
+    let http = Arc::new(FakeHttpClient::with_responses(vec![
+        response(403, Some("device_token_revoked"), None),
+        response(503, None, None),
+        response(403, Some("device_token_revoked"), None),
+        response(200, None, Some(reissued.clone())),
+        response(200, None, None),
+    ]));
+    let state = Arc::new(AuthStateMachine::new(AuthState::Authenticated {
+        device_id: "device-1".into(),
+    }));
+    let manager = AuthManager::new(
+        Arc::clone(&store),
+        Arc::clone(&http),
+        Arc::clone(&state),
+        Duration::zero(),
+    )
+    .with_refresh_transport_retry_after(StdDuration::from_millis(20));
 
     assert!(matches!(
         manager
@@ -717,8 +878,14 @@ async fn a_refresh_answered_by_an_outage_keeps_the_session() {
             .await,
         Err(AuthError::Transport)
     ));
-    assert!(matches!(state.current(), AuthState::Authenticated { .. }));
-    assert_eq!(store.load_tokens().unwrap(), Some(expired));
+    tokio::time::sleep(StdDuration::from_millis(40)).await;
+    let retried = manager
+        .send_authenticated(HttpRequest::get("/v1/events"))
+        .await
+        .unwrap();
+
+    assert_eq!(retried.status, 200);
+    assert_eq!(store.load_tokens().unwrap(), Some(reissued));
 }
 
 /// A refresh the cloud refuses with a session code still ends the session.

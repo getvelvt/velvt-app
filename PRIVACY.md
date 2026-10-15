@@ -613,7 +613,8 @@ compares with this list.
   device: the app version.
 - **`POST /v1/auth/devices/reissue`** — when you sign in on a Mac that is
   already registered, or the server says this device's token was revoked: the
-  device ID.
+  device ID. After a reissue that gets no answer, or no verdict on the session,
+  none is sent for a minute.
 - **`POST /v1/auth/refresh`** — when the access token is about to expire: the
   refresh token. After a refresh that gets no answer from the server, or an
   answer that is not the server's verdict on the session (a network edge's

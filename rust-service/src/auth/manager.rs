@@ -25,8 +25,8 @@ pub struct AuthManager<S, H> {
     state: Arc<AuthStateMachine>,
     refresh_buffer: Duration,
     refresh_lock: Mutex<()>,
-    /// When a refresh last failed in transport or got no verdict on the
-    /// session, until one gets one.
+    /// When a refresh or a reissue last failed in transport or got no
+    /// verdict on the session, until one gets one.
     refresh_transport_failed_at: std::sync::Mutex<Option<Instant>>,
     refresh_transport_retry_after: std::time::Duration,
 }
@@ -69,16 +69,60 @@ where
             AuthState::AccountDeleted => return Err(AuthError::AccountDeleted),
             _ => {}
         }
+        let account = match request.account.clone() {
+            Some(account) => Some(account),
+            None => self.store.load_user_id()?,
+        };
+        let account = account.as_deref();
         let tokens = self.tokens_for_request().await?;
+        self.ensure_bound_session(account)?;
         request.authorization = Some(tokens.access_token().clone());
         let response = self.http.send(request.clone()).await?;
         if refusal(&response) == Refusal::SessionRejected {
+            self.ensure_bound_session(account)?;
             let fresh = self.refresh_tokens(true).await?;
+            self.ensure_bound_session(account)?;
             request.authorization = Some(fresh.access_token().clone());
             let retried = self.http.send(request.clone()).await?;
-            return self.handle_response(retried, request).await;
+            return self.handle_response(retried, request, account).await;
         }
-        self.handle_response(response, request).await
+        self.handle_response(response, request, account).await
+    }
+
+    /// Refuses to send a request under any session but its account's: the
+    /// one it names (`HttpRequest::account`; an upload names its batch's
+    /// owner), else the one signed in when it started.
+    ///
+    /// The tokens a request is sent with are read when it is sent, not when
+    /// it was decided on. One waiting on the refresh lock behind a slow
+    /// refresh, or on its own refresh and retry, while Log Out and a sign-in
+    /// replace the session, is handed the new account's tokens: a batch the
+    /// ownership policy had judged account A's was POSTed under B's token
+    /// that way. It fails as `NeedsReauth` instead, and moves no state: the
+    /// upload path keeps the batch as `authentication_required`, and the
+    /// ownership policy judges it again on its next pass.
+    ///
+    /// Called after the tokens are read. Every path that puts another
+    /// account's session in place clears the account id before it stores
+    /// the new tokens, and stores the new account id last
+    /// (`AccountAuthService::store_session`), so tokens read from that
+    /// session are never seen beside the old account id. A request with no
+    /// account to bind to (a session handed over without one, before the
+    /// cloud named it) is sent as before.
+    fn ensure_bound_session(&self, account: Option<&str>) -> Result<(), AuthError> {
+        let Some(account) = account else {
+            return Ok(());
+        };
+        match self.store.load_user_id() {
+            Ok(Some(current)) if current == account => Ok(()),
+            _ => {
+                tracing::info!(
+                    error_code = "request_session_replaced",
+                    "the session a request was bound to ended before it was sent; not sent"
+                );
+                Err(AuthError::NeedsReauth)
+            }
+        }
     }
 
     /// Asks the cloud whether the restored session still stands, and keeps
@@ -272,10 +316,13 @@ where
         &self,
         response: HttpResponse,
         mut request: HttpRequest,
+        account: Option<&str>,
     ) -> Result<HttpResponse, AuthError> {
         match refusal(&response) {
             Refusal::DeviceTokenRevoked => {
+                self.ensure_bound_session(account)?;
                 let fresh = self.reissue_device_tokens().await?;
+                self.ensure_bound_session(account)?;
                 request.authorization = Some(fresh.access_token().clone());
                 let retried = self.http.send(request).await?;
                 let verdict = refusal(&retried);
@@ -322,8 +369,19 @@ where
         }
     }
 
+    /// Exchanges the user session for new device tokens, after the cloud
+    /// answered `device_token_revoked`.
+    ///
+    /// Backs off as a refresh does: a reissue (or the user-token refresh it
+    /// needs) that fails in transport, or that an edge, an outage or a rate
+    /// limit answers, is not tried again for `refresh_transport_retry_after`.
+    /// Without that, every request answered `device_token_revoked` while the
+    /// edge kept refusing POSTed one more reissue.
     async fn reissue_device_tokens(&self) -> Result<super::TokenPair, AuthError> {
         let _guard = self.refresh_lock.lock().await;
+        if self.refresh_recently_failed_in_transport() {
+            return Err(AuthError::Transport);
+        }
         let user_tokens = match self.user_tokens_for_reissue().await {
             Ok(tokens) => tokens,
             // No verdict on the session: the user-token refresh could not be
@@ -355,6 +413,9 @@ where
         let response = match self.http.send(request).await {
             Ok(response) => response,
             Err(error) => {
+                if matches!(error, AuthError::Transport) {
+                    self.record_refresh_transport(true);
+                }
                 if self.session_replaced_since(started_from.as_ref()) {
                     return Err(AuthError::NeedsReauth);
                 }
@@ -363,6 +424,7 @@ where
                 return Err(error);
             }
         };
+        self.record_refresh_transport(false);
         if self.session_replaced_since(started_from.as_ref()) {
             return Err(AuthError::NeedsReauth);
         }
@@ -402,8 +464,14 @@ where
                 Err(AuthError::NeedsReauth)
             }
             Refusal::Unattributed => {
+                self.record_refresh_transport(true);
                 self.state
                     .transition(AuthState::Authenticated { device_id })?;
+                tracing::warn!(
+                    error_code = "device_token_reissue_unattributed_refusal",
+                    status = response.status,
+                    "device token reissue was refused without a session error code; kept the session"
+                );
                 Err(transient_error(response.status))
             }
         }
@@ -427,7 +495,11 @@ where
             .ok_or(AuthError::NeedsReauth)?;
         let mut refresh_request = HttpRequest::post("/v1/auth/refresh");
         refresh_request.refresh_token = Some(tokens.refresh_token().clone());
-        let response = self.http.send(refresh_request).await?;
+        let response = self.http.send(refresh_request).await.inspect_err(|error| {
+            if matches!(error, AuthError::Transport) {
+                self.record_refresh_transport(true);
+            }
+        })?;
         if response.status == 200 {
             let Some(fresh) = response.tokens else {
                 self.state.transition(AuthState::NeedsReauth)?;
@@ -448,7 +520,10 @@ where
                 self.state.transition(AuthState::NeedsReauth)?;
                 Err(AuthError::NeedsReauth)
             }
-            Refusal::Unattributed => Err(transient_error(response.status)),
+            Refusal::Unattributed => {
+                self.record_refresh_transport(true);
+                Err(transient_error(response.status))
+            }
         }
     }
 }

@@ -46,7 +46,11 @@ Swift stores host session in Keychain
 
 A registration that fails (transport, a refusal, a response without a device)
 answers `auth_failure` and keeps nothing; `auth_success` is sent only once a
-device exists to upload as. A sign-up's failure says the account was created
+device exists to upload as. That includes a sign-in that reissues a stored
+device id and falls through to registering: the new account's user tokens are
+stored only once the reissue or the registration succeeds. Swift refuses an
+`auth_success` with an empty device id and sends `log_out`, so the service
+drops whatever it stored. A sign-up's failure says the account was created
 and asks the person to log in, because signing up again would be refused as an
 email already registered.
 
@@ -77,7 +81,24 @@ code is what Cloudflare's WAF, Bot Fight Mode or a challenge answers with; it,
 a 5xx and a 429 are returned to the caller as a status (or `Transport` /
 `RateLimited` from a refresh or reissue), the caller backs off, and the session
 and Keychain stay. One such 403 used to sign the tester out and wipe the
-Keychain (critic-04).
+Keychain (critic-04). A refresh, a reissue, or the user-token refresh a reissue
+needs, answered that way or not answered at all, is not tried again for a
+minute: requests in that minute use the unexpired token in hand, and one whose
+token has expired, or that is answered `device_token_revoked`, fails at once
+with `Transport`.
+
+Every authenticated request is bound to an account: the one it names
+(`HttpRequest::account`; `HttpBatchUploader` names the batch's owner), else the
+one signed in when it starts. `AuthManager` checks the account after it reads
+the tokens it is about to send with, and again before a refresh-and-retry or a
+reissue-and-retry, and fails the request as `NeedsReauth`, changing no state,
+when the account has changed. A batch the ownership policy judged account A's,
+waiting on the refresh lock while A logged out and B signed in, was otherwise
+POSTed under B's token. The check holds because every path that puts another
+account's session in place (`AccountAuthService::store_session`) clears the old
+account id before the tokens change and stores the new one after them. A
+session handed over with no account id binds nothing until
+`GET /v1/auth/session` names it.
 
 ## Token Storage
 
@@ -151,17 +172,18 @@ Rust to Swift:
 | `403 device_revoked`, or `403 device_inactive` from reissue | Enter `DeviceRevoked` |
 | `401 account_deleted` | Enter `AccountDeleted` |
 | `429` | Return rate-limited error; the session stays |
-| Anything else, including `403` without a code and `5xx` | Return the response (or `Transport` from a refresh or reissue); the session stays, and a refresh is not retried for a minute |
+| Anything else, including `403` without a code and `5xx` | Return the response (or `Transport` from a refresh or reissue); the session stays, and a refresh or reissue is not retried for a minute |
 
 ## UI Notification of Auth State
 
-`src/main.rs` subscribes to the Rust auth state machine. When state becomes `DeviceRevoked` or `NeedsReauth`, it pushes the corresponding IPC message through `PushAdapter`; when it becomes `AccountDeleted`, it runs `ipc::end_deleted_account_session`, which pushes `needs_reauth` with the reason `account_deleted`. When a session becomes usable, the retry loop makes due every batch put off as `authentication_required` and resumes the queue, and the menu's readiness probe runs again. This is independent of the request that caused the state change, which keeps the menu bar UI accurate even if the user is not actively using an auth screen.
+`src/main.rs` subscribes to the Rust auth state machine. When state becomes `DeviceRevoked` or `NeedsReauth`, it pushes the corresponding IPC message through `PushAdapter`; when it becomes `AccountDeleted`, `ipc::SessionWatch` runs `ipc::end_deleted_account_session`, which pushes `needs_reauth` with the reason `account_deleted`. When a session becomes usable, the retry loop makes due every batch put off as `authentication_required` and resumes the queue, and `SessionWatch` runs the menu's readiness probe again. This is independent of the request that caused the state change, which keeps the menu bar UI accurate even if the user is not actively using an auth screen.
 
 ## Tests to Update
 
 When changing auth behavior, inspect and update:
 
 - `rust-service/tests/auth_flow.rs`
+- `rust-service/tests/account_switch.rs` (whose session a queued batch or a waiting request is sent under)
 - `rust-service/tests/auth_state.rs`
 - `rust-service/tests/device_registrar.rs`
 - `rust-service/shared-types/src/lib.rs` DTO tests for auth message JSON shape

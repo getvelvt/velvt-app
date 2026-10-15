@@ -21,7 +21,7 @@ pub use connection::{
 pub use reconnect::ReconnectTracker;
 pub use router::{
     end_deleted_account_session, DefaultRouter, MenuStatusProvider, MessageRouter, R7Router,
-    ACCOUNT_DELETED_REASON,
+    SessionWatch, ACCOUNT_DELETED_REASON,
 };
 
 /// Errors produced by IPC transport or protocol handling.

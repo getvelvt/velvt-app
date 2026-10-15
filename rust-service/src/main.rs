@@ -559,53 +559,18 @@ async fn main() {
         // account_deleted` on its next request. What this Mac queued for that
         // account is destroyed, the session is cleared, and the app is told
         // why, so it can say the account was deleted rather than that the
-        // session expired.
-        {
-            let mut auth_changes = auth_state.subscribe();
-            let mut shutdown = token.subscribe();
-            let account_service = Arc::clone(&account_service);
-            let ingestor = Arc::clone(&shared_batcher);
-            let batches = Arc::clone(&upload_batch_repo);
-            let raw_events = Arc::clone(&raw_event_repo);
-            let push_adapter = Arc::clone(&push_adapter);
-            let menu_status = Arc::clone(&menu_status);
-            tokio::spawn(async move {
-                let mut was_usable = false;
-                loop {
-                    tokio::select! {
-                        changed = auth_changes.changed() => {
-                            if changed.is_err() {
-                                return;
-                            }
-                            let current = auth_changes.borrow_and_update().clone();
-                            let usable = matches!(
-                                current,
-                                AuthState::Authenticated { .. } | AuthState::RefreshInFlight
-                            );
-                            if usable && !was_usable {
-                                menu_status.probe_readiness();
-                            }
-                            was_usable = usable;
-                            if current == AuthState::AccountDeleted {
-                                velvt_service::ipc::end_deleted_account_session(
-                                    &account_service,
-                                    ingestor.as_ref(),
-                                    batches.as_ref(),
-                                    raw_events.as_ref(),
-                                    &push_adapter,
-                                )
-                                .await;
-                            }
-                        }
-                        _ = shutdown.changed() => {
-                            if *shutdown.borrow() {
-                                return;
-                            }
-                        }
-                    }
-                }
-            });
-        }
+        // session expired. A session that becomes usable re-asks readiness.
+        tokio::spawn(
+            velvt_service::ipc::SessionWatch {
+                account: Arc::clone(&account_service),
+                ingestor: Arc::clone(&shared_batcher),
+                batches: Arc::clone(&upload_batch_repo),
+                raw_events: Arc::clone(&raw_event_repo),
+                push: Arc::clone(&push_adapter),
+                menu_status: Arc::clone(&menu_status),
+            }
+            .run(auth_state.subscribe(), token.subscribe()),
+        );
 
         // Periodic age-based flush: count-based flush happens inline on
         // ingest, but events that never reach the batch-size threshold must

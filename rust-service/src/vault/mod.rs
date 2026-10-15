@@ -43,7 +43,7 @@ mod test_support {
     };
     use super::merge::Hlc;
 
-    /// 2026-10-15T00:00:00Z.
+    /// 2025-10-15T00:00:00Z.
     pub(crate) const NOW_MS: u64 = 1_760_486_400_000;
 
     /// A deterministic version-4 sync device id.

@@ -402,8 +402,9 @@ mod tests {
         ));
     }
 
-    /// The example the docs show is a real code. The design's J3 and §5.3
-    /// text shows `…8CJ5X`, whose check character is wrong.
+    /// The example the docs show is a real code. Earlier drafts of the
+    /// design's J3 and §5.3 showed `…8CJ5X`, whose check character is wrong;
+    /// #87 corrected them.
     #[test]
     fn the_documented_example_code_is_valid() {
         let example = SetupCode::parse("K7PQ-M2XD-9HTW-4RZN-8CJ5H").unwrap();

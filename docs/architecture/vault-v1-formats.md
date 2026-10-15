@@ -123,22 +123,31 @@ carry; restoring it would be a change on both sides.
 A signature proves only that `W` signed some bytes. velvt-core must also tie
 those bytes to the request they arrive with, or a valid statement could be
 replayed onto another request. It **rebuilds** the put, create and handoff
-statements from the request and never accepts statement bytes for them. It
-**parses** the rotate, delete and cancel-reset statements that arrive as bytes
-(`*_stmt_b64`), strictly, and requires each field below to equal its request
-counterpart. In every case `user_id` is the authenticated account's id, never a
+statements from the request and never accepts statement bytes for them. The
+rotate and cancel-reset statements arrive as bytes (`rotate_stmt_b64`,
+`cancel_stmt_b64`): it rebuilds each from the request and refuses bytes that
+differ in any one (`422 vault_statement_invalid`), which requires each field
+below to equal its request counterpart. It **parses** the delete statement
+(`delete_stmt_b64`) at exactly its §5.3 length and requires the same of its
+fields. In every case `user_id` is the authenticated account's id, never a
 request field.
+
+`rust-service/tests/vault_c2_contract.rs` ports these checks from velvt-core
+(`app/services/vault_formats.py`, the request checks in `vault_service.py` and
+the field limits in `schemas/vault.py`, #46 at `f448a15`). It runs velvt-core's
+own known answers, these vectors, and blobs and statements A1 makes now through
+them, so a byte on which A1 and C2 disagree fails `cargo test`.
 
 | Endpoint | Statement | Built or checked from |
 |---|---|---|
 | `POST /v1/vault` | create | built: `key_id` and `write_pk` from the body (`key_id` must equal `f(write_pk)`, else 422), `SHA-256(base64-decoded blob.ciphertext_b64)`; verified under the body's `write_pk` |
 | `POST /v1/vault` | put (`put_sig_b64`) | built: `name` = `blob.name` (`prefs`), the body's `key_id`, `blob.schema`, `base_version` = 0, `new_version` = 1, the same SHA-256; verified under the body's `write_pk`. The blob is sealed with version 1 in its AAD |
 | `PUT /v1/vault/blobs/{name}` | put | built: `name` = the path's `{name}`; `key_id` from the body, which must equal `vaults.key_id` (else 409 `vault_key_mismatch`); `schema` from the body; `base_version` = the `If-Match` version, which must be the current version (else 412); `new_version` from the body, with `base_version < new_version ≤ base_version + 2^32`; the SHA-256 of the uploaded bytes. Verified under `vaults.write_pk` |
-| `POST /v1/vault/rotate` | rotate | parsed from `rotate_stmt_b64`: `old_key_id` = the body's `old_key_id` = `vaults.key_id` (else 409); `new_key_id` = the body's `new_key_id` = `f(new_write_pk)` ≠ `old_key_id`; `new_write_pk` = the body's `new_write_pk_b64`; `new_version` = `blob.new_version`. `old_sig_b64` verified under `vaults.write_pk`, `new_sig_b64` under `new_write_pk`. Stored in `vaults.rotations` as statement ‖ old signature ‖ new signature |
+| `POST /v1/vault/rotate` | rotate | rebuilt from the request and compared byte for byte with `rotate_stmt_b64` (else 422 `vault_statement_invalid`): `old_key_id` = the body's `old_key_id` = `vaults.key_id` (else 409); `new_key_id` = the body's `new_key_id` = `f(new_write_pk)` ≠ `old_key_id`; `new_write_pk` = the body's `new_write_pk_b64`; `new_version` = `blob.new_version`. `old_sig_b64` verified under `vaults.write_pk`, `new_sig_b64` under `new_write_pk`. Stored in `vaults.rotations` as statement ‖ old signature ‖ new signature |
 | `POST /v1/vault/rotate` | put (`blob.put_sig_b64`) | built: `name` = `blob.name`, `key_id` = `new_key_id`, `blob.schema`, `base_version` = the current version `n` at the moment the rotation is applied, `new_version` = `blob.new_version` (`n < new_version ≤ n + 2^32`), the SHA-256 of `blob.ciphertext_b64`. Verified under `new_write_pk`. The blob is sealed under `K'` with `key_id'` and `new_version` in its AAD |
 | `DELETE /v1/vault` | delete | parsed from `delete_stmt_b64`: `key_id` = the body's `key_id` = `vaults.key_id` (else 409); `at_version` = the current blob version; `requested_at` within 600 s of the server's clock (else 422 `vault_statement_invalid`), so a tombstone cannot be replayed later. Verified under `vaults.write_pk`; stored as the tombstone (statement ‖ signature) |
 | `POST /v1/vault/handoffs` | handoff | built: `handoff_id` = the 16 bytes of the body's 32-hex `handoff_id`, `SHA-256(base64-decoded payload_b64)`, `expires_at` = the body's `expires_at` in whole Unix seconds (velvt-core keeps at most 600 s from its clock). Verified under `vaults.write_pk` |
-| `DELETE /v1/vault/reset-requests/{id}` | cancel reset | parsed from `cancel_stmt_b64`: `reset_request_id` = the path's `{id}`, which must be this account's pending request; `key_id` = `vaults.key_id` = the request's `key_id`. Verified under `vaults.write_pk` |
+| `DELETE /v1/vault/reset-requests/{id}` | cancel reset | rebuilt from the request and compared byte for byte with `cancel_stmt_b64` (else 422 `vault_statement_invalid`): `reset_request_id` = the path's `{id}`, which must be this account's pending request; `key_id` = `vaults.key_id` = the request's `key_id`. Verified under `vaults.write_pk` |
 
 The vectors have one of each put: `put` (an ordinary `PUT`, base 6 to 7),
 `create_put` (base 0 to 1, over the version-1 blob the `create` statement also
@@ -149,9 +158,9 @@ hashes) and `rotate_put` (under the next key, base 7 to 8, the rotation's
 
 - `s` is 100 random bits. It is shown as 20 Crockford base32 characters
   (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), most significant first, then one Luhn mod
-  32 check character, grouped 4-4-4-4-5: `K7PQ-M2XD-9HTW-4RZN-8CJ5H`. (The
-  design's J3 and §5.3 show `…8CJ5X`, whose check character is wrong; a test
-  pins the example here.)
+  32 check character, grouped 4-4-4-4-5: `K7PQ-M2XD-9HTW-4RZN-8CJ5H`. (Earlier
+  drafts of the design showed `…8CJ5X`, whose check character is wrong; #87
+  corrected it, and a test pins the example here.)
 - Reading what was typed: case is ignored; `O` reads as `0`, `I` and `L` as
   `1`; ASCII hyphens, the Unicode dashes U+2010–U+2015 and U+2212, and white
   space are ignored; `U` and anything else is refused. The check character

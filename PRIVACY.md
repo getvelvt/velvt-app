@@ -457,7 +457,13 @@ only complete removal, and the procedure for it is at the end of this document.
   when it posts a drift offer, and tells the service which kind of channel the
   offer reached; nothing about it leaves the Mac.
 - **The socket.** `~/.velvt/velvt-service.sock` is the local connection between
-  the app and the service. It holds no data.
+  the app and the service. It holds no data. In a release build the app talks
+  only to the service it started, the service only to the app that started
+  it, and each checks the other's code signature before anything crosses the
+  socket. Another program running as you therefore can't pose as the service
+  to the app or receive anything from the service over it. This does not
+  stand up to a program running with administrator rights, or to one that has
+  already got its own code running inside Velvt.
 - **An optional Claude Code log.** Velvt.app never writes
   `~/.velvt/agent-attention-log.jsonl`. It exists only if you installed the
   optional Claude Code notification hook from Velvt's workspace, which is not

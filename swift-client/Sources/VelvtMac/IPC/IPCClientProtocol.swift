@@ -18,6 +18,11 @@ public enum IPCError: Error, Equatable, Sendable {
     case notConnected
     case versionMismatch(expected: Int, got: Int)
     case handshakeFailed
+    /// The process serving the socket is not the signed helper this app
+    /// started (`SocketPeerCheck`, Release builds only). The code is an
+    /// `errno` or a Security framework status, never anything about the
+    /// process.
+    case peerRejected(code: Int32)
 }
 
 /// A handshake the service answered with a different protocol version.

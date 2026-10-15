@@ -92,6 +92,21 @@ fn main() {
         "VELVT_SOURCE_COMMIT must be a hex commit id, optionally ending in -dirty, got {source_commit:?}"
     );
     println!("cargo:rustc-env=VELVT_SOURCE_COMMIT_COMPILED={source_commit}");
+
+    // Whether the helper checks the code signature of the process that
+    // connects to its socket (docs/architecture/personal-vault-and-devices.md
+    // §9.3). build_rust_helper.sh passes `enforce` when it builds the helper
+    // for a Release app and `off` for a Debug one; a bare `cargo build` or
+    // `cargo test` is off. `velvt-service --peer-requirement` says which.
+    println!("cargo:rerun-if-env-changed=VELVT_PEER_SIGNATURE_CHECK");
+    let peer_signature_check = match non_empty_env("VELVT_PEER_SIGNATURE_CHECK").as_deref() {
+        None | Some("off") => "off",
+        Some("enforce") => "enforce",
+        Some(other) => {
+            panic!("VELVT_PEER_SIGNATURE_CHECK must be enforce or off, got {other:?}")
+        }
+    };
+    println!("cargo:rustc-env=VELVT_PEER_SIGNATURE_CHECK_COMPILED={peer_signature_check}");
 }
 
 fn non_empty_env(key: &str) -> Option<String> {

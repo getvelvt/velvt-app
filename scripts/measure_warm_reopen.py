@@ -4,6 +4,12 @@
 This probe does not clear application state, remove sockets, or alter defaults.
 It refuses to start when Velvt or its helper is already running and leaves the
 launched app running so the caller can terminate it through NSRunningApplication.
+
+It connects to the helper as a second client, so it works only with an app
+whose helper serves any local client: a Debug build (`make
+build-app-local-core`). A Release app's helper checks the code signature of
+whatever connects and serves only the Velvt app
+(docs/architecture/ipc-contract.md, "Peer Code-Signature Check").
 """
 
 from __future__ import annotations

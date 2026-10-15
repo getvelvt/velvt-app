@@ -1,6 +1,5 @@
 import Combine
 import Darwin
-import Network
 import XCTest
 
 @testable import VelvtMac
@@ -8,14 +7,37 @@ import XCTest
 final class UnixSocketIPCClientTests: XCTestCase {
     private var cancellables: Set<AnyCancellable> = []
 
-    func testWaitingConnectionRefusedFailsImmediatelyForFastHelperRetry() {
-        let state = NWConnection.State.waiting(.posix(.ECONNREFUSED))
+    /// A socket path with nothing listening behind it (a helper that has not
+    /// bound yet, or the file a crashed one left) is refused at once, so the
+    /// client's 250 ms retry cadence runs instead of the five-second connect
+    /// timeout.
+    func testARefusedConnectionFailsImmediatelyForFastHelperRetry() async throws {
+        let path = "/tmp/velvt-refused-\(UUID().uuidString.prefix(8)).sock"
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: Array(path.utf8)) }
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(bound, 0)
+        // Bound and never listened on: the file stays, the connection is refused.
+        Darwin.close(descriptor)
+        defer { unlink(path) }
 
-        XCTAssertEqual(
-            UnixSocketTransport.connectionError(for: state),
-            .socket(code: ECONNREFUSED)
-        )
-        XCTAssertNil(UnixSocketTransport.connectionError(for: .preparing))
+        let transport = UnixSocketTransport(peerCheck: SocketPeerCheck(policy: .skipped))
+        let started = ContinuousClock.now
+        do {
+            try await transport.connect(to: path)
+            XCTFail("Expected the connection to be refused")
+        } catch {
+            XCTAssertEqual(error as? IPCError, .socket(code: ECONNREFUSED))
+        }
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
     }
 
     func testHandshakeSuccessSendsClientHelloAndConnects() async throws {

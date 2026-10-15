@@ -12,6 +12,16 @@ pub const SERVICE_VERSION: &str = env!("VELVT_SERVICE_VERSION_COMPILED");
 /// Info.plist carries the same value as `VelvtSourceCommit`.
 pub const SOURCE_COMMIT: &str = env!("VELVT_SOURCE_COMMIT_COMPILED");
 
+/// Whether this helper checks the code signature of the process at the other
+/// end of its socket (`ipc::peer`). True only in a helper built for a Release
+/// app: `build_rust_helper.sh` sets `VELVT_PEER_SIGNATURE_CHECK=enforce` for a
+/// distributable build. A Debug app's helper, `cargo build` and `cargo test`
+/// skip the check.
+pub const PEER_SIGNATURE_CHECK: bool = matches!(
+    env!("VELVT_PEER_SIGNATURE_CHECK_COMPILED").as_bytes(),
+    b"enforce"
+);
+
 #[cfg(test)]
 mod tests {
     use super::{SERVICE_VERSION, SOURCE_COMMIT};

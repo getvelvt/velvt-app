@@ -42,6 +42,7 @@
 		9DB1CFAA2FE2D0CB00632E03 /* com.velvt.service.plist.template in Resources */ = {isa = PBXBuildFile; fileRef = 9DB1CFA92FE2D0CB00632E03 /* com.velvt.service.plist.template */; };
 		AF894F952FE76B6B0023DA87 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AF894F942FE76B6B0023DA87 /* Assets.xcassets */; };
 		A03B3DF738D28A838B7E16A5 /* ReconnectBackoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */; };
+		AEEAB2A6FFB9C1FC516FEBFC /* SocketPeerCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC1B75D1AFE5ABA4DC3D73BB /* SocketPeerCheck.swift */; };
 		A1B2C3D4E5F601234567890A /* BundleConfigLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890B /* BundleConfigLoader.swift */; };
 		A1B2C3D4E5F601234567890C /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890D /* ServiceManager.swift */; };
 		A1B2C3D4E5F601234567890E /* ServiceUnavailableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F601234567890F /* ServiceUnavailableView.swift */; };
@@ -65,6 +66,7 @@
 
 /* Begin PBXFileReference section */
 		010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ReconnectBackoff.swift; path = IPC/ReconnectBackoff.swift; sourceTree = "<group>"; };
+		BC1B75D1AFE5ABA4DC3D73BB /* SocketPeerCheck.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SocketPeerCheck.swift; path = IPC/SocketPeerCheck.swift; sourceTree = "<group>"; };
 		04D5396399374660825D54B5 /* InsightViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = InsightViewModel.swift; path = UI/InsightViewModel.swift; sourceTree = "<group>"; };
 		08FF548B5CFC292896112B45 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UnixSocketIPCClient.swift; path = IPC/UnixSocketIPCClient.swift; sourceTree = "<group>"; };
@@ -179,6 +181,7 @@
 				89648514F6F3C9E89EB036BE /* IPCClientProtocol.swift */,
 				39C7506861C548B6BD42DE38 /* IPCTypes.swift */,
 				010AB15E7FA5A879FBA71D14 /* ReconnectBackoff.swift */,
+				BC1B75D1AFE5ABA4DC3D73BB /* SocketPeerCheck.swift */,
 				22090E8600EB879CBD976826 /* UnixSocketIPCClient.swift */,
 				C9F1ADB76DD4328B7586E87C /* UIModule.swift */,
 				46EB4A8071B24F1681E1F2F9 /* PermissionViews.swift */,
@@ -385,6 +388,7 @@
 				45E74D92600605D1450A1281 /* IPCClientProtocol.swift in Sources */,
 				FEF395332D1059B366BF6D9A /* IPCTypes.swift in Sources */,
 				A03B3DF738D28A838B7E16A5 /* ReconnectBackoff.swift in Sources */,
+				AEEAB2A6FFB9C1FC516FEBFC /* SocketPeerCheck.swift in Sources */,
 				89AC090DEEE9F19A1A61543B /* UnixSocketIPCClient.swift in Sources */,
 				5C4179B95803E953316EC37F /* UIModule.swift in Sources */,
 				FFFC50D148BC43D6B17488A4 /* PermissionViews.swift in Sources */,

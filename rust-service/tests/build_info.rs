@@ -66,3 +66,20 @@ fn source_commit_flag_prints_the_stamped_commit() {
         velvt_service::build_info::SOURCE_COMMIT
     );
 }
+
+/// `--peer-requirement` prints what this build holds the app to: `none` in a
+/// build that checks nothing (`cargo test`, a Debug app's helper), otherwise
+/// the requirement. scripts/verify_release.sh refuses `none` in a Release app
+/// and checks the app against the rest.
+#[cfg(unix)]
+#[test]
+fn peer_requirement_flag_prints_this_builds_policy() {
+    let expected = velvt_service::ipc::peer::PeerPolicy::for_this_build()
+        .describe()
+        .expect("this build can say what it requires")
+        .to_owned();
+    if !velvt_service::build_info::PEER_SIGNATURE_CHECK {
+        assert_eq!(expected, "none");
+    }
+    assert_eq!(run_service("--peer-requirement"), expected);
+}

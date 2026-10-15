@@ -142,9 +142,13 @@ struct Session {
     /// A vault exists and its key is in this Mac's Keychain, while sync is
     /// off here: J2's card.
     available_elsewhere: bool,
-    /// The key of a create whose answer never arrived. The vault may exist
-    /// under it, so its item is kept, and a 404 lets this Mac try the create
-    /// again with the same key rather than leave it waiting on itself.
+    /// The key of this Mac's own create that velvt-core has not shown
+    /// settled: its answer never arrived, or it was refused. The vault may
+    /// exist under it, so its item is kept, and a 404 lets this Mac try the
+    /// create again with the same key rather than leave it waiting on
+    /// itself. Its key id is in the row (`pending_create_key_id`), so a
+    /// restart loads it again ([`SyncEngine::restore_pending_create`]).
+    /// Settled once this Mac trusts the vault made under it.
     pending_create: Option<VaultKey>,
     /// Holds the vault's requests after a 412 storm or a 429, never the
     /// device list.
@@ -210,6 +214,39 @@ impl Session {
 
     fn anchor(&self) -> Anchor {
         self.record.as_ref().map(anchor_of).unwrap_or_default()
+    }
+
+    /// This Mac's own create of `key` (or none), in memory and, as its key
+    /// id, in the row.
+    fn set_pending_create(&mut self, key: Option<VaultKey>) {
+        self.record_pending_create(key.as_ref().map(VaultKey::key_id));
+        self.pending_create = key;
+    }
+
+    /// The row's record of this Mac's own create, alone: `create` holds the
+    /// key itself while it builds the first copy.
+    fn record_pending_create(&mut self, key_id: Option<KeyId>) {
+        if let Some(record) = self.record.as_mut() {
+            record.pending_create_key_id = key_id.map(|key_id| key_id.to_hex());
+        }
+    }
+
+    /// The key id the row records for this Mac's own create.
+    fn recorded_pending_create(&self) -> Option<String> {
+        self.record
+            .as_ref()
+            .and_then(|record| record.pending_create_key_id.clone())
+    }
+
+    /// Called wherever trust moves. Once this Mac trusts the vault made under
+    /// its own pending create's key, that create landed: its item is the
+    /// trusted vault's, and never again an orphan to delete or a reason to
+    /// create (§5.5, I6).
+    fn settle_pending_create(&mut self) {
+        let trusted = self.anchor().trusted.map(|trusted| trusted.key_id.to_hex());
+        if trusted.is_some() && trusted == self.recorded_pending_create() {
+            self.set_pending_create(None);
+        }
     }
 
     /// Forgets the copy and the key, keeping the row's anchor.
@@ -803,6 +840,7 @@ impl SyncEngine {
                 if let Some(record) = session.record.as_mut() {
                     replace_trust(record, typed);
                 }
+                session.settle_pending_create();
             }
             session.key = Some(key);
             self.inconsistent(
@@ -892,6 +930,7 @@ impl SyncEngine {
                 }
             }
         }
+        session.settle_pending_create();
         session.key = Some(key);
         session.joined_via = JoinedVia::Code;
         session.line = None;
@@ -964,6 +1003,12 @@ impl SyncEngine {
             highest_seen_sha256: None,
             fetched_at_ms: None,
             seen_reset_request_id: None,
+            // A create this run still holds (its row went with a signed
+            // deletion) stays this Mac's own.
+            pending_create_key_id: session
+                .pending_create
+                .as_ref()
+                .map(|key| key.key_id().to_hex()),
             enabled: false,
             server_version: None,
             ciphertext: None,
@@ -1116,6 +1161,50 @@ impl SyncEngine {
         }
     }
 
+    /// The key of this Mac's own create that an earlier run of the service
+    /// recorded in the row and never saw settled (a restart, an update, Log
+    /// Out and back in): loaded again from the Keychain, so its kept item is
+    /// still this Mac's own create, sent again under its key, and not a live
+    /// item of unknown origin that blocks every create (§5.5). An item no
+    /// longer held, or the vault this Mac now trusts, clears the record.
+    async fn restore_pending_create(
+        &self,
+        session: &mut Session,
+        inventory: &KeyInventory,
+    ) -> Step {
+        if session.pending_create.is_some() {
+            return Ok(());
+        }
+        let Some(recorded) = session.recorded_pending_create() else {
+            return Ok(());
+        };
+        let key_id = match KeyId::from_hex(&recorded) {
+            Some(key_id) if inventory.holds_live(key_id) => key_id,
+            _ => {
+                session.set_pending_create(None);
+                return Ok(());
+            }
+        };
+        if session.anchor().trusted.map(|trusted| trusted.key_id) == Some(key_id) {
+            session.set_pending_create(None);
+            return Ok(());
+        }
+        match self.deps.keys.load(&session.user, key_id).await {
+            Ok(key) if key.key_id() == key_id => {
+                session.pending_create = Some(key);
+                Ok(())
+            }
+            Ok(_) | Err(KeyStoreError::NotFound) => {
+                session.set_pending_create(None);
+                Ok(())
+            }
+            Err(error) => {
+                session.set_state(SyncState::Error, Some(error.code()));
+                Err(Stop)
+            }
+        }
+    }
+
     // --- The pass ---------------------------------------------------------------
 
     async fn pass(&self, session: &mut Session, notices: &mut NoticeQueue, turning_on: bool) {
@@ -1157,6 +1246,7 @@ impl SyncEngine {
                 return Err(Stop);
             }
         };
+        self.restore_pending_create(session, &inventory).await?;
         let view = match self.api.get_vault(&user).await {
             Ok(view) => view,
             Err(error) => {
@@ -1164,17 +1254,20 @@ impl SyncEngine {
                 return Err(Stop);
             }
         };
-        // §14: a create this run sent and never heard back about lost the
-        // race if the vault is under another key. Its item is an orphan, and
-        // goes (its own key id only, §5.5); kept, it would stand as a key
-        // this Mac trusts against the winner's vault.
-        if let (Some(pending), VaultView::Present { key_id, .. }) = (&session.pending_create, &view)
-        {
-            let orphan = pending.key_id();
-            if *key_id != orphan {
+        // §14: a create of this Mac's that was never settled lost the race if
+        // the vault is under another key. Its item is an orphan, and goes
+        // (its own key id only, §5.5); kept, it would stand as a key this Mac
+        // trusts against the winner's vault. Never the item of the vault this
+        // Mac trusts: that create landed, and a served key no Mac signed is
+        // the server's claim alone (I6), judged below.
+        let pending = session.pending_create.as_ref().map(VaultKey::key_id);
+        if let (Some(orphan), VaultView::Present { key_id, .. }) = (pending, &view) {
+            if session.anchor().trusted.map(|trusted| trusted.key_id) == Some(orphan) {
+                session.set_pending_create(None);
+            } else if *key_id != orphan {
                 let _ = self.deps.keys.delete(&user, orphan).await;
                 inventory.keys.retain(|held| held.key_id != orphan);
-                session.pending_create = None;
+                session.set_pending_create(None);
             }
         }
         let anchor = session.anchor();
@@ -1238,13 +1331,11 @@ impl SyncEngine {
                     self.inconsistent(session, notices, Inconsistency::WriteKeyChanged);
                     return Err(Stop);
                 }
-                let own_create = session
-                    .pending_create
-                    .take_if(|pending| pending.key_id() == key_id)
-                    .is_some();
+                let own_create = session.recorded_pending_create() == Some(key_id.to_hex());
                 session.forget_document();
                 let record = session.record.as_mut().ok_or(Stop)?;
                 replace_trust(record, Trusted { key_id, write_pk });
+                session.settle_pending_create();
                 session.joined_via = if own_create {
                     JoinedVia::Created
                 } else {
@@ -1259,6 +1350,7 @@ impl SyncEngine {
                     if anchor.trusted.is_none() {
                         let record = session.record.as_mut().ok_or(Stop)?;
                         set_trusted(record, from);
+                        session.settle_pending_create();
                     }
                     self.queue(
                         session,
@@ -1293,6 +1385,7 @@ impl SyncEngine {
                 }
                 let record = session.record.as_mut().ok_or(Stop)?;
                 set_trusted(record, to);
+                session.settle_pending_create();
                 self.queue(
                     session,
                     notices,
@@ -1337,7 +1430,13 @@ impl SyncEngine {
                     );
                 }
                 session.drop_copy();
+                // A pending create under the reset key itself landed before
+                // the reset: settled, and no reason to create.
                 let pending_create = session.pending_create.as_ref().map(VaultKey::key_id);
+                if pending_create == Some(reset_key) {
+                    session.set_pending_create(None);
+                }
+                let pending_create = pending_create.filter(|pending| *pending != reset_key);
                 match new_vault {
                     Some(new) if inventory.holds_live(new.key_id) => {
                         self.load_key(session, new.key_id).await?;
@@ -1351,6 +1450,7 @@ impl SyncEngine {
                         }
                         let record = session.record.as_mut().ok_or(Stop)?;
                         replace_trust(record, new);
+                        session.settle_pending_create();
                         self.sync_copy(session, notices, now).await
                     }
                     // [Set Up Sync] on a Mac already showing the reset: §5.5's
@@ -1373,8 +1473,18 @@ impl SyncEngine {
                 }
             }
             VaultJudgement::NoVault if turning_on => self.create(session, notices, now).await,
+            // No vault, nothing that says one existed, and only Turn On
+            // creates one: sync is off here, as after Turn Off, so a later
+            // pass sends nothing (not even `GET /v1/devices`) until the
+            // person turns it on. This is where a Turn On that failed before
+            // creating (the Keychain unavailable, velvt-core unreachable)
+            // ends.
             VaultJudgement::NoVault => {
-                session.set_state(SyncState::Off, None);
+                if let Some(record) = session.record.as_mut() {
+                    record.clear_session();
+                }
+                session.drop_copy();
+                let _ = self.deps.repo.clear_sessions(None);
                 Err(Stop)
             }
             // A create this run sent and never heard back about: its item is
@@ -1854,11 +1964,28 @@ impl SyncEngine {
                 }
             },
         };
+        // The row records this create before its item exists, and is on disk
+        // before the item is made: after a restart a kept item is still this
+        // Mac's own create, and never a live item of unknown origin that
+        // blocks every create (§5.5). A row that cannot be saved makes no
+        // item.
+        session.record_pending_create(Some(key.key_id()));
+        if !self.save(session) {
+            if retrying {
+                session.pending_create = Some(key);
+            } else {
+                session.record_pending_create(None);
+            }
+            session.set_state(SyncState::Error, Some(STATE_NOT_SAVED));
+            return Err(Stop);
+        }
         // Keychain first, server second (§5.5): no vault ever exists whose key
         // was not saved.
         if let Err(error) = self.deps.keys.store(&session.user, &key, None).await {
             if retrying {
                 session.pending_create = Some(key);
+            } else {
+                session.record_pending_create(None);
             }
             session.set_state(SyncState::Error, Some(error.code()));
             return Err(Stop);
@@ -1940,6 +2067,7 @@ impl SyncEngine {
                 let last_hlc = max_hlc(&document).map(|hlc| hlc.to_string());
                 let record = session.record.as_mut().ok_or(Stop)?;
                 replace_trust(record, trusted);
+                record.pending_create_key_id = None;
                 record.highest_seen_version = 1;
                 record.highest_seen_sha256 = Some(digest.to_vec());
                 record.server_version = Some(1);
@@ -1971,6 +2099,7 @@ impl SyncEngine {
                         }
                         let record = session.record.as_mut().ok_or(Stop)?;
                         replace_trust(record, trusted);
+                        session.settle_pending_create();
                         session.forget_document();
                         session.key = Some(key);
                         session.joined_via = JoinedVia::Created;
@@ -1978,6 +2107,7 @@ impl SyncEngine {
                     }
                     Ok(VaultView::Present { .. }) => {
                         let _ = self.deps.keys.delete(&session.user, trusted.key_id).await;
+                        session.record_pending_create(None);
                         session.set_state(SyncState::WaitingForKey, None);
                         Err(Stop)
                     }
@@ -2211,10 +2341,16 @@ const RULES_OVER_CAP_LINE: &str =
 /// Whether a pass lists the account's devices: sync is on here and the
 /// session stands. A removal or a deleted account ends the session
 /// (`enabled` goes), and a request refused for want of a sign-in would be
-/// refused again.
+/// refused again. `off` is off whatever `enabled` says, and so is a build
+/// without the Keychain entitlement, where §14 says sync stays off.
 fn lists_devices(session: &Session) -> bool {
     session.record.as_ref().is_some_and(|record| {
-        record.enabled && record.last_error.as_deref() != Some(ApiError::NeedsReauth.code())
+        let error = record.last_error.as_deref();
+        record.enabled
+            && record.state != SyncState::Off.as_str()
+            && error != Some(ApiError::NeedsReauth.code())
+            && !(record.state == SyncState::Error.as_str()
+                && error == Some(KeyStoreError::EntitlementMissing.code()))
     })
 }
 

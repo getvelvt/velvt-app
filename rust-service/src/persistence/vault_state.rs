@@ -26,6 +26,11 @@ pub struct VaultStateRecord {
     pub highest_seen_sha256: Option<Vec<u8>>,
     pub fetched_at_ms: Option<i64>,
     pub seen_reset_request_id: Option<String>,
+    /// The key id of this Mac's own create that velvt-core has not yet shown
+    /// settled (no answer, or refused). Its Keychain item is kept, and is
+    /// this Mac's own create after a restart too, not a live item of unknown
+    /// origin. Not a session column: Log Out and Turn Off keep it.
+    pub pending_create_key_id: Option<String>,
     pub enabled: bool,
     pub server_version: Option<u64>,
     pub ciphertext: Option<Vec<u8>>,
@@ -60,6 +65,7 @@ impl fmt::Debug for VaultStateRecord {
             .field("highest_seen_version", &self.highest_seen_version)
             .field("fetched_at_ms", &self.fetched_at_ms)
             .field("seen_reset_request_id", &self.seen_reset_request_id)
+            .field("pending_create_key_id", &self.pending_create_key_id)
             .field("enabled", &self.enabled)
             .field("server_version", &self.server_version)
             .field(
@@ -161,7 +167,7 @@ pub(super) struct SqliteVaultStateRepo(pub(super) SqlitePersistence);
 
 const STATE_COLUMNS: &str = "user_id, sync_device_id, host_binding_salt, host_binding, key_id,
     write_pk, highest_seen_version, highest_seen_sha256, fetched_at, seen_reset_request_id,
-    enabled, server_version, ciphertext, last_hlc, state, last_error";
+    enabled, server_version, ciphertext, last_hlc, state, last_error, pending_create_key_id";
 
 const CLEARED_SESSION: &str = "enabled = 0, server_version = NULL, ciphertext = NULL,
     last_hlc = NULL, state = 'off', last_error = NULL";
@@ -197,6 +203,7 @@ fn state_from_row(row: &Row<'_>) -> rusqlite::Result<VaultStateRecord> {
         last_hlc: row.get(13)?,
         state: row.get(14)?,
         last_error: row.get(15)?,
+        pending_create_key_id: row.get(16)?,
     })
 }
 
@@ -232,7 +239,8 @@ impl VaultStateRepo for SqliteVaultStateRepo {
         connection.execute(
             &format!(
                 "INSERT OR REPLACE INTO vault_state({STATE_COLUMNS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                         ?17)"
             ),
             params![
                 record.user_id,
@@ -251,6 +259,7 @@ impl VaultStateRepo for SqliteVaultStateRepo {
                 record.last_hlc,
                 record.state,
                 record.last_error,
+                record.pending_create_key_id,
             ],
         )?;
         Ok(())
@@ -510,7 +519,7 @@ impl VaultStateRepo for SqliteVaultStateRepo {
 
 #[cfg(test)]
 mod tests {
-    use super::SyncNoticeRecord;
+    use super::{SyncNoticeRecord, VaultStateRecord};
     use crate::persistence::SqlitePersistence;
 
     fn notice(user: &str, id: &str, acknowledged_at_ms: Option<i64>) -> SyncNoticeRecord {
@@ -573,6 +582,46 @@ mod tests {
         let mut unknown = notice("a", "x", None);
         unknown.kind = "marketing".into();
         assert!(repo.save_sync_notice(&unknown).is_err());
+    }
+
+    /// `pending_create_key_id` is not a session column: a cleared session
+    /// (Log Out, Turn Off, another account) keeps it, so a kept item is
+    /// still this Mac's own create when sync is turned on again. It takes a
+    /// key id and nothing longer.
+    #[test]
+    fn a_pending_create_outlives_the_session() {
+        let database = SqlitePersistence::open_in_memory().unwrap();
+        let repo = database.vault_state_repo();
+        let record = VaultStateRecord {
+            user_id: "a".into(),
+            sync_device_id: "8f14e45f-ceea-467a-9575-1f2ab6c9d0e1".into(),
+            host_binding_salt: vec![1; 32],
+            host_binding: vec![2; 32],
+            key_id: None,
+            write_pk: None,
+            highest_seen_version: 0,
+            highest_seen_sha256: None,
+            fetched_at_ms: Some(1_000),
+            seen_reset_request_id: None,
+            pending_create_key_id: Some("0123456789abcdef".into()),
+            enabled: true,
+            server_version: None,
+            ciphertext: None,
+            last_hlc: None,
+            state: "error".into(),
+            last_error: Some("vault_create_refused".into()),
+        };
+        repo.save_vault_state(&record).unwrap();
+        assert_eq!(repo.vault_state("a").unwrap().as_ref(), Some(&record));
+
+        assert!(repo.clear_sessions(None).unwrap());
+        let cleared = repo.vault_state("a").unwrap().unwrap();
+        assert!(!cleared.enabled);
+        assert_eq!(cleared.pending_create_key_id, record.pending_create_key_id);
+
+        let mut key = record.clone();
+        key.pending_create_key_id = Some("0123456789abcdef0123456789abcdef".into());
+        assert!(repo.save_vault_state(&key).is_err());
     }
 
     /// Deleting an account's row deletes its notices too.

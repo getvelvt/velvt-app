@@ -31,10 +31,17 @@ on this Mac.
 | Part | Columns | Cleared by |
 |---|---|---|
 | Trust anchor | `sync_device_id`, `host_binding_salt`, `host_binding`, `key_id`, `write_pk`, `highest_seen_version`, `highest_seen_sha256`, `fetched_at`, `seen_reset_request_id` | Only a verified signed deletion and account deletion (`account_deleted`, below) remove the row. A reset this Mac accepted replaces the trust columns when it adopts or creates the new vault |
+| This Mac's own create | `pending_create_key_id` | Set (and saved) before the create's Keychain item is made, so before `POST /v1/vault`; kept while no answer came or the create was refused. Cleared when this Mac trusts the vault made under that key, when the vault is seen under another key (the create lost the race and its item is deleted), and when the item is gone. Log Out, Turn Off and the other session events keep it |
 | Session | `enabled`, `server_version`, `ciphertext`, `last_hlc`, `state`, `last_error` | Log Out, Turn Off Sync on This Mac, `403 device_revoked`, and another account signing in |
 
 `ciphertext` is the copy at `highest_seen_version`, still sealed. The
-plaintext document exists only in memory. `vault_rule_link` and
+plaintext document exists only in memory. `pending_create_key_id` is how a
+restart (an update, a reboot, Log Out and back in) still knows a kept item
+for this Mac's own create: the first pass of a session loads that item from
+the Keychain again, and the create is sent again under it. Without the
+record, the item would count as a live item of unknown origin, and every
+pass and every Turn On would stop in `missing_on_server` (or, after a reset,
+`reset_completed`) without ever sending the create. `vault_rule_link` and
 `sync_known_device` belong to whichever session is open and are cleared with
 it. `sync_notice` holds the security notices owed to the signed-in account
 (below). Times are Unix milliseconds.
@@ -69,7 +76,12 @@ hides a `new_sign_in`. The first list after sync turns on (or after a new
 session) seeds `sync_known_device` without alerting, as before. Only a
 session that has ended lists nothing: sync off here, this Mac removed
 (`403 device_revoked`), the account deleted (`401 account_deleted`), or a
-request refused for want of a sign-in. Either of the first two answers to
+request refused for want of a sign-in. Nor does a state that is off: `off`
+itself, and `error` on a build without the Keychain entitlement, where §14
+says sync stays off. A pass that finds no vault and was not asked to make one
+(a Turn On that failed before creating, for example with the Keychain
+unavailable) ends the session as Turn Off does, so "Sync is off on this
+Mac." means no request at all until the person turns sync on again. Either of the first two answers to
 `GET /v1/devices` itself ends the session as it would on a vault request; any
 other failure leaves the list for the next pass and changes neither the
 copy's state nor the backoff.
@@ -97,7 +109,7 @@ and no live item, may wait for a key and be offered a code.
 | A pending reset this Mac has not recorded | Recorded as seen only if its window is at least 72 h and it was requested after this Mac's last fetch (10-minute margin). Otherwise the server hid it or backdated it: `server_inconsistent`, not recorded, no `reset_requested` notice. A server cannot show one once and complete it minutes later (T5, T11). The reset's key is not compared: velvt-core keeps the key named when it was requested and names the vault's key when it completes |
 | A completed reset of the trusted key | `check_reset`: accepted if the window was at least 72 h and has passed, and this Mac saw it pending or made no fetch after it was requested (10-minute clock margin); otherwise `server_inconsistent` |
 | No vault, while this Mac holds a live item or has seen a version | `missing_on_server`; never creates |
-| No vault and nothing else | Creates, only when the person turns sync on |
+| No vault and nothing else | Creates, only when the person turns sync on. On any other pass, sync is off here: the session ends as at Turn Off |
 | A copy whose write signature fails, or that names another key | `server_inconsistent` |
 | A different copy at the version this Mac last accepted | `server_inconsistent` (a fork) |
 | A copy below the highest version seen | Merged with `merge_older_copy` into the copy this Mac last accepted, never cached; the next write goes at `highest_seen_version + 1`, which heals a restored database (F4). The sealed copy in the row is opened first if this run has none, also when the Keychain could not give the key at launch |
@@ -228,7 +240,9 @@ days after they were acknowledged.
 `retire` and `delete`. The engine never deletes an item on a server's word
 alone: only on this Mac's own Delete Account, a verified deletion (its own item
 for that key), a lost create race (its own orphan, once the vault is seen under
-another key), and 30 days after the item that superseded it was made. That last
+another key, and never the item of the vault this Mac trusts: once this Mac
+trusts the vault its create made, the create is settled), and 30 days after
+the item that superseded it was made. That last
 rule needs each item's `created_at`, which A4's `vault_keys_held` must report
 beside `supersedes` and `retired_by`.
 
@@ -320,3 +334,12 @@ scheduler.
   keep their new item and send the create again under its key, also after a
   completed reset; and 2,001 rule links leave one waiting, with the status
   line saying so until a deletion makes room.
+- The 2026-10-15 review: a refused create is sent again after a restart (and
+  a second Mac on the Apple ID then joins), after Log Out and back in, and
+  after a reset and a restart; a recorded create whose item is gone is
+  forgotten. After a reset, [Set Up Sync Again] whose answer was lost and
+  the pass that adopts its vault: a served key no Mac signed deletes no item
+  and the copy opens again after a restart, a signed rotation retires the
+  old item rather than deleting it, and a later reset makes no vault on a
+  plain pass. A Mac left off by a failed Turn On, and a build without the
+  entitlement, send nothing and post no `new_sign_in`.

@@ -39,6 +39,14 @@ CREATE TABLE vault_state (
     highest_seen_sha256 BLOB CHECK(highest_seen_sha256 IS NULL OR length(highest_seen_sha256) = 32),
     fetched_at INTEGER,
     seen_reset_request_id TEXT CHECK(seen_reset_request_id IS NULL OR length(seen_reset_request_id) = 36),
+    -- The key id of a vault this Mac sent velvt-core to create and has not
+    -- yet seen settled (no answer came, or the create was refused). Its
+    -- Keychain item is kept, and the create is sent again under it, also
+    -- after a restart, a Log Out or Turn Off Sync. Cleared once this Mac
+    -- trusts the vault made under it, once the vault is seen under another
+    -- key (the item is then deleted: the create lost a race), or once the
+    -- item is gone. A key id only, never the key.
+    pending_create_key_id TEXT CHECK(pending_create_key_id IS NULL OR length(pending_create_key_id) = 16),
     -- The session: cleared on Log Out, Turn Off Sync, removal and an account
     -- switch.
     enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0, 1)),

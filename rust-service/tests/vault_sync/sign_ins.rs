@@ -2,7 +2,9 @@
 //! /v1/devices`), so a new sign-in posts `new_sign_in` (J6) in every state
 //! the copy can be in, not only while it syncs. A pass whose copy waits for a
 //! key, is paused, read-only, missing or reset, or backs off after a 412
-//! storm, still lists them; a Mac whose session ended lists nothing.
+//! storm, still lists them; a Mac whose session ended lists nothing, and
+//! nor does one where sync is off (a Turn On that failed before a vault was
+//! made) or a build without the Keychain entitlement.
 
 use serde_json::json;
 use velvt_service::vault::crypto::statement::PutStatement;
@@ -346,4 +348,63 @@ async fn a_mac_whose_session_ended_lists_no_devices() {
         !listed_devices(&core),
         "with sync off, the device list is not fetched"
     );
+}
+
+/// Turn On that failed before any vault was made (the Keychain unavailable)
+/// ends, on the next pass, in "Sync is off on this Mac.": off as after Turn
+/// Off, so no pass sends anything, `GET /v1/devices` included, and no
+/// new_sign_in is posted, until the person turns sync on again. Then the
+/// first list seeds without alerting, as turning on always does.
+#[tokio::test]
+async fn a_mac_left_off_by_a_failed_turn_on_lists_no_devices() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    icloud.set_unavailable(Some(KeyStoreError::KeychainUnavailable));
+    let studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    assert_state(&studio.turn_on("Studio Mac").await, SyncState::Error);
+    icloud.set_unavailable(None);
+    clock.advance(10 * MINUTE);
+    let off = studio.sync().await;
+    assert_state(&off, SyncState::Off);
+    assert_eq!(off.status_line, "Sync is off on this Mac.");
+
+    let _intruder = core.sign_in(person.as_str(), &uuid::Uuid::new_v4().to_string());
+    core.clear_received();
+    clock.advance(10 * MINUTE);
+    let later = studio.sync().await;
+    assert_state(&later, SyncState::Off);
+    assert!(core.received().is_empty(), "{:?}", core.received());
+    assert_eq!(sign_ins(&later), 0);
+
+    let on = studio.turn_on("Studio Mac").await;
+    assert_state(&on, SyncState::Syncing);
+    assert!(listed_devices(&core));
+    assert_eq!(sign_ins(&on), 0, "turning on seeds the list");
+}
+
+/// §14: a build without the Keychain entitlement keeps sync off with "This
+/// Velvt build can't use iCloud Keychain.", and its passes send nothing:
+/// no device list and no new_sign_in.
+#[tokio::test]
+async fn a_build_without_the_keychain_entitlement_lists_no_devices() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    icloud.set_unavailable(Some(KeyStoreError::EntitlementMissing));
+    let studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    let on = studio.turn_on("Studio Mac").await;
+    assert_state(&on, SyncState::Error);
+    assert!(core.received().is_empty(), "{:?}", core.received());
+
+    let _intruder = core.sign_in(person.as_str(), &uuid::Uuid::new_v4().to_string());
+    clock.advance(10 * MINUTE);
+    let later = studio.sync().await;
+    assert_state(&later, SyncState::Error);
+    assert_eq!(
+        later.status_line,
+        "This Velvt build can't use iCloud Keychain."
+    );
+    assert!(core.received().is_empty(), "{:?}", core.received());
+    assert_eq!(sign_ins(&later), 0);
 }

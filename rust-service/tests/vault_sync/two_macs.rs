@@ -3,6 +3,7 @@
 use chrono::DateTime;
 use velvt_service::delivery::InsightNotificationRoute;
 use velvt_service::persistence::{VaultRuleLinkRecord, VaultStateRepo, VelvtQuietHours};
+use velvt_service::vault::crypto::KeyId;
 use velvt_service::vault::doc::{DeviceName, SyncDeviceId};
 use velvt_service::vault::sync::keys::{KeyStoreError, MemoryKeyStore, VaultKeyStore};
 use velvt_service::vault::sync::notices::NoticeKind;
@@ -1258,4 +1259,298 @@ async fn rules_past_the_cap_wait_and_the_status_line_says_so() {
     let copy = open_copy(&key, &person, version, &ciphertext);
     assert_eq!(copy.live_rule_count(), MAX_LIVE_RULES);
     assert!(copy.rules.keys().any(|key| key.key.to_hex() == waiting));
+}
+
+/// velvt-core stores the last `POST /v1/vault` this test saw, as if the
+/// create had landed and only its answer was lost. Returns its key id.
+fn land_the_last_create(core: &FakeCore, person: &str, now_ms: i64) -> KeyId {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
+    use velvt_service::vault::crypto::{Signature, WritePublicKey};
+
+    let sent = core
+        .received()
+        .into_iter()
+        .rev()
+        .find(|request| request.method == "POST" && request.path == "/v1/vault")
+        .unwrap()
+        .body
+        .unwrap();
+    let decode = |field: &serde_json::Value| BASE64.decode(field.as_str().unwrap()).unwrap();
+    let key_id = KeyId::from_hex(sent["key_id"].as_str().unwrap()).unwrap();
+    core.with_account(person, |account| {
+        account.vault = Some(super::fake_core::StoredVault {
+            key_id,
+            write_pk: WritePublicKey::from_slice(&decode(&sent["write_pk_b64"])).unwrap(),
+            created_at_ms: now_ms,
+            rotations: Vec::new(),
+        });
+        account.blob = Some(super::fake_core::StoredBlob {
+            version: 1,
+            base_version: 0,
+            schema: 1,
+            ciphertext: decode(&sent["blob"]["ciphertext_b64"]),
+            put_sig: Signature::from_slice(&decode(&sent["put_sig_b64"])).unwrap(),
+        });
+    });
+    key_id
+}
+
+/// A completed reset, then [Set Up Sync Again] whose create landed but whose
+/// answer was lost (503), then the pass that adopts that vault from this
+/// Mac's own Keychain. Returns the Mac, the reset key and the new key.
+async fn adopted_after_a_lost_answer(
+    core: &FakeCore,
+    clock: &Clock,
+    icloud: &MemoryKeyStore,
+) -> (Mac, KeyId, KeyId) {
+    let person = user("person");
+    let studio = Mac::new(core, clock, &person, icloud, 1).await;
+    assert_state(&studio.turn_on("Studio Mac").await, SyncState::Syncing);
+    let old = live_key(icloud, &person).await.key_id();
+    core.request_reset(person.as_str());
+    studio.sync().await;
+    clock.advance(RESET_DELAY_MS + MINUTE);
+    assert_state(&studio.sync().await, SyncState::ResetCompleted);
+
+    core.lie(|received, _| {
+        (received.method == "POST" && received.path == "/v1/vault")
+            .then(|| super::fake_core::error(503, "unavailable", None))
+    });
+    studio.turn_on("Studio Mac").await;
+    core.tell_the_truth();
+    let new = land_the_last_create(core, person.as_str(), clock.now());
+    clock.advance(MINUTE);
+    assert_state(&studio.sync().await, SyncState::Syncing);
+    assert_eq!(studio.row().unwrap().key_id, Some(new.to_hex()));
+    (studio, old, new)
+}
+
+/// I6, §5.5: once this Mac trusts the vault its own create made, that create
+/// is settled. A key velvt-core then serves that no Mac signed pauses sync,
+/// and deletes no item: not the trusted vault's, which would take it from
+/// every Mac on the Apple ID and leave each waiting for a key that no longer
+/// exists. With the server honest again, the copy still opens, also after a
+/// restart.
+#[tokio::test]
+async fn a_served_key_never_deletes_the_item_of_a_vault_adopted_after_a_lost_answer() {
+    let (core, clock) = setup();
+    let icloud = MemoryKeyStore::new();
+    let (mut studio, _, new) = adopted_after_a_lost_answer(&core, &clock, &icloud).await;
+    let person = studio.user.clone();
+    let held = icloud.held(&person);
+
+    let served = velvt_service::vault::crypto::VaultKey::generate().unwrap();
+    let served_id = served.key_id().to_hex();
+    let served_pk = served.write_public_key().to_base64();
+    let made = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(clock.now())
+        .unwrap()
+        .to_rfc3339();
+    core.lie(move |received, _| {
+        (received.method == "GET" && received.path == "/v1/vault").then(|| {
+            super::fake_core::response(
+                200,
+                serde_json::json!({
+                    "key_id": served_id,
+                    "write_pk_b64": served_pk,
+                    "created_at": made,
+                    "rotations_b64": [],
+                }),
+            )
+        })
+    });
+    clock.advance(10 * MINUTE);
+    let paused = studio.sync().await;
+    assert_state(&paused, SyncState::ServerInconsistent);
+    assert_eq!(
+        icloud.held(&person),
+        held,
+        "no item deleted on a server claim"
+    );
+
+    core.tell_the_truth();
+    studio.restart().await;
+    clock.advance(10 * MINUTE);
+    let back = studio.sync().await;
+    assert_state(&back, SyncState::Syncing);
+    assert_eq!(studio.row().unwrap().key_id, Some(new.to_hex()));
+}
+
+/// §5.6: a signed rotation of a vault this Mac adopted after its own create's
+/// answer was lost marks the old item retired and keeps it for 30 days, as
+/// on any Mac. It is not deleted at once as a lost race's orphan.
+#[tokio::test]
+async fn a_rotation_of_a_vault_adopted_after_a_lost_answer_retires_the_old_item() {
+    let (core, clock) = setup();
+    let icloud = MemoryKeyStore::new();
+    let (studio, _, new) = adopted_after_a_lost_answer(&core, &clock, &icloud).await;
+    let person = studio.user.clone();
+    let laptop = Mac::new(&core, &clock, &person, &icloud, 2).await;
+    assert_state(&laptop.turn_on("MacBook Pro").await, SyncState::Syncing);
+
+    let old = icloud.load(&person, new).await.unwrap();
+    icloud.set_clock_ms(clock.now());
+    let rotated = velvt_service::vault::crypto::VaultKey::generate().unwrap();
+    icloud.store(&person, &rotated, Some(new)).await.unwrap();
+    let answer = rotate(&laptop.client(), &person, &old, &rotated).await;
+    assert_eq!(answer.status, 200, "{:?}", answer.raw_body);
+
+    clock.advance(MINUTE);
+    let adopted = studio.sync().await;
+    assert_state(&adopted, SyncState::Syncing);
+    assert_eq!(
+        studio.row().unwrap().key_id,
+        Some(rotated.key_id().to_hex())
+    );
+    let old_item = icloud
+        .held(&person)
+        .into_iter()
+        .find(|held| held.key_id == new)
+        .expect("the old item is kept for its 30 days");
+    assert!(old_item.retired_by.is_some(), "retired, not deleted");
+}
+
+/// §10.4, §5.5: after a later reset of the vault this Mac adopted after its
+/// own create's answer was lost, a plain pass makes no vault, even with the
+/// first reset's item gone: only [Set Up Sync Again] does.
+#[tokio::test]
+async fn a_later_reset_after_an_adopted_lost_answer_waits_for_set_up_sync_again() {
+    let (core, clock) = setup();
+    let icloud = MemoryKeyStore::new();
+    let (studio, old, new) = adopted_after_a_lost_answer(&core, &clock, &icloud).await;
+    let person = studio.user.clone();
+    icloud.remove(&person, old);
+
+    core.request_reset(person.as_str());
+    studio.sync().await;
+    clock.advance(RESET_DELAY_MS + MINUTE);
+    let creates = posted_creates(&core);
+    let completed = studio.sync().await;
+    assert_state(&completed, SyncState::ResetCompleted);
+    assert_eq!(posted_creates(&core), creates, "no create on a plain pass");
+    assert_eq!(studio.row().unwrap().key_id, Some(new.to_hex()));
+
+    clock.advance(10 * MINUTE);
+    let again = studio.turn_on("Studio Mac").await;
+    assert_state(&again, SyncState::Syncing);
+    assert_eq!(posted_creates(&core), creates + 1);
+    assert_ne!(studio.row().unwrap().key_id, Some(new.to_hex()));
+}
+
+/// A refused create's kept item is this Mac's own create after a restart
+/// too (an update, a reboot): the row records it, so the next pass sends the
+/// create again under its key, rather than taking it for a live item of
+/// unknown origin and stopping in missing_on_server for good. A second Mac
+/// on the same Apple ID then joins by its Keychain.
+#[tokio::test]
+async fn a_refused_create_is_sent_again_after_a_restart() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let mut studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    core.lie(|received, _| {
+        (received.method == "POST" && received.path == "/v1/vault")
+            .then(|| super::fake_core::error(422, "vault_blob_invalid", None))
+    });
+    assert_state(&studio.turn_on("Studio Mac").await, SyncState::Error);
+    core.tell_the_truth();
+    let held = icloud.held(&person);
+    assert_eq!(held.len(), 1);
+
+    studio.restart().await;
+    clock.advance(10 * MINUTE);
+    let created = studio.sync().await;
+    assert_state(&created, SyncState::Syncing);
+    assert_eq!(posted_creates(&core), 2, "sent again");
+    assert_eq!(icloud.held(&person), held, "under the same key");
+    assert_eq!(studio.row().unwrap().key_id, Some(held[0].key_id.to_hex()));
+
+    let laptop = Mac::new(&core, &clock, &person, &icloud, 2).await;
+    assert_state(&laptop.turn_on("MacBook Pro").await, SyncState::Syncing);
+}
+
+/// The same across Log Out and back in, and Turn On pressed again.
+#[tokio::test]
+async fn a_refused_create_is_sent_again_after_log_out_and_back_in() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let mut studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    core.lie(|received, _| {
+        (received.method == "POST" && received.path == "/v1/vault")
+            .then(|| super::fake_core::error(413, "vault_too_large", None))
+    });
+    assert_state(&studio.turn_on("Studio Mac").await, SyncState::Error);
+    core.tell_the_truth();
+    let held = icloud.held(&person);
+
+    studio.engine.log_out().await;
+    studio.sign_back_in().await;
+    clock.advance(10 * MINUTE);
+    let created = studio.turn_on("Studio Mac").await;
+    assert_state(&created, SyncState::Syncing);
+    assert_eq!(posted_creates(&core), 2);
+    assert_eq!(icloud.held(&person), held, "under the same key");
+}
+
+/// After a completed reset, [Set Up Sync Again] refused, then a restart: the
+/// create is still this Mac's own, and the next pass sends it again under
+/// its key. Without the record [Set Up Sync Again] would stay in
+/// reset_completed, its kept item blocking every create.
+#[tokio::test]
+async fn a_refused_create_after_a_reset_is_sent_again_after_a_restart() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let mut studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    studio.turn_on("Studio Mac").await;
+    let old = live_key(&icloud, &person).await.key_id();
+    core.request_reset(person.as_str());
+    studio.sync().await;
+    clock.advance(RESET_DELAY_MS + MINUTE);
+    assert_state(&studio.sync().await, SyncState::ResetCompleted);
+    core.lie(|received, _| {
+        (received.method == "POST" && received.path == "/v1/vault")
+            .then(|| super::fake_core::error(422, "vault_blob_invalid", None))
+    });
+    assert_state(&studio.turn_on("Studio Mac").await, SyncState::Error);
+    core.tell_the_truth();
+    let held = icloud.held(&person);
+    let new = held.iter().find(|item| item.key_id != old).unwrap().key_id;
+
+    studio.restart().await;
+    clock.advance(10 * MINUTE);
+    let created = studio.sync().await;
+    assert_state(&created, SyncState::Syncing);
+    assert_eq!(posted_creates(&core), 3, "the first vault's, then two");
+    assert_eq!(studio.row().unwrap().key_id, Some(new.to_hex()));
+    assert_eq!(icloud.held(&person), held, "no item deleted, none added");
+}
+
+/// A recorded create whose item is gone by the next launch (deleted in
+/// Keychain Access) is forgotten: nothing is sent again under a key no Mac
+/// holds, sync is off, and Turn On makes a new vault under a new key.
+#[tokio::test]
+async fn a_recorded_create_whose_item_is_gone_is_forgotten() {
+    let (core, clock) = setup();
+    let person = user("person");
+    let icloud = MemoryKeyStore::new();
+    let mut studio = Mac::new(&core, &clock, &person, &icloud, 1).await;
+    core.lie(|received, _| {
+        (received.method == "POST" && received.path == "/v1/vault")
+            .then(|| super::fake_core::error(422, "vault_blob_invalid", None))
+    });
+    studio.turn_on("Studio Mac").await;
+    core.tell_the_truth();
+    let gone = icloud.held(&person)[0].key_id;
+    icloud.remove(&person, gone);
+
+    studio.restart().await;
+    clock.advance(10 * MINUTE);
+    let off = studio.sync().await;
+    assert_state(&off, SyncState::Off);
+    assert_eq!(posted_creates(&core), 1);
+    let created = studio.turn_on("Studio Mac").await;
+    assert_state(&created, SyncState::Syncing);
+    assert_ne!(studio.row().unwrap().key_id, Some(gone.to_hex()));
 }

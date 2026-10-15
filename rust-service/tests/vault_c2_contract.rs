@@ -6,9 +6,9 @@
 //! request: the six ciphertext lengths (`check_ciphertext`), each statement
 //! rebuilt from the request and compared or verified, `parse_delete_statement`
 //! at its exact length, the delete statement's ten-minute clock margin, the
-//! handoff's expiry in whole seconds, and the version step. It is written from
-//! velvt-core's code, not from A1's, and shares nothing with `vault::crypto`
-//! except `ring`.
+//! handoff's expiry in whole seconds, and the version's step and range. It is
+//! written from velvt-core's code, not from A1's, and shares nothing with
+//! `vault::crypto` except `ring`.
 //!
 //! Three sources go through it:
 //! - velvt-core's own known answers (`tests/test_vault_formats.py`), built with
@@ -69,6 +69,9 @@ mod c2 {
     pub const MAX_SCHEMA: u16 = 32767;
     /// `VERSION_STEP_LIMIT = 2**32`.
     pub const VERSION_STEP_LIMIT: u64 = 1 << 32;
+    /// `schemas/vault.py`: `MAX_VERSION = 2**63 - 1`, the most a `Version`
+    /// field (`new_version`) may hold.
+    pub const MAX_VERSION: u64 = i64::MAX as u64;
     /// `STATEMENT_CLOCK_MARGIN = timedelta(minutes=10)`.
     pub const STATEMENT_CLOCK_MARGIN_SECONDS: i64 = 600;
     /// `HANDOFF_MAX_TTL = timedelta(seconds=600)`.
@@ -348,6 +351,15 @@ mod c2 {
             .ok_or(Refused::Validation)
     }
 
+    /// `Version = Field(ge=1, le=MAX_VERSION)`, on `new_version`
+    /// (`VaultBlobPutRequest` and `RotatedVaultBlob`).
+    fn check_version_field(version: u64) -> Result<(), Refused> {
+        (1..=MAX_VERSION)
+            .contains(&version)
+            .then_some(())
+            .ok_or(Refused::Validation)
+    }
+
     /// One account's row in `vaults`, with its blob's version.
     #[derive(Clone, Debug)]
     pub struct Vault {
@@ -417,6 +429,7 @@ mod c2 {
     pub fn put_blob(vault: &mut Vault, request: &PutRequest<'_>) -> Result<u64, Refused> {
         check_key_id_field(request.key_id)?;
         check_schema_field(request.schema)?;
+        check_version_field(request.new_version)?;
         check_ciphertext(request.ciphertext)?;
         if request.key_id != vault.key_id {
             return Err(Refused::KeyMismatch);
@@ -466,6 +479,7 @@ mod c2 {
         check_key_id_field(request.new_key_id)?;
         check_statement_field(request.rotate_stmt)?;
         check_schema_field(request.schema)?;
+        check_version_field(request.new_version)?;
         check_ciphertext(request.ciphertext)?;
         if key_id_for(request.new_write_pk) != request.new_key_id
             || request.new_key_id == request.old_key_id
@@ -1440,4 +1454,96 @@ fn a1s_requests_pass_velvt_cores_checks_from_creation_to_deletion() {
         .verify(&user_id, next.write_public_key())
         .unwrap();
     assert_eq!(handed_back.statement.requested_at, NOW);
+}
+
+/// `PUT /v1/vault/blobs/prefs` and `POST /v1/vault/rotate`: velvt-core's
+/// schema holds `new_version` to `Version = Field(ge=1, le=MAX_VERSION)`, so a
+/// step that `_check_new_version` would allow is still refused with `422
+/// validation_error` once it passes 2^63 - 1, before any handler runs.
+#[test]
+fn velvt_cores_schema_caps_new_version_at_two_to_the_sixty_three_minus_one() {
+    let user_id = c2_user();
+    let name = BlobName::prefs();
+    let key = VaultKey::generate().unwrap();
+    let key_id = key.key_id().to_hex();
+    let next = VaultKey::generate().unwrap();
+    let next_key_id = next.key_id().to_hex();
+    let base = c2::MAX_VERSION - 1;
+    let vault = c2::Vault {
+        user_id: C2_USER_ID.to_owned(),
+        key_id: key_id.clone(),
+        write_pk: key.write_public_key().as_bytes().to_vec(),
+        version: base,
+    };
+    let seal = |key: &VaultKey, version: u64| {
+        let context = DocumentContext {
+            user_id: &user_id,
+            name: &name,
+            key_id: key.key_id(),
+            schema: 1,
+            version,
+        };
+        key.seal_document(&context, br#"{"schema":1}"#).unwrap()
+    };
+
+    for (new_version, expected) in [
+        (c2::MAX_VERSION, Ok(c2::MAX_VERSION)),
+        (c2::MAX_VERSION + 1, Err(c2::Refused::Validation)),
+    ] {
+        // The step alone is one velvt-core allows.
+        c2::check_new_version(base, new_version).unwrap();
+
+        let ciphertext = seal(&key, new_version);
+        let put = PutStatement {
+            user_id: user_id.clone(),
+            name: name.clone(),
+            key_id: key.key_id(),
+            schema: 1,
+            base_version: base,
+            new_version,
+            ciphertext_sha256: sha256(&ciphertext),
+        };
+        let put_sig = key.sign_statement(&put).unwrap();
+        let request = c2::PutRequest {
+            if_match: base,
+            key_id: &key_id,
+            schema: 1,
+            new_version,
+            ciphertext: &ciphertext,
+            put_sig: put_sig.as_bytes(),
+        };
+        assert_eq!(
+            c2::put_blob(&mut vault.clone(), &request),
+            expected,
+            "put to {new_version}"
+        );
+
+        let rotation = SignedRotation::sign(user_id.clone(), &key, &next, new_version).unwrap();
+        let ciphertext = seal(&next, new_version);
+        let rotate_put = PutStatement {
+            key_id: next.key_id(),
+            ciphertext_sha256: sha256(&ciphertext),
+            ..put
+        };
+        let rotate_put_sig = next.sign_statement(&rotate_put).unwrap();
+        let rotate_stmt = rotation.statement.to_bytes();
+        let request = c2::RotateRequest {
+            if_match: base,
+            old_key_id: &key_id,
+            new_key_id: &next_key_id,
+            new_write_pk: next.write_public_key().as_bytes(),
+            rotate_stmt: &rotate_stmt,
+            old_sig: rotation.old_signature.as_bytes(),
+            new_sig: rotation.new_signature.as_bytes(),
+            schema: 1,
+            new_version,
+            ciphertext: &ciphertext,
+            put_sig: rotate_put_sig.as_bytes(),
+        };
+        assert_eq!(
+            c2::rotate_vault(&mut vault.clone(), &request).map(|_| new_version),
+            expected,
+            "rotate to {new_version}"
+        );
+    }
 }

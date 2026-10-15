@@ -17,6 +17,9 @@
 >
 > Protocol and migration numbers below are placeholders. Each PR takes the
 > next free number when it merges, as AGENTS.md requires.
+>
+> **Revised 2026-10-15** after an adversarial review. §18 lists each finding
+> and the section that now resolves it.
 
 ---
 
@@ -71,9 +74,9 @@ on top of it in Phase 4.
 | velvt-core adds a device that can decrypt | No. It has no role in key distribution | No. An ADD needs a member's signature **and** the new device's co-signature, after a pairing the person cannot skip |
 | Someone with only the password overwrites, deletes or replaces the copy | No. Writes need the write key; a reset without it waits 72 h and alerts every Mac | Same |
 | A removed device stops getting new data | Its tokens are revoked and the server stops serving it. `K` does not rotate, so a Mac still in the person's iCloud Keychain circle keeps it (the UI says so) | Yes. The vault key rotates on every removal |
-| A hostname, app name or bundle id leaves the Mac | No, not even encrypted | No |
+| A website hostname, app name or bundle id leaves the Mac | No, not even encrypted | No |
 | Sync changes drift-gate inputs on another Mac | No: held behind three locks (§11) | No |
-| New Rust crates | None (`ring`, `base64` and `zeroize` are already in `Cargo.lock`) | Two, plus their transitive crates (`x25519-dalek` and an HPKE crate), and `uniffi` for the iOS bindings |
+| New Rust crates | None (`ring`, `base64`, `zeroize` and `subtle` are already compiled into today's build through `reqwest` and `rustls`) | Two, plus their transitive crates (`x25519-dalek` and an HPKE crate), and `uniffi` for the iOS bindings |
 
 ### 0.1 Where each part comes from
 
@@ -138,8 +141,9 @@ called fatal.
   data. In v2 that is cryptographic. In v1 it is enforced by the server, and
   the UI states the iCloud Keychain caveat.
 - **G5. Erasure is complete.** Account erasure leaves no vault, handoff,
-  device-trust or audit row that holds the user's id on the server. Backups
-  hold only ciphertext.
+  device-trust or audit row that holds the user's id on the server. Database
+  backups taken before the erasure keep the pre-erasure rows until they age
+  out (at most 14 days); the vault part of them is ciphertext only.
 - **G6. Measurement is untouched.** No synced value changes a drift-gate,
   initiation, demotion, reminder or digest input on any Mac until a
   pre-registered policy version says so.
@@ -182,6 +186,8 @@ called fatal.
 - **I6.** A Mac never overwrites a server copy it could not open and validate.
   It never creates a vault on its own because of a 404, and never adopts a new
   key without a signed rotation or the person's explicit action after an alert.
+  It never adopts a key that a Keychain item it holds supersedes or marks
+  retired, and no server claim alone deletes or rewrites a Keychain item.
 - **I7.** All synced-data copy is Rust-authored and passes
   `scripts/check_banned_copy.py`. No "learn" in any form, so no "Learn more"
   links; use "How this works".
@@ -225,6 +231,12 @@ Keychain being off, or MDM.
 1. The new Mac shows: "Waiting for your sync key from iCloud Keychain. Or add
    this Mac with a code from a Mac that already syncs." [Enter a Code]. Swift
    checks the Keychain again on activation and every 60 s for 10 minutes.
+   - The panel also says when the copy was made: "Sync was set up on your
+     account on 12 Oct. Not you? Start a New Synced Copy." Someone with the
+     password could set up a copy under their own key before the person ever
+     turns sync on. They still cannot read anything, but without this line the
+     person would only see a key that never arrives. `POST /v1/vault` also
+     emails the account (§8.3).
 2. On a syncing Mac: Your Macs › **Add a Mac with a code**. The sheet shows
    `K7PQ-M2XD-9HTW-4RZN-8CJ5X` in large monospace with a 10-minute countdown,
    and: "Type this on your other Mac. It works once, for 10 minutes. Velvt never
@@ -277,9 +289,9 @@ Sync key 4821 9133 0577 — the same on every Mac that syncs.
     have it."
   - Field: "Enter your Velvt password to continue." Checkbox (v1.1, PR A8):
     "It was lost or stolen: change the sync key".
-- **Turn Off Sync on This Mac** marks this Mac's entry removed and clears its
-  local sync state. The key stays in the Keychain, because deleting a
-  synchronizable item deletes it from every Mac.
+- **Turn Off Sync on This Mac** marks this Mac's entry removed and ends its
+  sync session, keeping the trust anchor (J7). The key stays in the Keychain,
+  because deleting a synchronizable item deletes it from every Mac.
 - **Delete Synced Data…** (J9).
 
 ### J5. A lost or stolen Mac
@@ -309,6 +321,12 @@ Rules for posting:
 - It is never time-sensitive, and it respects macOS Focus.
 - It is outside the one-offer-per-block rule and the daily needs-a-category
   cap.
+- It is **never posted during a work block.** Rust holds it until the block
+  ends, like the needs-a-category reminder. Clicking a notification is an app
+  switch, and the drift gate counts app switches, so a notice mid-block would
+  change drift evidence. The device list and status line show it at once.
+  The longest hold is one block, which is far shorter than the 72-hour reset
+  window it may be warning about.
 - Each notice is posted once, and the device list shows it until it is
   acknowledged.
 
@@ -325,13 +343,17 @@ Rules for posting:
 
 ### J7. Sign out and back in
 
-- **Log Out** clears this Mac's sync state and drops `K` from memory. It never
-  deletes the Keychain item.
+- **Log Out** ends this Mac's sync session and drops `K` from memory. It never
+  deletes the Keychain item. It keeps this account's **trust anchor** (the
+  trusted `key_id` and `write_pk`, the highest version seen, the reset
+  bookkeeping and this Mac's `sync_device_id`; §4.3). The anchor holds no
+  secret and no content. Without it, a Mac that logged out for five minutes
+  would be as easy to fool as one offline for 72 hours (§6.1), and every
+  re-sign-in would add a new device entry to the document.
 - Signing back in to the same account shows the J2 card again. One click turns
-  sync back on.
-- Signing in to **another** account sees `vault_state.user_id` mismatch and
-  clears the state. Keychain items are per account, so nothing crosses
-  accounts.
+  sync back on, and §6.1 checks the server's copy against the kept anchor.
+- Signing in to **another** account uses that account's own `vault_state`
+  row. Rows and Keychain items are per account, so nothing crosses accounts.
 
 ### J8. Migration Assistant, a restored backup or a new logic board
 
@@ -363,6 +385,16 @@ Migration Assistant copies the SQLite database, and with it `vault_state` and
   - After 72 hours the old copy is deleted and this Mac can create a new one.
   - During those 72 hours any Mac holding the key can cancel the reset (J6
     `reset_requested`).
+  - **Removing a Mac pushes the reset out.** A reset takes effect 72 hours
+    after the later of the request and the most recent removal of one device
+    by another. Otherwise someone with the password could first remove every
+    Mac (which then stops polling and cannot cancel), and then request the
+    reset. A removed Mac posts `this_mac_removed`, so the person can sign back
+    in within the window and cancel.
+  - **A password reset cancels it.** Completing a password reset through the
+    emailed link cancels any vault reset requested before it, and the email
+    says so. Whoever requested the reset knew the password, but a password
+    reset proves control of the email.
 
 ### J10. Delete account
 
@@ -501,16 +533,22 @@ PR A0.
 - **Validation on every open.** A failure leaves the blob untouched and is
   never overwritten.
   - `schema == 1`. A higher schema puts this Mac in read-only mode: "Update
-    Velvt on this Mac to keep syncing."
+    Velvt on this Mac to keep syncing." A schema-1 document is parsed
+    strictly. A higher schema is parsed leniently, and only for the two
+    applied fields (names and the daily-insight switch); nothing else from it
+    is read.
   - `category` is in the `mvp-2` enum.
   - Person keys are 64 lowercase hex characters.
   - Minutes are 0–1439.
   - `joined_via` is in its enum.
-  - At most 32 devices and 2,000 live rules.
+  - At most 32 live devices, 256 device entries in all, and 2,000 live rules.
   - Unknown top-level or entry fields are rejected (`deny_unknown_fields`).
-- **Size.** Deleted rules older than 180 days are dropped on write. The padded
-  document stays under 512 KiB: 2,000 rules at about 110 bytes each is about
-  220 KiB.
+- **A writer never produces a document that fails validation.** Past 2,000
+  live rules, the Mac stops mirroring new rules and the status line says so.
+  Otherwise one large rule set would make the copy unreadable on every Mac.
+- **Size.** Deleted rules, and device entries marked `removed`, are dropped on
+  write once their register is older than 180 days. The padded document stays
+  under 512 KiB: 2,000 rules at about 110 bytes each is about 220 KiB.
 - **Reserved for schema 2,** with the policy-version bumps in §11:
   `notify_category_reminder`, and a typed `activity_name` with
   `activity_name_source` if the founder ever approves name sync.
@@ -528,7 +566,7 @@ vaults                                   -- one row per account that uses sync
 vault_blobs
   user_id            FK vaults.user_id, part of PK
   name               VARCHAR(32), part of PK  -- 'prefs' only in v1; namespaced for the return ledger later
-  version            BIGINT NOT NULL          -- server assigns base+1
+  version            BIGINT NOT NULL          -- chosen by the writer, strictly greater than the current one (§8.3)
   schema             SMALLINT NOT NULL
   ciphertext         BYTEA NOT NULL           -- ≤ 512 KiB
   updated_at         TIMESTAMPTZ NOT NULL
@@ -584,21 +622,24 @@ until then.
 **`00NN_vault_state.sql` (PR A3)**
 
 ```sql
-CREATE TABLE vault_state (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  user_id TEXT NOT NULL,                     -- mismatch on sign-in clears the row, like 0042's upload owner
+CREATE TABLE vault_state (                   -- one row per account that has used sync on this Mac
+  user_id TEXT PRIMARY KEY,
+  -- the trust anchor: kept across Log Out, Turn Off Sync, removal and account switch (J7)
   sync_device_id TEXT NOT NULL CHECK (length(sync_device_id) = 36),
   host_binding_salt BLOB NOT NULL CHECK (length(host_binding_salt) = 32),
   host_binding BLOB NOT NULL CHECK (length(host_binding) = 32),   -- HMAC(salt, host UUID); J8
-  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
   key_id TEXT CHECK (key_id IS NULL OR length(key_id) = 16),
   write_pk BLOB CHECK (write_pk IS NULL OR length(write_pk) = 32),
-  server_version INTEGER,
   highest_seen_version INTEGER NOT NULL DEFAULT 0,               -- rollback guard
+  highest_seen_sha256 BLOB CHECK (highest_seen_sha256 IS NULL OR length(highest_seen_sha256) = 32),
+                                             -- hash of the blob at that version; a different blob at the same version is a fork
+  fetched_at INTEGER,                        -- this Mac's clock at its last successful fetch
+  seen_reset_request_id TEXT,                -- the last pending reset this Mac saw, for reset checks (§6.1)
+  -- the session: cleared on Log Out, Turn Off Sync, removal and account switch
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
+  server_version INTEGER,
   ciphertext BLOB,                           -- last opened blob, still encrypted; no plaintext at rest
   last_hlc TEXT,
-  fetched_at INTEGER,
-  seen_reset_request_id TEXT,                -- the last pending reset this Mac saw, for reset checks (§6.1)
   state TEXT NOT NULL DEFAULT 'off',         -- the §10.4 state machine
   last_error TEXT                            -- an error code only
 );
@@ -619,11 +660,18 @@ CREATE TABLE sync_known_device (             -- for the new-sign-in notice
 ```
 
 **Retention**
-- `vault_state` and `sync_known_device` are cleared on Log Out, on
-  `account_deleted`, on sign-in by another account, on Turn Off Sync and on
-  Delete Synced Data.
+- A `vault_state` row's session columns are cleared on Log Out, on Turn Off
+  Sync, on `403 device_revoked` and when another account signs in. Its anchor
+  columns stay.
+- The whole row is deleted only on `account_deleted`, on Delete Synced Data,
+  and on verifying a signed tombstone. It is replaced when this Mac adopts a
+  new vault after a reset it verified (§6.1).
+- `sync_known_device` is cleared with the session.
 - `vault_rule_link` rows follow the local rule: they become tombstones, and are
-  deleted once the tombstone is pushed. They are also cleared on Log Out.
+  deleted once the tombstone is pushed. They are also cleared on Log Out, and
+  whenever this Mac opens a document whose `person_salt` differs from the one
+  its links were made under (a new vault after a reset). Rules then re-mirror
+  at their next ladder match (§5.4).
 - No hostname, app name, bundle id or unsalted digest is written to any of
   these tables. `person_key` is an HMAC under the in-document `person_salt`,
   which exists on disk only inside the ciphertext.
@@ -655,10 +703,11 @@ and `relay_inbox_cursor`.
 
 ### 5.1 Primitives, crates and APIs
 
-**v1 uses one Rust crate for everything: `ring`.** It is already in
+**v1 uses one Rust crate for the cryptography: `ring`.** It is already in
 `Cargo.lock` (0.17.14, through rustls) and becomes a direct dependency, with
-no new crate in the lockfile. AGENTS.md asks for the founder's approval of each
-new direct dependency (§17 Q4).
+no new crate in the lockfile. So do `base64`, `zeroize` and `subtle`, which
+are already compiled into today's build. AGENTS.md asks for the founder's
+approval of each new direct dependency (§17 Q4).
 
 | Need | Choice | API |
 |---|---|---|
@@ -667,7 +716,7 @@ new direct dependency (§17 Q4).
 | Write signatures | Ed25519 (RFC 8032) from a 32-byte seed | `ring::signature::Ed25519KeyPair::from_seed_unchecked`; verify with `UnparsedPublicKey` |
 | MAC | HMAC-SHA256 | `ring::hmac` for new code. `abstraction/key.rs` keeps its own HMAC and is unchanged |
 | RNG | OS CSPRNG | `ring::rand::SystemRandom` |
-| Secret hygiene | zeroize on drop; constant-time comparison | `zeroize` (in the lockfile, 1.9.0); `ring::constant_time` |
+| Secret hygiene | zeroize on drop; constant-time comparison | `zeroize` (1.9.0, already compiled in through `rustls`). Tags are checked with `ring::hmac::verify`; any other secret comparison uses `subtle::ConstantTimeEq` (2.6.1, already compiled in through `rustls`). Not `ring::constant_time`: it is deprecated in 0.17.14, and `cargo clippy -D warnings` would fail on it |
 | Encoding | base64 | `base64` (in the lockfile, 0.22.1) |
 | Server verify | Ed25519 | Python `cryptography` (already a velvt-core dependency, `>=43,<46`): `Ed25519PublicKey.from_public_bytes(pk).verify(sig, msg)` |
 | Swift | Keychain only | Security.framework. No CryptoKit and no new package |
@@ -738,12 +787,13 @@ another, which mirrors the egress ledger's `velvt-egress-v1|…` pattern.
 - `kind` in a person key is one byte: 1 site, 2 bundle, 3 app name.
 - Unknown versions and trailing bytes are rejected.
 
-**Sealing the document at version `n+1`**
+**Sealing the document at version `v`** (`v = max(n, highest_seen_version) + 1`, where `n` is the server's current version; §10.4)
 
 ```
-plain      = u32_be(len(json)) ‖ json ‖ 0x00…      (padded to the next multiple of 4 KiB)
+plain      = u32_be(len(json)) ‖ json ‖ 0x00…      (padded to the next power of two, at least 16 KiB:
+                                                    16, 32, 64, 128, 256 or 512 KiB)
 nonce      = 12 random bytes
-aad        = "velvt-vault-doc-v1\0" ‖ lp(user_id) ‖ lp(name) ‖ key_id(8 B) ‖ u16_be(schema) ‖ u64_be(n+1)
+aad        = "velvt-vault-doc-v1\0" ‖ lp(user_id) ‖ lp(name) ‖ key_id(8 B) ‖ u16_be(schema) ‖ u64_be(v)
 ciphertext = nonce ‖ ChaCha20-Poly1305(K_doc, nonce, aad, plain)
 ```
 
@@ -761,8 +811,15 @@ sig      = Ed25519(W_sk, put_stmt)
   the signature.
 - An old blob relabelled with a new version fails, because the version is in
   the AAD.
-- An old blob served at its old version is refused, because its version is
-  below `highest_seen_version`.
+- An old blob served at its old version never replaces the cached document,
+  because its version is below `highest_seen_version`. It may be merged, which
+  is harmless: every value is a register with an HLC, so an older document
+  cannot undo a newer register this Mac has seen (§6.1).
+- A different blob at the same version is a fork, caught by
+  `highest_seen_sha256`.
+- Power-of-two padding shows the server only which of six size steps the
+  copy is in. Fixed 4 KiB steps would have shown the rule count to within
+  about 37 rules, and every few dozen labels as a size change.
 - A write from someone without `K` is refused by the server, because the
   signature fails against the stored `write_pk`.
 
@@ -786,6 +843,8 @@ which verify it with the `write_pk` they already trust):
   and spaces.
 - `(handoff_id ‖ K_wrap) = HKDF-SHA256(ikm=s, salt=∅, info="velvt-vault-handoff-v1", L=48)`.
 - `payload = nonce ‖ ChaCha20-Poly1305(K_wrap, nonce, aad = "velvt-vault-handoff-v1\0" ‖ lp(user_id) ‖ handoff_id, plain = 0x01 ‖ key_id ‖ K ‖ issuer_sync_device_id(16 B))`.
+- The receiver derives `write_pk` and `key_id` from the `K` it opened and
+  requires that `key_id` to equal the one in the payload.
 - The server releases the payload once, within 10 minutes.
 
 No PAKE is needed: the 100-bit secret travels eye to keyboard and never passes
@@ -832,21 +891,40 @@ The cost while sync is off is one boolean check per classification.
 | `kSecAttrAccessGroup` | `$(TeamIdentifierPrefix)com.velvt.shared`, shared later with the iOS app and its NSE |
 | `kSecAttrAccessible` | `kSecAttrAccessibleAfterFirstUnlock`. A synchronizable item cannot be `ThisDeviceOnly` |
 | `kSecAttrLabel` | `Velvt sync key` |
-| Value | JSON `{"v":1,"key_id":…,"key_b64":…,"created_at":…}` |
+| Value | JSON `{"v":1,"key_id":…,"key_b64":…,"created_at":…,"supersedes":<key_id or null>,"retired_by":<key_id, "v2" or null>}` |
 
 **Rules**
-- **Never create while any item exists.** Before creating a vault, Rust asks
-  Swift for every key id it holds for this `user_id`. If there is any, Rust
-  tries to adopt it and never creates a new vault.
+- **Never create while a live item exists.** Before creating a vault, Rust asks
+  Swift for every key item it holds for this `user_id`. If any item is not
+  retired, Rust tries to adopt it and never creates a new vault. The one
+  exception is an item whose `key_id` a completed reset names, and only when
+  §6.1 verified that reset or the person started it on this Mac.
 - **Keychain first, server second.** Rust sends `store_vault_key`, waits for
   `vault_key_stored{ok}`, and only then creates the vault on the server. A blob
   never exists whose key was not saved.
+- **Rotation is recorded in the Keychain, not only on the server** (§5.6). The
+  new item carries `supersedes: <old key_id>` in the same value as the new key,
+  so the two arrive on another Mac together. The old item is rewritten with
+  `retired_by: <new key_id>`.
+  - Rust never adopts a retired item.
+  - Rust never adopts a key that another item it holds supersedes. If the
+    server serves such a key, that is a rollback: `server_inconsistent`.
+  - Without these two rules, a malicious server could serve the pre-rotation
+    copy to a fresh Mac on the same Apple ID for the 30 days the old item
+    lives. That Mac would then write its choices under the key the lost Mac
+    still holds.
 - **Never delete on Log Out.** Deleting a synchronizable item deletes it from
   every Mac on the Apple ID. An item is deleted only:
-  - on Delete Account;
-  - on Delete Synced Data (that `key_id` only);
+  - on Delete Account (every item for the account);
+  - on Delete Synced Data (every item for the account, including retired
+    ones, so a later Turn On can create);
+  - on verifying a signed tombstone (the deleted `key_id` only; this is how a
+    Mac on another Apple ID drops its copy of the key);
   - when an orphan item lost a create race (its own `key_id` only);
   - 30 days after a verified rotation (the old `key_id` only).
+- **No server claim alone deletes or rewrites an item.** A completed reset,
+  a 404 or an unreadable copy never touches the Keychain. Deleting a
+  synchronizable item on a forged signal would remove the key from every Mac.
 
 **Entitlements**
 - Apple TN3137: a data-protection Keychain access group comes from an
@@ -867,13 +945,19 @@ The cost while sync is off is one boolean check per classification.
 **v1 rotation** (PR A8; offered on "lost or stolen" removal)
 1. Pull and open the latest document.
 2. Make `K'` and derive `W'`, `key_id'`.
-3. Store `K'` in the Keychain under `<user_id>.<key_id'>`, and wait for the
-   acknowledgement.
-4. Seal the document under `K'` at `n+1`.
+3. Store `K'` in the Keychain under `<user_id>.<key_id'>` with
+   `supersedes: <key_id>`, and wait for the acknowledgement.
+4. Seal the document under `K'` at the next version `v` (§5.3).
 5. Send `POST /v1/vault/rotate` with the rotate statement, signed by the old
    `W` and by `W'`. velvt-core verifies both, swaps `key_id` and `write_pk`, and
    stores the blob atomically.
-6. Other Macs see a new `key_id`. They verify the rotation statement against
+6. On success, rewrite the old item with `retired_by: <key_id'>` (§5.5). Every
+   Mac that verifies a rotation away from a key does the same (it is
+   idempotent), so a crash between steps 5 and 6 heals on the next fetch. If
+   the server refuses the rotation for good (409, because the key changed
+   underneath), the rotating Mac deletes its own `K'` item as an orphan. A Mac
+   that saw that orphan re-evaluates on its next fetch.
+7. Other Macs see a new `key_id`. They verify the rotation statement against
    the old `write_pk` they trust, then look for `K'` in the Keychain:
    - found: adopt silently, post `sync_key_changed`, and delete the old item
      after 30 days;
@@ -926,9 +1010,16 @@ authoritative for that Mac, so losing the vault never loses a Mac's own setup.
   - The issuer signs `WrapTBS`.
   - A recipient accepts a wrap only if all of these hold: the issuer was active
     at `chain_seq`, the epoch matches, the recipient is itself, and
-    SHA-256(`VK_e`) equals the chain's `vk_commitment`.
+    `SHA-256("velvt-vk-commit-v1\0" ‖ vault_id ‖ u32 epoch ‖ VK_e)` equals the
+    chain's `vk_commitment` (the same tagged formula as §6.2, never a bare
+    hash of `VK_e`).
+  - It also requires the `W_seed,e` public key derived from `VK_e` to equal
+    the chain's `epoch_write_pk` for that epoch.
 - **The document in v2** keeps the one-blob model. It is sealed under
   `K_doc,e`, and the AAD adds `vault_id` and `epoch`.
+  - A reader takes as current only a document at the verified chain's current
+    epoch. An older-epoch blob may have been written by a member removed since,
+    so it is never taken as current; it may only be merged, as in v1.
   - The plaintext adds `writer` (member id), `chain_seq` and `entry_hash`
     (witnessing).
   - It also carries an Ed25519 signature by the writer's member key, inside the
@@ -944,6 +1035,10 @@ authoritative for that Mac, so losing the vault never loses a Mac's own setup.
     `{kind, ref, title, body, actions[]}`, built from the copy Rust already
     renders.
   - The relay never uses a key derived from the shared vault key.
+  - **Replay.** A recipient drops an envelope past `expires_at` and any
+    `msg_id` it has already seen. It keeps seen ids until their `expires_at`
+    (at most 12 h), in the NSE's shared container on iOS. Otherwise the server
+    could replay a sealed, signed message inside its TTL and show it twice.
 - **Account binding.** `account_binding = SHA-256("velvt-account-v1\0" ‖ user_id)`
   is in every v2 signature and AAD.
 
@@ -954,38 +1049,67 @@ authoritative for that Mac, so losing the vault never loses a Mac's own setup.
 ### 6.1 What a v1 Mac verifies on every fetch (there is no chain in v1)
 
 ```
-on GET /v1/vault (state) and GET /v1/vault/blobs/prefs:
+trusted = this account's vault_state anchor (kept across Log Out and removal, §4.3),
+          or, with no anchor yet, the key_id and write_pk derived from the K this Mac holds
+now, fetched_at = this Mac's own clock; every comparison below allows a 10-minute margin
+
+on GET /v1/vault (200 or 404; both bodies carry pending_reset? and completed_reset?)
+and GET /v1/vault/blobs/prefs:
   if pending_reset is present:
       record seen_reset_request_id = pending_reset.id; post `reset_requested` once; offer [Cancel Reset]
+  elif seen_reset_request_id is set and no completed_reset carries that id:
+      clear seen_reset_request_id   (it was cancelled; a later "completed" claim for it must pass the fetched_at test)
+  if completed_reset is present and its key_id == trusted key_id:
+      check_reset(completed_reset)                                       (below; also on a 404)
   if 404:
-      if a tombstone is returned and its delete statement verifies under our trusted write_pk:
-          → state off ("Sync was turned off from “Studio Mac”."), clear vault_state
-            (the deleting Mac already removed the Keychain item, and iCloud Keychain carries that deletion)
-      elif we hold a key for this account or highest_seen_version > 0:
+      if a tombstone is returned and its delete statement verifies under trusted write_pk:
+          → state off ("Sync was turned off from “Studio Mac”."), delete this account's vault_state row,
+            delete this Mac's own Keychain items for that key_id (§5.5; a no-op on the deleting Mac's Apple ID)
+      elif check_reset accepted a completed reset → `reset_completed`; [Set Up Sync Again] may create (§5.5)
+      elif we hold a live key for this account or highest_seen_version > 0:
           → state `missing_on_server` (neutral copy); never auto-create; [Start a New Synced Copy] needs an explicit click
       else → state `off` / `available_elsewhere = false`
+  if a held Keychain item supersedes the served key_id, or the served key_id's item is retired:
+      → `server_inconsistent` (a rollback past a rotation, §5.5)
   if key_id == trusted key_id:
+      require write_pk == trusted write_pk                                (fail → `server_inconsistent`)
       verify the write signature over put_stmt with trusted write_pk      (fail → `server_inconsistent`)
-      require version ≥ highest_seen_version                               (fail → ignore, keep ours)
+      if version == highest_seen_version and SHA-256(ciphertext) != highest_seen_sha256
+          → `server_inconsistent` (two different blobs at one version: a fork)
       open with K_doc and the AAD; validate the schema                    (fail → `server_copy_unreadable`, never overwrite)
+      if version < highest_seen_version:
+          merge it into ours (registers cannot go backwards); never cache it as current;
+          the next write goes at highest_seen_version + 1 (§10.4)
+      else: cache it; highest_seen_version, highest_seen_sha256 = version, SHA-256(ciphertext)
   if key_id != trusted key_id:
       if the rotation statements form a verified path from our trusted key_id to the served key_id
          (each signed by the key before it and by the key it introduces) → adopt per §5.6
-      elif completed_reset is present
-           and completed_reset.effective_at − completed_reset.requested_at ≥ 72 h   (a client-side constant)
-           and completed_reset.effective_at ≤ now:
-          if seen_reset_request_id == completed_reset.id
-              → `reset_completed` notice; old key retired; offer [Set Up Sync Again]
-          elif previous successful fetch (vault_state.fetched_at) < completed_reset.requested_at
-              → `reset_completed` notice, saying "while this Mac was offline"
-          else → `server_inconsistent`   (this Mac fetched during the window and never saw it pending)
+      elif check_reset accepted a completed reset for the trusted key_id
+          → adopt the new vault only through the J3 routes; replace the anchor once a key arrives
       else → `server_inconsistent` notice; sync paused; **no code entry offered**
+
+check_reset(r):   accepted only if all hold
+      r.effective_at − r.requested_at ≥ 72 h   (a client-side constant)
+      r.effective_at ≤ now
+      and either seen_reset_request_id == r.id                 → `reset_completed` notice
+          or fetched_at < r.requested_at                         → `reset_completed`, "while this Mac couldn't reach Velvt"
+      otherwise → `server_inconsistent`   (this Mac fetched during the window and never saw it pending)
+      An accepted reset never deletes or rewrites a Keychain item (§5.5).
 ```
 
 A server that wants a polling Mac to accept a fake reset would have to claim it
 was requested after that Mac's last fetch. The 72-hour minimum then puts
-`effective_at` in the future, and the client refuses it. Only a Mac that was
-offline for at least 72 hours can be shown a reset it never saw pending (T5).
+`effective_at` in the future, and the client refuses it. Only a Mac that made
+no successful fetch for at least 72 hours can be shown a reset it never saw
+pending (T5). That includes a Mac the server itself refused to serve for 72
+hours: withholding is outside the threat model (§1.2), so this case ends in
+the J3 routes, where only a code typed from the person's own screen helps.
+
+Two earlier gaps are closed here. The 404 body now carries the reset fields,
+so a Mac that comes back after a completed reset, before anyone has made a new
+copy, sees `reset_completed` and not `missing_on_server`. And because the
+anchor survives Log Out, a Mac that signed out and back in is checked against
+what it last trusted, not against nothing.
 
 **Why this closes the "garbage blob" and "new key" attacks**
 - Someone holding only the password cannot produce a valid write signature, so
@@ -1000,7 +1124,7 @@ offline for at least 72 hours can be shown a reset it never saw pending (T5).
   or Enter a Code. The status line says nothing on this Mac changed, and offers
   **Replace the Server Copy with This Mac's** after 7 days. That is a signed
   repair: it rebuilds from local tables, the last good document and the cached
-  `person_salt`, and writes at `n+1`.
+  `person_salt`, and writes at `highest_seen_version + 1`.
 
 **Residual risk.** Fork and withholding go undetected. The server can show two
 Macs different valid versions, or stop serving updates. This is accepted for
@@ -1021,6 +1145,9 @@ TBS:
   [16] vault_id
   u32  epoch           the epoch in force after this entry
   [32] vk_commitment   SHA-256("velvt-vk-commit-v1\0" ‖ vault_id ‖ u32 epoch ‖ VK_epoch)
+  [32] epoch_write_pk  the Ed25519 public key of W_seed,epoch (§5.2); changes iff epoch changes.
+                       velvt-core reads the per-epoch write key it enforces from here, so the key it
+                       checks is one a member signed, not one a request merely asserted
   u64  created_at_ms   informational only
   u16  body_len, body
     GENESIS, ADD : u8 member_kind (1 mac, 2 iphone, 3 android, 4 recovery) ‖ [32] sign_pk ‖ [32] kem_pk
@@ -1062,7 +1189,7 @@ verify(entries, pinned_root, stored_head, user_id) -> Result<ChainState, ChainEr
     require (i == 0) == (e.kind == GENESIS)
     signers = the required set for e.kind (table above), from members active at seq i-1
     every signature: ed25519 verify over TBS, with no duplicate signers
-    epoch rule: +1 on REVOKE and ROTATE, unchanged otherwise; vk_commitment changes iff epoch changes
+    epoch rule: +1 on REVOKE and ROTATE, unchanged otherwise; vk_commitment and epoch_write_pk change iff epoch changes
     member rules: revoked or left members never sign again and are never re-added;
                   ≤ 20 active members; ≤ 1 recovery member of each source (printed, icloud)
     fold e into ChainState
@@ -1094,6 +1221,11 @@ verify(entries, pinned_root, stored_head, user_id) -> Result<ChainState, ChainEr
 - **Residual.** A server that partitions devices forever can hide a revocation
   from the partitioned devices. This is the limit of one server without key
   transparency, and it is stated in the threat model.
+- **A reset in v2** (R3, no device and no recovery secret left) ends the old
+  chain. A device that pinned the old root treats a new root exactly as §6.1
+  treats a new `key_id`: it accepts it only after `check_reset` passes, and
+  otherwise raises `chain_conflict`. It re-pins only through a pairing route
+  (§7.6), never on the server's word.
 
 **Failing closed without stranding testers**
 - A verification error halts sync only. Classification, work blocks, nudges
@@ -1117,7 +1249,7 @@ verify(entries, pinned_root, stored_head, user_id) -> Result<ChainState, ChainEr
 | 4 | Shows the code and a countdown | | Person types it. Swift sends `redeem_pairing_code {code}` |
 | 5 | | | Rust normalizes it and checks the check character (a typo fails locally), then derives `handoff_id` and `K_wrap` |
 | 6 | | `POST /v1/vault/handoffs/{id}/claim` → returns the payload and deletes the row (single use). Another account's id gets 404 | |
-| 7 | | | Opens the payload (AAD binds `user_id` and `handoff_id`). Checks that the `key_id` matches `GET /v1/vault`. Sends `store_vault_key` (synchronizable, so B's own iCloud circle gets it too). Writes its device entry with `joined_via: code` |
+| 7 | | | Opens the payload (AAD binds `user_id` and `handoff_id`) and checks that the `key_id` derived from `K` equals the payload's. Checks that it also matches `GET /v1/vault`. If it does not, B keeps the key the person typed, enters `server_inconsistent` and never adopts the served key: the code came from the person's own screen, and the server's answer did not. Otherwise B sends `store_vault_key` (synchronizable, so B's own iCloud circle gets it too) and writes its device entry with `joined_via: code` |
 | 8 | Next sync: sees B's new entry and posts `mac_joined_sync` | | |
 
 ### 7.2 Phase 4: adding a phone by QR, step by step
@@ -1138,6 +1270,13 @@ installed and nothing else; it has no account session yet.
    - A universal link delivers the full URL to the app, and opens the App Store
      if the app is missing. This needs an `apple-app-site-association` file on
      getvelvt.com (a velvt-web PR).
+   - When the app is missing, Safari opens `/pair` with the fragment in
+     `location.href`. That page is static HTML with **no script at all** (no
+     analytics, no tag manager, no error reporter) and a
+     `Content-Security-Policy: script-src 'none'`. Many analytics scripts send
+     the full URL, fragment included, which would hand `k` and the enrollment
+     token to a third party. A velvt-web test checks the header and the absence
+     of `<script>`.
 3. **P verifies the chain first.**
    - P parses the QR and calls `GET /v1/trust/chain` with
      `Authorization: Enrollment <token>`.
@@ -1150,11 +1289,18 @@ installed and nothing else; it has no account session yet.
      enrollment token, with:
      - `platform: ios`, `sign_pk` and `kem_pk`;
      - `proof = Ed25519(P, "velvt-pair-claim-v1\0" ‖ session_id ‖ sign_pk ‖ kem_pk)`;
-     - `mac = HMAC-SHA256(k, "velvt-qr-join-v1\0" ‖ session_id ‖ sign_pk ‖ kem_pk ‖ M member_id ‖ root_hash)`;
      - `sealed_name = HPKE(M.kem_pk, info="velvt-hpke-v1\0name", "Kevin's iPhone")`;
+     - `mac = HMAC-SHA256(k, "velvt-qr-join-v1\0" ‖ session_id ‖ sign_pk ‖ kem_pk ‖ M member_id ‖ root_hash ‖ SHA-256(sealed_name))`.
+       The name is inside the MAC because anyone can seal to `M.kem_pk`;
+       without it the server could swap the name M shows in its sheet;
      - optionally its push token.
    - velvt-core creates a `pending` device row with **no tokens** and answers
      202.
+   - **A session takes one claim.** A second claim marks the session
+     `contested`, and M shows "Two devices scanned this code, so nothing was
+     added." with no Add button. Someone who photographed the QR and claimed
+     first therefore cannot sit behind a sheet the person expects to be their
+     own phone.
 5. **M checks the claim.** The sync poll brings the claim to M. Rust checks
    `mac` with `k` in constant time and checks `proof`. It opens
    `sealed_name`, then shows the sheet **Add “Kevin's iPhone”?** [Not Mine]
@@ -1172,6 +1318,12 @@ installed and nothing else; it has no account session yet.
    `GET /v1/trust/pairing-sessions/{id}` under the enrollment token. It gets
    `approved` with its device tokens **once**: tokens are issued only after the
    chain entry lands.
+   - The request that collects the tokens also carries
+     `Ed25519(P.sign_sk, "velvt-pair-collect-v1\0" ‖ session_id ‖ server_nonce)`,
+     checked against the claimed `sign_pk`. The enrollment token is in the QR,
+     so anyone who photographed it could otherwise race P for the tokens. They
+     could not decrypt anything, but device tokens read the account's history
+     on the server.
 10. **P finishes.** P fetches the chain and verifies that the head is its own
     ADD. It unwraps `VK_e`, opens the document (for routing), and registers its
     push token.
@@ -1211,8 +1363,10 @@ Roles: **A** is a member. **B** is the new Mac, signed in.
 3. A reveals `EA`, `nA`, its member keys, `root_hash` and `(head_seq, head_hash)`.
 4. B reveals its values. A checks them against `commit`.
 5. Both compute `ss = X25519`, `T = SHA-256(transcript)` and
-   `okm = HKDF(ss, salt=T, "velvt-pair-v1", 64)`. From `okm` come a pairing AEAD
-   key and two codes:
+   `okm = HKDF(ss, salt=T, "velvt-pair-v1", 64)`. The transcript is every
+   commit and reveal in order, with both sides' member keys, `root_hash` and
+   `(head_seq, head_hash)` in it, so the codes also authenticate the chain
+   head B will pin. From `okm` come a pairing AEAD key and two codes:
    - `code1` = u32(okm[0..4]) mod 10^6, **shown on A and typed on B**;
    - `code2` = u32(okm[4..8]) mod 10^6, **shown on B and typed on A**.
 6. Each side compares the typed code in constant time.
@@ -1237,8 +1391,17 @@ Roles: **A** is a member. **B** is the new Mac, signed in.
 
 ### 7.5 Phase 4: joining through a recovery member
 
-The recovery secret `R` is either the iCloud Keychain item (v1's `K` slot,
-re-labelled) or a printed key.
+The recovery secret `R` is either a synchronizable iCloud Keychain item or a
+printed key.
+
+**`R` is always fresh, never v1's `K`.** Every Mac that ever synced in v1 holds
+`K`, including a lost Mac paired by code on another Apple ID. If `K` became
+`R`, that Mac could sign itself in as the recovery member, and v2's rotation on
+removal would protect nothing against it. So the v1 → v2 migration (T3) draws
+a new 32-byte `R`, stores it in a new item, re-seals everything under `VK_1`,
+deletes the v1 blob, and marks the v1 item `retired_by: "v2"`. Each device
+from v1 joins v2 through a route in §7.6. A same-Apple-ID Mac can use the new
+`R`, which alerts every device.
 
 1. The new Mac derives the recovery member keys:
    `HKDF(R, salt = "velvt-recovery-v1", info = vault_id)`.
@@ -1278,7 +1441,14 @@ allowed routes.
 - Every 429 carries `Retry-After`, following #41.
 - Every vault route except `GET` is under a per-user advisory lock
   (`SELECT … FOR UPDATE` on `vaults`), following #41's practice of locking the
-  device before refresh tokens.
+  device before refresh tokens. `POST /v1/vault` has no row to lock yet; the
+  `vaults` primary key makes the second of two racing creates fail with 409.
+- **Limits that are security properties are counted in Postgres**, not by
+  `InMemoryRateLimiter` (`rate_limit_service.py`), which is per process and
+  forgets on every deploy. That covers one live handoff, one pending reset,
+  resets, creates and rotations per day, and the claim budget. They are counted
+  from the vault tables and the content-free audit rows. The in-memory limiter
+  stays for request smoothing.
 - `VELVT_VAULT_ENABLED=false` answers every `/v1/vault/*` route with
   404 `feature_disabled`.
 
@@ -1303,26 +1473,38 @@ allowed routes.
 
 | Method and path | Auth | Request | Response | Errors and notes |
 |---|---|---|---|---|
-| `GET /v1/vault` | device | — | 200 `{key_id, write_pk_b64, created_at, rotations_b64[], pending_reset?: {id, requested_at, effective_at}, completed_reset?: {id, requested_at, effective_at, resolved_at}}` | 404 `vault_not_found` `{tombstone?: {key_id, deleted_at, statement_b64}}` |
-| `POST /v1/vault` | device | `{key_id, write_pk_b64, blob: {name:"prefs", schema, ciphertext_b64}, create_sig_b64, put_sig_b64}` | 201 `{version: 1}` | 409 `vault_exists`; 409 `vault_reset_pending`; 422 if `key_id ≠ f(write_pk)` or a signature fails. 10 a day |
+| `GET /v1/vault` | device | — | 200 `{key_id, write_pk_b64, created_at, rotations_b64[], pending_reset?: {id, key_id, requested_at, effective_at}, completed_reset?: {id, key_id, requested_at, effective_at, resolved_at}}` | 404 `vault_not_found` `{tombstone?: {key_id, deleted_at, statement_b64}, pending_reset?, completed_reset?}`. The reset fields are in the 404 body too, because a completed reset leaves no vault until someone makes a new one (§6.1) |
+| `POST /v1/vault` | device | `{key_id, write_pk_b64, blob: {name:"prefs", schema, ciphertext_b64}, create_sig_b64, put_sig_b64}` | 201 `{version: 1}` | 409 `vault_exists`; 409 `vault_reset_pending`; 422 if `key_id ≠ f(write_pk)` or a signature fails. 10 a day. Emails the account "Sync was turned on for your Velvt account" (names no device). Audit `vault.created` |
 | `GET /v1/vault/blobs/{name}` | device | `If-None-Match: "<v>"` | 200 `{version, key_id, schema, ciphertext_b64, put_sig_b64, base_version, updated_at}` with an ETag; 304 | `name` must be `prefs` in v1. 600 an hour |
-| `PUT /v1/vault/blobs/{name}` | device | `If-Match: "<n>"`; `{key_id, schema, ciphertext_b64, put_sig_b64}` | 200 `{version: n+1}` | 412 `vault_version_conflict {current_version}`; 409 `vault_key_mismatch`; 403 `vault_write_unauthorized` (bad signature); 413 `vault_too_large` (> 512 KiB). 120 an hour. **No audit event per write** |
-| `POST /v1/vault/rotate` | device | `{old_key_id, new_key_id, new_write_pk_b64, rotate_stmt_b64, old_sig_b64, new_sig_b64, blob: {…, put_sig_b64}}` | 200 `{version}` | 409 `vault_key_mismatch`; 403 on any signature failure. 10 a day. Audit `vault.rotated` |
-| `DELETE /v1/vault` | device + `require_reauth` | `{key_id, delete_stmt_b64, sig_b64}` | 204 | Deletes the blobs and handoffs, writes the tombstone (30 days). 403 without a valid signature. Audit `vault.deleted` |
-| `POST /v1/vault/reset-requests` | device + `require_reauth` | `{}` | 201 `{id, effective_at = now + 72 h}` | One pending per account; 3 a day. Sends the email notice through the existing password-reset mail provider (names no device). Audit `vault.reset_requested` |
+| `PUT /v1/vault/blobs/{name}` | device | `If-Match: "<n>"` (the current server version); `{key_id, schema, new_version, ciphertext_b64, put_sig_b64}` | 200 `{version: new_version}` | The server requires `n < new_version ≤ n + 2^32`, and the signed `put_stmt` binds both. The writer picks `max(n, highest_seen_version) + 1`, so a database restored from backup, whose versions went backwards, heals on the first write instead of looping on 412 against every Mac's rollback guard. 412 `vault_version_conflict {current_version}`; 409 `vault_key_mismatch`; 403 `vault_write_unauthorized` (bad signature); 413 `vault_too_large` (> 512 KiB). 120 an hour. **No audit event per write** |
+| `POST /v1/vault/rotate` | device | `{old_key_id, new_key_id, new_write_pk_b64, rotate_stmt_b64, old_sig_b64, new_sig_b64, blob: {…, new_version, put_sig_b64}}` | 200 `{version}` | 409 `vault_key_mismatch`; 403 on any signature failure. 10 a day. Audit `vault.rotated` |
+| `DELETE /v1/vault` | device + `require_reauth` | `{key_id, delete_stmt_b64, sig_b64}` | 204 | Deletes the `vaults` row, the blobs and the handoffs, and writes the tombstone (30 days). 403 without a valid signature. Audit `vault.deleted` |
+| `POST /v1/vault/reset-requests` | device + `require_reauth` | `{}` | 201 `{id, effective_at}` | `effective_at` = 72 h after the later of now and the account's most recent removal of one device by another. One pending per account; 3 a day. Emails the account (names no device). Audit `vault.reset_requested` |
 | `DELETE /v1/vault/reset-requests/{id}` | device | `{cancel_stmt_b64, sig_b64}` | 204 | Signed by the current `W`. Any Mac holding `K` can cancel. Audit `vault.reset_cancelled` |
 | `POST /v1/vault/handoffs` | device | `{handoff_id (32 hex), payload_b64 (≤ 256 B), expires_at, sig_b64}` | 201 `{expires_at}` | Signed by `W`. TTL ≤ 600 s. One live handoff per account. 10 an hour. Audit `vault.handoff_created` |
 | `POST /v1/vault/handoffs/{id}/claim` | device, same user | — | 200 `{payload_b64}`; the row is deleted | 404 `handoff_not_found` (unknown, expired, another user's, or already claimed). 10 per 10 minutes per user. Audit `vault.handoff_claimed` |
 | `GET /v1/devices` (new) | device | — | 200 `[{id, status, created_at, last_seen_at, client_version, is_current}]` | The caller's account only; revoked rows from the last 30 days included with `status`. No APNs fields, no names |
-| `DELETE /v1/devices/{id}` (extended) | device for itself (unchanged); device + `require_reauth` for another device of the same user | — | 200 | `revoke_device(actor="user", reason="removed_from_other_device")`. Another user's id gets 404. Audit `device.removed_by_other` |
+| `DELETE /v1/devices/{id}` (extended) | device for itself (unchanged); device + `require_reauth` for another device of the same user | — | 200 | `revoke_device(actor="user", reason="removed_from_other_device")`. Another user's id gets 404. If a reset is pending, its `effective_at` moves to 72 h after this removal. Audit `device.removed_by_other` |
 
 **The reset lifecycle (server)**
 - When `effective_at` passes, `enforce_retention` completes the request: it
   deletes the vault, blobs and handoffs, and marks the request `completed`.
-- The completed request stays visible in `GET /v1/vault` for 30 days, so Macs
-  that were offline can tell what happened (§6.1).
+- The completed request stays visible in `GET /v1/vault` (200 or 404) for 30
+  days, so Macs that were offline can tell what happened (§6.1).
 - While the request is pending, `POST /v1/vault` answers 409 `vault_reset_pending`.
   Once it is completed, a new vault can be created.
+- `confirm_password_reset` cancels every pending reset requested before it
+  (status `cancelled`, audit `vault.reset_cancelled` with reason
+  `password_reset`). Today a password reset already revokes every device token
+  (`auth_service.revoke_device_tokens`), so without this rule the person's
+  Macs would all be signed out exactly when they need to cancel.
+
+**Account email.** `password_reset_delivery.py` has a Resend deliverer that
+sends only the reset-link message. C2 generalizes it into an account-notice
+sender with three fixed templates: vault created, reset requested, and reset
+cancelled by a password reset. Q18 would add a fourth, new sign-in. Each names
+no device and carries nothing from the vault. The `Unconfigured` and `Logging`
+deliverers keep their current behaviour.
 
 ### 8.4 Quotas and rate limits (v1)
 
@@ -1346,7 +1528,8 @@ allowed routes.
 | `vault_tombstones` | 30 days | `enforce_retention`, erasure |
 | `vault_reset_requests` | 30 days after resolution | `enforce_retention`, erasure |
 | Audit events | `audit_retention_days` (365) | Erasure (§8.6) |
-| Database backups | At most 14 days (`backup_database.sh`) | They hold ciphertext only, unreadable without `K`. State it in `privacy-contract.md` |
+| Database backups | At most 14 days (`backup_database.sh`) | Age-out only. A backup taken before an erasure still holds that account's pre-erasure rows, including un-anonymized audit rows; its vault rows are ciphertext, unreadable without `K`. State both in `privacy-contract.md` |
+| Account-notice email (Resend) | The provider's own delivery-log retention | Not reachable by erasure. Each message holds the address, a fixed subject and a fixed body with no device name and nothing from the vault. Name the provider and this limit in `/privacy` and `privacy-contract.md` |
 
 ### 8.6 Erasure
 
@@ -1363,13 +1546,24 @@ allowed routes.
 - C0 changes `delete_user_owned_records`:
   1. Delete that user's audit rows whose `event_type` starts with `vault.`,
      `sync.`, `trust.`, `pairing.`, `relay.` or `device.`.
-  2. On every other audit row for the user, set `user_id`, `device_id` and
-     `actor_id` to NULL, and set `resource_id` to NULL where it names a
-     user-owned row. `event_type`, `outcome` and `created_at` stay, so security
-     totals still add up.
+  2. On every other audit row for the user, set `user_id`, `device_id`,
+     `actor_id` and `request_id` to NULL, and set `resource_id` to NULL where
+     it names a user-owned row. `request_id` goes too, because it can be
+     joined to request logs. `event_type`, `outcome` and `created_at` stay, so
+     security totals still add up. The match is on `user_id` and also on
+     `actor_id = user_id`, since some events record the user only as actor.
   3. `account.erasure_completed` metadata carries only a total deleted count,
      not per-table counts, so the record does not show that the account used
      sync.
+  4. `execute_account_erasure` writes `account.erasure_completed` *after* the
+     anonymization step, and today it sets `user_id`. C0 writes it, and
+     `account.erasure_started`, with `user_id` NULL and `resource_id` = the
+     erasure request id. The link to the person then lives only in
+     `account_erasure_requests`.
+  5. The `velvt_erasure_records_deleted_total` metric is labelled per table
+     today. C0 folds the vault, sync and trust tables into one `sync` label.
+     Otherwise a `vaults` increment at the moment of an erasure shows that the
+     account used sync, in a store erasure never reaches.
 - The guard test changes so that **no** audit row holds the user id after
   erasure. The only rows that still reference the opaque user id are the
   anonymized `users` row and `account_erasure_requests`, the durable completion
@@ -1377,9 +1571,13 @@ allowed routes.
 
 **Mac side**
 - Delete Account sends `delete_vault_key` for every key id held for the
-  account.
+  account, retired ones included.
 - Other Macs receive `account_deleted` and do the same.
-- `vault_state`, `vault_rule_link` and `sync_known_device` are cleared.
+- The account's `vault_state` row (anchor included), `vault_rule_link` and
+  `sync_known_device` are deleted.
+- A Mac on another Apple ID that never connects again keeps its copy of `K`.
+  This leaks nothing, because nothing server-side is left for `K` to open
+  once the backups age out.
 
 ### 8.7 Composition with the in-flight Phase 2 PRs
 
@@ -1449,7 +1647,8 @@ Each protocol bump follows AGENTS.md, all in one commit:
 |---|---|---|
 | `request_sync_state` | `{}` | Answered with `sync_state` |
 | `set_sync_enabled` | `{enabled, default_name?}` | `default_name` is a fact (the computer name), at most 64 characters |
-| `vault_keys_held` | `{user_id, key_ids[], reason?: keychain_unavailable \| entitlement_missing}` | The answer to `vault_key_inventory_request`. Key ids only |
+| `vault_keys_held` | `{user_id, keys[] {key_id, supersedes?, retired_by?}, reason?: keychain_unavailable \| entitlement_missing}` | The answer to `vault_key_inventory_request`. Key ids and their rotation markers (§5.5), never key bytes. Rust, not Swift, decides what the markers mean |
+| `vault_key_retired` | `{key_id, ok}` | The answer to `retire_vault_key` |
 | `vault_key` | `{user_id, key_id, key_b64}` | The answer to `vault_key_request`. **A secret:** sent only to a peer-verified helper (A0). Rust holds it in a redacted, zeroizing type |
 | `vault_key_missing` | `{user_id, key_id, reason: not_found \| keychain_unavailable \| entitlement_missing}` | |
 | `vault_key_stored` | `{key_id, ok, reason?}` | |
@@ -1470,16 +1669,17 @@ Each protocol bump follows AGENTS.md, all in one commit:
 |---|---|
 | `vault_key_inventory_request` | `{user_id}` |
 | `vault_key_request` | `{user_id, key_id}` |
-| `store_vault_key` | `{user_id, key_id, key_b64}`. **A secret**, with the same rule as `vault_key` |
+| `store_vault_key` | `{user_id, key_id, key_b64, supersedes?}`. **A secret**, with the same rule as `vault_key` |
+| `retire_vault_key` | `{user_id, key_id, retired_by}`. Rewrites the item's value with the marker and keeps its key bytes |
 | `delete_vault_key` | `{user_id, key_id}` |
 | `sync_state` | Rust-authored snapshot, answering every command above: `state` (`off \| available_elsewhere \| waiting_for_key \| syncing \| waiting_for_rotated_key \| reset_pending \| reset_completed \| missing_on_server \| server_copy_unreadable \| server_inconsistent \| read_only_newer_schema \| clone_detected \| error`), `status_line`, `fingerprint`, `devices[] {sync_device_id?, server_device_id?, name?, is_this_mac, status, last_seen_bucket, can_remove, notify_daily_insight?}`, `pairing {code, expires_at} \| null`, `held_summary {site_rules, app_rules, settings[]}`, `pending_reset {effective_at} \| null`, `notices[] {notice_id, kind, title, body}`, `last_synced_at?`, `error_code?` |
 | `sync_notice` | `{notice_id, kind, title, body, actions[]}`. Rust-authored copy; Swift posts it as the fourth notification kind |
 
 **Account events**
-- `needs_reauth.reason = account_deleted`: Rust clears its sync tables and sends
-  `delete_vault_key` for each held key id.
-- `log_out`: clears `vault_state` and drops `K` from memory. It never deletes a
-  Keychain item.
+- `needs_reauth.reason = account_deleted`: Rust deletes the account's sync rows
+  and sends `delete_vault_key` for each held key id.
+- `log_out`: clears the session columns of `vault_state`, keeps the anchor
+  (§4.3), and drops `K` from memory. It never deletes a Keychain item.
 
 **Privacy-boundary tests** cover the new messages. No raw field can appear in
 them, and the key fields use redacted types in both Rust (like
@@ -1498,8 +1698,13 @@ PR A0 lands first.
 - Check it with `SecCodeCheckValidity` against the requirement
   `anchor apple generic and certificate leaf[subject.OU] = "<TEAM_ID>" and identifier "com.velvt.mac"`.
 - This needs a small hand-written FFI to Security.framework and CoreFoundation,
-  with no new crate, costed at about two days. The alternative is
-  `security-framework-sys`, which needs founder approval.
+  with no new crate, costed at about two days.
+- The alternative is the `security-framework` crate (3.7.0). Its
+  `os::macos::code_signing` module already has `GuestAttributes::set_audit_token`,
+  `SecCode::copy_guest_with_attribues` and `check_validity`. It is in
+  `Cargo.lock` only through the optional `onnx` feature (`ort` → `native-tls`),
+  so in the default build it would add `security-framework`,
+  `security-framework-sys` and `core-foundation`. That needs founder approval.
 
 **Swift checks Rust**
 - The same check on the server end of the socket, against
@@ -1534,9 +1739,9 @@ Relay routing adds `surface` to `intervention_card_seen` and
 | Field | Class | On the receiving Mac in v1 |
 |---|---|---|
 | Mac names and device entries | Presentation | **Applied** to the device list |
-| `notify_daily_insight` for this Mac | Routing for a surface that is not a measured treatment (report 4.4) | **Applied.** Rust omits `notification_payload` on this Mac when off. The insight still shows in the popover |
+| `notify_daily_insight` for this Mac | Routing for a surface that is not a measured treatment (report 4.4) | **Applied.** Rust omits `notification_payload` on this Mac when off. The insight still shows in the popover. If a pre-registration ever names insight notifications as an exposure, this register moves to the held class under that registration |
 | Category rules (site, bundle and app-name person keys) | Classification input | **Held.** Stored in the document only. The ladder never consults them |
-| Quiet hours | Delivery input. It sets `do_not_disturb_until` on drift offers (`focus/mod.rs`) and gates the reminder | **Held** |
+| Quiet hours (`velvt_quiet_hours`) | Policy and delivery input. Inside the window, a drift offer drops to `InterventionSalience::Quiet`, an in-app card with no OS notification (`ipc/router.rs`); initiation invitations, the weekly digest and the needs-a-category reminder are held (`initiation`, `receipts`, `category_prompt`); and the daily insight carries `do_not_disturb_until` (`delivery/poll.rs`) | **Held** |
 | `invitations_enabled` | Initiation policy input | **Held**, including an opt-out (§17 Q6) |
 
 The local values of quiet hours and the invitations switch are written into the
@@ -1572,7 +1777,14 @@ applied from it.
 - **Per-field registers on device entries.** Mac A renaming Mac B, while B
   changes its own routing, keeps both changes.
 - **Clock skew.** The HLC never goes backwards on a Mac. A Mac whose clock runs
-  fast wins ties, which is acceptable for preferences.
+  fast wins concurrent edits for as long as it is ahead, which is acceptable
+  for preferences.
+- **Counter overflow.** The counter is four digits, so the string order holds
+  only while it stays at four. When the next counter would be 10000, the Mac
+  advances the millisecond field by one and resets the counter to 0. Without
+  this, a Mac that adopted a far-future `highest_seen_ms` from a Mac with a
+  bad clock would wrap to `…10000…` after 10,000 writes, which sorts *below*
+  `…9999…`. Its own writes would then start losing.
 
 ### 10.4 The sync engine (Rust `vault::sync`)
 
@@ -1582,6 +1794,7 @@ applied from it.
 off ──turn on──▶ (GET /v1/vault)
    404, no key held ─────────────▶ create: K, W, person_salt → store_vault_key → POST /v1/vault → syncing
    404, key held or seen before ─▶ missing_on_server   (explicit [Start a New Synced Copy] only)
+   404, verified completed reset ▶ reset_completed     ([Set Up Sync Again] may create, §5.5)
    200, key in Keychain ─────────▶ syncing
    200, key not here ────────────▶ waiting_for_key ──key arrives / code──▶ syncing
 syncing ─ key_id changed ─▶ (§6.1) waiting_for_rotated_key | reset_completed | server_inconsistent
@@ -1608,14 +1821,19 @@ any ─ host binding mismatch ─▶ clone_detected (sync off; card)
    rows, and the settings whose local `configured_at`/`updated_at` is newer
    than the document register's HLC wall time and whose value differs.
 2. Merge them into the last opened document. If nothing changed, stop.
-3. Seal at `n+1`, sign, and `PUT` with `If-Match: "n"`.
+3. Seal at `v = max(n, highest_seen_version) + 1`, where `n` is the server's
+   current version, sign, and `PUT` with `If-Match: "n"` and `new_version: v`
+   (§8.3).
 4. On 412: refetch, re-merge and retry. After three tries with jitter, back off
    10 minutes.
 
 **The device list and new-sign-in notices**
 - With sync on, the 10-minute pass also calls `GET /v1/devices`.
-- An active server device that is not in `sync_known_device` (and is not this
-  Mac) produces `new_sign_in` once.
+- When sync turns on (and after each new session), the first list seeds
+  `sync_known_device` without alerting. Otherwise turning sync on would post
+  one `new_sign_in` for every device already on the account.
+- After that, an active server device that is not in `sync_known_device` (and
+  is not this Mac) produces `new_sign_in` once.
 - A new `sync_device_id` in the document produces `mac_joined_sync`.
 
 **The document is a mirror.** Every Mac's local tables stay authoritative for
@@ -1648,16 +1866,19 @@ middle of a wave.
   `DRIFT_POLICY_VERSION = 6` (develop; #83 amends v6).
 - Reminder routing changes how often people label, which changes the same
   share.
-- Synced quiet hours defer drift offers.
+- Synced quiet hours would make drift offers quiet (in-app card only), and
+  would hold invitations, the digest and the reminder (§10.1).
 - A synced invitations switch silences invitations.
+- A sync notification posted during a block is an app switch waiting to happen.
+  This is why security notices wait for the block to end (J6).
 
 ### 11.1 Three locks on vault-driven classification
 
 | Lock | What it is | State in v1 |
 |---|---|---|
-| 1. Compile-time | The apply rung (after the four local rungs and before the plugins, so a local rule always wins) and the held appliers sit behind the cargo feature `vault-policy-inputs`, off in every release build. With it, `pub const VAULT_POLICY_INPUTS_VERSION: Option<u32>` must equal a version registered in the pre-registration ledger. A `published_claims` test fails if the feature is on in a release profile, or if the const is `Some` without a ledger entry | Off; `None` |
+| 1. Compile-time | The apply rung (after the four local rungs and before the plugins, so a local rule always wins) and the held appliers sit behind the cargo feature `vault-policy-inputs`, off in every release build. With it, `pub const VAULT_POLICY_INPUTS_VERSION: Option<u32>` must equal a version registered in the pre-registration ledger. A `published_claims` test fails if the const is `Some` without a ledger entry. A test cannot see which features a release was built with (CI runs `cargo test` in debug, and a feature is a build flag, not a profile). So the release check lives in the scripts: `build_rust_helper.sh` never passes `--features vault-policy-inputs`, the helper gains a `--policy-inputs` flag next to `--protocol-version` that prints `none` or the version, and `verify_release.sh` refuses a build whose answer does not match the build's registered policy versions | Off; `None` |
 | 2. Per Mac | Settings › Categories: "Use categories from my other Macs on this Mac", off by default. Note under it: "Changes which activity counts as work on this Mac, and so when Velvt offers a nudge." Its state is recorded on every decision | Not shown (compiled out) |
-| 3. Provenance | `work_block_observation.classification_source` (with `vault_rule`) and `intervention_decision_log.synced_rule_evidence` (a count of confident observations in the window that a vault rule classified) are added **now**, in PR A2, so the logged data itself shows zero contamination. The flip PR adds the toggle's state to the decision log and bumps the export format, so the analysis can stratify or exclude | Columns live; `vault_rule` cannot occur; evidence always 0 |
+| 3. Provenance | `work_block_observation.classification_source` (with `vault_rule`) and `intervention_decision_log.synced_rule_evidence` (a count of confident observations in the window that a vault rule classified) are added **now**, in PR A2, so the logged data itself shows zero contamination. `export_cohort_evidence.sh` names every column it selects, so A2 does not change the export mid-wave. The flip PR adds these columns and the toggle's state to the export and bumps its format, so the analysis can stratify or exclude | Columns live; `vault_rule` cannot occur; evidence always 0 |
 
 ### 11.2 Further rules
 
@@ -1672,6 +1893,10 @@ middle of a wave.
   `ClassificationTier::ExactMatch`, like `UserRule`. So the upload contract
   (`cloud_abstraction_type`) does not change. The local source is what the
   analysis reads.
+- **The IPC vocabulary.** `ClassificationSource` lives in `shared-types` and is
+  serialized over the socket (`QueuedEventSummary.classification_source`). The
+  `VaultRule` variant therefore sits behind the same feature, and the G1 build
+  that turns it on carries its own protocol bump. Protocol 38 never carries it.
 - **Never mid-wave.**
   - The feature and the const change only in a build cut between waves, under a
     new `DRIFT_POLICY_VERSION` registered before the wave starts.
@@ -1696,6 +1921,8 @@ middle of a wave.
 - Held quiet hours never hold an offer.
 - Held invitations-off never suppresses an invitation.
 - Synced rules never appear in `unclassified_triage`.
+- No `sync_notice` reaches Swift while a work block is active. It arrives
+  after the block ends.
 
 ---
 
@@ -1712,7 +1939,7 @@ The PR that turns on `SYNC_UI_ENABLED` carries all of these.
 | velvt-app `PRIVACY_AUDIT.md` | A dated note: what changed, and why no raw field leaves the Mac |
 | `tests/published_claims.rs` | `MIGRATED_TABLES`; the const and feature claim (§11.1); a structural test that the document type's only free-text field is `name`; ENDPOINTS equality |
 | `rust-service/src/egress/mod.rs` | ENDPOINTS rows; `reauth_token` in `SECRET_FIELDS` |
-| velvt-core `docs/privacy-contract.md`, `docs/retention.md`, `docs/api.md` | Vault tables, retention, erasure (including audit anonymization), backups hold only ciphertext |
+| velvt-core `docs/privacy-contract.md`, `docs/retention.md`, `docs/api.md` | Vault tables, retention, erasure (including audit anonymization), what pre-erasure backups still hold for 14 days (§8.5), and the account-notice emails and their provider |
 | velvt-app `AGENTS.md` | Notifications: four kinds, adding the security notice. Privacy boundary: a third tier, "end-to-end encrypted to the person's own devices: may leave the Mac only as vault ciphertext under keys velvt-core never holds, with contents limited to the closed `prefs` schema" |
 | velvt-core `AGENTS.md` | The same tier, and "the server never stores a vault key or plaintext" |
 | `ARCHITECTURE.md` | A ladder note: the dark apply rung |
@@ -1732,12 +1959,16 @@ The PR that turns on `SYNC_UI_ENABLED` carries all of these.
 **Draft `/privacy` paragraph**
 
 > **What the server can see from sync.** That your account uses sync; when
-> the encrypted copy changes and its size to within 4 KB; when a setup code was
-> made and claimed; whether a reset was requested; and the device list it
-> already keeps (which devices are signed in and when each was last seen). It
-> never sees Mac names, categories, sites, apps, settings or notification
-> choices. Deleting your account deletes the copy, and removes your account's
-> id from every audit record.
+> the encrypted copy changes, and which of six size steps (16 KB to 512 KB) it
+> is in; which of your signed-in devices sent each change (not stored); when a
+> setup code was made and claimed, and by which signed-in device; whether a
+> reset was requested; and the device list it already keeps (which devices are
+> signed in and when each was last seen). It never sees Mac names, categories,
+> sites, apps, settings or notification choices. Velvt emails you, through
+> Resend, when sync is turned on and when a reset is requested; those emails
+> name no device. Deleting your account deletes the copy, and removes your
+> account's id from every audit record. Backups taken before the deletion are
+> kept for up to 14 days. The email provider keeps its own delivery records.
 
 **Phase 4 adds:**
 - per-device public keys (a random per-account identifier, made only on devices
@@ -1754,33 +1985,33 @@ These rewrite consent line 2 (report 4.3).
 
 | # | Adversary or event | Attack | Mitigation | Residual |
 |---|---|---|---|---|
-| T1 | Database read, backup leak, Cloudflare at the TLS edge | Read preferences | Ciphertext only; `K` is never on the server; 4 KiB padding hides the rule count | Write timing and coarse size |
-| T2 | Malicious or compromised velvt-core | Add a device that can decrypt | v1: the server has no role in key distribution (iCloud Keychain or a typed code). v2: co-signed ADDs verified from a pinned root; pairing that cannot be skipped (§7.6) | None for content |
+| T1 | Database read, backup leak, Cloudflare at the TLS edge | Read preferences | Ciphertext only; `K` is never on the server; power-of-two padding (16–512 KiB) leaves six size steps | Write timing and the size step |
+| T2 | Malicious or compromised velvt-core | Add a device that can decrypt | v1: the server has no role in key distribution (iCloud Keychain or a typed code). v2: co-signed ADDs verified from a pinned root; pairing that cannot be skipped (§7.6) | None for content, unless the person types a code that did not come from their own screen (T13) |
 | T3 | " | Swap in another user's blob | `user_id` in the AAD and the signature | None |
-| T4 | " | Roll back | AAD binds the version; `highest_seen_version` | A fresh Mac can be shown an old version once. Low impact |
-| T5 | " | Serve a fake new key to phish code entry | A key change needs a verifiable rotation or a reset window this Mac could observe; otherwise `server_inconsistent` with no code entry (§6.1) | A Mac offline for the whole 72 h window cannot tell. The notice says "while this Mac was offline" |
+| T4 | " | Roll back the version, or the key | AAD and `put_stmt` bind the version; `highest_seen_version` and its hash survive Log Out; an older version is only merged, never taken as current (registers cannot go backwards); a served key that a held Keychain item supersedes or marks retired is `server_inconsistent` (§5.5) | A Mac with no anchor and no superseding item can be shown an old copy, which it merges. No key rollback |
+| T5 | " | Serve a fake new key to phish code entry | A key change needs a verifiable rotation or a reset window this Mac could observe; otherwise `server_inconsistent` with no code entry (§6.1). The anchor survives Log Out and removal, so "could observe" is measured from the last fetch this Mac actually made. A key delivered by a typed code always beats the server's word (§7.1 step 7) | A Mac with no successful fetch for the whole 72 h window cannot tell, including one the server refused to serve. The notice says "while this Mac couldn't reach Velvt", and only a code from the person's own screen helps |
 | T6 | " | Serve garbage or 404 | Never overwrite; never auto-create; neutral copy; signed repair only after 7 days | Denial of sync |
 | T7 | " | Fork or withhold | v1: accepted. v2: witnessing and head attestations | v1 preferences only |
 | T8 | " | Substitute a handoff | AEAD under a code-derived key | None |
 | T9 | Network attacker | Any | TLS, plus everything above | None |
 | T10 | Someone with the account password | Read the vault | Needs `K`: the person's iCloud Keychain or a code on their screen | — |
-| T11 | " | Overwrite, delete or replace the vault; DoS by a garbage blob | Writes, deletes and handoffs need the write key. A reset without it waits 72 h, is emailed, alerts every Mac, and can be cancelled by any Mac with `K` | If ignored for 72 h, a new empty vault (no confidentiality loss; this Mac keeps its choices) |
-| T12 | " | Remove the person's Macs | Needs re-authentication with the password, which they have. Removed Macs post `this_mac_removed` | Nuisance until the password changes |
+| T11 | " | Overwrite, delete or replace the vault; DoS by a garbage blob; squat sync before the person turns it on | Writes, deletes and handoffs need the write key. A reset without it waits 72 h, is emailed, alerts every Mac, and can be cancelled by any Mac with `K`. Removing a Mac pushes a pending reset to 72 h after the removal, so "remove every Mac, then reset" still leaves the removed Macs 72 h to sign back in and cancel. A password reset cancels it. A squatted copy is emailed and dated in the J3 panel | If ignored for 72 h, a new empty vault (no confidentiality loss; this Mac keeps its choices) |
+| T12 | " | Remove the person's Macs | Needs re-authentication with the password, which they have. Removed Macs post `this_mac_removed` and keep their trust anchor. A removal pushes any pending reset out (T11) | Nuisance until the password changes |
 | T13 | " | Phish the person into typing an attacker's code | Codes carry no meaning outside the person's own screens: "Only type a code shown on one of your own Macs. Velvt never sends codes by email or message." After a reset, code entry is offered only once the reset is verified | Social engineering |
-| T14 | Stolen or sold Mac, still in the Apple ID | Keep reading new preferences | Remove it: tokens revoked, the server stops serving it. Copy tells the person to remove it from the Apple ID; A8 rotates the key | v1: an Apple ID circle member keeps `K`. v2 fixes this with rotation (except through the iCloud recovery path, which alerts) |
+| T14 | Stolen or sold Mac, still in the Apple ID | Keep reading new preferences | Remove it: tokens revoked, the server stops serving it. Copy tells the person to remove it from the Apple ID; A8 rotates the key, and the `supersedes` and `retired_by` markers stop a server from steering a fresh Mac back to the old key | v1: an Apple ID circle member keeps `K`. v2 fixes this with rotation and a fresh recovery secret that v1 devices never held (§7.5), except through the iCloud recovery path, which alerts |
 | T15 | Migration Assistant or backup clone | Two Macs share one identity | Host-binding HMAC → new `sync_device_id`, sync off, card | False positive after a logic-board swap: one extra click |
 | T16 | Apple and iCloud Keychain | Read `K` | iCloud Keychain is end-to-end encrypted, and joining the circle needs the Apple ID and a device passcode | Trust in Apple's circle. Stated |
 | T17 | Another process as the same user | Spoof the socket and obtain `K` or tokens | A0 code-signature checks on both ends; data-protection Keychain limited to the team access group | Malware with the user's full rights (out of scope) |
 | T18 | A buggy or old Mac | Corrupt the document | Strict validation; read-only mode for a newer schema; limits; never overwrite what fails to open | None |
 | T19 | Privacy regression | A raw name enters the document | Person keys only; the document's only string is `name`; tracer tests over the ladder | None if the tests hold |
 | T20 | Measurement contamination | A synced value changes drift evidence | Three locks; provenance columns; golden replay (§11) | None if the tests hold |
-| T21 | Erasure gap | Audit rows outlive the account | C0 deletes sync and device audit rows and anonymizes the rest | Backups for up to 14 days (ciphertext and anonymized rows) |
+| T21 | Erasure gap | Audit rows, metrics labels or third-party mail outlive the account | C0 deletes sync and device audit rows, anonymizes the rest (request ids included), writes the erasure records without the user id, and folds sync tables into one metric label | Backups taken before the erasure keep pre-erasure rows, audit rows with the user id among them, for up to 14 days. The vault part is ciphertext. Resend keeps its delivery log of the notice emails |
 | T22 | (v2) Server substitutes keys during pairing | Get its key into the chain | Commit-then-reveal with two typed codes (10^-6); the QR carries a 256-bit secret | A person who types the code of a session they did not start, during an active attack |
 | T23 | (v2) Server gives devices different vault keys | Split the vault | VK commitments in the chain; issuer-signed wraps bound to epoch, recipient and seq | None |
 | T24 | (v2) Server hides a revocation | Keep a removed device reading | Monotonic head, witnessing, attestations, fork alerts | A permanent partition |
-| T25 | (v2) Photographed QR | Pair a rogue phone | Single use, 10 minutes, a tap on the Mac, tokens only after approval | A careless tap |
+| T25 | (v2) Photographed QR | Pair a rogue phone, or collect the real phone's tokens | Single use, 10 minutes, one claim per session (a second claim aborts), the name bound into the MAC, a tap on the Mac, tokens only after approval and only to the holder of the claimed signing key; `/pair` runs no script, so the fragment reaches no third party | A careless tap on a sheet for a phone that is not in hand |
 | T26 | (v2) Lost phone | Read relay messages | Remove → REVOKE, rotation, push token cleared, nothing sealed to it again | Messages already on it |
-| T27 | (v2) Apple or Google push | Read nudges | HPKE-sealed, signed, 512 B padded; generic fallback text | Timing, size, push token (report §5) |
+| T27 | (v2) Apple or Google push | Read or replay nudges | HPKE-sealed, signed, 512 B padded; generic fallback text; `msg_id` replay cache and `expires_at` (§5.9) | Timing, size, push token (report §5) |
 | T28 | Implementation bugs | Any of the above | Small v1 surface; fuzzing; vectors; a malicious-server suite; an external review before any tester | The main residual risk |
 | T29 | Supply chain | A malicious crate | v1 adds no crate. v2 uses exact pins, `cargo deny check advisories`, a reviewed lockfile diff | Upstream compromise |
 
@@ -1794,17 +2025,19 @@ These rewrite consent line 2 (report 4.3).
 | iCloud Keychain slow or off | `waiting_for_key`, with the code offered at once |
 | Keychain item deleted by the person | `waiting_for_key`, then a code or a reset |
 | Two Macs turn sync on at the same moment | `POST /v1/vault` lets one win (409 `vault_exists` for the other). The loser adopts the winner's vault (its key arrives by Keychain or code) and deletes **its own** orphan item `<user_id>.<its key_id>` only |
-| 404 after this Mac saw a vault | `missing_on_server` (or a verified tombstone → off). Never auto-create |
+| 404 after this Mac saw a vault | `missing_on_server`, a verified tombstone (→ off), or a completed reset that §6.1 accepts (→ `reset_completed`). Never auto-create |
 | Decrypt or validation failure | `server_copy_unreadable`. Never overwrite; no delete or code prompt; signed repair after 7 days |
 | Newer schema | `read_only_newer_schema`. Fetch and apply the known applied fields, never write |
 | 412 storm | Three retries with jitter, then a 10-minute backoff |
 | velvt-core down or `VELVT_VAULT_ENABLED=false` | Sync pauses silently. Local behaviour is unchanged. The menu status does not turn red for sync |
 | Mac offline for weeks | Merges by HLC on return. A rule deleted elsewhere more than 180 days earlier can come back (documented; it is held anyway) |
-| Account switch on one Mac | `vault_state.user_id` mismatch clears the state. Items are per account |
+| Account switch on one Mac | The other account uses its own `vault_state` row; this account's session columns are cleared and its anchor kept. Items are per account |
 | Cap eviction by #41 | That Mac disappears from the list and rejoins on its next sign-in. Its entry's `server_device_id` register is updated |
 | Old Velvt on another Mac | Unaffected. Listed as "Needs Velvt 1.1 or later to sync" from `client_version` |
 | Reset requested by someone else | Every polling Mac posts `reset_requested`. Any Mac with `K` cancels with one click |
-| Clock skew | HLC tolerates it. Pending-reset timing uses server timestamps |
+| Clock skew | HLC tolerates it, with the overflow rule in §10.3. The server sets the reset window. The client's acceptance check (§6.1) compares it with the client's own clock and last-fetch time, with a 10-minute margin |
+| velvt-core restored from a backup (vault versions go backwards) | Each Mac merges the older copy and never takes it as current. The first write goes at `highest_seen_version + 1`, which the server accepts because `new_version` only has to exceed its current version (§8.3). No 412 loop. Changes made after the backup survive on the Macs that made them |
+| A device entry for every re-sign-in | Does not happen: `sync_device_id` is part of the kept anchor (J7). Removed entries are dropped after 180 days, and the live cap is 32 |
 | Peer check fails (A0) | The connection is dropped and the app shows the helper as unavailable. Sync secrets never cross. Error code only in logs |
 | (v2) Chain verification fails | Halt sync only (§6.2): Try Again or Turn Off Sync on This Mac. Everything else works |
 | (v2) Keychain or Secure Enclave unavailable | `device_secret_unavailable`. Sync paused with "This Mac's key isn't available". Other devices see the Mac as stale and can remove it |
@@ -1834,23 +2067,23 @@ help.
 
 | PR | Repo | Scope | Depends on | Off by default via | Size |
 |---|---|---|---|---|---|
-| **C0** | core | Erasure deletes the account's sync and device audit rows and anonymizes the rest; `account.erasure_completed` carries a total only; #43's guard test asserts no audit row keeps the user id. `docs/retention.md`, `privacy-contract.md` | #43 | — (a privacy fix; founder approval Q12) | 1 |
+| **C0** | core | Erasure deletes the account's sync and device audit rows and anonymizes the rest (`request_id` included); the erasure start and completion records carry no user id and a total only; one `sync` metric label; #43's guard test asserts no audit row keeps the user id. `docs/retention.md`, `privacy-contract.md` (pre-erasure backups, Resend) | #43 | — (a privacy fix; founder approval Q12) | 1 |
 | **C1** | core | `POST /v1/auth/reauth` + `require_reauth`; `GET /v1/devices`; `DELETE /v1/devices/{id}` for another device with re-authentication; cross-user tests; `docs/api.md` | #41 | New routes with no caller | 1.5 |
-| **C2** | core | Vault models, Alembic `…_vault`, `vault_service` (CAS, write-signature verification, create, rotate, signed delete and tombstone, delayed reset with email and sweep, handoffs), `api/v1/vault.py`, rate limits, `USER_OWNED_MODELS` and verify, `enforce_retention` sweeps, content-free audit, docs. Tests: CAS, 412, 413, signatures, single-use and expired handoffs, reset window and cancel, cross-user isolation, erasure count zero, `make check-migrations` on Postgres 16 | #41, C0, C1 | `VELVT_VAULT_ENABLED=false` | 3 |
+| **C2** | core | Vault models, Alembic `…_vault`, `vault_service` (CAS, write-signature verification, create, rotate, signed delete and tombstone, delayed reset with email and sweep, the removal push-out and the password-reset cancel, handoffs), the account-notice sender generalized from the Resend reset deliverer, `api/v1/vault.py`, security limits counted in Postgres (§8.1), `USER_OWNED_MODELS` and verify, `enforce_retention` sweeps, content-free audit, docs. Tests: CAS, 412, 413, `new_version` bounds, signatures, single-use and expired handoffs, reset window and cancel, removal push-out, password-reset cancel, the reset fields in the 404 body, cross-user isolation, erasure count zero, `make check-migrations` on Postgres 16 | #41, C0, C1 | `VELVT_VAULT_ENABLED=false` | 3.5 |
 | **A0** | app | Socket peer code-signature checks in both directions (§9.3); `--identifier com.velvt.service` in `sign_release.sh`; `verify_release.sh` checks; tests with an unsigned peer; Debug bypass | — | Release builds only; protects today's tokens too | 2.5 |
 | **S0** | app (spike) | A Developer ID-signed probe with an embedded profile carrying `keychain-access-groups`: a synchronizable data-protection item on two Macs on one Apple ID; propagation time; iCloud Keychain off; profile missing. Outcome: go, or code-only (the item is stored non-synchronizable) | Founder profile | Not merged | 1 |
-| **A1** | app (Rust) | `vault::{crypto, doc, merge, code}`: `VaultKey` (redacted `Debug`, zeroize, no `Serialize`), seal and open, HKDF, write key and statements, padding, AAD, the setup code with its check character, schema and validation, the HLC merge. Direct dependencies `ring`, `base64`, `zeroize`. A published test-vector file. `cargo-fuzz` targets for the document decoder, the code parser and the statement parsers (a CI job, not a crate dependency) | Founder Q4 | No callers | 2.5 |
+| **A1** | app (Rust) | `vault::{crypto, doc, merge, code}`: `VaultKey` (redacted `Debug`, zeroize, no `Serialize`), seal and open, HKDF, write key and statements, padding, AAD, the setup code with its check character, schema and validation, the HLC merge with counter overflow. Direct dependencies `ring`, `base64`, `zeroize`, `subtle`. A published test-vector file. `cargo-fuzz` targets for the document decoder, the code parser and the statement parsers (a CI job, not a crate dependency) | Founder Q4 | No callers | 2.5 |
 | **A2** | app (Rust) | Provenance migration (§4.3); writes `classification_source` on observations; `synced_rule_evidence` stays 0; the golden-replay harness over decisions, decision log and observations | — | Measurement-neutral; ships only in a registered build | 1.5 |
-| **A3** | app (Rust) | Vault migration (§4.3); `vault::sync` (fetch, verify per §6.1, CAS, retries, rollback guard, rotation, tombstone and reset handling); settings mirror (held); the routing apply (daily insight); host binding; account, Log Out and switch clearing; `GET /v1/devices` diff; `egress::ENDPOINTS`; the dry-run vault mode; the malicious-server suite; a two-Mac integration test with an in-memory server | A1; C2's contract (a fake server until C2 deploys) | Unreachable: nothing can turn sync on without IPC | 3.5 |
+| **A3** | app (Rust) | Vault migration (§4.3); `vault::sync` (fetch, verify per §6.1, CAS with writer-chosen versions, retries, rollback guard and fork hash, rotation with Keychain markers, tombstone and reset handling); the per-account trust anchor that survives Log Out and removal; settings mirror (held); the routing apply (daily insight); host binding; account, Log Out and switch clearing; `GET /v1/devices` diff seeded without alerts; security notices held until a work block ends; `egress::ENDPOINTS`; the dry-run vault mode; the malicious-server suite; a two-Mac integration test with an in-memory server | A1; C2's contract (a fake server until C2 deploys) | Unreachable: nothing can turn sync on without IPC | 4 |
 | **A4** | app (protocol 38, Swift and Rust) | The §9.2 messages; `SyncKeyStore`; entitlements, profile and `verify_release.sh`; `SyncCoordinator`; the Your Macs section; the first-run card; security notices (fourth kind; AGENTS.md); the password relay for re-authentication; `verify_pbxproj_membership.sh` | A0, A3, C1, C2, S0, #86 | `SYNC_UI_ENABLED` off in Release | 3.5 |
 | **A5** | app | Setup codes: Rust create and claim; Swift sheets; normalization and typo handling | A4 | Same | 1.5 |
 | **A6** | app (Rust) | `vault::mirror`: person keys at labeling time (§5.4) and the ladder backfill; `vault_rule_link`; tombstones from the edit, remove and reset handlers; the tracer privacy test | A3 | Sync off by default; one boolean check | 1.5 |
-| **A7** | app (Rust) | The dark apply rung and the held appliers behind the `vault-policy-inputs` feature and `VAULT_POLICY_INPUTS_VERSION = None`; `ClassificationSource::VaultRule`; the per-Mac toggle's plumbing (not shown); `published_claims` tests; golden replay with a populated vault | A2, A6 | Compiled out | 1 |
+| **A7** | app (Rust) | The dark apply rung and the held appliers behind the `vault-policy-inputs` feature and `VAULT_POLICY_INPUTS_VERSION = None`; `ClassificationSource::VaultRule` (behind the feature, so not on the wire); the per-Mac toggle's plumbing (not shown); `published_claims` tests; the helper's `--policy-inputs` flag and its `verify_release.sh` check; golden replay with a populated vault | A2, A6 | Compiled out | 1 |
 | **A8** | app | "Lost or stolen: change the sync key" (signed rotation); the reset-without-key flow and Cancel Reset; the signed repair; notices | A5, C2 | Same as A4 | 1.5 |
 | **D1** | app, core, web, workspace | Everything in §12, plus the security-review packet: this document, the crypto spec, the vectors and code pointers | All above | Merges with the release that turns sync on | 1 |
 | **R1** | external | Security review of `vault`, A0, `SyncKeyStore` and the server's authorization. Fix the findings. Then the founder sets `SYNC_UI_ENABLED` on in a release | All above | — | 1–2 weeks |
 
-**Totals:** about 5.5 core days and 21 app days (including S0). That is about
+**Totals:** about 6 core days and 21.5 app days (including S0). That is about
 3 calendar weeks with core, Rust and Swift work running in parallel, plus the
 review.
 
@@ -1866,8 +2099,8 @@ waves only.
 |---|---|---|---|---|---|
 | T0 | founder | Approve the crates (§17 Q14); the APNs `.p8` key; the iOS App ID; answer report §5's three questions | — | — | — |
 | T1 | app | `velvt-trust` crate (pure, no I/O, no build script): chain codec and verifier, wraps, document v2 sealing, the pairing state machines (codes, QR, approve-with-phone, recovery), recovery derivation. RFC 8032, RFC 9180 and Wycheproof vectors; our own golden vectors exported as JSON; proptest; fuzzing; the malicious-server scenarios (§16.2) | T0 | No callers | 10 |
-| T2 | core | Registry v2 columns; chain store with compare-and-append and a validator using the shared vectors; bindings; pairing sessions with enrollment tokens; wraps; rotate; cap eviction skips chain members (amends #41); erasure and retention | T1 vectors, #41–#43 | `VELVT_DEVICE_TRUST_ENABLED=false` | 7 |
-| T3 | app | Device-seed custody (Swift: data-protection, ThisDeviceOnly, Secure Enclave-sealed where available); the v1 → v2 migration (genesis by the first v2 Mac holding `K`; `VK_1`; `K` re-labelled as the iCloud recovery secret if Q15 says keep); the two-typed-codes flow; device list v2; rotation on remove; alerts; IPC bump | T1, T2 | Flag | 10 |
+| T2 | core | Registry v2 columns; chain store with compare-and-append and a validator using the shared vectors; the per-epoch write key read from `epoch_write_pk`; bindings; pairing sessions with enrollment tokens, one claim per session and signed token collection; wraps; rotate; cap eviction skips chain members (amends #41); erasure and retention | T1 vectors, #41–#43 | `VELVT_DEVICE_TRUST_ENABLED=false` | 7 |
+| T3 | app | Device-seed custody (Swift: data-protection, ThisDeviceOnly, Secure Enclave-sealed where available); the v1 → v2 migration (genesis by the first v2 Mac holding `K`; `VK_1`; a **fresh** iCloud recovery secret `R` if Q15 says keep, never `K` itself; the v1 blob deleted and the v1 item retired, §7.5); the two-typed-codes flow; device list v2; rotation on remove; alerts; IPC bump | T1, T2 | Flag | 10 |
 | T4 | core | Alert sender and relay (report 4.1); the content-free insight alert | T2 | `VELVT_APNS_ENABLED=false` | 6 |
 | T5 | app | The Rust relay builder from existing copy; routing (the Focus hold first, then one surface per offer); `surface`; inbox replies (report 4.2) | T3, T4, B5 | Flag | 5 |
 | T6 | mobile | iOS app: `velvt-trust` through UniFFI; QR pairing; the NSE; actionable categories; receipt and insight viewers; account deletion; demo account (report 4.3) | T3, T4 | TestFlight only | 12 |
@@ -1901,6 +2134,10 @@ waves only.
 - `person_salt` stability.
 - Concurrent edits to separate fields of one device entry.
 - A newer schema stays read-only.
+- HLC counter overflow keeps string order: the HLC after `…9999…` sorts
+  above it.
+- Device entries: re-sign-in reuses `sync_device_id`; removed entries age out;
+  a writer never exceeds 32 live devices or 2,000 live rules.
 
 **Fuzzing:** `cargo-fuzz` on the document decoder, the code parser, the
 statement parsers and the handoff payload opener. The corpora are committed and
@@ -1922,6 +2159,13 @@ named test.
 | Garbage bytes | `server_copy_unreadable`; no delete or code prompt |
 | A substituted handoff payload | "That code didn't work."; nothing stored |
 | A replayed, claimed handoff | 404 |
+| A different blob at the version this Mac last accepted | `server_inconsistent` (fork hash) |
+| The pre-rotation copy served to a fresh Mac holding both the old item and the new item marked `supersedes` | `server_inconsistent`; the old key is never adopted |
+| The same, with the old item marked `retired_by` | `server_inconsistent` |
+| A completed reset shown in a 404 body to a Mac that polled through the window and never saw it pending | `server_inconsistent` |
+| The same reset shown to a Mac that logged out and in during the window | `server_inconsistent` (the anchor survived Log Out) |
+| A code-delivered key whose `key_id` differs from the served one | The typed key wins; `server_inconsistent` |
+| Versions that go backwards (a restored database) | Merged, never taken as current; the next write at `highest_seen_version + 1` succeeds |
 | Withheld updates (a fork) | Documented: converges once withholding stops |
 
 **Server (pytest)**
@@ -1935,13 +2179,26 @@ named test.
 - Cross-user isolation: a device of user A against every route with user B's
   ids.
 - Rate limits with `Retry-After`.
-- Erasure verification including the new tables and C0's audit rule.
+- Erasure verification including the new tables and C0's audit rule: after
+  erasure no audit row has the user id in `user_id` or `actor_id`, the
+  erasure records carry none, and no metric label names a vault table.
+- `PUT` accepts `new_version` only in `(current, current + 2^32]`, and the
+  signature must bind it.
+- A removal of another device moves a pending reset's `effective_at`; a
+  password reset cancels a reset requested before it.
+- Security limits hold across two API processes and a restart (they are
+  counted in Postgres).
 - Retention sweeps.
 - A structural "no plaintext" test: vault tables hold only ids, integers,
   timestamps and `bytea`.
 - Postgres 16 migration check.
 
 **Password-holder scenario (end to end)**
+- Remove every Mac, then request a reset: `effective_at` lands 72 h after
+  the last removal; a removed Mac that signs back in sees `reset_requested`
+  and cancels.
+- Set up sync on a fresh account before the person does: the account gets
+  the email, and the person's first Mac shows the dated J3 panel.
 - Register a fresh device with the password.
 - Try PUT, handoff create, delete and rotate. Each is refused.
 - A reset request becomes pending. Every syncing Mac's next pass posts
@@ -1985,7 +2242,11 @@ fake server:
 - account switch;
 - Log Out and back in;
 - account deleted while the other Mac is offline;
-- a Migration Assistant clone, by swapping the host binding.
+- a Migration Assistant clone, by swapping the host binding;
+- a security notice that comes due during a work block, posted only when the
+  block ends;
+- Delete Synced Data seen by a Mac on another Apple ID: its own key item is
+  deleted after the tombstone verifies.
 
 **Manual matrix before review**
 - Two Macs on one Apple ID (zero-touch).
@@ -2021,6 +2282,14 @@ fake server:
 - Invent an epoch.
 - Swap the blob across epochs and accounts.
 - Withhold a REVOKE for 24 hours.
+- Replay a relay envelope inside its TTL (dropped by `msg_id`).
+- Claim a QR session twice (contested, nothing added); collect tokens
+  without the claimed key's signature (refused); swap `sealed_name` (MAC
+  fails).
+- A v1 `K` holder tries to act as the recovery member after migration
+  (no chain member derives from `K`).
+- A wrap whose `VK_e` matches a bare SHA-256 commitment but not the tagged
+  one (refused).
 
 Each must be refused or alerted, and no key is ever wrapped to a non-member.
 
@@ -2046,7 +2315,7 @@ simulator:
 | Q1 | Do you approve the new disclosure (§12): opt-in sync stores an encrypted copy of your choices that Velvt cannot read and that holds no site or app names; the server can see that sync is used, when the copy changes, its approximate size, and when codes and resets happen? It touches the consent line, `/privacy`, PRIVACY.md, `published_claims`, the egress registry and the tester kit | **Yes**, with the §12 wording |
 | Q2 | Will you create the App ID with Keychain Sharing (and Communication Notifications for #84 route a), and a Developer ID provisioning profile, so both ship in one profile? Is the Apple Developer team an Organization or an Individual? | **Yes, one profile.** Organization if possible (it also sets the iOS seller name) |
 | Q3 | Sync off by default with an explicit toggle, or offered as on right after sign-in? | **Off by default.** A one-time card on a second Mac |
-| Q4 | Approve `ring`, `base64` and `zeroize` as direct dependencies of `rust-service`? All three are already in `Cargo.lock` | **Yes.** No new crate enters the lockfile |
+| Q4 | Approve `ring`, `base64`, `zeroize` and `subtle` as direct dependencies of `rust-service`? All four are already compiled into today's build through `reqwest` and `rustls` | **Yes.** No new crate enters the lockfile or the build |
 | Q5 | Who does the security review, and is it a hard gate before any tester turns sync on? | **External, 1–2 weeks** (for example Radically Open Security, Least Authority, Cure53 or NCC Group). **Hard gate.** A second review before phones (T7) |
 | Q6 | May a synced opt-out (invitations off on Mac A) apply at once on other Macs as reduce-only? | **No. Hold it** with the other policy inputs. Reduce-only still changes the invitation rate |
 | Q7 | Vault-driven policy inputs: one later amendment that turns on rules, quiet hours, invitations and reminder routing together, behind the per-Mac toggle (off by default), or hold them indefinitely? | **Hold through the current waves.** Then one amendment, cut between waves, with the per-Mac toggle off by default and provenance on every decision |
@@ -2059,7 +2328,47 @@ simulator:
 | Q14 | Phase 4: approve `x25519-dalek`, an HPKE crate (`hpke`, or `hpke-rs` with libcrux) and `uniffi`, with `cargo deny` in CI? And should device keys persist across Log Out (a random per-account identifier, made only on devices that turn on sync), which also replaces #41's deferred `install_id`? | **Yes to both.** Log Out keeps membership, with "Also remove this Mac from my devices" as an option |
 | Q15 | Phase 4: keep iCloud Keychain as a disclosed join path (a recovery member that alerts every device whenever it is used), or require a pairing ceremony for every new device? | **Keep it, on by default,** with an account switch to turn it off and a "Lost or stolen" prompt to remove the Mac from the Apple ID first |
 | Q16 | Should velvt-core delete a vault after 13 months with no device syncing, stated in PRIVACY.md? | **Yes** |
-| Q17 | Security notices (new sign-in, a Mac joined, reset requested): respect macOS Focus and DND like every other notification? | **Yes.** Never time-sensitive. Exempt only from Velvt's own one-offer-per-block and daily reminder caps |
-| Q18 | Email the account on a new device sign-in, as well as on a reset request (required)? | **Yes, both.** No device name in the email |
+| Q17 | Security notices (new sign-in, a Mac joined, reset requested): respect macOS Focus and DND like every other notification? | **Yes.** Never time-sensitive. Never posted during a work block (they wait for it to end, J6). Exempt only from Velvt's own one-offer-per-block and daily reminder caps |
+| Q18 | Email the account on a new device sign-in, as well as on vault creation and a reset request (both required)? All go through Resend, which keeps its own delivery log that erasure cannot reach | **Yes, all three.** No device name in any email; name Resend in `/privacy` |
 | Q19 | Report §5, which still gates Phase 4: is the relay's timing disclosure acceptable, or should phones start Bluetooth-only? Should drift offers ever reach the phone? | **The relay as a separate opt-in.** No drift offers to the phone until a pre-registered delivery-surface policy (4.5) |
 | Q20 | Accept that v1 does not detect a server that shows two Macs different valid versions (fork or withholding), for preferences only? | **Yes.** v2 adds witnessing |
+
+---
+
+## 18. Adversarial review, 2026-10-15
+
+Each finding was checked against velvt-app `origin/develop` @ 51ce105 and
+velvt-core `origin/develop` @ 6135547 before it was fixed here.
+
+| # | Finding | Class | Resolved in |
+|---|---|---|---|
+| F1 | During the 30 days a rotated key's item lives on, a malicious server could serve the pre-rotation copy to a fresh Mac on the same Apple ID. That Mac would adopt the old key, which the lost Mac still holds | Key rollback | §5.5 `supersedes` / `retired_by`, §5.6 steps 3 and 6, §6.1, T4, T14 |
+| F2 | Log Out, Turn Off Sync and removal cleared `vault_state`. A Mac that signed out for five minutes lost its rollback guard and its reset bookkeeping, so it could be shown a fake reset as if it had been offline for 72 h. Every re-sign-in also added a new device entry, and after 32 the document failed validation on every Mac | Rollback, availability | J7, §4.3 (per-account anchor), §4.1 device caps, §14 |
+| F3 | Someone with the password could remove every Mac (they stop polling and cannot cancel) and then request a reset. A person's own password reset signed out every Mac without cancelling the reset | Password holder | J9, §8.3 (removal push-out, password-reset cancel), T11, T12 |
+| F4 | A database restore makes versions go backwards. Each Mac ignored the restored copy, then wrote with `If-Match` of its own higher version and got 412 forever | Availability, buildability | §8.3 `PUT` `new_version`, §5.3, §6.1 merge rule, §10.4, §14 |
+| F5 | A completed reset left a 404 whose body had no reset fields, so returning Macs showed `missing_on_server`, and the "never create while an item exists" rule then blocked the new copy | Logic | §8.3 404 body, §6.1 `check_reset`, §5.5 create rule, §10.4 |
+| F6 | Delete Synced Data deleted one key id, so retired items blocked a later Turn On. A Mac on another Apple ID kept its item forever. "Old key retired" on an unverifiable reset could be read as deleting a synchronizable item, which would remove the key from every Mac | Erasure, destructive action | §5.5 deletion list, §6.1 |
+| F7 | A different blob at the same version (a fork) passed the `≥` check | Rollback | §4.3 `highest_seen_sha256`, §6.1 |
+| F8 | A code-delivered key that disagreed with the server's `key_id` had no defined outcome | Server trust | §7.1 step 7, T5 |
+| F9 | 4 KiB padding showed the rule count to within about 37 rules, and was described as hiding it | Metadata | §5.3, T1, §12 |
+| F10 | v2 reused v1's `K` as the iCloud recovery secret, so every v1 device, including a lost code-paired Mac, could join v2 as the recovery member | Crypto | §7.5, §15.3 T3, T14 |
+| F11 | The server-checked per-epoch write key was not in any signed chain entry | Crypto | §6.2 `epoch_write_pk`, §5.9 |
+| F12 | §5.9 checked a bare `SHA-256(VK_e)` against a commitment that §6.2 defines with a tag, `vault_id` and epoch | Crypto | §5.9 |
+| F13 | v2 readers had no rule against taking an older-epoch blob as current | Rollback | §5.9 |
+| F14 | Relay envelopes had no replay check inside their TTL | Crypto | §5.9, T27 |
+| F15 | QR pairing: `sealed_name` was outside the MAC (the server could swap the name in the approval sheet); a photographer of the QR could race for the phone's device tokens or claim first; `/pair` could leak the fragment, with `k` in it, to analytics | Pairing | §7.2 steps 2, 4 and 9, T25 |
+| F16 | The two-code transcript did not say it covers the chain head B pins | Pairing | §7.4 step 5 |
+| F17 | A v2 reset (new genesis) had no defined handling on devices that pinned the old root | Logic | §6.2 |
+| F18 | Erasure: `account.erasure_completed` is written after anonymization with `user_id` set; `request_id` was not nulled; a per-table metric showed sync use; backups were said to hold "only ciphertext"; Resend's delivery log was not disclosed | Erasure, privacy promise | §8.6 C0 steps 2–5, §8.5, G5, T21, §12 |
+| F19 | Security notices could post during a work block, and a click on one is an app switch the drift gate counts | Measurement | J6, §11, §11.3, Q17 |
+| F20 | Quiet hours were described as setting `do_not_disturb_until` on drift offers. In code they drop the offer to `Quiet` salience (`ipc/router.rs`), hold invitations, the digest and the reminder, and defer the daily insight (`delivery/poll.rs`) | Measurement accuracy | §10.1, §11 |
+| F21 | A `published_claims` test cannot see which features a release was built with | Buildability | §11.1 lock 1 (`--policy-inputs`, `verify_release.sh`) |
+| F22 | `ClassificationSource` crosses the socket, so `VaultRule` changes the IPC vocabulary | Buildability | §11.2 |
+| F23 | `ring::constant_time` is deprecated in 0.17.14 and fails `clippy -D warnings` | Buildability | §5.1 (`ring::hmac::verify`, `subtle`), Q4 |
+| F24 | `security-framework` is in `Cargo.lock` only through the optional `onnx` feature, so it is not "no new crate" for the default build | Buildability | §9.3 |
+| F25 | Per-day security limits relied on `InMemoryRateLimiter`, which is per process and forgets on deploy | Buildability | §8.1 |
+| F26 | Reset and creation email assumed a generic mail sender; the code has a reset-link-only Resend deliverer | Buildability | §8.3 "Account email", C2 |
+| F27 | Turning sync on would post `new_sign_in` for every existing device | UX | §10.4 |
+| F28 | HLC counter overflow broke string ordering | Logic | §10.3 |
+| F29 | A higher schema was to be read as "apply known fields" under `deny_unknown_fields`; a writer could exceed the 2,000-rule cap and make the copy unreadable everywhere | Logic | §4.1 |
+| F30 | A password holder could set up sync before the person did, leaving the person waiting for a key that never arrives | Password holder | J3, §8.3 create email, T11 |

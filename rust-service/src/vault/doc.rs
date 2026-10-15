@@ -541,13 +541,37 @@ impl PrefsDocument {
 
     /// The JSON a writer seals. Refuses a document that would fail
     /// [`Self::validate`] on any Mac, or that is too large to seal.
+    ///
+    /// Written into one buffer allocated at the largest size a document may
+    /// have, which is never grown: a growing `Vec` would free unwiped partial
+    /// copies of the plaintext, `person_salt` among them, on every reallocation.
     pub fn to_json(&self) -> Result<Zeroizing<Vec<u8>>, DocumentError> {
         self.validate()?;
-        let json = Zeroizing::new(serde_json::to_vec(self)?);
-        if json.len() > MAX_DOCUMENT_JSON_LENGTH {
-            return Err(DocumentError::TooLarge);
+        let mut writer =
+            BoundedWriter(Zeroizing::new(Vec::with_capacity(MAX_DOCUMENT_JSON_LENGTH)));
+        match serde_json::to_writer(&mut writer, self) {
+            Ok(()) => Ok(writer.0),
+            Err(error) if error.is_io() => Err(DocumentError::TooLarge),
+            Err(error) => Err(error.into()),
         }
-        Ok(json)
+    }
+}
+
+/// A writer that refuses to hold more than [`MAX_DOCUMENT_JSON_LENGTH`]
+/// bytes, so a buffer made with that capacity is never reallocated.
+struct BoundedWriter(Zeroizing<Vec<u8>>);
+
+impl std::io::Write for BoundedWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > MAX_DOCUMENT_JSON_LENGTH - self.0.len() {
+            return Err(std::io::Error::other("the document is too large to seal"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -607,13 +631,19 @@ struct LenientRegister<T> {
     hlc: Hlc,
 }
 
+/// The one part of a newer-schema document this Mac reads. Every other
+/// field, `person_salt` included, is skipped by the parser and never held in
+/// memory, since nothing here could wipe it.
+#[derive(Deserialize)]
+struct NewerSchemaFields {
+    #[serde(default)]
+    devices: serde_json::Value,
+}
+
 fn decode_newer(schema: u16, json: &[u8]) -> Result<NewerSchemaView, DocumentError> {
-    let document: serde_json::Value = serde_json::from_slice(json)?;
+    let NewerSchemaFields { devices: entries } = serde_json::from_slice(json)?;
     let mut devices = BTreeMap::new();
-    let entries = document
-        .get("devices")
-        .and_then(serde_json::Value::as_object);
-    for (id, entry) in entries.into_iter().flatten() {
+    for (id, entry) in entries.as_object().into_iter().flatten() {
         let Some(id) = SyncDeviceId::parse(id) else {
             continue;
         };
@@ -679,12 +709,12 @@ mod tests {
     };
     use crate::abstraction::{override_label_for_category, Taxonomy};
     use crate::vault::crypto::{
-        CryptoError, DocumentContext, PersonKey, PersonKeyKind, MAX_DOCUMENT_JSON_LENGTH,
+        CryptoError, DocumentContext, PersonKeyKind, MAX_DOCUMENT_JSON_LENGTH,
     };
     use crate::vault::merge::Hlc;
     use crate::vault::test_support::{
-        device, device_entry, hlc, name, prefs, rule, rule_key, sample_document, test_key, user,
-        NOW_MS,
+        device, device_entry, hlc, name, numbered_rule, prefs, rule, rule_key, sample_document,
+        test_key, user, uuid_device, NOW_MS,
     };
 
     fn as_value(document: &PrefsDocument) -> Value {
@@ -712,6 +742,42 @@ mod tests {
             json,
             "encoding is deterministic"
         );
+    }
+
+    /// The bytes a second implementation must reproduce: struct fields in
+    /// declaration order, the `devices` and `rules` maps in sorted key order,
+    /// no white space. (`serde_json::Value` sorts every object, so the shape
+    /// test below cannot see field order.)
+    #[test]
+    fn the_json_lists_fields_in_declaration_order() {
+        let document = sample_document();
+        let json = String::from_utf8(document.to_json().unwrap().to_vec()).unwrap();
+        let salt = document.person_salt.to_base64();
+        assert!(
+            json.starts_with(&format!(
+                r#"{{"schema":1,"person_salt":"{}","devices":{{"{}":{{"joined_via":"created","joined_at_ms":{NOW_MS},"server_device_id":{{"value":"#,
+                salt.as_str(),
+                device(1)
+            )),
+            "{json}"
+        );
+        assert!(json.contains(r#""rules":{"app:"#));
+        assert!(json.contains(r#"{"category":"COMMUNICATION","deleted":true,"hlc":"#));
+        assert!(json.contains(r#""settings":{"invitations_enabled":{"value":false,"hlc":"#));
+        assert!(json.contains(
+            r#""quiet_hours":{"value":{"start_local_minutes":1320,"end_local_minutes":420,"rule_version":1},"hlc":"#
+        ));
+        let without_names = json.replace("Studio Mac", "").replace("MacBook Pro", "");
+        assert!(!without_names.contains(char::is_whitespace), "{json}");
+    }
+
+    /// The JSON is written into one buffer made at the largest document size,
+    /// so no reallocation leaves an unwiped partial copy behind.
+    #[test]
+    fn the_json_is_written_into_one_buffer_that_never_grows() {
+        let json = sample_document().to_json().unwrap();
+        assert!(json.capacity() >= MAX_DOCUMENT_JSON_LENGTH);
+        assert!(json.len() < json.capacity());
     }
 
     /// The shape §4.1 publishes.
@@ -1101,23 +1167,6 @@ mod tests {
             decode(&serde_json::to_vec(&rules).unwrap()),
             Err(DocumentError::TooManyLiveRules)
         );
-    }
-
-    fn uuid_device(index: usize) -> super::SyncDeviceId {
-        let mut bytes = [0_u8; 16];
-        bytes[8..].copy_from_slice(&(index as u64).to_be_bytes());
-        bytes[6] = 0x40;
-        bytes[8] = 0x80;
-        super::SyncDeviceId::from_bytes(bytes).unwrap()
-    }
-
-    fn numbered_rule(index: usize) -> RuleKey {
-        let mut bytes = [0_u8; 32];
-        bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
-        RuleKey {
-            kind: PersonKeyKind::ALL[index % 3],
-            key: PersonKey::from_hex(&crate::vault::crypto::encode_hex(&bytes)).unwrap(),
-        }
     }
 
     /// The longest name in bytes: 64 characters of three bytes each.

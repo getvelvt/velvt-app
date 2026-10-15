@@ -5,7 +5,14 @@
 //! HKDF-SHA256, Ed25519 and HMAC-SHA256. Secret bytes this module holds sit in
 //! `Zeroizing` buffers and are wiped when dropped; key schedules inside `ring`
 //! are rebuilt per operation and dropped at once, which is the best effort the
-//! design asks for (§16.1). Nothing here implements `Serialize` for a secret.
+//! design asks for (§16.1). `K` never serializes. The one secret with a
+//! `Serialize` impl is `person_salt` (in `doc`), because the document carries
+//! it, and only ever inside the sealed document.
+//!
+//! The raw primitives are not reachable from the rest of the crate: signing
+//! with `W` is private to this module, so `W` signs only a [`statement`];
+//! `K`'s bytes, HKDF and the AEAD are visible only inside `vault`; and sealing
+//! with a chosen nonce exists only in test builds.
 
 pub mod statement;
 
@@ -21,6 +28,7 @@ use ring::{hkdf, hmac};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+use super::doc::SyncDeviceId;
 pub use super::wire::FormatError;
 use super::wire::Writer;
 
@@ -51,6 +59,7 @@ pub const MAX_DOCUMENT_JSON_LENGTH: usize =
 
 const DOC_KEY_INFO: &[u8] = b"velvt-vault-doc-v1";
 const WRITE_SEED_INFO: &[u8] = b"velvt-vault-write-v1";
+const ISSUER_KEY_INFO: &[u8] = b"velvt-vault-issuer-v1";
 const KEY_ID_TAG: &[u8] = b"velvt-vault-key-id-v1\0";
 const FINGERPRINT_TAG: &[u8] = b"velvt-vault-fpr-v1\0";
 const DOC_AAD_TAG: &[u8] = b"velvt-vault-doc-v1\0";
@@ -161,15 +170,23 @@ impl VaultKey {
         context: &DocumentContext<'_>,
         json: &[u8],
     ) -> Result<Vec<u8>, CryptoError> {
-        let mut nonce = [0_u8; NONCE_LENGTH];
-        SystemRandom::new()
-            .fill(&mut nonce)
-            .map_err(|_| CryptoError::Random)?;
-        self.seal_document_with_nonce(context, json, nonce)
+        self.seal_document_under(context, json, random_nonce()?)
     }
 
-    /// The deterministic half of [`Self::seal_document`], for test vectors.
-    pub(crate) fn seal_document_with_nonce(
+    /// The deterministic half of [`Self::seal_document`], for the test
+    /// vectors. Test builds only: a reused nonce under ChaCha20-Poly1305 gives
+    /// up both confidentiality and integrity.
+    #[cfg(test)]
+    pub(in crate::vault) fn seal_document_with_nonce(
+        &self,
+        context: &DocumentContext<'_>,
+        json: &[u8],
+        nonce: [u8; NONCE_LENGTH],
+    ) -> Result<Vec<u8>, CryptoError> {
+        self.seal_document_under(context, json, nonce)
+    }
+
+    fn seal_document_under(
         &self,
         context: &DocumentContext<'_>,
         json: &[u8],
@@ -200,12 +217,49 @@ impl VaultKey {
         Ok(Zeroizing::new(unpad_document(&plain)?.to_vec()))
     }
 
-    pub(crate) fn sign(&self, message: &[u8]) -> Result<Signature, CryptoError> {
+    /// The tag a rotation or deletion statement carries to name the Mac that
+    /// signed it (J6, J9): `HMAC-SHA256(K_issuer, sync_device_id)[0..16]`, with
+    /// `K_issuer = HKDF-SHA256(K, info = "velvt-vault-issuer-v1")`. Another
+    /// Mac holding this `K` finds the name by computing the tag for each
+    /// device in its last opened document; velvt-core, which stores the
+    /// statement, sees no device id.
+    pub fn issuer_tag(&self, issuer: SyncDeviceId) -> Result<IssuerTag, CryptoError> {
+        let issuer_key = hkdf_sha256::<KEY_LENGTH>(&self.secret[..], ISSUER_KEY_INFO)?;
+        let key = hmac::Key::new(hmac::HMAC_SHA256, &issuer_key[..]);
+        let mac = hmac::sign(&key, issuer.as_bytes());
+        let mut tag = [0_u8; IssuerTag::LENGTH];
+        tag.copy_from_slice(&mac.as_ref()[..IssuerTag::LENGTH]);
+        Ok(IssuerTag(tag))
+    }
+
+    /// The device among `candidates` whose tag under this key is `tag`, if
+    /// any. `None` when the signer is not in the document this Mac last
+    /// opened, for instance a Mac that joined since; the copy then names no
+    /// Mac.
+    pub fn identify_issuer<'a>(
+        &self,
+        tag: &IssuerTag,
+        candidates: impl IntoIterator<Item = &'a SyncDeviceId>,
+    ) -> Result<Option<SyncDeviceId>, CryptoError> {
+        for candidate in candidates {
+            if self.issuer_tag(*candidate)? == *tag {
+                return Ok(Some(*candidate));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Private to this module: `statement` signs through
+    /// [`VaultKey::sign_statement`], so nothing else in the crate can make `W`
+    /// sign arbitrary bytes.
+    fn sign(&self, message: &[u8]) -> Result<Signature, CryptoError> {
         let pair = write_key_pair(&self.secret)?;
         Signature::from_slice(pair.sign(message).as_ref())
     }
 
-    pub(crate) fn secret_bytes(&self) -> &[u8; KEY_LENGTH] {
+    /// `K`'s bytes, for the handoff payload (`vault::code`) and the vectors.
+    /// [`VaultKey::to_base64`] is the only way they leave `vault`.
+    pub(in crate::vault) fn secret_bytes(&self) -> &[u8; KEY_LENGTH] {
         &self.secret
     }
 
@@ -319,7 +373,7 @@ impl WritePublicKey {
         Fingerprint(u64::from_be_bytes(first) % Fingerprint::MODULUS)
     }
 
-    pub(crate) fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), CryptoError> {
+    fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), CryptoError> {
         UnparsedPublicKey::new(&ED25519, &self.0)
             .verify(message, &signature.0)
             .map_err(|_| CryptoError::BadSignature)
@@ -393,6 +447,29 @@ impl Signature {
 impl fmt::Debug for Signature {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "Signature({})", encode_hex(&self.0))
+    }
+}
+
+/// The 16 bytes a rotation or deletion statement carries in place of the
+/// signing Mac's `sync_device_id`; see [`VaultKey::issuer_tag`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct IssuerTag([u8; IssuerTag::LENGTH]);
+
+impl IssuerTag {
+    pub const LENGTH: usize = 16;
+
+    pub fn from_bytes(bytes: [u8; Self::LENGTH]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; Self::LENGTH] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for IssuerTag {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "IssuerTag({})", encode_hex(&self.0))
     }
 }
 
@@ -648,7 +725,7 @@ fn sha256_parts(parts: &[&[u8]]) -> [u8; 32] {
 
 /// HKDF-SHA256 (RFC 5869) with an empty salt, which RFC 5869 §2.2 defines as
 /// `HashLen` zero bytes.
-pub(crate) fn hkdf_sha256<const N: usize>(
+pub(in crate::vault) fn hkdf_sha256<const N: usize>(
     ikm: &[u8],
     info: &[u8],
 ) -> Result<Zeroizing<[u8; N]>, CryptoError> {
@@ -675,8 +752,18 @@ fn write_key_pair(secret: &[u8; KEY_LENGTH]) -> Result<Ed25519KeyPair, CryptoErr
     Ed25519KeyPair::from_seed_unchecked(&seed[..]).map_err(|_| CryptoError::Derivation)
 }
 
-/// `nonce ‖ ChaCha20-Poly1305(key, nonce, aad, plain)`.
-pub(crate) fn aead_seal(
+/// A fresh nonce from the operating system's CSPRNG.
+pub(in crate::vault) fn random_nonce() -> Result<[u8; NONCE_LENGTH], CryptoError> {
+    let mut nonce = [0_u8; NONCE_LENGTH];
+    SystemRandom::new()
+        .fill(&mut nonce)
+        .map_err(|_| CryptoError::Random)?;
+    Ok(nonce)
+}
+
+/// `nonce ‖ ChaCha20-Poly1305(key, nonce, aad, plain)`. Every production
+/// caller passes [`random_nonce`]; only the vectors fix one.
+pub(in crate::vault) fn aead_seal(
     key: &[u8; KEY_LENGTH],
     nonce: [u8; NONCE_LENGTH],
     aad: &[u8],
@@ -698,7 +785,7 @@ pub(crate) fn aead_seal(
 
 /// The inverse of [`aead_seal`]; the plaintext comes back in a buffer that is
 /// wiped when dropped.
-pub(crate) fn aead_open(
+pub(in crate::vault) fn aead_open(
     key: &[u8; KEY_LENGTH],
     aad: &[u8],
     sealed: &[u8],
@@ -772,7 +859,7 @@ mod tests {
         MAX_DOCUMENT_JSON_LENGTH, SEALED_SIZES,
     };
     use crate::vault::code::HandoffId;
-    use crate::vault::test_support::{other_key, other_user, prefs, test_key, user, Rng};
+    use crate::vault::test_support::{device, other_key, other_user, prefs, test_key, user, Rng};
 
     const JSON: &[u8] = br#"{"schema":1}"#;
 
@@ -1155,7 +1242,7 @@ mod tests {
                 write_pk: *key.write_public_key(),
                 ciphertext_sha256,
             },
-            rotate: SignedRotation::sign(user(), key, next, 43).unwrap(),
+            rotate: SignedRotation::sign(user(), key, next, 43, device(5)).unwrap(),
             delete: Signed::sign(
                 key,
                 DeleteStatement {
@@ -1163,6 +1250,7 @@ mod tests {
                     key_id: key.key_id(),
                     at_version: 42,
                     requested_at_ms: 1_760_486_400_000,
+                    issuer_tag: key.issuer_tag(device(5)).unwrap(),
                 },
             )
             .unwrap(),
@@ -1400,7 +1488,7 @@ mod tests {
     #[test]
     fn a_rotation_must_be_signed_by_both_keys_and_name_both_correctly() {
         let (old, new) = (test_key(), other_key());
-        let rotation = SignedRotation::sign(user(), &old, &new, 43).unwrap();
+        let rotation = SignedRotation::sign(user(), &old, &new, 43, device(5)).unwrap();
         assert_eq!(
             rotation.verify(&user(), old.write_public_key()),
             Ok(*new.write_public_key())
@@ -1422,7 +1510,7 @@ mod tests {
             Err(CryptoError::KeyMismatch)
         );
 
-        let to_itself = SignedRotation::sign(user(), &old, &old, 43).unwrap();
+        let to_itself = SignedRotation::sign(user(), &old, &old, 43, device(5)).unwrap();
         assert_eq!(
             to_itself.verify(&user(), old.write_public_key()),
             Err(CryptoError::KeyMismatch)
@@ -1432,6 +1520,38 @@ mod tests {
             rotation.verify(&user(), new.write_public_key()),
             Err(CryptoError::KeyMismatch)
         );
+    }
+
+    /// J6 and J9 name the Mac that rotated or deleted, so the statements carry
+    /// a tag only a holder of `K` can map back to a device: velvt-core, which
+    /// stores them, sees no device id, and cannot change the tag without
+    /// breaking the signature.
+    #[test]
+    fn a_rotation_or_deletion_names_its_mac_to_holders_of_the_key_only() {
+        let (key, next) = (test_key(), other_key());
+        let all = statements(&key, &next);
+        let tag = key.issuer_tag(device(5)).unwrap();
+        assert_eq!(all.rotate.statement.issuer_tag, tag);
+        assert_eq!(all.delete.statement.issuer_tag, tag);
+
+        let devices = [device(1), device(5), device(9)];
+        assert_eq!(key.identify_issuer(&tag, &devices), Ok(Some(device(5))));
+        assert_eq!(key.identify_issuer(&tag, &devices[..1]), Ok(None));
+        assert_eq!(next.identify_issuer(&tag, &devices), Ok(None));
+
+        assert_eq!(key.issuer_tag(device(5)), Ok(tag), "deterministic");
+        assert_ne!(key.issuer_tag(device(6)).unwrap(), tag);
+        assert_ne!(next.issuer_tag(device(5)).unwrap(), tag);
+        let stored = all.delete.to_bytes();
+        let id = device(5);
+        assert!(
+            !stored.windows(16).any(|window| window == id.as_bytes()),
+            "the stored statement holds no sync device id"
+        );
+        assert!(!stored
+            .windows(36)
+            .any(|window| window == id.to_string().as_bytes()));
+        assert!(format!("{tag:?}").starts_with("IssuerTag("));
     }
 
     #[test]

@@ -56,9 +56,18 @@ the shipped helper never resolve `libfuzzer-sys`. Two gates use it:
   points (`tests/vault_fuzz_corpus.rs`), on the pinned stable toolchain, on
   every pull request.
 - `.github/workflows/fuzz.yml` runs each target under libFuzzer: 10 minutes each
-  nightly, and 1 minute each on a pull request that touches `src/vault` or the
-  fuzz crate. It is not a required check. A crash prints the input and fails
-  the job; add that input to the target's `fuzz/corpus/` directory with the fix.
+  on a push to `develop` that touches `src/vault`, the fuzz crate or the
+  lockfile, and nightly; 1 minute each on a pull request that touches them. It
+  is not a required check. GitHub runs a schedule only from the default branch
+  (`main`), so the nightly run checks out `develop` and starts once the
+  workflow is on `main`; until then the pushes to `develop` are the long runs.
+- A crash fails the job. libFuzzer prints a crashing input inline only when it
+  is 256 bytes or less, so a failed run uploads `fuzz/artifacts/` as the
+  `vault-fuzz-artifacts` artifact. Add the crashing input to the target's
+  `fuzz/corpus/` directory with the fix.
+- `make fuzz-vault` locally writes the inputs libFuzzer finds to
+  `fuzz/scratch-corpus/` (gitignored) and only reads `fuzz/corpus/`, so the
+  committed corpus stays curated.
 
 ## `make lint-swift`
 

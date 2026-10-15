@@ -1,7 +1,7 @@
 //! Replays every committed vault fuzz input through the fuzz targets' own
 //! entry points (`fuzz/harness.rs`), so a regression a fuzzer once found, or
 //! a seed stops parsing, fails `cargo test` without a nightly toolchain. The
-//! fuzzing itself runs in CI's nightly fuzz job (`make fuzz-vault`).
+//! fuzzing itself runs in CI's Fuzz workflow (`make fuzz-vault`).
 
 #[path = "../fuzz/harness.rs"]
 mod harness;
@@ -9,8 +9,10 @@ mod harness;
 use std::path::PathBuf;
 
 use velvt_service::vault::code::{open_handoff, SetupCode};
-use velvt_service::vault::crypto::statement::{SignedRotation, Statement};
-use velvt_service::vault::crypto::{statement::PutStatement, UserId};
+use velvt_service::vault::crypto::statement::{
+    DeleteStatement, PutStatement, Signed, SignedRotation, Statement,
+};
+use velvt_service::vault::crypto::{UserId, VaultKey};
 use velvt_service::vault::doc::{decode, DecodedDocument};
 
 type Target = (&'static str, fn(&[u8]));
@@ -60,11 +62,21 @@ fn the_seeds_parse() {
     let typed = String::from_utf8(seed("vault_setup_code", "code-lowercase-spaced")).unwrap();
     assert!(SetupCode::parse(&typed).is_ok());
     assert!(PutStatement::parse(&seed("vault_statements", "put-statement")).is_ok());
-    assert!(SignedRotation::parse(&seed("vault_statements", "rotate-stored")).is_ok());
+    // Signed by the vectors' key, so a mutation reaches the signature check.
+    let user_id = UserId::new("8f14e45f-ceea-467a-9575-1f2ab6c9d0e1").unwrap();
+    let vector_key = VaultKey::from_slice(&(0..32).collect::<Vec<u8>>()).unwrap();
+    let trusted = vector_key.write_public_key();
+    SignedRotation::parse(&seed("vault_statements", "rotate-stored"))
+        .unwrap()
+        .verify(&user_id, trusted)
+        .unwrap();
+    Signed::<DeleteStatement>::parse(&seed("vault_statements", "delete-signed"))
+        .unwrap()
+        .verify(&user_id, trusted)
+        .unwrap();
 
     let code =
         SetupCode::parse(std::str::from_utf8(&seed("vault_setup_code", "code")).unwrap()).unwrap();
-    let user_id = UserId::new("8f14e45f-ceea-467a-9575-1f2ab6c9d0e1").unwrap();
     assert!(open_handoff(&code, &user_id, &seed("vault_handoff_payload", "payload")).is_ok());
 }
 

@@ -10,14 +10,20 @@
 //! (`vaults.rotations`, `vault_tombstones.statement`), is the statement's bytes
 //! followed by its 64-byte signatures: one, or for a rotation the old key's and
 //! then the new key's. A parser rejects anything after them.
+//!
+//! The rotation and deletion statements end with the signing Mac's
+//! [`IssuerTag`], so other Macs can name that Mac from signed bytes (J6
+//! `sync_key_changed`, J9 "Sync was turned off from …") while velvt-core sees
+//! no device id.
 
 use uuid::Uuid;
 
 use super::{
-    BlobName, CryptoError, FormatError, KeyId, Signature, UserId, VaultKey, WritePublicKey,
-    PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH,
+    BlobName, CryptoError, FormatError, IssuerTag, KeyId, Signature, UserId, VaultKey,
+    WritePublicKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH,
 };
 use crate::vault::code::HandoffId;
+use crate::vault::doc::SyncDeviceId;
 use crate::vault::wire::{Reader, Writer};
 
 const PUT_TAG: &[u8] = b"velvt-vault-put-v1\0";
@@ -38,7 +44,8 @@ mod private {
 }
 
 /// A statement a write key can sign. Sealed: only the six layouts below
-/// exist, so nothing else can be signed with `W`.
+/// exist, and `VaultKey`'s raw signing is private to `crypto`, so nothing else
+/// can be signed with `W`, inside this crate or outside it.
 pub trait Statement: private::Sealed {
     fn to_bytes(&self) -> Vec<u8>;
 
@@ -195,8 +202,10 @@ impl Statement for CreateStatement {
 }
 
 /// `"velvt-vault-rotate-v1\0" ‖ lp(user_id) ‖ old_key_id ‖ new_key_id ‖
-/// new_write_pk ‖ u64_be(new_version)`, signed by the old `W` (authorization)
-/// and by the new `W` (possession).
+/// new_write_pk ‖ u64_be(new_version) ‖ issuer_tag`, signed by the old `W`
+/// (authorization) and by the new `W` (possession). `issuer_tag` is the
+/// rotating Mac's, under the old key, which every Mac that verifies the
+/// rotation holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RotateStatement {
     pub user_id: UserId,
@@ -204,6 +213,7 @@ pub struct RotateStatement {
     pub new_key_id: KeyId,
     pub new_write_pk: WritePublicKey,
     pub new_version: u64,
+    pub issuer_tag: IssuerTag,
 }
 
 impl private::Sealed for RotateStatement {
@@ -215,6 +225,7 @@ impl private::Sealed for RotateStatement {
             new_key_id: KeyId::from_bytes(reader.array()?),
             new_write_pk: read_public_key(reader)?,
             new_version: reader.u64()?,
+            issuer_tag: IssuerTag::from_bytes(reader.array()?),
         })
     }
 }
@@ -227,6 +238,7 @@ impl Statement for RotateStatement {
             .bytes(self.new_key_id.as_bytes())
             .bytes(self.new_write_pk.as_bytes())
             .u64(self.new_version)
+            .bytes(self.issuer_tag.as_bytes())
             .finish()
     }
 }
@@ -241,12 +253,14 @@ pub struct SignedRotation {
 }
 
 impl SignedRotation {
-    /// The rotation from `old` to `new` that §5.6 step 5 posts.
+    /// The rotation from `old` to `new` that §5.6 step 5 posts, made by the
+    /// Mac `issuer`.
     pub fn sign(
         user_id: UserId,
         old: &VaultKey,
         new: &VaultKey,
         new_version: u64,
+        issuer: SyncDeviceId,
     ) -> Result<Self, CryptoError> {
         let statement = RotateStatement {
             user_id,
@@ -254,6 +268,7 @@ impl SignedRotation {
             new_key_id: new.key_id(),
             new_write_pk: *new.write_public_key(),
             new_version,
+            issuer_tag: old.issuer_tag(issuer)?,
         };
         Ok(Self {
             old_signature: old.sign_statement(&statement)?,
@@ -306,14 +321,17 @@ impl SignedRotation {
 }
 
 /// `"velvt-vault-delete-v1\0" ‖ lp(user_id) ‖ key_id ‖ u64_be(at_version) ‖
-/// i64_be(requested_at)`, signed by `W`. `requested_at` is Unix milliseconds.
-/// velvt-core keeps it as the tombstone other Macs verify (J9).
+/// i64_be(requested_at) ‖ issuer_tag`, signed by `W`. `requested_at` is Unix
+/// milliseconds, and `issuer_tag` names the deleting Mac
+/// ([`VaultKey::issuer_tag`]). velvt-core keeps it as the tombstone other Macs
+/// verify (J9).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteStatement {
     pub user_id: UserId,
     pub key_id: KeyId,
     pub at_version: u64,
     pub requested_at_ms: i64,
+    pub issuer_tag: IssuerTag,
 }
 
 impl private::Sealed for DeleteStatement {
@@ -324,6 +342,7 @@ impl private::Sealed for DeleteStatement {
             key_id: KeyId::from_bytes(reader.array()?),
             at_version: reader.u64()?,
             requested_at_ms: reader.i64()?,
+            issuer_tag: IssuerTag::from_bytes(reader.array()?),
         })
     }
 }
@@ -335,6 +354,7 @@ impl Statement for DeleteStatement {
             .bytes(self.key_id.as_bytes())
             .u64(self.at_version)
             .i64(self.requested_at_ms)
+            .bytes(self.issuer_tag.as_bytes())
             .finish()
     }
 }

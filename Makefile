@@ -150,9 +150,14 @@ CARGO_FUZZ_VERSION := 0.13.2
 FUZZ_SECONDS ?= 60
 VAULT_FUZZ_TARGETS := vault_document vault_setup_code vault_statements vault_handoff_payload
 
+# libFuzzer writes every new input into the first corpus directory it is
+# given, so that is a scratch directory (gitignored); the committed corpus is
+# read from second and never written to. Add only a crashing input to it.
 fuzz-vault:
 	cd rust-service && for target in $(VAULT_FUZZ_TARGETS); do \
-		cargo +$(FUZZ_TOOLCHAIN) fuzz run $$target -- -max_total_time=$(FUZZ_SECONDS) || exit 1; \
+		mkdir -p fuzz/scratch-corpus/$$target && \
+		cargo +$(FUZZ_TOOLCHAIN) fuzz run $$target fuzz/scratch-corpus/$$target fuzz/corpus/$$target \
+			-- -max_total_time=$(FUZZ_SECONDS) || exit 1; \
 	done
 
 print-fuzz-toolchain:

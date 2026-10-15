@@ -2,8 +2,15 @@
 //!
 //! Every mutable value is a register `{value, hlc}`, and a merge takes the
 //! register with the higher HLC. The merge is commutative, associative and
-//! idempotent for documents that share a `person_salt`, so any set of Macs
-//! converges whatever order they sync in.
+//! idempotent for documents that share a `person_salt` while the result stays
+//! within the live caps, so any set of Macs converges whatever order they sync
+//! in. Past a cap, the server's copy keeps its entries and this Mac's
+//! additions wait ([`merge`]).
+//!
+//! A served copy older than the newest this Mac has seen goes through
+//! [`merge_older_copy`] instead, which adds nothing: after tombstone
+//! collection, an old copy is the only thing that could bring a removed Mac or
+//! a deleted rule back.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -12,7 +19,10 @@ use std::fmt;
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::doc::{DeviceEntry, PrefsDocument, Register, RuleRegister, Settings, SyncDeviceId};
+use super::doc::{
+    DeviceEntry, PrefsDocument, Register, RuleKey, RuleRegister, Settings, SyncDeviceId,
+    MAX_DEVICE_ENTRIES, MAX_LIVE_DEVICES, MAX_LIVE_RULES,
+};
 
 /// Deleted rules and removed device entries are dropped on write once their
 /// register is older than this.
@@ -266,8 +276,7 @@ fn merge_optional<T: Clone + Ord>(
     }
 }
 
-/// A merged document, and whether the server's copy carried a different
-/// `person_salt` from this Mac's.
+/// A merged document, and what of this Mac's copy it could not take.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Merged {
     pub document: PrefsDocument,
@@ -276,12 +285,32 @@ pub struct Merged {
     /// salt), and the caller clears its rule links so the rules re-mirror
     /// (§4.3).
     pub person_salt_replaced: bool,
+    /// Rules this Mac made live that the merged copy has no room for: with
+    /// them it would hold more than 2,000 live rules. The merged copy keeps
+    /// the server's register for each (or no entry). They stay in this Mac's
+    /// own tables and are not mirrored, and the status line says so (§4.1).
+    pub rules_over_cap: Vec<RuleKey>,
+    /// Device entries this Mac made live, or added, that the merged copy has
+    /// no room for: more than 32 live Macs or 256 entries. The merged copy
+    /// keeps the server's `removed` register for each (or no entry). This
+    /// Mac's own id here means it cannot join until a Mac is removed.
+    pub devices_over_cap: Vec<SyncDeviceId>,
 }
 
 /// Merges this Mac's document into the server's.
 ///
 /// `person_salt` is written once at creation and the server copy's value wins
-/// (§10.3). With equal salts the merge is symmetric in its arguments.
+/// (§10.3). With equal salts the merge is symmetric in its arguments, as long
+/// as the result is within the caps.
+///
+/// Past a cap the merge gives up this Mac's additions, never the server's
+/// entries, so the result is always a document a writer may write (§4.1:
+/// "a writer never produces a document that fails validation"). An addition
+/// is an entry that is live only because of this Mac's copy. The server's copy
+/// passed validation, so giving up every addition always fits; they are given
+/// up from the highest key down until the result fits, which does not depend
+/// on the order this Mac made them in. Two Macs that each add the 2,000th rule
+/// then end with 2,000, not 2,001 that neither could write.
 pub fn merge(server: &PrefsDocument, local: &PrefsDocument) -> Merged {
     let person_salt_replaced = server.person_salt != local.person_salt;
     let rules = if person_salt_replaced {
@@ -289,16 +318,151 @@ pub fn merge(server: &PrefsDocument, local: &PrefsDocument) -> Merged {
     } else {
         merge_maps(&server.rules, &local.rules, RuleRegister::merge)
     };
+    let mut document = PrefsDocument {
+        schema: server.schema,
+        person_salt: server.person_salt.clone(),
+        devices: merge_maps(&server.devices, &local.devices, DeviceEntry::merge),
+        rules,
+        settings: server.settings.merge(&local.settings),
+    };
+    let rules_over_cap = fit_rules(&mut document, server);
+    let devices_over_cap = fit_devices(&mut document, server);
     Merged {
-        document: PrefsDocument {
-            schema: server.schema,
-            person_salt: server.person_salt.clone(),
-            devices: merge_maps(&server.devices, &local.devices, DeviceEntry::merge),
-            rules,
-            settings: server.settings.merge(&local.settings),
-        },
+        document,
         person_salt_replaced,
+        rules_over_cap,
+        devices_over_cap,
     }
+}
+
+/// Merges a served copy whose version is below this Mac's
+/// `highest_seen_version` into `current`, this Mac's document at that version
+/// (its last opened copy with its own edits merged in). §6.1: "merge it into
+/// ours (registers cannot go backwards); never cache it as current".
+///
+/// Unlike [`merge`], it never adds a device or a rule that `current` lacks.
+/// Every key an older copy holds was carried into each later version, unless
+/// a later write collected it as a tombstone more than 180 days old
+/// ([`collect_garbage`]). The older copy has the entry as it was before it was
+/// removed or deleted, so adding it back would revive a removed (perhaps
+/// stolen) Mac, or a deleted rule, on every Mac. velvt-core can replay any old
+/// copy signed under the current key, so it must not be able to do that (T4).
+/// Registers of keys both copies hold merge as usual; a copy under another
+/// `person_salt` contributes no rules; settings `current` has never had stay
+/// unset. The result stays within the caps.
+pub fn merge_older_copy(current: &PrefsDocument, older: &PrefsDocument) -> PrefsDocument {
+    let mut document = current.clone();
+    for (id, entry) in &mut document.devices {
+        if let Some(old) = older.devices.get(id) {
+            *entry = entry.merge(old);
+        }
+    }
+    if current.person_salt == older.person_salt {
+        for (key, rule) in &mut document.rules {
+            if let Some(old) = older.rules.get(key) {
+                *rule = rule.merge(old);
+            }
+        }
+    }
+    document.settings = Settings {
+        invitations_enabled: merge_existing(
+            &current.settings.invitations_enabled,
+            &older.settings.invitations_enabled,
+        ),
+        quiet_hours: merge_existing(&current.settings.quiet_hours, &older.settings.quiet_hours),
+    };
+    fit_rules(&mut document, current);
+    fit_devices(&mut document, current);
+    document
+}
+
+fn merge_existing<T: Clone + Ord>(
+    current: &Option<Register<T>>,
+    older: &Option<Register<T>>,
+) -> Option<Register<T>> {
+    match (current, older) {
+        (Some(current), Some(older)) => Some(current.merge(older)),
+        (current, _) => current.clone(),
+    }
+}
+
+/// Gives up live rules that only `merged` has live, highest key first, until
+/// at most [`MAX_LIVE_RULES`] are live. Returns the keys given up.
+fn fit_rules(merged: &mut PrefsDocument, baseline: &PrefsDocument) -> Vec<RuleKey> {
+    let excess = merged.live_rule_count().saturating_sub(MAX_LIVE_RULES);
+    if excess == 0 {
+        return Vec::new();
+    }
+    let given_up: Vec<RuleKey> = merged
+        .rules
+        .iter()
+        .rev()
+        .filter(|(key, rule)| {
+            !rule.deleted && baseline.rules.get(key).is_none_or(|kept| kept.deleted)
+        })
+        .map(|(key, _)| *key)
+        .take(excess)
+        .collect();
+    for key in &given_up {
+        match baseline.rules.get(key) {
+            Some(kept) => merged.rules.insert(*key, kept.clone()),
+            None => merged.rules.remove(key),
+        };
+    }
+    given_up
+}
+
+/// The same for devices: first live entries past [`MAX_LIVE_DEVICES`] (the
+/// baseline's `removed` register comes back, or the entry goes), then new
+/// entries past [`MAX_DEVICE_ENTRIES`].
+fn fit_devices(merged: &mut PrefsDocument, baseline: &PrefsDocument) -> Vec<SyncDeviceId> {
+    let mut given_up = Vec::new();
+    let excess_live = merged.live_device_count().saturating_sub(MAX_LIVE_DEVICES);
+    if excess_live > 0 {
+        let additions: Vec<SyncDeviceId> = merged
+            .devices
+            .iter()
+            .rev()
+            .filter(|(id, entry)| {
+                !entry.removed.value
+                    && baseline
+                        .devices
+                        .get(id)
+                        .is_none_or(|kept| kept.removed.value)
+            })
+            .map(|(id, _)| *id)
+            .take(excess_live)
+            .collect();
+        for id in additions {
+            match baseline.devices.get(&id) {
+                Some(kept) => {
+                    if let Some(entry) = merged.devices.get_mut(&id) {
+                        entry.removed = kept.removed.clone();
+                    }
+                }
+                None => {
+                    merged.devices.remove(&id);
+                }
+            }
+            given_up.push(id);
+        }
+    }
+    let excess_entries = merged.devices.len().saturating_sub(MAX_DEVICE_ENTRIES);
+    if excess_entries > 0 {
+        let additions: Vec<SyncDeviceId> = merged
+            .devices
+            .keys()
+            .rev()
+            .filter(|id| !baseline.devices.contains_key(id))
+            .copied()
+            .take(excess_entries)
+            .collect();
+        for id in additions {
+            merged.devices.remove(&id);
+            given_up.push(id);
+        }
+    }
+    given_up
 }
 
 fn merge_maps<K: Ord + Clone, V: Clone>(
@@ -322,7 +486,8 @@ fn merge_maps<K: Ord + Clone, V: Clone>(
 /// part of a merge.
 ///
 /// A Mac offline for longer than that can bring a deleted rule back. That is
-/// documented and harmless, since rules are held (§10.3).
+/// documented and harmless, since rules are held (§10.3). An old copy served
+/// by velvt-core cannot, because it is merged with [`merge_older_copy`].
 pub fn collect_garbage(document: &mut PrefsDocument, now_ms: u64) {
     let expired = |hlc: &Hlc| now_ms.saturating_sub(hlc.wall_ms()) > TOMBSTONE_RETENTION_MS;
     document
@@ -335,14 +500,17 @@ pub fn collect_garbage(document: &mut PrefsDocument, now_ms: u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_garbage, merge, Hlc, HlcClock, HlcError, TOMBSTONE_RETENTION_MS};
+    use super::{
+        collect_garbage, merge, merge_older_copy, Hlc, HlcClock, HlcError, TOMBSTONE_RETENTION_MS,
+    };
     use crate::vault::crypto::PersonKeyKind;
     use crate::vault::doc::{
-        Category, JoinedVia, PrefsDocument, QuietHours, Register, RuleRegister,
+        Category, JoinedVia, PrefsDocument, QuietHours, Register, RuleRegister, MAX_DEVICE_ENTRIES,
+        MAX_LIVE_DEVICES, MAX_LIVE_RULES,
     };
     use crate::vault::test_support::{
-        device, device_entry, hlc, name, permutations, register, rule, rule_key, salt,
-        sample_document, Rng, NOW_MS,
+        device, device_entry, hlc, name, numbered_rule, permutations, register, rule, rule_key,
+        salt, sample_document, uuid_device, Rng, NOW_MS,
     };
 
     const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -594,6 +762,11 @@ mod tests {
                 assert_eq!(merge(a, b).document, merge(b, a).document, "seed {seed}");
                 assert_eq!(merge(a, a).document, *a, "seed {seed}: idempotence");
                 assert_eq!(merge(&expected, a).document, expected, "seed {seed}");
+                // Every copy that went into `expected` is older than it, and
+                // nothing in one is missing from it or newer than it.
+                for older in edits.iter().chain([&base]) {
+                    assert_eq!(merge_older_copy(&expected, older), expected, "seed {seed}");
+                }
             }
         }
     }
@@ -783,6 +956,262 @@ mod tests {
         assert!(!document.devices.contains_key(&device(2)));
         assert!(document.devices.contains_key(&device(1)));
         assert!(document.devices.contains_key(&removed_recent));
+    }
+
+    /// T4 after tombstone collection. A copy from more than 180 days ago, still
+    /// validly signed under the current key, holds a Mac and a rule as they
+    /// were before they were removed and deleted; the tombstones that beat
+    /// them have since been collected. Merged as a peer it would revive both
+    /// on every Mac. Merged as the older copy it is, it adds nothing.
+    #[test]
+    fn an_older_copy_never_brings_back_what_tombstone_collection_dropped() {
+        let stolen = device(2);
+        let deleted = rule_key(PersonKeyKind::Site, 0xa1);
+        let replayed = sample_document();
+        assert!(!replayed.devices[&stolen].removed.value);
+        assert!(!replayed.rules[&deleted].deleted);
+
+        let mut current = replayed.clone();
+        let removed_at = hlc(NOW_MS + DAY_MS, 0, 1);
+        current.devices.get_mut(&stolen).unwrap().removed = register(true, removed_at);
+        current
+            .set_rule(deleted, rule(Category::SocialFeed, true, removed_at))
+            .unwrap();
+        collect_garbage(&mut current, NOW_MS + 182 * DAY_MS);
+        assert!(!current.devices.contains_key(&stolen));
+        assert!(!current.rules.contains_key(&deleted));
+
+        let as_peer = merge(&replayed, &current).document;
+        assert!(
+            !as_peer.devices[&stolen].removed.value && !as_peer.rules[&deleted].deleted,
+            "the symmetric merge revives both, which is why it is not used here"
+        );
+
+        let merged = merge_older_copy(&current, &replayed);
+        assert_eq!(merged, current);
+        assert_eq!(merged.live_device_count(), 1);
+    }
+
+    #[test]
+    fn an_older_copy_still_merges_the_registers_both_copies_hold() {
+        let current = sample_document();
+        let mut older = sample_document();
+        // A damaged older copy whose register is newer: it wins, as in any
+        // merge, but brings no entry with it.
+        older.devices.get_mut(&device(1)).unwrap().name =
+            register(name("Desk"), hlc(NOW_MS + 50, 0, 1));
+        older
+            .devices
+            .insert(device(3), device_entry(3, "Ghost", hlc(NOW_MS, 0, 3)));
+        let mut no_settings = current.clone();
+        no_settings.settings.invitations_enabled = None;
+        older.settings.invitations_enabled = Some(register(true, hlc(NOW_MS + 50, 0, 1)));
+
+        let merged = merge_older_copy(&current, &older);
+        assert_eq!(merged.devices[&device(1)].name.value.as_str(), "Desk");
+        assert!(!merged.devices.contains_key(&device(3)));
+        assert_eq!(
+            merged.settings.invitations_enabled,
+            Some(register(true, hlc(NOW_MS + 50, 0, 1)))
+        );
+        assert_eq!(
+            merge_older_copy(&no_settings, &older)
+                .settings
+                .invitations_enabled,
+            None,
+            "a setting this Mac has never had is not added"
+        );
+
+        let mut other_salt = older.clone();
+        other_salt.person_salt = salt(8);
+        other_salt
+            .rules
+            .values_mut()
+            .for_each(|rule| rule.hlc = hlc(NOW_MS + 99, 0, 9));
+        assert_eq!(
+            merge_older_copy(&current, &other_salt).rules,
+            current.rules,
+            "rules under another salt are not merged"
+        );
+        assert_eq!(
+            merge_older_copy(&current, &other_salt).person_salt,
+            current.person_salt
+        );
+    }
+
+    fn with_live_rules(range: std::ops::Range<usize>, at: Hlc) -> PrefsDocument {
+        let mut document = sample_document();
+        document.rules.clear();
+        for index in range {
+            document
+                .rules
+                .insert(numbered_rule(index), rule(Category::FocusWork, false, at));
+        }
+        document
+    }
+
+    /// §4.1: a writer never produces a document that fails validation. Two
+    /// Macs that each add the 2,000th rule must not end with 2,001, which no
+    /// Mac could write; the server's copy keeps its rule and this Mac's waits.
+    #[test]
+    fn two_macs_adding_the_two_thousandth_rule_end_with_two_thousand() {
+        let at = hlc(NOW_MS, 0, 1);
+        let full = with_live_rules(0..MAX_LIVE_RULES - 1, at);
+        let mut server = full.clone();
+        server
+            .set_rule(
+                numbered_rule(5_000),
+                rule(Category::Reference, false, hlc(NOW_MS + 1, 0, 1)),
+            )
+            .unwrap();
+        let mut local = full.clone();
+        let mine = numbered_rule(6_000);
+        local
+            .set_rule(
+                mine,
+                rule(Category::Reference, false, hlc(NOW_MS + 2, 0, 2)),
+            )
+            .unwrap();
+
+        let merged = merge(&server, &local);
+
+        assert_eq!(merged.rules_over_cap, [mine]);
+        assert_eq!(merged.document.live_rule_count(), MAX_LIVE_RULES);
+        assert!(!merged.document.rules.contains_key(&mine));
+        assert!(merged.document.to_json().is_ok());
+        assert!(merged.devices_over_cap.is_empty());
+    }
+
+    /// The probe from the review: 1,500 live rules on each of two Macs, on
+    /// different keys. The server's 1,500 stay; 500 of this Mac's fit, and the
+    /// 1,000 with the highest keys wait.
+    #[test]
+    fn merging_past_the_rule_cap_gives_up_this_mac_s_additions_highest_key_first() {
+        let at = hlc(NOW_MS, 0, 1);
+        let server = with_live_rules(0..1_500, at);
+        let local = with_live_rules(1_500..3_000, hlc(NOW_MS, 0, 2));
+
+        let merged = merge(&server, &local);
+
+        assert_eq!(merged.document.live_rule_count(), MAX_LIVE_RULES);
+        assert_eq!(merged.rules_over_cap.len(), 1_000);
+        let mut local_keys: Vec<_> = local.rules.keys().copied().collect();
+        local_keys.sort();
+        let (kept, given_up) = local_keys.split_at(500);
+        assert!(kept
+            .iter()
+            .all(|key| merged.document.rules.contains_key(key)));
+        assert!(given_up
+            .iter()
+            .all(|key| !merged.document.rules.contains_key(key)));
+        assert!(server
+            .rules
+            .keys()
+            .all(|key| merged.document.rules.contains_key(key)));
+        assert!(merged.document.to_json().is_ok());
+        // Within the caps nothing is given up, and the merge stays symmetric.
+        let small = merge(&with_live_rules(0..10, at), &with_live_rules(5..15, at));
+        assert!(small.rules_over_cap.is_empty());
+    }
+
+    /// A rule the server has deleted and this Mac revived, while another Mac
+    /// filled the last place, keeps the server's tombstone.
+    #[test]
+    fn a_rule_revived_past_the_cap_keeps_the_server_s_tombstone() {
+        let at = hlc(NOW_MS, 0, 1);
+        let mut before = with_live_rules(0..MAX_LIVE_RULES - 1, at);
+        let tombstone = rule(Category::System, true, hlc(NOW_MS + 1, 0, 1));
+        let revived = numbered_rule(9_000);
+        before.rules.insert(revived, tombstone.clone());
+        let mut local = before.clone();
+        local
+            .set_rule(
+                revived,
+                rule(Category::System, false, hlc(NOW_MS + 2, 0, 2)),
+            )
+            .unwrap();
+        let mut server = before;
+        server
+            .set_rule(
+                numbered_rule(9_001),
+                rule(Category::System, false, hlc(NOW_MS + 3, 0, 3)),
+            )
+            .unwrap();
+
+        let merged = merge(&server, &local);
+
+        assert_eq!(merged.rules_over_cap, [revived]);
+        assert_eq!(merged.document.rules[&revived], tombstone);
+        assert!(merged.document.to_json().is_ok());
+    }
+
+    /// Two Macs joining at 31 live Macs do not make 33: the one whose copy is
+    /// merged second waits until a Mac is removed.
+    #[test]
+    fn merging_past_the_live_device_cap_gives_up_this_mac_s_join() {
+        let at = hlc(NOW_MS, 0, 1);
+        let mut full = sample_document();
+        full.devices.clear();
+        for index in 0..MAX_LIVE_DEVICES - 1 {
+            full.devices
+                .insert(uuid_device(index), device_entry(1, "Mac", at));
+        }
+        let mut server = full.clone();
+        server
+            .set_device(device(0xa0), device_entry(0xa0, "First", at))
+            .unwrap();
+        let mut local = full.clone();
+        local
+            .set_device(device(0xb0), device_entry(0xb0, "Second", at))
+            .unwrap();
+
+        let merged = merge(&server, &local);
+
+        assert_eq!(merged.devices_over_cap, [device(0xb0)]);
+        assert_eq!(merged.document.live_device_count(), MAX_LIVE_DEVICES);
+        assert_eq!(merged.document.devices, server.devices);
+        assert!(merged.document.to_json().is_ok());
+
+        // A removed Mac that signs back in while another Mac takes the last
+        // place keeps its entry, still removed.
+        let returning = uuid_device(0);
+        let mut removed = server.clone();
+        removed.devices.get_mut(&returning).unwrap().removed =
+            register(true, hlc(NOW_MS + 1, 0, 1));
+        let mut back = removed.clone();
+        back.devices.get_mut(&returning).unwrap().removed = register(false, hlc(NOW_MS + 2, 0, 9));
+        let mut later_server = removed;
+        later_server
+            .set_device(device(0xc0), device_entry(0xc0, "Third", at))
+            .unwrap();
+        let merged = merge(&later_server, &back);
+        assert_eq!(merged.devices_over_cap, [returning]);
+        assert!(merged.document.devices[&returning].removed.value);
+        assert!(merged.document.to_json().is_ok());
+    }
+
+    #[test]
+    fn merging_past_the_entry_cap_gives_up_this_mac_s_new_entries() {
+        let at = hlc(NOW_MS, 0, 1);
+        let mut server = sample_document();
+        server.devices.clear();
+        for index in 0..MAX_DEVICE_ENTRIES {
+            let mut entry = device_entry(1, "Old Mac", at);
+            entry.removed.value = index >= 4;
+            server.devices.insert(uuid_device(index), entry);
+        }
+        // This Mac collected one old entry, so its own copy has room.
+        let mut local = server.clone();
+        local.devices.remove(&uuid_device(MAX_DEVICE_ENTRIES - 1));
+        local
+            .set_device(device(0xd0), device_entry(0xd0, "New", at))
+            .unwrap();
+
+        let merged = merge(&server, &local);
+
+        assert_eq!(merged.devices_over_cap, [device(0xd0)]);
+        assert_eq!(merged.document.devices.len(), MAX_DEVICE_ENTRIES);
+        assert!(merged.document.to_json().is_ok());
     }
 
     #[test]

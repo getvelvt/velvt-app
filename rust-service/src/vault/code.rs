@@ -2,7 +2,7 @@
 //! §7.1).
 //!
 //! The code carries a 100-bit secret `s` as 20 Crockford base32 characters
-//! plus one Luhn mod 32 check character, shown as `K7PQ-M2XD-9HTW-4RZN-8CJ5X`.
+//! plus one Luhn mod 32 check character, shown as `K7PQ-M2XD-9HTW-4RZN-8CJ5H`.
 //! It travels from one screen to a keyboard and never through velvt-core, so
 //! no PAKE is needed: the server sees only `handoff_id` and a payload sealed
 //! under a key that only `s` yields.
@@ -16,8 +16,8 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 use super::crypto::{
-    aead_open, aead_seal, decode_hex, encode_hex, hkdf_sha256, CryptoError, KeyId, UserId,
-    VaultKey, KEY_LENGTH, NONCE_LENGTH, TAG_LENGTH,
+    aead_open, aead_seal, decode_hex, encode_hex, hkdf_sha256, random_nonce, CryptoError, KeyId,
+    UserId, VaultKey, KEY_LENGTH, NONCE_LENGTH, TAG_LENGTH,
 };
 use super::doc::SyncDeviceId;
 use super::wire::Writer;
@@ -234,14 +234,23 @@ pub fn seal_handoff(
     key: &VaultKey,
     issuer: SyncDeviceId,
 ) -> Result<Vec<u8>, CryptoError> {
-    let mut nonce = [0_u8; NONCE_LENGTH];
-    SystemRandom::new()
-        .fill(&mut nonce)
-        .map_err(|_| CryptoError::Random)?;
-    seal_handoff_with_nonce(code, user_id, key, issuer, nonce)
+    seal_handoff_under(code, user_id, key, issuer, random_nonce()?)
 }
 
-pub(crate) fn seal_handoff_with_nonce(
+/// The deterministic half of [`seal_handoff`], for the test vectors. Test
+/// builds only, like `VaultKey::seal_document_with_nonce`.
+#[cfg(test)]
+pub(super) fn seal_handoff_with_nonce(
+    code: &SetupCode,
+    user_id: &UserId,
+    key: &VaultKey,
+    issuer: SyncDeviceId,
+    nonce: [u8; NONCE_LENGTH],
+) -> Result<Vec<u8>, CryptoError> {
+    seal_handoff_under(code, user_id, key, issuer, nonce)
+}
+
+fn seal_handoff_under(
     code: &SetupCode,
     user_id: &UserId,
     key: &VaultKey,
@@ -391,6 +400,18 @@ mod tests {
             &SetupCode::parse(&generated.display()).unwrap(),
             &generated
         ));
+    }
+
+    /// The example the docs show is a real code. The design's J3 and §5.3
+    /// text shows `…8CJ5X`, whose check character is wrong.
+    #[test]
+    fn the_documented_example_code_is_valid() {
+        let example = SetupCode::parse("K7PQ-M2XD-9HTW-4RZN-8CJ5H").unwrap();
+        assert_eq!(example.display().as_str(), "K7PQ-M2XD-9HTW-4RZN-8CJ5H");
+        assert_eq!(
+            SetupCode::parse("K7PQ-M2XD-9HTW-4RZN-8CJ5X").err(),
+            Some(CodeError::CheckFailed)
+        );
     }
 
     #[test]

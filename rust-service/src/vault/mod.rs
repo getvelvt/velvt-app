@@ -272,8 +272,9 @@ mod vectors {
     const SETUP_SECRET: [u8; 13] = [
         0x0a, 0x5c, 0x31, 0x9e, 0x07, 0xd2, 0x44, 0xb8, 0x6f, 0x13, 0xe9, 0x20, 0x8b,
     ];
-    const REQUESTED_AT_MS: i64 = 1_760_486_400_000;
-    const EXPIRES_AT_MS: i64 = 1_760_487_000_000;
+    /// Whole Unix seconds, as velvt-core signs and compares them.
+    const REQUESTED_AT: i64 = 1_760_486_400;
+    const EXPIRES_AT: i64 = 1_760_487_000;
 
     fn hex(bytes: &[u8]) -> String {
         encode_hex(bytes)
@@ -367,8 +368,7 @@ mod vectors {
             ciphertext_sha256: create_sha256,
             ..put.clone()
         };
-        let rotation =
-            SignedRotation::sign(user_id.clone(), &key, &next, VERSION + 1, issuer()).unwrap();
+        let rotation = SignedRotation::sign(user_id.clone(), &key, &next, VERSION + 1).unwrap();
         // POST /v1/vault/rotate: the blob is sealed under K' at the rotation's
         // new version, and its put statement names key_id', goes from the
         // server's current version and is signed by W'.
@@ -387,8 +387,7 @@ mod vectors {
                 user_id: user_id.clone(),
                 key_id: key.key_id(),
                 at_version: VERSION,
-                requested_at_ms: REQUESTED_AT_MS,
-                issuer_tag: key.issuer_tag(issuer()).unwrap(),
+                requested_at: REQUESTED_AT,
             },
         )
         .unwrap();
@@ -402,7 +401,7 @@ mod vectors {
                 user_id: user_id.clone(),
                 handoff_id: code.handoff_id().unwrap(),
                 payload_sha256: sha256(&payload),
-                expires_at_ms: EXPIRES_AT_MS,
+                expires_at: EXPIRES_AT,
             },
         )
         .unwrap();
@@ -441,7 +440,7 @@ mod vectors {
         clock.observe(&observed);
         let next_hlc = clock.tick(1_760_486_400_000).unwrap();
 
-        let padding: Vec<Value> = [0, 16_352, 16_353, 32_736, 32_737, MAX_DOCUMENT_JSON_LENGTH]
+        let padding: Vec<Value> = [0, 16_380, 16_381, 32_764, 32_765, MAX_DOCUMENT_JSON_LENGTH]
             .into_iter()
             .map(|length| json!({"json_length": length, "sealed_length": sealed_size_for(length)}))
             .collect();
@@ -454,7 +453,6 @@ mod vectors {
                 "k_b64": key.to_base64().as_str(),
                 "k_doc_hex": hex(&hkdf_sha256::<KEY_LENGTH>(key.secret_bytes(), b"velvt-vault-doc-v1").unwrap()[..]),
                 "w_seed_hex": hex(&hkdf_sha256::<KEY_LENGTH>(key.secret_bytes(), b"velvt-vault-write-v1").unwrap()[..]),
-                "k_issuer_hex": hex(&hkdf_sha256::<KEY_LENGTH>(key.secret_bytes(), b"velvt-vault-issuer-v1").unwrap()[..]),
                 "write_pk_hex": hex(key.write_public_key().as_bytes()),
                 "write_pk_b64": key.write_public_key().to_base64(),
                 "key_id": key.key_id().to_hex(),
@@ -498,8 +496,6 @@ mod vectors {
                 "create_put": put_vector(&key, &create_put),
                 "rotate": {
                     "new_version": VERSION + 1,
-                    "issuer_sync_device_id": issuer().to_string(),
-                    "issuer_tag_hex": hex(rotation.statement.issuer_tag.as_bytes()),
                     "statement_hex": hex(&rotation.statement.to_bytes()),
                     "old_signature_hex": hex(rotation.old_signature.as_bytes()),
                     "new_signature_hex": hex(rotation.new_signature.as_bytes()),
@@ -514,15 +510,13 @@ mod vectors {
                 },
                 "delete": {
                     "at_version": VERSION,
-                    "requested_at_ms": REQUESTED_AT_MS,
-                    "issuer_sync_device_id": issuer().to_string(),
-                    "issuer_tag_hex": hex(delete.statement.issuer_tag.as_bytes()),
+                    "requested_at": REQUESTED_AT,
                     "statement_hex": hex(&delete.statement.to_bytes()),
                     "signature_hex": hex(delete.signature.as_bytes()),
                     "stored_hex": hex(&delete.to_bytes()),
                 },
                 "handoff": {
-                    "expires_at_ms": EXPIRES_AT_MS,
+                    "expires_at": EXPIRES_AT,
                     "statement_hex": hex(&handoff.statement.to_bytes()),
                     "signature_hex": hex(handoff.signature.as_bytes()),
                 },
@@ -667,16 +661,6 @@ mod vectors {
         let rotation = SignedRotation::parse(&unhex(&statements["rotate"]["stored_hex"])).unwrap();
         let next_pk = rotation.verify(&user_id, &write_pk).unwrap();
         assert_eq!(hex(next_pk.as_bytes()), vectors["next_key"]["write_pk_hex"]);
-        let issuer = SyncDeviceId::parse(
-            statements["rotate"]["issuer_sync_device_id"]
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            key.identify_issuer(&rotation.statement.issuer_tag, &[device(1), issuer]),
-            Ok(Some(issuer))
-        );
         let next = VaultKey::from_slice(&unhex(&vectors["next_key"]["k_hex"])).unwrap();
         let rotate_vector = &statements["rotate_put"];
         let rotate_put = check_put(&rotate_vector["put"], &user_id, &next_pk);
@@ -713,12 +697,8 @@ mod vectors {
             Signed::<DeleteStatement>::parse(&unhex(&statements["delete"]["stored_hex"])).unwrap();
         delete.verify(&user_id, &write_pk).unwrap();
         assert_eq!(
-            hex(delete.statement.issuer_tag.as_bytes()),
-            statements["delete"]["issuer_tag_hex"]
-        );
-        assert_eq!(
-            key.identify_issuer(&delete.statement.issuer_tag, &[issuer]),
-            Ok(Some(issuer))
+            delete.statement.requested_at,
+            statements["delete"]["requested_at"].as_i64().unwrap()
         );
 
         let code = SetupCode::parse(vectors["setup_code"]["code"].as_str().unwrap()).unwrap();

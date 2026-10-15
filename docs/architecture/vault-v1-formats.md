@@ -12,7 +12,10 @@
 Every value in it is reproducible from the fixed inputs it states (Ed25519
 signatures are deterministic). `cargo test vault::vectors` fails if the file and
 the code disagree by one byte. The vectors were also re-derived independently
-with Python `cryptography` (OpenSSL) from the design text alone.
+with Python `cryptography` (OpenSSL) from the design text alone, and every
+statement, signature and sealed length in them was checked against velvt-core's
+own `app/services/vault_formats.py` and `CIPHERTEXT_BYTES` (PR C2, #46) on
+2026-10-15.
 
 ## Primitives
 
@@ -63,14 +66,9 @@ write_pk = the Ed25519 public key of seed W_seed
 key_id   = SHA-256("velvt-vault-key-id-v1\0" ‖ write_pk)[0..8]
 fingerprint = u64_be(SHA-256("velvt-vault-fpr-v1\0" ‖ write_pk)[0..8]) mod 10^12,
               shown as twelve digits in three groups: "4821 9133 0577"
-K_issuer = HKDF-SHA256(ikm = K, salt = ∅, info = "velvt-vault-issuer-v1", L = 32)
-issuer_tag(sync_device_id) = HMAC-SHA256(K_issuer, sync_device_id (16 raw bytes))[0..16]
 ```
 
-`K` travels as `key_b64`: standard base64, padded. An `issuer_tag` names a Mac
-to holders of `K` only: a Mac finds the signer of a rotation or deletion by
-computing the tag for each device in its last opened document (no match: the
-copy names no Mac).
+`K` travels as `key_b64`: standard base64, padded.
 
 ## The sealed document
 
@@ -81,10 +79,12 @@ aad    = "velvt-vault-doc-v1\0" ‖ lp(user_id) ‖ lp(name) ‖ key_id ‖ u16_
 sealed = nonce ‖ ChaCha20-Poly1305(K_doc, nonce, aad, plain)      (the 16-byte tag last)
 ```
 
-- `len(sealed)` is exactly one of 16, 32, 64, 128, 256 or 512 KiB: the
-  smallest that holds `json` plus 32 bytes (the prefix, the nonce and the tag).
-  So `len(plain) = len(sealed) − 28`.
-- The longest JSON is 524,256 bytes. A larger document is refused by the writer
+- `len(plain)` is exactly one of 16, 32, 64, 128, 256 or 512 KiB: the smallest
+  that holds `json` plus its 4-byte prefix. So `len(sealed) = len(plain) + 28`
+  (the nonce and the tag), one of six lengths from 16,412 to 524,316 bytes.
+  velvt-core stores exactly these six and answers any other length with `422
+  vault_blob_invalid`.
+- The longest JSON is 524,284 bytes. A larger document is refused by the writer
   (`TooLarge`) and by every reader.
 - Opening refuses any other length before decrypting, refuses a nonzero padding
   byte or a length prefix past the end, and requires the decrypted document's
@@ -101,20 +101,22 @@ signature and then the new key's.
 |---|---|---|---|
 | put | `"velvt-vault-put-v1\0" ‖ lp(user_id) ‖ lp(name) ‖ key_id ‖ u16_be(schema) ‖ u64_be(base_version) ‖ u64_be(new_version) ‖ SHA-256(sealed)` | `W` | the account is this one; `key_id` is the trusted key's |
 | create | `"velvt-vault-create-v1\0" ‖ lp(user_id) ‖ key_id ‖ write_pk ‖ SHA-256(sealed)` | the new `W` | `key_id` is the one `write_pk` derives |
-| rotate | `"velvt-vault-rotate-v1\0" ‖ lp(user_id) ‖ old_key_id ‖ new_key_id ‖ new_write_pk ‖ u64_be(new_version) ‖ issuer_tag` | old `W`, then new `W` | `old_key_id` is the trusted key's; `new_key_id` is the one `new_write_pk` derives and differs from `old_key_id` |
-| delete | `"velvt-vault-delete-v1\0" ‖ lp(user_id) ‖ key_id ‖ u64_be(at_version) ‖ i64_be(requested_at_ms) ‖ issuer_tag` | `W` | `key_id` is the trusted key's |
-| handoff | `"velvt-vault-handoff-v1\0" ‖ lp(user_id) ‖ handoff_id ‖ SHA-256(payload) ‖ i64_be(expires_at_ms)` | `W` | the account is this one |
+| rotate | `"velvt-vault-rotate-v1\0" ‖ lp(user_id) ‖ old_key_id ‖ new_key_id ‖ new_write_pk ‖ u64_be(new_version)` | old `W`, then new `W` | `old_key_id` is the trusted key's; `new_key_id` is the one `new_write_pk` derives and differs from `old_key_id` |
+| delete | `"velvt-vault-delete-v1\0" ‖ lp(user_id) ‖ key_id ‖ u64_be(at_version) ‖ i64_be(requested_at)` | `W` | `key_id` is the trusted key's |
+| handoff | `"velvt-vault-handoff-v1\0" ‖ lp(user_id) ‖ handoff_id ‖ SHA-256(payload) ‖ i64_be(expires_at)` | `W` | the account is this one |
 | cancel reset | `"velvt-vault-reset-cancel-v1\0" ‖ lp(user_id) ‖ key_id ‖ reset_request_id` | `W` | `key_id` is the trusted key's |
 
-Times are Unix milliseconds. `reset_request_id` is velvt-core's UUID as its 16
-raw bytes. `issuer_tag` is the signing Mac's 16-byte tag (see [Keys](#keys)):
-under the old `K` in a rotation, which every Mac that verifies it holds, and
-under the current `K` in a deletion. It is what lets J6 (`sync_key_changed`)
-and J9 ("Sync was turned off from “Studio Mac”") name the Mac from signed
-bytes, after the document is gone or unreadable. velvt-core treats it as
-opaque. No tag is a prefix of another. With a 36-character `user_id`, a stored
-rotation is 260 bytes and a stored deletion 164, inside the 512- and 256-byte
-columns of design §4.2.
+These are §5.3's layouts byte for byte, which velvt-core rebuilds or parses
+exactly. Times are whole Unix seconds. `reset_request_id` is velvt-core's UUID
+as its 16 raw bytes. No tag is a prefix of another. With a 36-character
+`user_id`, a stored rotation is 244 bytes and a stored deletion 148, inside the
+512- and 256-byte columns of design §4.2.
+
+No statement names the Mac that signed it, so a notice about a rotation or a
+deletion (J6 `sync_key_changed`, J9 "Sync was turned off from …") cannot name
+that Mac from signed bytes; `vault::sync` says "another of your Macs". A1 had
+added a 16-byte issuer tag for this, which velvt-core's statements do not
+carry; restoring it would be a change on both sides.
 
 ### What velvt-core checks against the request (C2)
 
@@ -134,8 +136,8 @@ request field.
 | `PUT /v1/vault/blobs/{name}` | put | built: `name` = the path's `{name}`; `key_id` from the body, which must equal `vaults.key_id` (else 409 `vault_key_mismatch`); `schema` from the body; `base_version` = the `If-Match` version, which must be the current version (else 412); `new_version` from the body, with `base_version < new_version ≤ base_version + 2^32`; the SHA-256 of the uploaded bytes. Verified under `vaults.write_pk` |
 | `POST /v1/vault/rotate` | rotate | parsed from `rotate_stmt_b64`: `old_key_id` = the body's `old_key_id` = `vaults.key_id` (else 409); `new_key_id` = the body's `new_key_id` = `f(new_write_pk)` ≠ `old_key_id`; `new_write_pk` = the body's `new_write_pk_b64`; `new_version` = `blob.new_version`. `old_sig_b64` verified under `vaults.write_pk`, `new_sig_b64` under `new_write_pk`. Stored in `vaults.rotations` as statement ‖ old signature ‖ new signature |
 | `POST /v1/vault/rotate` | put (`blob.put_sig_b64`) | built: `name` = `blob.name`, `key_id` = `new_key_id`, `blob.schema`, `base_version` = the current version `n` at the moment the rotation is applied, `new_version` = `blob.new_version` (`n < new_version ≤ n + 2^32`), the SHA-256 of `blob.ciphertext_b64`. Verified under `new_write_pk`. The blob is sealed under `K'` with `key_id'` and `new_version` in its AAD |
-| `DELETE /v1/vault` | delete | parsed from `delete_stmt_b64`: `key_id` = the body's `key_id` = `vaults.key_id` (else 409); `at_version` = the current blob version; `requested_at_ms` is not compared with the server's clock. Verified under `vaults.write_pk`; stored as the tombstone (statement ‖ signature) |
-| `POST /v1/vault/handoffs` | handoff | built: `handoff_id` = the 16 bytes of the body's 32-hex `handoff_id`, `SHA-256(base64-decoded payload_b64)`, `expires_at_ms` = the body's `expires_at` in Unix milliseconds (at most 600 s ahead). Verified under `vaults.write_pk` |
+| `DELETE /v1/vault` | delete | parsed from `delete_stmt_b64`: `key_id` = the body's `key_id` = `vaults.key_id` (else 409); `at_version` = the current blob version; `requested_at` within 600 s of the server's clock (else 422 `vault_statement_invalid`), so a tombstone cannot be replayed later. Verified under `vaults.write_pk`; stored as the tombstone (statement ‖ signature) |
+| `POST /v1/vault/handoffs` | handoff | built: `handoff_id` = the 16 bytes of the body's 32-hex `handoff_id`, `SHA-256(base64-decoded payload_b64)`, `expires_at` = the body's `expires_at` in whole Unix seconds (velvt-core keeps at most 600 s from its clock). Verified under `vaults.write_pk` |
 | `DELETE /v1/vault/reset-requests/{id}` | cancel reset | parsed from `cancel_stmt_b64`: `reset_request_id` = the path's `{id}`, which must be this account's pending request; `key_id` = `vaults.key_id` = the request's `key_id`. Verified under `vaults.write_pk` |
 
 The vectors have one of each put: `put` (an ordinary `PUT`, base 6 to 7),
@@ -223,7 +225,7 @@ cannot be written back.
 **Size, measured.** A rule costs about 187 bytes of JSON, not the 110 that
 design §4.1 estimates, and a device entry with a 64-character name about 565
 bytes. So 2,000 live rules take about 366 KiB, and the caps alone do not keep a
-document under the 524,256-byte limit: 2,000 live rules with 1,000 tombstones,
+document under the 524,284-byte limit: 2,000 live rules with 1,000 tombstones,
 or with 256 device entries whose names use three-byte characters, pass it. The
 writer refuses such a document rather than write it. How the mirror should stay
 under the limit is a question for PR A6 (see the PR).
@@ -271,9 +273,9 @@ Each is a choice made here that velvt-core (C2) and the reviewer should see.
 
 | Detail | Choice | Why |
 |---|---|---|
-| What the six sizes measure | The sealed bytes (nonce and tag included), not the padded plaintext | A 512 KiB plaintext seals to 512 KiB + 28 bytes, past velvt-core's 512 KiB limit |
+| What the six sizes measure | The padded plaintext; the sealed bytes are 28 longer | §5.3 pads the plaintext. velvt-core accepts exactly these six sealed lengths, the largest 512 KiB + 28 |
 | How `s` enters HKDF | 13 bytes, big-endian, top four bits zero | The design names 100 bits but no byte encoding |
-| Time fields in statements | Unix milliseconds | Matches `joined_at_ms` and the HLC |
+| Time fields in statements | Whole Unix seconds | What velvt-core signs, stores and compares (the handoff's `expires_at` is an integer of seconds in the request body) |
 | `reset_request_id` in the cancel statement | 16 raw UUID bytes | The encoding rules prefer fixed-length arrays |
 | The stored form of a signed statement | Statement, then its signature(s) | The design stores "signed statements" but gives no layout |
 | Fingerprint digits | First 8 hash bytes, big-endian, mod 10^12 | A bias below 10^-7 per value |
@@ -281,7 +283,7 @@ Each is a choice made here that velvt-core (C2) and the reviewer should see.
 | Name characters | Also no bidirectional formatting characters or U+2028/U+2029 | A name is quoted inside security notices |
 | Equal HLCs, different values | The larger value wins, in the orders under [HLC and merge](#hlc-and-merge) | Keeps the merge commutative for any input |
 | Quiet hours turned off | A register whose value is `null` | A clear has to propagate like any other write |
-| Naming the Mac that rotated or deleted | `issuer_tag`, a 16-byte HMAC of its `sync_device_id` under a key from `K`, at the end of the rotate and delete statements | J6 and J9 name that Mac, and after a deletion or an unadoptable rotation only signed bytes remain. A plain `sync_device_id` would give velvt-core a device id that survives sign-out (design §4.2 stores none); the tag means nothing without `K`, and changes with it |
+| Naming the Mac that rotated or deleted | Not named: the statements are §5.3's | velvt-core rebuilds the rotate statement and parses the delete statement at their §5.3 length, so an extra field would be refused |
 | The put statement of `POST /v1/vault` | `base_version` 0, `new_version` 1, the new `key_id`, signed by the new `W`; the blob's AAD has version 1 | §8.3 returns version 1 but did not say what the put statement binds |
 | The put statement of the rotation's blob | `key_id'`, `base_version` = the current version `n`, `new_version` = the rotate statement's `new_version`, signed by `W'`; the blob is sealed under `K'` | §5.6 step 4 seals under `K'` but did not say which key's put signs it or what its versions are. velvt-core refuses a `base_version` other than its current version as it refuses a stale `If-Match` |
 | JSON field order | Struct fields in declaration order, the maps sorted | Signatures cover the sealed bytes, so readers ignore order; it matters only to reproduce a vector |

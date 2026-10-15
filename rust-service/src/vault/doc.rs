@@ -1197,7 +1197,8 @@ mod tests {
         document
     }
 
-    /// Every live rule and live Mac the caps allow still seals, inside 512 KiB.
+    /// Every live rule and live Mac the caps allow still seals, at the largest
+    /// size velvt-core accepts: 512 KiB padded, plus the nonce and tag.
     /// A rule costs about 187 bytes of JSON, not the 110 §4.1 estimates, so 2,000
     /// of them take about 366 KiB.
     #[test]
@@ -1216,7 +1217,7 @@ mod tests {
             version: 1,
         };
         let sealed = seal(&key, &context, &document).unwrap();
-        assert_eq!(sealed.len(), 512 * 1024);
+        assert_eq!(sealed.len(), 512 * 1024 + 28);
     }
 
     /// The caps alone do not bound the size: 2,000 live rules pass 512 KiB with

@@ -1,9 +1,11 @@
-//! Sync v1's cryptography, document and merge: the personal vault
-//! (`docs/architecture/personal-vault-and-devices.md`, PR A1).
+//! Sync v1, the personal vault
+//! (`docs/architecture/personal-vault-and-devices.md`; PRs A1 and A3).
 //!
-//! Nothing in the shipped path calls this module. It makes no network call,
-//! touches no SQLite table and sends nothing over IPC; `vault::sync` (PR A3)
-//! is what will. Until then it is a library with tests, test vectors
+//! Nothing in the shipped path calls this module. [`sync`] is the engine
+//! that fetches, verifies, merges and writes the copy, but nothing constructs
+//! it until protocol 38 (PR A4) gives the app a way to turn sync on, so no
+//! vault request is sent and no `vault_state` row is written. The rest is a
+//! library with tests, test vectors
 //! (`docs/architecture/vault-v1-test-vectors.json`) and fuzz targets
 //! (`rust-service/fuzz`).
 //!
@@ -12,8 +14,10 @@
 //! - [`doc`]: the `prefs` document's schema and validation.
 //! - [`merge`]: hybrid logical clocks and the register merge.
 //! - [`code`]: the setup code and the handoff payload it opens.
+//! - [`sync`]: the engine (§6.1, §10.4), its trust anchor and its notices.
 //!
-//! Wire formats: `docs/architecture/vault-v1-formats.md`.
+//! Wire formats: `docs/architecture/vault-v1-formats.md`. The engine:
+//! `docs/architecture/vault-v1-sync.md`.
 
 #![deny(unsafe_code)]
 
@@ -21,6 +25,7 @@ pub mod code;
 pub mod crypto;
 pub mod doc;
 pub mod merge;
+pub mod sync;
 mod wire;
 
 #[cfg(test)]

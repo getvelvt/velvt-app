@@ -319,6 +319,9 @@ fn privacy_document_retention_cells_match_the_shipped_horizons() {
         ("intervention_decision_log", vec![]),
         ("out_of_block_run", vec![OUT_OF_BLOCK_RUN_RETENTION_DAYS]),
         ("block_antecedent", vec![]),
+        // Migration 0046: no sweep; cleared by account and sync events only.
+        ("vault_state", vec![]),
+        ("vault_rule_link", vec![]),
         ("antecedent_finding", vec![]),
     ];
 
@@ -710,11 +713,22 @@ const BUNDLE_DIGEST_COLUMNS: &[&str] = &["raw_event_buffer.app_bundle_stable_id"
 /// cannot decode a sketch. A new BLOB column is therefore content the published
 /// audit tool cannot read back, and it turns this build red until someone
 /// decides in writing what it holds.
+///
+/// The five `vault_state` columns (migration 0046) hold nothing drawn from the
+/// Mac's activity, and no row exists until sync is turned on, which this build
+/// cannot do: the sealed copy (`ciphertext`, opaque without a key the file never
+/// holds), the SHA-256 of a sealed copy, the vault's public write key, and the
+/// host binding (an HMAC of the host UUID) with its random salt.
 const BLOB_BEARING_COLUMNS: &[&str] = &[
     "embedding_salt.salt",
     "personal_semantic_prototype.embedding",
     "semantic_embedding_cache.embedding",
     "stable_key_salt.salt",
+    "vault_state.ciphertext",
+    "vault_state.highest_seen_sha256",
+    "vault_state.host_binding",
+    "vault_state.host_binding_salt",
+    "vault_state.write_pk",
 ];
 
 /// A sentinel application name, window title, bundle identifier, declared
@@ -1787,8 +1801,11 @@ const MIGRATED_TABLES: &[&str] = &[
     "schema_migration",
     "semantic_embedding_cache",
     "stable_key_salt",
+    "sync_known_device",
     "upload_batch",
     "upload_host_backoff",
+    "vault_rule_link",
+    "vault_state",
     "velvt_quiet_hours",
     "weekly_digest",
     "work_block",

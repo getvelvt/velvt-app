@@ -565,6 +565,30 @@ matched. The CHECK also accepts `vault_rule`, which nothing in this build
 produces. Both columns are local records, read by no gate, no upload path and
 no export, and no request was added.
 
+*Changed after this audit, 2026-10-15 (migration 0046, no protocol change):*
+the engine for sync across your Macs (`rust-service/src/vault/sync`), with
+nothing that can turn it on: no IPC message reaches it until protocol 38, so
+no vault request is sent and no row is written. Migration 0046 adds three
+empty tables, `vault_state`, `vault_rule_link` and `sync_known_device`, each in
+`PRIVACY.md`'s inventories. None holds document plaintext, a hostname, an app
+name, a bundle id or a window: `vault_state.ciphertext` is the synced copy
+sealed under a key the file never holds, `vault_rule_link` holds this install's
+salted rule keys beside keys made under a salt that is on disk only inside the
+sealed copy, and `sync_known_device` holds velvt-core's device ids. Five
+endpoints joined `egress::ENDPOINTS` and `PRIVACY.md`'s list, marked as sent
+only once sync is on: `GET /v1/vault`, `GET` and `PUT /v1/vault/blobs/prefs`,
+`POST /v1/vault` and `GET /v1/devices`. A test (`tests/vault_sync`) checks that
+no request body the engine sends, and no stored row, holds the vault key, the
+person salt, a Mac's name or any rule's category in the clear.
+`velvt-service --dry-run-egress --vault` prints the plaintext document a Mac
+would seal. The five `vault_state` BLOB columns join the allowlist
+`published_claims` holds, and `scripts/prove_local.sh` names them. Migration
+0047 rebuilds `egress_ledger` with `PUT` added to the methods its CHECK allows:
+0038 refused one, and the client sends nothing it cannot record, so the vault's
+write would have failed closed. Every row is copied unchanged and the chain,
+the checkpoint and the append-only triggers verify as before (a test upgrades a
+pruned ledger and checks each).
+
 `PRIVACY.md`'s list of what leaves the device was wrong in both directions: it
 named `/v1/auth/account/delete`, which nothing sends, and omitted
 `DELETE /v1/account`, `GET /v1/auth/session`, `GET /v1/insights/poll`,

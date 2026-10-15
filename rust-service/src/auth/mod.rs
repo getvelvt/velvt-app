@@ -15,7 +15,7 @@ pub use device::{
 };
 pub use http::{
     describe_request, encode_body, retry_after_delay, user_agent, HttpClient, HttpMethod,
-    HttpRequest, HttpResponse, ReqwestHttpClient,
+    HttpRequest, HttpResponse, Precondition, ReqwestHttpClient,
 };
 pub use manager::{AuthError, AuthManager, ClientVersionReport, SessionValidator};
 pub use state::{AuthState, AuthStateMachine, AuthTransitionError};

@@ -115,6 +115,48 @@ pub async fn run(
     Ok(report)
 }
 
+/// `velvt-service --dry-run-egress --vault`: [`run`], then the document sync
+/// would seal, in plaintext (design §10.4 "Egress"), so a tester can see
+/// exactly what syncs before turning it on.
+pub async fn run_with_vault(
+    database_path: &Path,
+    base_url: &str,
+    out: &mut dyn Write,
+) -> Result<DryRunReport, DryRunError> {
+    let report = run(database_path, base_url, out).await?;
+    print_vault(database_path, out)?;
+    Ok(report)
+}
+
+fn print_vault(database_path: &Path, out: &mut dyn Write) -> Result<(), DryRunError> {
+    writeln!(out, "== Sync across your Macs\n")?;
+    if !database_path.is_file() {
+        writeln!(
+            out,
+            "There is no database at this path, so this Mac has nothing to sync yet.\n"
+        )?;
+        return Ok(());
+    }
+    let persistence = SqlitePersistence::open_read_only(database_path)?;
+    let now_ms = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default();
+    let preview =
+        crate::vault::sync::preview::preview(persistence.vault_state_repo().as_ref(), now_ms)?;
+    writeln!(
+        out,
+        "Accounts with sync on on this Mac: {}. This build cannot turn sync on, so\n\
+         none of the vault requests above is sent.\n\n\
+         If sync were on, this is what this Mac adds to the synced copy, in\n\
+         plaintext. It is encrypted on this Mac before it leaves, under a key Velvt\n\
+         never holds, and it names no site, app or window: category rules travel\n\
+         as keyed fingerprints. The values in <angle brackets> do not exist until\n\
+         sync is on.\n",
+        preview.accounts_syncing
+    )?;
+    let text = serde_json::to_string_pretty(&preview.document).unwrap_or_default();
+    writeln!(out, "{text}\n")?;
+    Ok(())
+}
+
 async fn queued_requests(
     persistence: &SqlitePersistence,
     base_url: &str,

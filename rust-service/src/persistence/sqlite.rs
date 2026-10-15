@@ -532,6 +532,12 @@ impl SqlitePersistence {
         Arc::new(super::egress_ledger::SqliteEgressLedgerRepo(self.clone()))
     }
 
+    /// Sync v1's tables (`vault_state`, `vault_rule_link`, `sync_known_device`,
+    /// 0046) and the two settings the synced document mirrors.
+    pub fn vault_state_repo(&self) -> Arc<dyn super::VaultStateRepo> {
+        Arc::new(super::vault_state::SqliteVaultStateRepo(self.clone()))
+    }
+
     pub fn upload_batch_repo(&self) -> Arc<dyn UploadBatchRepo> {
         Arc::new(SqliteUploadBatchRepo(self.clone()))
     }
@@ -7019,6 +7025,94 @@ mod tests {
     /// before it records no source (NULL, never a guess at one), a decision
     /// written before it has no synced-rule evidence, which is true, and the
     /// gate reads the old rows exactly as before.
+    /// Migration 0047 rebuilds `egress_ledger` so it can record a PUT (the
+    /// vault's write). Rows already on disk, the checkpoint behind them, and
+    /// the append-only triggers all come through: the chain verifies exactly
+    /// as before, a PUT can be recorded, and an update or an early delete is
+    /// still refused. Before 0047 the PUT itself was refused.
+    #[test]
+    fn migration_0047_lets_the_ledger_record_a_put_and_keeps_its_chain() {
+        use crate::egress::{verify_chain, EgressRecord};
+        use chrono::TimeZone;
+
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migration (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );",
+            )
+            .unwrap();
+        for migration in super::EMBEDDED_MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version < 47)
+        {
+            connection.execute_batch(migration.sql).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migration(version, name) VALUES (?1, ?2)",
+                    rusqlite::params![migration.version, migration.name],
+                )
+                .unwrap();
+        }
+        let database = SqlitePersistence {
+            connection: Arc::new(Mutex::new(connection)),
+        };
+        let ledger = database.egress_ledger_repo();
+        let at = Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).unwrap();
+        for _ in 0..4 {
+            ledger
+                .append(
+                    &EgressRecord::new("GET", "https://h/v1/ready", &[], None, true),
+                    at,
+                )
+                .unwrap();
+        }
+        let put = EgressRecord::new("PUT", "https://h/v1/vault/blobs/prefs", b"{}", None, true);
+        assert!(ledger.append(&put, at).is_err(), "0038 refuses a PUT");
+        ledger
+            .prune(at - chrono::Duration::days(1), 2, 10, at)
+            .unwrap();
+        let before = ledger.entries().unwrap();
+        let checkpoint = ledger.checkpoint().unwrap();
+        assert_eq!(before.len(), 2);
+
+        database.run_migrations().unwrap();
+
+        assert_eq!(ledger.entries().unwrap(), before);
+        assert_eq!(ledger.checkpoint().unwrap(), checkpoint);
+        let stored = ledger.append(&put, at).unwrap();
+        assert_eq!(stored.method, "PUT");
+        let entries = ledger.entries().unwrap();
+        verify_chain(checkpoint.as_ref(), &entries).unwrap();
+        let connection = database.connection().unwrap();
+        assert!(connection
+            .execute("UPDATE egress_ledger SET body_bytes = 1", [])
+            .is_err());
+        assert!(connection
+            .execute("DELETE FROM egress_ledger WHERE seq = ?1", [stored.seq])
+            .is_err());
+        assert!(connection
+            .execute(
+                "INSERT INTO egress_ledger_checkpoint(through_seq, through_hash, created_at)
+                 VALUES (99, ?1, 0)",
+                [&stored.entry_hash],
+            )
+            .is_err());
+        let index: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_egress_ledger_recorded_at'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+    }
+
     #[test]
     fn migration_0045_leaves_rows_already_on_disk_without_a_source() {
         let connection = Connection::open_in_memory().unwrap();

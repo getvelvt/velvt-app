@@ -18,7 +18,7 @@ The Rust service is organized around narrow modules that own one runtime concern
 | `src/retention/` | Scheduled cleanup for raw events, sent/rejected batches, caches, and the egress ledger |
 | `src/work_block/` | Versioned work-block state machine, safe observation aggregation, deterministic copy, restart recovery, and one-shot deadline |
 | `src/lifecycle/` | Cancellation token used by long-running tasks |
-| `src/vault/` | Sync v1's personal vault: the vault key and what derives from it, the sealed `prefs` document, signed statements, setup codes, and the HLC merge. No caller in the shipped path yet; formats in `docs/architecture/vault-v1-formats.md` |
+| `src/vault/` | Sync v1's personal vault: the vault key and what derives from it, the sealed `prefs` document, signed statements, setup codes, the HLC merge, and `vault::sync`, the engine that fetches, verifies (design §6.1), merges and writes the copy, keeps the per-account trust anchor in `vault_state` (migration 0046), holds security notices until a work block ends, and applies only the daily-insight routing register. Nothing constructs the engine until protocol 38 (A4). Formats in `docs/architecture/vault-v1-formats.md`; the engine in `docs/architecture/vault-v1-sync.md` |
 | `shared-types/` | IPC DTOs and protocol constants shared by service tests and Swift-equivalent schemas |
 
 ## Startup Path

@@ -57,6 +57,8 @@ The split matters because transport correctness and business routing fail differ
 - Transport rejects malformed or unsupported protocol traffic without echoing payload content.
 - Router handles valid messages and returns typed `ServerMessage` values.
 
+In a helper built for a Release app, `ipc::transport` checks the code signature of each connecting process before anything else (`ipc::peer`): its audit token from `LOCAL_PEERTOKEN`, its code from Security.framework, and `SecCodeCheckValidity` against `identifier "com.velvt.mac"` signed by the helper's own team. A refused process is closed before `server_hello` and never takes the push queue; the refusal is logged as `error_code` and a status only. The check runs on the blocking pool with the stream moved into it. See `docs/architecture/ipc-contract.md`, "Peer Code-Signature Check".
+
 `ReconnectTracker` preserves a push queue across short Swift reconnects. This allows Rust to push service/auth/delivery events without assuming the UI is continuously connected.
 
 ## Abstraction Engine

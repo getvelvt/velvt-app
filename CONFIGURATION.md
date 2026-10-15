@@ -88,6 +88,13 @@ The Xcode "Bundle Rust Service" Run Script phase exports these from Xcode's
 build settings before calling `cargo build --release`, ensuring the Rust
 binary is always compiled with the same constants as the Swift binary.
 
+`build.rs` also reads `VELVT_PEER_SIGNATURE_CHECK` (`enforce` or `off`, default
+`off`) and emits `VELVT_PEER_SIGNATURE_CHECK_COMPILED`. It decides whether the
+helper checks the code signature of the process that connects to its socket
+(see "Socket peer check" below). `scripts/build_rust_helper.sh` sets it from
+`VELVT_DISTRIBUTABLE`: `enforce` for a Release app, `off` for a Debug one,
+whatever the calling shell had. A bare `cargo build` or `cargo test` is off.
+
 ---
 
 ## Changing the API base URL for a new environment
@@ -150,7 +157,8 @@ make verify-release
 URLs, embeds the release Rust helper and taxonomy, signs the complete bundle,
 and runs `scripts/verify_release.sh`. Verification checks the Release marker,
 hosted API URL, embedded helper, app/helper protocol match, strict codesign
-validity, and absence of preview/debug dylibs. Ad-hoc signing is sufficient for
+validity, the socket peer check's signing identifiers and requirements, and
+absence of preview/debug dylibs. Ad-hoc signing is sufficient for
 this local verification and does not alter the stable `com.velvt.mac` identity.
 
 The explicitly named `make build-app-local-core` command is the only packaging
@@ -177,6 +185,28 @@ verification (`alpha-dmg`, `release`) refuses, so tester builds are cut on
 Apple Silicon with Rosetta 2, and both targets check for it before they build
 (`scripts/check_release_host.sh`); install Rosetta with
 `softwareupdate --install-rosetta --agree-to-license`.
+
+### Socket peer check
+
+In a Release build the app and the helper each check the other's code
+signature on the socket before anything crosses it, so another process
+running as the same person can neither pose as the helper nor connect to it
+(`docs/architecture/ipc-contract.md`, "Peer Code-Signature Check"). The app
+requires a helper signed `com.velvt.service`, and the helper an app signed
+`com.velvt.mac`, each by the team in its own signature, or by identifier alone
+when it has no team (an ad-hoc local build). Debug builds skip both checks.
+
+- `scripts/sign_release.sh` signs the helper with
+  `--identifier com.velvt.service`. The app keeps its bundle identifier.
+- `velvt-service --peer-requirement` prints `none` (a Debug app's helper) or
+  the requirement it holds the app to.
+- `scripts/verify_release.sh` refuses a Release app whose helper says `none`,
+  whose app or helper is signed under another identifier, or whose app or
+  helper does not satisfy the requirement the other side checks
+  (`codesign --test-requirement`). Its summary prints both requirements.
+
+A refused connection logs an error code only and the app shows the service
+as unavailable while it keeps reconnecting.
 
 If the helper becomes unavailable after launch, Settings offers **Restart Local
 Service**. This sends a graceful termination, waits briefly, and starts the

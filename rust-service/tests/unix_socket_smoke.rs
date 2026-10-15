@@ -199,3 +199,115 @@ async fn unix_socket_accepts_two_simultaneous_clients() {
     drop(client_two);
     server.abort();
 }
+
+/// PR A0 (docs/architecture/personal-vault-and-devices.md §9.3): a Release
+/// helper serves only a peer whose code signature passes, and closes any other
+/// before writing it a single byte, so a refused peer never sees `server_hello`
+/// or anything pushed after it.
+///
+/// The test binary stands in for an unsigned peer: it is linker-signed ad hoc,
+/// with no team and an identifier that is not the app's. macOS will not run
+/// truly unsigned code on Apple Silicon, so ad hoc is what any program a
+/// process running as the person could build for itself looks like.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_peer_that_is_not_the_signed_app_is_closed_before_server_hello() {
+    use velvt_service::ipc::peer::{requirement_for, PeerPolicy, APP_IDENTIFIER};
+
+    if !filesystem_sockets_available() {
+        return;
+    }
+    let socket_dir = SocketDir::new();
+    let socket_path = socket_dir.socket_path("unsigned-peer");
+    let release_policy =
+        PeerPolicy::Require(requirement_for(APP_IDENTIFIER, Some("ABCDE12345")).unwrap());
+    let transport =
+        TokioUnixTransport::new(socket_path.clone(), 3).with_peer_policy(release_policy);
+    let server = tokio::spawn(async move { transport.run().await });
+
+    for _ in 0..2 {
+        let stream = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match tokio::net::UnixStream::connect(&socket_path).await {
+                    Ok(stream) => break stream,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for IPC socket");
+        let mut read = BufReader::new(stream);
+        let mut line = String::new();
+        let read_bytes = tokio::time::timeout(Duration::from_secs(5), read.read_line(&mut line))
+            .await
+            .expect("a refused peer is closed, not left waiting")
+            .unwrap_or(0);
+        assert_eq!(read_bytes, 0, "a refused peer was sent {line:?}");
+    }
+
+    server.abort();
+}
+
+/// A refusal ends only that connection: the helper goes on serving. Here a
+/// separate process (`/usr/bin/nc`, signed by Apple, not by Velvt) is refused
+/// and sees nothing, then a peer that satisfies the requirement completes the
+/// handshake on the same listener.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_refused_process_sees_nothing_and_the_next_peer_is_served() {
+    use std::io::Read;
+    use velvt_service::ipc::peer::{signing_identity_of_this_process, PeerPolicy};
+
+    let netcat = std::path::Path::new("/usr/bin/nc");
+    if !filesystem_sockets_available() || !netcat.exists() {
+        return;
+    }
+    let socket_dir = SocketDir::new();
+    let socket_path = socket_dir.socket_path("refused-then-served");
+    let this_binary = signing_identity_of_this_process()
+        .unwrap()
+        .identifier
+        .expect("the test binary is linker-signed");
+    let transport = TokioUnixTransport::new(socket_path.clone(), 3)
+        .with_peer_policy(PeerPolicy::Require(format!("identifier \"{this_binary}\"")));
+    let server = tokio::spawn(async move { transport.run().await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !socket_path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for IPC socket");
+
+    // nc with stdin at EOF stays connected until the other end closes, so its
+    // exit is the helper's refusal.
+    let mut netcat = std::process::Command::new(netcat)
+        .arg("-U")
+        .arg(&socket_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while netcat.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            netcat.kill().ok();
+            netcat.wait().ok();
+            panic!("the refused process was left connected");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mut received = String::new();
+    netcat
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut received)
+        .unwrap();
+    assert_eq!(received, "", "a refused process was sent something");
+
+    let writer = connect_and_handshake(&socket_path).await;
+    drop(writer);
+    server.abort();
+}

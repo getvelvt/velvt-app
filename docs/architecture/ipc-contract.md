@@ -859,6 +859,65 @@ Rust configuration overrides:
 - `VELVT_IPC_MAX_ERRORS`: positive malformed-frame threshold per connection.
 - `VELVT_LOG_LEVEL`: structured tracing filter, defaulting to `info`.
 
+### Peer Code-Signature Check (Release builds)
+
+The socket's directory is owner-only (`0700`), which keeps other users out but
+not another process running as the same person. In a Release build each end
+therefore checks the other's code signature before anything crosses the
+socket (design: `docs/architecture/personal-vault-and-devices.md` §9.3, from
+velvt-app #87; PR A0).
+The tokens that cross the socket today get the same protection.
+
+- **Rust checks Swift.** On accept, before `server_hello` and before the
+  connection takes the push queue, `ipc::transport` reads the peer's audit
+  token (`getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN)`), finds its code
+  (`SecCodeCopyGuestWithAttributes` with `kSecGuestAttributeAudit`) and checks
+  it with `SecCodeCheckValidity` against
+  `anchor apple generic and certificate leaf[subject.OU] = "<TEAM_ID>" and identifier "com.velvt.mac"`
+  (`rust-service/src/ipc/peer.rs`, a small hand-written FFI to
+  Security.framework and CoreFoundation; no crate).
+- **Swift checks Rust.** After `connect`, before reading `server_hello`, the
+  app makes the same check on the process serving the socket against
+  `identifier "com.velvt.service"` and the same team
+  (`swift-client/Sources/VelvtMac/IPC/SocketPeerCheck.swift`). The client
+  owns its BSD socket for this, rather than going through `NWConnection`,
+  which never exposes the descriptor; a second connection made only to check
+  could reach a different process.
+- **The team** is read from each side's own signature at launch. A build
+  without one (an ad-hoc `make package-release` build, which never leaves the
+  Mac that built it) requires the identifier alone. `verify_release.sh
+  --mode production` refuses any build without a Developer ID team, so every
+  build a tester gets pins it.
+- **Debug builds skip both checks.** Swift skips under `#if DEBUG`. The helper
+  checks only when `build_rust_helper.sh` built it for a Release app
+  (`VELVT_PEER_SIGNATURE_CHECK=enforce`, from `VELVT_DISTRIBUTABLE=YES`); a
+  Debug app's helper, `cargo build` and `cargo test` skip it.
+  `velvt-service --peer-requirement` prints `none` or the requirement it
+  holds the app to.
+- **A failed check** drops the connection and logs an error code only
+  (Rust: `error_code=ipc_peer_signature_rejected` and the `OSStatus`, or
+  `ipc_peer_token_unavailable` and the `errno`; Swift: `ipc_peer_rejected` and
+  the code). Nothing about the refused process is logged. The refused peer
+  is sent nothing. The app treats the refusal as a transport failure
+  (`IPCError.peerRejected`): it keeps reconnecting with backoff and shows the
+  service as unavailable, and on the first dial it reclaims the socket from
+  an orphaned helper of its own, as for a version mismatch (below), because a
+  helper whose executable was replaced by an update fails the check
+  (`errSecCSStaticCodeChanged`) before it can answer with its version.
+- **The release scripts** carry the names: `sign_release.sh` signs the helper
+  with `--identifier com.velvt.service` (codesign would otherwise name it
+  after its file), and `verify_release.sh` refuses a Release app whose helper
+  says `none`, whose halves are not signed `com.velvt.mac` and
+  `com.velvt.service`, or whose app or helper does not satisfy the other's
+  requirement (`codesign --test-requirement`).
+- **Other local clients.** Any other process connecting to a Release
+  helper's socket is refused: the measurement probes
+  (`scripts/measure_first_value.py`, `scripts/measure_warm_reopen.py`) and
+  the workspace's Claude Code attention hook work only against a helper that
+  skips the check.
+
+No message, field or protocol version changes.
+
 ### Stale Socket Handling
 
 Before binding, Rust checks whether a socket entry already exists. It first
@@ -870,6 +929,11 @@ attempts to connect:
   socket entry and then binds.
 
 Rust must never recursively delete the socket parent directory.
+
+In a Release build the check's own connection is refused by the live helper's
+peer check (it is not the app), and the live helper logs
+`ipc_peer_signature_rejected` for it. The connection still succeeds at the
+socket level, which is all the check needs.
 
 ### Reconnect and Buffering
 

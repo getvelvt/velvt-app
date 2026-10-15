@@ -1,7 +1,6 @@
 import Combine
 import Darwin
 import Foundation
-import Network
 
 /// Async newline-delimited frame transport used by the IPC client actor.
 protocol IPCTransportProtocol: Actor {
@@ -295,37 +294,31 @@ public actor UnixSocketIPCClient: IPCClientProtocol {
     }
 }
 
+/// The transport the app uses: a BSD Unix-domain stream socket.
+///
+/// It owns the socket descriptor rather than going through `NWConnection`,
+/// which never exposes one, because the peer check (`SocketPeerCheck`) has to
+/// ask the kernel about the very connection it then uses: a second connection
+/// made only to check could reach a different process.
 actor UnixSocketTransport: IPCTransportProtocol {
-    private var connection: NWConnection?
+    private let peerCheck: SocketPeerCheck
+    private var connection: UnixSocketConnection?
     private var bufferedData = Data()
+
+    init(peerCheck: SocketPeerCheck = .forThisBuild) {
+        self.peerCheck = peerCheck
+    }
+
+    deinit {
+        connection?.close()
+    }
 
     func connect(to path: String) async throws {
         guard FileManager.default.fileExists(atPath: path) else {
             throw IPCError.socket(code: ENOENT)
         }
-        let connection = NWConnection(to: .unix(path: path), using: .tcp)
-        self.connection = connection
-        defer { connection.stateUpdateHandler = nil }
-        try await withTaskCancellationHandler(
-            operation: {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    let gate = ContinuationGate(continuation)
-                    connection.stateUpdateHandler = { state in
-                        switch state {
-                        case .ready:
-                            gate.resume()
-                        default:
-                            if let error = Self.connectionError(for: state) {
-                                gate.resume(throwing: error)
-                            }
-                        }
-                    }
-                    connection.start(queue: DispatchQueue(label: "com.velvt.mac.ipc.socket"))
-                }
-            },
-            onCancel: {
-                connection.cancel()
-            })
+        connection?.close()
+        connection = try await UnixSocketConnection.connect(to: path, checkingPeerWith: peerCheck)
     }
 
     func send(frame: Data) async throws {
@@ -334,26 +327,16 @@ actor UnixSocketTransport: IPCTransportProtocol {
         }
         var framed = frame
         framed.append(0x0A)
-        // Network.framework completion handlers do not observe task
-        // cancellation, so tearing the socket down is the only thing that
-        // resumes this continuation. Without that the connect timeout cannot
-        // fire during the handshake: its task group waits for every child.
+        // A blocked write returns only when the socket is shut down, so that
+        // is what cancelling the task does. Without it the connect timeout
+        // could not fire during the handshake: its task group waits for every
+        // child.
         try await withTaskCancellationHandler(
             operation: {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    connection.send(
-                        content: framed,
-                        completion: .contentProcessed { error in
-                            if let error {
-                                continuation.resume(throwing: IPCError.socket(code: error.safeCode))
-                            } else {
-                                continuation.resume()
-                            }
-                        })
-                }
+                try await connection.write(framed)
             },
             onCancel: {
-                connection.cancel()
+                connection.shutdown()
             })
     }
 
@@ -368,87 +351,213 @@ actor UnixSocketTransport: IPCTransportProtocol {
                 throw IPCError.connectionClosed
             }
             // A peer that accepted the connection and then went silent parks
-            // this read forever, and the completion handler is deaf to task
-            // cancellation. Cancelling the socket is what resumes it.
+            // this read forever. Shutting the socket down is what returns it,
+            // so the connect timeout can still unwind a stalled handshake.
             let chunk = try await withTaskCancellationHandler(
                 operation: {
-                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-                        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
-                            data, _, complete, error in
-                            if let error {
-                                continuation.resume(throwing: IPCError.socket(code: error.safeCode))
-                            } else if complete, data?.isEmpty != false {
-                                continuation.resume(throwing: IPCError.connectionClosed)
-                            } else {
-                                continuation.resume(returning: data ?? Data())
-                            }
-                        }
-                    }
+                    try await connection.read(maximumLength: 64 * 1024)
                 },
                 onCancel: {
-                    connection.cancel()
+                    connection.shutdown()
                 })
             bufferedData.append(chunk)
         }
     }
 
     func close() async {
-        connection?.cancel()
+        connection?.close()
         connection = nil
         bufferedData.removeAll(keepingCapacity: false)
     }
-
-    /// Network.framework reports a refused Unix-domain connection as
-    /// `.waiting`, not `.failed`. Treating that as an immediate transport
-    /// error lets the client's 250 ms bundled-helper retry cadence run instead
-    /// of holding the startup UI until the five-second safety timeout.
-    static func connectionError(for state: NWConnection.State) -> IPCError? {
-        switch state {
-        case .waiting(let error), .failed(let error):
-            .socket(code: error.safeCode)
-        case .cancelled:
-            .connectionClosed
-        default:
-            nil
-        }
-    }
 }
 
-private final class ContinuationGate: @unchecked Sendable {
+/// One connected Unix-domain stream socket.
+///
+/// Reads and writes block on the connection's own serial queues, never on
+/// Swift's cooperative pool, so a read parked on a silent peer holds one
+/// thread and nothing else, and writes leave in the order they were sent.
+/// `shutdown()` wakes whatever is blocked; the descriptor itself is closed
+/// only once nothing is using it, so its number can never be reused under a
+/// read that is still running.
+final class UnixSocketConnection: @unchecked Sendable {
+    private let descriptor: Int32
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, Error>?
+    private var operationsInFlight = 0
+    private var isClosed = false
+    private let readQueue = DispatchQueue(label: "com.velvt.mac.ipc.socket.read")
+    private let writeQueue = DispatchQueue(label: "com.velvt.mac.ipc.socket.write")
 
-    init(_ continuation: CheckedContinuation<Void, Error>) {
-        self.continuation = continuation
+    private init(descriptor: Int32) {
+        self.descriptor = descriptor
     }
 
-    func resume() {
-        take()?.resume()
+    deinit {
+        if !isClosed {
+            Darwin.close(descriptor)
+        }
     }
 
-    func resume(throwing error: Error) {
-        take()?.resume(throwing: error)
+    /// Connects to the socket at `path` and checks the process serving it.
+    ///
+    /// A refused connection fails at once with `ECONNREFUSED`, so the client's
+    /// fast retry cadence covers a helper that has not bound the socket yet.
+    static func connect(
+        to path: String,
+        checkingPeerWith peerCheck: SocketPeerCheck
+    ) async throws -> UnixSocketConnection {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result { try connectBlocking(to: path, checkingPeerWith: peerCheck) })
+            }
+        }
     }
 
-    private func take() -> CheckedContinuation<Void, Error>? {
+    private static func connectBlocking(
+        to path: String,
+        checkingPeerWith peerCheck: SocketPeerCheck
+    ) throws -> UnixSocketConnection {
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else {
+            throw IPCError.socket(code: errno)
+        }
+        let connection = UnixSocketConnection(descriptor: descriptor)
+        do {
+            // A write to a peer that has gone returns EPIPE instead of
+            // killing the app with SIGPIPE.
+            var noSignal: Int32 = 1
+            guard
+                setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+                    == 0
+            else {
+                throw IPCError.socket(code: errno)
+            }
+            _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
+
+            var address = sockaddr_un()
+            address.sun_family = sa_family_t(AF_UNIX)
+            address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+            let pathBytes = Array(path.utf8)
+            guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+                throw IPCError.socket(code: ENAMETOOLONG)
+            }
+            withUnsafeMutableBytes(of: &address.sun_path) { destination in
+                destination.copyBytes(from: pathBytes)
+            }
+            let connected = withUnsafePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                    Darwin.connect(descriptor, socketAddress, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            guard connected == 0 else {
+                throw IPCError.socket(code: errno)
+            }
+
+            do {
+                try peerCheck.verifyPeer(ofSocket: descriptor)
+            } catch IPCError.peerRejected(let code) {
+                SocketPeerCheckLog.shared.error(
+                    "IPC peer failed the code-signature check; connection dropped. error_code=ipc_peer_rejected code=\(code, privacy: .public)"
+                )
+                throw IPCError.peerRejected(code: code)
+            }
+            return connection
+        } catch {
+            connection.close()
+            throw error
+        }
+    }
+
+    func read(maximumLength: Int) async throws -> Data {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+            readQueue.async { [self] in
+                continuation.resume(
+                    with: withOpenDescriptor { descriptor in
+                        var buffer = [UInt8](repeating: 0, count: maximumLength)
+                        while true {
+                            let count = Darwin.read(descriptor, &buffer, maximumLength)
+                            if count > 0 {
+                                return .success(Data(buffer[..<count]))
+                            }
+                            if count == 0 {
+                                return .failure(IPCError.connectionClosed)
+                            }
+                            let code = errno
+                            if code != EINTR {
+                                return .failure(IPCError.socket(code: code))
+                            }
+                        }
+                    })
+            }
+        }
+    }
+
+    func write(_ data: Data) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            writeQueue.async { [self] in
+                continuation.resume(
+                    with: withOpenDescriptor { descriptor in
+                        data.withUnsafeBytes { bytes -> Result<Void, Error> in
+                            guard let base = bytes.baseAddress else {
+                                return .success(())
+                            }
+                            var offset = 0
+                            while offset < bytes.count {
+                                let written = Darwin.write(descriptor, base + offset, bytes.count - offset)
+                                if written > 0 {
+                                    offset += written
+                                    continue
+                                }
+                                let code = written < 0 ? errno : EPIPE
+                                if code != EINTR {
+                                    return .failure(IPCError.socket(code: code))
+                                }
+                            }
+                            return .success(())
+                        }
+                    })
+            }
+        }
+    }
+
+    /// Wakes a blocked read or write, which then fails. The descriptor stays
+    /// open until `close()`.
+    func shutdown() {
         lock.withLock {
-            defer { continuation = nil }
-            return continuation
+            guard !isClosed else { return }
+            _ = Darwin.shutdown(descriptor, SHUT_RDWR)
         }
     }
-}
 
-extension NWError {
-    fileprivate var safeCode: Int32 {
-        switch self {
-        case .posix(let code):
-            return code.rawValue
-        case .dns(let code):
-            return Int32(code)
-        case .tls(let code):
-            return Int32(code)
-        @unknown default:
-            return -1
+    func close() {
+        let closeNow = lock.withLock { () -> Bool in
+            guard !isClosed else { return false }
+            isClosed = true
+            _ = Darwin.shutdown(descriptor, SHUT_RDWR)
+            return operationsInFlight == 0
         }
+        if closeNow {
+            Darwin.close(descriptor)
+        }
+    }
+
+    private func withOpenDescriptor<T>(_ body: (Int32) -> Result<T, Error>) -> Result<T, Error> {
+        let open = lock.withLock { () -> Bool in
+            guard !isClosed else { return false }
+            operationsInFlight += 1
+            return true
+        }
+        guard open else {
+            return .failure(IPCError.connectionClosed)
+        }
+        defer {
+            let closeNow = lock.withLock { () -> Bool in
+                operationsInFlight -= 1
+                return isClosed && operationsInFlight == 0
+            }
+            if closeNow {
+                Darwin.close(descriptor)
+            }
+        }
+        return body(descriptor)
     }
 }

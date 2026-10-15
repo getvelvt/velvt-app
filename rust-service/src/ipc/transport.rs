@@ -71,6 +71,7 @@ pub struct TokioUnixTransport<R = super::DefaultRouter> {
     write_timeout: std::time::Duration,
     shutdown: Option<tokio::sync::watch::Receiver<bool>>,
     reconnect_tracker: Option<std::sync::Arc<super::ReconnectTracker>>,
+    peer_policy: std::sync::Arc<super::peer::PeerPolicy>,
 }
 
 #[cfg(unix)]
@@ -87,6 +88,7 @@ impl TokioUnixTransport<super::DefaultRouter> {
             write_timeout: std::time::Duration::from_millis(500),
             shutdown: None,
             reconnect_tracker: None,
+            peer_policy: std::sync::Arc::new(super::peer::PeerPolicy::for_this_build()),
         }
     }
 }
@@ -105,6 +107,7 @@ impl<R: super::MessageRouter + Clone + Send + 'static> TokioUnixTransport<R> {
             write_timeout: std::time::Duration::from_millis(500),
             shutdown: None,
             reconnect_tracker: None,
+            peer_policy: std::sync::Arc::new(super::peer::PeerPolicy::for_this_build()),
         }
     }
 
@@ -159,6 +162,13 @@ impl<R: super::MessageRouter + Clone + Send + 'static> TokioUnixTransport<R> {
         self
     }
 
+    /// Replaces the check made on each connecting process, which is otherwise
+    /// [`super::peer::PeerPolicy::for_this_build`].
+    pub fn with_peer_policy(mut self, policy: super::peer::PeerPolicy) -> Self {
+        self.peer_policy = std::sync::Arc::new(policy);
+        self
+    }
+
     async fn bind(&self) -> Result<tokio::net::UnixListener, IpcError> {
         use std::os::unix::fs::PermissionsExt;
 
@@ -201,6 +211,11 @@ impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUni
                 ) => {
                     let Some(stream) = accept else {
                         break;
+                    };
+                    // Before the push queue is acquired or a byte is written:
+                    // a refused peer never sees `server_hello`.
+                    let Some(stream) = admit_peer(&self.peer_policy, stream).await else {
+                        continue;
                     };
                     let max_errors = self.max_errors;
                     let auth_states = self.auth_states.clone();
@@ -284,6 +299,67 @@ impl<R: super::MessageRouter + Clone + Send + 'static> IpcTransport for TokioUni
         // Wait for all in-flight connection tasks to finish.
         while join_set.join_next().await.is_some() {}
         Ok(())
+    }
+}
+
+/// Returns the stream if the process that connected passes `policy`, and
+/// drops it otherwise.
+///
+/// The Security.framework calls block, so they run on the blocking pool. The
+/// stream travels with them, so it cannot be closed (and its descriptor number
+/// reused by another connection) while its peer is being checked.
+#[cfg(unix)]
+async fn admit_peer(
+    policy: &std::sync::Arc<super::peer::PeerPolicy>,
+    stream: tokio::net::UnixStream,
+) -> Option<tokio::net::UnixStream> {
+    if matches!(policy.as_ref(), super::peer::PeerPolicy::Skip) {
+        return Some(stream);
+    }
+    let stream = match stream.into_std() {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::error!(
+                error_code = "ipc_peer_check_failed",
+                raw_os_error = ?error.raw_os_error(),
+                "IPC peer could not be checked; connection dropped"
+            );
+            return None;
+        }
+    };
+    let policy = std::sync::Arc::clone(policy);
+    let checked = tokio::task::spawn_blocking(move || {
+        let verdict = policy.verify(&stream);
+        (stream, verdict)
+    })
+    .await;
+    match checked {
+        Ok((stream, Ok(()))) => match tokio::net::UnixStream::from_std(stream) {
+            Ok(stream) => Some(stream),
+            Err(error) => {
+                tracing::error!(
+                    error_code = "ipc_peer_check_failed",
+                    raw_os_error = ?error.raw_os_error(),
+                    "IPC peer passed but its connection could not be resumed; dropped"
+                );
+                None
+            }
+        },
+        Ok((_stream, Err(refusal))) => {
+            tracing::error!(
+                error_code = refusal.code(),
+                status = refusal.status(),
+                "IPC peer failed the code-signature check; connection dropped"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::error!(
+                error_code = "ipc_peer_check_failed",
+                "IPC peer check did not finish; connection dropped"
+            );
+            None
+        }
     }
 }
 

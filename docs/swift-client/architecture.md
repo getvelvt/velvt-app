@@ -110,6 +110,8 @@ public protocol IPCClientProtocol: AnyObject {
 
 The client performs server-first handshake and only allows public sends after `acknowledged`. Version mismatches are surfaced as `IPCError.versionMismatch`.
 
+`UnixSocketTransport` owns a BSD Unix-domain socket (`UnixSocketConnection`): reads and writes block on the connection's own serial queues, and `shutdown` is how a cancelled read or write is woken. It does not use `NWConnection`, because in a Release build `SocketPeerCheck` asks the kernel for the audit token of the process serving that very socket and checks its code signature (`identifier "com.velvt.service"`, by this app's team) before reading `server_hello`. A refusal is `IPCError.peerRejected(code:)`, logged as an error code only and handled like any transport failure; on the first dial `AppDelegate.connectRetryingVersionMismatch` also reclaims the socket from an orphaned helper of this app's own. Debug builds skip the check. See `docs/architecture/ipc-contract.md`, "Peer Code-Signature Check".
+
 Tests use `FakeIPCClient` to drive state and messages without a real Unix socket.
 
 ## Delivery and Notifications

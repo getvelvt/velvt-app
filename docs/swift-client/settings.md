@@ -72,7 +72,7 @@ The "Send All Now" action sends:
 try await ipcClient.send(.flushUploadQueue)
 ```
 
-Rust responds with an updated `menu_status` or an `error_response` with code `upload_flush_failed`.
+Rust responds at once with a `menu_status` showing the queue as it stands and sends the queue in the background; the next `menu_status` shows the outcome. Since 1.0.14 Rust no longer sends `error_response(upload_flush_failed)`; the client still handles it.
 
 ## Persisted Local UI State
 

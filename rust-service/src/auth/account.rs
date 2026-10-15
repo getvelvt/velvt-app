@@ -30,6 +30,9 @@ pub struct AccountAuthService {
     authenticated_http: Arc<dyn HttpClient>,
     token_store: Arc<dyn TokenStore>,
     auth_state: Arc<AuthStateMachine>,
+    /// The revocation `log_out` sent in the background, until a sign-up or
+    /// login has waited for it.
+    pending_logout: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl AccountAuthService {
@@ -44,10 +47,12 @@ impl AccountAuthService {
             authenticated_http,
             token_store,
             auth_state,
+            pending_logout: std::sync::Mutex::new(None),
         }
     }
 
     pub async fn sign_up(&self, email: String, password: String) -> ServerMessage {
+        self.finish_pending_logout().await;
         let message = self
             .credential_flow("/v1/auth/signup", 201, email, password)
             .await;
@@ -55,6 +60,7 @@ impl AccountAuthService {
     }
 
     pub async fn log_in(&self, email: String, password: String) -> ServerMessage {
+        self.finish_pending_logout().await;
         let message = self
             .credential_flow("/v1/auth/login", 200, email, password)
             .await;
@@ -292,7 +298,11 @@ impl AccountAuthService {
     /// Fire-and-forget per the IPC contract: best-effort server-side
     /// revocation. Failures are not surfaced — the client has already
     /// cleared its local session by the time this is called.
-    pub async fn log_out(&self) {
+    ///
+    /// The local session is cleared before this returns, and the revocation
+    /// is sent in a task of its own: the router calls this on the connection
+    /// that carries every raw event, which must not wait on the cloud.
+    pub fn log_out(&self) {
         // Snapshot the credential first, then fail closed immediately for
         // local collection. The authenticated transport deliberately rejects
         // requests once state is unauthenticated, so issue this one explicit
@@ -304,12 +314,36 @@ impl AccountAuthService {
             .flatten()
             .map(|tokens| tokens.access_token().clone());
         let _ = self.auth_state.transition(AuthState::Unauthenticated);
+        self.clear_local_session(false);
         if let Some(access_token) = device_access_token {
             let mut request = HttpRequest::post("/v1/auth/logout");
             request.authorization = Some(access_token);
-            let _ = self.raw_http.send(request).await;
+            let raw_http = Arc::clone(&self.raw_http);
+            let revocation = tokio::spawn(async move {
+                let _ = raw_http.send(request).await;
+            });
+            if let Ok(mut pending) = self.pending_logout.lock() {
+                *pending = Some(revocation);
+            }
         }
-        self.clear_local_session(false);
+    }
+
+    /// Waits for a revocation `log_out` sent in the background.
+    ///
+    /// The cloud revokes every unrevoked refresh token of the device it is
+    /// sent for, and this Mac keeps its device id across a log out. A
+    /// revocation that landed after the next login reissued that device's
+    /// tokens would revoke the new session, so a sign-up or login waits for
+    /// it first.
+    async fn finish_pending_logout(&self) {
+        let pending = self
+            .pending_logout
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.take());
+        if let Some(revocation) = pending {
+            let _ = revocation.await;
+        }
     }
 
     /// Relays the deletion to the cloud and, on acceptance, clears this
@@ -772,7 +806,9 @@ mod tests {
             Arc::clone(&auth_state),
         );
 
-        service.log_out().await;
+        service.log_out();
+        assert!(token_store.load_tokens().unwrap().is_none());
+        service.finish_pending_logout().await;
 
         let requests = raw_http.requests();
         assert_eq!(requests.len(), 1);

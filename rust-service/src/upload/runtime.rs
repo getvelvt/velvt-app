@@ -255,9 +255,18 @@ where
 
 impl<U, A> EventIngestor for SharedUploadBatcher<U, A>
 where
-    U: BatchUploader,
-    A: PrivacyAlertSink,
+    U: BatchUploader + 'static,
+    A: PrivacyAlertSink + 'static,
 {
+    /// Adds the event to the batch being assembled. When that fills the batch,
+    /// the batch is persisted before this returns and uploaded in a task of its
+    /// own.
+    ///
+    /// The router awaits this for every raw event, so the upload cannot be
+    /// awaited here even with `inner` released: against a host that accepts
+    /// the connection and never answers, every event that filled a batch was
+    /// acked only after the request timed out. Once persisted the batch is
+    /// durable, and an upload that fails is resumed by the retry scan.
     fn ingest<'a>(
         &'a self,
         event_id: String,
@@ -277,7 +286,17 @@ where
             let Some(batch) = batch else {
                 return Ok(());
             };
-            self.submit_with_inner_released(batch, coordinator).await
+            if let Err(error) = coordinator.persist_batch(&batch) {
+                UploadBatcher::<U, A>::log_submit_failure(&error);
+                self.inner.lock().await.assembler.requeue(batch);
+                return Err(error);
+            }
+            tokio::spawn(async move {
+                if let Err(error) = coordinator.upload_batch(batch).await {
+                    UploadBatcher::<U, A>::log_submit_failure(&error);
+                }
+            });
+            Ok(())
         })
     }
 

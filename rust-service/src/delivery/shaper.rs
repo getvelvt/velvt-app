@@ -305,6 +305,16 @@ pub fn shape_cache_empty(
     })
 }
 
+pub fn shape_cache_empty_because(
+    payload_type: &str,
+    reason: &str,
+) -> Result<ValidatedPayload<CacheEmpty>, ValidationError> {
+    ValidatedPayload::new(CacheEmpty {
+        payload_type: payload_type.to_owned(),
+        reason: Some(reason.to_owned()),
+    })
+}
+
 pub fn shape_local_dashboard(
     payload: LocalDashboardSnapshot,
 ) -> Result<ValidatedPayload<LocalDashboardSnapshot>, ValidationError> {

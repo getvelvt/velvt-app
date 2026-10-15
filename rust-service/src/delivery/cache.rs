@@ -52,6 +52,13 @@ pub trait CacheManager: Send + Sync {
         date: NaiveDate,
     ) -> Pin<Box<dyn Future<Output = Result<Option<InsightPayload>, CacheError>> + Send + 'a>>;
 
+    /// What `daily_insight(date)` would answer from the cache alone, or `None`
+    /// when it would have to ask the cloud. Never makes a network request.
+    fn cached_daily_insight<'a>(
+        &'a self,
+        date: NaiveDate,
+    ) -> Pin<Box<dyn Future<Output = Option<Option<InsightPayload>>> + Send + 'a>>;
+
     /// Drops the cached history for a specific date, or all dates when `None`.
     fn invalidate_history<'a>(
         &'a self,
@@ -96,6 +103,13 @@ impl<H: HttpClient + 'static> CacheManager for FetchService<H> {
         date: NaiveDate,
     ) -> Pin<Box<dyn Future<Output = Result<Option<InsightPayload>, CacheError>> + Send + 'a>> {
         Box::pin(async move { self.daily_insight(date).await.map_err(CacheError::Fetch) })
+    }
+
+    fn cached_daily_insight<'a>(
+        &'a self,
+        date: NaiveDate,
+    ) -> Pin<Box<dyn Future<Output = Option<Option<InsightPayload>>> + Send + 'a>> {
+        Box::pin(async move { self.cached_daily_insight(date).await })
     }
 
     fn invalidate_history<'a>(
@@ -228,6 +242,17 @@ impl CacheManager for FakeCacheManager {
         let key = date.format("%Y-%m-%d").to_string();
         let result = self.insights.lock().unwrap().get(&key).cloned().flatten();
         Box::pin(async move { Ok(result) })
+    }
+
+    /// The preloaded insight for `date`, `Some(None)` for one preloaded as
+    /// absent, and `None` for a date nothing was preloaded for. Not counted.
+    fn cached_daily_insight<'a>(
+        &'a self,
+        date: NaiveDate,
+    ) -> Pin<Box<dyn Future<Output = Option<Option<InsightPayload>>> + Send + 'a>> {
+        let key = date.format("%Y-%m-%d").to_string();
+        let result = self.insights.lock().unwrap().get(&key).cloned();
+        Box::pin(async move { result })
     }
 
     fn invalidate_history<'a>(

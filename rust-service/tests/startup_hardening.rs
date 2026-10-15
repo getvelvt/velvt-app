@@ -360,11 +360,77 @@ fn missing_taxonomy_halts_with_structured_error() {
         "{}",
         output.diagnostics()
     );
+    assert_eq!(output.status.code(), Some(1), "{}", output.diagnostics());
     assert!(
         logs.contains("service startup halted"),
         "{}",
         output.diagnostics()
     );
+}
+
+/// A database file that is not a database halts startup with a fixed token
+/// for the cause, never the path or SQLite's message, and a non-zero status.
+#[test]
+fn a_damaged_database_halts_with_a_token_for_the_cause() {
+    if !filesystem_sockets_available() {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let taxonomy = write_taxonomy(&directory, "mvp-1");
+    let database = directory.path("damaged.sqlite3");
+    fs::write(&database, vec![0x5a_u8; 8_192]).expect("failed to write a damaged database");
+
+    let output = ServiceProcess::spawn(
+        &directory,
+        &[
+            ("VELVT_ABSTRACTION_TAXONOMY_PATH", &taxonomy),
+            ("VELVT_DATABASE_PATH", &database),
+            ("HOME", &directory.path),
+        ],
+    )
+    .wait_for_exit("the damaged-database refusal to exit");
+
+    assert!(
+        output.logs().contains("error_code=\"database_corrupt\""),
+        "{}",
+        output.diagnostics()
+    );
+    assert_ne!(output.status.code(), Some(0), "{}", output.diagnostics());
+}
+
+/// A helper whose socket cannot be bound used to keep running with no
+/// listener: the server task's error was never read, and the app relaunches
+/// a helper that exits, not one that idles. It must exit, non-zero, saying so.
+#[test]
+fn a_socket_that_cannot_be_bound_halts_the_service() {
+    if !filesystem_sockets_available() {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let taxonomy = write_taxonomy(&directory, "mvp-1");
+    // The socket's directory is a regular file, so it can never be created.
+    let blocker = directory.path("not-a-directory");
+    fs::write(&blocker, b"").expect("failed to write the blocking file");
+    let socket = blocker.join("s.sock");
+    let unreachable_api = PathBuf::from("http://127.0.0.1:9");
+
+    let output = ServiceProcess::spawn(
+        &directory,
+        &[
+            ("VELVT_ABSTRACTION_TAXONOMY_PATH", &taxonomy),
+            ("VELVT_IPC_SOCKET_PATH", &socket),
+            ("VELVT_API_BASE_URL", &unreachable_api),
+            ("HOME", &directory.path),
+        ],
+    )
+    .wait_for_exit("the helper whose socket cannot be bound to exit");
+
+    assert!(
+        output.logs().contains("ipc_bind_failed"),
+        "{}",
+        output.diagnostics()
+    );
+    assert_eq!(output.status.code(), Some(1), "{}", output.diagnostics());
 }
 
 #[test]
@@ -463,7 +529,7 @@ fn missing_database_file_is_created_and_migrated_at_startup() {
         .expect("startup database should contain the migration ledger");
     assert!(migration_count > 0, "{}", output.diagnostics());
     assert!(
-        !output.logs().contains("persistence_initialization_failed"),
+        !output.logs().contains("service startup halted"),
         "{}",
         output.diagnostics()
     );
@@ -590,7 +656,7 @@ fn readiness_wait_survives_startup_longer_than_500_milliseconds() {
     let output = service.terminate_and_collect();
 
     assert!(
-        !output.logs().contains("persistence_initialization_failed"),
+        !output.logs().contains("service startup halted"),
         "{}",
         output.diagnostics()
     );

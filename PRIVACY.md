@@ -606,7 +606,8 @@ compares with this list.
   already registered, or the server says this device's token was revoked: the
   device ID.
 - **`POST /v1/auth/refresh`** — when the access token is about to expire: the
-  refresh token.
+  refresh token. After a refresh that gets no answer from the server, none is
+  sent for a minute.
 - **`GET /v1/auth/session`** — when the app restores a saved session. No body.
 - **`POST /v1/auth/logout`** — when you sign out. No body.
 - **`DELETE /v1/account`** — when you use Delete Account. No body.
@@ -622,8 +623,9 @@ compares with this list.
   account signs in or out; and, while the history it shows is not the synced
   one, when Patterns opens and every 10 minutes. While it shows synced
   history, opening Patterns sends nothing. Once one of the app's asks for
-  history fails to get it from the server, later asks make no request of
-  their own until the 10-minute request succeeds or the session changes. The
+  history, or for an insight, fails to get it from the server, later asks of
+  the same kind make no request of their own until the 10-minute request
+  succeeds or the session changes. The
   app also asks for history while signed out; that answer is built on this
   Mac from its own events and makes no request.
 - **`GET /v1/ready`** — when the menu asks whether the server is reachable, at

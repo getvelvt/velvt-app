@@ -265,6 +265,18 @@ fn ready_response() -> HttpResponse {
     }
 }
 
+/// Lets the router's background tasks run until `done` holds.
+async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+    while !done() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never happened: {what}"
+        );
+        tokio::time::sleep(StdDuration::from_millis(1)).await;
+    }
+}
+
 fn token_pair(expires_in: ChronoDuration, access: &str, refresh: &str) -> TokenPair {
     TokenPair::new(
         RedactedString::new(access),
@@ -291,7 +303,10 @@ async fn flush_upload_queue_uses_shared_ingestor_and_returns_menu_status() {
         .unwrap();
 
     assert!(matches!(response, Some(ServerMessage::MenuStatus(_))));
-    assert_eq!(ingestor.flush_now_calls.load(Ordering::SeqCst), 1);
+    eventually("the flush ran", || {
+        ingestor.flush_now_calls.load(Ordering::SeqCst) == 1
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -385,8 +400,11 @@ async fn raw_events_during_a_token_refresh_stay_upload_eligible() {
     assert_eq!(ingestor.ingest_calls.load(Ordering::SeqCst), 1);
 }
 
+/// "Send all now" is answered with the queue as it stands, before the flush
+/// has run: a flush that fails is logged, and the next menu status shows the
+/// queue it left.
 #[tokio::test]
-async fn flush_upload_queue_returns_a_safe_error_when_uploading_fails() {
+async fn flush_upload_queue_answers_with_the_menu_status_even_when_the_flush_fails() {
     let persistence = SqlitePersistence::open_in_memory().unwrap();
     let router = build_router(
         Arc::new(FakeCacheManager::new()),
@@ -401,8 +419,7 @@ async fn flush_upload_queue_returns_a_safe_error_when_uploading_fails() {
         .await
         .unwrap();
 
-    assert!(matches!(response, Some(ServerMessage::ErrorResponse(error))
-        if error.code == "upload_flush_failed"));
+    assert!(matches!(response, Some(ServerMessage::MenuStatus(_))));
 }
 
 #[tokio::test]
@@ -445,22 +462,49 @@ async fn request_menu_status_reports_upload_auth_and_retry_state() {
         Arc::new(FakeHttp::default()),
     )
     .with_menu_status(Arc::new(MenuStatusProvider::new(
-        raw_http as Arc<dyn HttpClient>,
+        Arc::clone(&raw_http) as Arc<dyn HttpClient>,
         token_store as Arc<dyn TokenStore>,
         persistence.upload_batch_repo(),
         persistence.raw_event_repo(),
         persistence.abstraction_map_repo(),
     )));
 
+    // The first status starts the readiness probe and does not wait for it.
     let response = router
         .route(ClientMessage::RequestMenuStatus(RequestMenuStatus {}))
         .await
         .unwrap();
-
     let Some(ServerMessage::MenuStatus(status)) = response else {
         panic!("expected menu_status");
     };
-    assert!(status.cloud_ready);
+    assert!(!status.cloud_ready);
+    eventually("the readiness probe was sent", || {
+        raw_http.requests().len() == 1
+    })
+    .await;
+    let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
+    let status = loop {
+        let response = router
+            .route(ClientMessage::RequestMenuStatus(RequestMenuStatus {}))
+            .await
+            .unwrap();
+        let Some(ServerMessage::MenuStatus(status)) = response else {
+            panic!("expected menu_status");
+        };
+        if status.cloud_ready {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the probe's answer was never kept"
+        );
+        tokio::time::sleep(StdDuration::from_millis(1)).await;
+    };
+    assert_eq!(
+        raw_http.requests().len(),
+        1,
+        "a fresh answer was probed again"
+    );
     assert_eq!(status.upload_status, "auth_required");
     assert_eq!(
         status.last_upload_error_code.as_deref(),
@@ -574,8 +618,11 @@ async fn local_activity_name_stays_off_cloud_and_remains_in_correction_history()
         Some("Got it — Research reading counts as reference from now on.")
     );
 
+    eventually("the correction was sent", || {
+        correction_http.requests().len() == 1
+    })
+    .await;
     let requests = correction_http.requests();
-    assert_eq!(requests.len(), 1);
     assert_eq!(
         requests[0].json_body,
         Some(json!({ "category": "REFERENCE" }))

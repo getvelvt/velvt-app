@@ -356,6 +356,18 @@ insight.
 - `type`: literal `request_latest_insight`
 - `date`: calendar date formatted `YYYY-MM-DD`
 
+How Rust answers (1.0.14): at once from `insight_cache`, with the insight or,
+when the cache holds the cloud's answer that there is none,
+`cache_empty(insufficient_evidence)`. Otherwise the reply is not immediate:
+Rust asks the cloud in a background task and the answer arrives later on the
+same connection as a push — the `insight_payload`,
+`cache_empty(insufficient_evidence)`, or `cache_empty(backend_unavailable)`
+when the cloud cannot be read. A failed read starts an outage, during which
+requests are answered `cache_empty(backend_unavailable)` at once and ask
+nothing of the cloud, until the fetch scheduler puts an answer in the cache or
+the session changes (`log_in`, `log_out`, `auth_session`). Repeated requests
+while one read is outstanding start no second one.
+
 ### `request_latest_history`
 
 Direction: Swift to Rust. Purpose: request a ready-to-display history window.
@@ -379,14 +391,15 @@ minutes. A `cloud` history is not asked for again: Rust pushes a new
 `history_payload` each time its fetch scheduler fetches one.
 
 How Rust answers, signed in: from the cloud's history for at most 7 UTC days
-(the most `GET /v1/history/daily` returns), served from `history_cache` when
-every date is there. After a cloud read fails, later requests are answered
-from `history_cache` once the fetch scheduler has put the cloud's history
-back in it, and otherwise built on this Mac at once, without waiting on the
-cloud; a session change (`log_in`, `log_out`, `auth_session`, or a request
-made signed out) ends that. The connection reads one message at a time, so
-each cloud read that ran to the 10-second HTTP timeout held every other
-message back.
+(the most `GET /v1/history/daily` returns) when `history_cache` holds every
+date, and otherwise built on this Mac at once. Since 1.0.14 no request waits
+on the cloud: on a cache miss Rust asks the cloud in a background task, and
+pushes the `history_payload` it fetches when that history has a ready day.
+After a cloud read fails, later requests ask nothing of the cloud until the
+fetch scheduler has put the cloud's history back in `history_cache`; a session
+change (`log_in`, `log_out`, `auth_session`, or a request made signed out)
+ends that too. The connection reads one message at a time, so each cloud read
+that ran to the 10-second HTTP timeout used to hold every other message back.
 
 ### `cache_empty`
 
@@ -404,6 +417,17 @@ or `history_payload` is not cached or generated yet.
 Direction: Swift to Rust for `sign_up`, `log_in`, `log_out`, and
 `delete_account`; Rust to Swift for `auth_success`, `auth_failure`,
 `account_deletion_accepted`, `needs_reauth`, and `device_revoked`.
+
+Since 1.0.14 no account message but `sign_up`, `log_in` and `delete_account`
+waits on the cloud. `auth_session` is applied at once and validated in a
+background task; the outcome reaches Swift as the auth status it leaves, not
+as a reply. `log_out` clears the local session at once and sends its
+best-effort revocation in the background; a `sign_up` or `log_in` that follows
+waits for that revocation first, because the cloud revokes every refresh token
+of the device it names. The three that still wait are the ones a person is
+watching: each holds the connection for up to one 10-second HTTP timeout per
+request it sends (a sign-in can send three: the outstanding revocation, the
+credentials, and the device registration or reissue).
 
 Credentials and tokens are permitted only in these auth-specific wire
 messages. Rust redacts credential-carrying DTOs in `Debug`, Swift stores
@@ -428,16 +452,28 @@ Payload is empty.
 ### `flush_upload_queue`
 
 Direction: Swift to Rust. Purpose: request an immediate flush/retry of queued
-privacy-safe upload work, then return a fresh `menu_status`.
+privacy-safe upload work.
 
 Payload is empty and never carries event data.
+
+Rust answers with a `menu_status` at once, showing the queue as it stands,
+and sends the queue in a background task (1.0.14); the next `menu_status`
+shows the outcome. The first batch is sent even while the upload host is in
+backoff, and the drain stops at the first batch that leaves the host in
+backoff (a transport failure, a rate limit, a retryable status), leaving the
+rest to the retry scan. A request while a drain is running starts no second
+one. `error_response(upload_flush_failed)` is no longer sent: a failed drain is
+logged.
 
 ### `menu_status`
 
 Direction: Rust to Swift. Purpose: report service status for the menu popover.
 
 - `device_id`: optional device identifier
-- `cloud_ready`: whether the Rust service's cloud readiness probe succeeded
+- `cloud_ready`: whether the Rust service's last cloud readiness probe
+  succeeded; `false` until a probe has answered. A status never waits on the
+  probe (1.0.14): a status that finds the answer missing or more than 60
+  seconds old starts one in the background, and a later status reports it
 - `last_successful_sync_at`: timestamp of the last successful sync, or null
 - `upload_status`: privacy-safe upload state. Values are `ready`, `pending`,
   `retrying`, `auth_required`, `network_unavailable`, `rate_limited`, and
@@ -482,6 +518,8 @@ version in brackets is where the message or field arrived.
 
 - `correct_event_classification` [13; optional `local_activity_name` 21]:
   Swift to Rust. Correct one event's category, optionally naming the activity.
+  Answered once the correction is saved on this Mac; its best-effort cloud
+  sync is sent in the background (1.0.14).
 - `update_classification_override` [22]: Swift to Rust. Edit a saved rule's
   alias or category after its upload event is gone.
 - `request_correction_history` [22] / `correction_history_page` [22; `scope`

@@ -1343,6 +1343,547 @@ def antecedent_sparse_trace(index: int, seed: int, weeks: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Suite E — the return ledger. Multi-week traces replayed through the REAL
+# ingestion path, like suites A and B, and then read back out of the database
+# and scored by `behavior/returns.rs`.
+#
+# READ THIS BEFORE QUOTING A NUMBER FROM SUITE E.
+#
+# Unlike C and D, suite E does go through `WorkBlockManager`: the decision log,
+# the offers, the block cap and the backoff that the ledger reads are the ones
+# the shipped gate wrote. What is synthetic is the person. Every departure's
+# outcome is drawn from a rate this file sets, so a suite E result says whether
+# the ledger recovers a rate that was planted, and nothing about any real
+# person's rate.
+#
+# Every departure in an episode is spaced so the gate never sees three in ten
+# minutes: the only offers come from the deliberate bursts and runs below, so
+# the only censored-by-offer rows are the ones planted to be, and every row's
+# label is known exactly. The ledger's own label function is checked against
+# that label for every row.
+# ---------------------------------------------------------------------------
+
+# /2 adds a block's `pauses` and `end_offset_seconds`, and a departure's
+# `outcome`.
+RETURNS_SCHEMA = "velvt-return-trace/2"
+
+# Versioned independently of GENERATOR_VERSION, like suites C and D, so that
+# adding to this suite never changes a byte of the suites other harnesses pin.
+# Version 2 adds INFORMATIVE and GAPS without changing a draw in the five
+# earlier families: their traces differ from version 1 only in the schema tag.
+RETURNS_GENERATOR_VERSION = 2
+
+RETURNS_ANCHOR = "FOCUS_WORK"
+
+# The pre-registered primary outcome: at least 600 of the 900 seconds after a
+# departure in the anchor. Restated from `behavior/returns.rs`, which is the
+# authority; this file must never be the thing that changes it.
+RETURNS_HORIZON_SECONDS = 900
+RETURNS_SUSTAINED_SECONDS = 600
+
+# The departure cells of `behavior/returns.rs`, and the categories drawn for
+# each. FOCUS_WORK is also a work-adjacent category there, but only when it is
+# not the anchor, and here it always is.
+RETURNS_GROUPS = {
+    "communication": ("COMMUNICATION",),
+    "feeds_and_video": ("SOCIAL_FEED", "PASSIVE_CONSUMPTION"),
+    "work_adjacent": ("REFERENCE", "TASK_MANAGEMENT"),
+}
+RETURNS_CELL_IDS = {
+    "communication": "departure.communication",
+    "feeds_and_video": "departure.feeds_and_video",
+    "work_adjacent": "departure.work_adjacent",
+}
+
+# ASSUMPTION. Where departures go: 40% communication, 30% feeds and video, 30%
+# work-adjacent. Nothing measures it.
+RETURNS_GROUP_WEIGHTS = {"communication": 0.40, "feeds_and_video": 0.30,
+                         "work_adjacent": 0.30}
+
+# ASSUMPTION. Blocks start at 09:00, 14:00 or 19:00 UTC plus up to 40 minutes,
+# one of each part of the day the ledger distinguishes. The replay reads them
+# at a UTC offset of zero. Five hours apart, so two blocks on one day never
+# overlap however long the first runs.
+RETURNS_START_HOURS = (9, 14, 19)
+RETURNS_START_JITTER_SECONDS = 2400
+
+# ASSUMPTION. A 90-minute declared block, inside the shipped 300-10800 bounds.
+# The short one, in half of SPARSE, has room for exactly one departure.
+RETURNS_BLOCK_SECONDS = 5400
+RETURNS_SHORT_BLOCK_SECONDS = 2400
+
+# ASSUMPTION. Away time after a departure. A return is 60-240 s away and so at
+# least 660 of the next 900 s in the anchor; a non-return is 420-700 s away
+# and so at most 480. Neither straddles the 600 s line, so every label is
+# exact by construction.
+RETURNS_AWAY_RETURNED = (60, 240)
+RETURNS_AWAY_NOT_RETURNED = (420, 700)
+
+# After the horizon the anchor runs on before the next departure. Longer after
+# a non-return, so the anchor always holds more confident time than any other
+# category and `dominant_category` never moves off it.
+RETURNS_ANCHOR_AFTER_RETURN = (60, 400)
+RETURNS_ANCHOR_AFTER_NON_RETURN = (600, 900)
+
+# ASSUMPTION. A person's blocks differ: each block's rates move together by a
+# draw from N(0, 0.08) on the probability scale. This is what makes rows in one
+# block correlated, and it is why the ledger's within-block weighting has
+# something to be right about.
+RETURNS_BLOCK_EFFECT_SD = 0.08
+
+# Per block: an ambiguous blip after a horizon (never evidence, never a
+# departure, and never inside a horizon, so no label moves); and one of three
+# endings: a burst of three quick departures that the shipped gate answers with
+# an offer (so the ledger's treated exclusion has rows to exclude), a last
+# departure the block ends 200-260 s into (so the block-ended censoring has
+# rows to censor), or a plain end.
+RETURNS_BLIP_PROBABILITY = 0.25
+RETURNS_BURST_PROBABILITY = 0.20
+RETURNS_CENSORED_TAIL_PROBABILITY = 0.25
+
+# The planted structure: after a communication departure this person rarely
+# spends most of the next fifteen minutes back at work; after anything else
+# they usually do.
+RETURNS_PLANTED_RATES = {"communication": 0.25, "feeds_and_video": 0.70,
+                         "work_adjacent": 0.70}
+RETURNS_NULL_RATE = 0.55
+RETURNS_REGIME_BEFORE = {"communication": 0.20, "feeds_and_video": 0.75,
+                         "work_adjacent": 0.75}
+RETURNS_REGIME_AFTER_RATE = 0.60
+# CORRECTED: half of what looks like communication before the correction is a
+# work tool the classifier filed as COMMUNICATION. It is really work, and the
+# person comes straight back from it. The correction files it as REFERENCE.
+RETURNS_CHAT_RATE = 0.20
+RETURNS_TOOL_RATE = 0.85
+RETURNS_TOOL_SHARE_OF_COMMUNICATION = 0.50
+RETURNS_CORRECTED_OTHER_RATE = 0.70
+RETURNS_DISPUTE_PROBABILITY = 0.60
+
+RETURNS_PLANTED_BLOCKS_PER_WEEK = (3, 5, 8)
+RETURNS_WEEKS_IN_LOOKBACK = 4
+
+# INFORMATIVE: the same own-return rate after every kind of departure, but a
+# non-return after a communication departure usually turns into a run of
+# departures that the shipped gate answers with an offer. The ledger censors
+# at the offer, so it drops non-returns it would otherwise count, more of
+# them in one cell than the others. This is the bias the ledger discloses,
+# planted so that it shows.
+RETURNS_INFORMATIVE_RATE = 0.55
+RETURNS_INFORMATIVE_CHASE = {"departure.communication": 0.90,
+                             "departure.feeds_and_video": 0.10,
+                             "departure.work_adjacent": 0.10}
+# The run: away, back for 20 s, away 20 s, back 20 s, away again, and the
+# third departure draws the offer. The first time away is either short, so
+# the label is still open at the offer and the row is censored, or long
+# enough (over 280 s) that the time before the offer already decides "did
+# not return". Half of each. Then 420-600 s away: every departure in the run
+# is a non-return over its whole horizon.
+RETURNS_CHASE_AWAY_OPEN = (60, 100)
+RETURNS_CHASE_AWAY_DECIDED = (320, 400)
+RETURNS_CHASE_DECIDED_SHARE = 0.5
+RETURNS_CHASE_TAIL = (420, 600)
+# Room for the run and its last horizon before the block ends.
+RETURNS_CHASE_RESERVE = 480
+
+# GAPS: two ways the observation ledger misses time inside a horizon. A pause
+# (a sleep pauses too) during the first departure's horizon, and a block that
+# ends with the dwell it ended in still open: with no raw dwell reported, the
+# block end closes that row where it opened, so the last horizon has a gap.
+# That second one is the unmeasured final dwell. Both are censored,
+# `observer_gap`, whatever the person did.
+RETURNS_PAUSE_PROBABILITY = 0.5
+RETURNS_PAUSE_SECONDS = (120, 300)
+RETURNS_OPEN_END_PROBABILITY = 0.5
+RETURNS_GAPS_BLOCKS_PER_WEEK = 6
+
+
+def _slots(rng: random.Random, week: int, blocks_per_week: int) -> list[int]:
+    """Start offsets for one week's blocks, relative to the replay origin.
+
+    The replay origin, `1_800_000_000`, is 08:00 UTC. Offsets are strictly
+    increasing and at least five hours apart.
+    """
+    grid = [(day, hour) for day in range(7) for hour in RETURNS_START_HOURS]
+    chosen = sorted(rng.sample(grid, blocks_per_week))
+    return [
+        (week * 7 + day) * SECONDS_PER_DAY + (hour - 8) * 3600
+        + rng.randint(0, RETURNS_START_JITTER_SECONDS)
+        for day, hour in chosen
+    ]
+
+
+def _weighted_group(rng: random.Random) -> str:
+    return _weighted_choice(rng, RETURNS_GROUP_WEIGHTS)
+
+
+def _returns_block(rng: random.Random, start_offset: int, duration: int,
+                   draw_departure, allow_extras: bool = True,
+                   reply_to_offer: str | None = None,
+                   burst_categories: tuple[str, ...] = ("COMMUNICATION",),
+                   chase: dict[str, float] | None = None,
+                   gaps: bool = False) -> dict:
+    """One declared block of spaced departures, each labelled at generation.
+
+    `draw_departure(rng)` returns `(category, cell_id, rate)`. The block's
+    ending is chosen first, so the departures before it leave it room.
+
+    `chase` maps a departure cell to the chance that a non-return there turns
+    into a run of departures the gate offers on (INFORMATIVE); the block's
+    departures stop after the first. `gaps` may pause the block inside the
+    first horizon and may end it with its last dwell unmeasured (GAPS). Both
+    draw from `rng` only when set, so the other families are unchanged.
+    """
+    block_effect = rng.gauss(0.0, RETURNS_BLOCK_EFFECT_SD)
+    ending = "plain"
+    if allow_extras:
+        roll = rng.random()
+        if roll < RETURNS_BURST_PROBABILITY:
+            ending = "burst"
+        elif roll < RETURNS_BURST_PROBABILITY + RETURNS_CENSORED_TAIL_PROBABILITY:
+            ending = "censored"
+    reserve = {"burst": 1300, "censored": 400, "plain": 0}[ending]
+    if chase is not None:
+        reserve += RETURNS_CHASE_RESERVE
+    pause_first = gaps and rng.random() < RETURNS_PAUSE_PROBABILITY
+    open_end = gaps and rng.random() < RETURNS_OPEN_END_PROBABILITY
+
+    observations: list[dict] = []
+    departures: list[dict] = []
+    pauses: list[dict] = []
+    t = rng.randint(1, 20)
+    observations.append(observation(t, RETURNS_ANCHOR))
+    # Longer than the longest non-return, so the anchor holds the most
+    # confident time from the first departure on.
+    t += rng.randint(720, 900)
+    earliest = t
+    last_start = duration - RETURNS_HORIZON_SECONDS - 180 - reserve
+    while t <= last_start:
+        category, cell, rate = draw_departure(rng)
+        probability = min(0.98, max(0.02, rate + block_effect))
+        returned = rng.random() < probability
+        if not returned and chase is not None and rng.random() < chase[cell]:
+            earliest = _chased_non_return(rng, t, category, cell, observations, departures)
+            t = earliest + RETURNS_ANCHOR_AFTER_NON_RETURN[0]
+            break
+        low, high = RETURNS_AWAY_RETURNED if returned else RETURNS_AWAY_NOT_RETURNED
+        away = rng.randint(low, high)
+        observations.append(observation(t, category))
+        observations.append(observation(t + away, RETURNS_ANCHOR))
+        departure = {"t": t, "cell": cell,
+                     "label": "returned" if returned else "not_returned"}
+        departures.append(departure)
+        horizon_end = t + RETURNS_HORIZON_SECONDS
+        earliest = horizon_end
+        low, high = RETURNS_ANCHOR_AFTER_RETURN if returned else RETURNS_ANCHOR_AFTER_NON_RETURN
+        following = horizon_end + rng.randint(low, high)
+        if pause_first and not pauses:
+            # An ambiguous blip, then the pause: the pause closes the blip's
+            # row where it opened, so the anchor row before it is intact and
+            # the gap runs from the blip to the first observation after the
+            # resume, well inside this horizon.
+            blip = t + away + rng.randint(30, 60)
+            pause_at = blip + 5
+            resume = pause_at + rng.randint(*RETURNS_PAUSE_SECONDS)
+            observations.append(observation(blip, "REFERENCE", "ambiguous", "low"))
+            observations.append(observation(resume + 1, RETURNS_ANCHOR))
+            pauses.append({"at": pause_at, "resume": resume})
+            departure["outcome"] = departure["label"]
+            departure["label"] = "observer_gap"
+            earliest = max(earliest, resume + 1)
+            following = max(following, resume + 61)
+        if allow_extras and rng.random() < RETURNS_BLIP_PROBABILITY:
+            blip = horizon_end + rng.randint(10, 30)
+            back = blip + rng.randint(20, 40)
+            observations.append(observation(blip, "REFERENCE", "ambiguous", "low"))
+            observations.append(observation(back, RETURNS_ANCHOR))
+            earliest = back
+            following = max(following, back + 60)
+        t = following
+
+    # The ending starts soon after the last horizon closed, never inside it.
+    t = min(t, earliest + rng.randint(30, 120))
+    if ending == "burst":
+        # Three departures in 80 seconds: the third clears the gate's switch
+        # threshold and the shipped gate offers. The first two were logged as
+        # sub-threshold departures, and their horizons contain the offer. The
+        # anchor then holds for a full horizon, so were they not excluded they
+        # would read as returns.
+        away = [rng.choice(burst_categories) for _ in range(3)]
+        observations.extend(_drift_burst(t, RETURNS_ANCHOR, away))
+        for index in range(3):
+            departures.append({"t": t + 40 * index,
+                               "cell": _cell_of(away[index]), "label": "treated"})
+        observations.append(observation(t + 100, RETURNS_ANCHOR))
+        t = t + 100 + RETURNS_HORIZON_SECONDS + rng.randint(30, 120)
+    elif ending == "censored":
+        category, cell, _ = draw_departure(rng)
+        observations.append(observation(t, category))
+        departures.append({"t": t, "cell": cell, "label": "censored"})
+        t += rng.randint(200, 260)
+    end_offset = None
+    if open_end:
+        # No observation closes the dwell the block ends in. The replay
+        # reports no raw dwell, so the block end closes that row where it
+        # opened, and the last horizon has a gap in it.
+        last = departures[-1]
+        if pauses and last["t"] < pauses[0]["at"]:
+            raise ValueError(f"returns block at {start_offset}: one departure, two gaps")
+        last["outcome"] = last["label"]
+        last["label"] = "observer_gap"
+        if not observations[-1]["t"] < t < duration:
+            raise ValueError(f"returns block at {start_offset}: the ending overran the block")
+        end_offset = t
+    else:
+        # A SYSTEM observation closes the last row where the block ends. The
+        # replay reports no raw dwell, so without it the open row would close
+        # where it opened and the final horizon would read as a gap.
+        t = min(t, duration - 30)
+        if t <= observations[-1]["t"]:
+            raise ValueError(f"returns block at {start_offset}: the ending overran the block")
+        observations.append(observation(t, "SYSTEM"))
+    spec = block(observations, planned_duration_seconds=duration,
+                 where=f"returns block at {start_offset}")
+    spec["start_offset_seconds"] = start_offset
+    spec["departures"] = departures
+    if pauses:
+        spec["pauses"] = pauses
+    if end_offset is not None:
+        spec["end_offset_seconds"] = end_offset
+    if reply_to_offer is not None:
+        spec["reply_to_offer"] = reply_to_offer
+    return spec
+
+
+def _chased_non_return(rng: random.Random, t: int, category: str, cell: str,
+                       observations: list[dict], departures: list[dict]) -> int:
+    """A non-return that turns into a run of three departures in `category`.
+
+    The third clears the gate's switch threshold and the shipped gate offers
+    on it. Every departure in the run is a non-return over its whole horizon
+    (`outcome`); `label` is what the ledger must read once it censors at the
+    offer. Returns the end of the last horizon the run opens.
+    """
+    decided = rng.random() < RETURNS_CHASE_DECIDED_SHARE
+    first_away = rng.randint(*(RETURNS_CHASE_AWAY_DECIDED if decided
+                               else RETURNS_CHASE_AWAY_OPEN))
+    tail = rng.randint(*RETURNS_CHASE_TAIL)
+    second = t + first_away + 20
+    third = second + 40
+    observations.extend([
+        observation(t, category),
+        observation(t + first_away, RETURNS_ANCHOR),
+        observation(second, category),
+        observation(second + 20, RETURNS_ANCHOR),
+        observation(third, category),
+        observation(third + tail, RETURNS_ANCHOR),
+    ])
+    departures.extend([
+        {"t": t, "cell": cell, "label": "not_returned" if decided else "treated",
+         "outcome": "not_returned"},
+        {"t": second, "cell": cell, "label": "treated", "outcome": "not_returned"},
+        {"t": third, "cell": cell, "label": "treated", "outcome": "not_returned"},
+    ])
+    return third + RETURNS_HORIZON_SECONDS
+
+
+def _cell_of(category: str) -> str:
+    for group, categories in RETURNS_GROUPS.items():
+        if category in categories:
+            return RETURNS_CELL_IDS[group]
+    raise ValueError(f"{category} has no departure cell")
+
+
+def _group_draw(rates: dict[str, float]):
+    def draw(rng: random.Random) -> tuple[str, str, float]:
+        group = _weighted_group(rng)
+        return rng.choice(RETURNS_GROUPS[group]), RETURNS_CELL_IDS[group], rates[group]
+    return draw
+
+
+def _returns_trace(trace_id: str, family: str, seed: int, blocks: list[dict],
+                   truth: dict) -> dict:
+    return {
+        "kind": "trace",
+        "schema": RETURNS_SCHEMA,
+        "synthetic": True,
+        "trace_id": trace_id,
+        "family": family,
+        "seed": seed,
+        "blocks": blocks,
+        "truth": truth,
+    }
+
+
+def _weekly_blocks(rng: random.Random, weeks: int, blocks_per_week: int,
+                   make_block) -> list[dict]:
+    """`make_block(rng, week, index, start_offset)` for each scheduled slot."""
+    blocks: list[dict] = []
+    for week in range(weeks):
+        for start in _slots(rng, week, blocks_per_week):
+            blocks.append(make_block(rng, week, len(blocks), start))
+    return blocks
+
+
+def returns_planted_trace(index: int, seed: int, blocks_per_week: int) -> dict:
+    rng = random.Random(seed)
+    draw = _group_draw(RETURNS_PLANTED_RATES)
+    blocks = _weekly_blocks(
+        rng, RETURNS_WEEKS_IN_LOOKBACK, blocks_per_week,
+        lambda rng, week, n, start: _returns_block(rng, start, RETURNS_BLOCK_SECONDS, draw))
+    return _returns_trace(
+        f"E-PLANTED-{blocks_per_week}PW-{index:03d}", "PLANTED", seed, blocks,
+        {"planted_cell": "departure.communication", "planted_direction": "lower",
+         "rates": RETURNS_PLANTED_RATES, "blocks_per_week": blocks_per_week,
+         "weeks": RETURNS_WEEKS_IN_LOOKBACK, "change_after_block": None})
+
+
+def returns_null_trace(index: int, seed: int, weeks: int, blocks_per_week: int) -> dict:
+    rng = random.Random(seed)
+    rates = {group: RETURNS_NULL_RATE for group in RETURNS_GROUPS}
+    draw = _group_draw(rates)
+    blocks = _weekly_blocks(
+        rng, weeks, blocks_per_week,
+        lambda rng, week, n, start: _returns_block(rng, start, RETURNS_BLOCK_SECONDS, draw))
+    return _returns_trace(
+        f"E-NULL-{index:03d}", "NULL", seed, blocks,
+        {"planted_cell": None, "planted_direction": None, "rates": rates,
+         "blocks_per_week": blocks_per_week, "weeks": weeks,
+         "change_after_block": None})
+
+
+def returns_sparse_trace(index: int, seed: int) -> dict:
+    """Below the evidence floor, with the planted structure present anyway.
+
+    Even-numbered traces have five blocks in one week, below the six-block
+    floor. Odd-numbered ones have eight 40-minute blocks over two weeks, each
+    with room for one departure, so enough blocks and too few rows.
+    """
+    rng = random.Random(seed)
+    draw = _group_draw(RETURNS_PLANTED_RATES)
+    if index % 2 == 0:
+        blocks = _weekly_blocks(
+            rng, 1, 5,
+            lambda rng, week, n, start: _returns_block(
+                rng, start, RETURNS_BLOCK_SECONDS, draw))
+        shape = "five blocks in one week"
+    else:
+        blocks = _weekly_blocks(
+            rng, 2, 4,
+            lambda rng, week, n, start: _returns_block(
+                rng, start, RETURNS_SHORT_BLOCK_SECONDS, draw, allow_extras=False))
+        shape = "eight 40-minute blocks over two weeks"
+    return _returns_trace(
+        f"E-SPARSE-{index:03d}", "SPARSE", seed, blocks,
+        {"planted_cell": "departure.communication", "planted_direction": "lower",
+         "rates": RETURNS_PLANTED_RATES, "shape": shape,
+         "change_after_block": None})
+
+
+def returns_regime_trace(index: int, seed: int, weeks: int, change_week: int,
+                         blocks_per_week: int) -> dict:
+    rng = random.Random(seed)
+    before = _group_draw(RETURNS_REGIME_BEFORE)
+    after_rates = {group: RETURNS_REGIME_AFTER_RATE for group in RETURNS_GROUPS}
+    after = _group_draw(after_rates)
+    blocks = _weekly_blocks(
+        rng, weeks, blocks_per_week,
+        lambda rng, week, n, start: _returns_block(
+            rng, start, RETURNS_BLOCK_SECONDS, before if week < change_week else after))
+    return _returns_trace(
+        f"E-REGIME-{index:03d}", "REGIME", seed, blocks,
+        {"planted_cell": "departure.communication", "planted_direction": "lower",
+         "rates_before": RETURNS_REGIME_BEFORE, "rates_after": after_rates,
+         "blocks_per_week": blocks_per_week, "weeks": weeks,
+         "change_after_block": change_week * blocks_per_week})
+
+
+def returns_corrected_trace(index: int, seed: int, weeks: int, change_week: int,
+                            blocks_per_week: int) -> dict:
+    """A correction moves a work tool out of COMMUNICATION halfway through.
+
+    Before it, half of the COMMUNICATION departures are the tool (a quick
+    return) and the person answers some offers "Wrong category". After it, the
+    tool is filed as REFERENCE and COMMUNICATION is only chat.
+    """
+    rng = random.Random(seed)
+
+    def draw_for(corrected: bool):
+        def draw(rng: random.Random) -> tuple[str, str, float]:
+            group = _weighted_group(rng)
+            if group != "communication":
+                return (rng.choice(RETURNS_GROUPS[group]), RETURNS_CELL_IDS[group],
+                        RETURNS_CORRECTED_OTHER_RATE)
+            if rng.random() < RETURNS_TOOL_SHARE_OF_COMMUNICATION:
+                if corrected:
+                    return "REFERENCE", RETURNS_CELL_IDS["work_adjacent"], RETURNS_TOOL_RATE
+                return "COMMUNICATION", RETURNS_CELL_IDS["communication"], RETURNS_TOOL_RATE
+            return "COMMUNICATION", RETURNS_CELL_IDS["communication"], RETURNS_CHAT_RATE
+        return draw
+
+    def make(rng: random.Random, week: int, n: int, start: int) -> dict:
+        corrected = week >= change_week
+        reply = None
+        if not corrected and rng.random() < RETURNS_DISPUTE_PROBABILITY:
+            reply = "wrong_classification"
+        return _returns_block(
+            rng, start, RETURNS_BLOCK_SECONDS, draw_for(corrected),
+            reply_to_offer=reply,
+            burst_categories=("REFERENCE",) if corrected else ("COMMUNICATION",))
+
+    blocks = _weekly_blocks(rng, weeks, blocks_per_week, make)
+    return _returns_trace(
+        f"E-CORRECTED-{index:03d}", "CORRECTED", seed, blocks,
+        {"planted_cell": "departure.communication", "planted_direction": "lower",
+         "chat_rate": RETURNS_CHAT_RATE, "tool_rate": RETURNS_TOOL_RATE,
+         "tool_share_of_communication_before": RETURNS_TOOL_SHARE_OF_COMMUNICATION,
+         "other_rate": RETURNS_CORRECTED_OTHER_RATE,
+         "blocks_per_week": blocks_per_week, "weeks": weeks,
+         "change_after_block": change_week * blocks_per_week})
+
+
+def returns_informative_trace(index: int, seed: int, blocks_per_week: int) -> dict:
+    """Offers follow non-returns, so censoring at the offer is informative.
+
+    The own-return rate is the same after every kind of departure. A
+    non-return after a communication departure usually becomes a run the gate
+    offers on; after anything else, rarely. There is no cell to find: a cell
+    the ledger surfaces here is the bias, not the person.
+    """
+    rng = random.Random(seed)
+    rates = {group: RETURNS_INFORMATIVE_RATE for group in RETURNS_GROUPS}
+    draw = _group_draw(rates)
+    blocks = _weekly_blocks(
+        rng, RETURNS_WEEKS_IN_LOOKBACK, blocks_per_week,
+        lambda rng, week, n, start: _returns_block(
+            rng, start, RETURNS_BLOCK_SECONDS, draw, allow_extras=False,
+            chase=RETURNS_INFORMATIVE_CHASE))
+    return _returns_trace(
+        f"E-INFORMATIVE-{index:03d}", "INFORMATIVE", seed, blocks,
+        {"planted_cell": None, "planted_direction": None, "rates": rates,
+         "chase_after_non_return": RETURNS_INFORMATIVE_CHASE,
+         "blocks_per_week": blocks_per_week, "weeks": RETURNS_WEEKS_IN_LOOKBACK,
+         "change_after_block": None})
+
+
+def returns_gaps_trace(index: int, seed: int) -> dict:
+    """Pauses inside a horizon, and blocks that end in an unmeasured dwell."""
+    rng = random.Random(seed)
+    rates = {group: RETURNS_NULL_RATE for group in RETURNS_GROUPS}
+    draw = _group_draw(rates)
+    blocks = _weekly_blocks(
+        rng, 1, RETURNS_GAPS_BLOCKS_PER_WEEK,
+        lambda rng, week, n, start: _returns_block(
+            rng, start, RETURNS_BLOCK_SECONDS, draw, allow_extras=False, gaps=True))
+    return _returns_trace(
+        f"E-GAPS-{index:03d}", "GAPS", seed, blocks,
+        {"planted_cell": None, "planted_direction": None, "rates": rates,
+         "blocks_per_week": RETURNS_GAPS_BLOCKS_PER_WEEK, "weeks": 1,
+         "pause_probability": RETURNS_PAUSE_PROBABILITY,
+         "open_end_probability": RETURNS_OPEN_END_PROBABILITY,
+         "change_after_block": None})
+
+
+# ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------
 
@@ -1508,6 +2049,52 @@ Additional assumptions, none of them measured:
   BEHAVIOURAL PROXY. Nothing in this file, and nothing derived from it, may be
   read as a claim that the time was unproductive.
 
+## Suite E — the return-ledger families
+
+Suite E goes back through the ingestion path, like A and B: the decision log,
+the offers, the block cap and the backoff that `behavior/returns.rs` reads are
+the ones the shipped gate wrote. The person is synthetic. **A suite E number is
+a claim about whether the ledger recovers a rate that was planted.** It is not
+a claim about any person's rate, and it says nothing about what a nudge does.
+
+Additional assumptions, none of them measured:
+
+- The anchor is always FOCUS_WORK. Departures go to COMMUNICATION 40%, to
+  SOCIAL_FEED or PASSIVE_CONSUMPTION 30%, and to REFERENCE or TASK_MANAGEMENT
+  30%.
+- A return is 60-240 s away and a non-return 420-700 s away, so every label is
+  exact: at least 660 or at most 480 of the next 900 s in the anchor.
+  Departures are spaced at least 960 s apart, so the gate never sees three in
+  ten minutes and never offers on them.
+- Each block's rates move together by `N(0, 0.08)` on the probability scale.
+  This is what makes rows in one block correlated.
+- 90-minute blocks starting at 09:00, 14:00 or 19:00 UTC plus up to 40
+  minutes, read at a UTC offset of zero. 40-minute blocks in half of SPARSE.
+- Per block, 20% end with a burst of three departures in 80 seconds, which the
+  shipped gate answers with an offer; 25% end with a departure the block ends
+  200-260 s into; 25% of horizons are followed by an ambiguous blip, which is
+  never evidence. The first departure comes after 720-900 s of the anchor,
+  longer than the longest non-return, so the anchor never moves.
+- PLANTED: communication 0.25, everything else 0.70, at 3, 5 and 8 blocks a
+  week for the 4 weeks of the ledger's lookback. NULL: 0.55 everywhere, 6 a
+  week. REGIME: communication 0.20 and the rest 0.75 for 4 weeks, then 0.60
+  everywhere. CORRECTED: before the correction half of what is filed as
+  COMMUNICATION is a work tool with a 0.85 rate (chat is 0.20, the rest 0.70)
+  and 60% of pre-correction blocks answer an offer "Wrong category"; after it
+  the tool is filed as REFERENCE.
+- INFORMATIVE: 0.55 after every kind of departure, 6 blocks a week for 4
+  weeks. A non-return turns into a run of three departures, which the shipped
+  gate offers on, 90% of the time after a communication departure and 10%
+  after anything else; the block's departures stop there. Every departure in
+  a run is a non-return over its whole horizon. The first time away is 60-100
+  s in half of the runs, so the label is still open at the offer, and 320-400
+  s in the other half, so the time before the offer decides it. Nothing is
+  known about how often real offers follow real non-returns; this family
+  exists so the ledger's disclosed bias can be seen, not sized.
+- GAPS: 0.55 everywhere, 6 blocks in one week. Half the blocks pause for
+  120-300 s inside the first departure's horizon; half end with the dwell they
+  ended in still open, which no row measures once the block closes.
+
 ## What these fixtures cannot tell you
 
 - Whether real people behave like this. They do not, in ways nobody can predict.
@@ -1567,6 +2154,25 @@ def main() -> int:
     parser.add_argument("--antecedent-saturated-weeks", type=int, default=26)
     parser.add_argument("--antecedent-sparse-traces", type=int, default=16)
     parser.add_argument("--antecedent-sparse-weeks", type=int, default=2)
+    parser.add_argument("--returns-planted-seeds", type=int, default=12,
+                        help="suite E traces per PLANTED blocks-per-week level")
+    parser.add_argument("--returns-null-traces", type=int, default=40,
+                        help="NULL traces in suite E; the family the "
+                             "zero-surfaced acceptance is measured on")
+    parser.add_argument("--returns-sparse-traces", type=int, default=16)
+    parser.add_argument("--returns-regime-traces", type=int, default=12)
+    parser.add_argument("--returns-corrected-traces", type=int, default=12)
+    parser.add_argument("--returns-informative-traces", type=int, default=12,
+                        help="suite E traces in which offers follow non-returns")
+    parser.add_argument("--returns-gaps-traces", type=int, default=8,
+                        help="suite E traces with pauses and unmeasured final "
+                             "dwells inside horizons")
+    parser.add_argument("--returns-weeks", type=int, default=8,
+                        help="weeks in the suite E REGIME and CORRECTED traces")
+    parser.add_argument("--returns-change-week", type=int, default=4)
+    parser.add_argument("--returns-blocks-per-week", type=int, default=6,
+                        help="blocks per week in the suite E NULL, REGIME and "
+                             "CORRECTED traces")
     parser.add_argument("--check", action="store_true",
                         help="regenerate into a temporary directory and fail if "
                              "anything differs from what is on disk")
@@ -1601,6 +2207,15 @@ def main() -> int:
         print("ERROR: --antecedent-saturated-weeks must exceed the longest "
               "history in the recovery grid, or the inversion control is not "
               "a control", file=sys.stderr)
+        return 1
+
+    if not 0 < args.returns_change_week < args.returns_weeks:
+        print("ERROR: --returns-change-week must fall strictly inside "
+              "--returns-weeks", file=sys.stderr)
+        return 1
+    if not 1 <= args.returns_blocks_per_week <= 7 * len(RETURNS_START_HOURS):
+        print("ERROR: --returns-blocks-per-week must be between 1 and "
+              f"{7 * len(RETURNS_START_HOURS)}", file=sys.stderr)
         return 1
 
     target = args.out
@@ -1685,6 +2300,45 @@ def main() -> int:
         antecedent_sparse_trace(index, args.seed + 9_000_000 + index,
                                 args.antecedent_sparse_weeks)
         for index in range(args.antecedent_sparse_traces)
+    ]
+
+    # Suite E. Seed offsets disjoint from every other suite, for the same
+    # reason as C and D.
+    returns: list[dict] = []
+    for level, blocks_per_week in enumerate(RETURNS_PLANTED_BLOCKS_PER_WEEK):
+        for index in range(args.returns_planted_seeds):
+            returns.append(returns_planted_trace(
+                index, args.seed + 10_000_000 + level * 10_000 + index,
+                blocks_per_week))
+    returns += [
+        returns_null_trace(index, args.seed + 11_000_000 + index,
+                           RETURNS_WEEKS_IN_LOOKBACK, args.returns_blocks_per_week)
+        for index in range(args.returns_null_traces)
+    ]
+    returns += [
+        returns_sparse_trace(index, args.seed + 12_000_000 + index)
+        for index in range(args.returns_sparse_traces)
+    ]
+    returns += [
+        returns_regime_trace(index, args.seed + 13_000_000 + index,
+                             args.returns_weeks, args.returns_change_week,
+                             args.returns_blocks_per_week)
+        for index in range(args.returns_regime_traces)
+    ]
+    returns += [
+        returns_corrected_trace(index, args.seed + 14_000_000 + index,
+                                args.returns_weeks, args.returns_change_week,
+                                args.returns_blocks_per_week)
+        for index in range(args.returns_corrected_traces)
+    ]
+    returns += [
+        returns_informative_trace(index, args.seed + 15_000_000 + index,
+                                  args.returns_blocks_per_week)
+        for index in range(args.returns_informative_traces)
+    ]
+    returns += [
+        returns_gaps_trace(index, args.seed + 16_000_000 + index)
+        for index in range(args.returns_gaps_traces)
     ]
 
     files = {}
@@ -1805,6 +2459,60 @@ def main() -> int:
         antecedents,
     )
 
+    files["SYNTHETIC-suite-e-returns.jsonl"] = (
+        header_record(
+            "E - return ledger",
+            "Multi-week traces replayed through the real ingestion path and "
+            "then scored by behavior/returns.rs. Seven families with known "
+            "ground truth: PLANTED (communication departures rarely end in a "
+            "return, at 3, 5 and 8 blocks a week over the 28-day lookback), "
+            "NULL, SPARSE, REGIME (the pattern stops halfway), CORRECTED "
+            "(a correction moves a work tool out of COMMUNICATION halfway), "
+            "INFORMATIVE (offers follow non-returns, mostly after "
+            "communication departures) and GAPS (pauses, and blocks that end "
+            "in an unmeasured dwell).",
+            "Every departure the ledger finds carries the label planted for "
+            "it. NULL: ZERO surfaced cells across every trace, and the naive "
+            "controls do surface cells on the same traces. SPARSE: abstain, "
+            "with a stated reason. PLANTED: the communication cell surfaces "
+            "as lower at the highest volume in most traces; the recovery at "
+            "each volume is REPORTED. REGIME: found before the change, gone "
+            "once the lookback has passed it. CORRECTED: disputed blocks are "
+            "counted and down-weighted, and the pattern the misfiled tool "
+            "hid is found once corrected rows fill the lookback. INFORMATIVE: "
+            "the ledger's communication rate reads above the planted rate, "
+            "the offers are counted as treated in that cell, and the size is "
+            "REPORTED. GAPS: every planted gap is censored as observer_gap, "
+            "never scored. Every offered point is outside the rows the "
+            "ledger counts.",
+            returns,
+            {
+                "schema": RETURNS_SCHEMA,
+                "returns_generator_version": RETURNS_GENERATOR_VERSION,
+                "families": sorted({trace["family"] for trace in returns}),
+                "outcome": (
+                    "returned iff at least 600 of the 900 seconds after a "
+                    "departure were spent in the anchor recorded on the "
+                    "decision row. The pre-registered primary outcome's "
+                    "definition, applied to departures the gate did not act "
+                    "on. A BEHAVIOURAL PROXY, not a productivity label."
+                ),
+                "utc_offset_seconds": 0,
+                "planted_rates": RETURNS_PLANTED_RATES,
+                "planted_blocks_per_week": list(RETURNS_PLANTED_BLOCKS_PER_WEEK),
+                "null_rate": RETURNS_NULL_RATE,
+                "informative_rate": RETURNS_INFORMATIVE_RATE,
+                "informative_chase_after_non_return": RETURNS_INFORMATIVE_CHASE,
+                "block_effect_sd": RETURNS_BLOCK_EFFECT_SD,
+                "total_blocks": sum(len(trace["blocks"]) for trace in returns),
+                "total_observations": sum(
+                    len(spec["observations"])
+                    for trace in returns for spec in trace["blocks"]),
+            },
+        ),
+        returns,
+    )
+
     digests = {}
     for name, (header, entries) in files.items():
         digests[name] = {
@@ -1868,6 +2576,23 @@ def main() -> int:
             "sparse_traces": args.antecedent_sparse_traces,
             "sparse_weeks": args.antecedent_sparse_weeks,
             "read_by": "rust-service/tests/behavior_antecedents.rs",
+        },
+        "returns": {
+            "schema": RETURNS_SCHEMA,
+            "generator_version": RETURNS_GENERATOR_VERSION,
+            "planted_seeds_per_level": args.returns_planted_seeds,
+            "planted_blocks_per_week": list(RETURNS_PLANTED_BLOCKS_PER_WEEK),
+            "planted_rates": RETURNS_PLANTED_RATES,
+            "null_traces": args.returns_null_traces,
+            "sparse_traces": args.returns_sparse_traces,
+            "regime_traces": args.returns_regime_traces,
+            "corrected_traces": args.returns_corrected_traces,
+            "informative_traces": args.returns_informative_traces,
+            "gaps_traces": args.returns_gaps_traces,
+            "weeks": args.returns_weeks,
+            "change_week": args.returns_change_week,
+            "blocks_per_week": args.returns_blocks_per_week,
+            "read_by": "rust-service/tests/trace_replay.rs",
         },
         "replayed_by": "rust-service/tests/trace_replay.rs",
         "files": digests,

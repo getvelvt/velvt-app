@@ -220,6 +220,18 @@ impl AccountAuthService {
             Some(serde_json::json!({ "client_version": crate::build_info::SERVICE_VERSION }));
         let response = match self.raw_http.send(request).await {
             Ok(response) if (200..300).contains(&response.status) => response,
+            // velvt-core #41 limits registration to 10 an hour per user and
+            // says how long to wait in `Retry-After`. Answered as any other
+            // refusal, the person was told to try again at once, and each
+            // retry was another login against the login budgets.
+            Ok(response) if response.status == 429 => {
+                tracing::warn!(
+                    error_code = "device_registration_rate_limited",
+                    status = response.status,
+                    "device registration was refused for too many attempts"
+                );
+                return registration_rate_limited(flow, response.retry_after.as_deref());
+            }
             Ok(response) => {
                 tracing::error!(
                     error_code = "device_registration_rejected",
@@ -333,6 +345,14 @@ impl AccountAuthService {
                         flow,
                     )
                     .await;
+            }
+            Ok(response) if response.status == 429 => {
+                tracing::warn!(
+                    error_code = "device_token_reissue_rate_limited",
+                    status = response.status,
+                    "device token reissue was refused for too many attempts"
+                );
+                return registration_rate_limited(flow, response.retry_after.as_deref());
             }
             Ok(response) => {
                 tracing::error!(
@@ -589,6 +609,28 @@ fn registration_failure(flow: CredentialFlow, code: AuthFailureCode) -> ServerMe
     })
 }
 
+/// The answer to a sign-up or login whose credentials the cloud accepted but
+/// whose device registration, or the reissue of the device this Mac already
+/// has, it refused with `429`. As with any failed registration nothing is
+/// kept, and a sign-up still says the account exists; the wait comes from
+/// `Retry-After` as for a refused sign-in.
+fn registration_rate_limited(flow: CredentialFlow, retry_after: Option<&str>) -> ServerMessage {
+    let wait = retry_wait(retry_after);
+    let message = match flow {
+        CredentialFlow::SignUp => format!(
+            "Your account was created, but this Mac could not be registered yet. \
+             Too many attempts. Log in to try again {wait}."
+        ),
+        CredentialFlow::LogIn => {
+            format!("This Mac could not be registered yet. Too many attempts. Try again {wait}.")
+        }
+    };
+    ServerMessage::AuthFailure(AuthFailure {
+        code: AuthFailureCode::RateLimited,
+        message,
+    })
+}
+
 /// Prefers the cloud API's own `error.message` (e.g. "Email is already
 /// registered.", "Request validation failed.") over a generic fallback —
 /// the server already writes a message safe to show verbatim, and the
@@ -636,16 +678,21 @@ fn map_auth_failure(response: &super::HttpResponse) -> AuthFailure {
 /// header, so the app says the same thing to either server, and rounded up to
 /// the minute, so the person never comes back early.
 fn rate_limited_message(retry_after: Option<&str>) -> String {
+    format!("Too many attempts. Try again {}.", retry_wait(retry_after))
+}
+
+/// When to come back, from `Retry-After`: "in 15 minutes" ("in a minute"
+/// under one, in hours from 120 minutes), or "later" without a usable header.
+fn retry_wait(retry_after: Option<&str>) -> String {
     let Some(wait) = retry_after.and_then(super::retry_after_delay) else {
-        return "Too many attempts. Try again later.".into();
+        return "later".into();
     };
     let minutes = wait.as_secs().div_ceil(60).max(1);
-    let wait = match minutes {
-        1 => "a minute".to_owned(),
-        2..=119 => format!("{minutes} minutes"),
-        _ => format!("{} hours", minutes.div_ceil(60)),
-    };
-    format!("Too many attempts. Try again in {wait}.")
+    match minutes {
+        1 => "in a minute".to_owned(),
+        2..=119 => format!("in {minutes} minutes"),
+        _ => format!("in {} hours", minutes.div_ceil(60)),
+    }
 }
 
 /// Shown when velvt-core refuses the password's length. Its sign-up rule is
@@ -1604,6 +1651,85 @@ mod tests {
             "Too many attempts. Try again in 10 minutes.",
             "an HTTP date is a wait too"
         );
+    }
+
+    /// velvt-core #41 limits device registration to 10 an hour per user and
+    /// answers the 11th with `429` and `Retry-After`. A sign-in that reached
+    /// it was told "This Mac could not be registered. Please try again.", so
+    /// the person retried at once, each retry another login against the
+    /// login budgets. It is `rate_limited` now, with the wait, from the
+    /// registration of a new Mac and from the reissue of one already
+    /// registered, and from either server.
+    #[tokio::test]
+    async fn a_rate_limited_registration_says_how_long_to_wait() {
+        for (server, retry_after, sign_up_message, log_in_message) in [
+            (
+                "velvt-core with #41",
+                Some("3600"),
+                "Your account was created, but this Mac could not be registered yet. Too many attempts. Log in to try again in 60 minutes.",
+                "This Mac could not be registered yet. Too many attempts. Try again in 60 minutes.",
+            ),
+            (
+                "the server deployed before #41",
+                None,
+                "Your account was created, but this Mac could not be registered yet. Too many attempts. Log in to try again later.",
+                "This Mac could not be registered yet. Too many attempts. Try again later.",
+            ),
+        ] {
+            for (flow, stored_device, expected_path) in [
+                ("sign_up", None, "/v1/devices"),
+                ("log_in", None, "/v1/devices"),
+                ("log_in", Some("earlier-device"), "/v1/auth/devices/reissue"),
+            ] {
+                let case = format!("{server}, {flow}, {expected_path}");
+                let raw_http = Arc::new(FakeHttpClient::with_responses(vec![
+                    HttpResponse {
+                        status: if flow == "sign_up" { 201 } else { 200 },
+                        ..signup_response()
+                    },
+                    rate_limited(retry_after, "Too many requests."),
+                ]));
+                let (service, token_store) = service(Arc::clone(&raw_http));
+                if let Some(device_id) = stored_device {
+                    token_store.store_device_id(device_id).unwrap();
+                }
+
+                let outcome = if flow == "sign_up" {
+                    service
+                        .sign_up("a@example.test".into(), "password".into())
+                        .await
+                } else {
+                    service
+                        .log_in("a@example.test".into(), "password".into())
+                        .await
+                };
+
+                assert_eq!(
+                    outcome,
+                    ServerMessage::AuthFailure(AuthFailure {
+                        code: AuthFailureCode::RateLimited,
+                        message: if flow == "sign_up" {
+                            sign_up_message
+                        } else {
+                            log_in_message
+                        }
+                        .into(),
+                    }),
+                    "{case}"
+                );
+                let requests = raw_http.requests();
+                assert_eq!(requests.len(), 2, "{case}: nothing after the refusal");
+                assert_eq!(requests[1].path, expected_path, "{case}");
+                assert!(token_store.load_tokens().unwrap().is_none(), "{case}");
+                assert!(token_store.load_user_tokens().unwrap().is_none(), "{case}");
+                assert_eq!(token_store.load_user_id().unwrap(), None, "{case}");
+                assert_eq!(
+                    token_store.load_device_id().unwrap().as_deref(),
+                    stored_device,
+                    "{case}: the stored device is kept for the next sign-in"
+                );
+            }
+        }
     }
 
     #[tokio::test]

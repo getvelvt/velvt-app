@@ -15,7 +15,12 @@ velvt-core #41 sends `Retry-After` in whole seconds on every rate-limit 429.
   120 minutes), or "Too many attempts. Try again later." when the server sent
   no usable `Retry-After`, as the server deployed before #41 does. The server's
   own words are not used, so the app says the same thing to either server.
-  Swift shows the message as it is, as it does for every `auth_failure`.
+  Rust sends it too when a sign-in's device registration (`POST /v1/devices`,
+  which #41 limits to 10 an hour per user) or the reissue of the stored
+  device is refused with `429`: "This Mac could not be registered yet. Too
+  many attempts. Try again in 60 minutes." (after a sign-up, "Your account was
+  created, but ... Log in to try again in 60 minutes."). Swift shows the
+  message as it is, as it does for every `auth_failure`.
 - Swift decodes `auth_failure.code` as a closed set, so a 36 app would fail
   the frame and drop the connection: hence the version.
 - Not on the wire, in the same release: once per launch, after a restored
@@ -24,9 +29,13 @@ velvt-core #41 sends `Retry-After` in whole seconds on every rate-limit 429.
   server without the route included, ends it for the launch); an ingestion or
   insight-poll 429's `Retry-After` reaches the upload queue and the poll, which
   `AuthManager` used to drop; requests refused together as
-  `device_token_revoked` share one reissue. Swift labels synced history rows as
-  UTC days, never matches one against the local "today", and takes the
-  History tooltip's percentage from `seconds / active_seconds`.
+  `device_token_revoked` share one reissue. Swift never matches a synced
+  history row (a UTC day) against the local "today": the Patterns coaching
+  card shows "This week so far", not "Today so far", for a synced history
+  with one ready day. The UTC day labels, the history tooltip's percentage
+  (now `seconds / active_seconds`) and the Today metrics changed in
+  `HistoryListView` and `TodayWorkspaceView`, which only `#if DEBUG` previews
+  create; the app does not show them.
 
 ## Version 36 - 2026-10-15
 

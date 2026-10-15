@@ -1,5 +1,12 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+/// The longest a `Retry-After` puts the upload host off: one hour, velvt-core's
+/// longest rate-limit window (ingestion's is a minute). The header is honoured
+/// above the backoff's own cap, but a 429 from a proxy or edge in front of the
+/// API with a day or a far HTTP date would otherwise park the whole queue that
+/// long, across restarts, since the wait is saved with the host's backoff.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60 * 60);
+
 pub struct HostBackoff {
     base: Duration,
     cap: Duration,
@@ -33,7 +40,7 @@ impl HostBackoff {
 
     pub fn next_delay(&mut self, host: &str, retry_after: Option<&str>) -> Duration {
         if let Some(delay) = retry_after.and_then(parse_retry_after) {
-            return delay;
+            return delay.min(MAX_RETRY_AFTER);
         }
         let attempt = self.attempts.entry(host.to_owned()).or_default();
         let multiplier = 2_u32.saturating_pow(*attempt);

@@ -317,7 +317,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         method: "PATCH",
         path: "/v1/devices/{device_id}",
-        when: "once a launch, after a saved session is restored and the server confirms it",
+        when: "once a launch, after the app restores a saved session and the server confirms it; if that gets no answer, again each time the app restores the session until one does",
         body: "{\"client_version\"} (the app version device registration and every batch already send)",
     },
     Endpoint {

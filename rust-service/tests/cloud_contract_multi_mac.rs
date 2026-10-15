@@ -457,8 +457,8 @@ async fn an_old_server_is_answered_once_and_left_alone_whatever_it_says() {
     }
 }
 
-/// The report runs in the restored session's background task: a server that
-/// never answers it holds back no raw event.
+/// The report runs in the background: a server that never answers it holds
+/// back no raw event.
 #[tokio::test]
 async fn a_report_the_server_never_answers_holds_back_no_raw_event() {
     let core = FakeCore::start(Server::New, true).await;
@@ -469,6 +469,24 @@ async fn a_report_the_server_never_answers_holds_back_no_raw_event() {
 
     let ack = raw_event_ack_time(&helper.router).await;
     assert!(ack < Duration::from_millis(100), "{ack:?}");
+}
+
+/// Nor the next session's check. The report ran inside the validation's
+/// single-flight task, so while it waited (up to the request timeout) a
+/// session handed over on a new connection was applied but never checked
+/// with the server. Only one report is out at a time.
+#[tokio::test]
+async fn a_report_the_server_never_answers_holds_back_no_session_check() {
+    let core = FakeCore::start(Server::New, true).await;
+    let helper = helper(&core);
+
+    helper.router.route(restored_session()).await.unwrap();
+    core.wait_for("PATCH", "/v1/devices/", 1).await;
+    helper.router.route(restored_session()).await.unwrap();
+
+    core.wait_for("GET", "/v1/auth/session", 2).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(core.count("PATCH", "/v1/devices/"), 1);
 }
 
 // ---------------------------------------------------------------------------

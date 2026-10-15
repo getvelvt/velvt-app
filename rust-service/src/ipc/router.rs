@@ -3272,7 +3272,13 @@ impl MessageRouter for R7Router {
                                 );
                                 // Once per launch; any answer, a missing
                                 // route included, is fine (install-release-09).
-                                session_validator.report_client_version().await;
+                                // A task of its own, so the next session's
+                                // validation is not dropped while the report
+                                // waits; `AuthManager` sends at most one at a
+                                // time.
+                                tokio::spawn(async move {
+                                    session_validator.report_client_version().await;
+                                });
                             }
                             Err(AuthError::Transport | AuthError::RateLimited { .. }) => {
                                 tracing::warn!(

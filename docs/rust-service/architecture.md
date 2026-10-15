@@ -125,7 +125,7 @@ The upload path has three layers:
 2. `UploadBatcher` groups events by count, age, and shutdown.
 3. `UploadCoordinator` sends batches through `HttpBatchUploader`, records status, and manages retry/backoff.
 
-Batch IDs are stable for idempotent retry. `raw_field_rejected` is terminal because retrying a privacy-invalid payload would be incorrect. A `429` puts the upload host off for its `Retry-After`, or the coordinator's own backoff without one; `AuthManager` carries the header in `AuthError::RateLimited { retry_after }`, which `HttpBatchUploader` maps to `UploadOutcome::RateLimited` (protocol 37; before, it was mapped to a transport failure and the header was lost).
+Batch IDs are stable for idempotent retry. `raw_field_rejected` is terminal because retrying a privacy-invalid payload would be incorrect. A `429` puts the upload host off for its `Retry-After`, at most an hour (velvt-core's longest rate-limit window; a proxy's far larger value would otherwise park the queue, across restarts), or the coordinator's own backoff without one; `AuthManager` carries the header in `AuthError::RateLimited { retry_after }`, which `HttpBatchUploader` maps to `UploadOutcome::RateLimited` (protocol 37; before, it was mapped to a transport failure and the header was lost).
 
 ## Delivery Pipeline
 

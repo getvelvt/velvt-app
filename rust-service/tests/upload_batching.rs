@@ -572,6 +572,28 @@ fn retry_after_and_exponential_fallback_are_host_scoped() {
     );
 }
 
+/// A `Retry-After` is honoured above the backoff's own cap (15 minutes here),
+/// up to an hour, velvt-core's longest window. One from a proxy or edge in
+/// front of the API asking for days, in seconds or as a far HTTP date, used
+/// to park the whole queue that long, saved across restarts.
+#[test]
+fn a_retry_after_beyond_an_hour_waits_an_hour() {
+    let mut backoff = HostBackoff::new(Duration::from_secs(30), Duration::from_secs(900), || 1.0);
+    let in_a_year = (Utc::now() + chrono::Duration::days(365)).to_rfc2822();
+
+    for retry_after in ["3600", "3601", "86400", "999999999", in_a_year.as_str()] {
+        assert_eq!(
+            backoff.next_delay("dev-api.getvelvt.com", Some(retry_after)),
+            Duration::from_secs(3_600),
+            "{retry_after}"
+        );
+    }
+    assert_eq!(
+        backoff.next_delay("dev-api.getvelvt.com", Some("3599")),
+        Duration::from_secs(3_599)
+    );
+}
+
 #[test]
 fn privacy_payload_is_not_an_untyped_json_value() {
     let payload = BatchPayload::new(
@@ -975,6 +997,56 @@ async fn rate_limit_retry_after_is_persisted() {
     assert_eq!(
         repository
             .resumable_batches(before + chrono::Duration::seconds(700))
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// What the coordinator saves for the host is the capped wait: the batch is
+/// due again within the hour whatever the 429 asked for.
+#[tokio::test]
+async fn a_saved_rate_limit_wait_is_never_more_than_an_hour() {
+    let database = SqlitePersistence::open_in_memory().unwrap();
+    let repository = database.upload_batch_repo();
+    repository
+        .insert_batch(&NewUploadBatch {
+            batch_id: "batch-rate-limited".into(),
+            owner_user_id: None,
+        })
+        .unwrap();
+    let coordinator = UploadCoordinator::new(
+        repository.clone(),
+        FakeBatchUploader::with_outcomes(vec![UploadOutcome::RateLimited {
+            retry_after: Some("999999999".into()),
+        }]),
+        FakePrivacyAlertSink::default(),
+    )
+    .with_host_and_backoff(
+        "dev-api.getvelvt.com",
+        HostBackoff::new(Duration::from_secs(30), Duration::from_secs(900), || 1.0),
+    );
+    let before = Utc::now();
+
+    coordinator
+        .upload_batch(BatchPayload::new(
+            "batch-rate-limited",
+            "1",
+            "0.1.0",
+            vec!["document:edit".into()],
+            "mvp-1",
+            vec![event("one", 10)],
+        ))
+        .await
+        .unwrap();
+
+    assert!(repository
+        .resumable_batches(before + chrono::Duration::seconds(3_500))
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        repository
+            .resumable_batches(Utc::now() + chrono::Duration::seconds(3_601))
             .unwrap()
             .len(),
         1

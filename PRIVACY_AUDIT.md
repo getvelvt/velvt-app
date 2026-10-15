@@ -539,10 +539,12 @@ decisions file.
 
 *Changed after this audit, 2026-10-15 (protocol 37):* one request was added.
 Once a launch, after a restored session is confirmed, the service sends
-`PATCH /v1/devices/{device_id}` with `{"client_version": ...}`: the app version
-that device registration, every batch body and the `User-Agent` already carry,
-so the server's device row names the running build (velvt-core #41,
-install-release-09). The device id is the server's own identifier for this
+`PATCH /v1/devices/{device_id}` with `{"client_version": ...}`; a request that
+gets no answer (transport, 429, 5xx) is sent again at the next restored
+session, which can be the next IPC connection, until one is answered. The
+body is the app version that device registration, every batch body and the
+`User-Agent` already carry, so the server's device row names the running build
+(velvt-core #41, install-release-09). The device id is the server's own identifier for this
 device, already sent in the reissue body. The request is in `egress::ENDPOINTS`,
 in `PRIVACY.md`'s list, and in the ledger like every other. No install
 identifier and no UTC offset is sent; both wait on disclosure decisions
